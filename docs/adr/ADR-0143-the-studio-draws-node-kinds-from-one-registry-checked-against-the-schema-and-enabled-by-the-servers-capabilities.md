@@ -63,9 +63,10 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
    feature.
 2. **Keep the hand-written list and update it per feature.** No new contract. Rejected: it is how the Studio came to
    offer two refused kinds and to miss eight; nothing fails when it drifts.
-3. **Offer every schema kind and rely on `validate`.** No capability contract. Rejected: an author builds a graph the
-   server will refuse and learns it only when validating; the palette would show kinds that a deployment has
-   switched off on purpose (lake writes).
+3. **Offer every schema kind and rely on `validate`.** No capability contract. Rejected for the kinds and fields a
+   deployment switches off on purpose (lake writes, collection operators): the palette would offer what that server
+   will never accept. Refusals of placement and shape inside the publishable subset are knowingly left to live
+   validation (decision 5), because the codec's shape rules cannot be advertised as names.
 4. **Generate the Studio's forms from the JSON Schema.** Least hand-written code. Rejected for 0.3.0: the schema says
    what is valid, not how a person edits it (handles, bodies, expressions, durations); the registry keeps those and
    the test ties it to the schema.

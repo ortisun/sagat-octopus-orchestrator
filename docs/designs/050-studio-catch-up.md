@@ -37,14 +37,15 @@ From release 0.3.0 the Studio covers what the server executes and exposes:
 
 All of it is built on the Astryx design system of
 [Architecture decision 0101](https://github.com/ortisun/sagat-octopus-orchestrator/blob/feature/007-astryx-design-system/docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)
-(pull request #267), which this design accepts under the owner's delegation (Technical Plan 1). The server gains four
-small things: a `capabilities` list on `GET /version`, a namespace-wide approvals list, and a namespace-wide list of
-publication requests, and `youMayDecide` (a flag saying whether the caller may decide the item now) on the two
-existing per-run and per-workflow lists; and it makes three small
-additive corrections the screens need: a validation problem's pointer names the body of a body node, a decision on an
-approval whose run has ended answers `409 RUN_ENDED` instead of a retryable `503`, and the runtime graph reports each
-iteration's status and the counts by status from the engine's own outcomes. Nothing changes in the IR (the workflow
-document's schema, `workflow.schema.json`), the worker protocol or the SDKs.
+(pull request #267), which this design accepts under the owner's delegation (Technical Plan 1). The server gains five
+small things: a `capabilities` list on `GET /version`, a namespace-wide approvals list, a namespace-wide list of
+publication requests, a paged list of the iterations of one loop or collection, and `youMayDecide` (a flag saying
+whether the caller may decide the item now) on the two existing per-run and per-workflow lists. It makes two small
+additive corrections the screens need: a validation problem's pointer names the body of a body node, and the runtime
+graph reports on a loop or collection node the counts of its iterations by outcome, taken from the engine's own
+iteration events. It makes one deliberate change of behaviour: a decision on an approval whose run has ended answers
+`409 RUN_ENDED` instead of a retryable `503` (Non-functional requirement 050-003). Nothing changes in the IR (the
+workflow document's schema, `workflow.schema.json`), the worker protocol or the SDK interfaces.
 
 The owner is the product owner of the platform; the decisions of this design are taken under the owner's delegation
 (Owner decision 2026-11-24-4 in [`docs/owner-decisions.md`](../owner-decisions.md)), and the reviews it settles are in
@@ -134,9 +135,8 @@ REST API to approve a step.
   0143, decision 1). *Acceptance:* `registry.test.ts` passes on the schema of `develop` and fails on a schema with an
   added kind or a changed required field.
 - **Requirement 050-002** `GET /version` MUST return `capabilities`, a list of deployment-wide names (never per
-  tenant) in the form of Architecture decision 0143; design 050 ships the field with the names it uses
-  (`workflow.collection-operators`, `workflow.step-destinations`), each present when the answering replica would accept
-  the matching publication. A reader MUST ignore a name it does not know, and an absent field means a server older than
+  tenant) in the form of Architecture decision 0143; design 050 ships the field with the one name it uses
+  (`workflow.collection-operators`), present when the answering replica would accept the matching publication. A reader MUST ignore a name it does not know, and an absent field means a server older than
   0.3.0. Other features add their names when they ship (Technical Plan 3). *Acceptance:* the contract test
   `capabilities_follow_the_switches_a_server_was_started_with` and `a_reader_ignores_an_unknown_capability`.
 - **Requirement 050-003** The palette MUST offer only the kinds whose capability or advertisement is present (the
@@ -174,13 +174,17 @@ REST API to approve a step.
   before it is changed. *Acceptance:* the editor test opens the body of a `forEach`, adds a step, and cannot save a
   body without its `return` without the problem shown.
 - **Requirement 050-008** The run view MUST group scoped instances under their loop or collection node by
-  `instancePath` and `nodeId`, show the counts of iterations by status and each iteration's status as the runtime graph
-  reports them (Technical Plan 5: the engine's own outcomes, never a rule written again in the Studio), list up to
-  10,000 iterations virtualized, draw the body graph of one chosen iteration with compensations and reconciliations
-  beside their forward step, show the case a `switch` chose from `switchSelection`, and show an `UNKNOWN` selection as
-  such. *Acceptance:* the run view test with a recorded graph of a `forEach` of 500 items, a two-step body, one
-  compensation, one retry and one step routed by `onError` shows the counts the graph reports, opens iteration 312 and
-  shows its steps; the projection test that the reported iteration statuses equal the engine's recorded outcomes.
+  `instancePath` and `nodeId`, show the counts of iterations by outcome that the runtime graph reports on the owner
+  node (`SUCCEEDED`, `FAILED`, `DRAINED`, `RUNNING`, and for a collection the items not admitted), list the iterations
+  from the server's paged iteration list (`GET /runs/{runId}/graph/iterations`, filterable by outcome, virtualized up to
+  10,000), draw the body graph of one chosen iteration with compensations and reconciliations beside their forward
+  step, show the case a `switch` chose from `switchSelection`, and show an `UNKNOWN` selection as such (Technical Plan
+  5: the engine's own iteration events, never a rule written again in the Studio). The counts MUST stay current under
+  `GET /runs/{runId}/graph/changes` without a full reload. *Acceptance:* the run view test with a recorded graph of a
+  `forEach` of 500 items, a two-step body, one compensation, one retry and one step routed by `onError` shows the
+  counts the graph reports, opens iteration 312 and shows its steps; the projection test that the counts and the listed
+  outcomes equal the iteration events; the test that `graph/changes` polled across a retry, a return, a failure and a
+  drain gives the same counts as a fresh `GET /runs/{runId}/graph`.
 - **Requirement 050-009** The run view MUST list the run's approval requests with their status and deadline, and let a
   person decide one when `youMayDecide` (on the items of `GET /runs/{runId}/approvals`) is true, with a decision key
   per intent, an optional reason code, and the receipt shown; an ineligible person MUST see that they cannot decide,
@@ -205,15 +209,18 @@ REST API to approve a step.
   oldest first, with the same paging guarantee (`GET /namespaces/{namespaceId}/publication-requests`), each with
   `youMayDecide` computed by `PublicationRequest::may_decide` with the open-state clause and the three clauses of
   Architecture decision 0018 decision 4 (not the requester, not the last editor of the draft, not a person who already
-  decided it) and `publication:approve` held; the items of `GET /workflows/{id}/publication-requests` gain the same
-  flag. *Acceptance:* integration tests for the requester, the last editor, an approver who already approved a request
+  decided it) and `publication:approve` held; each item carries the fields of Technical Plan 6, never who decided it or who
+  last edited the draft; the items of `GET /workflows/{id}/publication-requests` gain the same flag. *Acceptance:*
+  the contract test that the inbox item has exactly its fields; integration tests for the requester, the last editor, an approver who already approved a request
   that needs two approvals, another approver and a viewer; a policy raised after an approval puts the request back for
   another approver and not for the first; paging across a page boundary while a request is superseded.
-- **Requirement 050-012** The Studio MUST have an inbox ("Waiting for me") that lists, for the chosen namespace, the
-  approvals (soonest deadline first) and the publication requests (oldest first) the person may decide, following
-  cursors within a bound, and lets them decide from there; each refresh starts from the first page; the page MUST
-  refresh while open and show when it last did and whether more may wait. *Acceptance:* the journey
-  `the_inbox_shows_what_waits_for_me_and_nothing_else`.
+- **Requirement 050-012** The Studio MUST have an inbox ("Waiting for me") that lists, for the chosen namespace (an
+  inbox per namespace, Decision 050-011), the approvals (soonest deadline first) and the publication requests (oldest
+  first) the person may decide, following cursors within a bound, and lets them decide from there; each refresh starts
+  from the first page; the page MUST refresh only the visible tab while it is open, back off while nothing changes
+  (Technical Plan 6), and show when it last refreshed and whether more may wait. *Acceptance:* the journey
+  `the_inbox_shows_what_waits_for_me_and_nothing_else`; the test that a hidden tab and an unchanged list are not
+  polled at the base interval.
 - **Requirement 050-013** The Studio MUST have an audit log page for holders of `audit:read`: the filters of
   `GET /audit`, an action picker that suggests the known actions and accepts any text (the Studio may be served from
   another build, Architecture decision 0016, `SAGAT_STUDIO_DIR`), a record view with a link to the resource when its
@@ -263,15 +270,23 @@ REST API to approve a step.
 
 - **Non-functional requirement 050-001 (security)** No new screen shows a value a route withheld, puts a token, an
   argument or a payload in a URL, a log or browser storage, or calls a route the person's permissions exclude without
-  showing the refusal. The two new server routes are in the cross-tenant battery and answer another tenant's
-  namespace as missing.
+  showing the refusal. The three new server routes are in the cross-tenant battery and answer another tenant's
+  namespace or run as missing.
 - **Non-functional requirement 050-002 (performance)** The inbox and the audit page answer a page in the time the
-  benchmark records on a declared environment, with 10,000 pending approvals in one namespace; the run view renders a
-  run with 10,000 iterations without blocking input for more than the frame budget the performance journey records.
-  No figure is promised.
-- **Non-functional requirement 050-003 (compatibility)** The REST additions are additive; an older Studio and older
-  clients behave as before; no IR, worker-protocol, AsyncAPI or SDK change.
-- **Non-functional requirement 050-004 (observability)** The two new routes have spans and closed-label metrics; a
+  benchmark records on a declared environment, with 10,000 pending approvals in one namespace; the journey also records
+  the requests per second that 300 open inboxes send to one tenant, against the tenant's request budget. The run view
+  renders a run with 10,000 iterations of an eight-step body without blocking input for more than the frame budget the
+  performance journey records, and the journey records the size of `GET /runs/{runId}/graph` for that run and the time
+  the browser spends parsing it (Gap 050-006). No figure is promised.
+- **Non-functional requirement 050-003 (compatibility)** The REST additions are additive: new routes, and new
+  optional fields that readers ignore when they do not know them (`sdks/SPEC.md`); `ApprovalListItem` and
+  `PublicationRequest`, closed schemas today, gain `youMayDecide` in the OpenAPI document, and the SDK type
+  descriptions that say the per-run list carries no eligibility are corrected. One behaviour changes on purpose: a
+  decision on an approval whose run has ended answers `409 RUN_ENDED`, which every SDK classifies as not retryable,
+  where it answered a retryable `503`; the SDK conformance suite gains the scenario
+  `an_approval_decision_on_an_ended_run_is_not_retried` in all six languages. No IR, worker-protocol or AsyncAPI
+  change.
+- **Non-functional requirement 050-004 (observability)** The three new routes have spans and closed-label metrics; a
   decision from the inbox is the existing decision operation with its existing audit.
 
 ### Success criteria
@@ -290,7 +305,7 @@ REST API to approve a step.
 
 - **User story 050-01** As an author, I draw every kind of node the platform runs, including loops and approvals,
   and I never lose a node the platform no longer accepts (CUJ 1, CUJ 2).
-- **User story 050-02** As an approver, I find what waits for me in one place and decide it (CUJ 3).
+- **User story 050-02** As an approver, I find what waits for me in a namespace in one place and decide it (CUJ 3).
 - **User story 050-03** As an operator, I follow a run with loops, call its Queries and Updates, and see its family
   (CUJ 4).
 - **User story 050-04** As an administrator, I read the audit log and change a namespace's settings (CUJ 5).
@@ -299,7 +314,7 @@ REST API to approve a step.
 ## Goals
 
 - The Studio offers every node kind the server runs, and nothing it refuses.
-- One place for what waits for a person, decided by the server's own rule.
+- One place per namespace for what waits for a person, decided by the server's own rule.
 - The audit trail readable by the people allowed to read it, without a database client.
 - Every operator action the server exposes is reachable from the Studio with the same authorization and audit.
 - A registry and a capability list that make the next drift a failing test.
@@ -317,6 +332,8 @@ REST API to approve a step.
 - Editing a workflow written as code (design 044 draws a code run's observed graph; it is not editable).
 - Converting a legacy node without the author's action, or publishing one.
 - A mobile layout beyond reflow at 320 pixels.
+- A tenant-wide inbox: the inbox is per namespace, because the routes, the indexes and feature 029's permissions are
+  per namespace (Decision 050-011).
 
 ## Open Questions
 
@@ -371,11 +388,29 @@ over its options and recorded with its reasoning in the register below; every de
 - **Decision 050-010 — The namespace approvals list holds pending approvals only.** Options: every status ordered by
   deadline (an unbounded sort of settled rows); a second index by `settled_at`; pending only. Chosen: pending only, the
   inbox's purpose; settled approvals stay on the per-run list and in the audit log (Major 6 of the same review).
+- **Decision 050-011 — The inbox is per namespace.** Options: one tenant-wide inbox; an inbox per namespace with a count
+  per namespace; an inbox per namespace. Chosen: per namespace, settling Major 5 of the Stage 7 review. Every route,
+  index and cursor of this design is per namespace, and so are feature 029's grants; a tenant-wide list would scan each
+  namespace the person can read on every refresh and merge their cursors, and a count per namespace costs the same
+  scan. An approver who works in several namespaces switches namespace as every other Studio page asks; a tenant-wide
+  inbox is a follow-up if the performance journey and use show it is needed.
+- **Decision 050-012 — Iteration outcomes come from the iteration events, counted on the owner and listed by a paged
+  route.** Options: a status field on every scoped instance (the first draft); a per-index list on the owner node; the
+  counts on the owner and a paged list route. Chosen: the last, settling Majors 1 to 3 of the Stage 7 review. Every
+  iteration event (`CollectionIterationAdmitted`, `...Returned`, `...Checkpointed`, `CollectionDrainStarted`,
+  `CollectionIterationDrained`, `CollectionFinished`, and the loop events of the same names) names the owner node, so
+  counts on the owner stay current under `graph/changes`, whose rule is that a node changes only through events that
+  name it; a status on each scoped instance would change without an event naming it; a per-index list on the owner
+  would resend up to 10,000 entries with every iteration event.
 
 ### Gaps
 
 - **Gap 050-001** The capability list is advice: during a rolling upgrade two replicas may answer differently. The
-  server's validation stays the authority (Architecture decision 0143, decision 5).
+  server's validation stays the authority (Architecture decision 0143, decision 5). A new Studio that reaches an older
+  replica also meets three other answers, and handles each: a new list route answering `404` with `ROUTE_NOT_FOUND`
+  shows "this page is not available on this server", never "namespace missing"; an absent `youMayDecide` means
+  unknown, so the decision is offered and the server decides; the old `503` on a decision is retried within the
+  existing retry bound.
 - **Gap 050-002** The audit trail has no namespace column, so the audit page cannot filter by namespace.
 - **Gap 050-003** The approval form, summary and notification fields of feature 026 are drawn by 026's Studio tasks on
   the inspector this design builds; until then the approval inspector shows only the fields of feature 014.
@@ -383,6 +418,12 @@ over its options and recorded with its reasoning in the register below; every de
   it lists the tenant's members (design 013, Requirement 013-020).
 - **Gap 050-005** No count exists of drafts that hold legacy nodes; a guided conversion is built only if a count
   (from `control-plane` over stored drafts) shows they are common.
+- **Gap 050-006** `GET /runs/{runId}/graph` returns every scoped instance of a run in one response, as it does today
+  (feature 014): a collection of 10,000 items over an eight-step body is more than 80,000 nodes and as many edges, sent
+  whole on every `reset` of `graph/changes`. This design does not page it; it adds no scoped node and moves the
+  per-iteration list to a paged route. The performance journey records the response size and the parse time (Task
+  050-14); if they exceed the frame budget, a graph read by scope (the owners only, then the instances of one chosen
+  iteration) becomes a follow-up task of its own.
 
 ## Owner decisions needed
 
@@ -424,12 +465,15 @@ of Architecture decisions 0101, 0143 and 0144 and the settlement of review findi
 
 ### CUJ 4: An operator follows a large collection (User story 050-03)
 
-*   **Given**: a run of a collection workflow over 2,000 items, 12 of which failed, and a run of an `order` workflow
-    (no bodies) whose declared state has the Query `progress`.
+*   **Given**: a failed run of a collection workflow over 2,000 items with a concurrency of 16, whose iteration 1,213
+    failed permanently, which stopped the collection: the engine admitted no new iteration and the 15 iterations in
+    flight ended without a result; and a run of an `order` workflow (no bodies) whose declared state has the Query
+    `progress`.
 *   **When**: the operator opens the first run, then the second.
-*   **Then**: the collection node shows 1,988 succeeded and 12 failed; the iteration list filters to the failed ones;
-    one opens with its body graph and its failure; on the second run the Queries panel calls `progress` and shows its
-    declared result.
+*   **Then**: the collection node shows the counts the server reports, which add up to 2,000, for example 1,200
+    succeeded, 1 failed, 15 drained and 784 not admitted; the iteration list filters to the failed one and the drained
+    ones; the failed one opens with its body graph and its failure code; on the second run the Queries panel calls
+    `progress` and shows its declared result.
 
 ### CUJ 5: An administrator investigates a change (User story 050-04)
 
@@ -502,12 +546,17 @@ may offer). The advertised names are the variants of `AdvertisedCapability` in `
 computed at start-up by `apps/control-plane` from the composition root's configuration and the workflow switches, and
 served by `crates/api-http/src/routes/identity.rs`.
 
-Design 050 ships two names:
+Design 050 ships one name:
 
 | Name | Present when |
 |---|---|
 | `workflow.collection-operators` | the deployment's collection-operators switch is on (design 042) |
-| `workflow.step-destinations` | step-output destinations publish (feature 035): the `stepDestinations` field of a step, which also writes the step's output to a table or a stream; without the name the Studio shows that field read-only |
+
+Step-output destinations (feature 035: the `stepDestinations` field of a step, which also writes the step's output to
+a table or a stream) are refused by every server today (`DESTINATIONS_NOT_ENABLED`, `crates/infra-ir/src/convert.rs`)
+and no switch turns them on, so design 050 ships no name for them: feature 035 adds `workflow.step-destinations` with
+its switch, its variant and its test when it builds them (Decision 050-002), and until then the Studio shows the field
+read-only, as for any absent name.
 
 Lake writes are already advertised by the database drivers list (`GET /namespaces/{namespaceId}/database-drivers`
 lists Iceberg only when `lake.enabled`), which the Studio reads for `icebergWrite`; no second advertisement is added.
@@ -518,7 +567,8 @@ and lets validation decide.
 A field whose capability is absent (the collection-operator stage list of `forEach`, `stepDestinations`) is shown
 read-only with the reason and kept on save, as a node of a disabled kind is.
 
-Each other 0.3.0 feature adds its names, with a variant and a row here, when it ships: feature 022
+Each other 0.3.0 feature adds its names, with a variant and a row here, when it ships: feature 035
+(`workflow.step-destinations`), feature 022
 (`workflow.flow-control.concurrency`, `workflow.flow-control.rate`), 027 (`apps.*`), 028 (`testing.*`), 029
 (`access.*`), 013 (`identity.*`). The instance registry (Architecture decision
 [0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md))
@@ -603,18 +653,30 @@ until the author deletes it (a read-only node can be deleted). The author fills 
 
 ### 5. The run view
 
-- **Iterations.** The runtime graph projection gains, on a collection or loop owner node, `iterations`: the counts of
-  its admitted iterations by status (`SUCCEEDED`, `FAILED`, `RUNNING`, `RETRYING`) and, when the owner knows it, the
-  total; and on each scoped instance of its direct scope, `iterationStatus`. Both are taken from the outcomes the
-  engine already records for each iteration (`CollectionDrainReason`, `LoopDrainReason` in
-  `crates/domain/src/execution/event.rs`: the reason a collection or loop stopped, with the failed iteration when one
-  failed), additive fields of `RuntimeNode`, so the Studio never decides an iteration's outcome itself. Under that rule
-  a step that failed and was routed by `onError` belongs to a succeeded iteration, and compensations and
-  reconciliations are not counted as iterations. `model/runGraph.ts` groups `RuntimeNode`s by `instancePath` and `nodeId` (never by parsing `id`) under
-  their outermost scope node and draws: the card shows the reported counts; the iteration strip (`useWindowedRows` of
-  `features/runs/useWindow.ts`) lists index, status and failure code, filterable by status; choosing an iteration draws
-  its body graph, with compensations (`~c`) and reconciliations (`~r`) beside their forward step. Nested scopes
-  (design 039) nest the same way.
+- **Iterations.** The engine stops a collection or a loop at its first permanent iteration failure: the failed
+  iteration is named by `CollectionDrainStarted` or `LoopDrainStarted` with the reason `Failed { iteration, code }`,
+  admission stops, and each iteration already in flight ends either with a result (`...Returned`, then
+  `...Checkpointed`) or without one (`CollectionIterationDrained`, `LoopIterationDrained`); a drain for the run-data
+  limit, the storage quota or a cancellation names no failed iteration (`crates/domain/src/execution/event.rs`). An
+  iteration's outcome is therefore one of `SUCCEEDED` (checkpointed), `FAILED` (the one named by the drain), `DRAINED`
+  (ended without a result during the drain) and `RUNNING` (admitted, not yet settled); a collection also has items not
+  admitted (`item_count` of `CollectionEntered` minus the admitted ones), which a loop, with no known total, has not. A
+  retried step is `RUNNING` in its iteration: its own node shows the retry, and the iteration's outcome does not
+  change. Under this rule a step that failed and was routed by `onError` belongs to a succeeded iteration, and
+  compensations and reconciliations are not iterations.
+  The runtime graph projection gains, on a collection or loop owner node, `iterations`: the counts by outcome and, for a
+  collection, `notAdmitted` and `total`; an additive field of `RuntimeNode`. Every iteration event names the owner
+  node, so `graph/changes` re-sends the owner whenever a count changes and the counts stay current (Decision 050-012).
+  No field is added to scoped instances. The outcome of each iteration is read from a new paged route,
+  `GET /runs/{runId}/graph/iterations?nodeId=&instancePath=&outcome=&cursor=&limit=` (`run:read`; at most 500 items a
+  page; cursor the last index returned; items `index`, `outcome`, `failureCode` on the failed one, `entryInstanceId`),
+  computed from the same iteration events by the same projection as the graph, so the list and the counts agree.
+  `model/runGraph.ts` groups `RuntimeNode`s by `instancePath` and `nodeId` (never by parsing `id`) under their
+  outermost scope node and draws: the card shows the reported counts; the iteration strip (`useWindowedRows` of
+  `features/runs/useWindow.ts`) pages the iteration list for the rows in view, filterable by outcome, and reads the
+  rows in view again when the owner arrives in `graph/changes`; choosing an iteration draws its body graph from the
+  instances of the graph whose `instancePath` names it, with compensations (`~c`) and reconciliations (`~r`) beside
+  their forward step. Nested scopes (design 039) nest the same way.
 - **Switch.** The card of a `switch` shows the chosen case id or "default" from `switchSelection`; `UNKNOWN` shows
   "an unknown case was recorded" and the id.
 - **Approvals.** A run's approvals and their `youMayDecide` come from `GET /runs/{runId}/approvals` (Technical Plan 6).
@@ -656,8 +718,8 @@ the inbox leaves such rows out. No SQL predicate repeats the rule; the snapshots
 at most 2,000 rows; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
 returned, so a page that drops every row it scanned still returns a cursor, and it is null only when no row remains
 (Architecture decision 0144, decision 5). The run view does not use this route: the items of the existing
-`GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, computed the same way (an additive field of
-`ApprovalListItem`; the flag concerns only the caller and reveals no policy, initiator or decider). A run end is
+`GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, computed the same way (`ApprovalListItem`, a
+closed schema, gains the property; the flag concerns only the caller and reveals no policy, initiator or decider). A run end is
 checked to cancel its pending approvals (the test `every_run_end_cancels_its_pending_approvals`); a path found not to
 becomes a follow-up task of its own scope, and until it is fixed such rows are left out of the inbox by the
 `run_ended` input. A migration adds `CREATE INDEX IF NOT EXISTS approval_requests_pending_deadline_idx ON approval_requests
@@ -674,8 +736,15 @@ open-state clause and the three clauses of Architecture decision 0018 decision 4
 editor, not a person who already decided it), which `decide` calls; the use case adds `publication:approve`. Order:
 `requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; the decisions of a
 page are loaded in one query; a migration adds `publication_requests_open_requested_idx ON publication_requests
-(tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`. The items of
-the existing `GET /workflows/{id}/publication-requests`, which the versions page reads, gain the same `youMayDecide`.
+(tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`. Items:
+`requestId`, `workflowId`, `workflowName`, `kind`, `state`, `draftRevision`, `requestedBy`, `requestedAt`,
+`approvals`, `approvalsRequiredNow` (what the current effective policy requires), `youMayDecide`. The item never
+carries `decisions` or `editedBy`: the inbox says what waits and whether the caller may decide it, and who decided or
+last edited stays on the workflow's own list, which discloses them under the same `definition:read`; the requester is
+named because a person needs to know whose change they review, and the per-workflow list names them too. The contract
+test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The items of the existing
+`GET /workflows/{id}/publication-requests`, which the versions page reads, gain the same `youMayDecide`
+(`PublicationRequest`, a closed schema, gains the property).
 
 **Metrics.** `approval_inbox_requests_total{outcome}` and `publication_inbox_requests_total{outcome}` (`outcome` in
 `ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram); no tenant, namespace, workflow
@@ -683,9 +752,19 @@ or subject label.
 
 **Studio.** `features/inbox/`: two tabs, approvals (deadline ascending, "time left" in words and as a number) and
 publication requests (oldest first), each read with `decidable=true` through `collectPagesBounded` (at most five
-pages per list per refresh), saying "more may wait" when it stopped with a cursor left; every refresh, every 30 seconds while the
-tab is visible, starts from the first page; the time of the last refresh is shown. Deciding uses the existing operations; an item that settled meanwhile shows its new status instead
-of an error.
+pages per list per refresh), saying "more may wait" when it stopped with a cursor left. Every refresh starts from the
+first page and reads only the tab in view, and only while the browser tab is visible. The interval is 30 seconds and
+doubles, up to four minutes, after each refresh that returns the same items in the same states; it returns to 30
+seconds when the list changes, when the person decides or asks to refresh, and when the browser tab becomes visible
+again. The time of the last refresh is shown. Deciding uses the existing operations; an item that settled meanwhile
+shows its new status instead of an error.
+
+The load this puts on a tenant: one open inbox sends at most five requests per refresh, so at the base interval at most
+one request every six seconds, and at the longest interval one every 48 seconds. 300 open inboxes of one tenant whose
+lists change at every refresh send at most 50 requests per second, half of the default tenant budget of 100 per
+second (`crates/api-http/src/limits.rs`); with unchanged lists they settle at about 6.3 per second; a list that fits
+in its first page costs a fifth of that. Task 050-14 measures the figure for 300 inboxes; a request refused with
+`429` waits for `Retry-After` (`collectPagesBounded`).
 
 ### 7. The audit page
 
@@ -743,7 +822,9 @@ added without being listed, and a test that `ALL` equals the OpenAPI list. The s
 | A capability shown by one replica is refused by another | The server's validation decides; the problem appears at validation (Gap 050-001) |
 | Parallel Studio branches rewrite the same files | The order of Technical Plan 1; new primitives in new files |
 | The bundle grows with every screen | The bundle budget test of Decision 050-001; pages load on demand as today |
-| A run with 10,000 iterations freezes the page | A virtualized iteration list; the graph draws one iteration at a time |
+| A run with 10,000 iterations freezes the page | Counts on the owner, a paged iteration list read for the rows in view, a virtualized strip; the graph draws one iteration at a time |
+| The runtime graph of a large collection is too large to download and parse | Measured by the performance journey (Non-functional requirement 050-002); a graph read by scope is the follow-up if the figure exceeds the budget (Gap 050-006) |
+| Open inboxes use the tenant's request budget and starve its workers | Only the tab in view refreshes, only while visible, with a doubling interval; the load for 300 inboxes is estimated in Technical Plan 6 and measured by Task 050-14 |
 
 ## Constitution Check
 
@@ -753,8 +834,8 @@ added without being listed, and a test that `ALL` equals the OpenAPI list. The s
 | II. Modular domain, ports and adapters | Pass | The eligibility rules stay in the domain (`ApprovalRequest::may_decide`, `PublicationRequest::may_decide`) and their decision paths call them; the use cases in `application` filter with them; the adapter only reads bounded pages; the capability names are a typed enumeration in `application`; no new dependency edge |
 | III. External effects are at-least-once; sagas compensate | n/a | No external effect is added |
 | IV. Compatibility is versioned and pinned | Pass | Additive REST fields and routes; the Studio draws the IR and keeps nodes it cannot run; no IR change |
-| V. Code, tenant boundary and secrets are isolated | Pass | Both routes take the tenant from the principal and answer another tenant's namespace as missing (battery); nothing of a policy, a payload or a secret leaves; no token in a URL or storage |
-| VI. Observability and audit are part of the feature | Pass | Spans and closed-label metrics on both routes; decisions and changes keep their existing audit; audit reading is audited |
+| V. Code, tenant boundary and secrets are isolated | Pass | The three new routes take the tenant from the principal and answer another tenant's namespace as missing (battery); nothing of a policy, a payload or a secret leaves; no token in a URL or storage |
+| VI. Observability and audit are part of the feature | Pass | Spans and closed-label metrics on the new routes; decisions and changes keep their existing audit; audit reading is audited |
 | VII. Events are redeliverable; inbox and outbox are the contract | n/a | No message is added; redrive uses feature 004's routes |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Property test of eligibility, contract tests of the capability list and the inbox schema, journeys with real PostgreSQL; nothing claimed before it runs |
 | Delivery Constraints | Pass | One new frontend dependency only through pull request #267 (Astryx, accepted with conditions); no new server technology |
@@ -765,6 +846,7 @@ added without being listed, and a test that `ALL` equals the OpenAPI list. The s
 |---|---|---|
 | A capability list on `GET /version` | The palette must follow the server it talks to, and three other features need the same advertisement | A field per feature; the Studio's constant list (how it drifted) |
 | Two list routes | A person cannot find what waits for them without them | The Studio asks every run (one request per run, no eligibility) |
+| A paged iteration list | Per-iteration outcomes on 10,000 scoped instances would go stale under `graph/changes` and grow every node | A status on each scoped instance (Decision 050-012) |
 | A body canvas | Bodies are named graphs of their own in the IR | Editing bodies as JSON |
 | A guided replacement for legacy nodes | Drafts of the first Studio exist | Dropping or converting silently |
 
@@ -782,8 +864,8 @@ added without being listed, and a test that `ALL` equals the OpenAPI list. The s
 
 Non-functional requirements 050-001 to 050-004 above. Their tests: the cross-tenant battery and the canary checks of
 the journeys (050-001); the performance journey with 10,000 pending approvals and a run of 10,000 iterations, recorded
-with its environment (050-002); the existing contract baselines and the Studio suites unchanged (050-003); the metric
-label test of the two routes (050-004).
+with its environment (050-002); the existing contract baselines and the Studio suites unchanged, and the conformance scenario of the ended-run
+decision in six languages (050-003); the metric label test of the new routes (050-004).
 
 --------------------------------------------------------------------------------
 
@@ -794,7 +876,7 @@ are seen failing first. A task line writes its identifier as `T050-n`, the form 
 "Task 050-n" for the same task.
 
 Two builders work in parallel after Task 050-2. The server builder owns every change under `crates/` and `apps/`:
-Tasks 050-3, 050-4 and 050-5, the codec pointer of Task 050-6, the runtime graph's iteration fields of Task 050-9, and
+Tasks 050-3, 050-4 and 050-5, the codec pointer of Task 050-6, the iteration counts and the iteration list of Task 050-9, and
 `AuditAction::ALL` of Task 050-11. The Studio builder owns `frontend/apps/studio/`: the editor (Tasks 050-6 to 050-8,
 `model/` and `features/workflows/`), then the operations screens. Predecessors: Task 050-6's Studio part after its
 codec part; Task 050-9 after Task 050-4 and its own projection part; Task 050-10 after Tasks 050-4 and 050-5; Task
@@ -808,20 +890,22 @@ journeys it runs. A new primitive goes in a new file of `src/ui/`.
   Verification: the budget test fails on an entry script 11% larger; the quickstart names the journey's result and
   environment.
   Refs: Requirement 050-022
-- [ ] T050-2 Contracts and documents: `PlatformVersion.capabilities` (pattern and `x-known-values`), the two list
-  operations, their schemas and errors, the known audit actions in `openapi.yaml`; the compatibility baseline; the four
+- [ ] T050-2 Contracts and documents: `PlatformVersion.capabilities` (pattern and `x-known-values`), the two inbox
+  list operations and the iteration list, their schemas and errors, `youMayDecide` on `ApprovalListItem` and
+  `PublicationRequest`, `RuntimeNode.iterations`, the SDK type descriptions of the per-run approvals list, the known audit actions in `openapi.yaml`; the compatibility baseline; the four
   rows of `docs/engineering/architecture-principles.md`; `schema.d.ts` regenerated; `docs/runbooks/studio.md`, with the
   publishable subset of Technical Plan 4; the screen list in `specs/007-workflow-studio/design/README.md`.
   Verification: `contract_platform_foundation` (OpenAPI lint), `npm run check:api`; the docs checks.
   Refs: Requirement 050-002, Requirement 050-010, Requirement 050-011, Requirement 050-013
-- [ ] T050-3 The capability list: `AdvertisedCapability` in `crates/application/src/capabilities.rs` with the two names
+- [ ] T050-3 The capability list: `AdvertisedCapability` in `crates/application/src/capabilities.rs` with the name
   of Technical Plan 3, computed at start-up in `apps/control-plane`, served by `crates/api-http/src/routes/identity.rs`.
   Red tests: `capabilities_follow_the_switches_a_server_was_started_with`, `a_reader_ignores_an_unknown_capability`.
   Refs: Requirement 050-002
 - [ ] T050-4 The approvals list: `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`),
   the use case that filters with it (`crates/application/src/approval_inbox.rs`), the bounded page query and the
   migration with the partial index and its `down` (`crates/infra-postgres`), the route and its metrics
-  (`crates/api-http`), `youMayDecide` on the items of `GET /runs/{runId}/approvals`, `RUN_ENDED`.
+  (`crates/api-http`), `youMayDecide` on the items of `GET /runs/{runId}/approvals`, `RUN_ENDED` and its SDK conformance scenario
+  `an_approval_decision_on_an_ended_run_is_not_retried` in six languages.
   Red tests: `may_decide_equals_decide` (property, domain, over pending requests with fresh keys and both run states),
   `a_decision_on_an_ended_run_is_409_run_ended`, `an_inbox_page_and_a_decision_agree_on_an_ended_run`,
   `every_run_end_cancels_its_pending_approvals` (a probe: a failing path opens a follow-up task and does not block this
@@ -835,7 +919,7 @@ journeys it runs. A new primitive goes in a new file of `src/ui/`.
   clauses, called by `decide` (`crates/domain/src/versioning.rs`); the use case with `publication:approve`; open
   requests that still need an approval; order, cursor, bound and the partial index; `youMayDecide` on the items of
   `GET /workflows/{id}/publication-requests`.
-  Red tests: `the_requester_and_the_last_editor_may_not_decide`, `a_person_who_decided_may_not_decide_again`,
+  Red tests: `the_publication_inbox_item_has_exactly_its_fields`, `the_requester_and_the_last_editor_may_not_decide`, `a_person_who_decided_may_not_decide_again`,
   `a_policy_raised_after_an_approval_lists_the_request_for_another_approver`, `an_approver_may_decide`,
   `paging_holds_across_a_supersede`, battery entry.
   Refs: Requirement 050-011
@@ -851,18 +935,20 @@ journeys it runs. A new primitive goes in a new file of `src/ui/`.
   `return`, `continueAsNew`, `icebergWrite`; the workflow settings for `inputSchema`, `state`, `limits` and
   `chainPolicy`; server problems at their fields; the read-only inspector of legacy nodes with its "add here" action.
   Red tests: one component test per kind and per setting; `a_legacy_inspector_shows_the_old_values`;
-  `add_here_links_a_new_node_from_the_predecessor`;
+  `add_here_moves_every_incoming_link_to_the_new_node` (two predecessors, and an entrypoint);
   `a_refused_combination_shows_the_codecs_reason_at_its_node`.
   Refs: Requirement 050-005, Requirement 050-006
 - [ ] T050-8 The body canvas: bodies panel, breadcrumb, body palette, exactly one `return`, shared-body confirmation.
   Red tests: `a_body_without_its_return_shows_the_problem`, `a_shared_body_asks_once_before_a_change`.
   Refs: Requirement 050-007
-- [ ] T050-9 The run view: the runtime graph's `iterations` and `iterationStatus` fields from the engine's recorded
-  outcomes (the projection in `crates/infra-postgres` and `crates/api-http`, the OpenAPI schema), iterations grouped and
-  drawn with `useWindowedRows`, the switch selection, the approvals panel and decision with `useIntentKey`, the Queries
+- [ ] T050-9 The run view: the runtime graph's `iterations` counts on owner nodes and the route
+  `GET /runs/{runId}/graph/iterations`, both from the iteration events (the projection in `crates/infra-postgres`,
+  the use case and the route in `crates/application` and `crates/api-http`, its metric and its battery entry),
+  iterations grouped and drawn with `useWindowedRows` over the paged list, the switch selection, the approvals panel and decision with `useIntentKey`, the Queries
   and Updates panel with `JsonField`, the family, the journal download with `collectPagesBounded`.
-  Red tests: `iteration_312_of_500_shows_its_steps`, `the_reported_iteration_statuses_equal_the_recorded_outcomes`
-  (projection), `an_iteration_with_a_handled_failure_counts_as_succeeded`,
+  Red tests: `iteration_312_of_500_shows_its_steps`, `the_counts_and_the_listed_outcomes_equal_the_iteration_events`
+  (projection), `a_failed_iteration_drains_the_others_and_counts_them_drained`,
+  `graph_changes_across_a_retry_a_return_and_a_drain_equals_a_fresh_graph`, `the_iteration_list_pages_by_index`, `an_iteration_with_a_handled_failure_counts_as_succeeded`,
   `compensations_are_drawn_beside_their_step_and_not_counted`, `an_unknown_switch_selection_says_so`,
   `a_resent_decision_reuses_its_key_and_a_changed_one_does_not`, `a_corrected_update_after_a_stale_revision_succeeds`,
   `a_second_tab_gets_a_revision_conflict`, `a_403_after_a_sent_decision_rereads_the_status`,
@@ -872,7 +958,8 @@ journeys it runs. A new primitive goes in a new file of `src/ui/`.
 - [ ] T050-10 The inbox page (`features/inbox/`).
   Red tests: `only_decidable_items_are_under_waiting_for_me`, `an_empty_first_page_with_a_cursor_is_followed`,
   `each_refresh_starts_from_the_first_page`, `a_settled_item_shows_its_status_not_an_error`,
-  `the_inbox_refreshes_only_while_visible`.
+  `the_inbox_refreshes_only_while_visible`, `only_the_tab_in_view_is_refreshed`,
+  `an_unchanged_list_doubles_the_interval_up_to_four_minutes`, `a_route_not_found_says_the_page_is_not_available`.
   Refs: Requirement 050-012
 - [ ] T050-11 The audit page (`features/audit/`), `AuditAction::ALL` and the action list test in
   `crates/domain/src/audit.rs`.
@@ -889,8 +976,9 @@ journeys it runs. A new primitive goes in a new file of `src/ui/`.
   Verification: `cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys`, with its result
   recorded.
   Refs: Requirement 050-009, Requirement 050-012, Requirement 050-014, Requirement 050-016, Requirement 050-018, Requirement 050-022
-- [ ] T050-14 The performance journey with 10,000 pending approvals and a run of 10,000 iterations, recorded with its
-  environment and failures.
+- [ ] T050-14 The performance journey with 10,000 pending approvals and a run of 10,000 iterations of an eight-step
+  body: the page times, the requests per second of 300 open inboxes of one tenant, the size of the run's graph and its
+  parse time in the browser, recorded with the environment and the failures.
   Refs: Non-functional requirement 050-002
 
 #### Follow-up tasks
@@ -902,7 +990,7 @@ None yet.
 - Unit: the registry drift test; the inspectors; the run graph grouping; the inbox, audit, versions, settings, events
   and palette components (`npm test`).
 - Property: `may_decide_equals_decide` for approvals and publication requests in `crates/domain`.
-- Integration (real PostgreSQL): the two list routes, their scan bound, their runtime-role privileges
+- Integration (real PostgreSQL): the three new routes, the inbox scan bound, their runtime-role privileges
   (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), the capabilities derived from the start-up switches, in a new target
   `integration_studio_catch_up`.
 - Contract: the OpenAPI lint, the capability list against the switches, the inbox schema without policy fields, the

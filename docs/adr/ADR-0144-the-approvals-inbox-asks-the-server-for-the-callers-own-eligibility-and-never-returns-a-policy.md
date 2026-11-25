@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
 **Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor"; supersedes none
-**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles, initiators and run states, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/approvals_inbox.rs` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider); the cross-tenant battery entry for the new route
+**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles, initiators and run states, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/approvals_inbox.rs` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
 
 ## Context
 
@@ -22,14 +22,15 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 ## Decision
 
 1. A new operation `GET /namespaces/{namespaceId}/approvals` MUST list the namespace's pending approval requests,
-   ordered by deadline then request id, with a bounded opaque cursor, optionally filtered by workflow or by run (the
-   run filter read through the run's own index). It needs `run:read` and `approval:read`. Settled approvals stay on the
-   per-run list and in the audit trail.
+   ordered by deadline then request id, with a bounded opaque cursor and no filter by workflow or by run (the per-run
+   and per-workflow lists already serve those reads). It needs `run:read` and `approval:read`. Settled approvals stay
+   on the per-run list and in the audit trail.
 2. Each item MUST carry `youMayDecide`, computed by `ApprovalRequest::may_decide(&Principal, run_ended)`, extracted
    from the decision's own check and called by `decide` with the same inputs, on the caller's principal built from the
    current membership as the decision builds it; an approval whose run has ended is not decidable, is left out of the
    list, and its decision answers `409 RUN_ENDED`. The flag is a point-in-time hint; the decision re-checks. The filter `decidable=true` MUST return only
-   such items. The adapter returns bounded pages of pending rows with their policy snapshots; the use case filters;
+   such items. The items of the existing per-run list (`GET /runs/{runId}/approvals`) MUST carry the same
+   `youMayDecide`, computed the same way, so the run view needs no second route. The adapter returns bounded pages of pending rows with their policy snapshots; the use case filters;
    no SQL predicate repeats the rule, and the snapshots never leave the use case.
 3. An item MUST NOT carry the policy's subjects or roles, the initiator, the decider or the reason code. It MAY carry
    what `listRunApprovals` carries, the workflow's identifier and name and the run's business identifier; feature 026
@@ -42,7 +43,12 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 6. The same holds for a namespace list of the open publication requests that still need an approval under the current
    effective policy (`PENDING`, and `APPROVED` with fewer approvals than now required), ordered by request time, with
    `PublicationRequest::may_decide` (the request open, not the requester, not the last editor, not a person who already
-   decided) and `publication:approve`.
+   decided) and `publication:approve`. Its items carry the request's identifier, workflow, kind, state, draft revision,
+   requester, request time, the approvals recorded and the approvals the current policy requires, and `youMayDecide`;
+   they MUST NOT carry the decisions or the last editor, which stay on the per-workflow list under the same
+   `definition:read`. Decision 3 concerns approval policies and does not forbid naming the requester, whom the
+   per-workflow list already names. The items of `GET /workflows/{id}/publication-requests` gain the same
+   `youMayDecide`.
 
 ## Considered options
 
@@ -57,7 +63,9 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 ## Consequences
 
-- One migration adds a partial index on pending approvals by namespace and deadline; the decision path is unchanged.
+- One migration adds a partial index on pending approvals by namespace and deadline. The decision path keeps its rule;
+  a decision on an approval whose run has ended answers `409 RUN_ENDED`, not retryable, where it answered a retryable
+  `503`: a deliberate change of behaviour, checked by an SDK conformance scenario in all six languages.
 - A person sees their own eligibility for every pending approval of a namespace they can read, which they could learn
   anyway by attempting a decision; nobody learns anything about another person.
 - Rollback: the route is additive; removing it removes the inbox page.

@@ -81,3 +81,25 @@ All 21 findings are accepted and fixed; none is contested.
 | 6 | Major | Fixed: Task 050-12 renamed with the requirement's tests | Task 050-12 |
 | 7 | Major | Fixed: the server builder owns every `crates/` part; each task's predecessors listed | The plan's introduction |
 | 8 to 21 | Nit | Fixed: "four" small things and `youMayDecide` glossed; IR expanded and a list of referenced features; the owner, the delegation, the review files and "an earlier draft" named; gaps in order; only the notes change when the subset widens; field-level capabilities read-only and kept; admitted iterations, drain reasons, compensations and reconciliations defined and the counting rules stated; chain and declared state defined; the test terms glossed; the Studio served from another build explained; CUJ 3 worded; source and recovery activities defined, the combination refusal moved, supersede and recount explained; the two task-identifier forms explained; "derived from the start-up switches"; the cancellation test a probe | Overview, Terms, Technical Plans 3 to 6, CUJ 3, Requirement 050-011, the plan |
+
+## egm-review Stage 7, Design Critic (`critic_report.md`, at `ea803052`)
+
+All 14 findings are accepted; none is contested. Findings 11, 13 and 14 had already been fixed by the settlement of
+Stage 6 (`ca5ef2a0`), which the critic did not see; finding 6 reverses Stage 6 finding 3, which had kept the name.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: outcomes `SUCCEEDED`, `FAILED` (the one named by the drain), `DRAINED`, `RUNNING`, and not admitted for a collection, from the iteration events; CUJ 4 rewritten as one failure that stops the collection (1,200 + 1 + 15 + 784 = 2,000); citation corrected | CUJ 4, Requirement 050-008, Technical Plan 5 |
+| 2 | Major | Fixed: counts on the owner only, whose every iteration event names it; no field on scoped instances; `RETRYING` dropped (a retried step shows on its own node); the `graph/changes` versus fresh graph test added (Decision 050-012) | Technical Plan 5, Requirement 050-008, Task 050-9 |
+| 3 | Major | Fixed in part: per-iteration outcomes moved to the paged route `GET /runs/{runId}/graph/iterations`; the existing graph route is not paged by this design; payload size and parse time are measured and a graph read by scope is the follow-up if they exceed the budget | Gap 050-006, Non-functional requirement 050-002, Risks, Task 050-14 |
+| 4 | Major | Fixed: only the tab in view, only while visible; interval doubling to four minutes while unchanged; the load estimated (300 inboxes: at most 50 requests per second, about 6.3 when unchanged, against 100) and measured | Technical Plan 6, Requirement 050-012, Risks, Task 050-14 |
+| 5 | Major | Fixed: the inbox is per namespace (Decision 050-011), a Non-Goal, the goal and user story reworded | Goals, Non-Goals, User story 050-02, Decisions |
+| 6 | Major | Fixed: only `workflow.collection-operators` ships; feature 035 adds `workflow.step-destinations` with its switch; the field stays read-only until then | Requirement 050-002, Technical Plan 3, Task 050-3 |
+| 7 | Major | Fixed: Architecture decision 0144 decision 1 has no filters; decision 2 adds the per-run flag | Architecture decision 0144 |
+| 8 | Major | Fixed: a reduced publication inbox item without decisions or the last editor; the requester named and why; the contract test `the_publication_inbox_item_has_exactly_its_fields`; decision 6 reworded | Technical Plan 6, Requirement 050-011, Architecture decision 0144, Task 050-5 |
+| 9 | Nit | Fixed: the ended-run answer named as a deliberate change with the conformance scenario `an_approval_decision_on_an_ended_run_is_not_retried` in six languages; the closed schemas gain the property; the SDK descriptions corrected | Non-functional requirement 050-003, Overview, Tasks 050-2 and 050-4, Architecture decision 0144 |
+| 10 | Nit | Fixed: the three answers of an older replica and what the Studio does with each | Gap 050-001, Task 050-10 |
+| 11 | Nit | Already fixed at `ca5ef2a0`; the test renamed `add_here_moves_every_incoming_link_to_the_new_node` | Requirement 050-005, Technical Plan 4, Task 050-7 |
+| 12 | Nit | Fixed: option 3 rejected only for kinds and fields a deployment switches off; shape refusals left to live validation | Architecture decision 0143 |
+| 13 | Nit | Already fixed at `ca5ef2a0` | Gaps |
+| 14 | Nit | Already fixed at `ca5ef2a0` | Task 050-12, Verification Plan |
