@@ -13,13 +13,14 @@ constitution principle IV (version 5.0.0):
 
 - the workflow function runs in an SDK worker, never in a platform process;
 - it proposes commands; the server checks each against the version's envelope (activities, secrets, signals, child
-  workflows, scripts, approvals), the current authorization and the per-run ceilings, and commits it under a lease and
-  a fencing token with the journal and the outbox in one transaction;
+  workflows, scripts, approvals), the current authorization and the quotas, and commits the whole completion under a
+  lease and a fencing token in one transaction, all or nothing (journal, steps, timers, waits, outbox and the next
+  workflow task);
 - the worker's memory is a cache that replay rebuilds;
 - a replay that diverges from the journal stops with a typed non-determinism error and commits nothing;
 - a run pins one version at any moment and changes it only by a verified move (an explicit, authorized request per run,
-  applied only after a replay of its own history against the target code matches); version markers let a change
-  branch inside one version.
+  applied with the run locked and no workflow task leased, only after the server finds that a replay of its own history
+  against the target code matches); version markers in a later version let it branch for older histories.
 
 Design 044 (and its records ADR-0103 to ADR-0109) holds the mechanism. It starts with a determinism study per
 language, and the mode ships in an SDK only after that study and the shared replay conformance scenarios pass; an SDK

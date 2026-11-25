@@ -204,6 +204,9 @@ implemented. Identifier range of this feature: D1560–D1599, G1560–G1599, O15
   diverging ADR to carry benchmark data and failure tests. The owner may accept the direction now; the
   ADR's `Accepted` status, ADR-0009's "Superseded in part" line and the constitution amendment wait for the
   region drill report and the commit-latency benchmark (T032-063). The amendment text stays in the ADR.
+  *Superseded in part 2026-11-24:* the amendment was applied in constitution 5.0.0 before the evidence
+  (Owner decision 2026-11-24-2); the gate now stands in the constitution's "Regions" bullet (production only
+  after a passing drill and a published benchmark). The ADR's `Accepted` and ADR-0009's line still wait.
 - **D1593 — Epochs enforced in the database, not by an operator flag (review Should-fix 4).** Triggers on
   `scheduler_shards`, `engine_leases`, `scheduler_members` and `connector_leases` refuse a granting or
   renewing write (expiry after `clock_timestamp()`) unless `current_setting('sagat.region', true)` is the

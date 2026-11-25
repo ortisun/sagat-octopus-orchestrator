@@ -66,51 +66,74 @@ must say so rather than hide it. Sources: ADR-0004, ADR-0005, ADR-0010, ADR-0076
 
 ### IV. Compatibility Is Versioned and Pinned
 
-A published workflow version is immutable and every run references exactly one version; there is
-no automatic migration of a running workflow to a new version. Wire contracts (OpenAPI, Protobuf,
-AsyncAPI, the workflow IR schema) are versioned, and a change MUST NOT break runs in progress. The
-SDK protocol has one semantic contract: the six official SDKs (TypeScript, Go, Python, C#, Java,
-Rust) pass the same conformance suite and MUST NOT fork the server semantics. Toolchains and
-dependencies are pinned (`rust-toolchain.toml`, `Cargo.lock`, locked CI builds).
+A published workflow version is immutable and a run's pin names exactly one version at any
+moment; there is no automatic migration of a running workflow to a new version. Wire contracts
+(OpenAPI, Protobuf, AsyncAPI, the workflow IR schema) are versioned, and a change MUST NOT break
+runs in progress. The SDK protocol has one semantic contract: the six official SDKs (TypeScript,
+Go, Python, C#, Java, Rust) pass the same conformance suite and MUST NOT fork the server
+semantics. Toolchains and dependencies are pinned (`rust-toolchain.toml`, `Cargo.lock`, locked CI
+builds).
 
 A workflow is written in one of two models that share one engine, one journal and this one
 semantic contract. In the **graph model** the published version is the declarative IR, drawn in
 the Studio or compiled by an SDK builder, and the engine interprets it. In the **procedural
 model** (workflow as code) the published version names a workflow function by the digest of its
 code and declares the envelope it may use (activities, secrets, signals, child workflows, scripts,
-approvals); an envelope entry that releases a secret names its activities exactly. The function
-runs in an SDK worker, never in a platform process (the control plane, the scheduler, the engine
-and the API, replay checks and queries included; Principle V), and is replayed deterministically
-against the run's journal. It proposes commands. The server checks each command against the
-version's envelope, the current authorization and the ceilings and quotas of the run and of its
-namespace (history length, payload size and fan-out among them), so that a command can ask for
-nothing that a graph version with the same declarations could not; it accepts the command as a
-worker result under Principle I (valid lease, fencing token) and commits it with the journal and
-the outbox in one transaction. A workflow task carries no secret value and no capability to
-resolve one: the envelope's secrets are released only to the activities whose entry lists them,
-under Principle V. The history a workflow task receives is a projection of that run's own
-journal, delivered only to a session whose current membership and binding to the workflow type
-authorize it, checked again on every delivery; a classified field reaches it only under the same
-classification rules as a step that reads that field; the SDK's determinism guard is not a
-security control. The worker's memory is a cache that replay can discard and rebuild, never a
-record.
-Code outside an activity may run again on every replay, so the workflow function MUST NOT perform
-an external effect itself: effects are activities under Principle III, and the SDK's determinism guard refuses or
-reports an effect outside one. A replay that diverges from the journal MUST stop with a typed,
-audited non-determinism error and commit none of its commands. A procedural run pins one version
-at any moment, and its pin changes only by a verified move: an explicit request per run by a
-person allowed to operate the run and to activate the target version, to a target approved for
-activation where the namespace requires approval, applied only when a replay of the run's own
-history against the target code reproduces the journaled commands and every outstanding step fits
-the target's envelope. Each move is journaled and audited, a refused move leaves the run unchanged, and no
-policy moves runs by itself; that is not an automatic migration. Within one version, explicit
-version markers in the code let a change branch for histories that started before it. The history
-and command format that the code replays is a wire contract under the rule above. The procedural
-model MUST NOT ship in an SDK before that language's determinism study and the shared replay
-conformance scenarios pass; an SDK that does not offer it says so in its declared capabilities,
-and the suite reports those scenarios as not offered, never as passed. The Studio draws the
-declarative IR and shows a procedural run as the graph observed from its journal; imperative code
-that cannot be converted to the IR is not promised a round trip.
+approvals). The function runs in an SDK worker, never in a platform process (the control plane,
+the scheduler, the engine and the API, replay checks and queries included; Principle V), and is
+replayed deterministically against the run's journal. It proposes commands, and the server
+decides:
+
+- **Commands are checked.** Each command is checked against the version's envelope, the current
+  authorization and the ceilings and quotas of the run and of its namespace (history length,
+  payload size and fan-out among them), so that a command can ask for nothing that a graph version
+  with the same declarations could not. An envelope entry that releases a secret names its
+  activities exactly.
+- **A completion is one transaction.** A workflow task's completion is a worker result under
+  Principle I (valid lease, fencing token) and commits all or nothing: the journal events of the
+  completion and of every command, the steps, timers, waits and subscriptions they create, the
+  outbox, and the next state of the workflow task decided from the journal. A command refused by
+  the checks refuses the whole completion. A completion that ends the run is refused while an
+  accepted signal, update or cancellation is still unseen by the function.
+- **Waits resolve once.** A wait ends by the first commit of its timeout or its event, as in
+  Principle I; a signal that arrives after the wait timed out is not dropped but kept in the
+  journal for the next activation.
+- **No secret and only the run's own history reach the function.** A workflow task carries no
+  secret value and no capability to resolve one; the envelope's secrets are released only to the
+  activities whose entry lists them, under Principle V. The history it receives is a projection of
+  that run's own journal, delivered only to a session whose current membership and binding to the
+  workflow type authorize it, checked again on every delivery; a classified field reaches it only
+  under the same classification rules as a step that reads that field. The SDK's determinism guard
+  is not a security control.
+- **The worker's memory is a cache** that replay can discard and rebuild, never a record.
+- **Effects are activities.** Code outside an activity may run again on every replay, so the
+  workflow function MUST NOT perform an external effect itself: effects are activities under
+  Principle III, an unknown outcome reaches the function as unknown, never as a failure, and the
+  SDK's determinism guard refuses or reports an effect outside an activity.
+- **A diverging replay commits nothing.** A replay that diverges from the journal MUST stop with
+  a typed, audited non-determinism error and commit none of its commands; the server judges the
+  match against its own record of the commands, not the worker's verdict.
+- **A pin changes only by a verified move.** An open procedural run moves to another version only
+  on an explicit request per run by a person allowed to operate the run and to activate the target
+  version, to a target approved for activation where the namespace requires approval. The move is
+  applied in one transaction with the run locked, only while no workflow task is leased and the
+  journal has not advanced past the activation that was verified, and only when the server finds
+  that a replay of the run's own history against the target code reproduces the journaled commands
+  and every outstanding step fits the target's envelope. Each move is journaled and audited, a
+  refused move leaves the run unchanged, a completion from a session of the former pin is stale,
+  and no policy moves runs by itself; that is not an automatic migration. Version markers in the
+  code of a later version let it branch for histories written under an earlier one, so that a
+  verified move can succeed. A run continued as new is a new run under Principle I and may pin
+  another version.
+- **The history format is a wire contract.** The history and command format that the code
+  replays is versioned under the rule above.
+- **Determinism is proven per language.** The procedural model MUST NOT ship in an SDK before
+  that language's determinism study and the shared replay conformance scenarios pass; an SDK that
+  does not offer it says so in its declared capabilities, and the suite reports those scenarios as
+  not offered, never as passed.
+
+The Studio draws the declarative IR and shows a procedural run as the graph observed from its
+journal; imperative code that cannot be converted to the IR is not promised a round trip.
 
 *Rationale:* a durable run outlives the release that started it, whichever model wrote it, and two
 models stay one product only if they share the journal, the fence and the conformance suite.
@@ -212,14 +235,19 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   fenced (feature 032, ADR-0067). Cells share no data and no transaction spans two cells; different
   cells may have their writable region in different regions. Cross-region failover is offered for
   production only after its region drill passes (no acknowledged work lost in the synchronous
-  quorum mode) and its commit-latency benchmark is published, each with its environment and
-  failures; until then a release may contain it built, but not offered for production. A
-  replication mode or a forced activation that can lose acknowledged work says so before it is
-  chosen, counts and reports what was lost after a failover, and never claims a recovery point
-  objective of zero. Changes of authority are never lost silently: a revocation of a credential,
-  session, membership, binding or grant, or a rotation or deletion of a secret, that such a mode
-  can lose is listed by the loss report, and the access it removed stays refused until an operator
-  applies it again or reviews it.
+  quorum mode, and the loss of the asynchronous mode counted and reported as specified) and its
+  commit-latency benchmark is published, each with its environment and failures; until then a
+  release may contain it built, but not offered for production. A replication mode or an
+  unplanned or forced activation that can lose acknowledged work says so before it is chosen,
+  counts and reports after a failover what it can read and states the window it cannot, and never
+  claims a recovery point objective of zero. In such a mode Principle I holds on the surviving
+  timeline: what is keyed by a journal sequence carries the region epoch, downstream consumers
+  receive a tombstone for what the loss undid, and the report lists the runs whose published
+  terminal state was undone. Changes that reduce authority (revocations of credentials, sessions,
+  memberships, bindings and grants; rotations and deletions of secrets) are reported as durable
+  only once the standby region holds them, in every mode; after an activation that can have lost
+  one, every session and token issued before the activation is invalidated, and the report lists
+  the changes of authority it can read and states the window it cannot.
 - **Admitted scope:** workflow as code (Principle IV); internal apps built in the Studio over
   declared workflow operations, whose sessions carry only the intersection of their viewer's
   current authority and the operations the pinned app version declares, and whose author code runs
@@ -279,7 +307,8 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   outside this repository that cannot be undone, amending this constitution, and every
   security exception, including accepting instead of fixing a finding of a security review or a
   checklist item of a security checklist. `scripts/check-design-docs.py` names the delegation it
-  accepts and the tag `v0.3.0` that ends it; an act recorded before the tag stays valid after it.
+  accepts and the tag `v0.3.0` that ends it; a delegate row that the tag contains, as it stands
+  there, stays valid after it.
 - **EGM pin:** a review counts only if it ran with an EGM plugin whose content hash is listed in
   `docs/engineering/egm-accepted-hashes.json`. Upgrading EGM adds an entry, in a pull request,
   after the owner has read the diff of the plugin, and amends this procedure if a step changed.

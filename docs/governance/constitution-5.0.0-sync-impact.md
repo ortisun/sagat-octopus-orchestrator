@@ -24,8 +24,8 @@ by a later amendment.
 
 ## Scope and why MAJOR
 
-The amendment changes one principle, the Delivery Constraints and one sentence of the Development Workflow (the Owner
-decisions clause); Governance is unchanged.
+The amendment changes one principle, the Delivery Constraints and the Owner decisions clause of the Development
+Workflow (three sentences added); Governance is unchanged.
 
 - **Principle IV is redefined.** Until 4.7.0 the unit of compatibility was "a published workflow version and its IR",
   and the Studio, the SDK builders and the engine all spoke one model, the declarative IR. In 5.0.0 a published version
@@ -37,7 +37,7 @@ decisions clause); Governance is unchanged.
   connector marketplace" leave the out-of-scope list; "single region with high availability" becomes "one writable
   region per cell, with high availability inside the region"; a "Regions" bullet and an "Admitted scope" bullet are
   added; the out-of-scope list is rewritten to say exactly what stays out.
-- **The Owner decisions clause gains one time-boxed sentence**: until release 0.3.0 is published, an act recorded as
+- **The Owner decisions clause gains a time-boxed delegation (three sentences)**: until release 0.3.0 is published, an act recorded as
   decided by `delegate (OD-2026-11-24-4)` counts as the owner's for that clause, the Approval clause and the
   Transitional clause, and every security exception stays the owner's (see "The delegation and the constitution's own
   text").
@@ -51,9 +51,9 @@ reader of 4.7.0 could rely on "every published version has an IR", and in 5.0.0 
 | Unit of 4.7.0 | Disposition | Old | New | Why |
 |---|---|---|---|---|
 | Principles I, II, III, V, VI, VII, VIII | KEEP | — | Byte-identical; hashes below | The new scope is met by the rules as they stand (see "What stays and why") |
-| Principle IV, first paragraph | REWRITE | "A published workflow version and its IR are immutable …" | "A published workflow version is immutable …"; the sentences on wire contracts, the one semantic contract of the six SDKs and pinned toolchains are kept verbatim | A procedural version has no IR (Owner decision 2026-11-24-3) |
+| Principle IV, first paragraph | REWRITE | "A published workflow version and its IR are immutable and every run references exactly one version …" | "A published workflow version is immutable and a run's pin names exactly one version at any moment …"; the sentences on wire contracts, the one semantic contract of the six SDKs and pinned toolchains are kept verbatim | A procedural version has no IR (Owner decision 2026-11-24-3), and a moved run keeps its start version as its origin while it pins another (ADR-0105) |
 | Principle IV, second paragraph | ADD | — | The two models share one engine, one journal and one semantic contract; the procedural model's rules (below) | Owner decisions 2026-11-24-2 and 2026-11-24-3 |
-| Principle IV, Studio sentence | KEEP (moved) | "The Studio draws the declarative IR; imperative code that cannot be converted is not promised a round trip." | The same, with "and shows a procedural run as the graph observed from its journal" and "converted to the IR" | Principle VI already makes the runtime graph a projection of the journal |
+| Principle IV, Studio sentence | REWRITE | "The Studio draws the declarative IR; imperative code that cannot be converted is not promised a round trip." | The same, with "and shows a procedural run as the graph observed from its journal" and "converted to the IR" | Principle VI already makes the runtime graph a projection of the journal |
 | Principle IV, rationale | REWRITE | ADR-0003, ADR-0007, overview, rule 8 | adds design 044 and its records ADR-0103 to ADR-0109, `workflow-ir-and-sdk-modes.md` and Owner decision 2026-11-24-3 | Sources of the new rules |
 | Delivery Constraints, technology baseline | REWRITE | "graph-native declarative IR; single region with high availability" | "two authoring models on one engine, the graph-native declarative IR and the procedural code-first model of Principle IV; one writable region per cell, with high availability inside the region" | Owner decision 2026-11-24-2 |
 | Delivery Constraints, Regions | ADD | — | Standby regions and active-passive failover by an operator's activation that raises a database-enforced region epoch, with a written attestation for an unplanned activation (032, ADR-0067); cells share no data and no transaction spans two cells; different cells may be writable in different regions; production only after the region drill passes and the commit-latency benchmark is published; a mode that can lose acknowledged work says so, reports the loss and never claims a recovery point objective of zero; a lost change of authority is listed and the access it removed stays refused until an operator applies it again or reviews it | Owner decision 2026-11-24-2; keeps ADR-0067's evidence gate (Decision 1592 of feature 032); the security review's Major 6 |
@@ -65,8 +65,9 @@ reader of 4.7.0 could rely on "every published version has an IR", and in 5.0.0 
 | Governance | KEEP | — | Unchanged | — |
 | Footer | REWRITE | `Version: 4.7.0`, last amended 2026-11-20 | `Version: 5.0.0`, last amended 2026-11-24, this report, the adoption sentence | — |
 
-Every sentence of 4.7.0 that uses MUST or MUST NOT is present word for word in 5.0.0 (line breaks aside; 36 sentences,
-checked by splitting both texts on sentence ends and searching each old sentence in the new text). Principle IV adds
+Every sentence of 4.7.0 that uses MUST or MUST NOT is present word for word in 5.0.0 (line breaks aside). The check
+collapses white space in both texts, splits the old text after every full stop, semicolon and colon (36 clauses use MUST;
+splitting after full stops only gives 34 sentences), and searches each clause in the new text; none is missing. Principle IV adds
 three: the workflow function MUST NOT perform an external effect itself; a diverging replay MUST stop with a typed,
 audited non-determinism error and commit none of its commands; the procedural model MUST NOT ship in an SDK before that
 language's determinism study and the shared replay conformance scenarios pass. The kept sentence that the six SDKs MUST
@@ -95,10 +96,20 @@ go wrong:
   model the definition is created by a command. The rule makes a command no more powerful than a graph node with the
   same declarations. The ceilings (history length, payload size, fan-out) replace the publication-shape limits of the
   graph's loops and collections, which a function does not have.
-- **Accepted as a worker result under Principle I and committed with the journal and the outbox in one transaction.**
-  A workflow task's result is a worker result like any other: valid lease, fencing token, stale attempts refused. This
-  keeps Principle I whole without rewriting it: the next task is still scheduled in the transaction of the transition,
-  by the server.
+- **A completion is one transaction, all or nothing.** A workflow task's result is a worker result like any other:
+  valid lease, fencing token, stale attempts refused. Principle I asks for one transaction per state transition but
+  does not say what a transition is for a code run, so the text says it: the journal events of the completion and of
+  every command, the steps, timers, waits and subscriptions they create, the outbox, and the next state of the
+  workflow task, decided from the journal. Committing command by command would leave half a decision after a crash,
+  and a signal that arrived while the task was leased would wake nothing (correctness review, Major 1; design 044's
+  Requirement 044-004 already says "nothing or all of it"). A command refused by the checks refuses the whole
+  completion.
+- **A completion that ends the run is refused while an accepted signal, update or cancellation is unseen.** Otherwise a
+  signal acknowledged to its sender is dropped when the run ends (design 044: `UNHANDLED_EVENTS`).
+- **Waits resolve once, and a late signal is kept.** Principle I says the first commit of a timeout and a signal wins
+  and the other is a no-op. For a code run the wait is what resolves once; a signal that arrives after the wait timed
+  out is journaled for the next activation, because the function may wait for it again (design 044, Requirement
+  044-014).
 - **An envelope entry that releases a secret names its activities exactly.** A pattern such as `payments.*` would
   release the secret to activity names registered after publication, which no graph version allows (security review,
   minor 3). Design 044 allows patterns today; for entries that list secrets it must change.
@@ -114,21 +125,31 @@ go wrong:
   leaves the worker protocol out of classification (security review, Major 4).
 - **The worker's memory is a cache that replay can discard and rebuild.** PostgreSQL stays the authority (Principle I);
   sticky execution is an optimisation, never a record.
-- **No external effect in the function itself; effects are activities under Principle III; the SDK's guard refuses or
-  reports one.** Code outside an activity runs again on every replay. The rule binds the author, so the SDK's
-  determinism guard is what makes it observable (ADR-0106, ADR-0107: no local activity).
-- **A diverging replay stops with a typed, audited error and commits nothing.** Accepting the commands of a replay that
-  disagrees with the journal applies a transition the history does not explain. Design 044 holds the run with a cause
-  (`CHAIN_MISMATCH`, ADR-0104); it is never a silent continuation.
+- **No external effect in the function itself; effects are activities under Principle III; an unknown outcome reaches
+  the function as unknown, never as a failure; the SDK's guard refuses or reports an effect outside an activity.** Code
+  outside an activity runs again on every replay. The rule binds the author, so the SDK's determinism guard is what makes
+  it observable (ADR-0106, ADR-0107: no local activity). If an unknown outcome reached the function as a failure, the
+  function could schedule the effect again under a new step and a new idempotency key while the first is under review.
+- **A diverging replay stops with a typed, audited error and commits nothing; the server judges the match.**
+  Accepting the commands of a replay that disagrees with the journal applies a transition the history does not
+  explain. The server compares against its own record of the commands (ADR-0104's command chain), not the worker's
+  verdict, and puts the run under review; it is never a silent continuation.
 - **A run pins one version at any moment; the pin changes only by a verified move.** The move is an explicit request
   per run by a person allowed to operate the run and to activate the target version, to a target approved for
   activation where the namespace requires approval (otherwise a person holding only the right to operate runs could
-  move one onto an unapproved version with a wider envelope; security review, minor 1), applied only when a replay of the run's own history against the target
-  code reproduces the journaled commands and every outstanding step fits the target's envelope; it is journaled and
-  audited, a refused move changes nothing, and no policy moves runs by itself. This is how a fix reaches a run of
+  move one onto an unapproved version with a wider envelope; security review, minor 1). It is applied in one transaction
+  with the run locked, only while no workflow task is leased and the journal has not advanced past the activation that
+  was verified, and only when the server finds that the replay reproduces the journaled commands and every outstanding
+  step fits the target's envelope: a verification made at journal sequence N says nothing about commands a workflow task
+  of the old code committed at N + 3 (correctness review, Major 2). It is journaled and audited, a refused move changes
+  nothing, a completion from a session of the former pin is stale, only an open run moves, and no policy moves runs by
+  itself. This is how a fix reaches a run of
   months without the automatic migration that the first paragraph forbids: the platform never guesses, and the replay
   proves the move before it is applied (ADR-0105; gap 044-010 asked the constitution to say what a verified move is).
-  Version markers in the code let one version branch for older histories, as Temporal's patches do.
+  Version markers in the code of a later version let it branch for histories written under an earlier one, as
+  Temporal's patches do, so that a verified move can succeed; a version is named by its digest, so there is no change
+  "within one version" (correctness review, Major 3). A run continued as new is a new run under Principle I and may
+  pin another version.
 - **The history and command format is a wire contract.** Open runs pinned to older code must keep replaying it across
   upgrades of the server, N and N-1 included (design 048).
 - **Ships in an SDK only after that language's determinism study and the shared replay conformance pass; an SDK
@@ -180,12 +201,26 @@ What the constitution now requires of failover, beyond 4.7.0:
 - A lost change of authority is worse than lost work: a revoked key, a removed member, a revoked binding or a rotated
   secret that the region lost before replication would work again after the activation, reversing "authentication and
   authorization fail closed" (Principle V) without anyone being told. Feature 032's divergence report lists runs, inbox
-  events, deliveries, receipts and audit records, not authority. So the constitution requires the loss report to list
-  such changes and the access they removed to stay refused until an operator applies them again or reviews them
-  (security review, Major 6). Acknowledging authority writes only after synchronous replication in every mode was the
-  alternative; it was not chosen because the asynchronous mode exists for installations that cannot afford a
-  cross-region wait, and a revocation that waits on a lost region would block the very operator trying to contain an
-  incident.
+  events, deliveries, receipts and audit records, not authority (security review, Major 6). The first answer, "the loss
+  report lists them and the access stays refused", cannot be met when the former primary is gone: the new authority
+  never saw the revocation, so nothing can list it (correctness review, Major 4; feature 032 lists lost operations only
+  "when the former primary is reachable"). The text now does two things:
+  - **A change that reduces authority is reported as durable only once the standby region holds it, in every mode.**
+    PostgreSQL allows this per transaction: with the standby named in `synchronous_standby_names` and ordinary commits
+    at `synchronous_commit = local`, a revocation's transaction alone waits. The revocation still takes effect at once
+    in the active region; only its report of durability waits, so an operator containing an incident is not blocked,
+    and a revocation whose wait is cut short is reported as not yet durable, never as done (Decision 1590 of 032).
+    Revocations are rare, so the cost of the cross-region wait is small.
+  - **After an activation that can have lost one, every session and token issued before the activation is
+    invalidated.** That closes the window for short-lived authority without knowing what was lost; the report lists the
+    changes it can read and states the window it cannot, so an operator can review long-lived credentials changed in
+    it.
+- Principle I holds on the surviving timeline (correctness review, Major 5). Feature 032 says transitions shown by the
+  former region may be lost and their sequence numbers reused, so a run a client saw as terminal can be running again.
+  Principle I's "monotonic per-run sequence" and "a terminal run never returns to running" stay true of the timeline
+  that survived; what is keyed by a journal sequence carries the region epoch, downstream consumers receive a tombstone
+  for what the loss undid (Requirement 032-034), and the report lists the runs whose published terminal state was
+  undone. Principle VII's deduplication by identity then cannot silently drop a new event at a reused sequence.
 
 ## The other items of the out-of-scope list
 
@@ -257,25 +292,38 @@ Three options were weighed:
    a finding of a security review or an item of a security checklist (security review, Major 1: otherwise a delegate
    could accept a security Blocker and approve the design).
 
-The check itself is pull request #281 (`chore/delegate-settles-findings`), split out of this amendment so that it can
-land first:
+The check itself is pull request #281 (`chore/delegate-settles-findings`), stacked on this one and merged right after
+it, so that the check never accepts a delegate row that the constitution in force does not name (correctness review
+of #281, minor 6, against Documentation first):
 
 - `DELEGATIONS = {"OD-2026-11-24-4": "v0.3.0"}`. A row decided by `delegate (<id>)` is citable only when `<id>` is listed,
-  its own row is an owner row with status `Decided`, and, once the tag exists, the row first carried the delegation in
-  a commit that the tag contains.
-- The delegation therefore ends by itself at the tag, and acts taken during the release stay valid after it. The first
-  draft of this report had the publishing pull request delete the entry, which would have failed every approval and
-  every gate the delegate had recorded, on the release's own CI (security review, Major 2). A date window, which the
+  its own row is an owner row with status exactly `Decided`, and, once the tag exists, the identical row is in
+  `docs/owner-decisions.md` as the tag holds it.
+- The delegation therefore ends by itself at the tag, and acts recorded during the release stay valid after it. The
+  first draft of this report had the publishing pull request delete the entry, which would have failed every approval
+  and every gate the delegate had recorded, on the release's own CI (security review, Major 2). A date window, which the
   security review proposed, was weighed and not chosen: the date in a row's identifier is written by whoever writes the
-  row, while the commit that first gave it the delegation is history the check reads, and relabelling an old plain
-  `delegate` row after the tag is refused too.
-- A delegate row that covers a finding of the security report is refused (Major 1).
+  row. A first version of #281 keyed on the commit that first gave a row the delegation; the correctness review showed
+  that a row edited after the tag (a new `Covers`, a new status) kept its earlier validity, and that cherry-picks and
+  merge resolutions hide the first commit (Major 1 of #281). Comparing the row with the tag's copy closes both.
+- A delegate row that covers a finding of the security report is refused, and acceptances are counted per report, so a
+  security finding cannot be covered by spare acceptances of another report (security review, Major 1; correctness
+  review of #281, Major 2).
+- In a pull request's CI, a delegate row is refused unless the clone has the release tags (`v0.2.0` resolves), so a
+  clone without tags cannot keep the delegation open.
+- A test reads `docs/constitution.md` and fails if `DELEGATIONS` names a delegation or a tag that the Owner decisions
+  clause does not name, which only the owner can amend (security review, minor 5; correctness review, Major 6).
 - A plain `delegate`, a delegation not listed, a delegation whose row is missing or is itself a delegate row are
-  refused. Ten tests, the passing cases and the security refusal seen failing first, the expiry checked by a hand
-  mutation; 133 tests of the script pass.
-- That `DELEGATIONS` could be widened by a pull request the delegate merges (security review, minor 5) is closed after
-  #281 is in `develop`: this pull request then makes the check refuse a delegation that the Owner decisions clause of
-  `docs/constitution.md` does not name, which only the owner can amend.
+  refused. The tests, each seen failing first or bitten by a hand mutation, are listed in #281.
+
+What the sentence rests on, said plainly (correctness review, Major 7): Owner decision 2026-11-24-2 lists four changes
+and none of them touches the owner-only gates. The sentence rests on Owner decision 2026-11-24-4, whose words are the
+owner's ("Quero que os agents continuem por mim. Tomem a melhor decisão") and whose reading, including "docs/constitution.md
+(approval and acceptance clauses)" in its Covers cell, was written by the coordinating session; and on the coordinating
+session's instruction to amend this clause if its text would otherwise contradict the delegation, which it did (the
+check refused delegate rows). It does not widen what the owner delegated: it lets the record say who acted, and it
+keeps security exceptions and amendments with the owner. It is the first item of the after-the-fact report to the owner,
+who can strike it with a PATCH amendment and a revert of #281 without touching any other part of 5.0.0.
 
 The EGM pin keeps requiring the owner's own reading of the plugin's diff; the delegation does not name it.
 
@@ -290,7 +338,7 @@ The line above is the git blob of `docs/constitution.md` at 4.7.0. A principle b
 | I | KEEP | 32d2ec982a4ae0995a472628184c4762ea740f9081886bb4c78fa461237a5a21 | 32d2ec982a4ae0995a472628184c4762ea740f9081886bb4c78fa461237a5a21 |
 | II | KEEP | 80fbee5c64129b11cc2cc1d978c7a4b91f9af39cfdea73510c3bcb345aad8ec2 | 80fbee5c64129b11cc2cc1d978c7a4b91f9af39cfdea73510c3bcb345aad8ec2 |
 | III | KEEP | 69d38cce2aa95cfa7f3e70b2be2e93260ff8f224afa7e8f779e5558b4f9827d9 | 69d38cce2aa95cfa7f3e70b2be2e93260ff8f224afa7e8f779e5558b4f9827d9 |
-| IV | REWRITE | ff10043d76dfd25ac3b2db1ea27b943804c52d4d46c83838e6908cdaccc32f7b | 23d380d586fce881488b297860fe5ba50eb55b521c035e02316a5a0677ab1770 |
+| IV | REWRITE | ff10043d76dfd25ac3b2db1ea27b943804c52d4d46c83838e6908cdaccc32f7b | 2bf35e4b0a41b41d2bd7a98dd2e2825a18ea635bc8eed63ed34b6c98e8c6e5eb |
 | V | KEEP | b816cb76163ef1d8cc8579bb3e326f59c774b077131029cfd64fa45d470f38f9 | b816cb76163ef1d8cc8579bb3e326f59c774b077131029cfd64fa45d470f38f9 |
 | VI | KEEP | 3fbc81dd01da920dafb2681958b3a7864f90b6395d3aecb2254555436c6aa8bc | 3fbc81dd01da920dafb2681958b3a7864f90b6395d3aecb2254555436c6aa8bc |
 | VII | KEEP | 708ea13f72890e3ff5bf0472c30fdb2a5cab3d5e616e40e88197c880eeba2760 | 708ea13f72890e3ff5bf0472c30fdb2a5cab3d5e616e40e88197c880eeba2760 |
@@ -303,11 +351,11 @@ builds it; until then the rule is held by review.
 
 | Rule | Check today | Check to add, and where |
 |---|---|---|
-| Only the named delegation counts as the owner's, never for a security finding, and only until `v0.3.0` | `scripts/check-design-docs.py` (`DELEGATIONS`) and its ten tests (pull request #281) | the refusal of a delegation the constitution does not name (this pull request, after #281) |
+| Only the named delegation counts as the owner's, never for a security finding, and only until `v0.3.0` | `scripts/check-design-docs.py` (`DELEGATIONS`), its tests and the test that binds it to this clause (pull request #281) | none |
 | The workflow function never runs in a platform process | review | `scripts/check-architecture.py` refuses embedded language runtimes (`deno_core`, `v8`, `pyo3`, `boa_engine`, `mlua`, `wasmtime`) in the dependency graph of the server crates (design 044) |
 | A command stays within the envelope | none | Requirement 044-013, one test per envelope member |
-| A diverging replay commits nothing | none | ADR-0104's `a_completion_with_a_foreign_command_chain_is_refused_and_holds_the_run` and the conformance scenario `code-nondeterminism` |
-| A pin changes only by a verified move | none | ADR-0105's trigger test `the_version_of_a_run_changes_only_through_the_move_function` |
+| A diverging replay commits nothing | none | ADR-0104's `a_completion_with_a_foreign_command_chain_is_refused_and_puts_the_run_under_review` and the conformance scenario `code-nondeterminism` |
+| A pin changes only by a verified move | none | ADR-0105's `sagat_app_cannot_update_code_run_pins` and the move tests it names (design 044 renames them as it changes; the names were read on 2026-11-25) |
 | No effect in the function | none | a conformance scenario that injects an effect outside an activity; the SDK guard must refuse or report it (ADR-0106, ADR-0107) |
 | An SDK without the model says so | none | a capability declaration per SDK in the conformance suite; the procedural scenarios report "not offered" for it (design 044) |
 | Cross-region failover is not offered before its evidence | none | Task 032-063, and a step of the release workflow that fails if the documents or release notes call it supported while the drill or the benchmark report is missing or failing (feature 032) |
@@ -354,7 +402,8 @@ builds it; until then the rule is held by review.
   #275)", and its Covers cell links this report.
 - `docs/architecture/security-and-sandbox.md`: the four trust boundaries that 0.3.0 adds (workflow code in tenant
   workers, internal apps and their frames, the hub's indexes, the region epoch).
-- `scripts/check-design-docs.py` and its tests change in pull request #281, which lands first (above).
+- `scripts/check-design-docs.py` and its tests change in pull request #281, stacked on this one and merged right after
+  it (above).
 - `docs/governance/README.md`: the row of this report.
 
 Not changed, on purpose:
@@ -388,13 +437,19 @@ Not changed, on purpose:
 - **After release 0.3.0 is tagged** the delegation has ended by itself in the check; a later PATCH amendment may delete
   the expired sentence of the Owner decisions clause, and the `DELEGATIONS` entry stays so that the acts recorded during
   the release remain valid.
-- **Design 044** must also: make an envelope entry that lists a secret name its activities exactly (today it allows
-  patterns); register a gap for the history projection to workflow sessions under the classification rules of
-  feature 016 (the worker protocol is outside 016 today); drop a sticky cache when the region epoch or the generation
-  changes; and check a sticky completion against the full command chain, so that after an asynchronous failover a
-  cached, lost completion is refused.
-- **Feature 032** must list changes of authority in its divergence report and keep the revoked access refused until an
-  operator reviews it.
+- **Design 044**, for the agent that holds it (its branch is `feature/044-workflow-as-code`; this change does not edit
+  it): register as gaps, in `specs/044-workflow-as-code/research.md`, that Requirement 044-013 allows activity entries
+  "by name or prefix" with secrets, which Principle IV now forbids for an entry that releases a secret; and that the
+  history projection to workflow sessions must follow the classification rules of feature 016 (the worker protocol is
+  outside 016 today). Also: drop a sticky cache when the region epoch or the generation changes; check a sticky
+  completion against the full command chain, so that after an asynchronous failover a cached, lost completion is
+  refused; keep its test names in step with the enforcement table above.
+- **Feature 032**: report a change that reduces authority as durable only once the standby region holds it (a
+  per-transaction synchronous wait), invalidate every session and token issued before a lossy activation, list in the
+  divergence report the changes of authority it can read and the window it cannot, and list the runs whose published
+  terminal state the loss undid. ADR-0009 stays accepted while ADR-0067 is proposed; the Governance rule for diverging
+  from an accepted ADR is met by ADR-0067, which exists and carries the evidence plan, and no code diverges from
+  ADR-0009 until 032 is built.
 
 ## Review
 
@@ -444,13 +499,35 @@ with the reasoning, as delegate (Owner decision 2026-11-24-4).
 | minor 2: the ceilings read as a closed per-run list | Fixed: "the ceilings and quotas of the run and of its namespace (… among them)" |
 | minor 3: a pattern entry could release a secret to activities registered later | Fixed: an entry that releases a secret names its activities exactly; design 044 must follow (follow-ups) |
 | minor 4: the hub pinned its sources, not its content | Fixed: every item and everything it pulls in is pinned by digest and verified before import; no item adds code, a template or an expression beyond what authored content of the same kind may carry |
-| minor 5: the delegation sentence drifted from the owner's decision; `DELEGATIONS` could be widened by the delegate | Fixed: "acts that need the owner's own hands or credentials" and the Transitional clause are in the sentence; the check will refuse a delegation the constitution does not name (this pull request, after #281) |
+| minor 5: the delegation sentence drifted from the owner's decision; `DELEGATIONS` could be widened by the delegate | Fixed: "acts that need the owner's own hands or credentials" and the Transitional clause are in the sentence; a test in #281 refuses a delegation or tag that the constitution does not name |
 | Nit: `security-and-sandbox.md` not a dependent; "platform process" undefined | Fixed: four trust boundaries added there; "platform process" is defined in Principle IV |
 | Suspicion: a sticky completion after an asynchronous failover | Handed to design 044 (follow-ups): check a sticky completion against the full command chain |
 
-### Correctness review
+### Correctness review (no Blocker; seven Major, ten minor, four Nit on this pull request; two Major, six minor, two Nit on #281, settled there)
 
-(Filled in after the review.)
+| Finding | Disposition |
+|---|---|
+| Major 1: each command its own commit, not the whole completion | Fixed: "A completion is one transaction", all or nothing, with what it contains and a refused command refusing the whole completion |
+| Major 2: the verified move did not require the verification to be current | Fixed: one transaction with the run locked, no workflow task leased, the journal not past the verified activation, the match judged by the server against its own record, a completion from the former pin stale, only an open run |
+| Major 3: "within one version, version markers" contradicted digest pinning | Fixed: markers in the code of a later version branch for histories written under an earlier one |
+| Major 4: the promise about lost authority could not be met when the former primary is unreachable | Fixed: authority-reducing changes are reported durable only once the standby holds them, in every mode; every session and token issued before a lossy activation is invalidated; the report counts what it can read and states the window it cannot |
+| Major 5: Principle I after a lossy failover | Fixed: Principle I holds on the surviving timeline; sequence-keyed data carries the epoch; tombstones downstream; undone terminal states listed |
+| Major 6: the binding of `DELEGATIONS` to the constitution was marked fixed but was not in this pull request | Fixed: #281, stacked on this one, adds the test that binds the delegation and its tag to this clause |
+| Major 7: the delegation sentence goes beyond what Owner decision 2026-11-24-2 lists | Settled, delegate (Owner decision 2026-11-24-4): not contested and not removed. The report states what the sentence rests on (Owner decision 2026-11-24-4 and the coordinating session's instruction), that it widens nothing, and that it is the first item of the after-the-fact report to the owner, who can strike it alone. Removing it would leave the check refusing every delegate act the owner asked for, or the record falsified |
+| minor 1: a terminal command with an unseen signal | Fixed |
+| minor 2: the timeout and signal race for code runs | Fixed: "Waits resolve once"; a late signal is kept for the next activation |
+| minor 3: continue-as-new and the pin | Fixed: a run continued as new is a new run and may pin another version |
+| minor 4: an unknown outcome and a repeated effect | Fixed: an unknown outcome reaches the function as unknown, never as a failure |
+| minor 5: design 044 contradicts the secret rule and has no gap for it | Handed to design 044's agent (follow-ups); this change does not edit that branch |
+| minor 6: feature 032 left contradicting the amendment; ADR-0009 and Governance | Fixed: the plan's status cells, Decision 1592 annotated, the Governance reading in the follow-ups |
+| minor 7: two enforcement-table tests do not exist | Fixed: the names design 044 uses now, with the date they were read |
+| minor 8: "an act recorded before the tag" is time-based, the check is not | Fixed: "a delegate row that the tag contains, as it stands there" (and the check now compares with the tag's copy) |
+| minor 9: "every run references exactly one version" | Fixed: "a run's pin names exactly one version at any moment" in Principle IV and in invariant 1 of the overview |
+| minor 10: the production gate checked only the synchronous mode; "forced activation" | Fixed: the gate also requires the asynchronous mode's loss counted and reported; "an unplanned or forced activation" (032 uses both words) |
+| Nit: the Studio sentence was marked "KEEP (moved)" | Fixed: REWRITE |
+| Nit: "one sentence" added to the Owner decisions clause | Fixed: three |
+| Nit: the Review section was a placeholder | Fixed: this table |
+| Nit: the MUST count depends on the method | Fixed: the method is stated (36 clauses split after full stops, semicolons and colons; 34 sentences after full stops only) |
 
 ## Risks and rollback
 
