@@ -411,18 +411,18 @@ example of the arithmetic, not a measurement.
   Refs: Requirement 051-012, Requirement 051-014
 - [ ] T051-9 Run the history loads and the pilots that choose each product's configuration and each variant's starting rate on the larger runner, and publish them.
   Refs: Requirement 051-004, Requirement 051-006, Requirement 051-015
-  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (Owner decision 2026-11-24-515: no paid run until it is confirmed)
 - [ ] T051-10 Run the first full campaign and publish the dated report section and raw data.
   Refs: Success criterion 051-001, Requirement 051-011, Requirement 051-013
-  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (Owner decision 2026-11-24-515: no paid run until it is confirmed)
 - [ ] T051-11 Publish the crash-recovery table of the first campaign.
   Refs: Success criterion 051-003
-  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (Owner decision 2026-11-24-515: no paid run until it is confirmed)
 - [ ] T051-12 Write the reader's guide to the report and link it from `docs/README.md` and the roadmap.
   Refs: User story 051-01, User story 051-02
 - [ ] T051-13 State, in every later campaign of 0.3.0, the ranking of Success criterion 051-002 with its ties.
   Refs: Success criterion 051-002
-  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (Owner decision 2026-11-24-515: no paid run until it is confirmed)
 - [ ] T051-14 Run the second tier on three machines and publish it.
   Refs: Requirement 051-003
   Owner-gate: pending, the owner's row providing the cloud account of "Owner decisions needed"

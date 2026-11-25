@@ -161,21 +161,22 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
 
 ## Open Questions
 
-1. **Is this design in release 0.3.0's scope?** Decided yes, delegate (Owner decision 2026-11-20-6): Owner decision
-   2026-11-24-1 puts in 0.3.0 everything missing to surpass Temporal and Windmill, and the assessment's remedies table
-   lists these as missing; the coordinating session's brief named them. The architecture reviewer of design 051 contested
-   this (its Major 7); the coordinating session is asked to confirm it with a scope row.
+1. **Is this design in release 0.3.0's scope?** Yes, confirmed by the coordinating session (Owner decision
+   2026-11-24-513): the owner wants to surpass both products on performance, and design 051's benchmark is meaningless
+   without these remedies.
 2. **Does the CI gate need a constitution amendment?** Yes: the constitution enumerates the suites a pull request runs
-   ("and only those"); adding the gate widens them, as design 038's selector rule needed version 4.4.0. Recommendation:
-   fold it into the 5.0.0 amendment (Owner decision 2026-11-24-2). Gates Task 052-14.
+   ("and only those"); adding the gate widens them, as design 038's selector rule needed version 4.4.0. Decided by the
+   coordinating session: it goes in the constitution 5.1.0 amendment, pending (Owner decision 2026-11-24-512). Task
+   052-15 writes this design's part of it. Gates Task 052-14.
 3. **What when a refused head blocks the queue?** The poll's exclusion set walks past refused rows, at most today's
    window of 64, so the refused case costs no more than today and the common case costs one probe. Parking refused rows
    until a re-arming event is a follow-up if design 051 shows the refused case matters.
 
 ## Owner decisions needed
 
-- The constitution amendment of Open Question 2 (with the 5.0.0 amendment). Gates Task 052-14.
-- The scope row of Open Question 1, if the coordinating session does not confirm it under its delegation.
+- The constitution 5.1.0 amendment of Open Question 2, pending (Owner decision 2026-11-24-512). Gates Task 052-14.
+- The runner budget for Task 052-12's measurement (US$ 208.01, design 051's "Cost of the campaigns"), with the owner
+  through the coordinating session; no paid run is planned until it is confirmed (Owner decision 2026-11-24-515).
 
 ## Critical User Journeys (CUJs)
 
@@ -272,7 +273,7 @@ of 2026-11-24). How this draft answers each finding that concerned them:
 | VI. Observability and audit are part of the feature | Pass | Repairs, sweeps, size, wakes, next-step grants and declines, all with closed labels |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | The wake uses the outbox hint as a hint |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Barrier tests per lock, a lost wake, a lost answer, a refused head, each seen failing first |
-| Delivery Constraints | Pass with conditions | The CI gate needs the constitution's CI gates amended (Open Question 2) |
+| Delivery Constraints | Pass with conditions | The CI gate needs the constitution's CI gates amended in 5.1.0, pending (Owner decision 2026-11-24-512) |
 
 ## Complexity Tracking
 
@@ -326,12 +327,14 @@ of 2026-11-24). How this draft answers each finding that concerned them:
   Refs: Requirement 052-002
 - [ ] T052-12 Measure each remedy on and off with design 051's harness and record the gain or the removal.
   Refs: Success criterion 052-004
-  Owner-gate: pending, the owner's row approving the runner budget of design 051
+  Owner-gate: pending, the owner's row approving the runner budget (Owner decision 2026-11-24-515)
 - [ ] T052-13 Pilot thirty runs of the gate on the standard runner to measure its minimum detectable effect.
   Refs: Requirement 052-030
 - [ ] T052-14 Add the `throughput-gate` job and prove it fails on the hand mutation and passes on its revert.
   Refs: Requirement 052-030, Success criterion 052-003
-  Owner-gate: pending, the constitution amendment of Open Question 2
+  Owner-gate: pending, the constitution 5.1.0 amendment (Owner decision 2026-11-24-512)
+- [ ] T052-15 Draft this design's part of the constitution 5.1.0 amendment (the throughput gate among the CI gates), for its own review.
+  Refs: Requirement 052-030
 
 #### Follow-up tasks
 

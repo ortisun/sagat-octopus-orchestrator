@@ -219,7 +219,9 @@ From the code and documents on `develop` at `546d5aa5`:
   the driver's ledger of acknowledgments, so that a commit accepted by two primaries is found. A dated report,
   `tests/performance/reports/high-availability.md`, states the environment and every failure.
 - **Requirement 048-043 The drill gates the release.** A release MUST fail when any repetition loses acknowledged work,
-  finds a commit after the fork that the driver saw acknowledged, or exceeds 300 s to the first transition.
+  finds a commit after the fork that the driver saw acknowledged, or exceeds 300 s to the first transition. The Compose
+  drill (free, in the release workflow) gates every release; the Kubernetes drill gates it once its runner is approved
+  (Owner decision 2026-11-24-515), and until then the report says it has not run.
 
 ### Success criteria
 
@@ -509,7 +511,7 @@ before Tasks 048-15 to 048-17, which reuse it.
   Refs: Requirement 048-035, Success criterion 048-003
 - [ ] T048-16 Write the Kubernetes drill in `tests/e2e/high-availability/` with the fork comparison, run it, and publish `tests/performance/reports/high-availability.md`.
   Refs: Requirement 048-041, Requirement 048-042, Requirement 048-043, Success criterion 048-001, Success criterion 048-002
-  Owner-gate: pending, the owner's row approving the drill's runner of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
+  Owner-gate: pending, the owner's row approving the drill's runner of "Owner decisions needed" (Owner decision 2026-11-24-515: no paid run until it is confirmed)
 - [ ] T048-17 Write `infra/dr/ha-drill.sh` on the Compose reference, measure the takeover, and run it in the `scale` job and the release workflow.
   Refs: Requirement 048-040, Requirement 048-042, Requirement 048-043, Success criterion 048-004
 

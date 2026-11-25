@@ -30,9 +30,9 @@ have one, and makes the per-run path cheap for every run created after it:
    tables.
 6. **`runs`, `steps` and the audit trail are not partitioned in release 0.3.0**, for the reasons in the Technical Plan.
 
-Deleting journal rows, by month or by run, changes an obligation of principle I (the journal is append-only); feature
-020 carries that amendment (its Task T020-061). The partitioning needs none and is built first; only the deleting tasks
-wait for it.
+Deleting journal rows, by month or by run, changes an obligation of principle I (the journal is append-only); that
+amendment is constitution 5.1.0, pending (Owner decision 2026-11-24-511). The partitioning needs none and is built first;
+only the deleting tasks wait for it.
 
 The cost on the hot path is measured by design 038's statement budget, which gains a count of the relations each lease
 and completion locks and of its round trips.
@@ -303,11 +303,12 @@ record is under Owner decision 2026-11-24-4 (pull request 274).
 
 ## Owner decisions needed
 
-- **The amendment of principle I that feature 020 carries** (its Task T020-061, the text in Architecture decision 0054,
-  "Required amendment of principle I"): retirement deletes journal rows, as feature 020's purge does. Recommendation: fold
-  it into the constitution 5.0.0 amendment of Owner decision 2026-11-24-2, so that release 0.3.0 can retire data at all,
-  with the text naming both audited privileged paths: feature 020's per-run purge and the retirement of a whole month
-  (Architecture decision 0054's proposed text says "one audited privileged path"). Gates Tasks 049-11 and 049-14.
+- **The amendment of principle I, pending constitution 5.1.0.** Retirement deletes journal rows, as feature 020's purge
+  does. Decided by the coordinating session (Owner decision 2026-11-24-511): it is not part of 5.0.0; it is a 5.1.0
+  amendment written once this design and feature 020's retention design are approved, so that its text follows the
+  approved mechanisms and names both audited privileged paths (feature 020's per-run purge and the retirement of a whole
+  month; Architecture decision 0054's proposed text says "one audited privileged path"), and has its own review. Task
+  049-18 writes this design's part of it. Gates Tasks 049-11 and 049-14.
 - **Scope.** Owner decision 2026-11-24-1 (pull request 273) names "partitioning of the journal tables" among the new
   designs of release 0.3.0; the delegation covers its open questions. The rows of Owner decisions 2026-11-24-1, -2 and -4
   are in pull requests 273 and 274, which merge before this design.
@@ -487,7 +488,7 @@ check that shared payloads need, and the partition is detached and dropped once 
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass with conditions | The partitioning keeps the journal append-only with a monotonic per-run sequence and a run's rows together; retirement deletes journal rows and waits for the amendment of principle I that feature 020 carries (Owner decisions needed) |
+| I. State and retry semantics are explicit and durable | Pass with conditions | The partitioning keeps the journal append-only with a monotonic per-run sequence and a run's rows together; retirement deletes journal rows and waits for the constitution 5.1.0 amendment of principle I (Owner decision 2026-11-24-511) |
 | II. Modular domain, ports and adapters | Pass | `journal_bucket` stays in `infra-postgres`'s row types and never enters the domain's run type; the application, scheduler and control-plane changes (Tasks 049-9 and 049-13) only call the store |
 | III. External effects are at-least-once; sagas compensate | n/a | No effect changes |
 | IV. Compatibility is versioned and pinned | Pass | Expand migrations whose triggers raise the same SQLSTATE as the keys they replace; old binaries write the legacy bucket; the switch is a registry activation |
@@ -556,20 +557,22 @@ are named; the test suites are those of the Verification Plan.
   Refs: Requirement 049-005, Requirement 049-006
 - [ ] T049-11 After Task 049-3's measurement, build the partial legacy reference indexes concurrently and give feature 020's legacy purge its reference check on them, with the re-check after the delete.
   Refs: Requirement 049-007
-  Owner-gate: pending, the amendment of principle I that feature 020's Task T020-061 carries (Owner decisions needed)
+  Owner-gate: pending, the constitution 5.1.0 amendment of principle I (Owner decision 2026-11-24-511; Owner decisions needed)
 - [ ] T049-12 Write the per-run copy rules for children, resets, reruns, the chain's next segment and cross-namespace operations, with a test per path that the new run references only its own payloads.
   Refs: Requirement 049-005, Requirement 049-014
 - [ ] T049-13 Write `control-plane journal switch` in `apps/control-plane/src/cli.rs` on the registry's activation (`crates/application/src/instances.rs`), with a suite that runs after it across a month boundary with two dated partitions.
   Refs: Requirement 049-002, Requirement 049-010
 - [ ] T049-14 Write `control-plane journal retire`, `journal_retirements`, `sagat_quota_release_bytes`, the mark-only form and the chart's scheduled job, with the crash test at every step and inside a detach cancelled while it waits, the races with an append and with a per-run purge, and the quota reconciliation test.
   Refs: Requirement 049-009, Requirement 049-014, Success criterion 049-002, Success criterion 049-004
-  Owner-gate: pending, the amendment of principle I that feature 020's Task T020-061 carries (Owner decisions needed)
+  Owner-gate: pending, the constitution 5.1.0 amendment of principle I (Owner decision 2026-11-24-511; Owner decisions needed)
 - [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge has the key and the mark-only form of Requirement 049-014.
   Refs: Requirement 049-014, Requirement 049-015
 - [ ] T049-16 Measure the scheduler's passes with `steps` partitioned by bucket after design 052's queue, and record the decision.
   Refs: Requirement 049-012
 - [ ] T049-17 Write the retention section of `docs/runbooks/database-recovery.md` and the bucket runbook.
   Refs: User story 049-01
+- [ ] T049-18 Once this design and feature 020's retention design are approved, draft with feature 020 the text of the constitution 5.1.0 amendment of principle I that admits the two audited deletion paths, for its own review.
+  Refs: Requirement 049-009, Requirement 049-014
 
 #### Follow-up tasks
 
