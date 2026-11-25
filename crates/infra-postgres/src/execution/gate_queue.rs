@@ -445,7 +445,23 @@ impl PgRunTx {
             } else {
                 &mut self.run_gate_outcomes
             };
-            outcomes.push((q.kind, GateOutcome::GrantedFromQueue));
+            // how long it waited, and for a slot of the pass's own key the grant's lag: from the instant the key became
+            // due (its hint, early and never late) or the waiter's queueing if later (T022-082; decision D022-083)
+            let micros = |d: time::Duration| i64::try_from(d.whole_microseconds()).ok();
+            let own = q.kind == order.kind
+                && level_of(node).0 == order.level
+                && q.group == *order.group
+                && q.digest == *order.digest;
+            let lag_us = (own && q.kind == GateKind::RateLimit)
+                .then(|| micros(now - order.due_at.max(q.enqueued_at)))
+                .flatten();
+            outcomes.push((
+                q.kind,
+                GateOutcome::GrantedFromQueue {
+                    waited_us: micros(now - q.enqueued_at),
+                    lag_us,
+                },
+            ));
             events.push(GateEvent {
                 target: node.map_or(GateTarget::Run, |node| GateTarget::Step {
                     node: node.clone(),

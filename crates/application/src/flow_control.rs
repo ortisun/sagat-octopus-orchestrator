@@ -370,6 +370,9 @@ pub struct PassOrder<'a> {
     /// The instant the pass selected the key: every decision of the pass counts the key's grants as of it (decision
     /// D022-073 item 2).
     pub counted_at: time::OffsetDateTime,
+    /// The key's next-eligible hint as the pass selected it: the instant it became due, early and never late, from which
+    /// a slot's grant lag is measured (T022-082; decision D022-083).
+    pub due_at: time::OffsetDateTime,
     pub refused: &'a [RefusedRoom],
 }
 
@@ -383,6 +386,7 @@ impl<'a> PassOrder<'a> {
             group: &key.group,
             digest: &key.digest,
             counted_at: key.selected_at,
+            due_at: key.hint,
             refused,
         }
     }

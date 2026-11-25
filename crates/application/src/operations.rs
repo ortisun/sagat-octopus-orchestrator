@@ -57,6 +57,13 @@ impl Thresholds {
             AlertKind::StepUnclaimed => self.unclaimed,
             AlertKind::ReviewPending => self.review,
             AlertKind::DeadItems => Duration::ZERO,
+            // feature 022 reuses two of them (decision D022-077 item 7): work waits while other work is served, and the
+            // scheduler has not done what a tick does; a saturated buffer is a share of a ceiling and an orphan is any
+            AlertKind::ConcurrencyQueueStuck => self.unclaimed,
+            AlertKind::RateLimitGrantLagging => self.lease_grace,
+            AlertKind::RateLimitQueueSaturated | AlertKind::FlowControlWaiterOrphaned => {
+                Duration::ZERO
+            }
         }
     }
 }
@@ -210,6 +217,21 @@ pub struct Sample {
     pub batch_jobs_active: u64,
     /// Resets that wait for their source run to end (`CANCEL_SOURCE`, feature 018).
     pub resets_pending: u64,
+    /// The waiters of flow control's keys, deployment-wide (feature 022, T022-082): what the gauges
+    /// `concurrency_waiters` and `rate_limit_waiters` show, by scope.
+    pub flow_control: FlowControlSample,
+}
+
+/// The waiters of flow control's keys and the grants no worker has leased, deployment-wide (feature 022, T022-082; plan
+/// "Observability" and "Observability (rate limits)"): counts, never a key or a group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowControlSample {
+    pub concurrency_run_waiters: u64,
+    pub concurrency_step_waiters: u64,
+    pub rate_run_waiters: u64,
+    pub rate_step_waiters: u64,
+    /// Step grants whose lease is not recorded yet (`rate_limit_unleased_grants`).
+    pub unleased_grants: u64,
 }
 
 /// How late the scheduler is, by pass (seconds; zero when nothing is overdue).

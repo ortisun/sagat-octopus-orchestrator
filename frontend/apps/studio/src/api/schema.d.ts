@@ -5630,8 +5630,8 @@ export interface components {
             /** Format: uuid */
             namespaceId: string;
             /** @enum {string} */
-            kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS";
-            /** @description What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS; empty for the others. */
+            kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS" | "CONCURRENCY_QUEUE_STUCK" | "RATE_LIMIT_GRANT_LAGGING" | "RATE_LIMIT_QUEUE_SATURATED" | "FLOW_CONTROL_WAITER_ORPHANED";
+            /** @description What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS, a flow-control group (never a key) for the four flow-control kinds of feature 022; empty for the others. */
             subject: string;
             /** @enum {string} */
             state: "FIRING" | "RESOLVED";
