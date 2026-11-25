@@ -154,7 +154,7 @@ fn check(rendered: &str) -> (BTreeSet<&'static str>, Vec<String>) {
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
     {
-        let name = line.split(['{', ' ']).next().expect("a name");
+        let name = line.split(['{', ' ']).next().unwrap_or_default();
         let Some(family) = FlowControlMetric::ALL
             .into_iter()
             .find(|metric| name.starts_with(metric.as_str()))
@@ -172,7 +172,7 @@ fn check(rendered: &str) -> (BTreeSet<&'static str>, Vec<String>) {
                 .split(',')
                 .filter(|label| !label.starts_with("le=") && !label.starts_with("quantile="))
             {
-                let key = label.split('=').next().expect("a key");
+                let key = label.split('=').next().unwrap_or_default();
                 if !family.label_keys().contains(&key) {
                     violations.push(format!(
                         "{key} is not a label of {}: {line}",
