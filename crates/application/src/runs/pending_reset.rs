@@ -341,6 +341,20 @@ where
                 crate::run_input::FieldPolicy::Root,
             )
             .await?;
+        // Decision D022-079: cancelling the source frees no rate-limit slot, so a request whose key's window is full as
+        // it arrives would cancel the source and then fail; it is refused now, before anything is written. Advisory: the
+        // completion decides again (the window may empty or fill before the source ends).
+        if let Some(policy) = definition.run_flow_control().rate_limit()
+            && self
+                .store
+                .start_window_full(tenant, id, policy.limit())
+                .await?
+                == Some(true)
+        {
+            return Err(AppError::FlowControl(
+                crate::flow_control::FlowControlRefusal::SlotUnavailable,
+            ));
+        }
         let limit = self
             .store
             .effective_limit(

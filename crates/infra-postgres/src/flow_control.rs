@@ -921,6 +921,49 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
         }))
     }
 
+    async fn start_window_full(
+        &self,
+        tenant: TenantId,
+        run: sagat_domain::execution::RunId,
+        declared_limit: u32,
+    ) -> Result<Option<bool>, StoreError> {
+        // its own read-only transaction and the listing's timeout, as the place estimate's: advice never holds a request
+        let mut tx = crate::pool::BeginSafely::begin_safely(self.pool())
+            .await
+            .map_err(store_error)?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        sqlx::query(LISTING_TIMEOUT_SQL)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let row: Option<(uuid::Uuid, i32, i64)> = sqlx::query_as(START_WINDOW_SQL)
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let Some((namespace, period, counted)) = row else {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(None);
+        };
+        let ceilings =
+            crate::quotas::step_gate_ceilings(&mut tx, tenant, NamespaceId::new(namespace)).await?;
+        tx.commit().await.map_err(store_error)?;
+        let ceiling = match period {
+            1_000 => ceilings.rate_per_second,
+            60_000 => ceilings.rate_per_minute,
+            3_600_000 => ceilings.rate_per_hour,
+            _ => return Err(corrupt("rate-limit period")),
+        };
+        let limit = u64::from(declared_limit).min(ceiling);
+        Ok(Some(
+            u64::try_from(counted).map_err(|_| corrupt("rate-limit count"))? >= limit,
+        ))
+    }
+
     async fn key_version_in_force(&self, version: u16) -> Result<bool, StoreError> {
         // the one reading of the versions in force (`flow_control_key_versions_in_force`): a forced or ended retirement
         // is out of force at once (ADR-0093 decision 5)
@@ -1122,6 +1165,24 @@ pub const RATE_PLACE_SQL: &str = concat!(
             me.deadline_at, me.skipped \
        FROM me, counted, ahead"
 );
+
+/// The key of the run-level slot of run `$2` (tenant `$1`), from its grant row or, while it is buffered, its waiter row:
+/// its namespace, its window length and the key's grants that count over that window now (a grant counts while it is
+/// unleased and for its window after its lease, as the gate counts it). No row when the run has neither (decision
+/// D022-079).
+pub const START_WINDOW_SQL: &str = "WITH k AS ( \
+         (SELECT namespace_id, pool, limit_scope, group_name, key_digest, period_ms FROM rate_limit_grants \
+           WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN' \
+          UNION ALL \
+          SELECT namespace_id, pool, limit_scope, group_name, key_digest, period_ms FROM rate_limit_waiters \
+           WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN') LIMIT 1) \
+     SELECT k.namespace_id, k.period_ms, \
+            (SELECT count(*) FROM rate_limit_grants g \
+              WHERE g.tenant_id = $1 AND g.namespace_id = k.namespace_id AND g.pool = k.pool \
+                AND g.limit_scope = k.limit_scope AND g.group_name = k.group_name AND g.key_digest = k.key_digest \
+                AND (g.leased_at IS NULL \
+                     OR g.leased_at > clock_timestamp() - make_interval(secs => k.period_ms / 1000.0))) \
+       FROM k";
 
 /// The listing of one group's keys (`$3`), in the order of `concurrency_semaphores_group_listing_idx`: the order of
 /// [`KEY_LISTING_SQL`] within one group, after a position of that group (`$8`).

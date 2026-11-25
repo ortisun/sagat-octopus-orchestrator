@@ -505,6 +505,17 @@ pub trait FlowControlKeyReader {
         run: sagat_domain::execution::RunId,
     ) -> impl Future<Output = Result<Option<PlaceReading>, StoreError>> + Send;
 
+    /// Whether the window of the rate-limit key that the run-level slot of `run` took (or waits for) is full now: its
+    /// grants that count over the start's window reach the lower of `declared_limit` and the namespace's current
+    /// ceiling of that window length. `None` when the run has no row of its slot. Read in its own read-only
+    /// transaction; advisory only (decision D022-079: a `CANCEL_SOURCE` reset is refused at its request on it).
+    fn start_window_full(
+        &self,
+        tenant: TenantId,
+        run: sagat_domain::execution::RunId,
+        declared_limit: u32,
+    ) -> impl Future<Output = Result<Option<bool>, StoreError>> + Send;
+
     /// Whether `subject` may reveal personal data in the namespace now: its role in the tenant may use a reveal grant
     /// and it holds one for the namespace (feature 009's `payload:reveal-pii`). What a key's label needs (FR-022-057,
     /// D022-060). Read without a lock: a label is a pseudonym, not a disclosure that is audited.

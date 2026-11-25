@@ -1999,9 +1999,6 @@ async fn a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable
         let b = w.one_task_of(&session, "act.b").await;
         open.push((run, b, point_after(&w, run, "a").await));
     }
-    // a second slot of the first key: its window is full
-    let other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
-    assert_eq!(slot_rows(&w, other).await, (1, 0));
     let mut entries = Vec::new();
     for (run, _, after_a) in &open {
         let mut request = reset_request(*after_a);
@@ -2014,6 +2011,10 @@ async fn a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable
         assert!(made.run.is_none(), "it waits for its source");
         entries.push(made.reset.id);
     }
+    // a second slot of the first key after its request was accepted (a full window at the request is refused there,
+    // decision D022-079): the window is full when the source ends
+    let other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(slot_rows(&w, other).await, (1, 0));
     for (run, b, _) in &open {
         w.complete(&session, b, &json!({})).await.expect("b");
         assert!(w.run_status(*run).await.is_terminal());
@@ -2211,4 +2212,68 @@ async fn a_reset_whose_prefix_returned_a_step_slot_restores_it_as_history() {
     assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
     assert_eq!(step_slot_nodes(&w, reset).await, ["b"]);
     w.assert_consistent(reset).await;
+}
+
+/// Task T022-114 (decision D022-079, gap G022-019): a `CANCEL_SOURCE` reset of an open source whose start took the only
+/// slot of `limit: 1, per: hour` finds the key's window full as it arrives (the source's own slot counts for its window
+/// and cancelling frees none): it is refused `RATE_LIMIT_SLOT_UNAVAILABLE` at once, and nothing happens: the source is
+/// not cancelled, no entry and no run exist. A source of a key whose window has room is accepted as before.
+#[tokio::test]
+async fn a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_cancels_nothing() {
+    use sagat_application::runs::ResetSourcePolicy;
+
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_pair("creators-rate-full-cancel", 1, "hour")).await;
+    let session = w.session(&["act.a", "act.b"]).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let after_a = point_after(&w, source, "a").await;
+    let mut request = reset_request(after_a);
+    request.source_policy = ResetSourcePolicy::CancelSource;
+    let refused = w
+        .runs
+        .reset(&w.admin, source, request, &idempotency(), &ctx())
+        .await
+        .expect_err("refused at its request");
+    assert_eq!(
+        refused,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable)
+    );
+    assert_eq!(
+        w.run_status(source).await,
+        RunStatus::Running,
+        "not cancelled"
+    );
+    let stopping: bool =
+        sqlx::query_scalar("SELECT stop_reason IS NOT NULL FROM runs WHERE id = $1")
+            .bind(source.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the source");
+    assert!(!stopping, "no cancellation was requested");
+    let entries: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_resets WHERE source_run_id = $1")
+            .bind(source.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("entries");
+    assert_eq!(entries, 0, "no entry");
+    assert_eq!(runs_of(&w, workflow).await, [source], "no run");
+    w.assert_consistent(source).await;
+
+    // a source of another key, whose window has room once the source's own slot is counted (`limit: 2`)
+    let roomy = publish(&w, rated_pair("creators-rate-roomy-cancel", 2, "hour")).await;
+    let open = w.start(roomy, &json!({"accountId": "acct-2"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    assert_eq!(a.run_id, open);
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let mut request = reset_request(point_after(&w, open, "a").await);
+    request.source_policy = ResetSourcePolicy::CancelSource;
+    let made = w
+        .runs
+        .reset(&w.admin, open, request, &idempotency(), &ctx())
+        .await
+        .expect("accepted");
+    assert!(made.run.is_none(), "it waits for its source");
 }
