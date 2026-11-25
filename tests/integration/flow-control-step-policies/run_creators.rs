@@ -2276,6 +2276,32 @@ async fn a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_ca
         RunStatus::Running,
         "not cancelled"
     );
+    // the refusal tells only a caller who may reset the run: another tenant's principal does not see the run and a
+    // viewer may not reset it, whatever its key's window (review of 2026-11-25, security minor 1)
+    {
+        use sagat_domain::identity::{Principal, Role};
+        let mut request = reset_request(after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        let foreign = w
+            .runs
+            .reset(&w.other_admin, source, request, &idempotency(), &ctx())
+            .await
+            .expect_err("another tenant's principal");
+        assert_eq!(foreign, AppError::NotFound);
+        let viewer = w.member("vera", Role::Viewer).await;
+        let viewer = Principal::new(w.admin.tenant_id(), viewer.subject().clone(), Role::Viewer);
+        let mut request = reset_request(after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        let forbidden = w
+            .runs
+            .reset(&viewer, source, request, &idempotency(), &ctx())
+            .await
+            .expect_err("a viewer");
+        assert!(
+            matches!(forbidden, AppError::Forbidden { .. }),
+            "{forbidden:?}"
+        );
+    }
     let stopping: bool =
         sqlx::query_scalar("SELECT stop_reason IS NOT NULL FROM runs WHERE id = $1")
             .bind(source.as_uuid())
@@ -2307,4 +2333,70 @@ async fn a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_ca
         .await
         .expect("accepted");
     assert!(made.run.is_none(), "it waits for its source");
+}
+
+/// Review of 2026-11-25 (correctness minor 2, security minor 2; decision D022-079): a `CANCEL_SOURCE` reset's advisory
+/// window check is asked under the source's row, after the receipt, so a retry that arrives while the accepted request
+/// is still in flight, the window filled meanwhile, answers that request's entry instead of being refused.
+#[tokio::test]
+async fn a_cancel_source_reset_retried_while_the_first_is_in_flight_answers_its_entry() {
+    use sagat_application::runs::ResetSourcePolicy;
+
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_pair("creators-rate-replay-cancel", 2, "hour")).await;
+    let session = w.session(&["act.a", "act.b"]).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let after_a = point_after(&w, source, "a").await;
+    let key = idempotency();
+    let request = || {
+        let mut request = reset_request(after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        request
+    };
+    // the first request holds the source's row, has passed its advisory check (one slot of two is free) and waits to
+    // write its entry, which the test holds back; the window then fills, and a retry with the same key arrives before the
+    // first commits: it must wait for the source's row and answer the first request's entry
+    let mut held = w.db.pool.begin().await.expect("tx");
+    sqlx::query("LOCK TABLE run_resets IN SHARE MODE")
+        .execute(&mut *held)
+        .await
+        .expect("the entries held back");
+    let waiting = |pool: sqlx::PgPool, n: i64| async move {
+        for _ in 0..3_000 {
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                   AND wait_event_type = 'Lock' AND query NOT LIKE '%pg_stat_activity%'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("activity");
+            if blocked >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    };
+    let context = ctx();
+    let first = w.runs.reset(&w.admin, source, request(), &key, &context);
+    let controller = async {
+        assert!(
+            waiting(w.db.pool.clone(), 1).await,
+            "the first request waits to write its entry"
+        );
+        let _other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+        let retry = w.runs.reset(&w.admin, source, request(), &key, &context);
+        let release = async {
+            // the retry waits for the source's row (its receipt and the window are read under it), or it answered at once
+            let _ = waiting(w.db.pool.clone(), 2).await;
+            held.commit().await.expect("released");
+        };
+        tokio::join!(retry, release).0
+    };
+    let (first, again) = tokio::join!(first, controller);
+    let first = first.expect("accepted: one slot of two was free");
+    let again = again.expect("the retry answers the first request's entry, not the full window");
+    assert_eq!(again.reset.id, first.reset.id);
 }

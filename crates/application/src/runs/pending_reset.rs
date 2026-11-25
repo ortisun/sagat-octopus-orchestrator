@@ -341,20 +341,6 @@ where
                 crate::run_input::FieldPolicy::Root,
             )
             .await?;
-        // Decision D022-079: cancelling the source frees no rate-limit slot, so a request whose key's window is full as
-        // it arrives would cancel the source and then fail; it is refused now, before anything is written. Advisory: the
-        // completion decides again (the window may empty or fill before the source ends).
-        if let Some(policy) = definition.run_flow_control().rate_limit()
-            && self
-                .store
-                .start_window_full(tenant, id, policy.limit())
-                .await?
-                == Some(true)
-        {
-            return Err(AppError::FlowControl(
-                crate::flow_control::FlowControlRefusal::SlotUnavailable,
-            ));
-        }
         let limit = self
             .store
             .effective_limit(
@@ -400,6 +386,30 @@ where
             return self
                 .reset_ended(principal, id, record, source, request, key, ctx)
                 .await;
+        }
+        // Decision D022-079: cancelling the source frees no rate-limit slot, so a request whose key's window is full as
+        // it arrives would cancel the source and then fail; it is refused now, before anything is written. Asked after
+        // the receipt, under the source's row, so a retry of an accepted request answers that request's entry whatever
+        // the window is now; and advisory: the completion decides again (the window may empty or fill before the source
+        // ends), so a read that fails is no advice and the request goes on (review of 2026-11-25, correctness minor 2,
+        // security minor 2).
+        if let Some(policy) = definition.run_flow_control().rate_limit() {
+            match self
+                .store
+                .start_window_full(tenant, id, policy.limit())
+                .await
+            {
+                Ok(Some(true)) => {
+                    drop(tx);
+                    return Err(AppError::FlowControl(
+                        crate::flow_control::FlowControlRefusal::SlotUnavailable,
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, run = %id, "the advisory read of a reset's rate-limit window failed: no advice");
+                }
+            }
         }
         tx.register_pending_reset(&PendingRegistration {
             id: reset,

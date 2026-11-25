@@ -1166,8 +1166,9 @@ pub const RATE_PLACE_SQL: &str = concat!(
 );
 
 /// The key of the run-level slot of run `$2` (tenant `$1`), from its grant row or, while it is buffered, its waiter row:
-/// its namespace, its window length and the key's grants that count over that window now (a grant counts while it is
-/// unleased and for its window after its lease, as the gate counts it). No row when the run has neither (decision
+/// its namespace, its window length and the key's grants that count over that window now: the key is a run-scope window,
+/// whose grants are leased at their grant (`rate_limit_grants_shape`), so a grant counts for its window after its lease
+/// (a step's window is a row of its own; review of 2026-11-25, security nit 2). No row when the run has neither (decision
 /// D022-079).
 pub const START_WINDOW_SQL: &str = "WITH k AS ( \
          (SELECT namespace_id, pool, limit_scope, group_name, key_digest, period_ms FROM rate_limit_grants \
@@ -1179,8 +1180,7 @@ pub const START_WINDOW_SQL: &str = "WITH k AS ( \
             (SELECT count(*) FROM rate_limit_grants g \
               WHERE g.tenant_id = $1 AND g.namespace_id = k.namespace_id AND g.pool = k.pool \
                 AND g.limit_scope = k.limit_scope AND g.group_name = k.group_name AND g.key_digest = k.key_digest \
-                AND (g.leased_at IS NULL \
-                     OR g.leased_at > clock_timestamp() - make_interval(secs => k.period_ms / 1000.0))) \
+                AND g.leased_at > clock_timestamp() - make_interval(secs => k.period_ms / 1000.0)) \
        FROM k";
 
 /// The listing of one group's keys (`$3`), in the order of `concurrency_semaphores_group_listing_idx`: the order of
