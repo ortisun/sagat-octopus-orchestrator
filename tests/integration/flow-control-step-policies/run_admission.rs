@@ -736,6 +736,8 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_
     for run in &holders[..2] {
         assert_eq!(start_rows(&w, *run).await, (0, 0), "its permit given back");
     }
+    // the releases above set the key's hint already: the start must write its own instant (re-review minor 5)
+    let before = crate::support::flow_control::database_now_us(&w.db.pool).await;
     let late = w.start(workflow, &input).await;
     let committed = crate::support::flow_control::database_now_us(&w.db.pool).await;
     assert_eq!(
@@ -747,8 +749,9 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_
     assert_eq!(count(&w, late, "concurrency.queued").await, 1);
     let hint = key_hint_us(&w, late).await;
     assert!(
-        hint.is_some_and(|hint| hint <= committed),
-        "the key is due once the start has committed: {hint:?} > {committed}"
+        hint.is_some_and(|hint| (before..=committed).contains(&hint)),
+        "the start writes the key's hint to its own instant, whatever it was (decision D022-076 item 1): {hint:?} \
+         outside [{before}, {committed}]"
     );
     let report = w.scheduler.grant_gates().await;
     assert_eq!(report.gates_granted, 2, "{report:?}");

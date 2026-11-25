@@ -534,12 +534,24 @@ struct KeyPass {
     skipped: u32,
 }
 
+/// How many keys one grant pass visits for a scheduler batch of `batch`: the batch, never more than
+/// [`KEYS_PER_GRANT_PASS`](sagat_application::flow_control::KEYS_PER_GRANT_PASS) (decision D022-077 item 1).
+fn grant_pass_keys(batch: u32) -> u32 {
+    batch.min(sagat_application::flow_control::KEYS_PER_GRANT_PASS)
+}
+
 /// What the grant routine did with one waiter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Granted {
     Yes,
     /// A gate refuses it now, its deadline passed, or another commit reached it first.
     Refused,
+    /// The pass's own key refuses it for lack of room: the pass grants no younger waiter of the key that this refusal
+    /// holds back (decision D022-078 item 2).
+    RefusedRoom(sagat_application::flow_control::RefusedRoom),
+    /// The counts admitted it, but an earlier refusal of the pass holds it back (a free came between the two decisions):
+    /// the key keeps its hint, so the next pass grants in admission order (decision D022-078 item 2).
+    HeldBack,
     /// Its run is locked, paused or stopping: the key keeps its hint.
     Busy,
     Orphan,
@@ -553,7 +565,7 @@ impl Granted {
     const fn label(self) -> &'static str {
         match self {
             Self::Yes => "done",
-            Self::Refused | Self::Busy => "skipped",
+            Self::Refused | Self::RefusedRoom(_) | Self::HeldBack | Self::Busy => "skipped",
             Self::Orphan => "orphan",
             Self::Fenced => "fenced",
             Self::Failed => "failed",
@@ -5081,8 +5093,8 @@ where
     }
 
     /// Reads the candidates of a pass: the oldest, taken fairly between the tenants (`FR-010-002`),
-    /// from the shards this replica holds. A query that fails is logged and the pass has nothing to
-    /// do this tick.
+    /// from the shards this replica holds, at most the scheduler's batch. A query that fails is logged and the pass has
+    /// nothing to do this tick.
     async fn pick<'a, T, K, Fut>(
         &'a self,
         view: &View,
@@ -5096,7 +5108,27 @@ where
         K: Eq + Hash,
         Fut: Future<Output = Result<Vec<T>, StoreError>>,
     {
-        let (shards, limit, store) = (view.shards, self.settings.batch, &self.store);
+        self.pick_at_most(view, what, self.settings.batch, report, tenant, key, query)
+            .await
+    }
+
+    /// [`Self::pick`], at most `limit` candidates.
+    #[allow(clippy::too_many_arguments)]
+    async fn pick_at_most<'a, T, K, Fut>(
+        &'a self,
+        view: &View,
+        what: &'static str,
+        limit: u32,
+        report: &mut Report,
+        tenant: impl Fn(&T) -> TenantId,
+        key: impl Fn(&T) -> K,
+        query: impl Fn(&'a S, Window) -> Fut,
+    ) -> Vec<T>
+    where
+        K: Eq + Hash,
+        Fut: Future<Output = Result<Vec<T>, StoreError>>,
+    {
+        let (shards, store) = (view.shards, &self.store);
         if !self.settings.fair {
             let oldest = query(
                 store,
@@ -5627,10 +5659,12 @@ where
     /// a new waiter or the first instant a slot may stop counting sets its hint again (D022-064).
     async fn gate_grants(&self, view: &View, report: &mut Report) {
         use sagat_application::flow_control::GateKey;
+        // the scheduler's batch of keys, never more than the plan's hard ceiling (decision D022-077 item 1)
         let keys = self
-            .pick(
+            .pick_at_most(
                 view,
                 "gate_grants",
+                grant_pass_keys(self.settings.batch),
                 report,
                 |key: &GateKey| key.tenant_id,
                 |key| {
@@ -5686,12 +5720,22 @@ where
         // would be refused by the same counts, so a full key costs one pass, not one every tick
         let truncated = u32::try_from(waiters.len()).unwrap_or(u32::MAX) >= GRANTS_PER_KEY_PER_PASS;
         let mut undecided = false;
+        // the refusals of this pass for lack of room on the key, each of which holds back its younger waiters of no looser
+        // limit and window (decision D022-078 item 2); one entry per distinct bound, so at most a few
+        let mut refused: Vec<sagat_application::flow_control::RefusedRoom> = Vec::new();
         for waiter in waiters {
-            match self
-                .grant_waiter(view, &hold, &waiter, key.selected_at)
-                .await
-            {
+            let order = sagat_application::flow_control::PassOrder::of(&key, &refused);
+            match self.grant_waiter(view, &hold, &waiter, order).await {
                 Granted::Yes => pass.granted += 1,
+                Granted::RefusedRoom(room) => {
+                    if !refused
+                        .iter()
+                        .any(|known| known.holds_back(room.limit, room.period_ms))
+                    {
+                        refused.push(room);
+                    }
+                }
+                Granted::HeldBack => undecided = true,
                 // a replica without the gate grants nothing of any key; it keeps the hint for one that has it
                 Granted::Unsupported => {
                     pass.failed += 1;
@@ -5729,7 +5773,7 @@ where
         view: &View,
         hold: &Hold,
         waiter: &sagat_application::flow_control::GateWaiter,
-        counted_at: time::OffsetDateTime,
+        order: sagat_application::flow_control::PassOrder<'_>,
     ) -> Granted {
         let outcome = async {
             // the waiter's run first (ADR-0089 decision 3): one another transaction holds is tried by the next pass
@@ -5781,14 +5825,24 @@ where
                     None => return Ok(Granted::Refused),
                 }
             };
-            let Some(grants) = tx
-                // every decision of this pass counts the key's grants as of the pass's selection of the key (decision
-                // D022-073 item 2): its grants follow admission order
-                .grant_queued_step(waiter.node.as_ref(), attempt, counted_at)
+            // every decision of this pass counts the key's grants as of the pass's selection of the key (decision
+            // D022-073 item 2) and respects the pass's refusals (decision D022-078 item 2): its grants follow admission
+            // order
+            let grants = match tx
+                .grant_queued_step(waiter.node.as_ref(), attempt, order)
                 .await
                 .map_err(EngineError::Store)?
-            else {
-                return Ok(Granted::Refused);
+            {
+                sagat_application::flow_control::QueueDecision::Granted(grants) => grants,
+                sagat_application::flow_control::QueueDecision::Refused {
+                    held_back: true, ..
+                } => return Ok(Granted::HeldBack),
+                sagat_application::flow_control::QueueDecision::Refused {
+                    room: Some(room), ..
+                } => return Ok(Granted::RefusedRoom(room)),
+                sagat_application::flow_control::QueueDecision::Refused { .. } => {
+                    return Ok(Granted::Refused);
+                }
             };
             // the span names the group, never the key (FR-022-033); a slot's grant is a rate-limit grant
             let rate = grants.iter().find(|grant| {
@@ -6960,7 +7014,19 @@ mod tests {
     use sagat_application::primitives::PrimitiveStoreError;
     use sagat_domain::quota::QuotaResource;
 
-    use super::{Outcome, collection_content_quota, loop_content_quota, recovery_guard};
+    use super::{
+        Outcome, collection_content_quota, grant_pass_keys, loop_content_quota, recovery_guard,
+    };
+
+    /// Decision D022-077 item 1: a grant pass visits the scheduler's batch of keys, never more than 256.
+    #[test]
+    fn a_grant_pass_visits_the_batch_of_keys_and_never_more_than_256() {
+        assert_eq!(grant_pass_keys(200), 200, "the default batch");
+        assert_eq!(grant_pass_keys(1), 1);
+        assert_eq!(grant_pass_keys(256), 256);
+        assert_eq!(grant_pass_keys(257), 256, "the hard ceiling");
+        assert_eq!(grant_pass_keys(u32::MAX), 256);
+    }
 
     #[test]
     fn quota_recovery_does_not_mutate_after_version_change_or_shard_loss() {

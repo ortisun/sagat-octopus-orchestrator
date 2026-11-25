@@ -1239,4 +1239,53 @@ async fn a_lowered_ceiling_moves_the_estimate_and_the_limit_a_waiting_run_shows(
         granted_us(&api, &holders[2]).await + HOUR_US,
         "the third counted slot's age-out"
     );
+    // the listing shows the limit the grant is decided with too (decision D022-076 item 5; re-review minor 2)
+    let (status, listed) = read(&api, "/runs").await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed_limit = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["runId"] == waiter.as_str())
+        .map(|item| item["rateLimit"]["limit"].as_u64());
+    assert_eq!(listed_limit, Some(Some(1)), "{listed}");
+}
+
+/// Decision D022-076 item 5 (re-review minor 2): the place of a waiting run counts ahead only the waiters the grant
+/// routine counts ahead. On a key shared by an hour's `limit: 1` and a minute's `limit: 2`, the hour's holder counts for
+/// both and the hour's waiter `wa` is refused by its own limit for the hour; the minute's waiter `wb` behind it is first
+/// in its key's queue (`wa` is not eligible), while a count of every live waiter ahead would place it second.
+#[tokio::test]
+async fn the_place_of_a_waiting_run_counts_only_the_eligible_waiters_ahead() {
+    let (api, _) = api().await;
+    let hourly = publish(
+        &api,
+        "rest-rate-place-hour",
+        rated_start("rest-rate-place-hour", 1, "hour"),
+    )
+    .await
+    .expect("published");
+    let minutely = publish(
+        &api,
+        "rest-rate-place-minute",
+        rated_start("rest-rate-place-minute", 2, "minute"),
+    )
+    .await
+    .expect("published");
+    let _holder = start(&api, &hourly, CANARY).await;
+    let wa = start(&api, &hourly, CANARY).await;
+    let other = start(&api, &minutely, CANARY).await;
+    let wb = start(&api, &minutely, CANARY).await;
+    let (_, run) = read(&api, &format!("/runs/{wb}")).await;
+    let slot = &run["rateLimit"];
+    assert_eq!(slot["state"].as_str(), Some("WAITING"), "{slot}");
+    assert_eq!(
+        slot["position"].as_u64(),
+        Some(1),
+        "the hour's waiter is not ahead of it: {slot}"
+    );
+    let (_, run) = read(&api, &format!("/runs/{wa}")).await;
+    assert_eq!(run["rateLimit"]["state"].as_str(), Some("WAITING"));
+    let (_, run) = read(&api, &format!("/runs/{other}")).await;
+    assert_eq!(run["rateLimit"]["state"].as_str(), Some("GRANTED"), "{run}");
 }

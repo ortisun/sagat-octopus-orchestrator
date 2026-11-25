@@ -446,14 +446,54 @@ macro_rules! run_rate_lateral_sql {
               WHERE g.tenant_id = runs.tenant_id AND g.run_id = runs.id AND g.node = '' AND g.attempt = 0 \
                 AND g.leased_at > now() - make_interval(secs => g.period_ms / 1000.0) \
              UNION ALL \
-             SELECT 'WAITING', w.pool, w.group_name, w.key_digest, w.enqueued_at, w.deadline_at, w.declared_limit, \
-                    w.period_ms \
+             SELECT 'WAITING', w.pool, w.group_name, w.key_digest, w.enqueued_at, w.deadline_at, \
+                    coalesce(w.pinned_limit, w.declared_limit), w.period_ms \
                FROM rate_limit_waiters w \
               WHERE w.tenant_id = runs.tenant_id AND w.run_id = runs.id AND w.node = '' \
            ) q ORDER BY q.rl_state LIMIT 1) slot ON true "
     };
 }
 pub(crate) use run_rate_lateral_sql;
+
+/// Bounds the limit each waiting run-level slot of `records` shows by the namespace's current ceiling of its window's
+/// length, so a waiting run shows the limit the grant routine decides it with, the lower of its declaration and that
+/// ceiling (decision D022-076 item 5; the lateral read gives the declaration, or the filed limit of an older row): one
+/// read of the ceilings per namespace with a waiting slot, none for runs without one.
+///
+/// # Errors
+/// A store error.
+pub(crate) async fn bound_waiting_rate_slots(
+    pool: &sqlx::PgPool,
+    records: &mut [sagat_application::execution::RunRecord],
+) -> Result<(), StoreError> {
+    use sagat_application::flow_control_keys::RunPermitState;
+    let mut ceilings: Vec<(NamespaceId, sagat_domain::workflow::FlowControlCeilings)> = Vec::new();
+    for record in records {
+        let (tenant, namespace) = (record.info.tenant_id, record.info.namespace_id);
+        let Some(slot) = record.rate_limit.as_mut() else {
+            continue;
+        };
+        if !matches!(slot.state, RunPermitState::Waiting { .. }) {
+            continue;
+        }
+        let of = match ceilings.iter().find(|(n, _)| *n == namespace) {
+            Some((_, of)) => *of,
+            None => {
+                let mut conn = pool.acquire().await.map_err(store_error)?;
+                let of = crate::quotas::step_gate_ceilings(&mut conn, tenant, namespace).await?;
+                ceilings.push((namespace, of));
+                of
+            }
+        };
+        let ceiling = match slot.per {
+            sagat_domain::workflow::RatePeriod::Second => of.rate_per_second,
+            sagat_domain::workflow::RatePeriod::Minute => of.rate_per_minute,
+            sagat_domain::workflow::RatePeriod::Hour => of.rate_per_hour,
+        };
+        slot.limit = u32::try_from(ceiling.min(u64::from(slot.limit))).unwrap_or(slot.limit);
+    }
+    Ok(())
+}
 
 /// The run-level rate-limit slot of a row that `get` or `list` read with [`run_rate_lateral_sql`]; `None` for a row
 /// without those columns (a command transaction's) or a run that neither holds a counting slot nor waits.
@@ -1025,34 +1065,44 @@ pub const RATE_KEY_LISTING_OF_GROUP_SQL: &str = concat!(
 );
 
 /// Where the run-level rate-limit waiter of run `$2` of tenant `$1` stands at one instant `t` (`now()`; plan
-/// "Visibility of the rate gate", D022-014): its limit `L` (the lower of its filed limit and the namespace's current
+/// "Visibility of the rate gate", D022-014): its limit `L` (the lower of its declaration and the namespace's current
 /// ceiling of its window length, `$3`, `$4` and `$5` for a second, a minute and an hour: the limit the grant routine
-/// decides it with, decision D022-075 item 3) and window, `n` the key's grants that count over its window at
-/// `t`, `a` the waiters ahead of it that the pass visits (not past their deadline, their run running or waiting and not
-/// paused, in the queue's order), `t` (the statement's instant), the lease of the `k`-th oldest counted grant for
+/// decides it with, decisions D022-075 item 3 and D022-076 item 7) and window, `n` the key's grants that count over its
+/// window at `t`, `a` the waiters ahead of it that the grant routine counts ahead (not past their deadline, their run
+/// running or waiting and not paused, and below the count of their own window by the lower of their declaration and the
+/// ceiling of its length: decision D022-076 item 5), `t` (the statement's instant), the lease of the `k`-th oldest counted grant for
 /// `k = n + a - limit + 1` (offset `k - 1`, at least 0), and its own deadline and whether the pass skips its run (decision
 /// D022-068 item 1). A run's grant is leased at its grant (`rate_limit_grants_shape`), so its counted grants are those
 /// leased within its window, one range of `rate_limit_grants_count_idx`.
 pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
          SELECT w.tenant_id, w.namespace_id, w.pool, w.limit_scope, w.group_name, w.key_digest, w.run_id, w.node, \
                 w.enqueued_at, w.period_ms, w.deadline_at, \
-                least(w.declared_limit::bigint, CASE w.period_ms WHEN 1000 THEN $3::bigint WHEN 60000 THEN $4::bigint \
-                      WHEN 3600000 THEN $5::bigint ELSE w.declared_limit::bigint END)::integer AS l, \
+                least(coalesce(w.pinned_limit, w.declared_limit)::bigint, CASE w.period_ms WHEN 1000 THEN $3::bigint \
+                      WHEN 60000 THEN $4::bigint WHEN 3600000 THEN $5::bigint \
+                      ELSE coalesce(w.pinned_limit, w.declared_limit)::bigint END)::integer AS l, \
                 NOT (mr.status IN ('RUNNING', 'WAITING') AND NOT mr.paused) AS skipped, statement_timestamp() AS t \
            FROM rate_limit_waiters w JOIN runs mr ON mr.tenant_id = w.tenant_id AND mr.id = w.run_id \
           WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.node = ''), \
-       counted AS ( \
-         SELECT count(*) AS n FROM rate_limit_grants g, me \
-          WHERE g.tenant_id = me.tenant_id AND g.namespace_id = me.namespace_id AND g.pool = me.pool \
-            AND g.limit_scope = me.limit_scope AND g.group_name = me.group_name AND g.key_digest = me.key_digest \
-            AND g.leased_at > me.t - make_interval(secs => me.period_ms / 1000.0)), \
+       counts AS ( \
+         SELECT p.ms, (SELECT count(*) FROM rate_limit_grants g \
+                        WHERE g.tenant_id = me.tenant_id AND g.namespace_id = me.namespace_id AND g.pool = me.pool \
+                          AND g.limit_scope = me.limit_scope AND g.group_name = me.group_name \
+                          AND g.key_digest = me.key_digest \
+                          AND g.leased_at > me.t - make_interval(secs => p.ms / 1000.0)) AS n \
+           FROM (VALUES (1000), (60000), (3600000)) p(ms), me), \
+       counted AS (SELECT c.n FROM counts c, me WHERE c.ms = me.period_ms), \
        ahead AS ( \
-         SELECT count(*) AS a FROM rate_limit_waiters x \
-           JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id, me \
-          WHERE x.tenant_id = me.tenant_id AND x.namespace_id = me.namespace_id AND x.pool = me.pool \
+         SELECT count(*) AS a FROM me \
+           JOIN rate_limit_waiters x \
+             ON x.tenant_id = me.tenant_id AND x.namespace_id = me.namespace_id AND x.pool = me.pool \
             AND x.limit_scope = me.limit_scope AND x.group_name = me.group_name AND x.key_digest = me.key_digest \
-            AND (x.enqueued_at, x.run_id, x.node) < (me.enqueued_at, me.run_id, me.node) \
-            AND x.deadline_at > me.t AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused) \
+           JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id \
+           LEFT JOIN counts c ON c.ms = x.period_ms \
+          WHERE (x.enqueued_at, x.run_id, x.node) < (me.enqueued_at, me.run_id, me.node) \
+            AND x.deadline_at > me.t AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+            AND least(coalesce(x.pinned_limit, x.declared_limit)::bigint, CASE x.period_ms WHEN 1000 THEN $3::bigint \
+                      WHEN 60000 THEN $4::bigint WHEN 3600000 THEN $5::bigint \
+                      ELSE coalesce(x.pinned_limit, x.declared_limit)::bigint END) > coalesce(c.n, 0)) \
      SELECT me.l, me.period_ms, counted.n, ahead.a, me.t, \
             (SELECT g.leased_at FROM rate_limit_grants g \
               WHERE g.tenant_id = me.tenant_id AND g.namespace_id = me.namespace_id AND g.pool = me.pool \

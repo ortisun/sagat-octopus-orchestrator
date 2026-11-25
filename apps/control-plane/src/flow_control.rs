@@ -3,9 +3,10 @@
 //!
 //! It records that every control plane and every engine must list the capability, which the registry allows only while
 //! every live process of both kinds lists it. A process lists it only when its binary runs the gate, its switch is on
-//! and it holds the deployment's digest keys (D022-057): this build lists `concurrency-keys` so, and never
-//! `rate-limits` (T022-072, T022-074), so an activation of the rate gate is refused with any process live. It runs with
-//! the schema-owning role: the activation functions are not the runtime role's.
+//! and it holds the deployment's digest keys (D022-057): this build runs both gates and lists both capabilities so
+//! (`concurrency-keys` since D022-057, `rate-limits` since D022-064), and an activation is refused while any live process
+//! does not list the one asked for. It runs with the schema-owning role: the activation functions are not the runtime
+//! role's (decision D022-077 item 8).
 
 use sagat_application::error::StoreError;
 use sagat_application::flow_control::FlowControlCapability;

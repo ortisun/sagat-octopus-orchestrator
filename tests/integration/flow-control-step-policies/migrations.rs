@@ -1508,3 +1508,103 @@ async fn the_reset_slot_reason_rolls_back_only_once_no_entry_carries_it() {
     .expect("the constraint");
     assert!(validated, "20270209000100 validates it");
 }
+
+/// The migration before the waiters' declarations (decision D022-078 item 1).
+const BEFORE_PINNED_LIMIT: i64 = 20_270_209_000_100;
+
+/// Decisions D022-076 item 7 and D022-078 item 1 (migration `20270210000000_flow_control_waiter_pinned_limit`): the waiter
+/// rows of both gates carry the declaration their version pins (`pinned_limit`), never below the filed limit; the
+/// rollback refuses while a waiter's declaration is above its filed limit (no older binary could recover it) and goes
+/// through once the rows agree or are gone; forward again, a row written before has none and the CHECKs are validated.
+#[tokio::test]
+async fn the_waiters_declaration_rolls_back_only_once_no_waiter_would_lose_it() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let anchor = a_run(&w).await;
+    let (tenant, namespace, run) = anchor;
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    window(pool, anchor, 1).await;
+    let waiter = |filed: i32, pinned: Option<i32>| async move {
+        sqlx::query(
+            "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
+             group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard, pinned_limit) \
+             VALUES ($1, $2, $3, 'a', 1, 'ORDINARY', 'STEP', 'provider-starts', $4, $5, 1000, clock_timestamp(), \
+                     clock_timestamp() + interval '1 minute', 3, $6)",
+        )
+        .bind(tenant)
+        .bind(namespace)
+        .bind(run)
+        .bind(DIGEST.as_slice())
+        .bind(filed)
+        .bind(pinned)
+        .execute(pool)
+        .await
+        .map(drop)
+    };
+    let below = waiter(5, Some(4)).await;
+    assert_eq!(
+        db_error(below.expect_err("a declaration below its filed limit")).0,
+        "23514",
+        "the filed limit is never above the declaration"
+    );
+    waiter(2, Some(5))
+        .await
+        .expect("a waiter filed under a lowered ceiling");
+    let refused = undo(pool, BEFORE_PINNED_LIMIT).await;
+    assert!(
+        format!("{refused:?}").contains("bounded by a declaration above their filed limit"),
+        "{refused:?}"
+    );
+    assert!(
+        exists_column(pool, "rate_limit_waiters").await,
+        "a refused rollback changes nothing"
+    );
+    sqlx::query("DELETE FROM rate_limit_waiters WHERE run_id = $1")
+        .bind(run)
+        .execute(pool)
+        .await
+        .expect("the waiter drains");
+    // the emptied window went with its last waiter
+    window(pool, anchor, 1).await;
+    waiter(3, Some(3))
+        .await
+        .expect("a waiter whose two limits agree");
+    undo(pool, BEFORE_PINNED_LIMIT)
+        .await
+        .expect("rolled back: a waiter whose limits agree loses nothing");
+    assert!(!exists_column(pool, "rate_limit_waiters").await);
+    assert!(!exists_column(pool, "concurrency_waiters").await);
+    MIGRATOR.run(pool).await.expect("forward again");
+    let kept: Option<i32> =
+        sqlx::query_scalar("SELECT pinned_limit FROM rate_limit_waiters WHERE run_id = $1")
+            .bind(run)
+            .fetch_one(pool)
+            .await
+            .expect("the older row");
+    assert_eq!(kept, None, "a row written before the column has none");
+    let validated: Vec<bool> = sqlx::query_scalar(
+        "SELECT convalidated FROM pg_constraint \
+          WHERE conname IN ('concurrency_waiters_pinned_limit_valid', 'rate_limit_waiters_pinned_limit_valid')",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("the constraints");
+    assert_eq!(validated, [true, true], "20270210000100 validates both");
+    sqlx::query("DELETE FROM rate_limit_waiters WHERE run_id = $1")
+        .bind(run)
+        .execute(pool)
+        .await
+        .expect("cleaned");
+}
+
+/// Whether `table` has the column `pinned_limit`.
+async fn exists_column(pool: &PgPool, table: &str) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                         WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'pinned_limit')",
+    )
+    .bind(table)
+    .fetch_one(pool)
+    .await
+    .expect("query")
+}
