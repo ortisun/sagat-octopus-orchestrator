@@ -1532,7 +1532,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
      (`20270213000000` and `20270213000100`; first numbered `20270210000000` and `20270210000100`, which feature 041's
      step logs also took, and renumbered on 2026-11-25 after the latest migration of every branch; the queued-runs
      counters and the alert kinds then moved after them, to `20270213000200`..`20270213000400`, so the rollback order
-     follows the order they were built in, review of 2026-11-25, correctness minor 8). The
+     follows the order they were built in, review of 2026-11-25, correctness minor 8). A development database that
+     applied the first numbers no longer starts against this build (its history names migrations the build does not
+     have): the branch is unreleased, so such a database is recreated, never repaired by hand (batch 4 reviews,
+     correctness minor 2; `quickstart.md`, Prerequisites). The
      migration's rollback refuses while a waiter row's declaration is above its filed limit: dropping the column would
      lose a bound no older binary can recover; a row whose two limits agree loses nothing. No grant changes (the table
      grants cover the column) and no storage class is added (a fixed-size column, outside the variable-size review).
@@ -1768,6 +1771,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
      data, which covers every level a published key may read; every other caller is given the group rows of T022-111
      (D022-086). A `secret` key of a version published before this rule could reach a revealer's listing by its label;
      none exists in production, since the runbook forbids activating the capability before T022-104 (G022-015).
+     *Stated 2026-11-25 (batch 4 reviews, security nits):* a page of `listRuns` may parse up to its 200 runs' pinned
+     versions to grade their labels (each version once a page, from the definition cache), a cost bounded by the page;
+     and a continuation never attaches key levels: a continuation successor cannot declare a run-level gate
+     (FR-022-059), and its node-level gates are graded when its own version is read.
   Evidence: `contract_flow_control_step_policies::ir::{a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers,
   a_key_over_personal_data_is_published_with_a_warning_and_one_over_internal_data_is_not,
   every_invalid_fixture_is_refused_with_its_code_before_a_version_exists}` and

@@ -615,10 +615,12 @@ SELECT 'rate', w.group_name, w.run_id, w.node, w.enqueued_at, r.status, r.finish
 (`GET /runs/{runId}/events`) and the rows above for the report.
 
 **Safe actions.** The waiter holds nothing and is never granted, so nothing is over-admitted while it stays; its key's
-counter of waiters counts it, so it takes one place of the key's buffer (section 10). Report it first. Then, as the
-schema-owning role, delete the waiter row (`DELETE FROM concurrency_waiters` or `rate_limit_waiters` `WHERE run_id = ...
-AND node = ...`): the triggers keep the key's counters and the namespace's queued runs in step, and a key left empty is
-deleted at the commit.
+counter of waiters counts it, so it takes one place of the key's buffer (section 10), and an orphan of a run's start
+(`node = ''`) also holds one unit of the namespace's `queued_runs` (`flow_control_counts`), so it takes one place of that
+ceiling too. Report it first. Then, as the schema-owning role, delete the waiter row, naming its tenant (the primary key
+begins with it, and an identifier alone could name another tenant's row): `DELETE FROM concurrency_waiters` (or
+`rate_limit_waiters`) `WHERE tenant_id = '<tenant>' AND run_id = '<run>' AND node = '<node>'`. The triggers keep the
+key's counters and the namespace's queued runs in step, and a key left empty is deleted at the commit.
 
 **Never.** Delete a waiter row of a run that has not ended: that run would wait for ever with nothing to grant it.
 

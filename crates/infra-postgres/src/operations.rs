@@ -130,13 +130,47 @@ fn event_body(
     .unwrap_or_default()
 }
 
+/// The bounds of a look over `groups` (the common table of the two statements below), applied in the statement, most
+/// severe first: at most `$2` groups of a namespace, `$3` of a tenant and `$4` in all are `SEEN`; a namespace with more
+/// is returned once as `NAMESPACE`, a tenant with more, or with groups beyond the look's bound, once as `TENANT`. A look
+/// is short for a tenant or a namespace, never for everyone: one tenant's volume never stops another's alerts from
+/// resolving (batch 3 reviews of 2026-11-25, correctness Major 2, security Major 1).
+macro_rules! ranked_groups_sql {
+    () => {
+        "ranked_ns AS ( \
+       SELECT g.*, row_number() OVER (PARTITION BY g.tenant_id, g.namespace_id \
+                                      ORDER BY g.severity DESC, g.oldest DESC, g.subject) AS nr \
+         FROM groups g), \
+     ranked_tenant AS ( \
+       SELECT n.*, row_number() OVER (PARTITION BY n.tenant_id \
+                                      ORDER BY n.severity DESC, n.oldest DESC, n.namespace_id, n.subject) AS tr \
+         FROM ranked_ns n WHERE n.nr <= $2), \
+     ranked AS ( \
+       SELECT t.*, row_number() OVER (ORDER BY t.severity DESC, t.oldest DESC, t.tenant_id, t.namespace_id, t.subject) \
+                   AS gr \
+         FROM ranked_tenant t WHERE t.tr <= $3) \
+     SELECT * FROM ( \
+       SELECT 'SEEN' AS place, tenant_id, namespace_id, subject, items, oldest, gr AS position \
+         FROM ranked WHERE gr <= $4 \
+       UNION ALL \
+       SELECT DISTINCT 'NAMESPACE', tenant_id, namespace_id, '', 0::bigint, 0::float8, 0::bigint \
+         FROM ranked_ns WHERE nr > $2 \
+       UNION ALL \
+       SELECT 'TENANT', tenant_id, min(namespace_id::text)::uuid, '', 0::bigint, 0::float8, 0::bigint \
+         FROM (SELECT tenant_id, namespace_id FROM ranked_tenant WHERE tr > $3 \
+               UNION ALL SELECT tenant_id, namespace_id FROM ranked WHERE gr > $4) beyond \
+        GROUP BY tenant_id) looked \
+     ORDER BY place DESC, position, tenant_id, namespace_id"
+    };
+}
+
 /// The keys of `CONCURRENCY_QUEUE_STUCK` (`docs/runbooks/flow-control.md` section 8) with their namespace's effective
 /// `concurrency_limit`: a key whose oldest eligible waiter (not paused, not past its deadline, of a live run) queued more
 /// than the threshold ago and more than the threshold before the key's oldest current holder took its permit, and whose
 /// holders leave no room for that waiter under the lower of its declaration and the ceiling. One row per group: its keys
 /// in the condition, the longest wait, and the severity it is ranked by (the longest wait: age first).
-const STUCK_GROUPS_SQL: &str = concat!(
-    "keys AS ( \
+const STUCK_ALERT_SQL: &str = concat!(
+    "WITH keys AS ( \
        SELECT s.tenant_id, s.namespace_id, s.group_name, s.holders::bigint AS holders, w.lim::bigint AS lim, \
               extract(epoch FROM clock_timestamp() - w.enqueued_at)::float8 AS waited \
          FROM concurrency_semaphores s \
@@ -163,14 +197,17 @@ const STUCK_GROUPS_SQL: &str = concat!(
               max(k.waited) AS severity \
          FROM keys k JOIN ceilings c ON c.tenant_id = k.tenant_id AND c.namespace_id = k.namespace_id \
         WHERE k.holders >= least(k.lim, c.cap) \
-        GROUP BY k.tenant_id, k.namespace_id, k.group_name)"
+        GROUP BY k.tenant_id, k.namespace_id, k.group_name), ",
+    ranked_groups_sql!()
 );
 
 /// The keys of `RATE_LIMIT_QUEUE_SATURATED` (`docs/runbooks/flow-control.md` section 10) with their namespace's
 /// effective `flow_control_key_waiters` (never above the namespace's `queued_runs` less one, as the admission bounds a
 /// key): a run-scope window whose waiters are above 80% of it. One row per group: its keys in the condition, the age of
 /// the oldest waiter, and the severity it is ranked by (the fullest key's share of its ceiling). The threshold is not read.
-const SATURATED_GROUPS_SQL: &str = "keys AS ( \
+macro_rules! saturated_groups_sql {
+    () => {
+        "keys AS ( \
        SELECT w.tenant_id, w.namespace_id, w.group_name, w.waiters::bigint AS waiters, \
               coalesce(extract(epoch FROM clock_timestamp() - w.oldest_wait_at), 0)::float8 AS waited \
          FROM rate_limit_windows w \
@@ -183,37 +220,13 @@ const SATURATED_GROUPS_SQL: &str = "keys AS ( \
               max(k.waiters::float8 / greatest(c.cap, 1)) AS severity \
          FROM keys k JOIN ceilings c ON c.tenant_id = k.tenant_id AND c.namespace_id = k.namespace_id \
         WHERE k.waiters * 5 > c.cap * 4 \
-        GROUP BY k.tenant_id, k.namespace_id, k.group_name)";
+        GROUP BY k.tenant_id, k.namespace_id, k.group_name)"
+    };
+}
 
-/// The bounds of a look over `groups` (the common table of one of the statements above), applied in the statement, most
-/// severe first: at most `$2` groups of a namespace, `$3` of a tenant and `$4` in all are `SEEN`; a namespace with more
-/// is returned once as `NAMESPACE`, a tenant with more, or with groups beyond the look's bound, once as `TENANT`. A look
-/// is short for a tenant or a namespace, never for everyone: one tenant's volume never stops another's alerts from
-/// resolving (batch 3 reviews of 2026-11-25, correctness Major 2, security Major 1).
-const RANKED_GROUPS_SQL: &str = "ranked_ns AS ( \
-       SELECT g.*, row_number() OVER (PARTITION BY g.tenant_id, g.namespace_id \
-                                      ORDER BY g.severity DESC, g.oldest DESC, g.subject) AS nr \
-         FROM groups g), \
-     ranked_tenant AS ( \
-       SELECT n.*, row_number() OVER (PARTITION BY n.tenant_id \
-                                      ORDER BY n.severity DESC, n.oldest DESC, n.namespace_id, n.subject) AS tr \
-         FROM ranked_ns n WHERE n.nr <= $2), \
-     ranked AS ( \
-       SELECT t.*, row_number() OVER (ORDER BY t.severity DESC, t.oldest DESC, t.tenant_id, t.namespace_id, t.subject) \
-                   AS gr \
-         FROM ranked_tenant t WHERE t.tr <= $3) \
-     SELECT * FROM ( \
-       SELECT 'SEEN' AS place, tenant_id, namespace_id, subject, items, oldest, gr AS position \
-         FROM ranked WHERE gr <= $4 \
-       UNION ALL \
-       SELECT DISTINCT 'NAMESPACE', tenant_id, namespace_id, '', 0::bigint, 0::float8, 0::bigint \
-         FROM ranked_ns WHERE nr > $2 \
-       UNION ALL \
-       SELECT 'TENANT', tenant_id, min(namespace_id::text)::uuid, '', 0::bigint, 0::float8, 0::bigint \
-         FROM (SELECT tenant_id, namespace_id FROM ranked_tenant WHERE tr > $3 \
-               UNION ALL SELECT tenant_id, namespace_id FROM ranked WHERE gr > $4) beyond \
-        GROUP BY tenant_id) looked \
-     ORDER BY place DESC, position, tenant_id, namespace_id";
+/// The look of `RATE_LIMIT_QUEUE_SATURATED`, as [`STUCK_ALERT_SQL`] with `{key_waiters}` and `{queued_runs}`.
+const SATURATED_ALERT_SQL: &str =
+    concat!("WITH ", saturated_groups_sql!(), ", ", ranked_groups_sql!());
 
 impl PgRunStore {
     /// [`MonitorStore::detect`] of the flow-control kinds that compare with a namespace's ceilings (feature 022,
@@ -233,29 +246,27 @@ impl PgRunStore {
         use sagat_domain::quota::QuotaResource;
         let effective =
             |resource| crate::quotas::effective_sql(resource, "n.tenant_id", "n.namespace_id");
-        let groups = if kind == AlertKind::ConcurrencyQueueStuck {
-            STUCK_GROUPS_SQL.replace(
+        let statement = if kind == AlertKind::ConcurrencyQueueStuck {
+            STUCK_ALERT_SQL.replace(
                 "{concurrency_limit}",
                 &effective(QuotaResource::ConcurrencyLimit),
             )
         } else {
-            SATURATED_GROUPS_SQL
+            SATURATED_ALERT_SQL
                 .replace(
                     "{key_waiters}",
                     &effective(QuotaResource::FlowControlKeyWaiters),
                 )
                 .replace("{queued_runs}", &effective(QuotaResource::QueuedRuns))
         };
-        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "WITH {groups}, {RANKED_GROUPS_SQL}"
-        )))
-        .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))
-        .bind(i64::from(bounds.per_namespace))
-        .bind(i64::from(bounds.per_tenant))
-        .bind(i64::from(bounds.total))
-        .fetch_all(self.pool())
-        .await
-        .map_err(store_error)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))
+            .bind(i64::from(bounds.per_namespace))
+            .bind(i64::from(bounds.per_tenant))
+            .bind(i64::from(bounds.total))
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?;
         let mut detection = Detection::default();
         for row in &rows {
             let place: String = col(row, "place")?;
