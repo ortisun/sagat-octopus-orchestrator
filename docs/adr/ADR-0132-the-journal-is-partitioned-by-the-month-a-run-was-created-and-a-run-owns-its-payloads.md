@@ -2,14 +2,14 @@
 
 **Status:** Proposed (2026-11-24)
 **Decided by:** agent proposal (design 049), to be accepted under Owner decision 2026-11-24-4 once design 049's review is complete
-**Refines / supersedes:** refines in part [ADR-0054](ADR-0054-run-content-leaves-the-hot-store-only-through-a-verified-archive-under-a-namespace-retention-policy.md): its decision 4 (one privileged purge function) gains a second path for whole months; its decision 6 (references found from the catalog) takes its references from the registry it already plans; its rejected option 3 (partition drop) is taken for whole months only, aligned with runs. Its stub, its eligibility rule and its verified archive are unchanged. Refines [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a drop releases content bytes through the accounting function, not by row triggers). Supersedes nothing.
+**Refines / supersedes:** refines in part [ADR-0054](ADR-0054-run-content-leaves-the-hot-store-only-through-a-verified-archive-under-a-namespace-retention-policy.md): its decision 4 (one privileged purge function) gains a second path for whole months; its decision 6 (references found from the catalog) takes its references from the registry it already plans; its rejected option 3 (partition drop) is taken for whole months only, aligned with runs. Its stub, its eligibility rule and its verified archive are unchanged. Refines [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a drop releases content bytes through the accounting function, in the drop's transaction and in tenant order, not by row triggers) and [ADR-0131](ADR-0131-migrations-expand-before-and-contract-after-a-release-and-a-binary-refuses-a-schema-it-cannot-use.md) (two recorded exceptions to its expand rules: foreign keys replaced by equivalent triggers, and the rename that makes `run_events` partitioned). Supersedes nothing.
 **Enforced by:** the bucket trigger and the suite after the switch across a month boundary (Tasks 049-5, 049-8 and 049-13); the registry test that fails on an unregistered digest column or a run-owned foreign key to `payloads` (Task 049-10); the static check that every statement on a partitioned journal table compares its bucket to a parameter or a literal (Task 049-6); the catalog checks that know partitions (Task 049-7); the relations-locked and round-trip lines of design 038's budget (Task 049-4); the crash, race and quota-reconciliation tests of retirement (Task 049-14)
 
 ## Context
 
 Nothing is deleted today. Feature 020 plans a verified archive and a purge of each run in chunks; payloads are shared by
 content within a tenant from 22 foreign-key columns and one column without a key, so a purge needs a reference check and
-an index on each of them (feature 020, gap 1099). Architecture decision 0054 rejected partition drop because partitions
+an index on each of them (feature 020, gap 1099); three more run-owned columns reference payloads with no key. Architecture decision 0054 rejected partition drop because partitions
 did not align with runs and could not be verified per run. Child run identifiers are hashes, not times. Every read of the
 journal is by run. Foreign keys into a partitioned table make each detach scan the referencing tables under a lock that
 blocks their writes, and a drop releases no quota because it fires no row trigger.
@@ -22,21 +22,23 @@ blocks their writes, and a drop releases no quota because it fires no row trigge
 2. `run_events` and a new `run_payloads` MUST be partitioned by range of `journal_bucket`, one partition per month, with
    the bucket last in their primary keys so that lookups by run keep their prefix; the existing `run_events` becomes the
    legacy partition without a copy and without an index build under a blocking lock.
-3. A run created after the switch MUST keep its payloads in `run_payloads`, keyed by the run, `(tenant_id, run_id,
-   digest, journal_bucket)`, and MUST NOT reference another run's payload. A legacy run keeps its payloads in
-   `payloads`, uncopied, purged by feature 020's reference check on partial indexes of legacy rows only. Payloads of
-   rows that belong to no run, and the tombstones of feature 020's stubs, stay in `payloads`.
-4. No foreign key MUST point into or out of a partitioned journal table. Every reference to run content MUST be listed in
-   feature 020's registry and checked on write by a trigger.
+3. A run created after the switch MUST keep its payloads in `run_payloads`, keyed by its run tree, `(tenant_id,
+   root_run_id, digest, journal_bucket)`, and MUST NOT reference a payload of another tree. A legacy run keeps its
+   payloads in `payloads`, uncopied, purged by feature 020's reference check. Payloads of rows that belong to no run, and
+   the tombstones of feature 020's stubs, stay in `payloads`.
+4. A foreign key MUST NOT point into or out of a partitioned journal table. Every reference to run content MUST be
+   listed with its owning run and checked on write by a trigger that locks the row it finds (`FOR KEY SHARE`) and raises
+   the SQLSTATE of the key it replaces.
 5. Every statement on a partitioned journal table MUST compare its bucket to a parameter or a literal, and the way
    statements are planned MUST be the one design 049's Task 049-3 measures to lock no more than the pruned partition.
-6. A bucket MAY be dropped only when every run in it is purgeable under feature 020 and its archive verified; the runs
-   are purged under their run locks first, the bytes per tenant counted, the partitions detached concurrently, checked,
-   the bytes released in one audited transaction, then dropped. Retirement is an owner-run command, never a platform
+6. A bucket MAY be dropped only when every run in it is purgeable under feature 020 and its archive verified, in this
+   order: the runs purged under their run locks, the partitions detached concurrently, checked, the bytes per tenant
+   counted from the detached tables, then released, audited and dropped in one transaction. Retirement is an owner-run command, never a platform
    process. It, and the cleanup of legacy payloads, wait for the amendment of principle I that feature 020 carries.
-7. New runs get a dated bucket only after the registry's activation of `journal-buckets`, which refuses older processes.
+7. New runs get a dated bucket only after the registry's activation of `journal-buckets-v1`, which refuses older
+   processes; a child run takes its root's bucket, and the payloads of a run tree are owned by its root.
 8. `runs`, `steps` and the audit trail are not partitioned in release 0.3.0; `steps` is measured again after design
-   051's queue; no audit record is dropped.
+   052's queue; no audit record is dropped.
 
 ## Considered options
 
