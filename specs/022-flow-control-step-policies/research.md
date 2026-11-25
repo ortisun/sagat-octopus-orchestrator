@@ -2006,6 +2006,30 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `migrations::the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss`. The migration is on no
   released tree; a database that applied it is recreated (D022-089).
 
+- **D022-099 — A test that asserts what one grant pass decides about a waiter of two keys runs one key at a time
+  (2026-11-25; CI runs 45637128106 at `f30d4ffd` and 45649612535 at `484c6047`, integration shard 2; decisions D022-088,
+  D022-073 item 4).** Delegate (OD-2026-11-24-4). (The numbers D022-093 to D022-098 are taken by the SDK-builders branch,
+  `feature/022-sdk-builders`, whose own D022-090 to D022-092 also clash with this branch's: the merge renumbers one side.)
+  `rate_gate::a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_and_the_next_pass_grants_it` failed
+  on both runs, and passed locally, with "the window rests until the holder's slot ages out": after the first pass, the
+  window's hint of the dual-gated waiter `w2` was still the instant of its queueing. Cause: `w2` waits on the window and
+  on a permit, so both keys are due, and the grant routine runs up to `SchedulerSettings::concurrency` keys' passes at
+  once (eight by default); the permit's pass held `w2`'s run while the window's pass tried it, the window's pass found it
+  busy (`SKIP LOCKED`) and, since D022-088, a busy waiter ends its key's pass and the key keeps its hint, so the window did
+  not rest. It is the rule working, not a refusal mistaken for an undecided waiter: a busy waiter may be grantable the
+  moment its run is free, and the next pass decides it (one pass more, as D022-088 accepted: the key that won the run
+  decides the waiter in that pass, so the loser is alone in the next). The test depended on which key's pass took the run
+  first. Reproduced red by holding `w2`'s run in a transaction of the test during the pass (the same assertion failed, the
+  hint unchanged). Options: (a) the test runs that pass one key at a time, as
+  `rate_gate::a_grant_through_another_keys_pass_wakes_the_waiters_of_its_window` already did for the same
+  cause, and a test of its own pins the busy case down; (b) the routine awaits a waiter's run that another key's pass of
+  the same process holds (an in-process registry of the runs in flight), which saves that one pass but adds coordination
+  to every pass for a cost D022-088 already bounds; (c) wait for the run's lock (`Lock::Wait`), which ADR-0089 decision 3
+  forbids. Chosen (a). Tests: the first pass of the failing test runs one key at a time; the new
+  `rate_gate::a_dual_gated_waiter_found_busy_keeps_its_window_due_and_the_next_pass_rests_it` holds `w2`'s run during a
+  pass of the default scheduler (nothing granted, `skipped` counted, the window's hint unchanged), then a pass one key at a
+  time refuses `w2` for its permit and rests the window at the holder's grant plus one hour.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
