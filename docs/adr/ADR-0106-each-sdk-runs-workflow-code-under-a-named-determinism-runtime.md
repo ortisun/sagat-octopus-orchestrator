@@ -1,8 +1,9 @@
 # ADR-0106: Each SDK runs workflow code under a named determinism runtime, with the same deterministic primitives in six languages
 
 **Status:** Proposed
-**Decided by:** agent (Claude Code, design 044), after the determinism study of 2026-11-24, under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4); the study was required by OD-2026-11-24-3
+**Decided by:** agent (Claude Code, design 044), after the determinism study of 2026-11-24, under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4); the study was required by OD-2026-11-24-3; no person has reviewed it
 **Refines / supersedes:** none; adds to ADR-0007 and ADR-0015 (one conformance suite for the SDKs)
+**Required before acceptance:** the replay measurements of design 044 Task 044-25
 **Enforced by:** the conformance scenarios `code-deterministic-primitives`, `code-nondeterminism` and `code-activation-deadline` in all six SDKs; each runtime's tests of design 044 Tasks 044-10 and 044-15 to 044-20 (for example `the_context_global_is_not_a_host_object`, `registration_refuses_an_unset_or_random_hash_seed`, `a_module_level_import_of_uuid_is_refused_at_load`, `TestSagatvetRefusesGoStatementsSelectAndMapRange`, `ConfigureAwaitFalseBeforeAnSdkCallFailsTheWorkflowTask`, `theArtifactRefusesToStartBelowJava21`, `a_tokio_sleep_in_a_workflow_fails_the_workflow_task`, `four_abandoned_activations_withdraw_the_workflow_types`)
 
 ## Context
@@ -28,9 +29,12 @@ Decisions 044-041 and 044-053 of `specs/044-workflow-as-code/research.md`.
 2. Each runtime MUST give workflow code UTC and the root locale. An SDK MUST refuse to register workflow types when its
    precondition fails: TypeScript below Node 22.8; Python below 3.11 or without a fixed `PYTHONHASHSEED` (unset or
    `random`); Java below 21, or with a default time zone other than UTC or a default locale other than `Locale.ROOT`.
-3. The code digest MUST include the runtime's name and major and minor version and the dependency closure, and for
-   Python the `hash()` of a fixed string under the process's seed.
-4. Time MUST be the database time of the activation's `workflow_task.started`, constant during the activation run; random
+3. The code digest MUST include the runtime's name and full version, with its locale-data version where it has one, and
+   the dependency closure (for Python, extension binaries included), and for Python the `hash()` of a fixed string under
+   the process's seed. Each SDK MUST declare whether it offers workflow as code, and the conformance suite MUST report
+   the scenarios of an SDK that does not as not offered, never as passed.
+4. Time MUST be the time of the activation's `workflow_task.started` (the later of the previous start's time and the
+   database clock), constant during the activation run; random
    numbers MUST come from xoshiro256** seeded by the run's 32-byte seed (four little-endian 64-bit words; an all-zero seed
    replaced by SplitMix64 from 0), `random()` as `(next() >> 11) × 2^-53`, bounded integers without bias by rejection,
    UUIDs version 4 from the generator; the six SDKs MUST produce the same sequence for the same seed. A reset MUST keep

@@ -1,63 +1,69 @@
-# ADR-0105: A code run pins a code digest, and moves to other code only after a verified replay of its own history
+# ADR-0105: A code run pins a code digest, moves to other code only on a person's request after a verified replay of its own history, and resets only within its code
 
 **Status:** Proposed
-**Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-001 and 044-002; OD-2026-11-24-4 for the acceptance)
-**Refines / supersedes:** applies principle IV (a run references one version; no automatic migration) to code versions; complements feature 019, which versions activity builds only; adds the action `MOVE_CODE_VERSION` to the batch operations of ADR-0050
-**Enforced by:** `workflow_tasks_follow_the_current_digest`; `a_completion_from_a_session_of_another_digest_is_stale`; `sagat_app_cannot_update_code_version_id`; `the_move_function_refuses_a_version_of_another_workflow`; `a_move_applies_only_after_a_matching_replay`; `a_move_waits_while_the_workflow_task_is_leased`; `a_move_of_a_run_whose_visible_count_grew_is_rechecked_then_run_busy`; `a_moved_run_keeps_its_step_and_compensation_identities`; `a_move_without_version_activate_is_refused`; `an_all_open_move_without_run_batch_is_refused`; the conformance scenario `code-patch-and-move` (design 044, Tasks 044-6, 044-8, 044-9, 044-13)
+**Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-001, 044-002 and 044-016; OD-2026-11-24-4 for the acceptance); no person has reviewed it
+**Refines / supersedes:** applies constitution 5.0.0 principle IV (a procedural run's pin changes only by a verified move) to code versions; complements feature 019, which versions activity builds only; adds the action `MOVE_CODE_VERSION` to the batch operations of ADR-0050; refines ADR-0050 decisions 5 and 8 for code runs
+**Enforced by:** `workflow_tasks_follow_the_current_digest`; `a_completion_from_a_session_of_another_digest_is_stale`; `sagat_app_cannot_update_code_run_pins`; `a_pin_inserted_with_another_version_than_the_start_is_refused`; `the_move_function_refuses_a_version_of_another_workflow`; `a_move_applies_only_after_a_matching_replay`; `a_move_waits_while_the_workflow_task_is_leased`; `a_move_of_a_run_whose_last_completion_moved_is_rechecked_then_run_busy`; `a_move_off_a_review_with_no_new_events_runs_the_failed_activation`; `a_moved_run_keeps_its_step_and_compensation_identities`; `a_move_without_version_activate_is_refused`; `a_batch_move_without_run_batch_is_refused`; `a_reset_point_with_an_attempt_in_flight_is_refused`; `a_reset_of_a_code_run_keeps_its_seed`; `contract_workflow_as_code::every_new_event_kind_has_a_reset_rule`; the conformance scenario `code-patch-and-move` (design 044, Tasks 044-2, 044-6, 044-8, 044-12, 044-13)
+**Required before acceptance:** the fault suite of design 044 Task 044-28
 
 ## Context
 
 Temporal pins a run to a build identifier the deployer chooses, and its automatic upgrade lets new code replay open runs
-with no check; its patches are checked by nothing on the server before they apply. Principle IV says a published version
-is immutable, every run references exactly one version, and there is no automatic migration of a running workflow. Code
-runs can last months, so "never change code under a run" would keep old workers for months and leave a run under review
-only reset or termination. Step identifiers, journal instance identifiers and compensation identifiers are derived from
-`runs.workflow_version_id` (`crates/application/src/execution.rs`, `crates/infra-postgres/src/execution.rs`, the saga
-tables), so that column cannot change.
+with no check. Constitution 5.0.0 says a procedural run pins one version at any moment, its pin changes only by a
+verified move requested by a person, and no policy moves runs. Step identifiers, journal instance identifiers and
+compensation identifiers are derived from `runs.workflow_version_id`, so that column cannot change. ADR-0050 makes a reset
+point with a waiting step ineligible and requires a reset rule per event kind; a code run nearly always has its
+workflow-task step waiting.
 
 ## Decision
 
-1. A code version MUST name the SHA-256 digest of its code, its dependency closure and its runtime (design 044,
-   Technical Plan 3.2). A code run MUST keep its start version (`runs.workflow_version_id`) for its whole life and MUST
-   have one current code version (`runs.code_version_id`) at any moment, equal to the start version until a move. Its
-   workflow tasks MUST go only to sessions of the current version's digest, and a completion from a session of another
-   digest MUST be refused as stale.
-2. The current code version of an open code run MUST change only through a move: an explicit request of a person with
-   `run:operate` and `version:activate` (and `run:batch` for many runs), to a published code version of the same workflow
-   and namespace that is approved for activation where the namespace requires approval, applied per run in one
-   transaction with the run locked, only when a session of the target digest replayed the run's history with the same
-   keyed command chain, the run's visible count has not changed since, its `~workflow` step is not leased, and every
-   outstanding step fits the target version's envelope. Only the `SECURITY DEFINER` function that applies a move MAY
-   change `runs.code_version_id`; the runtime role MUST NOT hold the update privilege on it. Each applied move MUST be
-   journaled (`run.code_version_moved`) and audited; a refused one MUST leave the run unchanged and record why.
-3. A move MUST be available as a dry run that records verdicts and moves nothing. No policy MUST move runs by itself in
-   0.3.0.
-4. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
+1. A code version MUST name the SHA-256 digest of its code, its dependency closure and its runtime (design 044, Technical
+   Plan 3.2). A code run's start version (`runs.workflow_version_id`) MUST never change and MUST be its identity origin;
+   its pin MUST be one current code version (`code_run_pins.code_version_id`), equal to the start version until a move.
+   Its workflow tasks MUST go only to sessions of the current version's digest, and a completion from a session of
+   another digest MUST be refused as stale.
+2. The pin MUST change only through a move: an explicit request of a person with `run:operate` and `version:activate`
+   (and `run:batch` for a batch, whose selection is frozen at creation so that each item is a per-run request), to a
+   published code version of the same workflow and namespace that is approved for activation where the namespace requires
+   approval; applied per run in one transaction with the run locked, only when a session of the target digest replayed the
+   run's history up to its last completed activation with the same command chain, that activation is still the last
+   completed one, the workflow-task step is not leased, and every outstanding step fits the target version's envelope.
+   Only the `SECURITY DEFINER` function `sagat_move_code_run` MAY change the pin; the runtime role MUST NOT hold the update
+   privilege on it. A move MUST clear the step's sticky session, make it `READY` with a hint when it was under review or a
+   task is pending, be journaled (`run.code_version_moved`) and audited; a refused one MUST leave the run unchanged and
+   record why. No policy, schedule or pipeline MUST move runs.
+3. A move MUST be available as a dry run that records verdicts and moves nothing.
+4. A reset of a code run MUST be to its current code version only, in one transaction within ADR-0050's prefix ceiling.
+   For a code run, an eligible point MUST be the end of a completion's journal block with no attempt in flight, no unknown
+   outcome and no compensating saga; the workflow-task step waiting and `READY` steps, timers and waits MUST NOT make it
+   ineligible and MUST be rematerialized; the new run MUST keep the source's seed and recompute the chain of its prefix.
+   Every new event kind MUST have a reset rule in the registry of ADR-0050 decision 8.
+5. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
 
 ## Considered options
 
-1. **Pin, plus explicit verified per-run moves of a separate current code version** — a deploy cannot change the code
-   under a run; long runs can take fixed code; every change under a run is proven, inputs included, and recorded; no
-   derived identity changes.
+1. **Pin, plus person-requested verified per-run moves of a separate pin, and resets within the code** — a deploy cannot
+   change the code under a run; long runs can take fixed code; every change under a run is proven, inputs included, and
+   recorded; no derived identity changes.
 2. **Replay on the newest code (Temporal's automatic upgrade)** — lost: the failure the design exists to avoid.
 3. **Pin forever** — lost: months of old workers; a run under review cannot be repaired in place.
-4. **Re-pin `runs.workflow_version_id`** — lost: every identity derived from it would stop matching the run's own steps,
-   leases and compensations.
-5. **An automatic move policy at each deploy** — not in 0.3.0: principle IV forbids automatic migration (Gap 044-006).
-6. **A user-chosen build identifier instead of a computed digest** — lost: a reused identifier with different code is
-   the case that corrupts runs.
-7. **A promotion replay check** — lost: a promotion changes no open run; a dry-run move answers the question.
+4. **Re-pin `runs.workflow_version_id`** — lost: every identity derived from it would stop matching.
+5. **A pipeline or policy that moves runs at each deploy** — lost: constitution 5.0.0 says no policy moves runs.
+6. **A user-chosen build identifier instead of a computed digest** — lost: a reused identifier with different code is the
+   case that corrupts runs.
+7. **Reset to another code version** — not in 0.3.0 (Gap 044-019): it would need a replay check and an asynchronous reset,
+   which ADR-0050 decision 2 does not allow.
 
 ## Consequences
 
 - Good: no nondeterminism from a deploy; moves are proven per run and auditable; the version list shows what still runs
   on each digest.
 - Bad: workers of old digests stay up until their runs end or move; in a compiled language a change of the worker binary
-  is a new digest, so the recommended topology keeps workflow code in its own binary and the pipeline requests a move.
-- Compatibility: a new column, a database function and a batch action; the start version never changes. The
-  constitution 5.0.0 text should say that such a move is not automatic migration (Gap 044-010).
+  is a new digest, so the recommended topology keeps workflow code in its own binary and a person requests the move.
+- Compatibility: a new table, a database function, a batch action and reset rules; the start version never changes.
 
 ## Evidence
 
-Design 044, Technical Plan 3.2, 7; Owner questions 044-001 and 044-002 and Decisions 044-042 and 044-048 in
-`specs/044-workflow-as-code/research.md`; the design and security findings of round 1.
+Design 044, Technical Plan 3.2, 6.3, 7; Owner questions 044-001, 044-002 and 044-016 and Decisions 044-075, 044-076 and
+044-085 in `specs/044-workflow-as-code/research.md`; the design, security, correctness and architecture findings of rounds
+1 and 2.

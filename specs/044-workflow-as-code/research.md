@@ -247,6 +247,88 @@ finding was answered. These entries supersede the earlier ones they name; the ea
   target checked against the grammar of the kind, and an exception type name matching
   `^[A-Za-z_][A-Za-z0-9_.$]{0,127}$`; the expected command comes from the server's record; no message is stored.
 
+### Decisions after the second review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-2/`; `resolution.md` there says how each
+finding was answered. These entries supersede the earlier ones they name.
+
+- **D044-069** (2026-11-25) Supersedes D044-003 in its wording: the activation window is `(S(k − 1), S(k)]` over journal
+  sequences, `S(k)` the start of the task that produced completion k; D044-003's pair of events is how `S` is found.
+- **D044-070** (2026-11-25) A per-run node overlay (`code_step_nodes`: the node spec of each accepted work command, at most
+  4 KiB, and its derived companions) is how the engine finds the node of a `c-<n>` step; a code version's parsed
+  definition is a code definition with no graph. Every `node_for_instance` call site is audited in Task 044-4.
+- **D044-071** (2026-11-25) The workflow-task step's node identifier is a reserved form recognised by
+  `NodeId::is_workflow_task_step`, tested before `is_derived` and `forward`, and accepted by `parse_stored`.
+- **D044-072** (2026-11-25, supersedes the flag of D044-042 and of round 1) Pending is derived: a workflow task is due
+  when `code_last_waking_seq` is greater than `code_last_completed_start_seq`; the journal append of a code run moves the
+  first for every waking event (`RunEvent::is_waking`, exhaustive), a completion moves the second; a failed task moves
+  neither; the reconciler repairs a pending run whose step waits.
+- **D044-073** (2026-11-25, supersedes D044-016 and the signal bounds of D044-058) Signals of a code version use the
+  inbox of Architecture decision 0111 (every declared signal buffered); the activation consumes them and its completion
+  marks them consumed. Delegated (OD-2026-11-20-6): one buffered-signal mechanism for graph and code runs, rather than
+  two; Gap 044-017 tracks the refinement Architecture decision 0111 needs for code versions.
+- **D044-074** (2026-11-25, supersedes D044-026 and D044-062) `code-workflows` is recorded by an operator (Architecture
+  decision 0082), never by a tenant's publication; publication is refused until it is recorded.
+- **D044-075** (2026-11-25) A move is always a person's explicit request; a batch move freezes its selection at creation
+  so that each item is a per-run request; no pipeline or policy moves runs (constitution 5.0.0, principle IV). The current
+  code version lives in `code_run_pins`, written only by `sagat_move_code_run`; the start version is the run's identity
+  origin. Supersedes the `runs.code_version_id` column of D044-042.
+- **D044-076** (2026-11-25) The replay check replays activations 1 to k (the last completed) and the move compares
+  `code_last_completed_start_seq` with the replayed `S(k)`, not a visible count; a move clears the sticky fields and makes
+  the step `READY` with a hint when it was under review or a task is pending. Supersedes the visible-count comparison of
+  D044-042.
+- **D044-077** (2026-11-25, supersedes D044-055) A completion runs at most today's activity-completion statements plus 4,
+  reads included; the batched path is held to `persist` by a differential test.
+- **D044-078** (2026-11-25, supersedes the cancellation of outstanding work in D044-056) A terminal command goes through
+  the engine's stop drain: `run.finished` is written only when no leased work is left or what is left went to review.
+  Continue-as-new waits for quiescence through feature 014's handoff and the function gets no further activation.
+- **D044-079** (2026-11-25) A completion carries `applied_through_seq`; a terminal command waits for the whole window in
+  the SDK; a completion below `S(k)` is refused `UNHANDLED_EVENTS`, journaled `workflow_task.failed`, and the SDK replays.
+- **D044-080** (2026-11-25, supersedes the closing window of D044-057) The closing window is 1,024 visible events plus two
+  per outstanding step, timer, wait and child at the retry; exhausted, the run fails `HISTORY_LIMIT` through the stop
+  drain. The largest history is 56,320 visible events, replayed in 5.5 s at the replay budget.
+- **D044-081** (2026-11-25, supersedes D044-045 and D044-046 in part) Risk metadata (`irreversible`, `highRisk`,
+  `compensateWith`, `reconcileWith`) belongs to the envelope entry; a fragment may repeat or omit it, never change it;
+  derived steps receive the secrets of their own entry; activity inputs are validated and classified by the entry's
+  `inputSchema`.
+- **D044-082** (2026-11-25, supersedes the keyed digests of D044-043) The chain uses the SHA-256 of the fragment bytes as
+  received (after a canonical check); the claim that keying protected readers is withdrawn. The hashing is behind a domain
+  port implemented in `sagat-application`.
+- **D044-083** (2026-11-25, supersedes D044-061) A code saga's plan lives in `code_saga_plan_entries`; step B depends on
+  step A when B's command was issued in an activation after the one that delivered A's outcome; independent
+  compensations stay eligible together. Architecture decision 0107 supersedes Architecture decision 0010 decision 3 for
+  code runs.
+- **D044-084** (2026-11-25) Code updates follow `ADMITTED`, `ACCEPTED` or `REJECTED`, `COMPLETED` or `FAILED`;
+  Architecture decision 0108 supersedes Architecture decision 0031 decisions 8 and 9 for code versions; a result outside
+  its schema fails the update only (`RESULT_SCHEMA_VIOLATION`).
+- **D044-085** (2026-11-25, supersedes D044-054) A reset of a code run is to its current code version only, in one
+  transaction, within Architecture decision 0050's prefix ceiling; an eligible point is the end of a completion block with
+  no attempt in flight, no unknown outcome and no compensating saga; `READY` steps, timers and waits are rematerialized;
+  each new event kind has its reset rule. Architecture decision 0105 refines Architecture decision 0050 decisions 5 and 8
+  for code runs.
+- **D044-086** (2026-11-25, supersedes D044-050 and D044-067 in part) `history:export` is held by the admin role only by
+  default. Delegated (OD-2026-11-24-4), Owner question 044-015.
+- **D044-087** (2026-11-25) Worker queries and replay checks are durable rows claimed through `PollTasks`, re-announced
+  by the reconciler; replay checks live in `code_replay_checks`.
+- **D044-088** (2026-11-25) Bindings gain `workflowTypes`; activity bindings never cover a workflow type.
+- **D044-089** (2026-11-25, supersedes D044-059) While sticky, the workflow-task step's activity is
+  `sagat.workflow-sticky:<session id>`, so the claim's SQL is unchanged; the scheduler's timer pass rewrites it to the
+  digest name and writes the hint when `sticky_until` passes or the session ends.
+- **D044-090** (2026-11-25, supersedes D044-060 in part) Eager activity leases are provisional leases of feature 006,
+  released safely when unacknowledged; the eager workflow task checks the session's digest and binding.
+- **D044-091** (2026-11-25) The protocol minor a step needs is decided per step kind, so old-minor activity workers still
+  lease a code run's activities.
+- **D044-092** (2026-11-25) A code run starts at most one workflow task per 100 ms (the step's earliest next start).
+- **D044-093** (2026-11-25) Reading history extends the workflow task lease, up to 120,000 ms in all.
+- **D044-094** (2026-11-25) The time of `workflow_task.started` is the later of the previous start's time and
+  `clock_timestamp()`; the idempotency key is looked up before any fence and any bound.
+- **D044-095** (2026-11-25) The runtime string of the digest carries the full version and the locale-data version; Python
+  hashes extension binaries; SDKs declare whether they offer workflow as code, and the suite reports "not offered".
+- **D044-096** (2026-11-25) A command on one of the run's own steps that is already terminal is an audited no-op.
+- **D044-097** (2026-11-25) The activity code profile admits design 045's timeout and retry fields when design 045 lands.
+- Supersession notes for the first register: D044-040 (`code_nodes`) is superseded by D044-047 and D044-070; D044-026 by
+  D044-074; D044-062 by D044-074.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -284,10 +366,19 @@ finding was answered. These entries supersede the earlier ones they name; the ea
 - **G044-016** (2026-11-24) `PYTHONHASHSEED` is a 32-bit value; anyone who can read a Python code version's digest and
   knows its modules' sources could search the seed from the fingerprint in the digest. Readers of versions are the
   tenant's own; an outside sender sees no digest.
-- **G044-005** (2026-11-24, later entry) With the keyed chain over fragments the history does not carry, a worker can
-  produce a `match` only by producing the same commands; a worker of the tenant that runs the tenant's code to forge a
-  verdict harms only the tenant's own runs. The earlier sentence that "the chain check limits what a forged verdict can
-  claim" was false for the first draft's chain.
+
+- **G044-017** (2026-11-25) Architecture decision 0111 (branch `docs/temporal-parity-readiness`, Proposed) requires a
+  buffered name to be the event type of a `waitEvent` node; for a code version the consumer is the activation. Its owner
+  must admit code versions (all declared signals buffered, consumption by the completion) before Task 044-21 builds on it.
+- **G044-018** (2026-11-25, replaces the second entry the first round wrongly numbered G044-005) With a chain over
+  fragments the history does not carry, a worker can produce a `match` only by producing the same commands; a worker of the
+  tenant that runs the tenant's code to forge a verdict harms only the tenant's own runs. The first draft's sentence that
+  "the chain check limits what a forged verdict can claim" was false for its chain.
+- **G044-019** (2026-11-25) A reset of a code run to another code version is not in 0.3.0.
+- **G044-020** (2026-11-25) Design 045's deadline on a live attempt (Architecture decision 0110 decision 4, branch
+  `docs/temporal-parity-readiness`) must exclude the workflow-task step; its owner is told, and Task 044-27 tests it.
+- **G044-010** (2026-11-25, later state) The constitution 5.0.0 draft (branch `docs/constitution-5.0.0`, principle IV)
+  states the verified move as this design does; the gap closes when that text merges.
 
 ## 4. Owner questions (all delegated)
 
@@ -333,3 +424,9 @@ finding was answered. These entries supersede the earlier ones they name; the ea
   queries, as a deferrable task. Some answers exist only in the function's memory (journey 7 of the design), and the
   alternative, publishing state at every iteration, grows the journal by one event per iteration. Contested against the
   zoom-out review of round 1 (finding 7), which asked to defer them.
+- **O044-015** (2026-11-25) Who holds `history:export`? delegate (OD-2026-11-24-4): the admin role only, by default.
+  Exported histories leave the platform for developers' machines; even redacted, they hold business data, and a wider
+  default is a security choice a tenant should make itself.
+- **O044-016** (2026-11-25) May a deploy pipeline request moves? delegate (OD-2026-11-20-6): no. Constitution 5.0.0 says a
+  pin changes only by a person's explicit request and no policy moves runs; a pipeline step that moves every open run at
+  each deploy is such a policy. A person requests a dry run and the move of a frozen selection.

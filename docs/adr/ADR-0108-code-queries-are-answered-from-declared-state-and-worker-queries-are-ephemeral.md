@@ -1,53 +1,57 @@
-# ADR-0108: Queries of code runs are answered from declared state by the engine, worker queries are ephemeral, and every result a code run discloses is declared
+# ADR-0108: Signals, updates and queries of code runs reuse the platform's mechanisms, and every result a code run discloses is declared
 
 **Status:** Proposed
-**Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-011 and 044-014; OD-2026-11-24-4 for the acceptance)
-**Refines / supersedes:** extends feature 014's declared state and ADR-0031 (declared result disclosure) to code versions, and makes the history export of a code run a payload read path of feature 016 (ADR-0028), the new decision ADR-0031 asks for before any generic payload reader
-**Enforced by:** `a_declared_query_is_answered_with_no_worker`; `a_worker_query_expires_without_a_journal_event`; `a_worker_query_answer_outside_its_schema_is_refused`; `an_update_result_outside_its_schema_is_refused`; `an_update_receipt_of_another_principal_is_not_found`; `security_workflow_as_code::a_history_export_redacts_classified_fields_without_a_reveal_grant`; `security_workflow_as_code::a_secret_field_is_never_exported`; `security_workflow_as_code::a_worker_query_of_another_tenant_is_not_found`; the conformance scenarios `code-declared-state` and `code-worker-queries` (design 044, Tasks 044-21, 044-24, 044-26, 044-29)
+**Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-011 and 044-014; OD-2026-11-24-4 for the acceptance and for Owner question 044-015); no person has reviewed it
+**Refines / supersedes:** supersedes ADR-0031 decisions 8 and 9 (an update schedules no work; its handler is a declared expression) for code versions only; extends feature 014's declared state and ADR-0031's declared result disclosure to code versions; makes the history export of a code run a payload read path of feature 016 (ADR-0028), the new decision ADR-0031 asks for before any reader of raw payloads; refines ADR-0111 (branch `docs/temporal-parity-readiness`, Proposed) for code versions: every declared signal is buffered and the activation is its consumer
+**Enforced by:** `a_signal_before_the_function_waits_is_delivered_at_the_next_activation`; `a_delivered_signal_is_consumed_by_the_completion`; `a_repeated_signal_key_is_answered_before_the_bounds`; `a_declared_query_is_answered_with_no_worker`; `an_update_result_outside_its_schema_fails_the_update_only`; `an_update_receipt_of_another_principal_is_not_found`; `a_lost_update_response_replays_after_authorization_is_checked_again`; `a_worker_query_is_claimed_by_polling_with_the_broker_down`; `a_worker_query_answer_outside_its_schema_is_refused`; `security_workflow_as_code::a_classified_value_copied_into_an_activity_input_is_redacted_on_export`; `security_workflow_as_code::a_secret_field_is_never_exported`; the conformance scenarios `code-signals`, `code-updates`, `code-declared-state` and `code-worker-queries` (design 044, Tasks 044-21, 044-24, 044-26, 044-29)
+**Required before acceptance:** ADR-0111 accepted with its refinement for code versions (Gap 044-017)
 
 ## Context
 
-A Temporal query is answered by a worker replaying the workflow, and fails when no worker runs. Feature 014 already
-answers declared expression queries over committed declared state, with no worker, also on ended runs while their data
-is retained, under `run:query` and audited. Some answers exist only in the function's memory. ADR-0031 requires a
-disclosure declaration and closed, validated result schemas for every result the platform returns, and rules out a raw
-payload reader without a new decision. A code run's replay in a team's tests needs its history.
+A code function reads signals when it chooses, so a signal must be kept until then; ADR-0050 decision 4 and ADR-0030
+decision 17 forbid buffering, and ADR-0111 (Proposed) admits a bounded per-run inbox for versions that declare it. ADR-0031
+requires a disclosure declaration and closed, validated result schemas, says an update schedules no work, and rules out a
+raw payload reader without a new decision. A Temporal query needs a live worker; feature 014 answers declared expression
+queries from committed state with no worker. Some answers exist only in the function's memory.
 
 ## Decision
 
-1. A code version MAY declare state and expression queries in the IR's `state` form; the function MUST set the state by a
-   command journaled `state.updated`; the engine MUST answer the declared queries exactly as for a graph run.
-2. A code version MAY declare worker queries and updates, each with `disclosure` and a closed `resultSchema`. Their
-   results MUST be validated by the platform's validator (design 043) before they are stored or returned, and returned
-   with `Cache-Control: no-store`. An update receipt MUST be readable only by the principal that admitted it or by one
-   with `run:operate`.
-3. A worker query MUST be a row of `code_query_requests`, never a journal event, expiring at the caller's timeout (at most
-   30,000 ms) plus 5 s, announced by a hint, leased by a session of the run's current digest (the sticky one first),
-   answered in at most 256 KiB, audited without arguments or answer, under `run:read` and `run:query`, at most 64 in flight
-   per namespace. A handler that issues a command MUST fail the query, not the run.
-4. `GET /runs/{runId}/history` MUST be granted by `run:read` and the new `history:export` (held by the admin and developer
-   roles), MUST apply feature 016's redaction and reveal rules to every payload, MUST never export a field classified
-   `secret`, and MUST be audited.
+1. Every declared signal of a code version MUST be buffered in ADR-0111's inbox, with its bounds and lifecycle; the next
+   activation MUST deliver the buffered signals in journal order, and the completion that ends it MUST mark them consumed
+   in its transaction. The idempotency key MUST be answered before any bound.
+2. A code version's update MUST follow `ADMITTED`, then `ACCEPTED` or `REJECTED`, then `COMPLETED` or `FAILED`: admitted
+   durably, validated by the function when its admission event is applied, handled by the function (which may schedule
+   work), and completed with a result validated against its closed `resultSchema` by the platform's validator, or failed
+   (`RESULT_SCHEMA_VIOLATION` when the result does not fit), the run left alone. A receipt MUST be readable only by the
+   principal that admitted it or by one with `run:operate`, after authorization is checked again.
+3. A code version MAY declare state and expression queries in the IR's `state` form; the engine MUST answer them exactly
+   as for a graph run.
+4. A worker query MUST be a durable row claimed through `PollTasks` by a session of the run's current digest, never a
+   journal event, expiring at the caller's timeout (at most 30,000 ms) plus 5 s, its answer validated against its closed
+   `resultSchema` and returned with `Cache-Control: no-store`, at most 64 in flight per namespace.
+5. `GET /runs/{runId}/history` MUST be granted by `run:read` and `history:export`, held by the admin role only by
+   default; it MUST classify every payload by its schema (an activity input by its envelope entry's `inputSchema`), apply
+   feature 016's redaction and reveal rules, never export a field classified `secret`, and be audited.
 
 ## Considered options
 
-1. **Declared queries by default, worker queries beside them, every result declared, the export under feature 016** —
-   queries that work without workers and after the end, the flexibility of code where needed, and no new way around the
-   disclosure rules.
-2. **Worker queries only (Temporal)** — lost: no answer without a worker.
-3. **Declared queries only** — lost: a long loop would publish its progress into the journal at every iteration.
-4. **Journal every query** — lost: unbounded history for reads.
-5. **Export payloads as stored** — lost: a classified field would reach anyone with two permissions, which ADR-0031
-   forbids.
+1. **Reuse ADR-0111's inbox, an asynchronous update lifecycle with declared results, declared and worker queries, an
+   export under feature 016** — one buffered-signal mechanism for both models; queries without workers; no new way around
+   the disclosure rules.
+2. **A signal store of design 044's own** — lost: two buffered-signal mechanisms with two meanings for a refusal.
+3. **Synchronous updates only** — lost: no handler could wait on an activity.
+4. **Worker queries only (Temporal)** — lost: no answer without a worker.
+5. **Export payloads as stored, or grant the export to developers by default** — lost: a classified value would reach
+   readers ADR-0031 does not allow, and a wider default is a security choice the tenant should make.
 
 ## Consequences
 
 - Good: an operator can read a code run's business state with every worker down; a team can replay real histories in its
   tests without seeing what it may not.
-- Bad: two query paths; a worker query adds a short-lived table and a task kind; a replay over a redacted history can end
-  `INCONCLUSIVE_REDACTED`.
+- Bad: two query paths; a short-lived table and a task kind for worker queries; a replay over a redacted history can end
+  `INCONCLUSIVE_REDACTED`; the signal path waits for ADR-0111.
 
 ## Evidence
 
-Design 044, Technical Plan 7.4 and 8; `crates/application/src/declared_operations.rs`; Decisions 044-050 and 044-067; the
-security findings of round 1.
+Design 044, Technical Plan 7.4 and 8; `crates/application/src/declared_operations.rs`; Decisions 044-073, 044-084,
+044-086 and 044-087; the architecture and security findings of rounds 1 and 2.

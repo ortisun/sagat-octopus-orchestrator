@@ -1,14 +1,14 @@
 # ADR-0109: Workflow tasks, worker queries and replay checks travel on the next free worker-protocol minor, as additive messages
 
 **Status:** Proposed
-**Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4) and the register rule of OD-2026-11-15-8
+**Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4) and the register rule of OD-2026-11-15-8; no person has reviewed it
 **Refines / supersedes:** extends ADR-0015 (minor-version negotiation) and ADR-0029 (task streams)
 **Enforced by:** `contract_workflow_as_code::the_worker_protocol_change_is_additive_to_the_baseline` against `worker.baseline.json`; `a_session_below_the_minor_is_never_offered_a_workflow_task`; `a_workflow_task_lease_is_refused_by_every_activity_rpc`; the conformance scenario `protocol-negotiation` extended with a workflow worker (design 044, Tasks 044-2, 044-8)
 
 ## Context
 
 The register of minors in `sdks/SPEC.md` gives 1.7 to feature 041; the branch of feature 006's delivery acknowledgement
-reserves 1.8; drafts 019, 020, 021, 025, 026 and 031 each need minors and take the next free one when their contract
+reserves 1.8; design 045 (branch `docs/temporal-parity-readiness`) names 1.9; drafts 019, 020, 021, 025, 026 and 031 each need minors and take the next free one when their contract
 merges. A code workflow needs new task kinds, a history stream, new completions, and fields for the deferrable parts of
 design 044 (eager dispatch, worker queries, behaviour flags) so that they can land later without reshaping the contract.
 
@@ -19,7 +19,10 @@ design 044 (eager dispatch, worker queries, behaviour flags) so that they can la
 2. They MUST be additive: new fields, enumeration values, messages and RPCs only; no existing field changes meaning. The
    fields of the deferrable parts MUST be in that same minor.
 3. A session MUST be offered `WORKFLOW`, `QUERY` and `REPLAY_CHECK` tasks only at that minor or later and only for the
-   `(workflow type, code digest)` pairs it registered (at most 64); every activity RPC MUST refuse those leases.
+   `(workflow type, code digest)` pairs it registered (at most 64); every activity RPC MUST refuse those leases. The minor
+   a step needs MUST be decided per step kind, so that an older activity worker still leases a code run's activities.
+   `CompleteWorkflowTaskRequest` MUST carry `applied_through_seq`, and `WorkerCapabilities` the SDK's declaration whether
+   it offers workflow as code.
 4. The history a worker receives MUST be the typed `HistoryEvent` projection, not the journal's internal JSON, and MUST
    NOT carry the fragments of past commands.
 
