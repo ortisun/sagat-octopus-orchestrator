@@ -481,13 +481,14 @@ fn require_supported_task(
     }
 }
 
-/// What the caller of a claim says while the claim runs (feature 006, decision D006-035 of
+/// What the caller of a claim says while the claim runs (feature 006, decisions D006-035 and D006-092 of
 /// `specs/006-sdk-multilanguage/research.md`). A claim commits one transaction per run; between two of them nothing is half
 /// done, so it stops there once its consumer is gone and returns what it already committed, which the caller hands to the
-/// withdrawal.
+/// withdrawal. A run's transaction whose only writes are its leases is rolled back instead of committed when the consumer is
+/// gone just before its commit.
 pub trait ClaimWatch: Send + Sync {
     /// Whether the consumer of the claim is gone (a stream body dropped or past its window, a unary handler dropped);
-    /// asked before each run's transaction.
+    /// asked before each run's transaction and just before the commit of one that leased.
     fn consumer_gone(&self) -> bool;
 
     /// Awaited after each run's transaction committed at least one lease, before the next run is claimed: a test's barrier
@@ -495,6 +496,29 @@ pub trait ClaimWatch: Send + Sync {
     fn committed(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(std::future::ready(()))
     }
+
+    /// Awaited just before the commit of a run's transaction that leased, before the claim asks again whether its consumer
+    /// is gone (decision D006-092): a test's barrier (decision D006-008). Production returns at once.
+    fn before_commit(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::ready(()))
+    }
+}
+
+/// Whether the run's transaction that is about to commit leases must be dropped instead, which rolls it back, because the
+/// consumer of the claim went away while it ran (feature 006, decision D006-092): a claim that waited on a lock when its client
+/// left would otherwise commit leases nobody receives. Only a transaction whose only writes are its leases is rolled back:
+/// with `kept_writes` (a refusal's audit, a permanent failure) it commits and its leases go to the withdrawal. Waits first at
+/// the test's barrier.
+pub(crate) async fn roll_back_for_a_gone_consumer(
+    watch: &dyn ClaimWatch,
+    kept_writes: bool,
+) -> bool {
+    watch.before_commit().await;
+    let gone = !kept_writes && watch.consumer_gone();
+    if gone {
+        metrics::counter!("worker_claim_skipped_total", "reason" => "consumer_gone").increment(1);
+    }
+    gone
 }
 
 /// A claim whose consumer never goes away: [`WorkerService::poll`].
@@ -1115,6 +1139,7 @@ where
                     trace_id,
                     &mut bytes,
                     &mut progress,
+                    watch,
                 )
                 .await
             {
@@ -1164,6 +1189,7 @@ where
         trace_id: Option<&str>,
         bytes: &mut usize,
         progress: &mut ClaimProgress,
+        watch: &dyn ClaimWatch,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
@@ -1253,6 +1279,9 @@ where
         );
         let mut leased = Vec::new();
         let mut run_bytes = 0usize;
+        // Set by a write that is not a lease (a refusal's audit, a permanent failure of an input): it must not be rolled back
+        // with the leases of a consumer that went away (decision D006-092).
+        let mut kept_writes = false;
         for (instance, activity, timeout) in ready {
             // Every task carries the run's data; the response is bounded by what it carries.
             // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
@@ -1285,6 +1314,7 @@ where
                     "lease",
                     trace_id,
                 );
+                kept_writes = true;
                 tx.persist(&[], effects).await?;
                 metrics::counter!("secret_delivery_refused_total", "stage" => "lease").increment(1);
                 continue;
@@ -1307,6 +1337,7 @@ where
                     .map_err(|error| { tracing::error!(%error, instance = ?instance, "failed to materialize task input"); AppError::Internal })?
             };
             if input.len() > MAX_TASK_INPUT_BYTES {
+                kept_writes = true;
                 match self
                     .reject_large_input(&mut tx, session, &instance, trace_id)
                     .await
@@ -1360,6 +1391,7 @@ where
                         )
                         .with_reason("managed database claim refused"),
                     );
+                    kept_writes = true;
                     tx.persist(&[], effects).await?;
                     continue;
                 }
@@ -1372,6 +1404,7 @@ where
                     match self.lake_lease_input(&mut tx, &instance).await? {
                         Ok(leased) => leased,
                         Err(failure) => {
+                            kept_writes = true;
                             let code = FailureCode::parse(failure.code())
                                 .map_err(|_| AppError::Internal)?;
                             match self
@@ -1412,6 +1445,7 @@ where
                 )
             ) {
                 if input.len() > MAX_TASK_INPUT_BYTES {
+                    kept_writes = true;
                     match self
                         .reject_large_input(&mut tx, session, &instance, trace_id)
                         .await
@@ -1475,6 +1509,9 @@ where
                 Err(AppError::StateConflict(_)) => break,
                 Err(other) => return Err(other),
             }
+        }
+        if !leased.is_empty() && roll_back_for_a_gone_consumer(watch, kept_writes).await {
+            return Ok(Vec::new());
         }
         tx.commit().await?;
         // A failed transaction contributes neither leases nor bytes to this response.
@@ -3285,5 +3322,67 @@ mod tests {
         assert_eq!(json_escaped("caf\u{e9}", true), "caf\\u00e9");
         // Beyond the BMP it is a surrogate pair.
         assert_eq!(json_escaped("\u{1f511}", true), "\\ud83d\\udd11");
+    }
+}
+
+/// Feature 006, decision D006-092: the rollback for a gone consumer, its exception for kept writes, and its counter.
+#[cfg(test)]
+mod rollback_for_a_gone_consumer {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::{ClaimWatch, roll_back_for_a_gone_consumer};
+
+    struct Watch {
+        gone: AtomicBool,
+        barriers: AtomicUsize,
+    }
+
+    impl ClaimWatch for Watch {
+        fn consumer_gone(&self) -> bool {
+            self.gone.load(Ordering::SeqCst)
+        }
+
+        fn before_commit(
+            &self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            self.barriers.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    fn watch(gone: bool) -> Watch {
+        Watch {
+            gone: AtomicBool::new(gone),
+            barriers: AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn only_a_transaction_of_leases_alone_is_rolled_back_and_each_rollback_is_counted() {
+        let (metrics, recorder) = sagat_telemetry::Metrics::detached(Duration::from_secs(60));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        let (gone, kept, present) = (watch(true), watch(true), watch(false));
+        let decisions = metrics::with_local_recorder(&recorder, || {
+            runtime.block_on(async {
+                (
+                    roll_back_for_a_gone_consumer(&gone, false).await,
+                    roll_back_for_a_gone_consumer(&kept, true).await,
+                    roll_back_for_a_gone_consumer(&present, false).await,
+                )
+            })
+        });
+        assert_eq!(decisions, (true, false, false));
+        // the test's barrier is awaited in every case, before the question
+        for each in [&gone, &kept, &present] {
+            assert_eq!(each.barriers.load(Ordering::SeqCst), 1);
+        }
+        let page = metrics.render();
+        assert!(
+            page.contains("worker_claim_skipped_total{reason=\"consumer_gone\"} 1"),
+            "{page}"
+        );
     }
 }

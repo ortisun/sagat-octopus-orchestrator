@@ -699,6 +699,68 @@ async fn a_claim_whose_consumer_is_gone_leases_no_further_run() {
     }
 }
 
+/// Decision D006-092: the consumer goes away while the claim is held just before the commit of a run's transaction that
+/// leased. On a platform that withdraws, the transaction is still rolled back, not committed and then withdrawn: the step
+/// was never leased, nothing went to the withdrawal (no slot of the cap of four is used), and the next lease is the step's
+/// first. For a stream and for a unary poll.
+#[tokio::test]
+async fn a_claim_whose_consumer_goes_before_its_commit_leases_nothing_and_withdraws_nothing() {
+    for unary in [false, true] {
+        let barrier = barrier();
+        let mut options = Options {
+            hand_back_ceiling: 8,
+            ..Options::default()
+        };
+        options.worker.idle_retry = Duration::from_millis(50);
+        options.lease_withdrawal = Some(withdrawing());
+        options.commit_probe = Some(barrier.probe);
+        let p = platform_with(options).await;
+        record_requirement(&p).await;
+        let workflow = p
+            .publish("gone-before-commit", &one_attempt("gone-before-commit"))
+            .await;
+        let run = p.start(&workflow, &json!({})).await;
+        let mut worker = stream_worker(&p, "first").await;
+        if unary {
+            let request = worker.req(worker.poll_message(1));
+            let mut client = worker.client.clone();
+            let call = tokio::spawn(async move { client.poll_tasks(request).await });
+            tokio::time::timeout(WAIT, barrier.arrived.notified())
+                .await
+                .expect("the claim reached its commit");
+            call.abort();
+            let _ = call.await;
+        } else {
+            let stream = open_stream(&mut worker, 1).await;
+            tokio::time::timeout(WAIT, barrier.arrived.notified())
+                .await
+                .expect("the claim reached its commit");
+            drop(stream);
+        }
+        assert!(
+            p.api.worker_withdrawals.drain(WAIT).await,
+            "unary={unary}: the claim ended"
+        );
+        assert_eq!(
+            p.api.worker_withdrawals.handed_over(),
+            0,
+            "unary={unary}: nothing went to the withdrawal"
+        );
+        assert_eq!(
+            step(&p, &run).await,
+            ("READY".to_owned(), 0, 0),
+            "unary={unary}: the run's transaction was rolled back"
+        );
+        let journal = journal(&p, &run).await;
+        assert!(named(&journal, "step.leased").is_empty(), "unary={unary}");
+        assert!(
+            named(&journal, "step.lease_withdrawn").is_empty(),
+            "unary={unary}"
+        );
+        runs_once_afterwards(&p, &run, 0).await;
+    }
+}
+
 /// Architecture Blocker 2 (decision D006-032): once a journal holds `step.lease_withdrawn`, the requirement is a replay
 /// floor and cannot be removed; it is still recorded afterwards.
 #[tokio::test]

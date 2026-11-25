@@ -62,6 +62,8 @@ pub struct WorkerGrpc<St, S, C, E, R> {
     withdrawals: Withdrawals,
     /// A barrier after a claim committed (tests only, decision D006-008).
     probe: Option<DeliveryProbe>,
+    /// A barrier before a run's transaction that leased commits (tests only, decisions D006-008 and D006-092).
+    commit_probe: Option<DeliveryProbe>,
 }
 
 impl<St: Clone, S, C, E, R> Clone for WorkerGrpc<St, S, C, E, R> {
@@ -74,6 +76,7 @@ impl<St: Clone, S, C, E, R> Clone for WorkerGrpc<St, S, C, E, R> {
             admission: self.admission.clone(),
             withdrawals: self.withdrawals.clone(),
             probe: self.probe.clone(),
+            commit_probe: self.commit_probe.clone(),
         }
     }
 }
@@ -90,6 +93,7 @@ impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
             admission,
             withdrawals: Withdrawals::default(),
             probe: None,
+            commit_probe: None,
         }
     }
 
@@ -114,6 +118,14 @@ impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
     #[must_use]
     pub fn with_delivery_probe(mut self, probe: DeliveryProbe) -> Self {
         self.probe = Some(probe);
+        self
+    }
+
+    /// Holds every claim at `probe` just before a run's transaction that leased commits, before the claim asks whether its
+    /// consumer is gone (decision D006-092). For the tests of the rollback only (decision D006-008): production never sets one.
+    #[must_use]
+    pub fn with_commit_probe(mut self, probe: DeliveryProbe) -> Self {
+        self.commit_probe = Some(probe);
         self
     }
 
@@ -606,6 +618,7 @@ where
             let watch = ConsumerWatch {
                 gone: abandoned,
                 probe: self.probe.clone(),
+                commit_probe: self.commit_probe.clone(),
             };
             let claim = self.withdrawals.spawn(async move {
                 let _slot = slot;
@@ -719,6 +732,7 @@ where
             let watch = ConsumerWatch {
                 gone: stop.clone(),
                 probe: self.probe.clone(),
+                commit_probe: self.commit_probe.clone(),
             };
             // on the tracker a graceful shutdown waits for, so that a claim in progress and its withdrawal end before
             // the pool closes (decision D006-036)
@@ -2112,11 +2126,13 @@ mod withdrawal_of_undelivered_frames {
     }
 }
 
-/// What a claim of this API watches (decisions D006-035 and D006-008): its consumer, gone when the stream's producer is told
-/// to stop or the unary handler is dropped, and the test's probe after each run's commit.
+/// What a claim of this API watches (decisions D006-035, D006-092 and D006-008): its consumer, gone when the stream's producer
+/// is told to stop or the unary handler is dropped, the test's probe after each run's commit, and the test's probe just before
+/// the commit of a run's transaction that leased.
 struct ConsumerWatch {
     gone: CancellationToken,
     probe: Option<DeliveryProbe>,
+    commit_probe: Option<DeliveryProbe>,
 }
 
 impl sagat_application::worker::ClaimWatch for ConsumerWatch {
@@ -2126,6 +2142,13 @@ impl sagat_application::worker::ClaimWatch for ConsumerWatch {
 
     fn committed(&self) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         match &self.probe {
+            Some(probe) => probe(Abandonment(self.gone.clone())),
+            None => Box::pin(std::future::ready(())),
+        }
+    }
+
+    fn before_commit(&self) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        match &self.commit_probe {
             Some(probe) => probe(Abandonment(self.gone.clone())),
             None => Box::pin(std::future::ready(())),
         }

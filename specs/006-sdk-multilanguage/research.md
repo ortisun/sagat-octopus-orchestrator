@@ -690,8 +690,12 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
     migration runner refuses it.
   - The Rust SDK's newest understood minor is 8 under `cfg(test)` and 6 otherwise, so its unit tests do not exercise the
     shipped refusal of a newer minor.
-  - The domain's cap of four trusts the count its caller reads; the delivery probe and the test hooks are public types of
-    production crates (behind no feature); `with_withdrawal_concurrency` must be called before `withdrawals()`.
+  - The domain's cap of four trusts the count its caller reads; the delivery probe, the commit probe of D006-092 (which
+    holds the run's locks while it waits, bounded by `idle_in_transaction_session_timeout`) and the test hooks are public
+    types of production crates (behind no feature; `scripts/check-architecture.py` refuses their use outside the tests,
+    D006-093); `with_withdrawal_concurrency` must be called before `withdrawals()`.
+  - `tasks.md` has no rows for the withdrawal (D006-001 to D006-093): it was built from this register and ADR-0098, and
+    its evidence is the pull request's CI (round 4 correctness Minor 3).
   - No alert on `worker_leases_undelivered_total{outcome="capped"|"error"}`; the withdrawal semaphore is per engine, not
     per tenant; every withdrawal takes `FOR SHARE` on one requirement row.
   - `release_upgrade_inflight.rs`'s "no withdrawal before the activation" cannot fail on a 0.2 journal; a lease handed back
@@ -700,3 +704,76 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
     settled with ADR-0099's expiry rule (its request (1) of D006-059).
   - The scoped half of D006-089 (`scoped_reports.rs`) is covered by the verdict's unit test and by reading, not by a test
     of a scoped hand-back on a fleet that does not withdraw.
+
+### The claim that waits when its consumer goes, and the final review (2026-11-24, D006-092 and D006-093)
+
+The finding. `protocol::cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens` failed on every CI run of pull
+request #260 since the server side of the withdrawal (commit 31c28347; runs 44850791606, 44853482693, 44864595812,
+44917207464 and 44917210114): the step read `READY`, then the recovery stream received no task. The cause is in the code,
+not in the test. D006-002 replaced the abort of the producer with a stop signal, and D006-035 asks whether the consumer is
+gone only before each run's transaction. A claim that is inside a run's transaction, waiting on a lock (in the test the
+drain lock that `worker_drained` takes), when its client goes away, therefore goes on once the lock opens and commits the
+lease for a consumer that is gone. On `develop` the abort dropped that transaction before its commit, so it was rolled
+back. On a fleet that has not recorded `lease-withdrawal-v1` (every fleet until the operator's activation; the test's
+platform has no gate) the lease then lapses: the defect this pull request exists to remove, made more likely than on
+`develop`. On a fleet that has recorded it, the lease is withdrawn, at the cost of two more transactions, a journal event and
+one of the four withdrawals the attempt may have (D006-031), where a rollback costs nothing. The step read `READY` in the
+test only because the claim had not committed yet when it was read: the second wait of the test ends as soon as the claim
+holds the lock, not when it ends.
+
+- **D006-092 — A run's transaction whose only writes are its leases is rolled back when its consumer is gone before it
+  commits** (delegate, OD-2026-11-24-4). Just before the commit of a run's transaction that leased at least one step, the
+  claim asks again whether its consumer is gone. If it is, and the transaction wrote nothing but its leases, it is dropped,
+  which rolls it back: no lease is committed, no attempt is spent, nothing goes to the withdrawal, and the run is counted
+  `worker_claim_skipped_total{reason="consumer_gone"}`. A transaction that also wrote something that is not a lease (the
+  audit of a step refused outside its secret's worker pools or of a refused database claim, a permanent failure of an input
+  that cannot be made) commits as before, and its leases go to the withdrawal: those writes belong to no consumer, an audit
+  of a refusal must not disappear because the refused client cancelled (constitution, auditing), and the worker that was
+  refused may never claim again to have it recorded anew (security and correctness reviews of round 4, Minor 1 of each). A
+  transaction that leased nothing commits as before. The claim then stops, as D006-035 says. What is left is the consumer going away between this question and the end of the commit; those leases go
+  to the withdrawal as before (D006-001). D006-002 still holds: nothing cuts a claim between a commit and the hand-over.
+  Weighed:
+  - Leave it to the withdrawal (the branch before this decision): a lapse on every fleet before its activation, a
+    regression against `develop`; after it, two transactions and a slot of the cap for each cancelled claim.
+  - Cut the database wait when the consumer goes (cancel the backend, or race the stop signal against the transaction and
+    drop it): the lock wait ends sooner, but the store port would have to split a phase that may be dropped from a commit
+    that may not, because a drop that reaches the commit is the loss D006-002 forbids. What it saves is bounded by the
+    store's lock timeout. Not taken.
+  - The question before the commit: one check, no new state, the same rule on the root path and on the scoped path, and
+    the same result `develop` had for the case the abort covered. Taken, with the exception for kept writes: rolling those
+    back too (what `develop`'s abort did) would lose an audit, and writing them again in a transaction of their own would add
+    a store port for a case that the withdrawal already covers.
+
+  The test barrier (D006-008): the claim awaits `ClaimWatch::before_commit` just before that question; a test sets it with
+  `WorkerGrpc::with_commit_probe`, which is given the same `Abandonment` as the delivery probe, so the test releases the
+  claim exactly when the server knows its consumer is gone. Production never sets it. The test is renamed
+  `cancelling_while_a_claim_waits_on_a_lock_rolls_its_run_back`, waits for the claim to end (the tracker of D006-036)
+  before it reads the step, and asserts that nothing went to the withdrawal. The other tests:
+  `a_claim_whose_consumer_goes_before_its_commit_leases_nothing_and_withdraws_nothing` (a stream and a unary poll on a
+  platform that withdraws: no `step.leased`, no `step.lease_withdrawn`, the next lease is the step's first),
+  `a_scoped_claim_whose_consumer_goes_before_its_commit_is_rolled_back` (the scoped path, on the real store),
+  `a_claim_whose_consumer_goes_before_its_commit_keeps_the_audit_of_a_refusal` (`secret_pools.rs`: one step refused and
+  audited, one leased, in one transaction: it commits) and the unit test of `roll_back_for_a_gone_consumer` (the exception
+  and the counter). Seen failing before the check: the first two with `handed_over() == 1` (the lease committed), the scoped
+  one with the lease returned; the audit test with no audit row under the rule without the exception.
+
+- **D006-093 — The final review of pull request #260 (round 4, 2026-11-24), settled** (delegate, OD-2026-11-24-4). The
+  correctness and security reviewers read the branch after the merge of `develop` and D006-092: no Blocker, no Major.
+  Fixed: Minor 1 of both (the mixed transaction, above); correctness Nit 1 (the barrier waits of the new contract test are
+  bounded); Nit 2 (the new counter value has a test); Nit 3 (the documentation of `ClaimWatch` and `ConsumerWatch`, the
+  decision ranges of ADR-0098). Settled in writing:
+  - Correctness Minor 2 (no test that a transaction that leased nothing commits): with the exception for kept writes the
+    condition `leased` only spares the barrier; the audit test fails if the exception is removed, which is the case the
+    reviewer's mutation would break.
+  - Correctness Minor 3 (no green run recorded; `tasks.md` has no rows for the withdrawal): the runs are in the pull
+    request's CI; the withdrawal was built from `research.md` and the ADR, and its tasks are not rewritten after the fact.
+    Recorded in G006-033.
+  - Correctness, governance note (an accepted ADR edited in place): ADR-0098's decision 2 keeps its guarantee (nothing is
+    cut between a commit and the hand-over; what was committed and not handed over is withdrawn). D006-092 adds that nothing
+    is committed for a consumer known gone, which decision 1 already intends; it is a clarification dated in the decision,
+    not a change of mind, so no new ADR.
+  - Security Minor 2 (the probes are public and not behind a feature): no configuration, request or variable reaches them;
+    a feature `test-support` would have to be threaded through every crate that builds the API for tests. Instead the
+    architecture check refuses a call of `with_delivery_probe` or `with_commit_probe` outside `tests/` and the crate's own
+    tests. Recorded in G006-033 with the probe's locks.
+  - Security Nit 3 (no test pins the two newer definer functions): fixed, the privilege test lists them.
