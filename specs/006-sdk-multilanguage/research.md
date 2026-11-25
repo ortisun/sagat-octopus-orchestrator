@@ -845,6 +845,26 @@ Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of 
   depend on how many withdrawals the platform ever made, D006-085); a guard that refuses the removal once any withdrawal
   exists (it would make the activation one-way from the first `NOT_SENT`, which a build without `lease-withdrawal-v2`
   replays).
+- **D006-097 — A hand-back of a lease still `LEASED` passes the report fence whatever the cancellation says** (Task
+  006-069; the part of request (1) of D006-059 that belongs to this build). A run whose cancellation was requested, or that
+  is stopping, still has steps `LEASED` to hosts that never started them, and a host that stops hands those back. Without
+  declared secrets the report reached the verdict of D006-030 already; with them, `checked_secret_report` (root) and
+  `live_path_fence` (scoped) refused it `STALE_ATTEMPT`, because the fence let a stop through only for an acknowledged
+  cancellation (`CANCELLED`, not retryable): the lease then lapsed into a review instead of being withdrawn and cancelled
+  at once (D006-011). The fence now takes the closed `StopAllowance`: `None` (any other report), `Cancellation` (the
+  acknowledgement, as before) and `HandBack` (a `TASK_NOT_STARTED`), which lets the stop through only while the step is
+  still `LEASED` to this attempt and generation, judged again on the second fence after the scan. A hand-back of a step that
+  started (a heartbeat made it `RUNNING`) keeps the fence it had, so a secret step whose cancellation was requested cannot
+  record an ordinary failure past it. The verdict that follows is unchanged (the minor that reserves the code, the
+  requirement, the cap), and the withdrawal settles the stopping run in the same command, so the step ends `CANCELLED` with
+  its attempt unspent. What request (1) also asks, the expiry of an acknowledged lease and the lifted expiry of a lease whose
+  mark counts, is behaviour of protocol 1.8 (G006-037). Tested, red first for the two cases with declared secrets (the
+  hand-back answered `STALE_ATTEMPT`, the step still `LEASED`):
+  `a_hand_back_of_a_run_whose_cancellation_was_requested_is_withdrawn` for a root and a scoped lease, each with and without
+  declared secrets (`contract_grpc_durable_execution`). Weighed: allowing every stop for `TASK_NOT_STARTED` (a started
+  secret step whose cancellation was requested could then fail past the fence with a code a handler may have raised before
+  1.8); deciding the hand-back's verdict before the fence (the verdict needs the requirement's lock, which the scan's
+  transaction must not hold across the provider's input and output).
 
 ## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-066, Gap 006-040 to Gap 006-048, Owner question 006-002)
 

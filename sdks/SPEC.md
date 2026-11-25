@@ -431,8 +431,9 @@ instead of a report) and leaves it to lapse, as before this rule. The reason: a 
 for good where the lapse sends it to a review (feature 037), which an operator can still retry. The minor is the one
 the registration accepted (§6.1), read per lease from the session that received it, never the newest the SDK offers. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
 of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
-code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
-(decisions D006-030 and D006-031). On a fleet that does not withdraw (the requirement not recorded, or the engine's
+code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` (whether or not its cancellation was
+requested or its run is stopping: the step is then cancelled at once, decision D006-097) and at most four withdrawals of the
+attempt (decisions D006-030 and D006-031). On a fleet that does not withdraw (the requirement not recorded, or the engine's
 switch `SAGAT_LEASE_WITHDRAWAL=off`) it records nothing and answers `STALE_ATTEMPT`, so the lease lapses as before
 (decision D006-089). At `1.8` (Architecture decision 0099 decision 9) the reservation is read from the lease, not
 from the session, and honoured only while the operator has activated `delivery-acknowledgement-v1` (and, before it,

@@ -26,7 +26,12 @@ where
                 .is_some_and(|node| !node.secrets().is_empty());
         // A cancelled but still current attempt retains the existing upload-policy refusal.
         // This exception only returns a denial; it never grants a capability over cancellation.
-        Self::live_path_fence(&mut tx, task, refuses_secret_upload).await?;
+        Self::live_path_fence(
+            &mut tx,
+            task,
+            StopAllowance::cancellation(refuses_secret_upload),
+        )
+        .await?;
         if refuses_secret_upload {
             return Err(AppError::NotAllowed(
                 "blob outputs with declared secrets require content scanning",

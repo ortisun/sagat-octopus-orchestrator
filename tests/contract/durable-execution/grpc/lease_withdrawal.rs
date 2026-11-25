@@ -1055,3 +1055,144 @@ async fn a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling() {
     assert_eq!(ack.step_status, "FAILED");
     assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
 }
+
+/// Whether the lease is of an instance in a scope (a root lease names the root instance, with an empty path).
+fn in_a_scope(lease: &sagat_api_grpc::pb::TaskLease) -> bool {
+    lease
+        .instance
+        .as_ref()
+        .is_some_and(|instance| !instance.instance_path.is_empty())
+}
+
+/// Stores the secret `name` in the namespace and lets the publisher (`alice`) use it.
+async fn declared_secret(p: &Platform, name: &str) {
+    let namespace = p.namespace_id().await;
+    let (stored, _) = p
+        .rest(
+            reqwest::Method::PUT,
+            &format!("/namespaces/{namespace}/secrets/{name}"),
+            Some(&json!({"value": "a-secret-value-long-enough-0001"})),
+        )
+        .await;
+    assert_eq!(stored, 200);
+    let (granted, _) = p
+        .rest(
+            reqwest::Method::PUT,
+            &format!("/namespaces/{namespace}/secrets/{name}/access/alice"),
+            None,
+        )
+        .await;
+    assert_eq!(granted, 204);
+}
+
+/// One activity of one attempt, at the root or in the body of a `forEach` of one item, declaring `secrets`.
+fn cancellable(name: &str, scoped: bool, secrets: &[&str]) -> Value {
+    let mut activity = json!({
+        "id": "a", "type": "activity", "activity": "act.a",
+        "retry": {"maxAttempts": 1, "strategy": "fixed", "initialDelayMs": 1, "maxDelayMs": 1, "jitter": false}
+    });
+    if !secrets.is_empty() {
+        activity["secrets"] = json!(secrets);
+    }
+    if !scoped {
+        return json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+            "metadata": {"name": name}, "entrypoint": "a", "nodes": [activity]
+        });
+    }
+    activity["next"] = json!("returned");
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": name}, "entrypoint": "lines",
+        "bodies": {"line": {"entrypoint": "a", "nodes": [
+            activity,
+            {"id": "returned", "type": "return", "result": "1"}
+        ]}},
+        "nodes": [
+            {"id": "lines", "type": "forEach", "items": "input.lines", "body": "line",
+             "result": "bodyResult", "maxItems": 1, "maxConcurrency": 1, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]
+    })
+}
+
+/// Request (1) of decision D006-059, the part of this build (Task 006-069, decision D006-097): a host of 1.8 hands back a
+/// lease still `LEASED` of a run whose cancellation was requested. It is withdrawn whatever the cancellation and the stop
+/// reason say, at the root and in a scope, with and without declared secrets (the secret report fence let a stop through
+/// only for `CANCELLED`): nothing fails, the attempt is not spent, and the stopping run ends `CANCELLED`.
+#[tokio::test]
+async fn a_hand_back_of_a_run_whose_cancellation_was_requested_is_withdrawn() {
+    for (scoped, secrets) in [(false, false), (false, true), (true, false), (true, true)] {
+        let case = format!("scoped={scoped} secrets={secrets}");
+        let p = withdrawing_platform(None).await;
+        let declared: &[&str] = if secrets { &["handback-key"] } else { &[] };
+        if secrets {
+            declared_secret(&p, "handback-key").await;
+        }
+        let name = format!("cancel-hand-back-{scoped}-{secrets}");
+        let workflow = p
+            .publish(&name, &cancellable(&name, scoped, declared))
+            .await;
+        let mut worker = p.worker("first").await;
+        worker
+            .register_version(&["act.a"], if scoped { "1.5" } else { "1.4" })
+            .await;
+        as_protocol_1_8(&p, "first").await;
+        let (run, scheduler) = if scoped {
+            let (status, body) = p
+                .rest(
+                    reqwest::Method::PUT,
+                    "/quotas/iteration_concurrency",
+                    Some(&json!({"limit": 8})),
+                )
+                .await;
+            assert_eq!(status, 200, "{body}");
+            let run = p.start(&workflow, &json!({"lines": [1]})).await;
+            let scheduler = crate::support::blob_collections::scheduler(&p, None).await;
+            (run, Some(scheduler))
+        } else {
+            (p.start(&workflow, &json!({})).await, None)
+        };
+        let mut lease = None;
+        for _ in 0..20 {
+            if let Some(scheduler) = &scheduler {
+                scheduler.tick().await;
+            }
+            if let Some(found) = worker.poll(1).await.pop() {
+                lease = Some(found);
+                break;
+            }
+        }
+        let lease = lease.unwrap_or_else(|| panic!("{case}: one lease"));
+        assert_eq!(in_a_scope(&lease), scoped, "{case}");
+        let (status, _) = p
+            .rest(
+                reqwest::Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&json!({"action": "CANCEL", "reason": "the customer changed their mind"})),
+            )
+            .await;
+        assert_eq!(status, 202, "{case}");
+        if let Some(scheduler) = &scheduler {
+            scheduler.tick().await;
+        }
+        worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .unwrap_or_else(|refused| panic!("{case}: the hand-back is refused: {refused:?}"));
+        let run_id: Uuid = run.parse().expect("run id");
+        if let Some(scheduler) = &scheduler {
+            crate::support::blob_collections::tick_until_settled(&p, scheduler, run_id, 20).await;
+        }
+        assert_eq!(p.status(&run).await, "CANCELLED", "{case}");
+        let journal = journal(&p, &run).await;
+        let withdrawn = named(&journal, "step.lease_withdrawn");
+        assert_eq!(withdrawn.len(), 1, "{case}: {journal:?}");
+        assert_eq!(withdrawn[0]["cause"], "NOT_STARTED", "{case}");
+        assert_eq!(withdrawn[0]["attempt"], 1, "{case}");
+        assert!(named(&journal, "step.failed").is_empty(), "{case}");
+        assert!(named(&journal, "step.needs_review").is_empty(), "{case}");
+        assert!(named(&journal, "step.started").is_empty(), "{case}");
+        replays(&p, &run).await;
+    }
+}

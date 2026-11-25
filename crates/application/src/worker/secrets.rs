@@ -269,13 +269,13 @@ where
         mut tx: S::Tx,
         idempotency: &Idempotency,
         output: &[u8],
-        cancellation_acknowledgement: bool,
+        stop: StopAllowance,
     ) -> Result<SecretReport<S::Tx>, AppError> {
         let names = Self::declared_secrets(&mut tx, task);
         if self.vault.is_none() || names.is_empty() {
             return Ok(SecretReport::Ready(tx, None));
         }
-        self.report_authority_fence(principal, &mut tx, task, cancellation_acknowledgement)
+        self.report_authority_fence(principal, &mut tx, task, stop)
             .await?;
         let before = tx.secret_versions(&names).await?;
         tx.commit().await?;
@@ -284,7 +284,7 @@ where
         if let Some(ack) = self.replayed(principal, &mut tx, task, idempotency).await? {
             return Ok(SecretReport::Replayed(ack));
         }
-        self.report_authority_fence(principal, &mut tx, task, cancellation_acknowledgement)
+        self.report_authority_fence(principal, &mut tx, task, stop)
             .await?;
         if before != tx.secret_versions(&names).await? {
             return Err(AppError::Unavailable);
