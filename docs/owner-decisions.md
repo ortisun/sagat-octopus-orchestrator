@@ -4,6 +4,22 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-25 — No paid runners; how a 0.3.0 design is approved
+
+Asked whether to pay for GitHub's larger runners for the benchmarks of designs 048, 051 and 052 (US$ 1,885.68 for the
+first comparative campaign, US$ 1,613.52 for each later one, US$ 208.01 for 052, US$ 10.08 per Kubernetes drill), the
+owner answered "Nada pago".
+
+The design reviews of release 0.3.0 do not converge to zero Major findings on long designs: design 044 had 0 Blockers and
+15 Majors at its eleventh round, each round's Majors being new and narrower than the last; 048 behaved the same way. The
+owner settled the same pattern for designs 041 and 043 with "fix, short re-read, accept the rest" (OD-2026-11-16-3,
+OD-2026-11-16-7). The coordinating session applies that precedent to every 0.3.0 design under the delegation.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-25-1 | "Nada pago": no paid runner, cloud account or other spending for 0.3.0. Every benchmark and drill runs on GitHub's free standard runners or on the local machine. A report says which runner it used, and no document or release note claims to surpass Temporal or Windmill on throughput, latency or recovery time unless a run on a declared, comparable environment shows it; a figure from a free runner is published as that, never as a product limit. The paid tasks of designs 048, 051 and 052 stay unscheduled until the owner decides otherwise | owner | Decided | docs/designs/048-*, docs/designs/051-*, docs/designs/052-*, docs/releases/unreleased.md |
+| OD-2026-11-25-2 | How a 0.3.0 design is approved, decided by the coordinating session under OD-2026-11-24-4 on the precedent of OD-2026-11-16-3 and OD-2026-11-16-7: (1) a full round by every required reviewer; (2) every Blocker fixed, never accepted; every finding of a security report fixed, never accepted (the check refuses a delegate acceptance of those); (3) every Major fixed or settled in writing with its reasoning; (4) one short re-read of the fixes alone (the changed text, by the reviewers whose findings it answers), which must find no Blocker and no Major in that changed text; (5) the remaining Majors and every minor of the last full round settled in writing as `delegate (OD-2026-11-24-4)` rows citing `<report>#<n>`, then the design is Approved. New findings that a fresh full read would raise are left to the build, where each task is test-first and reviewed. Weighed: looping to zero Majors (each design spent ten or more rounds without converging and holds the builders back), approval on the first round (leaves real defects), and this rule, which keeps every Blocker and security finding fixed and bounds the cost | delegate (OD-2026-11-24-4) | Decided | every 0.3.0 design doc; scripts/check-design-docs.py |
+
 ## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
 
 The coordinating session compared the platform with Temporal and Windmill (gaps that have a specification, gaps that have
