@@ -4,6 +4,22 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-24 — Delegated decisions of the Temporal-parity readiness (features 019, 020, 030, 031 and design 045)
+
+Taken by the agent that the coordinating session briefed for the Temporal-side parity features, under the owner's delegations
+Owner decision 2026-11-20-6 (the open questions of 0.3.0 features) and Owner decision 2026-11-24-4 (accepting ADRs, checklist items
+and design approvals), both recorded in this file by their own pull requests. Each row is a delegate's decision, weighed over every
+option and taken for the most architectural and business advantage; its reasoning is where the question lives, named in `Covers`.
+The owner may overrule any of them.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-24-700 | Feature 019: O1040 `autoUpgrade` by default; O1041 no token-only completion; O1042 no in-process reuse in warm containers; Architecture decisions 0051 and 0052 revised and accepted (0052 supersedes 0013 in part, its `reused` mode only); the four unticked checklist items accepted | delegate | Decided; not built | specs/019-worker-deployments-dispatch/research.md, checklists/requirements.md, docs/adr/ADR-0051, ADR-0052 |
+| OD-2026-11-24-701 | Feature 020: O1080 no default retention; O1081 the uniform `pii` egress rule of D1617; O1082 run stubs kept; Architecture decision 0053 revised and accepted, 0054 accepted with its code gated on the amendment of principle I; the checklist items accepted or fixed, except the principle-I amendment, which is the owner's | delegate | Decided; not built | specs/020-visibility-analytics-archival/research.md §5 and §5a, checklists/requirements.md, docs/adr/ADR-0053, ADR-0054 |
+| OD-2026-11-24-702 | Feature 030: O1480 (a) flat handler workflows for sync operations; O1481 (a) fail closed after revocation; O1482 (b) contract and endpoint revisions through the publication-request flow in protected namespaces; Architecture decision 0065 accepted; the `serviceCall` carrier accepted for feature 016; G1496 accepted for 0.3.0; the four checklist items accepted | delegate | Decided; not built | specs/030-cross-namespace-services/research.md, checklists/requirements.md, docs/adr/ADR-0065 |
+| OD-2026-11-24-703 | Feature 031: O1520 (a) OpenBao Transit and a test-only provider; O1521 (a) the customer's identity provider authenticates; O1522 (a) the reference codec server is an example; Architecture decision 0066 revised and accepted; the four checklist items accepted | delegate | Decided; not built | specs/031-client-side-encryption/research.md, checklists/requirements.md, docs/adr/ADR-0066 |
+| OD-2026-11-24-704 | Design 045: Owner questions 045-001 to 045-009 decided (no retry after a timeout that ends a live attempt; `SCHEDULE_TO_START_TIMEOUT` final; `error_code` as the error type; host and handler heartbeats; a retry policy per code; `activity` and `script` nodes); buffered signals belong to a design of their own, whose proposal is Architecture decision 0111 (proposed, to be numbered by the coordinating session) | delegate | Decided; not built | specs/045-activity-timeouts/research.md, docs/designs/045-activity-timeouts.md |
+
 ## 2026-11-20 — Documentation first, words in full, identifiers as words
 
 The owner gave three instructions on 2026-11-20, one after the other. They are amended into the constitution together
