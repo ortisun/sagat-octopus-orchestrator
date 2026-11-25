@@ -97,30 +97,62 @@ place. Every owner question below was decided under the owner's delegation (Owne
 - **Decision 045-016 — The exception-to-code map stays** (zoom-out review, Nit 13, contested). Without it an uncaught exception is
   `ACTIVITY_ERROR` whatever its class, so a retry list cannot name it unless every handler catches and rethrows; the map is local to
   each SDK and changes nothing on the wire.
-- **Decision 045-017 — A `RETRY_WAIT` step past its close deadline is ended by the retries pass** (zoom-out review, Nit 12, accepted),
-  so the close-deadline index covers `READY` and gated `WAITING` rows only.
+- **Decision 045-017 — A `RETRY_WAIT` step past its close deadline is ended by the retries pass** (zoom-out review, Nit 12, accepted).
+  Revised 2026-11-24 (architecture review round 2, Nit 1): the close index covers `READY` rows only; a gated step is ended by feature
+  022's timeout routine.
 
-- **Decision 045-018 — An operator's retry clears the close deadline** (correctness review, Major 6; architecture review, Major 5).
+- **Decision 045-018 — An operator's retry clears the close deadline** (revised in round 2, architecture review Major 3: only the
+  retry of a step that failed with a known code; a step whose outcome is unknown is settled by a person first, as feature 037's
+  `OutcomeUnresolved` refusal says) (correctness review, Major 6; architecture review, Major 5).
   Options: (a) refuse the retry past the deadline with a typed reason; (b) give the retry a new close budget; (c) clear the close
   deadline. Chosen (c), delegate (Owner decision 2026-11-24-4): the operator has looked at the step and decided; (a) makes the
   button useless after the budget and (b) invents a budget nobody wrote. The new attempt keeps `timeoutMs` and gets a start deadline.
   The same rule clears the deadline when a reconciliation, a review or an operator's hold takes over: from then on a person or a
   reconciliation decides (correctness review, Blocker 1).
-- **Decision 045-019 — A pause suspends the start deadline, not the close deadline** (correctness review, Major 7; architecture
+- **Decision 045-019 — A pause suspends the start deadline, not the close deadline** (revised in round 2, correctness review Major 3,
+  security review Major 5, architecture review Major 9: the pause removes the claimable steps' start deadlines and the resume gives
+  each a full window from `db_now`, in one statement each, with the window kept on the row; a shift by the paused time was wrong for
+  steps that became claimable during the pause and needed a payload per step; the close deadline is enforced during the pause by
+  every path) (correctness review, Major 7; architecture
   review, Major 4). Options: (a) both keep running; (b) both suspended; (c) the start deadline suspended, the close deadline kept.
   Chosen (c), delegate (Owner decision 2026-11-24-4): schedule-to-start detects a missing worker, and a pause is not one; the close
   deadline is the author's business window, which a pause does not extend. The pass skips a paused run; the resume moves each
   claimable step's start deadline later by the paused time; the close deadline is enforced from the resume.
-- **Decision 045-020 — A reset recomputes the deadlines** (architecture review, Major 5). Options: (a) copy the source's instants;
+- **Decision 045-020 — A reset recomputes the deadlines** (withdrawn in round 2, codebase review Major 6 and correctness review Nit 5:
+  a reset point is not offered while any step is open, so no copied event makes a step claimable and no rule is needed) (architecture review, Major 5). Options: (a) copy the source's instants;
   (b) refuse a reset point with open deadlines; (c) recompute from the reset's time. Chosen (c), delegate (Owner decision
   2026-11-24-4): (a) fails the new run at once, (b) makes a common reset impossible; a reset is a deliberate new start.
-- **Decision 045-021 — The close floor** (correctness review, Major 3; design review, Major 2): an attempt is not leased, and a retry
+- **Decision 045-021 — The close floor** (round 2: the domain journals the close cutoff, the close deadline less the floor, which is the
+  indexed column, so the hint, the pass and the lease decision compare the same value; publication refuses a `scheduleToCloseMs` below
+  the floor plus 1,000 ms) (correctness review, Major 3; design review, Major 2): an attempt is not leased, and a retry
   not scheduled, with less than the earlier of `timeoutMs` and 6,000 ms left before the close deadline, so that running out of budget
   is a known failure and not a review.
-- **Decision 045-022 — `heartbeatFrom: "handler"` requires `scheduleToStartMs`, and has its own requirement** (security review,
+- **Decision 045-022 — `heartbeatFrom: "handler"` requires `scheduleToStartMs`, and has its own requirement** (round 2: the requirement
+  is `activity-timeouts-protocol-v1` and also covers a `heartbeatTimeoutMs` below 30,000 ms, which only a 1.9 host is given,
+  architecture review Major 4) (security review,
   Major 3; architecture review, Blocker 1 and Major 7): such a step waits for a 1.9 host, and only a bounded wait keeps it from
   waiting without end; `activity-timeouts-handler-v1` is listed only by a build that offers 1.9.
-- **Decision 045-023 — The worker's delay is clamped to at least the author's initial delay** (security review, Major 4).
+- **Decision 045-023 — The worker's delay is clamped to at least the author's initial delay** (security review, Major 4). Revised in
+  round 2 (security review Major 4): the longer of the worker's delay and the policy's computed delay for that attempt.
+- **Decision 045-024 — The minimum heartbeat timeout is 18,000 ms** (implementation-readiness review Major 10; correctness review round
+  2, Major 9). Options: (a) 10,000 ms; (b) 18,000 ms. Chosen (b), delegate (Owner decision 2026-11-24-4): below 18,000 ms a lease is
+  never provisional under protocol 1.8 (Architecture decision 0099 decision 2), so it loses the protection against a delivery lost
+  on the wire, and such a loss becomes an unknown outcome and a review for work that never ran; detecting a dead worker in 18 s
+  instead of 10 s is the smaller cost. Decided before the schema merges, because raising a minimum later would tighten a published
+  schema (Architecture decision 0032 decision 2). This closes Gap 045-004.
+- **Decision 045-025 — A withdrawal gives the attempt a fresh receive bound** (correctness review round 2, Major 6). Options: (a) keep
+  the start deadline, so a lease lost on the wire past it fails the step; (b) write the later of the old deadline and the withdrawal's
+  `db_now` plus the shorter of the window and 6,000 ms. Chosen (b), delegate (Owner decision 2026-11-24-4): a withdrawal is not a
+  missing worker, and (a) would run a failure route, or a saga's compensations, after a delivery loss that protocol 1.8 exists to
+  recover; the four withdrawals per attempt of Architecture decision 0098 decision 7 bound how often.
+- **Decision 045-026 — The level of a version** (security review round 2, Majors 1 and 3; architecture review round 2, Major 8).
+  Publication records 0, 1 or 2; only a version above 0 is read with these rules, so a document stored before the upgrade that already
+  carries one of the keys runs as today; the removal of a requirement is refused while a version of its level exists, which is one
+  indexed predicate and cannot race the publication, which holds the requirement.
+- **Decision 045-027 — The publication hold is a fair advisory lock** (security review round 2, Major 2; architecture review round 2,
+  Major 7): a shared transaction advisory lock on the requirement's key, which the operator's functions take exclusively; advisory
+  locks queue in order, so publications cannot starve the operator, and the runtime role takes no row lock on the registry. It refines
+  Architecture decision 0082 decision 1, and features 020, 029 and 031 may use the same function.
 
 ## Gaps
 
@@ -128,8 +160,7 @@ place. Every owner question below was decided under the owner's delegation (Owne
   window. Closed 2026-11-24 after the security and design reviews: it never shares; it is its own `pick` pass with its own window.
 - **Gap 045-002 — The start deadline as an urgency hint.** Feature 019's priority order could serve sooner a step whose start deadline
   is close; not in 0.3.0, recorded for 019.
-- **Gap 045-004 — Whether the minimum heartbeat timeout should be 18,000 ms**, so that every lease can be provisional under protocol
-  1.8 and keep delivery acknowledgement's protection. Decided by the measurement of Task 045-17.
+- **Gap 045-004 — Whether the minimum heartbeat timeout should be 18,000 ms.** Closed 2026-11-24 by Decision 045-024: it is.
 - **Gap 045-003 — Timeouts on the managed runner nodes** (database, lake). Their runners have their own limits; a schedule-to-start for
   a runner fleet that is down is useful and is left for a later design.
 
