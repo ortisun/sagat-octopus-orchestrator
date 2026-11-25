@@ -482,7 +482,13 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
         E::InvalidContinuationPolicy(_) => ("INVALID_CONTINUATION_POLICY", None),
         E::InvalidSwitch { node, .. } => ("INVALID_SWITCH", Some(node.to_string())),
-        // feature 022 (`contracts/errors.md`): the code of the gate the declaration is for
+        // feature 022 (`contracts/errors.md`): a key per run has a code of its own (FR-022-056), every other rule the code
+        // of the gate the declaration is for
+        E::InvalidFlowControl {
+            node,
+            rule: sagat_domain::workflow::FlowControlRule::UnboundedKey,
+            ..
+        } => ("FLOW_CONTROL_KEY_UNBOUNDED", node.clone()),
         E::InvalidFlowControl { kind, node, .. } => (
             match kind {
                 sagat_domain::workflow::GateKind::Concurrency => "CONCURRENCY_POLICY_INVALID",

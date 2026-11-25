@@ -22,6 +22,10 @@ use serde_json::{Map, Value};
 const RUN_KEY_VARIABLES: [&str; 1] = ["input"];
 /// What a node-level key may read: the run data a step sees when it would become ready.
 const STEP_KEY_VARIABLES: [&str; 4] = ["input", "steps", "state", "run"];
+/// The variable that holds the run's identity: its only field is the run's id (`run.id`), so a key that reads it makes a
+/// key per run, which publication refuses (FR-022-056, decision D022-081). The business identifier and the idempotency key
+/// are not visible to an expression.
+const IDENTITY_VARIABLE: &str = "run";
 
 /// The longest expression a key may be: the bounded evaluator's source limit.
 const MAX_KEY_EXPRESSION_BYTES: usize = 1024;
@@ -198,8 +202,8 @@ fn key(
     } else {
         &STEP_KEY_VARIABLES
     };
-    if compiled
-        .variables()
+    let variables = compiled.variables();
+    if variables
         .iter()
         .any(|variable| !allowed.contains(&variable.as_str()))
     {
@@ -212,6 +216,11 @@ fn key(
                 message: "a step's key reads `input`, `steps`, `state` or `run`".to_owned(),
             }
         });
+    }
+    // alone or beside other data, the run's id makes the key one of a kind per run: as many keys as runs, each of which a
+    // window row and its retention keep alive (FR-022-056, decision D022-081)
+    if variables.contains(IDENTITY_VARIABLE) {
+        return Err(refused(kind, node, FlowControlRule::UnboundedKey));
     }
     Expression::parse(text)
         .map(Some)

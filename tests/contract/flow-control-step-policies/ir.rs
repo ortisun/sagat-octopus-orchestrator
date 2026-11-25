@@ -37,7 +37,7 @@ fn refusal(name: &str) -> Vec<(&'static str, Option<String>)> {
 }
 
 /// What each invalid fixture is refused with, and the node it names.
-const REFUSED: [(&str, &str, Option<&str>); 7] = [
+const REFUSED: [(&str, &str, Option<&str>); 8] = [
     (
         "invalid-concurrency-policy.workflow.json",
         "CONCURRENCY_POLICY_INVALID",
@@ -73,6 +73,11 @@ const REFUSED: [(&str, &str, Option<&str>); 7] = [
         "UNSUPPORTED_NODE",
         Some("charge"),
     ),
+    (
+        "invalid-flow-control-key-unbounded.workflow.json",
+        "FLOW_CONTROL_KEY_UNBOUNDED",
+        Some("call"),
+    ),
 ];
 
 #[test]
@@ -83,6 +88,51 @@ fn every_invalid_fixture_is_refused_with_its_code_before_a_version_exists() {
             vec![(code, node.map(str::to_owned))],
             "{name}"
         );
+    }
+}
+
+/// FR-022-056 (task T022-103, decision D022-081): a step key that reads the run's identity, alone or beside other data,
+/// at either gate, is refused `FLOW_CONTROL_KEY_UNBOUNDED` at its node; a key over the run's data that does not read it
+/// is accepted, and a top-level key cannot read it at all (it reads only `input`).
+#[test]
+fn a_key_that_reads_the_runs_identity_is_refused_as_unbounded() {
+    let document = |gate: &str, key: &str| {
+        let mut policy = serde_json::json!({"key": key, "limit": 1});
+        if gate == "rateLimit" {
+            policy["per"] = serde_json::json!("second");
+        }
+        let mut call =
+            serde_json::json!({"id": "call", "type": "activity", "activity": "provider.call"});
+        call[gate] = policy;
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1",
+            "kind": "Workflow",
+            "metadata": {"name": "keys"},
+            "entrypoint": "call",
+            "nodes": [call]
+        }))
+        .expect("json")
+    };
+    for gate in ["concurrency", "rateLimit"] {
+        for key in ["run.id", "input.accountId + run.id", "run"] {
+            let codes: Vec<_> = match JsonIrCodec.parse(&document(gate, key)) {
+                Ok(_) => panic!("{gate} {key} is refused"),
+                Err(error) => problems_of(&error)
+                    .into_iter()
+                    .map(|problem| (problem.code, problem.node))
+                    .collect(),
+            };
+            assert_eq!(
+                codes,
+                vec![("FLOW_CONTROL_KEY_UNBOUNDED", Some("call".to_owned()))],
+                "{gate} {key}"
+            );
+        }
+        for key in ["input.accountId", "input.accountId + '-' + input.region"] {
+            JsonIrCodec
+                .parse(&document(gate, key))
+                .unwrap_or_else(|error| panic!("{gate} {key}: {error:?}"));
+        }
     }
 }
 
@@ -258,8 +308,7 @@ fn the_corpus_that_declares_no_gate_reads_as_before() {
 /// rule has a fixture in [`REFUSED`], is the warning of
 /// [`a_self_starting_child_under_a_run_permit_is_published_with_a_warning`], or is a namespace warning of
 /// [`NAMESPACE_WARNINGS`].
-const PENDING: [(&str, &str); 4] = [
-    ("FLOW_CONTROL_KEY_UNBOUNDED", "T022-103"),
+const PENDING: [(&str, &str); 3] = [
     ("FLOW_CONTROL_KEY_SECRET", "T022-104"),
     ("FLOW_CONTROL_KEY_PII", "T022-104"),
     (

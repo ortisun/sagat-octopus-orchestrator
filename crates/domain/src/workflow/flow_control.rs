@@ -235,6 +235,10 @@ pub enum FlowControlRule {
     TopLevelKey,
     #[error("a definition may hold at most {max} node-level declarations of one kind")]
     TooManyDeclarations { max: usize },
+    /// `FLOW_CONTROL_KEY_UNBOUNDED` (FR-022-056, decision D022-081): the key reads the run's identity, so every run
+    /// would make a key of its own.
+    #[error("a key that reads the run's identity makes a key per run")]
+    UnboundedKey,
 }
 
 /// At most `limit` holders of one key at once (FR-022-017). `key` is absent for the single key of the group.

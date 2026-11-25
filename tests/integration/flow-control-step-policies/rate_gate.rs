@@ -744,6 +744,115 @@ async fn the_purge_keeps_a_short_grant_for_the_longest_period_its_window_has_see
     w.complete(&session, &task, &json!({})).await.expect("done");
 }
 
+/// Moves the instants of `run`'s grant rows by `by_us` microseconds, as the owner, with the guard that forbids it
+/// switched off for this transaction only (decision D022-072: counted instants are moved, the clock is not).
+pub(crate) async fn move_grant_instants(w: &World, run: RunId, by_us: i64) {
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    sqlx::query("ALTER TABLE rate_limit_grants DISABLE TRIGGER rate_limit_grants_guard")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard off in this transaction");
+    sqlx::query(
+        "UPDATE rate_limit_grants SET granted_at = granted_at + $2 * interval '1 microsecond', \
+                leased_at = leased_at + $2 * interval '1 microsecond' WHERE run_id = $1",
+    )
+    .bind(run.as_uuid())
+    .bind(by_us)
+    .execute(&mut *tx)
+    .await
+    .expect("the grant's instants moved");
+    sqlx::query("ALTER TABLE rate_limit_grants ENABLE ALWAYS TRIGGER rate_limit_grants_guard")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard on again");
+    tx.commit().await.expect("moved");
+}
+
+/// Task T022-103 (FR-022-056), mixed periods on one key: two per-second slots and one hourly slot of `acct-1`. The window
+/// row keeps the longest period (an hour), so a per-second grant is kept an hour and a minute after its lease, not its
+/// own second and a minute; the purge deletes only what is past that, at most `limit` rows a key, and the window's
+/// `live_grants` goes down by exactly the rows each purge deleted. The hourly grant, leased ten minutes later (its
+/// instants moved, decision D022-072), stays.
+#[tokio::test]
+async fn the_purge_of_a_key_with_mixed_periods_counts_down_the_rows_it_deleted() {
+    const LATER_US: i64 = 600 * SECOND_US;
+    let w = gated_world().await;
+    let secondly = publish(&w, rated_start("rate-purge-mixed-s", 5, "second")).await;
+    let hourly = publish(&w, rated_start("rate-purge-mixed-h", 5, "hour")).await;
+    let input = json!({"accountId": "acct-1"});
+    let short = [
+        w.start(secondly, &input).await,
+        w.start(secondly, &input).await,
+    ];
+    let long = w.start(hourly, &input).await;
+    for run in short.iter().chain([&long]) {
+        assert_eq!(start_slot(&w, *run).await.0, 1, "granted at once");
+    }
+    // the runs end: a grant counts until it ages out, whatever its run does since
+    let session = w.session(&["act.g"]).await;
+    for task in w.poll(&session, 8).await {
+        w.complete(&session, &task, &json!({})).await.expect("done");
+    }
+    move_grant_instants(&w, long, LATER_US).await;
+    let window = || async {
+        sqlx::query_as::<_, (i32, i32, i64)>(
+            "SELECT w.max_period_ms, w.live_grants, \
+                    (SELECT count(*) FROM rate_limit_grants g WHERE g.group_name = w.group_name) \
+               FROM rate_limit_windows w WHERE w.group_name = 'accounts'",
+        )
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the window")
+    };
+    assert_eq!(window().await, (3_600_000, 3, 3));
+    let mut latest = 0;
+    for run in short {
+        latest = latest.max(start_slot(&w, run).await.3.expect("a lease instant"));
+    }
+    let at = |micros: i64| {
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000).expect("an instant")
+    };
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(at(latest + SECOND_US + 60 * SECOND_US + 1), 64, 100)
+            .await
+            .expect("purge"),
+        0,
+        "a per-second grant is kept for the window's longest period"
+    );
+    let past_short = at(latest + HOUR_US + 60 * SECOND_US + 1);
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(past_short, 64, 1)
+            .await
+            .expect("purge"),
+        1,
+        "at most `limit` rows of a key"
+    );
+    assert_eq!(
+        window().await,
+        (3_600_000, 2, 2),
+        "down by the one row deleted"
+    );
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(past_short, 64, 100)
+            .await
+            .expect("purge"),
+        1,
+        "the other per-second grant; the hourly one is ten minutes younger"
+    );
+    assert_eq!(
+        window().await,
+        (3_600_000, 1, 1),
+        "down by the one row deleted"
+    );
+    assert_eq!(start_slot(&w, long).await.0, 1, "the hourly grant stays");
+    // (the consistency checks are not run: they compare the journal with the true clock, under which the grants this
+    // purge deleted as of an hour from now still count; the window's own count is checked above)
+    move_grant_instants(&w, long, -LATER_US).await;
+}
+
 // ------------------------------------------------------------------------------- the re-reviews of 2026-11-20 (D022-066)
 
 /// The namespace's rate-limit window rows (both scopes, every version).
