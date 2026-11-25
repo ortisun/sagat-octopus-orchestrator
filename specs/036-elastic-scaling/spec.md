@@ -262,9 +262,11 @@ nothing changes automatically.
 
 ### User Story 5 (US05) - Manage signals and policies programmatically (Priority: P1)
 
-A program (an operator's controller, a deployment pipeline, a tenant's automation) uses the management
-interface to define, read, update and delete policies and signals, to ask what a policy would decide for given
-values without applying it, to override a decision for a limited time, and to publish its own signals.
+A program of an operator (a controller, a deployment pipeline) uses the management interface to define, read,
+update and delete policies and signals, to ask what a policy would decide for given values without applying it,
+to override a decision for a limited time, and to publish its own signals. A tenant's automation only reads its
+connectors' lag and adjusts their consumption (FR-036-023); in the first delivery only operators publish custom
+signals (FR-036-024). *Corrected 2026-11-24, security checklist items CHK016 and CHK017.*
 
 **Why this priority**: The owner requires programmatic control as a peer of configuration, not an afterthought.
 
@@ -630,7 +632,8 @@ make each source fail in turn and verify that the signal becomes unavailable and
   be listed and a previous one restored.
 - **FR-036-019**: The same model, validation and versioning MUST be available through the management
   interface: create, read, update and delete policies and custom signals. Everything that can be declared by
-  configuration can be declared programmatically by an operator, and the reverse; what a tenant can do
+  configuration can be declared programmatically by an operator, and the reverse, except the configuration-only
+  limits of FR-036-064 (corrected 2026-11-24, checklist item CHK004); what a tenant can do
   programmatically about scaling is limited to FR-036-023. The **management interface** is the
   platform's documented, versioned REST contract, checked by contract tests like the other public contracts,
   together with the operator command line; the official SDKs do not expose it in this feature (O1708).
@@ -814,12 +817,24 @@ make each source fail in turn and verify that the signal becomes unavailable and
   so that a name cannot be rebound to an address that was not intended. Redirects are never followed and
   proxies from the environment are ignored. Where the deployment restricts its network the destination MUST
   also be allowed there explicitly. A source whose destination is not allowed is refused at declaration, and the
-  check is repeated at every query.
+  check is repeated at every query. *Added 2026-11-24 (checklist item CHK014):* a forbidden address is any
+  address of the egress guard's forbidden classes, and with `allowPrivate` only the private class is lifted:
+  link-local and cloud-metadata addresses (169.254.0.0/16, `fd00:ec2::254`), unspecified, loopback, multicast,
+  broadcast and IPv4-mapped IPv6 forms of any of these stay forbidden. Every endpoint a broker advertises (Kafka
+  metadata, NATS `connect_urls`) or a region derives (an SQS endpoint) MUST pass the same allowlist before it is
+  connected to. Allowlist entries and destinations are compared in canonical form: the host in lower case
+  without a trailing dot, the port explicit (the scheme's default when omitted), and an address literal parsed
+  as an address (decimal, octal and short IPv4 notations are refused as literals).
 - **FR-036-058**: The credentials of a source MUST be references to secrets, resolved at use, and MUST NOT
   appear in a source declaration, a policy, a decision record, a log, a metric or a response. A destination with
   embedded user information, or a destination query string or query text with a parameter named like a
-  credential (`token`, `password`, `secret`, `authorization`, `api_key` and the like), is refused at
-  declaration; the platform does not promise to recognise a credential in free text (G1718). A source with
+  credential, is refused at declaration; the names are a closed list compared without regard to case and
+  ignoring `-` and `_` (`token`, `access_token`, `password`, `passwd`, `pwd`, `secret`, `client_secret`,
+  `authorization`, `auth`, `api_key`, `apikey`, `key`, `signature`, `sig`, `credential`, `x_amz_credential`,
+  `x_amz_security_token`, `x_amz_signature`; closed on 2026-11-24, checklist item CHK029), and `servers` and
+  `queueUrl` are destinations under this rule and FR-036-057. A source declaration is a closed object: an
+  unknown field is refused (the configuration schema and the operator contract both close it). The platform does
+  not promise to recognise a credential in free text (G1718). A source with
   credentials MUST use an encrypted connection (TLS 1.2 or later, the certificate chain and the host name
   validated against the system trust roots and any roots the operator names in configuration) and is refused
   otherwise; a certificate error is a refusal, never a warning.
@@ -850,7 +865,14 @@ make each source fail in turn and verify that the signal becomes unavailable and
   refused by the operator interface, and a token issued for operators MUST be refused by the tenant interface.
   Tokens accepted by the operator interface are short-lived (a lifetime above one hour is refused); access is
   revoked by expiry and by rotating the verification keys of the operator audience; and every operator action
-  records the token's subject and identifier, so that the actions of a leaked token can be listed.
+  records the token's subject and identifier, so that the actions of a leaked token can be listed. *Added
+  2026-11-24 (checklist items CHK002 and CHK023):* operator tokens MUST come from an operator issuer configured
+  separately from the tenant issuers, with its own verification keys, so that rotating them revokes operator
+  tokens only; the process refuses to start when the operator issuer and audience equal a tenant's. The four
+  permissions travel in a named claim (`sagat_scaling_permissions`); a token without it, or with a value outside
+  the four, is refused. A token's lifetime is `exp - iat`, and a token without either is refused. The blast
+  radius of a leaked operator token is its own permissions, inside the configuration-only limits of FR-036-064,
+  from the peers of FR-036-063, until its expiry. The operator listener serves TLS only.
 - **FR-036-063**: The operator interface MUST be absent unless enabled by configuration. When enabled it MUST be
   reachable only from peers named explicitly in the deployment; an empty or unrestricted peer list is refused
   when the deployment is rendered or started.
@@ -859,9 +881,18 @@ make each source fail in turn and verify that the signal becomes unavailable and
   interface. The evaluator MUST validate every policy, source and signal version against them at each
   evaluation, and MUST refuse, and raise a condition for, one that violates them, so that rows written outside
   the management interface cannot take a unit past its ceilings or a source to a destination that is not allowed.
+  *Added 2026-11-24 (checklist item CHK024):* every replica's exporter MUST clamp each published desired capacity
+  to the configured floor and ceiling of its unit (which it reads from configuration, not from the database), and
+  MUST publish only a desired value written by a fenced decision (its decision identifier and lease generation
+  present and matching a decision record), so that a row written by a compromised runtime role cannot take the
+  autoscaler past the configuration; SC-036-021 covers these rows.
 - **FR-036-065**: Refused attempts on the operator interface, on a source declaration and on a cross-tenant read
-  MUST be audited, without the content of the request, and counted by reason on a metric that carries no tenant
-  identity.
+  or write (the consumption `PATCH` included, added 2026-11-24, checklist item CHK005) MUST be audited, without
+  the content of the request, and counted by reason on a metric that carries no tenant identity. A refusal on the
+  operator interface or a source declaration goes to the platform audit trail with the token's subject as actor
+  (or `anonymous`); a refused cross-tenant attempt goes to the audit trail of the caller's own tenant, with the
+  caller as actor, and never names the target. The platform audit trail is read through `GET /scaling/audit`
+  under `scaling:read` and the operator command line (CHK001).
 - **FR-036-066**: The actor of an audit record MUST be: the operator identity of the token, for a change through
   the interface; `configuration` with the digest of the document, for a change that comes from the
   configuration file (each applied version is recorded with a reason, the document's declared change note or its
