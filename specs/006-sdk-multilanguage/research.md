@@ -820,8 +820,8 @@ Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of 
   registry that does).
 - **D006-096 — `lease-withdrawal-v2`: a capability of its own, an entry that follows `lease-withdrawal-v1`, and a floor of
   one cause** (Task 006-071; request (9) of D006-059). `Capability::LeaseWithdrawalV2` (`lease-withdrawal-v2`) joins the
-  closed set, and the migration pair `20270211000100_lease_withdrawal_v2` and `20270211000200_lease_withdrawal_v2_validate`
-  adds it to the three checks (the union with every value of `develop`; feature 022's are still on its own branch, and the
+  closed set, and the migrations `20270211000100_lease_withdrawal_v2` and `20270211000200_lease_withdrawal_v2_validate`
+  add it to the three checks (the floor below is `20270211000150_lease_withdrawal_v2_floor`, split out by D006-100) (the union with every value of `develop`; feature 022's are still on its own branch, and the
   branch that merges second takes the union, D006-033), `NOT VALID` then validated, its down restoring the list of
   `20270208000000` (D006-083). The processes list it from Task 006-072 on, in the same commit as the rule it promises (an
   engine whose registry is silent serves no capability call): a commit that listed it first would announce a rule the binary

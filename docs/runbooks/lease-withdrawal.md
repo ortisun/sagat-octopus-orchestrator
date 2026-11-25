@@ -93,7 +93,9 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS run_events_lease_not_acknowledged_idx ON
 It can be removed again (`platform_requirement_remove('lease-withdrawal-v2', ...)`, under READ COMMITTED and the 1.5 s
 statement timeout, as below) until a journal holds a withdrawal with the cause `NOT_ACKNOWLEDGED`. From then on the removal
 is refused (`lease-withdrawal-v2 cannot be removed while a journal holds step.lease_withdrawn with the cause
-NOT_ACKNOWLEDGED`), and the down migration `20270211000100_lease_withdrawal_v2` refuses as well. This build writes no such
+NOT_ACKNOWLEDGED`), and the down migrations `20270211000150_lease_withdrawal_v2_floor` and `20270211000100_lease_withdrawal_v2`
+refuse as well. The migration that builds the index (`20270211000150`) touches no registry table, so heartbeats never wait
+for its read of the journal. This build writes no such
 withdrawal: only a build of protocol 1.8 does.
 
 ### The forward order to protocol 1.8
