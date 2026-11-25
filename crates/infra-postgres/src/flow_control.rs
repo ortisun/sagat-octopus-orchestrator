@@ -401,15 +401,14 @@ async fn lock_row(
         .transpose()
 }
 
-/// The namespace's queued runs as the `queued_runs` ceiling counts them (feature 022, T022-013, D022-051): a run waiting
-/// for both gates counts once. The one statement the ceiling's check, its quota usage and the key listing read, so they
-/// never disagree; `$1` is the tenant, `$2` the namespace.
-pub(crate) const QUEUED_RUNS_SQL: &str = "SELECT count(*) FROM ( \
-         SELECT run_id FROM concurrency_waiters \
-          WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
-         UNION \
-         SELECT run_id FROM rate_limit_waiters \
-          WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN') waiting";
+/// The namespace's queued runs as the `queued_runs` ceiling counts them (feature 022, T022-013, D022-051, T022-105): the
+/// sum of its sixteen slot rows of `flow_control_counts`, which `SECURITY DEFINER` triggers on the run-scope waiter rows
+/// keep in the transaction that writes them, a run waiting for both gates once (migration `20270212000000`; decision
+/// D022-084). Under the namespace's admission lock it is exact, as the scan it replaces was. The one statement the
+/// ceiling's check, its quota usage and the key listing read, so they never disagree; `$1` is the tenant, `$2` the
+/// namespace.
+pub(crate) const QUEUED_RUNS_SQL: &str = "SELECT coalesce(sum(queued_runs), 0)::bigint FROM flow_control_counts \
+         WHERE tenant_id = $1 AND namespace_id = $2";
 
 /// The run-level permit of a run, as `get` and `list` read it beside the run's row (T022-026): one lateral probe of the
 /// holder and waiter primary keys, which yields nothing for a run that neither holds nor waits. Invariants 1 and 2 allow

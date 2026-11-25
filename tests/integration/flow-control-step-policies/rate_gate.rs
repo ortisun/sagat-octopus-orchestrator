@@ -1354,3 +1354,102 @@ async fn a_grant_from_the_buffer_does_not_reauthorize_and_keeps_the_initiator() 
         w.assert_consistent(run).await;
     }
 }
+
+/// The namespace's queued runs as the counter rows hold them (`flow_control_counts`, T022-105) and as a scan of the
+/// run-scope waiter rows finds them (the statement the counters replace): (counted, scanned).
+async fn queued_runs(w: &World) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT coalesce(sum(queued_runs), 0)::bigint FROM flow_control_counts), \
+                (SELECT count(*) FROM (SELECT run_id FROM concurrency_waiters WHERE permit_scope = 'RUN' \
+                                       UNION SELECT run_id FROM rate_limit_waiters WHERE limit_scope = 'RUN') q)",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("queued runs")
+}
+
+/// Task T022-105 (FR-022-058; decisions D022-026, D022-084): the namespace's queued runs are kept in slot rows by the
+/// triggers of the waiter rows, in the transaction that writes them; a run waiting for both gates counts once, when it
+/// queues and when it leaves; a step waiter is not a queued run; and the runtime role reads the counters and writes none
+/// of them, nor a counter of a key row, while it may still move a key's hint.
+#[tokio::test]
+async fn a_dual_gated_queued_run_counts_once_and_the_runtime_role_cannot_write_a_counter() {
+    use sagat_application::runs::RunOperation;
+    let w = gated_world().await;
+    let mut doc = rated_start("rate-counts-dual", 1, "hour");
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    assert_eq!(queued_runs(&w).await, (0, 0));
+    let second = w.start(workflow, &input).await;
+    let third = w.start(workflow, &input).await;
+    for run in [second, third] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT (SELECT count(*) FROM concurrency_waiters WHERE run_id = $1) \
+                      + (SELECT count(*) FROM rate_limit_waiters WHERE run_id = $1)",
+            )
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("rows"),
+            2,
+            "a waiter row of each gate"
+        );
+    }
+    assert_eq!(queued_runs(&w).await, (2, 2), "two runs, four waiter rows");
+    // a dual-gated run leaves both queues in one transaction, and the count once
+    w.operate_run(second, RunOperation::Cancel).await;
+    assert_eq!(queued_runs(&w).await, (1, 1));
+    // a step that waits is not a queued run
+    let stepped = publish(&w, rated_step("rate-counts-step", "provider", 1, "hour")).await;
+    let _step_holder = w.start(stepped, &input).await;
+    let step_waiter = w.start(stepped, &input).await;
+    let step_waiters: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rate_limit_waiters WHERE run_id = $1 AND limit_scope = 'STEP'",
+    )
+    .bind(step_waiter.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!(step_waiters, 1, "the second step waits");
+    assert_eq!(queued_runs(&w).await, (1, 1));
+    w.operate_run(third, RunOperation::Cancel).await;
+    assert_eq!(queued_runs(&w).await, (0, 0));
+    let slots: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM flow_control_counts WHERE queued_runs <> 0")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("slots");
+    assert_eq!(slots, 0);
+
+    let runtime = w.db.runtime_pool().await;
+    let read: i64 = sqlx::query_scalar("SELECT count(*) FROM flow_control_counts")
+        .fetch_one(&runtime)
+        .await
+        .expect("the runtime role reads the counters");
+    assert!(read >= 1, "the slot rows stay, at zero");
+    for forged in [
+        "UPDATE flow_control_counts SET queued_runs = 0",
+        "INSERT INTO flow_control_counts (tenant_id, namespace_id, slot, queued_runs) \
+         SELECT tenant_id, namespace_id, 15, 0 FROM flow_control_counts LIMIT 1",
+        "DELETE FROM flow_control_counts",
+        "UPDATE rate_limit_windows SET waiters = 0, live_grants = 0",
+        "UPDATE concurrency_semaphores SET holders = 0, waiters = 0",
+    ] {
+        let refused = sqlx::query(forged).execute(&runtime).await;
+        let code = match refused {
+            Err(sqlx::Error::Database(error)) => error.code().map(|c| c.into_owned()),
+            other => panic!("{forged}: {other:?}"),
+        };
+        assert_eq!(code.as_deref(), Some("42501"), "{forged}");
+    }
+    sqlx::query("UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp()")
+        .execute(&runtime)
+        .await
+        .expect("the runtime role moves a window's hint");
+    for run in [holder, second, third, step_waiter] {
+        w.assert_consistent(run).await;
+    }
+}

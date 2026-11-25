@@ -1608,3 +1608,68 @@ async fn exists_column(pool: &PgPool, table: &str) -> bool {
     .await
     .expect("query")
 }
+
+/// Task T022-105 (migration `20270212000000`; decision D022-084): the queued-runs counters are filled from the waiter rows
+/// present when they are created, a dual-gated run once and a step waiter not at all; rolling them back loses nothing
+/// (the waiter rows stay, the counters are derived), and migrating forward again counts the same. The alert kinds of task
+/// T022-082 (`20270212000100`) roll back while no alert of theirs is kept, and refuse while one is.
+#[tokio::test]
+async fn the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss() {
+    const BEFORE_COUNTS: i64 = 20_270_210_000_100;
+    let w = crate::support::flow_control::gated_world().await;
+    let pool = &w.db.pool;
+    let mut dual = document("counts-dual", "g", vec![activity("g")]);
+    dual["rateLimit"] =
+        json!({"group": "accounts", "key": "input.accountId", "limit": 1, "per": "hour"});
+    dual["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let dual = crate::support::flow_control::publish(&w, dual).await;
+    let input = json!({"accountId": "acct-1"});
+    let _holder = w.start(dual, &input).await;
+    let _first = w.start(dual, &input).await;
+    let _second = w.start(dual, &input).await;
+    let queued = |pool: &PgPool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT coalesce(sum(queued_runs), 0)::bigint FROM flow_control_counts",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("counted")
+        }
+    };
+    assert_eq!(queued(pool).await, 2);
+    undo(pool, BEFORE_COUNTS).await.expect("rolled back");
+    assert!(!exists(pool, "flow_control_counts").await);
+    let waiters: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM concurrency_waiters) + (SELECT count(*) FROM rate_limit_waiters)",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("waiters");
+    assert_eq!(waiters, 4, "the waiter rows stay");
+    MIGRATOR.run(pool).await.expect("forward again");
+    assert_eq!(
+        queued(pool).await,
+        2,
+        "filled from the rows present, a dual-gated run once"
+    );
+
+    // an alert of a flow-control kind is retained: its rollback refuses
+    sqlx::query(
+        "INSERT INTO operational_alerts (id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
+                last_seen_at, fired_count, item_count, oldest_seconds) \
+         VALUES (gen_random_uuid(), $1, $2, 'RATE_LIMIT_QUEUE_SATURATED', 'accounts', 'FIRING', 'warning', now(), now(), 1, 1, 0)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(pool)
+    .await
+    .expect("an alert");
+    let refused = undo(pool, BEFORE_COUNTS).await;
+    assert!(
+        format!("{refused:?}").contains("flow-control alerts are retained"),
+        "{refused:?}"
+    );
+    MIGRATOR.run(pool).await.expect("forward");
+}
