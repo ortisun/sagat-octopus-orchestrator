@@ -540,6 +540,9 @@ weighs the options and chooses the most architectural and business advantage, ne
   (design 046, Decision 046-022), which Decision 1625 should read in place of "kept in the blob store". The table
   `script_build_provenance` is created by design 046's migration with the columns of this feature's data model, and
   its envelope names the lock and SBOM digests instead of listing every dependency, so the 65,536-byte bound holds.
+  (d) The lease-time check is design 046's typed admission on both lease paths (`lease_one` and the scoped claims),
+  not a statement in `crates/infra-postgres/src/workers.rs` alone; plan 8a and the code table say so (design 046's third
+  review round).
 ## 4. Gaps
 
 | # | Gap | State |

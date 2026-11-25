@@ -1,9 +1,9 @@
 # ADR-0123: Hub integrations are signed data that specialise closed operation kinds, and are imported as pinned versions
 
 **Status:** Proposed
-**Decided by:** agent proposal (design 047, 2026-11-24, revised after review round 1), to be accepted or rejected under Owner decision 2026-11-24-4 when design 047 completes its review
+**Decided by:** agent proposal (design 047, 2026-11-24, revised after review rounds 1 and 2), to be accepted or rejected under Owner decision 2026-11-24-4 when design 047 completes its review
 **Refines / supersedes:** refines ADR-0074 (the operator's block and offers) and the curated template hub of feature 028 (Requirements 028-039 to 028-042: the signed index, its verification, import as a draft) and ADR-0055 (the closed resource-type catalog of feature 021) as admitted by constitution 5.0.0 (Owner decision 2026-11-24-2); supersedes none
-**Enforced by:** planned tests of design 047: the contract suite `contract_integration_hub` that loads every item of `hub/` with the platform's own codecs and refuses an item that names an operation kind outside the closed set, a host outside https, a wildcard host or an undeclared scope; the index tests of feature 028 (tampered file, unpinned key, rollback, expiry); the import tests (a pinned type version, provenance, idempotency, nothing executed). Until they exist: review only.
+**Enforced by:** planned tests of design 047: the contract suite `contract_integration_hub` that loads every item of `hub/` with the platform's own codecs and refuses an item that names an operation kind outside the closed set, a host outside https, a host pattern outside design 047's rule (one leftmost-label wildcard under a fixed registrable domain, bound from the token response or the registration) or an undeclared scope; the index tests of feature 028 (tampered file, unpinned key, rollback, expiry); the import tests (a pinned type version, provenance, idempotency, nothing executed). Until they exist: review only.
 
 ## Context
 
@@ -26,14 +26,15 @@ kinds executed by its integration runner, and refused namespace-defined types (i
    code and enters only through a release of the platform.
 3. Items live in this repository under `hub/`, each with a review record naming two reviewers, are validated in
    continuous integration by the platform's own codecs, and are signed into the release's index with feature 028's
-   format. Operators may add indexes signed by keys they pin, and an optional revocation feed signed with the release key.
+   format. Operators may add indexes signed by keys they pin; revocations travel in any configured index, including a
+   revocations-only index the release publishes, which deployments configure by default.
    There is no tenant-configured source, no public submission, no rating and no payment.
-4. Importing creates drafts: a draft provider or resource-type version with provenance (index, item, version, digest,
+4. Importing creates drafts, through feature 028's routes and with its permissions for workflow and script parts: a draft provider or resource-type version with provenance (index, item, version, digest,
    signer), or a workflow or script draft. A provider or resource type becomes usable only when a holder of
    `hub:publish` publishes it after the same checks as authored content. Resources pin a published version; a newer hub
    version is adopted only by an explicit new revision.
 5. Revocations carry a class. A `security` revocation blocks new admissions of steps whose resources pin a published
-   version of the item, until an operator lifts the block (audited); an `other` revocation records a finding. A revoked
+   version of the item and refuses its deliveries to runs already admitted, until an operator lifts the block (audited); an `other` revocation records a finding. A revoked
    item cannot be imported or published.
 ## Considered options
 

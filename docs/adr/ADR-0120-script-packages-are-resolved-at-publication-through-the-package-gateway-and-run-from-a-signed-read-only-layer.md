@@ -2,8 +2,8 @@
 
 **Status:** Proposed
 **Decided by:** agent proposal (design 046, 2026-11-24, revised after review rounds 1 and 2), to be accepted or rejected under Owner decision 2026-11-24-4 when design 046 completes its review
-**Refines / supersedes:** supersedes ADR-0013 **in part**: a run container of a bundle version 5 has one added mount, a read-only dependency layer that is not `noexec` (every other rule of ADR-0013 stays, including "no network" for every sandbox container). Narrows ADR-0057 decision 4 ("no customer build or run may reach a registry"; "dependencies come only from closed offline catalogs") to C#, Rust and PHP: for TypeScript and Python, a resolve container reaches the package gateway's package routes, and nothing else, through its runner. Refines ADR-0021 and ADR-0023 (a separate package store, not the tenant payload store). Supersedes Decision 105 of feature 005 for TypeScript and Python only.
-**Enforced by:** planned tests of design 046 (`docs/designs/046-script-dependencies.md`, Verification Plan): the lock validator fixtures in `crates/infra-packages`; the hostile battery `integration_script_dependencies_containers` (a resolve container reaches only the gateway's package routes, install and run containers reach nothing, the layer is read-only, refused archives, two tenants get two volumes, an unmarked volume is never mounted); `layer_digest_is_identical_on_two_hosts`; the tamper tests; and three rules in `scripts/check-architecture.py` (no network mode other than `none` in `crates/infra-sandbox`; exactly one added read-only mount on a run container; only the gateway and `crates/infra-egress` name the package store's settings). Until they exist: review only.
+**Refines / supersedes:** supersedes ADR-0013 **in part**: a run container of a bundle version 5 has one added mount, a read-only dependency layer that is not `noexec` (every other rule of ADR-0013 stays, including "no network" for every sandbox container). Narrows ADR-0057 decision 4 to C#, Rust and PHP: for TypeScript and Python a resolve container's requests reach, through its runner, only the package gateway's public routes and the control plane's private document, metadata and file routes for the tenant's reserved names. Refines ADR-0023: private packages use its tenant payload store; the gateway's public files use a store of their own. Supersedes Decision 105 of feature 005 for TypeScript and Python only.
+**Enforced by:** planned tests of design 046 (`docs/designs/046-script-dependencies.md`, Verification Plan): the lock validator fixtures in `crates/infra-packages` (including `a_relabelled_file_is_refused`); the hostile battery `integration_script_dependencies_containers` (`a_resolve_container_reaches_only_the_forwarded_routes`, `a_reserved_name_never_reaches_the_public_registry`, `a_script_cannot_write_the_layer`, `two_tenants_with_one_lock_get_two_volumes`, `an_unmarked_volume_is_never_mounted`, `unpacker_refuses_*`); `the_digest_is_recomputed_by_a_fresh_container`; `layer_digest_is_identical_on_two_hosts`; the tamper tests; the Helm test `only_the_gateway_leaves_the_cluster`; and four rules of `scripts/check-architecture.py` with negative tests: no network mode other than `none` in `crates/infra-sandbox` (`docker.rs`, `lake.rs`); exactly one added read-only mount on a run container; no token or secret in a resolve or install container; only `apps/package-gateway` names the public store's settings, and its dependency allow-list keeps it away from the database, application and sandbox crates. Until they exist: review only.
 
 ## Context
 
@@ -32,7 +32,7 @@ The forces:
    repository's compose). It proxies the npm registry protocol and the Python simple repository API (PEP 691) read-only,
    keeps public files by SHA-256 in a store of its own (not the tenant payload store of ADR-0023), holds no tenant data,
    applies only fixed rules (the job's quarantine cut, wheels only), and can run with no upstream. It never calls the
-   control plane. No other component MUST reach a public registry.
+   control plane. Other components MUST NOT reach a public registry.
 3. **A resolve container has no network.** It uses the ADR-0013 profile unchanged. Its resolver's requests become
    `fetch` ops on the supervisor channel; the runner forwards only the gateway's public package routes, or the control
    plane's private index routes for a tenant's reserved names, adding a job grant. No token or secret enters the
@@ -41,7 +41,7 @@ The forces:
    control plane, for that tenant only.
 5. **Installation runs no installer and no package code.** The runner checks each file against the lock's own hash and
    streams the files into an unpack container (ADR-0013 profile, no network). The layer's digest is computed by a fresh
-   container on a read-only mount; Python bytecode is compiled with checked hashes and stays outside the digest; modes are
+   container on a read-only mount over the whole tree, with no bytecode compiled into the layer; modes are
    fixed and the completion marker written last.
 6. **The signature binds the lock and each layer.** Bundle version 5 names the lock, the unpacker and the runtime; a
    layer record per (artifact, target), signed with the same key, names the layer digest. Every runner materializes its
@@ -52,9 +52,10 @@ The forces:
    advisory snapshot (ADR-0121), before anything is signed.
 ## Considered options
 
-1. **Gateway, channel-forwarded resolution, unpack-only install, signed digest materialized per runner (chosen).**
+1. **A gateway of public files with fixed rules, channel-forwarded resolution, unpack-only install, a signed digest each
+   runner materializes and checks (chosen).**
    Package code never runs before the run; every sandbox container keeps no network; the gateway is the only egress and
-   applies policy; layers are content-addressed and bound by the existing signature.
+   holds no tenant data, while the control plane applies the policy; layers are content-addressed and bound by the existing signature.
 2. **A closed curated catalog in the image** (ADR-0021, ADR-0057). Strongest, but a catalog of a few packages does not
    serve npm and PyPI. Kept for C#, Rust and PHP.
 3. **Install at run time on the worker** (Windmill). A network path in every run, install scripts, a registry outage

@@ -43,7 +43,8 @@ not activated.
 |---|---|---|
 | `RESOLUTION_FAILED` | no | the resolver failed, or a channel budget was passed |
 | `PACKAGE_GATEWAY_UNAVAILABLE` | yes | a forwarded request was refused, timed out, or answered `502`, `503` or `504` |
-| `INSTALL_FAILED` | no | the unpacker refused an archive (`details.rule`) or the verify step's digest did not match |
+| `PACKAGE_FILE_UNAVAILABLE` | yes | an install fetch failed in transport or got a file whose hash differs from the lock |
+| `INSTALL_FAILED` | no | the unpacker refused an archive (`details.rule`, including a name or version that differs from the lock entry) or the verify step's digest did not match |
 
 A retryable failure re-queues the job with `not_before` (15 s times the attempt, feature 005's rule); after the last
 attempt the version is `FAILED`.
@@ -54,7 +55,8 @@ attempt the version is `FAILED`.
 |---|---|---|---|
 | `SCRIPT_DENIED` | `PACKAGE_BLOCKED` | no | a block matches the artifact and the namespace, at lease, at materialization or before start |
 | `SCRIPT_UNTRUSTED_ARTIFACT` | `LAYER_DIGEST_MISMATCH`, `LOCK_DIGEST_MISMATCH`, `LAYER_RECORD_INVALID` | no | the layer, the served lock or the record does not match |
-| `SCRIPT_SANDBOX_UNAVAILABLE` | `LAYER_UNAVAILABLE`, or an old runner's unknown bundle version | yes | materialization could not finish, or a rolled-back runner |
+| `SCRIPT_SANDBOX_UNAVAILABLE` | `LAYER_UNAVAILABLE` | no | three runners failed to materialize the layer, or no registered target has a layer record for 10 minutes (the control plane fails the ready steps) |
+| `SCRIPT_SANDBOX_UNAVAILABLE` | an old runner's unknown bundle version | yes | a rolled-back runner |
 
 ## Other
 

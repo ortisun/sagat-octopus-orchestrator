@@ -65,6 +65,9 @@ and admission to `200` (FR-021-028). Existing webhook endpoints keep their order
 | `GRAPHQL_ERRORS` | no | `errors` with null `data` |
 | `SECRET_IN_OUTPUT` | no | a resolved slot value appears in the output |
 | `CAPABILITY_UNAVAILABLE` | yes | OpenBao or resolution unavailable; nothing was sent (2026-11-24: also design 047's token broker unavailable) |
+| `RESOURCE_REAUTHORIZATION_REQUIRED` | yes | added by design 047: the OAuth credential needs a person to reconnect, or its registration is broken; nothing was sent |
+| `OAUTH_SCOPE_INSUFFICIENT` | no | added by design 047: the credential's granted scopes do not cover the operation or declaration |
+| `RESOURCE_ASK_LIMIT` | yes | added by design 047: a script or activity spent its delivery budget for the attempt |
 | `RESOURCE_UNAVAILABLE` | no | resource paused/deleted or authority revoked at capability use; also ends a connector stream lease |
 | `CAPACITY` | yes | per-resource/namespace/tenant concurrency full before dispatch (2026-11-24: withdrawn, never produced: a step over a concurrency bound waits outside `READY` or is not claimed, Decision 021-009) |
 | `OUTCOME_UNKNOWN` | never automatically | effect may have happened; reconcile or manual review |

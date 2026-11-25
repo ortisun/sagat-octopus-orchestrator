@@ -18,7 +18,8 @@ EdDSA JSON Web Tokens verified with `jsonwebtoken`, signed by the control plane 
 
 | Token | Audience | Claims | Lifetime |
 |---|---|---|---|
-| Job grant | `package-gateway` | `tenant`, `job` (a dependency job, a test run or a materialization), `attempt`, `kind` (`resolve`, `install`, `materialize`, `test-run`), `ecosystem`, `cut` (the quarantine cut, RFC 3339, from the control plane's clock), `exp` | until the job attempt's deadline, at most 10 minutes |
+| Job grant | `package-gateway` | `tenant`, `job` (a dependency job, a test run or a materialization), `attempt`, `kind` (`resolve`, `install`, `materialize`, `test-run`), `ecosystem`, `cut` (the quarantine cut, RFC 3339, from the control plane's clock), `targets` and `python` (the required
+targets and the runtime's interpreter, for the wheel filter), `exp` | until the job attempt's deadline (120 s plus 20 s per 100 MiB of the layer limit) |
 | Service token | `package-gateway-internal` | `sub` = `control-plane` | 5 minutes |
 
 A token never appears in a URL, a log line or a container: the runner adds it to the requests it forwards.
@@ -27,9 +28,9 @@ A token never appears in a URL, a log line or a container: the runner adds it to
 
 | Route | Meaning |
 |---|---|
-| `GET /npm/{name}` | the npm version document, abbreviated form (`application/vnd.npm.install-v1+json`), with every version published after `cut` left out |
+| `GET /npm/{name}` | the npm version document in the abbreviated form (`application/vnd.npm.install-v1+json`), built by the gateway from the full upstream document read with a streaming parse capped at 64 MiB; every version published after `cut`, or without a time, is left out |
 | `GET /npm/{name}/-/{file}` | a tarball |
-| `GET /pypi/simple/{project}/` | the project page of the simple API in its JSON form (PEP 691), with versions after `cut` and every source distribution left out |
+| `GET /pypi/simple/{project}/` | the project page of the simple API in its JSON form (PEP 691), with files after `cut` or without `upload-time`, every source distribution and every wheel no grant target can use left out |
 | `GET /pypi/files/{sha256}/{filename}` | a wheel |
 | `GET /pypi/files/{sha256}/{filename}.metadata` | the wheel's core metadata (PEP 658, PEP 714) |
 | `GET /files/sha256/{hex}` | a stored public file by hash |
@@ -43,7 +44,7 @@ gateway (the runner sends them to the control plane's private routes).
 
 | Route | Meaning |
 |---|---|
-| `POST /internal/v1/metadata` | for up to 2,000 entries (ecosystem, name, version, file hash): `uploadedAt`, `licence` (at most 1 KiB), `installScripts` (npm), `yanked` or `deprecated`, `declaredDependencies`, `stored`, `size` |
+| `POST /internal/v1/metadata` | for up to 2,000 entries (ecosystem, name, version, file name, file hash): `registryHash` (the hash the registry's own document lists for that file), `uploadedAt`, `licence` (at most 1 KiB), `installScripts` (npm), `yanked` or `deprecated`, `declaredDependencies`, `stored`, `size` |
 | `GET /internal/v1/advisories/{ecosystem}` | the OSV archive of the ecosystem, fetched from `SAGAT_PACKAGE_GATEWAY_ADVISORY_SOURCE` and cached, streamed |
 | `GET /internal/v1/store/objects?olderThan=…&after=…` | page through stored objects |
 | `DELETE /internal/v1/store/objects/sha256/{hex}` | delete one object (the collection pass only) |

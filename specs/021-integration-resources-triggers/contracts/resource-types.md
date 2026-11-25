@@ -70,7 +70,9 @@ naming an OAuth credential of design 047 (authorization code or client credentia
 must be a subset of the credential's. The runner sends no token request: `ResolveResource` returns the credential's
 current access token from design 047's broker as the slot value, and the runner sends `Authorization: Bearer <value>`;
 the value is scanned for in the output like every slot value and is never logged, cached across attempts or reported.
-A save or publication with `oauth` is refused with `OAUTH_BROKER_UNAVAILABLE` while design 047's broker capability is
+Binding an `oauth` slot needs design 047's `oauth:credential:manage` and is refused (`OAUTH_CREDENTIAL_HOST_MISMATCH`)
+unless every host of the resource is among the API hosts of the credential's provider (design 047, Requirement
+047-018). A save or publication with `oauth` is refused with `OAUTH_BROKER_UNAVAILABLE` while design 047's broker capability is
 off.
 
 **`http.request`** — safe for `GET`/`HEAD`, effect otherwise.

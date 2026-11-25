@@ -114,7 +114,10 @@ slot of shape `oauth_credential`, step 2 also asks design 047's token broker, wi
 credential's current access token; step 3 checks that the credential is still bound, active and authorized, records
 its version in `step_resource_credentials` like a secret version, and returns the access token as
 `ResolvedSlot.value`. The refresh token and the client secret never leave the broker. A broker that is unavailable
-gives `CAPABILITY_UNAVAILABLE`; a revoked or unbound credential gives `RESOURCE_UNAVAILABLE`. The runner keeps the
+gives `CAPABILITY_UNAVAILABLE`; a credential that needs reconnecting gives `RESOURCE_REAUTHORIZATION_REQUIRED`; missing
+scopes give `OAUTH_SCOPE_INSUFFICIENT`; a revoked or unbound credential gives `RESOURCE_UNAVAILABLE` (design 047,
+`contracts/errors.md`). A provider `401` on an operation marks the access token stale at the broker, so the next attempt
+refreshes. The runner keeps the
 token only for the attempt.
 
 ## Execution and reporting

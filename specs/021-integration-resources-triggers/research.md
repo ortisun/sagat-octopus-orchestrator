@@ -590,6 +590,13 @@ weighed and the one with the most architectural and business advantage was chose
   control plane. The scanner is therefore a dependency-free crate, `crates/output-scan` (bytes in, match or no match
   out, the encodings and cross-chunk overlap of Decision 1132), used by `crates/infra-integrations` and by the server's
   completion path; the per-crate allowlist of Task 021-016 lets every crate depend on it.
+- **D021-022 — The integration runner's disclosure depends on a declared set Principle V does not list yet
+  (2026-11-25, delegate (OD-2026-11-24-4)).** The runner receives the values a resource's slots bind (secrets, and for an
+  `oauth` slot an access token) for an operation the step declares. Principle V's executor-read exception lists two sets
+  (ordinary declared secrets and the managed database capability). Design 047's Technical Plan 12 proposes a third set,
+  "a declared resource", bound like managed database delivery for the integration runner; this feature's capability
+  resolution depends on that wording being in the constitution before it ships, which the coordinating session is asked
+  to carry into the 5.0.0 amendment or the next one.
 
 ### Gaps (2026-11-24)
 

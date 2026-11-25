@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. The one decision still to take is the acceptance of Architecture decisions 0120 and 0121, which falls under
 Owner decision 2026-11-24-4 when the review completes. Every other choice, including the read-only mount that relaxes
 Architecture decision 0013 (Decision 046-009, a partial supersession), is recorded in research.md as Decisions 046-001 to
-046-050 with the register's literal marker "delegate (OD-2026-11-24-4)".
+046-064 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -360,7 +360,7 @@ sequenceDiagram
     CP->>G: metadata (internal listener), no transaction open
     CP->>CP: one transaction: lock, metadata, report; refuse, or insert install jobs and the build job
     R->>CP: claim install (its target)
-    R->>R: fetch files, check hashes, unpack, compile, verify the digest in a fresh container
+    R->>R: fetch files, check hashes, unpack, verify the digest in a fresh container, seal
     R->>CP: complete install (digest)
     R->>CP: claim and complete the build (feature 005; bundle version 5)
     CP->>CP: finishing transaction: checks, SBOM, provenance, sign bundle and layer records, READY
@@ -381,9 +381,13 @@ version. Every transition is one transaction fenced by the job's lease token; a 
   insert one install job per required target and the build job. A failed metadata call fails the resolve job as
   retryable.
 - **An install completes.** One transaction: the job row, then the version row (`BUILDING` required); record the target's
-  digest; if this install refused the version (size, metadata mismatch), mark the version `FAILED` and its sibling jobs
-  `FAILED`. The unique key of dependency jobs is `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`.
-- **The build** waits until every install job of the version succeeded (its claim filters on that).
+  digest; if this install refused the version (size, metadata or identity mismatch, or its last attempt failed), mark the
+  version `FAILED` and nothing else. No transaction writes a sibling's row: a sibling's completion finds the version no
+  longer `BUILDING` and finishes its own job as cancelled. The unique key of dependency jobs is
+  `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`.
+- **The build** waits until every install job of the version succeeded. The build claim, the dependency-job claim and the
+  `script_jobs` quota count only jobs of versions that are `BUILDING`, so the jobs of a refused version stop counting at
+  once.
 - **The finish** (Technical Plan 9) runs on both the new-build path and the cache-hit path.
 
 **Publication and the build key.** `content_digest` (`crates/application/src/scripts.rs`) gains the manifest under a new
@@ -396,6 +400,12 @@ dependency runtime image identity. Framework-only versions keep `sagat/build/v1`
 **An author lock** skips the resolve job: publication calls the gateway's metadata synchronously (an outage answers
 `503`, retryable), validates and evaluates in the publication transaction, answers `422` on refusal, and inserts the
 install jobs and the build job directly.
+
+**Where the evaluation runs.** The evaluation is pure code in the application. Each store call that commits a decision
+(resolve completion, an author-lock publication, the finish) takes the snapshot, policy and reservation revisions and the
+earliest waiver expiry the application evaluated against, locks their rows `FOR SHARE` itself, compares, and answers
+`StaleInputs` when any differs or the waiver time has passed; the application then evaluates again and retries
+(`crates/infra-postgres/src/scripts.rs`, `finish_build` and `finish_build_cached` gain these parameters).
 
 ### 2. The manifest and the lockfile gate
 
@@ -411,21 +421,25 @@ only in the last three, whose locks the control plane has validated; in a `Build
 
 `apps/package-gateway` has no database and holds no tenant data. Its routes (package-gateway.md):
 
-- npm package documents in their abbreviated form and tarballs; the PyPI JSON simple API, wheel files and their
-  core-metadata files (PEP 658 and PEP 714), all public;
+- npm package documents, which the gateway builds in the abbreviated form from the full document it reads upstream, and
+  tarballs; the PyPI JSON simple API, wheel files and their core-metadata files (PEP 658 and PEP 714), all public;
 - on a separate internal listener, for the control plane's service token: file metadata, the advisory archives, store
   administration (pins, marks, deletions);
 - a `package-gateway healthcheck` subcommand for the compose healthcheck, as the other images have.
 
-The gateway applies three fixed rules to what it serves, none of them policy: versions published after the job grant's
-quarantine cut are left out of package documents (so npm needs no `before` flag and can read abbreviated documents); for
-Python, source distributions and wheels no required target can use are left out; yanked versions are marked as the
-registries mark them. Allow and deny rules, waivers and advisories are not the gateway's: the control plane's evaluation
+The gateway applies three fixed rules to what it serves, none of them policy. Versions published after the job grant's
+quarantine cut are left out: for npm it reads each version's time from the full document with a streaming parse capped at
+64 MiB and drops a version without a time; for PyPI it drops a file without `upload-time`. For Python, source
+distributions and wheels that none of the grant's targets and interpreter can use are left out. Yanked versions are marked
+as the registries mark them. Allow and deny rules, waivers and advisories are not the gateway's: the control plane's evaluation
 applies them.
 
 Tokens are EdDSA web tokens signed with the package token key (`SAGAT_PACKAGE_TOKEN_KEY`, not the script signing key): a
 job grant bound to one job attempt, valid until the job's deadline (at most 10 minutes), and a service token for the
 control plane. The gateway never calls the control plane.
+
+The metadata endpoint also answers, for each (ecosystem, name, version, file name), the hash the registry's own document
+lists for that file, so the control plane can refuse a lock entry whose hash belongs to another file (Technical Plan 5).
 
 Upstream fetches use a streaming GET-only send that `crates/infra-egress` gains: addresses checked once, private ranges
 refused unless the operator allows an upstream's, redirects not followed, only https hosts that are configured upstreams
@@ -440,9 +454,9 @@ and deletes, after 7 days, those still unreferenced and unpinned at deletion tim
 a running resolve, install, test run or materialization pins its files until it ends; an imported offline bundle pins its
 files until an operator removes it.
 
-**Fetch budget.** The resolve-completion transaction charges `package_fetch_usage` with the sizes of the locked files the
-metadata marks as not yet stored; over the daily budget (20 GiB per tenant by default) the version is refused with
-`PACKAGE_FETCH_BUDGET_EXCEEDED`.
+**Fetch budget.** The resolve-completion transaction charges `package_fetch_usage` with the bytes the runner reports it
+forwarded during the resolve and the sizes of the locked files the metadata marks as not yet stored; over the daily budget
+(20 GiB per tenant by default) the version is refused with `PACKAGE_FETCH_BUDGET_EXCEEDED`.
 
 ### 4. The resolve job
 
@@ -452,10 +466,13 @@ cut and the tenant's reserved names for the ecosystem (runner-protocol.md). The 
 512 MiB of scratch.
 
 The resolver shim serves HTTP on the container's loopback interface and turns each request into a `fetch` op on the
-supervisor channel, the op scripts use today. For a resolve job the runner's host calls allow only these paths, matched
-as raw paths against a closed grammar (no percent-encoded separators, no `..`, no `//`, no query): the gateway's public
-package routes, rewritten to the control plane's private index routes when the name (normalised) is reserved. The runner
-adds the grant and forwards. Responses come back in chunks of at most 160 KiB decoded per line. A resolve job has its own
+supervisor channel, the op scripts use today. For a resolve job the runner's host calls allow only the routes that
+runner-protocol.md lists, each with how its package name is read: the package document (the name is the path; an npm
+scope's `%2f` is decoded once into the canonical `@scope/name`, and nothing else may be encoded), the core-metadata file
+and the file (the name is read from the wheel or tarball file name and must match the name its index answer gave), with
+no `..`, no `//` and no query. A request whose name, normalised, is reserved goes to the control plane's private routes
+for the same three kinds; every other goes to the gateway; a path that does not parse is refused. The runner adds the
+grant and forwards. Responses come back in chunks of at most 160 KiB decoded per line. A resolve job has its own
 budgets: 4,000 requests, 30,000 channel lines, 32 MiB per response, 1 GiB in all.
 
 The shim runs the pinned `uv` (0.8 or later; PEP 751 output, binary wheels only, the quarantine cut as `exclude-newer`,
@@ -475,8 +492,11 @@ The control plane parses the lock in its closed subset with bounded nesting and 
 manifest entry is satisfied by a root entry; the closure is complete against the dependencies the gateway reports for
 each file; Python may hold several entries for one name only when their markers select different targets; each required
 target selects a full set (wheel tags; npm `os`, `cpu`, `libc`); a reserved name has no public source. Version orders and
-ranges sit behind the application port `PackageRules`, implemented in `crates/infra-packages` with published crates
-(`nodejs-semver`, `pep440_rs`, `pep508_rs`); the domain holds the policy types and the combination of results.
+ranges sit behind the application port `PackageRules`; the SBOM and provenance builders behind `SupplyChainDocuments`;
+the OSV parser behind `AdvisoryArchives`. Every lock entry's hash must be the one the registry's own document lists for
+its name, version and file name (from the metadata endpoint; for a private entry, from `private_packages`), so a hash
+cannot be relabelled with another package's name. The ports are implemented in `crates/infra-packages` with published
+crates (`nodejs-semver`, `pep440_rs`, `pep508_rs`); the domain holds the policy types and the combination of results.
 
 ### 6. The supply-chain policy
 
@@ -505,14 +525,21 @@ deny and allow, quarantine, vulnerabilities, licences, yanked versions, install 
 The report (verdict, findings, the snapshot, policy and reservation revisions) is stored per version in
 `script_version_dependencies`.
 
-**Blocks and re-evaluation.** A block is a row of `script_artifact_blocks`: tenant, artifact digest, namespace (null for
-all namespaces, with `UNIQUE NULLS NOT DISTINCT`), reason, source (`ADVISORY_IMPORT`, `REEVALUATION`, `RESERVATION`,
-`OPERATOR`). Artifact rows stay immutable. A durable row of `script_policy_reevaluations` is inserted in the transaction
+**Blocks and re-evaluation.** A block is a row of `script_artifact_blocks`, keyed by tenant: tenant, artifact digest,
+namespace (null for all namespaces, with `UNIQUE NULLS NOT DISTINCT`), reason, source (`ADVISORY_IMPORT`, `REEVALUATION`,
+`RESERVATION`, `OPERATOR`), and the policy and reservation revisions it was evaluated at; every predicate that reads a
+block names the tenant. Artifact rows stay immutable. A durable row of `script_policy_reevaluations` is inserted in the transaction
 that changes the policy, adds or removes a waiver, imports a snapshot, creates a reservation or deletes an upload; the
-hourly waiver pass inserts one for each expired waiver. A leased pass works the jobs of one namespace in creation order,
-in pages of 200 versions, one transaction per page that holds the policy and snapshot rows `FOR SHARE` and advances the
-cursor in its commit. A page writes and removes only `REEVALUATION` and `RESERVATION` blocks; it never removes an
-`ADVISORY_IMPORT` or `OPERATOR` block. With `blockNewAtLease`, a finding at or above the threshold without a waiver
+hourly waiver pass inserts one for each expired waiver. A leased pass works a tenant's jobs in creation order (a
+tenant-wide job before the namespace jobs created after it), in pages of 200 versions, one transaction per page that holds
+the policy, snapshot and reservation-revision rows `FOR SHARE` and advances the cursor in its commit. A page writes and
+removes only `REEVALUATION` and `RESERVATION` blocks, removes one only when it evaluated at revisions at least those the
+block records, and never removes an `ADVISORY_IMPORT` or `OPERATOR` block.
+
+**Steps of a blocked artifact.** A step whose artifact becomes blocked may have no runner holding its volume, so no runner
+would advertise it and the lease check would never see it. So the transaction that inserts a block also inserts a row the
+block pass reads; that pass fails the ready script steps of the blocked artifact in the affected namespaces, in batches,
+through `reject_input` with `SCRIPT_DENIED` and `PACKAGE_BLOCKED`. With `blockNewAtLease`, a finding at or above the threshold without a waiver
 blocks that namespace.
 
 ### 7. The advisory snapshot
@@ -524,36 +551,45 @@ Non-functional requirement 046-004. A record is malicious when its identifier or
 database-specific type says malware; severity is the GitHub advisory label, else the CVSS (Common Vulnerability Scoring
 System) base score mapped to the same labels, else unrated.
 
-An import stages its records under a new snapshot identifier in paged transactions, outside any lock. It is refused if it
-is older than the current snapshot of that ecosystem or holds at least 1 percent fewer records, and held for an operator's
-confirmation (`advisory:import`) if it would add blocks to more than 50 artifacts; both are audited. Then one short switch
-transaction takes the snapshot row `FOR UPDATE`, makes the new snapshot current, inserts a block for every artifact that
-locks a package a new malicious record matches (through the index `script_locked_packages`), and inserts the
-re-evaluation row. The old snapshot's rows are deleted afterwards. A malware block is released only through
+An import stages its records under a new snapshot identifier in paged transactions, outside any lock, and while staging
+computes, for each new malicious record, the exact (name, version) pairs it matches among the versions that
+`script_locked_packages` holds at that time. The switch is one transaction that takes the snapshot row `FOR UPDATE` and
+then: refuses the import if it is older than the current snapshot of that ecosystem or holds at least 1 percent fewer
+records (checked again under the lock); makes it current; inserts a block for every artifact that locks a precomputed pair;
+evaluates the ranges, through `PackageRules`, only for `script_locked_packages` rows inserted after staging began; and
+inserts one re-evaluation row per tenant concerned. An import that would newly block more than 50 artifacts is held for an
+operator's confirmation (`advisory:import`) and an alert fires; while it is held, finishes and materializations refuse
+artifacts that lock a package its malicious records match, so a wide compromise is not delayed. Refusals and holds are
+audited. The old snapshot's rows are deleted afterwards. A malware block is released only through
 `DELETE /v1/admin/script-blocks/{id}` (`script:block:release`, the platform operator), which a database trigger allows only
 when the advisory is withdrawn.
 
 ### 8. Installation and the layer
 
 The runner claims an install job for its own target (claims carry the target; the only target setting today is
-`SAGAT_RUNNER_GO_TARGET`, so a general `SAGAT_RUNNER_TARGET` is added). It fetches each locked file from the gateway by
-SHA-256 (or from the control plane's private file route for a reserved name), with a URL it builds from its configured
-base and the hash, checks the hash and, for npm, the lock's SHA-512 integrity, and keeps the file in its file cache. Then
-four containers, each with the sandbox profile, no network, and the volume mount builder of feature 035's lake profile:
+`SAGAT_RUNNER_GO_TARGET`, so a general `SAGAT_RUNNER_TARGET` is added). It fetches each locked file through the route that
+carries its name (`/npm/{name}/-/{file}`, `/pypi/files/{sha256}/{filename}`, so the gateway can fetch it again upstream
+if its store no longer holds it), or from the control plane's private file route for a reserved name, with a URL it builds
+from its configured base, checks the hash and, for npm, the lock's SHA-512 integrity, and keeps the file in its file
+cache. A transport failure or a hash mismatch on these fetches fails the job as `PACKAGE_FILE_UNAVAILABLE`, retryable.
+Then three containers, each with the sandbox profile, no network, and the volume mount builder of feature 035's lake
+profile:
 
 1. **Unpack** (`runners/layer-tool`, a static Rust binary; volume read-write; files on standard input): wheels into
    `site-packages/` following the wheel format, tarballs into their `node_modules` paths. It refuses links, absolute
    paths, `..`, special files, set-user-id and set-group-id bits, `__pycache__` in a wheel, a path written by two
-   packages, and the path, file and size bounds, and stops writing at `maxLayerBytes`. It reports the lifecycle scripts it
-   sees in each `package.json`.
-2. **Compile** (Python only; the runtime image; volume read-write; working directory `/`):
-   `python -I -m compileall --invalidation-mode checked-hash`. `-I` keeps the layer and the working directory off the
-   import path. Checked-hash bytecode is checked against its source at import, so a changed bytecode file is ignored, and
-   bytecode is outside the digest. A file that fails to compile is recorded; its source is still importable.
-3. **Verify** (the layer tool; volume read-only; no input): computes the layer digest from the tree.
-4. **Seal and mark** (the layer tool; volume read-write), only after the runner has compared the verify step's digest
+   packages, and the path, file and size bounds, and stops writing at `maxLayerBytes`. It checks each wheel's
+   `.dist-info` name and version and each tarball's `package.json` name and version against the lock entry, and reports
+   the lifecycle scripts it sees in each `package.json`.
+2. **Verify** (the layer tool; volume read-only; no input): computes the layer digest from the whole tree.
+3. **Seal and mark** (the layer tool; volume read-write), only after the runner has compared the verify step's digest
    with the expected one: sets modes (0444 files, 0555 directories; the owner stays the sandbox user), then writes the
    completion marker `.sagat-layer` with the digest, last.
+
+No bytecode is compiled into the layer: a bytecode file would be code that runs without being covered by the digest, so
+the run's Python never writes or reads cached bytecode for the layer (`PYTHONDONTWRITEBYTECODE=1`, as today, and no
+`__pycache__` in the tree, which the verify step refuses). The cold-import cost this adds is measured by the benchmark
+(Gap 046-010).
 
 The unpacker's bound is the only limit on what a compromised unpacker could write to the runner's disk; the runbook
 places the engine's volume root on a filesystem of its own, so that a full layer disk cannot stop other work (Gap
@@ -568,9 +604,11 @@ both extended to compare the dependencies object with `script_version_dependenci
 object to the runner.
 
 A layer record is a separate signed statement per (artifact digest, target): `sagat/script-layer/v1 ‖ tenant ‖ artifact
-digest ‖ target ‖ layer digest ‖ unpacker`, Ed25519 with the script signing key. Because records are separate from the
-bundle, a deployment that adds a target later runs a backfill pass that inserts install jobs for existing versions and
-signs new records; nothing is republished.
+digest ‖ target ‖ layer digest ‖ unpacker`, Ed25519 with the script signing key, kept in `script_layer_records`, which is
+the one place per-target digests live once a version is `READY`. Because records are separate from the bundle, a
+deployment that adds a target later runs a backfill pass (leased, the platform operator starts it, audited): it inserts
+install jobs of the phase `BACKFILL` for `READY` versions; a backfill completion signs and inserts the new record in its own
+transaction and does not touch the version's state; nothing is republished.
 
 The finishing transaction of a bundle version 5, on the new-build path and on the cache-hit path
 (`finish_build_cached` gains these steps):
@@ -593,7 +631,8 @@ A snapshot import's switch takes the snapshot row `FOR UPDATE`, and a policy wri
 A tenant administrator reserves names and scopes (`POST /v1/package-reservations`, `package:manage`); each reservation
 increases the tenant's reservation revision. Only a reserved name can be uploaded
 (`PUT /v1/namespaces/{namespace}/packages/{ecosystem}`, `package:upload`, at most 64 MiB, on a router with that body
-limit). The control plane checks the archive's own name and version against the reservation, stores it in the tenant's
+limit). The control plane reads the archive's own name and version (at most 1 MiB of metadata, at most 64 MiB inspected) and
+checks them against the reservation, stores it in the tenant's
 payload store (Architecture decision 0023's blob keys, under the uploading namespace), then inserts the `private_packages`
 row; uploads are visible to every namespace of the tenant. The same file again answers `200`; another file for an
 uploaded version answers `409 PACKAGE_VERSION_EXISTS`. Uploads count against the tenant's content bytes (Architecture
@@ -612,12 +651,20 @@ versions keep their Alpine images. The runner's configuration gains the resolver
 images and the target.
 
 Materialization comes before the lease. The pending-activities route tells a runner which ready activities need a layer
-it lacks; the runner materializes those (the four containers of Technical Plan 8, with the files of the version's lock,
+it lacks; the runner materializes those (the three containers of Technical Plan 8, with the files of the version's lock,
 which must hash to the bundle's lock digest), and advertises an activity only once its volume is marked. So the engine's
 attempt timeout never includes a materialization. Materializations run at most two at a time per runner and one at a
-time per (tenant, digest), within 10 minutes each. Before starting a run container the runner asks
-`GET /script-runner/artifacts/{digest}/runnable?namespace=` once; a block found there, at materialization or at lease
-refuses the start with `SCRIPT_DENIED` and `PACKAGE_BLOCKED`.
+time per (tenant, digest), within a deadline of 120 s plus 20 s per 100 MiB of layer (about 16 minutes at the 4 GiB
+ceiling; the install job and the grant use the same deadline). A runner reports a failed materialization
+(`POST /script-runner/materializations/{id}/failed`); when three runners have failed one, or no registered target has a
+layer record for 10 minutes, the control plane fails the ready steps of that artifact through `reject_input` with
+`SCRIPT_SANDBOX_UNAVAILABLE` and `LAYER_UNAVAILABLE`, so no step waits silently, and the gauge
+`script_steps_waiting_for_layer` shows the rest.
+
+Before starting a run container the runner asks once whether the attempt may start (`GET /script-runner/attempts/{attempt}/runnable`
+for a step, `GET /script-runner/test-runs/{run}/runnable` with the lock digest for a test run); the tenant and namespace come
+from the attempt or the test run, never from the runner. A block found there, at materialization or at lease refuses the
+start with `SCRIPT_DENIED` and `PACKAGE_BLOCKED`; an unknown attempt answers `404`.
 
 Volumes are named by tenant, layer digest and the runner's configured instance identifier (`SAGAT_RUNNER_INSTANCE_ID`,
 required with this feature; at start the runner refuses to run if another live runner on the engine carries the same
@@ -640,10 +687,13 @@ containers.
 
 ### 12. Blocking at lease
 
-`RunTx::script_execution_admitted_instance` (`crates/application/src/execution.rs`, implemented in
-`crates/infra-postgres/src/execution.rs`) reads, in the same statement, whether a block matches the artifact digest and
-the step's namespace or all namespaces; feature 023 joins its language section into the same statement (its Decision
-1628). A blocked step is failed permanently through `reject_input` (`crates/application/src/worker.rs`) in the lease
+Today `RunTx::script_execution_admitted_instance` (`crates/application/src/execution.rs`) is the retention-quota
+admission and returns a `bool` whose `false` leaves the step ready. It becomes a typed admission, `Admit`, `Wait` (the
+quota, as today) or `Deny(reason)`, implemented in `crates/infra-postgres/src/execution.rs` and in
+`crates/infra-postgres/src/execution/path.rs`, and called on both lease paths: `lease_one` (`crates/application/src/worker.rs`)
+and the scoped claims (`crates/application/src/worker/scoped_claims.rs`). Its statement reads, with the tenant, whether a
+block matches the artifact digest and the step's namespace or all namespaces; feature 023 joins its language section into
+the same statement (its Decision 1628). `Deny` fails the step permanently through `reject_input` in the lease
 transaction, with `Failure::Denied` carrying the closed reason `PACKAGE_BLOCKED` (`crates/domain/src/scripts.rs`), its
 journal event, next work, outbox rows and a `script.supply_chain_blocked` audit record. An attempt already started
 finishes. Design 038's budget test gains a script-step shape.
@@ -654,14 +704,14 @@ finishes. Design 038's budget test gains a script-step shape.
 |---|---|---|
 | Policy, finding, verdict, block types; `Failure::Denied` reason; the `Lockfile` documentation | `crates/domain/src/scripts/packages.rs`, `crates/domain/src/scripts.rs` | Create, Modify |
 | Permissions | `crates/domain/src/identity.rs` | Modify |
-| Ports `PackageRules`, `PackageMetadata`; publication, dependency jobs, finishing, passes, waivers, reservations, uploads | `crates/application/src/scripts/packages.rs`, `crates/application/src/scripts.rs` (`Draft`, `Expected`, `content_digest`, the stores), `crates/application/src/sandbox.rs` (requests, build key version 2) | Create, Modify |
-| Lease check | `crates/application/src/execution.rs`, `crates/application/src/worker.rs`, `crates/infra-postgres/src/execution.rs` | Modify |
+| Ports `PackageRules`, `PackageMetadata`, `SupplyChainDocuments`, `AdvisoryArchives`; publication, dependency jobs, finishing, passes, waivers, reservations, uploads | `crates/application/src/scripts/packages.rs`, `crates/application/src/scripts.rs` (`Draft`, `Expected`, `content_digest`, the stores), `crates/application/src/sandbox.rs` (requests, build key version 2) | Create, Modify |
+| Lease check | `crates/application/src/execution.rs`, `crates/application/src/worker.rs`, `crates/application/src/worker/scoped_claims.rs`, `crates/infra-postgres/src/execution.rs`, `crates/infra-postgres/src/execution/path.rs` | Modify |
 | Lock parsers, version orders, advisory parsing and matching, SBOM and provenance builders | `crates/infra-packages` (new adapter crate) | Create |
 | Bundle version 5 | `crates/infra-schema/src/bundle.rs` | Modify |
 | Tables and statements | `crates/infra-postgres` (migrations after `20270119000000`, `scripts.rs`, `quotas.rs`, `storage-classification.json`) | Create, Modify |
 | REST and runner routes | `crates/api-http/src/routes/{scripts,script_packages,runner}.rs`, `crates/api-http/src/dto_scripts.rs`, `crates/api-http/src/lib.rs` | Create, Modify |
 | Streaming GET send; store settings prefix | `crates/infra-egress/src/lib.rs`, `crates/infra-blobstore/src/config.rs` | Modify |
-| Container driver: resolve, install, compile, verify, seal containers; volumes; channel forwarding; the lockfile gate | `crates/infra-sandbox/src/{docker,lake,protocol,lockfile}.rs` | Modify |
+| Container driver: resolve, unpack, verify, seal containers; volumes; channel forwarding; the lockfile gate | `crates/infra-sandbox/src/{docker,lake,protocol,lockfile}.rs` | Modify |
 | Runner: dependency jobs, materialization, caches, configuration | `apps/sandbox-runner/src/{lib,config,api,host}.rs` | Modify |
 | The gateway | `apps/package-gateway` | Create |
 | Images | `runners/resolver-python`, `runners/resolver-node`, `runners/layer-tool`, `runners/python-glibc`, `runners/node-glibc` | Create |
@@ -671,7 +721,10 @@ finishes. Design 038's budget test gains a script-step shape.
 `scripts/check-architecture.py` gains checks with negative tests: no network mode other than `none` in any container
 configuration of `crates/infra-sandbox` (`docker.rs` and `lake.rs`); a run container's configuration has exactly one added
 mount, read-only; no token or secret in a resolve or install container's environment or input (a configuration-builder
-unit test); only `apps/package-gateway` names the public store's settings. A Helm render test checks that only the gateway
+unit test); only `apps/package-gateway` names the public store's settings; and a dependency allow-list for `apps/package-gateway` (as the
+existing lake-runner rule does), which fails if it links `sagat-infra-postgres`, `sagat-application`, `sagat-infra-sandbox`
+or any crate that reads database or payload-store settings. A test checks that activating `script-dependencies-v1` is
+refused when the admission statement does not read `script_artifact_blocks`. A Helm render test checks that only the gateway
 may leave the cluster. The rows go into `docs/engineering/architecture-principles.md`.
 
 ### 14. Permissions
@@ -770,7 +823,7 @@ principles these rows rely on.
 | Dependency jobs, build key version 2, an extended cache-hit finish | A version needs resolve and install before its build; the key covers the lock | Reusing the build-job row: one row per version |
 | A block table | Blocks change; artifacts must not | A column on the artifact row: refused by the immutability trigger |
 | An advisory snapshot and two version orders | Facts about vulnerabilities and malware without a third party per publication | An online scanner |
-| Four containers per materialization | The digest must not be reported by the container that parsed the archives, and modes must be fixed after compiling | One container: the unpacker would vouch for itself |
+| Three containers per materialization | The digest must not be reported by the container that parsed the archives, and modes must be fixed after the digest is checked | One container: the unpacker would vouch for itself |
 
 ## Alternatives Considered
 
@@ -841,20 +894,23 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   transaction with malware blocks, matching, severity, the release route and its trigger. Files:
   `crates/infra-packages/src/advisories.rs`, `crates/application/src/scripts/packages.rs`, migrations. Tests:
   `matcher_agrees_with_the_version_order_*`, `an_older_snapshot_is_refused`, `a_large_import_is_held`,
-  `the_switch_holds_the_snapshot_row_briefly` (a held-lock test).
+  `the_switch_rechecks_age_under_the_lock`, `a_finish_between_staging_and_switch_is_matched` (held-lock tests),
+  `a_held_import_refuses_matching_finishes`.
   Refs: Requirement 046-008, Requirement 046-009
 - [ ] T046-6 Gateway skeleton and npm side: listeners, tokens, abbreviated documents filtered by the cut, tarballs, the
   public store, the streaming GET send, the healthcheck subcommand. Files: `apps/package-gateway/`,
   `crates/infra-egress/src/lib.rs`, `crates/infra-blobstore/src/config.rs`. Tests against recorded responses
   (`apps/package-gateway/tests/fixtures/npm/`, refreshed by `scripts/record-registry-fixtures.sh`):
-  `filters_versions_after_the_cut`, `refuses_a_redirect_to_another_host`, `validates_names_before_upstream`,
+  `filters_versions_after_the_cut`, `drops_versions_without_a_time`, `refuses_a_redirect_to_another_host`,
+  `validates_names_before_upstream`,
   `egress_is_get_only`.
   Refs: Requirement 046-004, Requirement 046-018
 - [ ] T046-7 Gateway PyPI side: the JSON simple API, core-metadata files, wheel-only and tag filtering, files by hash, the
   metadata endpoint, the advisory archive route. Tests: recorded PyPI fixtures; `never_serves_a_source_distribution`.
   Refs: Requirement 046-005, Requirement 046-007
 - [ ] T046-8 Runner side of private packages: rewriting reserved names to the private routes. Test:
-  `a_reserved_name_never_reaches_the_public_registry` (runner part).
+  `a_reserved_name_never_reaches_the_public_registry` (runner part: index, metadata, file and scoped requests, with
+  the gateway receiving none).
   Refs: Requirement 046-017
 - [ ] T046-9 Control-plane side of private packages: reservations and their revision, uploads into the tenant's payload
   store, the private index and file routes, re-evaluation on reservation and deletion, audit (`sagat package push` is
@@ -866,12 +922,13 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `crates/application/src/scripts.rs`, `crates/application/src/scripts/packages.rs`, `crates/application/src/sandbox.rs`,
   `crates/infra-postgres/src/{scripts,quotas}.rs`. Tests: `framework_only_versions_keep_their_build_key`,
   `resolve_again_makes_a_new_version`, `an_author_lock_is_validated_synchronously`,
-  `two_installs_completing_together_insert_one_build` (a barrier), `a_refused_install_fails_its_siblings`,
+  `a_refused_install_and_a_sibling_completion_do_not_deadlock` (a barrier), `a_refused_install_stops_the_build_job_and_the_quota`,
   `a_duplicate_completion_changes_nothing`, `an_undeclared_import_fails_at_import_time_and_changes_nothing`.
   Refs: Requirement 046-002, Requirement 046-003, Requirement 046-008
 - [ ] T046-11 Vulnerabilities, licences, waivers (routes and the hourly pass), findings and blocks listings,
   re-evaluation jobs and pass. Tests: `policy_change_reaches_the_lease`, `waiver_expiry_reaches_the_lease`,
-  `reevaluation_resumes_after_a_crash`, `reevaluation_never_removes_a_malware_block`, `a_waiver_cannot_cover_malware`,
+  `reevaluation_resumes_after_a_crash`, `reevaluation_never_removes_a_malware_block`,
+  `a_page_never_removes_a_fresher_reservation_block`, `a_waiver_cannot_cover_malware`,
   `a_waiver_longer_than_90_days_is_refused`, `block_new_at_lease_blocks_one_namespace`.
   Refs: Requirement 046-010, Requirement 046-011
 - [ ] T046-12 Resolver images and shims; the `fetch` forwarding with its grammar and budgets; the probe that fixes the
@@ -880,21 +937,23 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `apps/sandbox-runner/src/host.rs`. Tests: `probe_resolves_the_acceptance_packages`,
   `a_resolve_container_reaches_only_the_forwarded_routes`, `a_forwarding_failure_fails_the_job_retryable`.
   Refs: Requirement 046-004, Requirement 046-005, Requirement 046-006
-- [ ] T046-13 The layer tool and the install job: unpack, compile, verify, seal and mark. Files: `runners/layer-tool/`,
+- [ ] T046-13 The layer tool and the install job: unpack (with the identity checks), verify, seal and mark. Files: `runners/layer-tool/`,
   `crates/infra-sandbox/src/{docker,lake}.rs`, `apps/sandbox-runner/src/lib.rs`. Tests: `unpacker_refuses_*`,
-  `the_digest_is_recomputed_by_a_fresh_container`, `compile_imports_nothing_from_the_layer`,
+  `the_digest_is_recomputed_by_a_fresh_container`, `a_relabelled_file_is_refused`, `a_pycache_in_the_tree_is_refused`,
   `a_postinstall_never_runs_and_is_reported`, `layer_digest_is_identical_on_two_hosts`.
   Refs: Requirement 046-006, Requirement 046-012, Non-functional requirement 046-002
 - [ ] T046-14 Runner routes in the control plane: claims with capability and target, materializations, the runnable
   check, test-run dependencies, target-aware pending activities. Files: `crates/api-http/src/routes/runner.rs`,
   `crates/application/src/scripts/packages.rs`. Tests: `an_old_runner_claim_gets_no_dependency_work`,
-  `a_runner_of_another_target_is_not_offered_the_step`, `a_test_run_with_packages_runs_and_is_refused_for_malware`.
+  `a_runner_of_another_target_is_not_offered_the_step`, `a_test_run_with_packages_runs_and_is_refused_for_malware`,
+  `a_step_no_runner_can_materialize_fails_typed`, `the_runnable_check_takes_the_namespace_from_the_attempt`.
   Refs: Requirement 046-016, Requirement 046-020
 - [ ] T046-15 Bundle version 5, layer records, the finishing steps on both build paths, the SBOM, the provenance (the
   module feature 023 reuses). Files: `crates/infra-schema/src/bundle.rs`, `crates/infra-packages/src/{sbom,provenance}.rs`,
   `crates/application/src/scripts.rs`. Tests: `a_snapshot_imported_during_a_build_is_seen_before_signing`,
   `a_cached_build_is_evaluated_and_finished_like_a_new_one`, `sbom_package_set_equals_the_lock`,
-  `provenance_verifies_and_marks_reported_fields`, `a_tampered_layer_record_is_refused`.
+  `provenance_verifies_and_marks_reported_fields`, `a_tampered_layer_record_is_refused`,
+  `a_waiver_expiring_during_a_build_is_seen_at_finish`, `a_target_added_later_gets_records_without_republishing`.
   Refs: Requirement 046-008, Requirement 046-009, Requirement 046-013, Requirement 046-015
 - [ ] T046-16 Materialization and the run: runtime images, volumes per tenant, digest and runner, the hold, the restart
   check, the runnable check before start, the mount, the shims, the caches, image retention. Files:
@@ -903,12 +962,14 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `an_unmarked_volume_is_never_mounted`, `two_materializations_of_one_layer_run_once` (a barrier),
   `a_script_cannot_write_the_layer`, `a_malware_import_during_materialization_stops_the_start`, `native_extension_imports_*`.
   Refs: Requirement 046-009, Requirement 046-013, Requirement 046-014
-- [ ] T046-17 The lease check in `RunTx::script_execution_admitted_instance` and `reject_input`; `Failure::Denied` with
-  its reason; design 038's budget test with a script-step shape. Tests: `a_malware_import_blocks_the_next_lease`,
-  `an_attempt_already_started_finishes`.
+- [ ] T046-17 The typed admission on both lease paths, `reject_input`, `Failure::Denied` with its reason, the block pass
+  for ready steps; design 038's budget test with a script-step shape. Tests: `a_malware_import_blocks_the_next_lease`,
+  `a_blocked_child_script_step_fails_at_lease`, `a_blocked_step_with_no_materialized_runner_fails`,
+  `an_attempt_already_started_finishes`, `activation_requires_the_block_check`.
   Refs: Requirement 046-009, Requirement 046-020
 - [ ] T046-18 Store collection with marks, pins and the grace period; the fetch budget. Tests:
-  `a_pinned_file_is_never_collected`, `a_reference_gained_after_the_mark_keeps_the_file`, `the_fetch_budget_refuses`.
+  `a_pinned_file_is_never_collected`, `a_reference_gained_after_the_mark_keeps_the_file`,
+  `a_collected_file_is_fetched_again_by_name`, `the_fetch_budget_counts_forwarded_bytes`.
   Refs: Requirement 046-018
 - [ ] T046-19 Studio panel and CLI (`sagat script packages`, `sagat package push`). Files:
   `frontend/apps/studio/src/features/scripts/`, `apps/cli`. Tests: the Studio journey test, the CLI contract tests.
@@ -951,8 +1012,8 @@ None yet.
   (neither runs). A write into the layer (refused). Two tenants, one lock (two volumes). A tampered lock, bundle, record,
   layer and another tenant's file (refused before start). A native extension in each language.
   `layer_digest_is_identical_on_two_hosts` compares two hosts of the same target, with a pure and a native lock.
-- **Faults:** the runner dies during resolve, install, compile, verify and materialization (the job is retried with
-  `not_before` and ends `FAILED` after its attempts; an unmarked volume is never mounted); the gateway refuses, times out
+- **Faults:** the runner dies during resolve, install, verify and materialization (a lapsed lease is reclaimed at once,
+  as feature 005 reclaims it, and the job ends `FAILED` after its attempts; an unmarked volume is never mounted); the gateway refuses, times out
   and answers `503` (retryable); a duplicate completion (`AlreadyDone`); the control plane dies between an import's switch
   and the first re-evaluation page and during a page (the pass resumes); two materializations at a barrier.
 - **Contracts:** OpenAPI lint and conformance; the gateway's contract against recorded npm and PyPI responses.

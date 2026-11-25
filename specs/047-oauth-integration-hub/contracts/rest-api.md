@@ -1,25 +1,32 @@
 # REST routes (design 047)
 
-Under `/v1`. Every route answers `404` alike for another tenant's object and a missing one, and audits the attempt.
-Bodies are bounded (64 KiB unless stated). Errors are in `errors.md`.
+Tenant routes are under `/v1` of the tenant API; operator routes are on the platform-operator surface of Architecture
+decision 0074 (Proposed), and until it is accepted they are schema-owner commands of `control-plane`. Every tenant route
+answers `404` alike for another tenant's object and a missing one, and audits the attempt. Bodies are bounded at 64 KiB.
+Errors are in `errors.md`.
 
 | Method and path | Permission | Purpose |
 |---|---|---|
-| `GET /oauth/providers`, `GET /oauth/providers/{id}/versions/{version}` | `resource:read` | list and read providers (tenant and published hub ones) |
-| `POST /oauth/providers` | `oauth:client:manage` | create an authored provider (a draft version) |
-| `POST /oauth/providers/{id}/versions/{version}:publish` | `oauth:client:manage` for authored, `hub:publish` for hub | publish after the write-time checks |
-| `POST /oauth/registrations`, `GET /oauth/registrations`, `POST /oauth/registrations/{id}:retire` | `oauth:client:manage` | tenant registrations; the secret or key is write-only (rotation is a new registration) |
-| `POST /oauth/offers/{registration}:opt-in`, `:opt-out` | `oauth:client:manage` | a tenant's answer to an operator offer |
-| `POST /namespaces/{ns}/oauth/credentials` | `oauth:credential:manage` | create a credential (`PENDING`, or `ACTIVE` for client credentials) |
-| `GET /namespaces/{ns}/oauth/credentials`, `GET .../{id}` | `resource:read` | state, granted scopes, account label (to holders of `pii` reveal only), expiry, outcome |
-| `POST /namespaces/{ns}/oauth/authorizations` | `oauth:credential:manage` | start a connection; body `{credential, registration, scopes, returnTo}`; answer `{authorizationUrl, expiresAt}` |
+| `GET /oauth/providers`, `GET /oauth/providers/{id}/versions/{version}` | `resource:read` | list and read the tenant's providers |
+| `POST /oauth/providers` | `oauth:client:manage` | author a provider (a draft version) |
+| `POST /oauth/providers/{id}/versions/{version}:publish` | `oauth:client:manage` for an authored provider, `hub:publish` for an imported one | publish after the write-time checks |
+| `POST /oauth/registrations`, `GET /oauth/registrations` | `oauth:client:manage` | tenant registrations; the secret or key is write-only |
+| `POST /oauth/registrations/{id}:rotate-secret` | `oauth:client:manage` | a new secret revision; clears `BROKEN` |
+| `POST /oauth/registrations/{id}:retire` | `oauth:client:manage` | stop new connections; credentials keep refreshing until disconnected |
+| `POST /oauth/offers/{offer}:opt-in`, `:opt-out` | `oauth:client:manage` | a tenant's answer to an operator offer |
+| `POST /namespaces/{ns}/oauth/credentials` | `oauth:credential:manage` | create a credential (`PENDING`, or `ACTIVE` without a token for client credentials) |
+| `GET /namespaces/{ns}/oauth/credentials`, `GET .../{id}` | `resource:read` | state, granted scopes, expiry, outcome; the account label to holders of the namespace's personal-data reveal only |
+| `POST /namespaces/{ns}/oauth/authorizations` | `oauth:credential:manage` | body `{credential, scopes, returnTo}`; answer `{authorizationUrl, expiresAt}` |
 | `POST /oauth/callback` | the person who started it | body `{registration, code, state, iss}`; answer the credential's state |
 | `POST /namespaces/{ns}/oauth/credentials/{id}:disconnect` | `oauth:credential:manage` | move to `DISCONNECTING` |
-| `GET /hub/items`, `GET /hub/items/{id}/versions/{version}` | `definition:read` | browse (feature 028's route, more kinds) |
-| `POST /hub/imports` | `hub:import` | body `{item, version, namespace?, requestKey}`; answer the drafts and what to prepare |
+| Feature 028's `GET /template-catalog/entries` and `GET .../{id}` | `definition:read` | browse, with the new kinds |
+| Feature 028's `POST /namespaces/{ns}/template-imports` | feature 028's (`definition:write` or `script:write`) | import workflow and script drafts |
+| `POST /template-imports` (tenant-wide) | `hub:import`, plus feature 028's permission for every workflow or script part | import providers, resource types and integrations; body `{entry, version, namespace?, requestKey}`; answer the drafts and what to prepare |
 | `POST /hub/resource-types/{key}/versions/{version}:publish` | `hub:publish` | publish an imported resource type |
-| `POST /admin/oauth/registrations`, `POST /admin/oauth/offers`, `:withdraw` | `oauth:offer:manage` (platform operator, Architecture decision 0074) | deployment registrations and offers |
-| `POST /admin/hub/blocks`, `DELETE /admin/hub/blocks/{digest}` | `hub:version:block` (platform operator) | block or lift an item digest |
+
+Operator acts (platform-operator surface, or `control-plane` commands until Architecture decision 0074 is accepted):
+`oauth deployment-provider import`, `oauth deployment-registration create|rotate-secret|retire`, `oauth offer
+create|withdraw` (`oauth:offer:manage`), `hub unblock <digest>` (`hub:version:block`).
 
 Default holders: `oauth:client:manage`, `oauth:credential:manage` and `hub:publish` belong to Admin; `hub:import` to
 Developer and Admin; the operator permissions to the platform operator only.
