@@ -616,6 +616,43 @@ finding was answered.
   and timeouts are journaled as not counted; the flag has a column grant and is read `FOR SHARE`; worker queries to an
   ended run answer `QUERY_UNAVAILABLE`; marker identifiers have a pattern; `ReleaseSticky` takes at most 256 runs.
 
+### Decisions after the eighth review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-8/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-189** (2026-11-25, supersedes D044-175 and D044-176 in part) A closed scope nested in an open parent stays
+  compensable by the parent; the can-act set counts members by `root_scope` in the forward, aborting or compensating
+  phase; `steps.outcome_seq` is stored; code scopes store linear `(issued_seq, outcome_seq)` pairs, never a quadratic
+  `after` list; the SDK awaits members before closing and aborts every open scope before a terminal command.
+- **D044-190** (2026-11-25, supersedes D044-178 in part) Initiator rows are written only in trees that contain a code run;
+  a code approval also refuses the binder of the issuing session's binding; a workflow-type binding grants authorship and
+  needs `definition:publish`.
+- **D044-191** (2026-11-25, supersedes D044-180 in part) A completion's message holds at most 64 KiB of metadata and 192
+  KiB of inline values; the declared state is inline and at most 128 KiB, once per completion; every other value may be
+  a blob; poll answers at most 3.5 MiB.
+- **D044-192** (2026-11-25) The node spec is the canonical code-profile fragment without literal values, merged with the
+  entry's publisher fields under the IR's `apiVersion`, decoded only by `parse_code_node_spec` behind `IrCodec`.
+- **D044-193** (2026-11-25, supersedes D044-184 in part) The shared hold function has no capability list in its body;
+  the table's closed check bounds the value; a migration compares the rest; Architecture decision 0105 records the
+  refinement of Architecture decision 0082 decision 1; `CAPABILITY_NOT_ACTIVE` is `422`.
+- **D044-194** (2026-11-25) A workflow-task lease journals only `workflow_task.started`; feature 008's attempt projector
+  gains arms for the four `workflow_task.*` kinds.
+- **D044-195** (2026-11-25) Move items record `MATCHED`, `REPLAY_MISMATCH` or `ENVELOPE_MISMATCH` and a
+  `firstDifference` on `BatchItem`; a move under a `HISTORY_LIMIT` review is refused; tokens are bound to their session
+  and invalidated at the verdict; ranges arrive in order.
+- **D044-196** (2026-11-25) A rerun of a code run starts on its current code version.
+- **D044-197** (2026-11-25, supersedes D044-187 in part) The completion journals `run.continue_requested` with the
+  resolved successor version, and the acknowledgement journals `run.stop_requested`; the continuation pass gains a code
+  arm (boundary, quiescence, per-segment version, recorded input check, workflow-task entry, latch).
+- **D044-198** (2026-11-25) A workflow failure keeps a closed code (`^[A-Z][A-Z0-9_]{0,63}$`) and stores its message
+  only as a `pii` payload; the same for update failures.
+- **D044-199** (2026-11-25, supersedes D044-181 in part) The overlay cache is keyed by the run alone and reads only new
+  rows by command number; the completion feeds it.
+- **D044-200** (2026-11-25) `DefinitionCache::get` becomes `get_parsed`; the Go and C# analyzers take
+  `golang.org/x/tools` v0.28.0 and `Microsoft.CodeAnalysis.CSharp` 4.11.0, pinned and reviewed as esbuild is; the goldens
+  test is a guard; `NodeMissing` maps to `INTERNAL` with `NODE_MISSING`; signals declare `maxBytes` (default 64 KiB).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -701,6 +738,11 @@ finding was answered.
   waking events committed after it are not yet applied by the function and are delivered in the next activation on the
   target code. The draft's owner should word the clause "the run has not completed an activation past the one
   verified". Raised by the architecture review of round 6.
+
+- **G044-026** (2026-11-25) Design 045 (branch `docs/temporal-parity-readiness`) writes the closed list of capabilities
+  into the body of `platform_requirement_hold`, so a second design that adds a capability would change the shared body.
+  This design keeps the list out of the body and relies on the table's closed check; design 045's owner should do the
+  same before either migration lands. Raised by the architecture review of round 8.
 
 ## 4. Owner questions (all delegated)
 

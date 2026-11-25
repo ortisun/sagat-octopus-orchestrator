@@ -16,7 +16,7 @@ queries from committed state with no worker. Some answers exist only in the func
 
 ## Decision
 
-1. A code version MUST declare its signals in ADR-0111's shape, each buffered, and the publication of a version that
+1. A code version MUST declare its signals in ADR-0111's shape, each buffered and with a `maxBytes`, and the publication of a version that
    declares signals MUST require `signal-inbox-v1`; the next activation MUST deliver the buffered signals in journal order; a signal MUST be consumed
    only when the function's handler or wait takes it, reported by the completion and marked in its transaction; a
    delivered signal not yet taken MUST stay pending, moved or discarded as ADR-0111 decides. After authentication,

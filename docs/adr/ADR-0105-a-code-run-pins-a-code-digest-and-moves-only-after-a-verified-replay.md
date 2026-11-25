@@ -2,8 +2,8 @@
 
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-001, 044-002 and 044-016; OD-2026-11-24-4 for the acceptance); no person has reviewed it
-**Refines / supersedes:** applies constitution 5.0.0 principle IV (a procedural run's pin changes only by a verified move) to code versions; complements feature 019, which versions activity builds only; adds the action `MOVE_CODE_VERSION` to the batch operations of ADR-0050; refines ADR-0050 decisions 5 and 8 for code runs; supersedes ADR-0030 decision 16 (a same-version successor) for code runs
-**Enforced by:** `workflow_tasks_follow_the_current_digest`; `a_completion_from_a_session_of_another_digest_is_stale`; `sagat_app_cannot_update_code_run_pins`; `a_pin_inserted_with_another_version_than_the_start_is_refused`; `the_move_function_refuses_a_version_of_another_workflow`; `a_move_applies_only_after_a_matching_replay`; `a_move_waits_while_the_workflow_task_is_leased`; `a_move_of_a_run_whose_last_completion_moved_is_rechecked_then_run_busy`; `a_move_off_a_review_with_no_new_events_runs_the_failed_activation`; `a_moved_run_keeps_its_step_and_compensation_identities`; `a_move_without_version_activate_is_refused`; `a_batch_move_without_run_batch_is_refused`; `a_reset_point_with_an_attempt_in_flight_is_refused`; `a_reset_of_a_code_run_keeps_its_seed`; `contract_workflow_as_code::every_new_event_kind_has_a_reset_rule`; the conformance scenario `code-patch-and-move` (design 044, Tasks 044-2, 044-6, 044-8, 044-12, 044-13)
+**Refines / supersedes:** applies constitution 5.0.0 principle IV (a procedural run's pin changes only by a verified move) to code versions; complements feature 019, which versions activity builds only; adds the action `MOVE_CODE_VERSION` to the batch operations of ADR-0050; refines ADR-0082 decision 1, as ADR-0110 decision 8 (branch `docs/temporal-parity-readiness`) does, by holding a recorded requirement's row `FOR SHARE` in a tenant's publication; refines ADR-0050 decisions 5 and 8 for code runs; supersedes ADR-0030 decision 16 (a same-version successor) for code runs
+**Enforced by:** `workflow_tasks_follow_the_current_digest`; `publication_and_removal_of_the_requirement_race_and_one_is_refused`; `a_rerun_of_a_moved_code_run_starts_on_its_current_code_version`; `a_continue_as_new_after_a_version_promotion_pins_the_recorded_version`; `a_completion_from_a_session_of_another_digest_is_stale`; `sagat_app_cannot_update_code_run_pins`; `a_pin_inserted_with_another_version_than_the_start_is_refused`; `the_move_function_refuses_a_version_of_another_workflow`; `a_move_applies_only_after_a_matching_replay`; `a_move_waits_while_the_workflow_task_is_leased`; `a_move_of_a_run_whose_last_completion_moved_is_rechecked_then_run_busy`; `a_move_off_a_review_with_no_new_events_runs_the_failed_activation`; `a_moved_run_keeps_its_step_and_compensation_identities`; `a_move_without_version_activate_is_refused`; `a_batch_move_without_run_batch_is_refused`; `a_reset_point_with_an_attempt_in_flight_is_refused`; `a_reset_of_a_code_run_keeps_its_seed`; `contract_workflow_as_code::every_new_event_kind_has_a_reset_rule`; the conformance scenario `code-patch-and-move` (design 044, Tasks 044-2, 044-6, 044-8, 044-12, 044-13)
 **Required before acceptance:** the fault suite of design 044 Task 044-28 and the measurements of Task 044-25
 
 ## Context
@@ -38,7 +38,10 @@ workflow-task step waiting.
    the pin; the runtime role MUST NOT hold the update privilege on it. A move MUST clear the step's sticky session, make it `READY` with a hint when it was under review or a
    task is pending, be journaled (`run.code_version_moved`) and audited; a refused one MUST leave the run unchanged and
    record why. No policy, schedule or pipeline MAY move runs.
-3. A move MUST be available as a dry run that records verdicts and moves nothing.
+3. A move MUST be available as a dry run that records verdicts and moves nothing. A move MUST be refused for a run under
+   a `HISTORY_LIMIT` review, whose remedy is the retry; each item MUST record its verdict (`MATCHED`, `REPLAY_MISMATCH`,
+   `ENVELOPE_MISMATCH` or a refusal) and its first difference. A rerun of a code run MUST start on its current code
+   version.
 4. A reset of a code run MUST be to its current code version only, in one transaction within ADR-0050's prefix ceiling.
    For a code run, an eligible point MUST be the end of a completion's journal block with no attempt in flight, no unknown
    outcome, no open, aborting or compensating saga scope, no open approval or child, and no code update admitted or
@@ -53,7 +56,8 @@ workflow-task step waiting.
    outcome is in the prefix, the reset rebuilding that scope's saga rows from them. This refines ADR-0050 decision 5
    for code runs: rows re-emitted with `restored: true` count for the visible count, the history and the chain. Every new event kind MUST have a reset rule in the registry of
    ADR-0050 decision 8, which gains a column for rules that differ for code runs.
-5. An accepted continue-as-new MUST only close the workflow-task step; feature 014's continuation pass MUST perform the
+5. An accepted continue-as-new MUST be recorded (`run.continue_requested`, with the resolved successor version) and
+   close the workflow-task step, the handoff pinning exactly the recorded version; feature 014's continuation pass MUST perform the
    handoff in its own transaction and lock order (the chain before the run), ending the run `FAILED` when the chain's or
    tree's limits refuse it, while an input outside the successor's schema, a target that is not a code version of the
    same type, or a version without a `chainPolicy` is refused at the completion (`COMMAND_INVALID`). The successor MUST

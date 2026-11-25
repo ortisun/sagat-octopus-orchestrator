@@ -33,8 +33,9 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    the actor of every event of origin `external`, every mover, review retrier, review resolver and resetter, and the
    publisher of each code version the run is pinned to), copied to a successor, a child and a reset run with a sequence
    of 0 so that they always bind, written for a child of a graph parent from the parent's starter, chain initiator and
-   publisher, checked by every approval of a run that has them (a graph child's approval node included), and otherwise
-   bound by the issuing activation's start; a derived step MUST receive the secrets of its own entry; a
+   publisher, written only in trees that contain a code run, checked by every approval of a run that has them (a graph
+   child's approval node included), and otherwise bound by the issuing activation's start; a code approval MUST also
+   refuse the binder of the issuing session's binding, since a workflow-type binding grants authorship of the runs; a derived step MUST receive the secrets of its own entry; a
    script entry by digest with its own secrets, schemas and compensation; a listed child
    workflow at its listed version; a listed event type within its look-back; a named approval policy. No activity name MAY start with
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.
@@ -46,7 +47,8 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
 5. Eager activity leases MUST be provisional leases of feature 006, granted through the claim's admission function
    (quotas, breakers, pools, capacity windows, gates, approvals), released safely when unacknowledged; an idempotent
    replay MUST NOT return a lease, and the idempotency record MUST NOT store a lease token.
-6. A saga opened from code MUST be an engine compensation domain: closing it drops the compensations; aborting it MUST plan
+6. A saga opened from code MUST be an engine compensation domain: closing a top-level scope drops the compensations,
+   while a closed scope nested in an open parent stays compensable by it; aborting it MUST plan
    the compensations of its completed steps in the run-scoped tables of feature 003 (`run_sagas`, `run_saga_entries`),
    with step B depending on step A when A's outcome is at or before the start of the workflow task whose completion
    recorded B, so that independent
@@ -58,7 +60,9 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    settled, the scope's `cancelPolicy` applied to members still in flight. A scope MAY be nested in an open parent,
    recorded by the open-saga command and the overlay: aborting the parent MUST abort its open children first, and
    closing a parent with an open child MUST be `COMMAND_INVALID`. The dependency source of `plan_entries` MUST have a
-   code arm reading each command's issuing `S(k)` and each step's outcome sequence.
+   code arm reading each command's issuing `S(k)` and each step's stored outcome sequence, and MUST store the linear
+   pairs `(issued_seq, outcome_seq)`, never a quadratic list. Before a terminal or continue-as-new command the SDK MUST
+   abort every open scope, so the command is deferred rather than refused.
 7. A terminal command MUST be deferred, not counted, while a saga scope aborts or a step is under review or has an
    unknown outcome, and MUST put the run under review (`COMMAND_INVALID`) while a scope is open and not aborting, since
    only the function can close it; closing a scope while a member is not settled, and a command that names a closed
