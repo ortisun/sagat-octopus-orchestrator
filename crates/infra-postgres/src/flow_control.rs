@@ -1257,8 +1257,9 @@ macro_rules! groups_named_sql {
         concat!(
             "WITH g AS ( \
                SELECT c.pool, c.scope, $7::text AS group_name \
-                 FROM (VALUES ('DRAFT_TEST', 'RUN'), ('DRAFT_TEST', 'STEP'), ('ORDINARY', 'RUN'), \
-                              ('ORDINARY', 'STEP')) c(pool, scope) \
+                 FROM (SELECT 'DRAFT_TEST'::text AS pool, 'RUN'::text AS scope \
+                       UNION ALL SELECT 'DRAFT_TEST', 'STEP' UNION ALL SELECT 'ORDINARY', 'RUN' \
+                       UNION ALL SELECT 'ORDINARY', 'STEP') c \
                 WHERE (c.pool, c.scope, $7::text) > ($3::text, $4::text, $5::text) \
                   AND EXISTS (SELECT 1 FROM ", $table, " s \
                                WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = c.pool \
