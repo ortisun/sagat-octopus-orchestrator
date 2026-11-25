@@ -46,6 +46,15 @@ node, before any lookup or gate. `failure_handler.started` replaces `run.finishe
 commits with the start's `concurrency.released` and `run.finished`. `result.returned` follows the round
 `Evaluation::EarlyResult`.
 
+*Revised 2026-11-25 (decisions D022-224, D022-228, D022-230, D022-233, D022-238):* `step.cache_missed` is one of the
+task-ready hint's arms and writes the lookup's key digest and version on the step projection (`steps.cache_lookup`), never
+in `detail`; no step is released while its run is paused, so no lookup waits across a commit. An upstream pin commits
+`step.mocked` and the existing `step.routed` with no activation, which releases no successor. `failure_handler.started`
+moves the stop into `pending_terminal_status` and clears it; a cancellation, the run deadline or the handler's timer
+during the phase drains it (`failure_handler_state` `CANCELLING` or `TIMING_OUT`) before `failure_handler.finished`, whose
+`outcome` `FAILURE_HANDLER_TIMEOUT` the column records as `TIMED_OUT`; a phase never opens a second one. `run.started`
+also carries `start_at` (a draft test's start node), `handler_tree` and `handler_kind` (`DISPATCHED`, `REGION_CHILD`).
+
 `run.started` (existing) gains optional provenance `handler_for`, `origin` and `test_tree`. `key_label` is
 the 12-hex-character prefix of the keyed digest (D1168), never the key value.
 
@@ -79,6 +88,7 @@ including ADR-0056's holder count, skip them. Rules for this feature's event typ
 | `rate_limit.granted` | `REMATERIALIZE` | restored rows are history and create no grant row; after `run.reset` the reset transaction takes a fresh run-scope slot through the admission port and never waits, else the reset is refused (`409 CONFLICT`, `RATE_LIMIT_SLOT_UNAVAILABLE`, 018's contract; rate first when the start also takes a permit, D022-069); a point with a step waiting for a slot or granted and not yet completed is not eligible (no attempt in flight, ADR-0050 decision 5) |
 | `rate_limit.wait_timed_out`, `rate_limit.dequeued` | `REFUSE` | run scope: points after them lie in a terminal tail of a run that never started work; step scope: reset to a point before the step asked for its slot |
 | `rate_limit.returned` | `REMATERIALIZE` | history; it creates no grant row, and a point between it and the step's next grant is not eligible (no attempt in flight) |
+| `run.started` provenance (`handler_tree`, `handler_kind`, `start_at`; added 2026-11-25) | `REMATERIALIZE` | a reset of a handler-tree source is a handler-tree run and inherits no `handler_kind`; `lineage_run_id` is the source's (decision D022-228); `start_at` is copied with the test tree, which is refused as a source anyway |
 | `run.started` provenance (`handler_for`) | `REMATERIALIZE` | the reset run does not inherit `handler_for` (exactly one handler run per failure, unique index); its link to the source is 018's reset provenance; `origin` and `test_tree` are copied (test trees are refused as sources) |
 
 ## Spans

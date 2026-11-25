@@ -792,3 +792,68 @@ its own evidence, as written.
 - US04 (slices 4, 5) → US01 (slices 6 to 9) → US03 (slices 10 to 13) → US05 (slices 14, 15) → US06 (slices 16 to 19).
 - Surfaces after the story they show; T022-221 after slices 12, 14 and 16; T022-060 before T022-065.
 - Parallel: T022-203, T022-205, T022-222, T022-223 within slice 2; T022-220 and the SDK tasks per language.
+
+### Revision of 2026-11-25: the rulings of the design reviews
+
+The three repository reviewers read `14b9e40b`; the rulings are in `reviews/2026-11-25/design-reviews-and-rulings.md`,
+the decisions D022-222 to D022-240 in `research.md`, and where each finding lives in
+`reviews/2026-11-25/design-responses.md`. Nothing above is ticked or rewritten; this subsection says how the tasks of the
+rest read now, adds the evidence each slice must bring, and adds tasks T022-224 to T022-237. This branch merges after
+`docs/owner-delegation-2026-11-24`, which records OD-2026-11-24-4 (architecture minor 16).
+
+#### Tasks of the rest, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-200 | the ADRs are accepted once the three reviewers find no Blocker in a re-review of this revision; ADR-0146 is one of them | D022-232 |
+| T022-201 | a binary lists each capability only once every slice of it has merged (T022-235) | D022-236 |
+| T022-204 | its evidence no longer includes the seeded `DRAFT_TEST` waiter, which moves to T022-217 | D022-237 |
+| T022-207 | every site of the plan's code facts row (`primitives.rs` 3495, 4026 to 4045, 4061; `loop_progress.rs` 778, 3409 to 3449; `chain_progress.rs` 2246 to 2248 allow-listed), and a loop and a collection that end `FAILED` with `onFailure` and with a namespace handler | D022-232 |
+| T022-209 | the fingerprint of D022-226 (canonical IR with the closed exclude list), `secret_refs` and `producer_worker_id` on the entry, `steps.cache_lookup`, the obligation without lease columns, `KeyPurpose::StepCache` | D022-225, D022-226, D022-229, D022-230 |
+| T022-210 | no paused exception (a domain test that a pause releases no step); `step.cache_missed` among the hint's arms; invariant 14 admits `step.mocked` | D022-238 |
+| T022-213 | `handler_tree`, `handler_kind`, `lineage_run_id`, the two draining values of `failure_handler_state` | D022-224, D022-228 |
+| T022-214 | the revision read with the definition; the dispatch row locked through a `NewRun` field; attempts counted before admission; the ceiling on configuration | D022-223, D022-237 |
+| T022-215 | recovery through a machine identity given as a secret, audited as it; a handler run without one cannot reset; at most one dispatch per lineage | D022-228 |
+| T022-216 | plus the review refusal (T022-229) and published script artifacts only | D022-227, D022-233 |
+| T022-217 | plus the seeded `DRAFT_TEST` waiter (from T022-204), the `BEFORE UPDATE OF test_tree` guard `ENABLE ALWAYS`, and the insert check against the parent's flag | D022-237 |
+| T022-061 | plus a runbook section on the draft-test pool's own load on a shared external system, and on G022-024 | D022-240 |
+| T022-062 | plus the multixact cost of `FOR SHARE` on a hot entry | D022-240 |
+
+#### Evidence each slice must bring now, added to the slices above
+
+- **Slice 2 (foundations):** T022-225 and T022-226's fitness rules with negative fixtures; T022-235's per-capability
+  test that no binary of this slice lists a capability of the rest; the publication rows `CACHE_KEY_SECRET`,
+  `CACHE_KEY_PII`, `FAILURE_HANDLER_SELF_GATE` and the `compensateWith` refusal of a region in the fixtures (T022-203).
+- **Slice 3 (routing):** T022-207 as it reads now, with T022-226's rule red before the routing (each listed site caught)
+  and green after; the crash at each finish commit.
+- **Slices 4 and 5 (US04):** a result set once across a handler phase (T022-227's domain cases with an early result).
+- **Slices 6 to 9 (US01):** the two-publisher, one-access-list test and the revoked-binding test (T022-236); the barrier
+  tests of T3 against T4 and T5, of T18 against T3, and the dead-entry replacement (T022-231); the hit over the retained
+  bytes (T022-232); the budget lines of the hit's content read and of the round's secret locks and binding check; the
+  label, counts and source-run disclosure tests for a caller without the right (T022-230).
+- **Slices 10 to 13 (US03):** every domain case of T022-227; the loop bound and the lineage index (T022-228); the
+  slot-order case of the dispatcher and a crash inside the admission reaching `DEAD` (T022-224, T022-214); the
+  configuration ceiling refusing configuration, never a terminal commit; a run cancelled in its phase not dispatched.
+- **Slices 14 and 15 (US05):** the review refusal and its setting (T022-229); a script artifact of an unpublished
+  version refused; the shared default group across actors.
+- **Slices 16 to 19 (US06):** the slot-order case of a publication of a workflow with a database node against a test
+  admission of its draft (T022-224); the upstream-pin domain test (T022-233); the floor on every disclosure; the check
+  order; a test-tree child of a published version bypassing the cache; the migrations' `NOT VALID` and refusing `down`
+  (T022-237).
+
+#### Follow-up tasks of the rulings (T022-224 to T022-237)
+
+- [ ] T022-224 Slot-order cases in `tests/fault/schedules-bulk-operations/slot_order.rs` for the new creators: the publication of a workflow with a database node against a test admission of its draft (no cycle: the draft row is read without a lock); the dispatcher's slots (dispatch row inside `create`, source identity, run, gates, update); the retained private definition where 017's `create` takes it. ADR-0050 decision 7 as amended; D022-222, D022-223, D022-240. Evidence: each case without deadlock, a reversed control that waits, both database roles.
+- [ ] T022-225 A rule of `scripts/check-architecture.py`: only the terminal path of `persist` inserts into `failure_handler_dispatches`; only the dispatcher and the redrive lock it. D022-223. Evidence: the rule's tests with negative fixtures.
+- [ ] T022-226 A rule of `scripts/check-architecture.py`: no `run.finished` journal or outbox write, no `finished_at =` and no direct `task.ready` outbox insert outside `persist`, with the one allow-listed exception of `chain_progress.rs` citing the `continueAsNew` refusals. ADR-0146 decision 2; D022-232. Evidence: red on the tree before T022-207 at every listed site, green after; negative fixtures.
+- [ ] T022-227 [US3] `crates/domain/tests/failure_handler.rs`: one test per case — a gated region step, a region step failing without `onError` (phase `FAILED`, no second phase), a cancellation during the phase, the run deadline during the phase, the handler timeout with a leased attempt (draining, then one commit of `failure_handler.finished`, the release and `run.finished`), a stop request during the phase accepted, the status equal to the pending status for every outcome, the timer cancelled by `failure_handler.finished`. FR-022-013, 014; D022-224. Evidence: each test seen failing on a planner without the phase state; hand mutations of the stop clearing and of the draining caught.
+- [ ] T022-228 [US3] Handler trees and lineages: `runs.handler_tree`, `handler_kind`, `lineage_run_id`, the dispatch rows' lineage unique index, the inheritance rules (children, resets and reruns of a handler-tree source), no dispatch of a handler-tree run, no inheritance of `handler_for`. FR-022-016; D022-228. Evidence: a handler that reruns its failed run through a machine identity is dispatched once in all (fault test, 20 rounds); invariants 16 and 17; a rerun of a handler run has no `handler_for`.
+- [ ] T022-229 [US5] [US6] The setting `publication_policies.draft_executions_enabled` (off by default, changed through the publication-policy route, audited) and the refusals `TEST_RUN_REVIEW_REQUIRED` and `STANDALONE_STEP_REVIEW_REQUIRED` where the effective `required_approvals` is above zero; 017's database executions unchanged. FR-022-023, 026; D022-227. Evidence: one test per combination (approvals 0 or more, setting on or off, a database node); the audit row of the setting.
+- [ ] T022-230 [US1] Cache keys under the key classification rules: `CACHE_KEY_SECRET`, `CACHE_KEY_PII`, `KeyPurpose::StepCache` with its bound, and the label, counts and hit source run shown only to a caller who may disclose every location the key reads (listing, journal, provenance). FR-022-007, 057; D022-229. Evidence: codec tests over 016 carriers; REST tests with and without the right; a raw-key canary.
+- [ ] T022-231 [US1] Store correctness: entries stamped with the obligation's instant; T4 inserting an absent scope and stamping after its lock; T5 deleting the pending obligations of the scope and key; T3 skipping an obligation older than the invalidation and replacing a dead entry; T18 obligations before entries; the key digest copied from `steps.cache_lookup`; the ceilings skipped and counted; the usage-row triggers with `SET search_path`; `UPDATE (expires_at)` only. FR-022-005, 006, 037; D022-230. Evidence: barrier tests of T3 against T4 and against T5 (both orders, held locks, `pg_blocking_pids`), of T18 against T3; a dead entry replaced; a direct update of another column refused as `sagat_app`.
+- [ ] T022-232 [US1] A hit over the run's retained bytes fails the step `RUN_DATA_LIMIT` through its route in the lookup round, and the hit's bytes enter through the outputs path of `persist`. FR-022-003; D022-231. Evidence: an integration test at and over the bound; the commit is never retried for it.
+- [ ] T022-233 [US6] Upstream pins commit `step.mocked` and `step.routed` with no activation; `start_at` in `run.started`; the highest floor of the pins on every disclosure of the test run; the check order of a test-run request; published script artifacts only for a standalone script node. FR-022-027..029; D022-233. Evidence: `crates/domain/tests/test_runs.rs` with `A → X` and `A → B → C`, `startAt = C` (no release of `X`); replay of the journal reaching the same entry; disclosure tests at each floor; one test per check in its order.
+- [ ] T022-234 A domain property test that no progress emits a filed gate decision and `run.finished` in one commit, and the as-built order of ADR-0056 decision 2 (counter row before any key given back; `runs` written by `persist` after the rounds) pinned by the lock-order tests. D022-234. Evidence: `crates/domain/tests/flow_control_properties.rs` at `PROPTEST_CASES=2000`; `concurrency_locks` unchanged.
+- [ ] T022-235 Per registry capability of the rest, a test that a binary lists it only once every slice of it is in the binary (a build constant per capability, set by its last slice). FR-022-031; D022-236. Evidence: five tests, one per capability, red when the constant is set early by hand.
+- [ ] T022-236 [US1] Producer secrets and bindings: `secret_refs` in the fingerprint and on the entry, the recheck under the shared secret-access and membership locks, `producer_worker_id` and its binding check. FR-022-002, 004; D022-225, D022-226. Evidence: two publishers with one access list (the one without access misses `unauthorized`); a revoked access list between the store and the hit; a worker binding revoked between the store and the hit; the lock taken before the cache rows (a held-lock barrier).
+- [ ] T022-237 Migrations and rollback of the rest: the `origin` CHECK `NOT VALID` then `VALIDATE`; the unique index on `handler_for_run_id` in its own migration with its lock measured on the acceptance data set; every `down` refusing while rows with the new origins, flags or events exist; the runbook's rollback (switch off, never a binary downgrade). D022-239. Evidence: up and down tests, both database roles; the index build's duration recorded.

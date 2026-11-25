@@ -26,6 +26,10 @@ paths:
         (`Engine::start`), so the node's `concurrency` and `rateLimit` gate it like a workflow's, with a default group
         derived from the activity name or the script artifact's digest; an optional `businessId` with 018's conflict
         and reuse policies; refused 422 `FLOW_CONTROL_ACTIVATION_PENDING` until `step-executions-v1` is activated.
+        Revised 2026-11-25 (decisions D022-227, D022-233): an activity or script step is refused 403
+        STANDALONE_STEP_REVIEW_REQUIRED in a namespace whose effective required approvals are above zero unless its
+        publication policy enables draft executions; a script node accepts only the artifact of a published script
+        version; a run of this private definition uses only its own version scope of the cache.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -64,6 +68,12 @@ paths:
         the publication rules (409 if the draft moved), retains a private definition (origin DRAFT_TEST,
         publisher the actor) and admits a run. Nothing is published. A test run produces no outbound
         delivery, fires no trigger and starts no namespace failure handler.
+        Revised 2026-11-25 (decisions D022-222, D022-227, D022-233): the draft row is read without a lock and its
+        revision compared (409 if it moved); a namespace whose effective required approvals are above zero refuses
+        (403 TEST_RUN_REVIEW_REQUIRED) unless its publication policy enables draft executions; checks run in the order:
+        namespace from the authenticated context, 404 for the workflow, the prod or review 403, then a fromRun 404
+        before PIN_NOT_DISCLOSABLE. Upstream pins route without activating; the highest floor of the pins applies to
+        every disclosure of the test run.
         Amended 2026-11-24 (decisions D022-200, D022-206, D022-211, D022-212): `dev` and `staging` namespaces allow it;
         admitted through `Engine::start`; the run and every child it starts are a test tree whose gates use the
         `DRAFT_TEST` pool; refused 422 `FLOW_CONTROL_ACTIVATION_PENDING` until `draft-test-runs-v1` is activated.
@@ -97,7 +107,7 @@ paths:
       summary: List cache entry metadata (never values or raw keys)
       tags: [Governance]
       x-proposed: '022'
-      description: Needs `ops:read`. Filters by workflow, node or shared cache name. Keys appear only as a 12-hex-character label of their keyed digest.
+      description: Needs `ops:read`. Filters by workflow, node or shared cache name. Keys appear only as a 12-hex-character label of their keyed digest. Revised 2026-11-25 (decisions D022-229, D022-240) the label, the counts and `sourceRunId` only to a caller who may disclose every location the key reads (null otherwise); the listing shows to `ops:read` the ids of private (internal) workflows whose version scope holds entries, which name no content.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: workflowId, in: query, schema: {type: string, format: uuid}}
@@ -231,6 +241,11 @@ paths:
         Needs `failure-handler:manage` (administrators). `expectedRevision` is required when a handler
         exists (409 otherwise). The workflow must exist in this namespace; a pinned version must be
         published. Applies to failures committed after this change. Audited with `reason`.
+        Revised 2026-11-25 (decisions D022-223, D022-240): a workflow that is missing, foreign or internal (a
+        private definition) is the same opaque 404; a pinned version that is not published is 422
+        INVALID_FAILURE_HANDLER. While the namespace's pending dispatches are at their ceiling a new or re-enabled
+        handler is refused 429 QUOTA_EXCEEDED with FLOW_CONTROL_LIMIT (an alert is raised); a terminal commit is never
+        refused.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
       requestBody:
@@ -357,7 +372,7 @@ components:
           additionalProperties: false
           required: [mock]
           properties:
-            mock: {description: 'The output the node completes with (any JSON, at most 256 KiB).'}
+            mock: {description: 'The output the node completes with (any JSON, at most 256 KiB, the pin bound of the plan, nested at most to the platform''s JSON depth limit; bounded 2026-11-25, decision D022-240).'}
         - type: object
           additionalProperties: false
           required: [fromRun]
@@ -379,7 +394,7 @@ components:
         createdAt: {type: string, format: date-time}
         expiresAt: {type: string, format: date-time}
         sizeBytes: {type: integer, minimum: 0, maximum: 262144}
-        sourceRunId: {type: string, format: uuid}
+        sourceRunId: {type: [string, 'null'], format: uuid, description: 'Null for a caller who may not disclose every location the key reads (revised 2026-11-25, decision D022-229); with keyLabel and the counts.'}
     StepCacheEntryPage:
       type: object
       required: [items]
@@ -400,13 +415,13 @@ components:
                 workflowId: {type: string, format: uuid}
                 versionNumber: {type: integer, minimum: 1, description: 'Only VERSION-scope entries of this version; every scope of the node when absent.'}
                 node: {type: string, maxLength: 64}
-                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged).'}
+                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged). Bounded 2026-11-25 (decision D022-240): its canonical form at most 4096 bytes, nested at most to the platform''s JSON depth limit (422 otherwise).'}
             - type: object
               additionalProperties: false
               required: [cacheName]
               properties:
                 cacheName: {type: string, pattern: '^[a-z][a-z0-9.-]{0,63}$'}
-                keyValue: {}
+                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged). Bounded 2026-11-25 (decision D022-240): its canonical form at most 4096 bytes, nested at most to the platform''s JSON depth limit (422 otherwise).'}
         reason: {type: string, minLength: 8, maxLength: 2000}
     StepCacheInvalidationResult:
       type: object

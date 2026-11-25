@@ -525,7 +525,10 @@ run_id)` to `runs (tenant_id, namespace_id, id)` (constraint `runs_tenant_namesp
 - A node that declares `cache`: its first `step.released` in a run leads to `WAITING(CACHE_LOOKUP)`; `step.cache_hit`
   (with `step.completed`, attempt 0) leads to `SUCCEEDED`; `step.cache_missed {outcome}` leads to `READY`, or to
   `WAITING(RATE_LIMIT | CONCURRENCY)` when the node also declares a gate (decided in the same commit). A retry never
-  returns to `CACHE_LOOKUP`. A step committed `WAITING(CACHE_LOOKUP)` exists only while its run is paused.
+  returns to `CACHE_LOOKUP`. A step committed `WAITING(CACHE_LOOKUP)` exists only while its run is paused. *(Revised
+  2026-11-25, decision D022-238: no root step is released while its run is paused, so no commit leaves a step
+  `WAITING(CACHE_LOOKUP)`: the wait kind exists in the reducer's state only, `steps.waiting_kind` does not gain it, and
+  `persist`'s refusal of an undecided lookup keeps it so.)*
   `steps.waiting_kind` gains `CACHE_LOOKUP`.
 - A pinned node of a draft test run: an upstream pin is `SUCCEEDED` by `step.mocked` at admission; a downstream pin's
   `step.released` leads to `SUCCEEDED` by `step.mocked` in the same commit, before any lookup or gate.
@@ -571,7 +574,8 @@ run). The payload references are foreign keys, which 020's catalog-driven discov
 
 14. Every commit in which a step of a node that declares `cache` is first released contains, for that step, a
     `step.cache_hit` or a `step.cache_missed`, unless its run is paused, in which case the step is
-    `WAITING(CACHE_LOOKUP)`; no step of such a node is `READY` or leased before one of them.
+    `WAITING(CACHE_LOOKUP)`; no step of such a node is `READY` or leased before one of them. *(Revised 2026-11-25,
+    decision D022-238: "a `step.cache_hit`, a `step.cache_missed` or a `step.mocked`", with no paused clause.)*
 15. Every `step.mocked` belongs to a run with `test_tree = true`, has a `test_run_pins` row whose `payload_digest` is its
     payload, and no `step.leased` of that node exists in the run.
 16. Every run with `handler_for_run_id` has a dispatch row `ADMITTED` naming it, and at most one run names a given
@@ -586,3 +590,97 @@ rows; the namespace handler policy row read without a lock) → quota, rate and 
 last. A later lookup round of the same commit may read cache rows after the semaphores: the exclusive takers of cache
 rows (T3, T4, T5, T18) lock nothing after one but usage rows (ADR-0135 decision 7). An admission follows ADR-0050
 decision 7, as amended (dispatch row 3, source runs 3R, draft workflow row 4b, pins 6, gates 7).
+
+## Revision of 2026-11-25 (the reviews of the rest of 022)
+
+Decisions D022-222 to D022-240 (the rulings of [reviews/2026-11-25/](reviews/2026-11-25/)). Where this section and the
+ones above disagree, this section wins.
+
+### Node fingerprint (decisions D022-225, D022-226)
+
+`NodeFingerprint` = digest of (the node's canonical IR without the fields `next`, `onError`, `cache.ttlSeconds`,
+`cache.name`, `concurrency`, `rateLimit`, `retry`, `timeoutMs`, `compensationRetry`, `compensationTimeoutMs`; the
+classification rules version). The canonical IR includes the activity name or artifact digest, the canonical key
+expression, the author `version`, the `outputSchema` carrier and the sorted logical secret references, and any field a
+later feature adds (an input mapping, a binding) by construction. `KeyDigest` is computed under
+`KeyPurpose::StepCache` (1 KiB by default, 4 KiB ceiling), for each digest key version in force (ADR-0093).
+
+### `step_cache_entries`, columns added or changed
+
+| Column | Type | Notes |
+|---|---|---|
+| `payload_digest` | bytea | FK `(tenant_id, payload_digest)` → `payloads (tenant_id, digest)` `ON DELETE RESTRICT` |
+| `secret_refs` | text[] | the producing node's sorted logical secret references (names, never values); at most the node's secrets ceiling; protected |
+| `producer_worker_id` | uuid | the worker identity of the completed attempt's lease; a hit requires it to hold now a binding that covers the activity |
+| `created_at` | timestamptz | the producing completion's instant (its store obligation's `created_at`), not the insert's; dead when at or before the scope's `invalidated_at` |
+| `expires_at` | timestamptz | `created_at` + `ttlSeconds`; the runtime role may lower it (`UPDATE (expires_at)` only); the `ALWAYS` trigger refuses any other update and any raise |
+
+Grants: SELECT, INSERT, DELETE, `UPDATE (expires_at)`. Counted by a usage row kept by a `SECURITY DEFINER` trigger with
+`SET search_path = pg_catalog, pg_temp` (as `flow_control_counts`); an expired entry counts until purged.
+
+### `step_cache_store_obligations`, revised
+
+PK `(tenant_id, namespace_id, run_id, node, attempt)`; `scope_digest`, `key_digest`, `key_version` copied from the
+step's `cache_lookup` projection; `payload_digest` FK `ON DELETE RESTRICT`; `ttl_seconds`; `created_at` (the
+completion's instant). The lease columns are removed: the writer takes no lease or fence, only `FOR UPDATE SKIP LOCKED`.
+Written only for the outcomes `miss`, `expired`, `invalidated`; counted by a usage row as the entries are; a full
+ceiling skips the insert (counted `skipped_backlog`).
+
+### `steps`, column added
+
+| Column | Type | Notes |
+|---|---|---|
+| `cache_lookup` | jsonb null | written with `step.cache_missed`: scope digest, key digest and key version of the lookup (bounded, protected); read by T2 to write the store obligation; never a key value |
+
+### `runs`, columns added or changed (decisions D022-223, D022-224, D022-228, D022-237)
+
+| Column | Type | Notes |
+|---|---|---|
+| `handler_tree` | boolean | NOT NULL DEFAULT false; true for a dispatched handler run, an `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a handler-tree run; never dispatched |
+| `handler_kind` | text null | CHECK `IN ('DISPATCHED','REGION_CHILD')`; `REGION_CHILD` is the `onFailure~h` child form |
+| `handler_for_run_id` | uuid null | only when `handler_kind = 'DISPATCHED'` (CHECK); FK `(tenant_id, namespace_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null; never inherited by a reset or rerun |
+| `lineage_run_id` | uuid | NOT NULL; the run's own id, or its source's `lineage_run_id` for a reset or a rerun (read under the source's identity guard) |
+| `failure_handler_state` | text null | CHECK `IN ('RUNNING','CANCELLING','TIMING_OUT','SUCCEEDED','FAILED','TIMED_OUT','CANCELLED')`; the journal's outcome maps `SUCCEEDED` → `SUCCEEDED`, `FAILED` → `FAILED`, `FAILURE_HANDLER_TIMEOUT` → `TIMED_OUT`, `CANCELLED` → `CANCELLED` |
+| `test_tree` | boolean | immutable by a `BEFORE UPDATE OF test_tree` trigger, `ENABLE ALWAYS`; at insert a child's flag must equal its parent's |
+
+The `origin` CHECK gains `STANDALONE_STEP` and `DRAFT_TEST` added `NOT VALID` and validated by a second migration; the
+unique index on `handler_for_run_id` is built in its own migration (decision D022-239).
+
+### `failure_handler_dispatches`, revised
+
+Adds `lineage_run_id` (the source run's) with UNIQUE `(tenant_id, namespace_id, lineage_run_id)`: at most one dispatch
+per lineage. `attempts` is incremented and committed before each admission is tried. Inserted only by the terminal path
+of `persist` (a recorded deviation of ADR-0050 decision 7), locked only by the dispatcher and the redrive. The
+pending-dispatch ceiling refuses a new or re-enabled handler configuration, never an insert. `config_revision` is the
+revision read with the run's definition.
+
+### `namespace_failure_handlers` and `publication_policies`
+
+`namespace_failure_handlers` is never locked by a deciding transaction; its `revision` and `enabled` are read with the
+run's definition. `publication_policies` gains `draft_executions_enabled boolean NOT NULL DEFAULT false` (decision
+D022-227): with `required_approvals > 0`, draft test runs and standalone activity and script steps are refused unless it
+is true; changed through the publication-policy route and audited.
+
+### Invariants, revised and added
+
+- Invariant 5 reads: a dispatch `ADMITTED` names a run whose `handler_kind` is `DISPATCHED` and whose
+  `handler_for_run_id` is the dispatch's source run.
+- Invariant 14 (revised): every commit in which a step of a node that declares `cache` is first released contains, for
+  that step, a `step.cache_hit`, a `step.cache_missed` or a `step.mocked`.
+- Invariant 16 (revised): every run with `handler_kind = 'DISPATCHED'` has a dispatch row `ADMITTED` naming it; at most
+  one run names a given failed run, and at most one dispatch row exists per lineage.
+- 17. No run with `handler_tree = true` has a dispatch row as its source, and every child of a handler-tree or test-tree
+  run carries its parent's flag.
+- 18. A `step_cache_entries` row's `created_at` is after its scope's `invalidated_at`, or the entry is dead and never
+  served; every `step.cache_hit` names an entry whose `secret_refs` the consumer's publisher could use at the hit's
+  commit (checked by the hit's test, not replayable from the journal).
+- 19. An upstream pin's `step.routed` releases nothing: no `step.released` of a node outside what `start_at` reaches.
+
+### Lock order, revised
+
+A transition on an existing run: chain → run (a shard fence only where a pass already holds one) → the active-run counter
+row when the commit ends a run → the secret-access and membership locks of a cacheable step's secrets (shared,
+ascending) → cache scope → cache entry (`FOR SHARE`) → semaphores, then windows, each sorted → `persist` → usage rows,
+last. The exclusive takers of cache rows take their store obligations first and lock nothing after a cache row but usage
+rows (T3, T4, T5, T18). An admission follows ADR-0050 decision 7: its slot 7 is run-scope gates, cache scope, cache
+entry, step-scope gates.
