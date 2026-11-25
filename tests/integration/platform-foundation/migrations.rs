@@ -392,6 +392,108 @@ async fn every_quota_resource_is_accepted_by_the_checks_in_force_on_a_fresh_data
     );
 }
 
+/// Whether `migration` is one of feature 022's (flow control): those a database of `develop` did not have before the
+/// merge of decision D022-089.
+fn of_flow_control(migration: &sqlx::migrate::Migration) -> bool {
+    migration.description.contains("flow control")
+        || [
+            20_270_204_000_000, // start_release_deferrals
+            20_270_209_000_000, // reset_rate_slot
+            20_270_209_000_100, // reset_rate_slot_validate
+        ]
+        .contains(&migration.version)
+}
+
+/// Decision D022-089: a database of `develop` (feature 041 migrated, feature 022 not) that stores step-log limits and
+/// ceilings takes feature 022's migrations, which sqlx applies after the later versions it already has, and then accepts
+/// every resource. Feature 022's restatements of the quota resource lists name the step-log resources, so their
+/// validations pass on those rows.
+#[tokio::test]
+async fn a_database_of_develop_with_step_log_limits_takes_the_flow_control_migrations() {
+    use sagat_domain::quota::QuotaResource;
+    let db = fresh_db().await;
+    let develop = sqlx::migrate::Migrator::with_migrations(
+        MIGRATOR
+            .iter()
+            .filter(|migration| !of_flow_control(migration))
+            .cloned()
+            .collect(),
+    );
+    develop
+        .run(&db.pool)
+        .await
+        .expect("the migrations of develop");
+    let tenant: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO tenants (id, slug, created_at) VALUES (gen_random_uuid(), 'acme', now()) RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("tenant");
+    for resource in [
+        QuotaResource::TenantStepLogBytes,
+        QuotaResource::StepLogAttemptRecords,
+        QuotaResource::StepLogAttemptBytes,
+        QuotaResource::StepLogRetentionDays,
+    ] {
+        let value = i64::try_from(resource.default_limit()).expect("a bigint");
+        sqlx::query(
+            "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) VALUES ($1, $2, $3, 'operator')",
+        )
+        .bind(tenant)
+        .bind(resource.as_str())
+        .bind(value)
+        .execute(&db.pool)
+        .await
+        .expect("a step-log ceiling");
+        sqlx::query(
+            "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+             VALUES ($1, NULL, $2, $3, 'admin')",
+        )
+        .bind(tenant)
+        .bind(resource.as_str())
+        .bind(value)
+        .execute(&db.pool)
+        .await
+        .expect("a step-log limit");
+    }
+    migrate(&db.pool)
+        .await
+        .expect("feature 022's migrations on a database of develop");
+    let missing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM unnest($1::text[]) AS v(version) \
+          WHERE NOT EXISTS (SELECT 1 FROM _sqlx_migrations m WHERE m.version = v.version::bigint AND m.success)",
+    )
+    .bind(
+        MIGRATOR
+            .iter()
+            .filter(|m| m.migration_type.is_up_migration())
+            .map(|m| m.version.to_string())
+            .collect::<Vec<_>>(),
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the applied migrations");
+    assert_eq!(missing, 0, "every migration is applied");
+    for resource in QuotaResource::ALL {
+        let value = i64::try_from(
+            resource
+                .default_limit()
+                .clamp(resource.minimum(), resource.maximum()),
+        )
+        .expect("a bigint");
+        sqlx::query(
+            "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) VALUES ($1, $2, $3, 'operator') \
+             ON CONFLICT (tenant_id, resource) DO NOTHING",
+        )
+        .bind(tenant)
+        .bind(resource.as_str())
+        .bind(value)
+        .execute(&db.pool)
+        .await
+        .unwrap_or_else(|error| panic!("{resource}: {error}"));
+    }
+}
+
 /// The stamp of the migration before the one that gives a worker binding its profile (D035-136).
 const BEFORE_BINDING_PROFILE: i64 = 20_261_231_000_000;
 
