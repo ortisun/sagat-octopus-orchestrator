@@ -943,3 +943,36 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
         .route("/livez", get(live))
         .route("/readyz", get(ready))
 }
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    /// Decision D006-036: the drain of the worker API gets the grace that is left after the stop, less a margin of one
+    /// second, so the supervisor (which aborts at `SHUTDOWN_GRACE` from the stop) never cuts it off; past the grace it is
+    /// zero, never a new grace of its own.
+    #[tokio::test(start_paused = true)]
+    async fn the_drain_gets_what_is_left_of_the_grace_less_one_second() {
+        let margin = Duration::from_secs(1);
+        assert_eq!(drain_bound(None), SHUTDOWN_GRACE - margin);
+        let stop = tokio::time::Instant::now();
+        assert_eq!(drain_bound(Some(stop)), SHUTDOWN_GRACE - margin);
+        for passed in [1, 10, 28] {
+            tokio::time::advance(Duration::from_secs(passed) - (stop.elapsed())).await;
+            let bound = drain_bound(Some(stop));
+            assert_eq!(
+                bound + Duration::from_secs(passed) + margin,
+                SHUTDOWN_GRACE,
+                "{passed} s after the stop"
+            );
+        }
+        for passed in [29, 30, 45] {
+            tokio::time::advance(Duration::from_secs(passed) - stop.elapsed()).await;
+            assert_eq!(
+                drain_bound(Some(stop)),
+                Duration::ZERO,
+                "{passed} s after the stop"
+            );
+        }
+    }
+}

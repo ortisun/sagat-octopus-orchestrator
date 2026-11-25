@@ -12,8 +12,9 @@ using Xunit;
 namespace SagatOctopusOrchestrator.Sdk.Tests;
 
 /// <summary>
-/// The hand-back of SPEC section 6.2: a lease the host received and will not run is reported with <c>FailStep</c> <c>TASK_NOT_STARTED</c>,
-/// before any handler of it runs, once, and never for a task whose handler started.
+/// The hand-back of SPEC section 6.2: on a session of protocol 1.8 or later, a lease the host received and will not run is reported with
+/// <c>FailStep</c> <c>TASK_NOT_STARTED</c>, before any handler of it runs, once, and never for a task whose handler started; below 1.8 it
+/// lapses.
 /// </summary>
 public sealed class HandBackTests : IAsyncLifetime
 {
@@ -41,11 +42,23 @@ public sealed class HandBackTests : IAsyncLifetime
         await fake.DisposeAsync();
     }
 
-    private WorkerHost Host(int maxInflight, Interceptor? interceptor = null, ILoggerFactory? logs = null)
+    /// <summary>
+    /// A host whose session negotiates <paramref name="protocol"/>: 1.8 unless the test says otherwise, the first minor on which a host
+    /// hands a lease back (decision D006-080). A test of the poll transport names it, since from 1.4 the host streams.
+    /// </summary>
+    private WorkerHost Host(
+        int maxInflight,
+        Interceptor? interceptor = null,
+        ILoggerFactory? logs = null,
+        string protocol = "1.8",
+        WorkerTransport transport = WorkerTransport.Auto)
     {
+        State.AcceptedVersion = protocol;
         var options = new SagatOptions { GrpcUrl = fake.Url, Namespace = "payments", Token = "tok" };
         options.Worker.Name = name;
         options.Worker.MaxInflight = maxInflight;
+        options.Worker.ProtocolVersion = protocol;
+        options.Worker.Transport = transport;
         options.Retry.InitialDelay = TimeSpan.FromMilliseconds(5);
         options.Retry.MaxDelay = TimeSpan.FromMilliseconds(20);
         if (interceptor is not null)
@@ -100,13 +113,60 @@ public sealed class HandBackTests : IAsyncLifetime
 
     private int BeatsOf(string task) => State.Of("Heartbeat").Count(call => ((HeartbeatRequest)call.Request).TaskId == task);
 
+    /// <summary>
+    /// Below protocol 1.8 the host drops the same leases and reports none of them: a server of 1.6 or 1.7 would record
+    /// <c>TASK_NOT_STARTED</c> as an ordinary failure that spends the attempt, so the lease lapses as before (decision D006-080).
+    /// </summary>
+    [Fact]
+    public async Task BelowProtocol18ALeaseTheHostDropsLapsesWithoutAHandBack()
+    {
+        State.IgnoreMax = true;
+        State.HoldStreamOpen = true;
+        State.Lease(Numbered(1), Numbered(2), Numbered(3));
+        var provider = new CapturingLoggerProvider();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var host = Host(maxInflight: 1, logs: factory, protocol: "1.7");
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the kept task completes");
+
+        // Stop waits for every hand-back on its way, so a hand-back, had one been queued, has reached the fake.
+        await host.StopAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty(State.Of("FailStep"));
+        Assert.Equal(0, meters.Total("sagat.worker.tasks.failed"));
+        Assert.Equal(0, meters.Total("sagat.worker.tasks.dropped"));
+        foreach (var task in new[] { "run-2/charge/1", "run-3/charge/1" })
+        {
+            Assert.Single(provider.Lines, line => line.Contains($"drops task {task}, which it did not start: credit; its lease lapses", StringComparison.Ordinal));
+        }
+    }
+
+    /// <summary>From protocol 1.8 the same leases are handed back (decision D006-080).</summary>
+    [Fact]
+    public async Task FromProtocol18ALeaseTheHostDropsIsHandedBack()
+    {
+        State.IgnoreMax = true;
+        State.HoldStreamOpen = true;
+        State.Lease(Numbered(1), Numbered(2), Numbered(3));
+        var host = Host(maxInflight: 1);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the kept task completes");
+        await host.StopAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["run-2/charge/1", "run-3/charge/1"], HandedBack());
+    }
+
     [Fact]
     public async Task APollAnswerBeyondTheCreditIsHandedBack()
     {
         State.IgnoreMax = true;
         State.Lease(Numbered(1), Numbered(2), Numbered(3));
         var ran = new List<string>();
-        var host = Host(maxInflight: 1);
+        var host = Host(maxInflight: 1, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, context, _) =>
         {
             lock (ran)
@@ -135,7 +195,6 @@ public sealed class HandBackTests : IAsyncLifetime
     [Fact]
     public async Task AStreamFrameBeyondTheCreditIsHandedBackAndTheStartedTaskIsNot()
     {
-        State.AcceptedVersion = "1.4";
         State.IgnoreMax = true;
         State.HoldStreamOpen = true;
         State.Lease(Numbered(1), Numbered(2), Numbered(3));
@@ -161,7 +220,6 @@ public sealed class HandBackTests : IAsyncLifetime
     [Fact]
     public async Task AFrameAfterTheCreditIsUsedUpIsReadAndHandedBack()
     {
-        State.AcceptedVersion = "1.4";
         State.IgnoreMax = true;
         State.HoldStreamOpen = true;
 
@@ -191,7 +249,6 @@ public sealed class HandBackTests : IAsyncLifetime
     [Fact]
     public async Task TheRestOfAFrameOverTheInputBudgetIsHandedBack()
     {
-        State.AcceptedVersion = "1.4";
         State.HoldStreamOpen = true;
         var heavy = Leases.Document(new string('x', 5 * 1024 * 1024), "charge");
         State.Lease(Numbered(1, l => l.InputJson = heavy), Numbered(2, l => l.InputJson = heavy), Numbered(3));
@@ -211,7 +268,6 @@ public sealed class HandBackTests : IAsyncLifetime
     [Fact]
     public async Task AStreamFrameReadWhileStoppingIsHandedBackWhole()
     {
-        State.AcceptedVersion = "1.4";
         State.Lease(Numbered(1), Numbered(2));
         var hold = new HoldUntilStop("StreamTasks", nonemptyAnswer: 1);
         var ran = 0;
@@ -243,7 +299,7 @@ public sealed class HandBackTests : IAsyncLifetime
         var hold = new HoldUntilStop("PollTasks", nonemptyAnswer: 2);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var host = Host(maxInflight: 4, hold);
+        var host = Host(maxInflight: 4, hold, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", async (_, _, ct) =>
         {
             started.TrySetResult();
@@ -270,7 +326,6 @@ public sealed class HandBackTests : IAsyncLifetime
     [Fact]
     public async Task ADuplicateLeaseIsIgnoredNeverHandedBack()
     {
-        State.AcceptedVersion = "1.4";
         State.IgnoreMax = true;
         State.HoldStreamOpen = true;
 
@@ -303,7 +358,7 @@ public sealed class HandBackTests : IAsyncLifetime
         State.Lease(Numbered(1));
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var ran = new List<string>();
-        var host = Host(maxInflight: 2);
+        var host = Host(maxInflight: 2, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", async (_, context, ct) =>
         {
             lock (ran)
@@ -337,7 +392,6 @@ public sealed class HandBackTests : IAsyncLifetime
     [Fact]
     public async Task SiblingIterationsThatShareATaskIdAreNotDuplicates()
     {
-        State.AcceptedVersion = "1.5";
         State.IgnoreMax = true;
         State.HoldStreamOpen = true;
         static TaskLease Sibling(uint index) => Numbered(1, lease =>
@@ -370,7 +424,7 @@ public sealed class HandBackTests : IAsyncLifetime
         State.IgnoreMax = true;
         State.Lease(Numbered(1), Numbered(2), Numbered(3));
         State.Fail("FailStep", new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Aborted, "STALE_ATTEMPT"));
-        var host = Host(maxInflight: 1);
+        var host = Host(maxInflight: 1, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
 
         await host.StartAsync();
@@ -396,7 +450,7 @@ public sealed class HandBackTests : IAsyncLifetime
         State.IgnoreMax = true;
         State.FailStepHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         State.Lease(Enumerable.Range(1, 10_000).Select(n => Numbered(n)).ToArray());
-        var host = Host(maxInflight: 1);
+        var host = Host(maxInflight: 1, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
 
         await host.StartAsync();
@@ -426,7 +480,7 @@ public sealed class HandBackTests : IAsyncLifetime
         State.FailStepHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         State.Lease(Numbered(1), Numbered(2));
         var ran = new List<string>();
-        var host = Host(maxInflight: 1);
+        var host = Host(maxInflight: 1, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, context, _) =>
         {
             lock (ran)
@@ -469,7 +523,7 @@ public sealed class HandBackTests : IAsyncLifetime
         var provider = new CapturingLoggerProvider();
         using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
         var ran = new List<string>();
-        var host = Host(maxInflight: 2, logs: factory);
+        var host = Host(maxInflight: 2, logs: factory, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, context, _) =>
         {
             lock (ran)
@@ -512,7 +566,7 @@ public sealed class HandBackTests : IAsyncLifetime
         State.Lease(Enumerable.Range(1, 21).Select(n => Numbered(n)).ToArray());
         var provider = new CapturingLoggerProvider();
         using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
-        var host = Host(maxInflight: 1, logs: factory);
+        var host = Host(maxInflight: 1, logs: factory, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
 
         await host.StartAsync();
@@ -545,7 +599,7 @@ public sealed class HandBackTests : IAsyncLifetime
     {
         State.IgnoreMax = true;
         State.Lease(Numbered(1), Numbered(2));
-        var host = Host(maxInflight: 1);
+        var host = Host(maxInflight: 1, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
 
         // One worker place, and that worker held once it has found the queue empty and before it gives up its place (the private seams of
@@ -598,7 +652,7 @@ public sealed class HandBackTests : IAsyncLifetime
     {
         State.IgnoreMax = true;
         State.Lease(Numbered(1), Numbered(2));
-        var host = Host(maxInflight: 1);
+        var host = Host(maxInflight: 1, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => throw new ActivityFailure("TASK_NOT_STARTED", "custom", retryable));
 
         await host.StartAsync();
@@ -633,7 +687,7 @@ public sealed class HandBackTests : IAsyncLifetime
                 lease.TaskKind = "RECONCILIATION";
                 lease.TargetNode = "charge";
             }));
-        var host = Host(maxInflight: 2);
+        var host = Host(maxInflight: 2, transport: WorkerTransport.Poll);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         host.RegisterCompensation<JsonNode?>("refund", (_, _, _) => throw ActivityFailure.Retryable("TASK_NOT_STARTED", "custom"));
         host.RegisterReconciler<JsonNode?>("check", (_, _, _) => throw ActivityFailure.Permanent("TASK_NOT_STARTED", "custom"));

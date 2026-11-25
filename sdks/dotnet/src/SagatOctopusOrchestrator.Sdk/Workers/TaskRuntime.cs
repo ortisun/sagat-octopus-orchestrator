@@ -8,13 +8,13 @@ internal sealed class TaskRuntime
     private int lost;
     private int finished;
 
-    internal TaskRuntime(long expiresAtEpochMs)
+    internal TaskRuntime(long expiresAtEpochMs, DateTimeOffset now)
     {
         Abort = new CancellationTokenSource();
         Interlocked.Exchange(ref deadlineEpochMs, expiresAtEpochMs);
 
         // A lease that says anything (the past, the far future) gives an interval, not an exception.
-        var left = Math.Clamp(expiresAtEpochMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), 0, 3_600_000);
+        var left = Math.Clamp(expiresAtEpochMs - now.ToUnixTimeMilliseconds(), 0, 3_600_000);
         HeartbeatInterval = WorkerHost.HeartbeatIntervalFor(TimeSpan.FromMilliseconds(left));
     }
 

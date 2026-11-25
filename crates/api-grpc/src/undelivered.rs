@@ -23,6 +23,7 @@ use sagat_application::worker::{
 use sagat_domain::execution::WithdrawalCause;
 use sagat_domain::identity::TenantId;
 use tokio_util::task::TaskTracker;
+use tokio_util::task::task_tracker::TaskTrackerToken;
 
 /// A point a test holds a claim at, after each run's transaction committed leases and before the next run is claimed
 /// (feature 006, decisions D006-008 and D006-035: a barrier, never a sleep). It is given the [`Abandonment`] of the consumer, so a test
@@ -46,7 +47,12 @@ type SinkFn = Arc<dyn Fn(Vec<UndeliveredLease>) + Send + Sync>;
 
 /// Where dropped leases go: a withdrawal on the tracker of the worker API.
 #[derive(Clone)]
-pub(crate) struct WithdrawalSink(SinkFn);
+pub(crate) struct WithdrawalSink {
+    give: SinkFn,
+    /// The tracker the withdrawals run on: every guard of leases holds a token of it until its leases are handed to the
+    /// transport or to their withdrawal, so a graceful shutdown never finds it empty in between (decision D006-036).
+    tracker: Option<TaskTracker>,
+}
 
 impl WithdrawalSink {
     pub(crate) fn new<S, C, E, R>(
@@ -59,7 +65,8 @@ impl WithdrawalSink {
         E: ExpressionEvaluator + 'static,
         R: Entropy + 'static,
     {
-        Self(Arc::new(move |leases: Vec<UndeliveredLease>| {
+        let tracker = withdrawals.tracker.clone();
+        let give: SinkFn = Arc::new(move |leases: Vec<UndeliveredLease>| {
             let workers = Arc::clone(&workers);
             let n = leases.len() as u64;
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -81,7 +88,11 @@ impl WithdrawalSink {
                 // the runtime is gone (the process is stopping past its grace): the leases lapse (gap G006-002)
                 count_undelivered(WithdrawalCause::NotSent, WithdrawalOutcome::Error, n);
             }
-        }))
+        });
+        Self {
+            give,
+            tracker: Some(tracker),
+        }
     }
 
     /// A sink that keeps what it is given, for the tests of the body.
@@ -90,9 +101,12 @@ impl WithdrawalSink {
         let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
         let into = Arc::clone(&kept);
         (
-            Self(Arc::new(move |leases| {
-                into.lock().expect("lock").extend(leases);
-            })),
+            Self {
+                give: Arc::new(move |leases| {
+                    into.lock().expect("lock").extend(leases);
+                }),
+                tracker: None,
+            },
             kept,
         )
     }
@@ -102,6 +116,10 @@ impl WithdrawalSink {
 pub(crate) struct PendingLeases {
     leases: Vec<UndeliveredLease>,
     sink: Option<WithdrawalSink>,
+    /// Keeps the withdrawals' tracker from being empty while these leases are on their way. It is dropped after `drop`
+    /// has handed the leases to their withdrawal, which then holds the tracker itself: a unary claim's leases, dropped
+    /// with the output of its task after the task left the tracker, are never missed by a drain (decision D006-036).
+    _held: Option<TaskTrackerToken>,
 }
 
 impl PendingLeases {
@@ -110,6 +128,7 @@ impl PendingLeases {
         Self {
             leases: Vec::new(),
             sink: None,
+            _held: None,
         }
     }
 
@@ -120,6 +139,7 @@ impl PendingLeases {
                 .map(|task| UndeliveredLease::of(tenant, task))
                 .collect(),
             sink: Some(sink.clone()),
+            _held: sink.tracker.as_ref().map(TaskTracker::token),
         }
     }
 
@@ -135,6 +155,7 @@ impl PendingLeases {
         Self {
             leases,
             sink: Some(sink.clone()),
+            _held: sink.tracker.as_ref().map(TaskTracker::token),
         }
     }
 }
@@ -145,7 +166,7 @@ impl Drop for PendingLeases {
             return;
         }
         if let Some(sink) = &self.sink {
-            (sink.0)(std::mem::take(&mut self.leases));
+            (sink.give)(std::mem::take(&mut self.leases));
         }
     }
 }

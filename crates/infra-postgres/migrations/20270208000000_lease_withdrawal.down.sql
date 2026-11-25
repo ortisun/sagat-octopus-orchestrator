@@ -1,5 +1,6 @@
--- Rollback is an operator/quiesced-service operation (ADR-0098, "Rollback"): remove the requirement first, then stop the
--- processes of this build. A recorded requirement of `lease-withdrawal-v1`, a history that names it, a live process that lists
+-- Rollback is an operator/quiesced-service operation (ADR-0098, "Rollback"), possible only while nothing names the capability:
+-- after an activation the history does, so only the binaries roll back unless that history is exported and removed first
+-- (docs/runbooks/instance-registry.md, section 5). A recorded requirement of `lease-withdrawal-v1`, a history that names it, a live process that lists
 -- it, or a journal that holds `step.lease_withdrawn` (an older binary cannot replay it) is refused.
 LOCK TABLE serving_instances, platform_requirements, platform_requirement_history IN ACCESS EXCLUSIVE MODE;
 DO $guard$

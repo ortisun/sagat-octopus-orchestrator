@@ -800,7 +800,14 @@ async fn shutdown_grace_does_not_add_an_unrequested_two_second_delay() {
         .await
         .expect("handler entered");
     let pending = host.running.as_ref().expect("running").tracker.clone();
+    // The clock of the runtime is paused for the stop: it moves only when every task is waiting on a timer, and then straight to the
+    // next one. A stop with zero grace waits only for its zero grace, so it ends at once on that clock however loaded the machine is;
+    // a stop that waits two seconds lets the clock jump to the 100 ms deadline first (AGENTS.md rule 18: no wall-clock margin).
+    tokio::time::pause();
+    let began = tokio::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_millis(100), host.stop(Duration::ZERO)).await;
+    let waited = began.elapsed();
+    tokio::time::resume();
     release.notify_one();
     pending.close();
     tokio::time::timeout(Duration::from_secs(1), pending.wait())
@@ -809,6 +816,11 @@ async fn shutdown_grace_does_not_add_an_unrequested_two_second_delay() {
     assert!(
         result.is_ok(),
         "zero grace must not wait an additional two seconds"
+    );
+    // The timers of the runtime count whole milliseconds, so the zero grace is one tick of the paused clock.
+    assert!(
+        waited <= Duration::from_millis(1),
+        "a stop with zero grace waited {waited:?} of the paused clock"
     );
 }
 
@@ -1376,9 +1388,9 @@ async fn a_panicking_metrics_observer_does_not_drop_a_leased_activity() {
     assert!(count.load(Ordering::Acquire) >= 4);
 }
 
-// The hand-back of `sdks/SPEC.md` section 6.2: a lease the host received and will not run is
-// reported with FailStep TASK_NOT_STARTED, before any handler of it runs, once, and never for a
-// task whose handler started.
+// The hand-back of `sdks/SPEC.md` section 6.2: on a session of protocol 1.8 or later, a lease the
+// host received and will not run is reported with FailStep TASK_NOT_STARTED, before any handler of
+// it runs, once, and never for a task whose handler started; below 1.8 it lapses.
 
 const TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 
@@ -1425,6 +1437,8 @@ impl Drop for Served {
         self.server.abort();
     }
 }
+/// A fake worker service and the options of a host whose session negotiates protocol 1.8, the first
+/// minor on which a host hands a lease back (decision D006-080).
 async fn serve(leases: Vec<pb::TaskLease>, max_inflight: usize) -> Served {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1436,10 +1450,12 @@ async fn serve(leases: Vec<pb::TaskLease>, max_inflight: usize) -> Served {
         TokenSource::bearer("fixture-token"),
     );
     options.max_inflight = max_inflight;
+    options.protocol_version = "1.8".into();
     options.retry.initial_delay = Duration::from_millis(5);
     options.retry.max_delay = Duration::from_millis(20);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let control = Arc::new(Control::default());
+    control.accepted_minor.store(8, Ordering::Release);
     let leases = Arc::new(Mutex::new(VecDeque::from(leases)));
     let service = Service {
         control: control.clone(),
@@ -1565,6 +1581,51 @@ fn hold_nth(
         }
     });
     (held, proceed)
+}
+
+// Below protocol 1.8 the host drops the same leases and reports none of them: a server of 1.6 or
+// 1.7 would record TASK_NOT_STARTED as an ordinary failure that spends the attempt, so the lease
+// lapses as before (decision D006-080).
+#[tokio::test]
+async fn below_protocol_1_8_a_lease_the_host_drops_lapses_without_a_hand_back() {
+    let warnings = Warnings::default();
+    let _logs = warnings.install();
+    let mut served = serve(vec![], 1).await;
+    served.control.accepted_minor.store(6, Ordering::Release);
+    served.stream(vec![vec![numbered(1), numbered(2), numbered(3)]]);
+    let mut options = served.options.clone();
+    options.protocol_version = "1.6".into();
+    let mut host = WorkerHost::new(options).expect("host");
+    host.activity("charge", |_: ActivityContext, _: Value| async { Ok(1) })
+        .expect("handler");
+    host.start().await.expect("start");
+    assert_eq!(served.completed().await.task_id, "run-1/charge/1");
+    // Stop waits for every hand-back on its way, so a hand-back, had one been queued, has reached
+    // the fake.
+    host.stop(Duration::from_secs(5)).await.expect("stop");
+    assert!(
+        served.failures().is_empty(),
+        "a dropped lease lapses below protocol 1.8, it is never handed back"
+    );
+    assert_eq!(
+        warnings.tasks("the host drops a task it did not start; its lease lapses"),
+        ["run-2/charge/1", "run-3/charge/1"],
+        "a warning names each dropped task and says that its lease lapses"
+    );
+}
+
+// From protocol 1.8 the same leases are handed back (decision D006-080).
+#[tokio::test]
+async fn from_protocol_1_8_a_lease_the_host_drops_is_handed_back() {
+    let mut served = serve(vec![], 1).await;
+    served.stream(vec![vec![numbered(1), numbered(2), numbered(3)]]);
+    let mut host = WorkerHost::new(served.options.clone()).expect("host");
+    host.activity("charge", |_: ActivityContext, _: Value| async { Ok(1) })
+        .expect("handler");
+    host.start().await.expect("start");
+    assert_eq!(served.completed().await.task_id, "run-1/charge/1");
+    host.stop(Duration::from_secs(5)).await.expect("stop");
+    assert_eq!(served.handed_back(), ["run-2/charge/1", "run-3/charge/1"]);
 }
 
 #[tokio::test]

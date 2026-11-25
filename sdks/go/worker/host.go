@@ -205,6 +205,11 @@ type Host struct {
 	session  atomic.Pointer[session]
 	current  *link // the link of the running Start; guarded by lifecycle
 	wake     chan struct{}
+
+	// pauses sees every pause of the loop as it begins. It is nil outside the tests of this package, which set it
+	// through export_test.go before Start: they read the pacing of the host from it instead of from the wall clock
+	// (AGENTS.md Rule 18).
+	pauses func(time.Duration)
 }
 
 // link is what one Start makes: the channel, the context the reports and heartbeats live in, and the
@@ -445,7 +450,7 @@ func isLoopback(host string) bool {
 }
 
 // Stop stops polling, cancels nothing, and waits for the tasks in flight and the leases it hands back
-// (received while stopping, sdks/SPEC.md section 6.2) until ctx is done (30 s
+// (received while stopping, from protocol 1.8, sdks/SPEC.md section 6.2) until ctx is done (30 s
 // when ctx has no deadline); then it cancels their contexts with the cause ErrShutdown, gives the
 // handlers two seconds more to report, and closes the channel. A task that did not finish keeps its
 // lease until it lapses and the server leases it again. Stop returns ctx's error when it had to
@@ -473,8 +478,8 @@ func (h *Host) Stop(ctx context.Context) error {
 		receiveCancel()
 	}
 	h.signal()
-	// The poll in progress ends and no other starts; what it leased is handed back, and Stop waits for the
-	// hand-backs with the tasks in flight (sdks/SPEC.md section 6.2).
+	// The poll in progress ends and no other starts; what it leased is handed back from protocol 1.8 (below
+	// it the leases lapse), and Stop waits for the hand-backs with the tasks in flight (sdks/SPEC.md section 6.2).
 	l := h.current
 	select {
 	case <-l.loopDone:

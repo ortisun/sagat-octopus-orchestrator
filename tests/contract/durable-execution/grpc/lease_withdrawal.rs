@@ -19,7 +19,7 @@ use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
 use crate::support::api::Options;
-use crate::support::worker::{Platform, Worker, platform_with, single_ir};
+use crate::support::worker::{Platform, Worker, machine_code, platform_with, single_ir};
 
 const WAIT: Duration = Duration::from_secs(15);
 
@@ -390,15 +390,81 @@ async fn a_lease_handed_back_with_task_not_started_is_withdrawn_while_it_is_stil
     runs_once_afterwards(&p, &run, generation).await;
 }
 
-/// The step is no longer `LEASED` (a heartbeat started its handler), or the requirement is not recorded: the hand-back is an
-/// ordinary retryable failure, never an unknown outcome. With one attempt allowed it fails the step for good.
+/// Decision D006-086 (round-2 correctness minor 1, security minor 4): a token handed back is dead for heartbeats too. A host
+/// that broke "never after start" and keeps beating its handler is told `STALE_ATTEMPT`, never an OK that would let the
+/// handler run on while the step is leased again.
 #[tokio::test]
-async fn a_hand_back_of_a_started_step_or_without_the_requirement_is_an_ordinary_failure() {
-    for (gate, started) in [
-        (Some(withdrawing()), true),
-        (None, false),
-        (Some(Arc::new(ServingGate::opened())), false),
+async fn a_heartbeat_with_a_handed_back_token_is_stale() {
+    let p = withdrawing_platform(None).await;
+    let workflow = p.publish("dead-token", &one_attempt("dead-token")).await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    as_protocol_1_8(&p, "first").await;
+    let lease = worker.one_task().await;
+    let ack = worker
+        .fail_with(&lease, "TASK_NOT_STARTED", true)
+        .await
+        .expect("the hand-back is accepted");
+    assert_eq!(ack.step_status, "READY");
+    let stale = worker
+        .client
+        .heartbeat(worker.req(worker.heartbeat_message(&lease)))
+        .await
+        .expect_err("the handed-back token is dead");
+    assert_eq!(machine_code(&stale), "STALE_ATTEMPT", "{stale:?}");
+    assert_eq!(step(&p, &run).await, ("READY".to_owned(), 0, 1));
+    assert!(named(&journal(&p, &run).await, "step.started").is_empty());
+}
+
+/// Decision D006-089 (round-3 correctness Major 1): a session of 1.8 that hands back on a fleet that does not withdraw (no
+/// gate, a gate that does not keep the requirement, or the requirement recorded with the engine's switch off) records
+/// nothing: the host is told `STALE_ATTEMPT` and the lease lapses as on `develop`, where it opens a review. It never spends
+/// the attempt of a step whose work never ran.
+#[tokio::test]
+async fn a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse() {
+    for (case, gate, switched_off) in [
+        ("no gate", None, false),
+        ("not required", Some(Arc::new(ServingGate::opened())), false),
+        ("switched off", Some(withdrawing()), true),
     ] {
+        let mut options = Options {
+            hand_back_ceiling: 8,
+            ..Options::default()
+        };
+        options.worker.idle_retry = Duration::from_millis(50);
+        options.lease_withdrawal = gate;
+        options.new_withdrawals = !switched_off;
+        let p = platform_with(options).await;
+        if switched_off {
+            record_requirement(&p).await;
+        }
+        let workflow = p.publish("lapse", &one_attempt("lapse")).await;
+        let run = p.start(&workflow, &json!({})).await;
+        let mut worker = stream_worker(&p, "first").await;
+        as_protocol_1_8(&p, "first").await;
+        let lease = worker.one_task().await;
+        let refused = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect_err("nothing is recorded");
+        assert_eq!(
+            machine_code(&refused),
+            "STALE_ATTEMPT",
+            "{case}: {refused:?}"
+        );
+        assert_eq!(step(&p, &run).await, ("LEASED".to_owned(), 1, 1), "{case}");
+        let journal = journal(&p, &run).await;
+        assert!(named(&journal, "step.failed").is_empty(), "{case}");
+        assert!(named(&journal, "step.lease_withdrawn").is_empty(), "{case}");
+        assert_eq!(p.status(&run).await, "RUNNING", "{case}");
+    }
+}
+
+/// The step is no longer `LEASED` (a heartbeat started its handler): the hand-back is an ordinary retryable failure, never
+/// an unknown outcome. With one attempt allowed it fails the step for good.
+#[tokio::test]
+async fn a_hand_back_of_a_started_step_is_an_ordinary_failure() {
+    for (gate, started) in [(Some(withdrawing()), true)] {
         let p = platform(gate, None).await;
         if started {
             record_requirement(&p).await;
@@ -726,6 +792,41 @@ async fn a_graceful_shutdown_waits_for_a_claim_in_progress_and_its_withdrawal() 
     assert!(
         p.api.worker_withdrawals.drain(WAIT).await,
         "the claim and its withdrawal ended"
+    );
+    assert_eq!(p.api.worker_withdrawals.handed_over(), 1);
+    assert_eq!(step(&p, &run).await, ("READY".to_owned(), 0, 1));
+    assert_withdrawn(&journal(&p, &run).await, "NOT_SENT");
+}
+
+/// Decision D006-036 for the unary poll: its claim runs on the tracker a graceful shutdown drains, so the drain waits for a
+/// unary claim in progress and then for its withdrawal. A claim spawned outside the tracker would let the drain end while
+/// the claim is still held.
+#[tokio::test]
+async fn a_graceful_shutdown_waits_for_a_unary_claim_in_progress_and_its_withdrawal() {
+    let gate = held_past_the_window();
+    let p = withdrawing_platform(Some(gate.probe)).await;
+    let workflow = p
+        .publish("shutdown-unary", &one_attempt("shutdown-unary"))
+        .await;
+    let run = p.start(&workflow, &json!({})).await;
+    let worker = stream_worker(&p, "first").await;
+    let request = worker.req(worker.poll_message(1));
+    let mut client = worker.client.clone();
+    let call = tokio::spawn(async move { client.poll_tasks(request).await });
+    gate.arrived.notified().await;
+    assert!(
+        !p.api
+            .worker_withdrawals
+            .drain(Duration::from_millis(200))
+            .await,
+        "the drain waits while the unary claim is held"
+    );
+    call.abort();
+    let _ = call.await;
+    gate.release.add_permits(1);
+    assert!(
+        p.api.worker_withdrawals.drain(WAIT).await,
+        "the unary claim and its withdrawal ended"
     );
     assert_eq!(p.api.worker_withdrawals.handed_over(), 1);
     assert_eq!(step(&p, &run).await, ("READY".to_owned(), 0, 1));

@@ -25,9 +25,14 @@ public sealed partial class WorkerHost : IWorkerHost
     // decision D006-026): a server that answers a poll with thousands of leases does not start thousands of reports.
     private const int MaxHandBacks = 8;
 
-    // Why a lease the host received is handed back (SPEC section 6.2): it arrived after the stop began, it is beyond the credit or the
+    // The first protocol minor on which the host hands a lease back: its server reserves TASK_NOT_STARTED, and an older one would record it
+    // as an ordinary failure that spends the attempt (decision D006-080).
+    private const int HandBackMinor = 8;
+
+    // Why a lease the host received is not run (SPEC section 6.2): it arrived after the stop began, it is beyond the credit or the
     // free slots, it is in the rest of a frame that broke the receive contract, or the host could not start it.
-    // The step failure code of a lease the host received and hands back without starting it; it is never raised to a caller.
+    // The step failure code of a lease the host received and hands back without starting it, from protocol 1.8; it is never raised to a
+    // caller.
     private const string TaskNotStarted = "TASK_NOT_STARTED";
 
     private const string HandBackStopping = "stopping";
@@ -81,6 +86,12 @@ public sealed partial class WorkerHost : IWorkerHost
     private TaskCompletionSource? wake;
     private TaskCompletionSource stopSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool wakePending;
+
+    // The clock of the host: the time a lease is taken at, the heartbeat interval, the pause after a failed beat and the pauses of the
+    // loop are counted on it. It is the
+    // system clock; the unit tests replace it (by reflection, before the host starts: they compile the protocol types themselves, so they
+    // cannot be given the internals) to read the pacing exactly instead of by the wall clock.
+    private readonly TimeProvider time = TimeProvider.System;
 
     /// <summary>Creates a host. <see cref="SagatOptions.GrpcUrl"/>, <see cref="SagatOptions.Namespace"/>, a token and <see cref="WorkerOptions.Name"/> are required to start it.</summary>
     public WorkerHost(SagatOptions options, ILoggerFactory? loggerFactory = null)
@@ -228,7 +239,7 @@ public sealed partial class WorkerHost : IWorkerHost
             loopCancel?.Cancel();
 
             // The receive call in progress ends and no other starts; a poll answer or a stream frame the loop already holds is handed back
-            // whole (SPEC section 6.2). Cancelling the token ends the wait for that call at once (the host is going away), never the code
+            // whole from protocol 1.8 (SPEC section 6.2). Cancelling the token ends the wait for that call at once (the host is going away), never the code
             // that reads what was received.
             using (cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), loopCancel))
             {
@@ -440,7 +451,7 @@ public sealed partial class WorkerHost : IWorkerHost
         try
         {
             using var timer = new CancellationTokenSource();
-            var delay = Task.Delay(Limits.Capped(wait), timer.Token);
+            var delay = Task.Delay(Limits.Capped(wait), time, timer.Token);
             await Task.WhenAny(delay, stop, waiting.Task).ConfigureAwait(false);
             await timer.CancelAsync().ConfigureAwait(false);
         }
@@ -503,7 +514,7 @@ public sealed partial class WorkerHost : IWorkerHost
                         {
                             if (stopping)
                             {
-                                // A host that is stopping starts nothing new: the frame it read is handed back whole.
+                                // A host that is stopping starts nothing new: the frame it read is handed back whole (from protocol 1.8).
                                 foreach (var lease in frame.Tasks)
                                 {
                                     Take(window, lease, HandBackStopping, session, windowMinor);
@@ -519,7 +530,7 @@ public sealed partial class WorkerHost : IWorkerHost
                             }
 
                             // The host runs at most the credit it asked for and has slots for, within the input budget of the window: the
-                            // lease that breaks either and the rest of the frame after it are handed back, and the stream is given up.
+                            // lease that breaks either and the rest of the frame after it are not run, and the stream is given up.
                             var allowed = Math.Min(asked - delivered, maxInflight - inflight.Count);
                             var taken = 0;
                             string? why = null;
@@ -581,7 +592,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 Safe.Add(Telemetry.Polls, tags);
 
                 // The host runs at most as many tasks as it asked for, and nothing once it is stopping: a server that sends more is not
-                // obeyed, and the rest are handed back (SPEC section 6.2).
+                // obeyed, and the rest are not run (SPEC section 6.2).
                 var got = response.Tasks.Count;
                 if (got > asked)
                 {
@@ -728,8 +739,8 @@ public sealed partial class WorkerHost : IWorkerHost
     }
 
     /// <summary>
-    /// Dispatches a lease of a poll answer or of a stream receive window, or hands it back when <paramref name="why"/> is not null, and says
-    /// whether it took a slot of the credit (it was dispatched, or the host tried to start it). A lease whose in-flight key is in flight, or
+    /// Dispatches a lease of a poll answer or of a stream receive window, or drops it when <paramref name="why"/> is not null (handing it back
+    /// from protocol 1.8), and says whether it took a slot of the credit (it was dispatched, or the host tried to start it). A lease whose in-flight key is in flight, or
     /// was already seen in the same answer or window (<paramref name="seen"/>), is a duplicate: it is ignored and never reported, since its fence
     /// may be the one of the running handler (SPEC section 6.2).
     /// </summary>
@@ -754,13 +765,19 @@ public sealed partial class WorkerHost : IWorkerHost
 
     /// <summary>
     /// Reports a lease the host received and will not run: <c>FailStep</c> <c>TASK_NOT_STARTED</c>, retryable, before any handler of it runs
-    /// (SPEC section 6.2). The server gives the step back without consuming the attempt when it can; a lease left to lapse would be an unknown
-    /// outcome. It is the failure report of every task, with its retries, made by one of at most <see cref="MaxHandBacks"/> workers in the
+    /// (SPEC section 6.2), on a session of protocol 1.8 or later. The server gives the step back without consuming the attempt when it can.
+    /// Below 1.8 the lease is only logged and left to lapse. It is the failure report of every task, with its retries, made by one of at most <see cref="MaxHandBacks"/> workers in the
     /// order received; nothing here waits, so the receive loop never blocks on the bound. Stop waits for it like a task in flight, so the
     /// channel is still open.
     /// </summary>
     private void HandBack(TaskLease lease, string key, Session session, int protocolMinor, string why)
     {
+        if (protocolMinor < HandBackMinor)
+        {
+            Log.DroppingLapses(logger, lease.TaskId, why);
+            return;
+        }
+
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         // Only the receive loop hands back, and Take looked for the same key in this table just before: a lease is handed back at most once.
         var added = handingBack.TryAdd(key, done);
@@ -847,7 +864,7 @@ public sealed partial class WorkerHost : IWorkerHost
         InFlight? entry = null;
         try
         {
-            entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
+            entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs, time.GetUtcNow()));
             // Only the receive loop adds to the table, and Take looked for the same key in it just before: a lease of a running task is
             // never started again.
             var added = inflight.TryAdd(key, entry);
@@ -875,7 +892,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
             });
         }
-#pragma warning disable CA1031 // The task could not be started (its runtime refused it): it is not in flight and is handed back.
+#pragma warning disable CA1031 // The task could not be started (its runtime refused it): it is not in flight and is dropped.
         catch (Exception error)
 #pragma warning restore CA1031
         {
@@ -1272,7 +1289,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 {
                     try
                     {
-                        await Task.Delay(interval, stop).ConfigureAwait(false);
+                        await Task.Delay(interval, time, stop).ConfigureAwait(false);
                         var request = new HeartbeatRequest
                         {
                             TaskId = lease.TaskId,
@@ -1334,11 +1351,11 @@ public sealed partial class WorkerHost : IWorkerHost
     }
 
     /// <summary>A short pause inside a failure handler of a loop: whatever raised, even before the interval was waited for, the loop cannot spin.</summary>
-    private static async Task Breathe(CancellationToken stop)
+    private async Task Breathe(CancellationToken stop)
     {
         try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100), stop).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(100), time, stop).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

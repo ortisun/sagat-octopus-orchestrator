@@ -128,8 +128,9 @@ buffer, no lease is acknowledged by a transport read, and external effects remai
   handler/report lifecycle finishes, including across reconnection, lease expiry and registration.
 - Dispatch a frame immediately and start heartbeats using the same activity path as unary polling.
   Defend against a server emitting more than the remaining credit or local capacity: accept only
-  bounded valid work, cancel the receive, record a closed diagnostic and hand the excess leases
-  back with `TASK_NOT_STARTED` (`sdks/SPEC.md` §6.2; at most eight hand-backs on their way at once).
+  bounded valid work, cancel the receive, record a closed diagnostic and, from protocol 1.8, hand the
+  excess leases back with `TASK_NOT_STARTED` (`sdks/SPEC.md` §6.2; at most eight hand-backs on their way at once); below
+  1.8 they lapse (D006-080).
   Never grow an unbounded queue of handlers or concatenate all frames.
 - Normal filled EOF may reopen immediately if capacity remains. Underfilled termination obeys the
   positive retry hint with existing jitter and the host's bounded wait rules; task completion can
@@ -217,7 +218,7 @@ server and SDKs, not five isolated unit-test results.
 
 ## Leases that never reach a host
 
-Decisions D006-001 to D006-018 and D006-030 to D006-039 of [`research.md`](research.md); ADR-0098. A committed lease that no host received used to be
+Decisions D006-001 to D006-018, D006-030 to D006-039 and D006-080 to D006-091 of [`research.md`](research.md); ADR-0098. A committed lease that no host received used to be
 left to lapse; since feature 037 a lapse of an `Activity` opens a review for work that never ran. The rules:
 
 1. **The server withdraws what it knows it did not send.** A lease is *handed to the transport* when `TaskBody::poll_next`
@@ -239,11 +240,12 @@ left to lapse; since feature 037 a lapse of an `Activity` opens a review for wor
    lease-withdrawal-v1`). Until then the lease lapses as before and `worker_leases_undelivered_total{cause, outcome="lapsed"}`
    counts it. The requirement cannot be removed once a journal holds the event; `SAGAT_LEASE_WITHDRAWAL=off` stops an engine
    writing new withdrawals (D006-032).
-5. **A host hands back what it drops** (`sdks/SPEC.md` §6.2): `FailStep` with `TASK_NOT_STARTED`, retryable, before any
+5. **A host of 1.8 or later hands back what it drops** (`sdks/SPEC.md` §6.2; below 1.8 the lease lapses, D006-080): `FailStep` with `TASK_NOT_STARTED`, retryable, before any
    handler of the task runs; a handler that raises the code has it rewritten by its SDK. The server withdraws it (cause
    `NOT_STARTED`) only when the session that holds the lease negotiated 1.8 or later, the requirement is recorded, the step
-   is still `LEASED` and the cap is not reached (D006-030); otherwise it is an ordinary failure with the host's `retryable`
-   flag, never an unknown outcome.
+   is still `LEASED` and the cap is not reached (D006-030). On a fleet that does not withdraw (the requirement not recorded,
+   the switch off) it records nothing and answers `STALE_ATTEMPT`, and the lease lapses (D006-089); otherwise it is an
+   ordinary failure with the host's `retryable` flag, never an unknown outcome.
    At 1.8 ("Delivery acknowledgement (protocol 1.8)" below) the reservation is read from the lease, not from the session; it is
    honoured only while `delivery-acknowledgement-v1` is recorded, for a lease claimed after that recording on the current database
    server; and a lease that has not run (still `LEASED`, no capability served) is withdrawn on its hand-back whether or not it was

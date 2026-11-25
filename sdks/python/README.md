@@ -304,7 +304,7 @@ What a hostile or broken server, or a careless caller, cannot make the SDK do (`
   up it is one `SagatError` (`UNAUTHENTICATED`, reason `TOKEN_PROVIDER_FAILED`, the exception's class only). The SDK
   knows it was the provider by a private class, never by the reason: a `TOKEN_PROVIDER_FAILED` in a server's answer
   makes nothing repeatable. It never stops the heartbeat or the poll loop.
-* **The host** runs no more tasks than it asked for (a lease the host received and will not run (it arrived while the host was stopping, beyond the tasks the host asked for or has room for, or in the rest of a frame over the input budget) is handed back at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back instead of leaving the lease to lapse into a review (sdks/SPEC.md section 6.2)) and registers again with a backoff when its session keeps being
+* **The host** runs no more tasks than it asked for (a lease the host received and will not run (it arrived while the host was stopping, beyond the tasks the host asked for or has room for, or in the rest of a frame over the input budget) is handed back at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back instead of leaving the lease to lapse into a review, from protocol 1.8; below it the lease lapses (sdks/SPEC.md section 6.2)) and registers again with a backoff when its session keeps being
   refused. `ctx.secrets()` hands out copies, overwrites its own buffers when the handler returns, raises afterwards
   (also for a call the handler scheduled and did not await), and a first call after the handler returned does not
   call the server. Python cannot wipe an immutable `bytes` or `str` you made from a secret: that copy is yours to drop.

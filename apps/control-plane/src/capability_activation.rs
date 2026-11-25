@@ -32,6 +32,9 @@ pub struct Activatable {
     pub kinds: &'static [InstanceKind],
     /// Whether `--expect-live 0` may activate it with nothing live (a requirement nothing serves under yet).
     pub empty_fleet: bool,
+    /// Whether every kind it covers must have at least one live process that lists it (decision D006-082; feature 022's
+    /// rule). `--expect-live` still counts the kinds together.
+    pub each_kind_live: bool,
     /// What follows the activation, in words for the operator, and where the runbook is.
     pub after: &'static str,
 }
@@ -42,6 +45,7 @@ pub const ACTIVATABLE: &[Activatable] = &[Activatable {
     capability: Capability::LeaseWithdrawalV1,
     kinds: &InstanceKind::ALL,
     empty_fleet: true,
+    each_kind_live: false,
     after: "Each engine withdraws the leases it never handed to a host from its next heartbeat on (within about ten \
             seconds). The activation is one-way once a lease is withdrawn; to stop, set SAGAT_LEASE_WITHDRAWAL=off on the \
             engines: docs/runbooks/lease-withdrawal.md.",
@@ -174,6 +178,39 @@ fn check_live(entry: &Activatable, live: u32, expect: Option<u32>) -> Result<(),
     }
 }
 
+/// The kinds with a live process against an entry that requires each of its kinds live (decision D006-082): every kind
+/// the entry covers must be among `live`. An entry that does not require it accepts any.
+fn check_kinds(entry: &Activatable, live: &[InstanceKind]) -> Result<(), RunError> {
+    if !entry.each_kind_live {
+        return Ok(());
+    }
+    let missing: Vec<&str> = entry
+        .kinds
+        .iter()
+        .filter(|kind| !live.contains(kind))
+        .map(|kind| kind.as_str())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(declined(format!(
+        "{} requires at least one live process (seen within 30 seconds) of each kind it covers, and none of {} is live. \
+         Start one and run the command again. Nothing was changed.",
+        entry.capability.as_str(),
+        missing.join(", ")
+    )))
+}
+
+/// Whether the second count, under the epoch lock, refuses the activation: the live count is not the one the first count
+/// agreed with, a live process lacks the capability, none is live for an entry an empty fleet may not activate, or a kind
+/// the entry requires live has none (decision D006-082).
+fn refused_under_lock(entry: &Activatable, census: &CapabilityCensus, expected: u32) -> bool {
+    census.live != expected
+        || census.lacking > 0
+        || (census.live == 0 && !entry.empty_fleet)
+        || check_kinds(entry, &census.kinds_live).is_err()
+}
+
 /// Records the requirement `args.capability` of the kinds its entry covers.
 ///
 /// # Errors
@@ -244,6 +281,7 @@ async fn run(
         return Ok(ActivationOutcome::AlreadyActive { entry });
     }
     check_live(entry, census.live, args.expect_live)?;
+    check_kinds(entry, &census.kinds_live)?;
     if census.lacking > 0 {
         return Err(lacking(entry, &census));
     }
@@ -271,12 +309,9 @@ async fn run(
     let first = census.live;
     // under the epoch lock the fleet is counted again: a process that registered or went silent since the first count
     // changes nothing
-    let empty_fleet = entry.empty_fleet;
     let judge = move |census: &CapabilityCensus| {
         counted.store(census.live, std::sync::atomic::Ordering::Relaxed);
-        census.live != expect.unwrap_or(first)
-            || census.lacking > 0
-            || (census.live == 0 && !empty_fleet)
+        refused_under_lock(entry, census, expect.unwrap_or(first))
     };
     let activated = PgInstanceStore::new(pool.clone())
         .activate(
@@ -303,6 +338,7 @@ async fn run(
                 lacking: missing,
                 lacking_examples: examples,
                 recorded: false,
+                kinds_live: Vec::new(),
             },
         )),
         Err(ChangeRefused::KindsDiffer) => Err(declined(format!(
@@ -346,6 +382,80 @@ mod tests {
             Err(RunError::Declined(_))
         ));
         assert!(check_live(&no_empty_fleet, 1, Some(1)).is_ok());
+    }
+
+    /// Decision D006-082: an entry that requires a live process of each kind refuses, naming the kinds with none, unless
+    /// every kind it covers has one; an entry that does not require it judges the count alone.
+    #[test]
+    fn an_entry_that_requires_each_kind_live_refuses_a_kind_with_none() {
+        let each = Activatable {
+            each_kind_live: true,
+            empty_fleet: false,
+            ..*LEASE
+        };
+        let both = [InstanceKind::ControlPlane, InstanceKind::ExecutionEngine];
+        assert!(check_kinds(&each, &both).is_ok());
+        for live in [
+            &[InstanceKind::ControlPlane][..],
+            &[InstanceKind::ExecutionEngine][..],
+            &[][..],
+        ] {
+            let Err(RunError::Declined(message)) = check_kinds(&each, live) else {
+                panic!("{live:?} must be refused");
+            };
+            for kind in both.iter().filter(|kind| !live.contains(kind)) {
+                assert!(message.contains(kind.as_str()), "{message}");
+            }
+            assert!(message.contains("Nothing was changed"), "{message}");
+        }
+        // the entry of lease-withdrawal-v1 does not require it
+        assert!(!LEASE.each_kind_live);
+        assert!(check_kinds(LEASE, &[]).is_ok());
+        assert!(check_kinds(LEASE, &[InstanceKind::ExecutionEngine]).is_ok());
+    }
+
+    /// The judgement under the epoch lock (decision D006-082): every reason the first count refuses is refused again.
+    #[test]
+    fn the_count_under_the_lock_refuses_what_the_first_count_refuses() {
+        let census = |live, lacking, kinds: &[InstanceKind]| CapabilityCensus {
+            live,
+            lacking,
+            lacking_examples: Vec::new(),
+            recorded: false,
+            kinds_live: kinds.to_vec(),
+        };
+        let both = InstanceKind::ALL;
+        let each = Activatable {
+            each_kind_live: true,
+            empty_fleet: false,
+            ..*LEASE
+        };
+        assert!(!refused_under_lock(&each, &census(2, 0, &both), 2));
+        assert!(
+            refused_under_lock(&each, &census(3, 0, &both), 2),
+            "the count moved"
+        );
+        assert!(
+            refused_under_lock(&each, &census(2, 1, &both), 2),
+            "a process lacks it"
+        );
+        assert!(
+            refused_under_lock(&each, &census(2, 0, &[InstanceKind::ExecutionEngine]), 2),
+            "a kind has none live"
+        );
+        assert!(
+            refused_under_lock(&each, &census(0, 0, &[]), 0),
+            "an empty fleet"
+        );
+        assert!(
+            !refused_under_lock(LEASE, &census(0, 0, &[]), 0),
+            "the lease entry may be empty"
+        );
+        assert!(!refused_under_lock(
+            LEASE,
+            &census(1, 0, &[InstanceKind::ExecutionEngine]),
+            1
+        ));
     }
 
     #[test]

@@ -22,6 +22,14 @@ pub const TASK_NOT_STARTED: &str = "TASK_NOT_STARTED";
 /// D006-030, ADR-0099). A session of an older minor may forward a handler's code, so its hand-back is an ordinary failure.
 pub const HAND_BACK_PROTOCOL_MINOR: u32 = 8;
 
+// Raising this build's ceiling to the minor that reserves the code turns the withdrawal of hand-backs on with no other
+// change; before that, the minor must be read for the lease (the session row is overwritten by a new registration of the same
+// worker), as ADR-0099 decision 9 says (round-3 security Minor 1).
+const _: () = assert!(
+    super::PROTOCOL_MINOR < HAND_BACK_PROTOCOL_MINOR,
+    "read the holder's minor per lease (ADR-0099 decision 9) before this build negotiates the minor that reserves TASK_NOT_STARTED"
+);
+
 /// A lease the server committed that no handler received: what its withdrawal is fenced on.
 #[derive(Clone)]
 pub struct UndeliveredLease {
@@ -170,6 +178,40 @@ impl<S, C, E, R> WorkerService<S, C, E, R> {
     }
 }
 
+/// What a host's `TASK_NOT_STARTED` becomes (decisions D006-030, D006-031 and D006-089).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandBackVerdict {
+    /// Withdrawn, the attempt given back; the count of the earlier withdrawals of the attempt.
+    Withdraw(u32),
+    /// The ordinary failure, with the host's `retryable` flag, counted as the outcome.
+    Fail(WithdrawalOutcome),
+    /// Nothing recorded and `STALE_ATTEMPT` answered, so the lease lapses as before: a session that reserves the code
+    /// handed back on a fleet that does not withdraw (the requirement not recorded, or the switch off).
+    Lapse(WithdrawalOutcome),
+}
+
+/// [`hand_back`]'s refusal sorted (decision D006-089): a refusal for a reason of the fleet (`Lapsed`, `Disabled`) from a session
+/// that reserves the code, of a lease still `LEASED` to it, leaves the lease to lapse; any other refusal is the ordinary
+/// failure.
+#[must_use]
+pub fn hand_back_verdict(
+    gate: Option<WithdrawalOutcome>,
+    leased: bool,
+    holder_minor: Option<u32>,
+    required: bool,
+    before: u32,
+) -> HandBackVerdict {
+    match hand_back(gate, leased, holder_minor, required, before) {
+        Ok(before) => HandBackVerdict::Withdraw(before),
+        Err(outcome @ (WithdrawalOutcome::Lapsed | WithdrawalOutcome::Disabled))
+            if leased && holder_minor.is_some_and(|minor| minor >= HAND_BACK_PROTOCOL_MINOR) =>
+        {
+            HandBackVerdict::Lapse(outcome)
+        }
+        Err(outcome) => HandBackVerdict::Fail(outcome),
+    }
+}
+
 /// What a host's `TASK_NOT_STARTED` becomes (decision D006-030): a withdrawal given the count of the earlier withdrawals of
 /// the attempt, or the ordinary failure, with the outcome it is counted as. The reads are the caller's, in its transaction:
 /// `gate` is [`WorkerService::withdraws_leases`]'s verdict, `leased` whether the step is still `LEASED` to this very lease,
@@ -217,7 +259,7 @@ where
         &self,
         tx: &mut Tx,
         task: &TaskRef<'_>,
-    ) -> Result<Result<u32, WithdrawalOutcome>, AppError> {
+    ) -> Result<HandBackVerdict, AppError> {
         let hash = Token::hash_of(task.lease_token);
         let leased = tx.parts().1.instance(task.instance).is_some_and(|step| {
             step.status() == StepStatus::Leased
@@ -236,12 +278,13 @@ where
             None
         };
         let gate = self.gate_outcome();
-        if let Err(outcome) = hand_back(gate, leased, minor, true, 0) {
-            return Ok(Err(outcome));
+        let cheap = hand_back_verdict(gate, leased, minor, true, 0);
+        if !matches!(cheap, HandBackVerdict::Withdraw(_)) {
+            return Ok(cheap);
         }
         let required = tx.lease_withdrawal_required().await?;
         let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
-        Ok(hand_back(gate, leased, minor, required, before))
+        Ok(hand_back_verdict(gate, leased, minor, required, before))
     }
 
     /// [`Self::root_hand_back`] for a scoped instance, in its path transaction.
@@ -249,7 +292,7 @@ where
         &self,
         tx: &mut Tx,
         task: &TaskRef<'_>,
-    ) -> Result<Result<u32, WithdrawalOutcome>, AppError> {
+    ) -> Result<HandBackVerdict, AppError> {
         let hash = Token::hash_of(task.lease_token);
         let leased = tx
             .snapshot()
@@ -273,12 +316,13 @@ where
             None
         };
         let gate = self.gate_outcome();
-        if let Err(outcome) = hand_back(gate, leased, minor, true, 0) {
-            return Ok(Err(outcome));
+        let cheap = hand_back_verdict(gate, leased, minor, true, 0);
+        if !matches!(cheap, HandBackVerdict::Withdraw(_)) {
+            return Ok(cheap);
         }
         let required = tx.lease_withdrawal_required().await?;
         let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
-        Ok(hand_back(gate, leased, minor, required, before))
+        Ok(hand_back_verdict(gate, leased, minor, required, before))
     }
 
     /// Withdraws `leases`, which the server committed and never handed to the transport (decision D006-001), and returns
@@ -522,6 +566,40 @@ mod tests {
         );
         for gate in [WithdrawalOutcome::Lapsed, WithdrawalOutcome::Disabled] {
             assert_eq!(hand_back(Some(gate), true, Some(8), true, 0), Err(gate));
+        }
+    }
+
+    /// Decision D006-089 at its edges: only a refusal for a reason of the fleet, from a session that reserves the code, of a
+    /// lease still `LEASED`, lapses; the cap, a started step and an older minor stay the ordinary failure.
+    #[test]
+    fn a_hand_back_lapses_only_when_the_fleet_does_not_withdraw_for_a_reserving_session() {
+        use HandBackVerdict::{Fail, Lapse, Withdraw};
+        assert_eq!(hand_back_verdict(None, true, Some(8), true, 0), Withdraw(0));
+        for gate in [WithdrawalOutcome::Lapsed, WithdrawalOutcome::Disabled] {
+            assert_eq!(
+                hand_back_verdict(Some(gate), true, Some(8), true, 0),
+                Lapse(gate)
+            );
+        }
+        assert_eq!(
+            hand_back_verdict(None, true, Some(8), false, 0),
+            Lapse(WithdrawalOutcome::Lapsed),
+            "the requirement is not recorded"
+        );
+        assert_eq!(
+            hand_back_verdict(None, true, Some(8), true, 4),
+            Fail(WithdrawalOutcome::Capped)
+        );
+        assert_eq!(
+            hand_back_verdict(None, false, Some(8), false, 0),
+            Fail(WithdrawalOutcome::FenceMissed)
+        );
+        for minor in [Some(7), None] {
+            assert_eq!(
+                hand_back_verdict(Some(WithdrawalOutcome::Disabled), true, minor, false, 0),
+                Fail(WithdrawalOutcome::Lapsed),
+                "{minor:?}: the code is not reserved below 1.8"
+            );
         }
     }
 

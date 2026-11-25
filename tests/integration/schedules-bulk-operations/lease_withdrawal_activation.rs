@@ -232,3 +232,47 @@ async fn before_any_withdrawal_the_requirement_can_be_removed() {
     assert_eq!(outcome, "REMOVED");
     assert_eq!(recorded(&r).await, None);
 }
+
+/// Decision D006-082: the census says which of the kinds asked have a live process, so an entry that requires one of each
+/// (feature 022's rule, `each_kind_live`) can refuse a fleet of one kind only. A silent process does not count.
+#[tokio::test]
+async fn the_census_names_the_kinds_that_have_a_live_process() {
+    let r = registry().await;
+    let census = |r: &Registry| {
+        let pool = r.db.pool.clone();
+        async move {
+            let mut connection = pool.acquire().await.expect("a connection");
+            sagat_infra_postgres::capability_census(
+                &mut connection,
+                Capability::LeaseWithdrawalV1,
+                &InstanceKind::ALL,
+            )
+            .await
+            .expect("census")
+        }
+    };
+    assert!(census(&r).await.kinds_live.is_empty(), "nothing is live");
+    r.serving(
+        InstanceKind::ExecutionEngine,
+        &[Capability::LeaseWithdrawalV1],
+    )
+    .await;
+    r.serving(
+        InstanceKind::ExecutionEngine,
+        &[Capability::LeaseWithdrawalV1],
+    )
+    .await;
+    let engines = census(&r).await;
+    assert_eq!(engines.live, 2);
+    assert_eq!(engines.kinds_live, vec![InstanceKind::ExecutionEngine]);
+    let control_plane = r
+        .serving(InstanceKind::ControlPlane, &[Capability::LeaseWithdrawalV1])
+        .await;
+    assert_eq!(census(&r).await.kinds_live, InstanceKind::ALL.to_vec());
+    r.age(control_plane, 40).await;
+    assert_eq!(
+        census(&r).await.kinds_live,
+        vec![InstanceKind::ExecutionEngine],
+        "a silent process is not live"
+    );
+}

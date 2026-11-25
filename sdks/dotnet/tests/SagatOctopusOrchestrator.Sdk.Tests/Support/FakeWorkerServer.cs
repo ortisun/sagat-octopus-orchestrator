@@ -61,6 +61,12 @@ internal sealed class FakeWorkerState
     /// <summary>Called when a <c>CompleteStep</c> arrives, to play a platform that releases the next task at once.</summary>
     internal Action? OnComplete { get; set; }
 
+    /// <summary>
+    /// Runs when a call of that method arrives, once it is recorded and before it is answered: a test holds a call in flight with it until
+    /// what the test claims has happened meanwhile (a barrier, never a fixed delay: AGENTS.md Rule 18).
+    /// </summary>
+    internal System.Collections.Concurrent.ConcurrentDictionary<string, Func<Task>> Before { get; } = new();
+
     /// <summary>Takes the leases when a poll arrives and answers after <see cref="PollDelay"/>: a task released meanwhile is for the next poll.</summary>
     internal bool TakeBeforeDelay { get; set; }
 
@@ -305,11 +311,16 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
             return answer;
         });
 
-    private Task<T> Answer<T>(string method, object request, ServerCallContext context, Func<T> answer)
+    private async Task<T> Answer<T>(string method, object request, ServerCallContext context, Func<T> answer)
     {
         state.Record(method, request, context.RequestHeaders, ClientCertificateOf(context));
+        if (state.Before.TryGetValue(method, out var hold))
+        {
+            await hold().ConfigureAwait(false);
+        }
+
         Throw(method);
-        return Task.FromResult(answer());
+        return answer();
     }
 
     private static string? ClientCertificateOf(ServerCallContext context) => context.GetHttpContext().Connection.ClientCertificate?.Thumbprint;

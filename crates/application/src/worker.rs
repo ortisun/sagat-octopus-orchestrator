@@ -31,8 +31,8 @@ pub use output::BlobOutput;
 use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
 pub use withdrawal::{
-    HAND_BACK_PROTOCOL_MINOR, TASK_NOT_STARTED, UndeliveredLease, WithdrawalOutcome,
-    count as count_undelivered, hand_back,
+    HAND_BACK_PROTOCOL_MINOR, HandBackVerdict, TASK_NOT_STARTED, UndeliveredLease,
+    WithdrawalOutcome, count as count_undelivered, hand_back, hand_back_verdict,
 };
 
 use std::future::Future;
@@ -2479,7 +2479,10 @@ where
         // never reaches the withdrawal.
         if code.as_str() == TASK_NOT_STARTED {
             match self.root_hand_back(&mut tx, task).await? {
-                Ok(before) => {
+                HandBackVerdict::Withdraw(before) => {
+                    // the token handed back is dead for every call, heartbeats included (decision D006-086): it is not
+                    // recorded as the lease that reported the step
+                    effects.reported = None;
                     let node = task.instance.node().clone();
                     let fence = task.fence;
                     self.engine
@@ -2507,7 +2510,12 @@ where
                     );
                     return Ok(ack);
                 }
-                Err(outcome) => {
+                // nothing recorded: the lease lapses as before (decision D006-089)
+                HandBackVerdict::Lapse(outcome) => {
+                    count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1);
+                    return Err(AppError::StaleAttempt);
+                }
+                HandBackVerdict::Fail(outcome) => {
                     count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1)
                 }
             }

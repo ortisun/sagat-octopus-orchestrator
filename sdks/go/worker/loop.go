@@ -24,6 +24,9 @@ func (h *Host) idle(ctx context.Context, d time.Duration) {
 	if h.stopping.Load() {
 		return
 	}
+	if h.pauses != nil {
+		h.pauses(d)
+	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
@@ -92,11 +95,12 @@ func (h *Host) run(ctx context.Context, l *link) {
 			h.frameReceived(len(tasks))
 		}
 		// The host runs at most as many tasks as it asked for, and nothing once it is stopping: a server
-		// that sends more is not obeyed, and the rest are handed back (sdks/SPEC.md section 6.2).
+		// that sends more is not obeyed, and the rest are handed back from protocol 1.8 or left to lapse
+		// below it (sdks/SPEC.md section 6.2).
 		asked := min(free, maxPoll)
 		if len(tasks) > asked {
-			h.log.Warn("the server sent more tasks than were asked for: the rest are handed back",
-				"asked", asked, "received", len(tasks), "handed_back", len(tasks)-asked)
+			h.log.Warn("the server sent more tasks than were asked for: the rest are not run",
+				"asked", asked, "received", len(tasks), "not_run", len(tasks)-asked)
 		}
 		w, taken, stopping := newWindow(sess), 0, h.stopping.Load()
 		for _, lease := range tasks {

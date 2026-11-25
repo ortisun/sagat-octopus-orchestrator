@@ -29,9 +29,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * The hand-back of SPEC section 6.2: a lease the host received and will not run is reported with FailStep
- * TASK_NOT_STARTED, before any handler of it runs, once, and never for a task whose handler started (mirrors
- * handback_test.go of the Go SDK and adds the lease the task pool refuses).
+ * The hand-back of SPEC section 6.2: on a session of protocol 1.8 or later, a lease the host received and will not run
+ * is reported with FailStep TASK_NOT_STARTED, before any handler of it runs, once, and never for a task whose handler
+ * started; below 1.8 it lapses (mirrors handback_test.go of the Go SDK and adds the lease the task pool refuses).
  */
 @Timeout(60)
 class WorkerHandBackTest {
@@ -163,13 +163,61 @@ class WorkerHandBackTest {
         return CompletableFuture.runAsync(() -> host.stop(Duration.ofSeconds(5)));
     }
 
+    /** A host whose session negotiates protocol 1.8, the first minor on which a host hands a lease back (decision D006-080). */
+    private WorkerHost handBackHost(Consumer<WorkerConfig.Builder> tweak) {
+        fake.acceptedVersion = "1.8";
+        return host(b -> tweak.accept(b.protocolVersion("1.8")));
+    }
+
+    /**
+     * Below protocol 1.8 the host drops the same leases and reports none of them: a server of 1.6 or 1.7 would record
+     * TASK_NOT_STARTED as an ordinary failure that spends the attempt, so the lease lapses as before (decision D006-080).
+     */
+    @Test
+    void belowProtocol18ALeaseTheHostDropsLapsesWithoutAHandBack() {
+        fake.acceptedVersion = "1.7";
+        fake.ignoreMax = true;
+        fake.holdStreamOpen = true;
+        fake.addLeases(numbered(1), numbered(2), numbered(3));
+        CapturingLogger log = new CapturingLogger();
+        List<WorkerEvent> failures = new CopyOnWriteArrayList<>();
+        WorkerHost h = host(b -> b.protocolVersion("1.7").maxInflight(1).logger(log).onEvent(e -> {
+            if (e instanceof WorkerEvent.TaskFailed || e instanceof WorkerEvent.TaskDropped) {
+                failures.add(e);
+            }
+        }));
+        h.registerActivity("charge", (in, ctx) -> 1);
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the kept task to complete");
+        // Stop waits for every hand-back on its way, so a hand-back, had one been queued, has reached the fake.
+        h.stop(Duration.ofSeconds(5));
+        assertEquals(0, fake.of("FailStep").size(), "a dropped lease lapses below protocol 1.8, it is never handed back");
+        assertEquals(List.of(), failures, "a lease that lapses emits no failure event");
+        assertEquals(1, log.warnings("its lease lapses task=run-2/charge/1 reason=credit").size(), "a warning names the task, the reason and the lapse");
+        assertEquals(1, log.warnings("its lease lapses task=run-3/charge/1 reason=credit").size(), "a warning names the task, the reason and the lapse");
+    }
+
+    /** From protocol 1.8 the same leases are handed back (decision D006-080). */
+    @Test
+    void fromProtocol18ALeaseTheHostDropsIsHandedBack() {
+        fake.ignoreMax = true;
+        fake.holdStreamOpen = true;
+        fake.addLeases(numbered(1), numbered(2), numbered(3));
+        WorkerHost h = handBackHost(b -> b.maxInflight(1));
+        h.registerActivity("charge", (in, ctx) -> 1);
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the kept task to complete");
+        h.stop(Duration.ofSeconds(5));
+        assertEquals(List.of("run-2/charge/1", "run-3/charge/1"), handedBack(), "the two leases beyond the credit");
+    }
+
     @Test
     void aPollAnswerBeyondTheCreditIsHandedBack() {
         fake.ignoreMax = true;
         fake.addLeases(numbered(1), numbered(2), numbered(3));
         CapturingLogger log = new CapturingLogger();
         List<String> ran = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(1).logger(log));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(1).logger(log));
         h.registerActivity("charge", (in, ctx) -> {
             ran.add(ctx.taskId());
             return 1;
@@ -186,11 +234,10 @@ class WorkerHandBackTest {
 
     @Test
     void aStreamFrameBeyondTheCreditIsHandedBackAndTheStartedTaskIsNot() {
-        fake.acceptedVersion = "1.4";
         fake.ignoreMax = true;
         fake.holdStreamOpen = true;
         fake.addLeases(numbered(1), numbered(2), numbered(3));
-        WorkerHost h = host(b -> b.maxInflight(1).heartbeatInterval(Duration.ofMillis(20)));
+        WorkerHost h = handBackHost(b -> b.maxInflight(1).heartbeatInterval(Duration.ofMillis(20)));
         h.registerActivity("charge", (in, ctx) -> held());
         h.start();
         until(() -> fake.of("FailStep").size() == 2, "the two hand-backs");
@@ -205,13 +252,12 @@ class WorkerHandBackTest {
 
     @Test
     void theRestOfAFrameOverTheInputBudgetIsHandedBack() {
-        fake.acceptedVersion = "1.4";
         fake.holdStreamOpen = true;
         String big = "x".repeat(5 * 1024 * 1024);
         Consumer<Worker.TaskLease.Builder> heavy = b -> b.setInputJson("{\"run\":{\"id\":\"run-1\"},\"node\":\"charge\",\"input\":\"" + big + "\"}");
         fake.addLeases(numbered(1, heavy), numbered(2, heavy), numbered(3));
         CapturingLogger log = new CapturingLogger();
-        WorkerHost h = host(b -> b.maxInflight(3).logger(log));
+        WorkerHost h = handBackHost(b -> b.maxInflight(3).logger(log));
         h.registerActivity("charge", (in, ctx) -> 1);
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "the kept task to complete");
@@ -223,11 +269,10 @@ class WorkerHandBackTest {
 
     @Test
     void aStreamFrameReadWhileStoppingIsHandedBackWhole() {
-        fake.acceptedVersion = "1.4";
         fake.holdStreamOpen = true;
         fake.addLeases(numbered(1), numbered(2));
         CapturingLogger log = new CapturingLogger();
-        WorkerHost h = host(b -> b.maxInflight(4).logger(log));
+        WorkerHost h = handBackHost(b -> b.maxInflight(4).logger(log));
         CountDownLatch read = new CountDownLatch(1);
         CountDownLatch proceed = new CountDownLatch(1);
         h.frameReceived = leases -> {
@@ -251,7 +296,7 @@ class WorkerHandBackTest {
     @Test
     void aPollAnswerThatArrivesWhileStoppingIsHandedBackAndTheRunningTaskIsNot() {
         fake.addLeases(numbered(1));
-        WorkerHost h = host(b -> b.maxInflight(4));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(4));
         CountDownLatch started = new CountDownLatch(1);
         h.registerActivity("charge", (in, ctx) -> {
             started.countDown();
@@ -284,13 +329,12 @@ class WorkerHandBackTest {
 
     @Test
     void aDuplicateLeaseIsIgnoredNeverHandedBack() {
-        fake.acceptedVersion = "1.4";
         fake.ignoreMax = true;
         fake.holdStreamOpen = true;
         // The second is the running task's own lease again; the fourth repeats a lease handed back.
         fake.addLeases(numbered(1), numbered(1), numbered(2), numbered(2));
         CapturingLogger log = new CapturingLogger();
-        WorkerHost h = host(b -> b.maxInflight(1).logger(log));
+        WorkerHost h = handBackHost(b -> b.maxInflight(1).logger(log));
         h.registerActivity("charge", (in, ctx) -> held());
         h.start();
         until(() -> fake.of("FailStep").size() >= 1, "the hand-back");
@@ -322,11 +366,10 @@ class WorkerHandBackTest {
 
     @Test
     void aSiblingIterationBeyondTheCreditIsHandedBackWithItsInstanceNotIgnored() {
-        fake.acceptedVersion = "1.5";
         fake.ignoreMax = true;
         fake.holdStreamOpen = true;
         fake.addLeases(sibling(0), sibling(1));
-        WorkerHost h = host(b -> b.maxInflight(1));
+        WorkerHost h = handBackHost(b -> b.maxInflight(1));
         h.registerActivity("charge", (in, ctx) -> held());
         h.start();
         until(() -> fake.of("FailStep").size() == 1, "the hand-back of the second iteration");
@@ -346,7 +389,7 @@ class WorkerHandBackTest {
         fake.addLeases(numbered(1), numbered(2), numbered(3));
         fake.failNext("FailStep", FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE), FakeWorkerServer.Failure.of(Status.Code.ABORTED, "STALE_ATTEMPT"));
         List<WorkerEvent> events = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(1).onEvent(e -> {
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(1).onEvent(e -> {
             if (e instanceof WorkerEvent.TaskFailed || e instanceof WorkerEvent.TaskStale || e instanceof WorkerEvent.TaskDropped) {
                 events.add(e);
             }
@@ -374,7 +417,7 @@ class WorkerHandBackTest {
         fake.addLeases(numbered(1), numbered(2));
         CapturingLogger log = new CapturingLogger();
         List<WorkerEvent> events = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(2).logger(log).onEvent(events::add));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(2).logger(log).onEvent(events::add));
         h.beforeTaskStarts = lease -> {
             if (lease.getTaskId().equals("run-2/charge/1")) {
                 throw new RejectedExecutionException("refused by the test");
@@ -404,7 +447,7 @@ class WorkerHandBackTest {
         CountDownLatch gate = new CountDownLatch(1);
         fake.failStepGate = gate;
         List<String> ran = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(1).logger(new CapturingLogger()));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(1).logger(new CapturingLogger()));
         h.registerActivity("charge", (in, ctx) -> {
             ran.add(ctx.taskId());
             return 1;
@@ -439,7 +482,7 @@ class WorkerHandBackTest {
         fake.failStepGate = gate;
         CapturingLogger log = new CapturingLogger();
         List<String> ran = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(1).logger(log));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(1).logger(log));
         h.registerActivity("charge", (in, ctx) -> {
             ran.add(ctx.taskId());
             return 1;
@@ -475,7 +518,7 @@ class WorkerHandBackTest {
         CapturingLogger log = new CapturingLogger();
         List<WorkerEvent> events = new CopyOnWriteArrayList<>();
         List<String> ran = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(2).logger(log).onEvent(events::add));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(2).logger(log).onEvent(events::add));
         h.registerActivity("charge", (in, ctx) -> {
             ran.add(ctx.taskId());
             return 1;
@@ -533,7 +576,7 @@ class WorkerHandBackTest {
         fake.failStepGate = gate;
         CapturingLogger log = new CapturingLogger();
         List<WorkerEvent> events = new CopyOnWriteArrayList<>();
-        WorkerHost h = host(b -> b.maxInflight(1).logger(log).onEvent(events::add)
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(1).logger(log).onEvent(events::add)
                 .retry(new RetryPolicy(4, Duration.ofSeconds(10), Duration.ofSeconds(10))));
         h.registerActivity("charge", (in, ctx) -> 1);
         h.start();
@@ -572,11 +615,10 @@ class WorkerHandBackTest {
 
     @Test
     void aFrameAfterTheCreditIsUsedUpIsReadAndHandedBack() {
-        fake.acceptedVersion = "1.4";
         fake.holdStreamOpen = true;
         // One receive window: the first frame uses up the credit of one, the second carries two more.
         fake.streamFrames = List.of(List.of(numbered(1)), List.of(numbered(2), numbered(3)));
-        WorkerHost h = host(b -> b.maxInflight(1));
+        WorkerHost h = handBackHost(b -> b.maxInflight(1));
         h.registerActivity("charge", (in, ctx) -> held());
         h.start();
         until(() -> fake.of("FailStep").size() == 2, "the two hand-backs");
@@ -599,7 +641,7 @@ class WorkerHandBackTest {
                 numbered(3, b -> b.setActivityName("refund").setTaskKind("COMPENSATION")),
                 numbered(4, b -> b.setActivityName("check").setTaskKind("RECONCILIATION").setTargetNode("charge")),
                 numbered(5));
-        WorkerHost h = host(b -> b.maxInflight(4));
+        WorkerHost h = handBackHost(b -> b.transport(WorkerTransport.POLL).maxInflight(4));
         h.registerActivity("charge", (in, ctx) -> {
             throw ctx.taskId().equals("run-1/charge/1")
                     ? ActivityFailure.retryable("TASK_NOT_STARTED", "custom")

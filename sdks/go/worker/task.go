@@ -74,7 +74,7 @@ func inflightKey(lease *pb.TaskLease, minor int) string {
 	return key
 }
 
-// Why a lease the host received is handed back (sdks/SPEC.md section 6.2).
+// Why a lease the host received is not run (sdks/SPEC.md section 6.2).
 const (
 	handBackStopping  = "stopping"
 	handBackCredit    = "credit"
@@ -100,7 +100,8 @@ func newWindow(sess *session) *window {
 	return &window{minor: minorOf(sess.accepted), seen: map[string]bool{}}
 }
 
-// take dispatches a lease, or hands it back when why is not empty, and reports whether it dispatched it.
+// take dispatches a lease, or drops it when why is not empty (handing it back from protocol 1.8), and
+// reports whether it dispatched it.
 // A lease whose key is in flight, or was already seen in the window, is a duplicate: it is ignored and
 // never reported, since its fence may be the one of the running handler.
 func (h *Host) take(l *link, w *window, lease *pb.TaskLease, why string) bool {
@@ -126,12 +127,21 @@ func (h *Host) take(l *link, w *window, lease *pb.TaskLease, why string) bool {
 // cannot make the host open a call per lease (sdks/SPEC.md section 6.2, decision D006-026).
 const handBackConcurrency = 8
 
+// handBackMinor is the first protocol minor on which the host hands a lease back: its server reserves
+// TASK_NOT_STARTED, and an older one would record it as an ordinary failure that spends the attempt
+// (decision D006-080).
+const handBackMinor = 8
+
 // handBack reports a lease the host received and will not run: FailStep TASK_NOT_STARTED, retryable,
-// before any handler of it runs (sdks/SPEC.md section 6.2). The server gives the step back without
-// consuming the attempt when it can; a lease left to lapse would be an unknown outcome. The report waits
-// its turn behind at most handBackConcurrency others; until it ends its key is in flight, and Stop waits
-// for it like a task in flight, so the connection is still open.
+// before any handler of it runs (sdks/SPEC.md section 6.2), on a session of protocol 1.8 or later. The
+// server gives the step back without consuming the attempt when it can. Below 1.8 the lease is only
+// logged and left to lapse. The report waits its turn behind at most handBackConcurrency others; until it
+// ends its key is in flight, and Stop waits for it like a task in flight, so the connection is still open.
 func (h *Host) handBack(l *link, lease *pb.TaskLease, minor int, key, why string) {
+	if minor < handBackMinor {
+		h.log.Warn("the host drops a task it did not start; its lease lapses", "task", lease.GetTaskId(), "reason", why)
+		return
+	}
 	h.log.Warn("the host hands back a task it did not start", "task", lease.GetTaskId(), "reason", why)
 	h.mu.Lock()
 	h.wg.Add(1)

@@ -378,7 +378,9 @@ where
             .is_some_and(|(code, _)| code.as_str() == super::TASK_NOT_STARTED)
         {
             match self.path_hand_back(&mut tx, task).await? {
-                Ok(before) => {
+                super::HandBackVerdict::Withdraw(before) => {
+                    // dead for heartbeats too (decision D006-086)
+                    effects.reported = None;
                     let snapshot = tx.snapshot();
                     let progress = execution::withdraw_path_instance(
                         &snapshot.definition,
@@ -398,7 +400,12 @@ where
                     );
                     return Ok(PathReportApply::Finished(ack));
                 }
-                Err(outcome) => {
+                // nothing recorded: the lease lapses as before (decision D006-089)
+                super::HandBackVerdict::Lapse(outcome) => {
+                    super::count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1);
+                    return Err(AppError::StaleAttempt);
+                }
+                super::HandBackVerdict::Fail(outcome) => {
                     super::count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1)
                 }
             }
