@@ -6724,10 +6724,24 @@ where
                 },
                 true,
             )),
+            // This process does not serve the gate (no digest key ring): a fact of the replica, not of the child. The
+            // reservation stays for a replica that serves it, as the grant pass leaves a key it cannot grant (decision
+            // D022-080 as amended by the review of 2026-11-25).
+            Err(StoreError::FlowControl(
+                sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            )) => {
+                tracing::warn!(
+                    "this process does not serve the flow-control gate: a child start is left for one that does"
+                );
+                Err(StoreError::FlowControl(
+                    sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+                )
+                .into())
+            }
             // The gate of the child's start refused it (a full buffer, `queued_runs`, the live-keys ceiling, a capability
-            // switched off, not activated or not served): the parent's node fails with the refusal's reason, a typed
-            // failure its route takes, and no child run exists (FR-022-055, D022-080). Waiting instead would keep the
-            // reservation at the head of the pass and fail it every tick.
+            // switched off or not activated): the parent's node fails with the refusal's reason, a typed failure its
+            // route takes, and no child run exists (FR-022-055, D022-080). Waiting instead would keep the reservation at
+            // the head of the pass and fail it every tick.
             Err(StoreError::FlowControl(refusal)) => Ok(self
                 .fail_unstarted_child(
                     view,
@@ -6753,8 +6767,12 @@ where
                     .await;
                 if let Err(error) = started {
                     drop(tx);
-                    // the child's start gates refused it in the creation transaction, rolled back with it (FR-022-055)
-                    if let EngineError::Store(StoreError::FlowControl(refusal)) = &error {
+                    // the child's start gates refused it in the creation transaction, rolled back with it (FR-022-055);
+                    // a replica that does not serve the gate leaves it for one that does (decision D022-080, amended)
+                    if let EngineError::Store(StoreError::FlowControl(refusal)) = &error
+                        && *refusal
+                            != sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing
+                    {
                         return Ok(self
                             .fail_unstarted_child(
                                 view,

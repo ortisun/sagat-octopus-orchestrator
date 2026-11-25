@@ -191,6 +191,50 @@ async fn a_child_refused_by_its_capability_fails_its_node_through_the_route() {
     refused(&w, run, "FLOW_CONTROL_ACTIVATION_PENDING").await;
 }
 
+/// Review of 2026-11-25 (correctness minor 3; decision D022-080 as amended): a child start refused
+/// `BINARY_CAPABILITY_MISSING` (this process does not serve the gate: it holds no digest key ring) is a fact of the
+/// replica, not of the child: the reservation stays for a replica that serves it, the parent's node does not fail, and
+/// a replica with the ring starts the child.
+#[tokio::test]
+async fn a_child_a_replica_cannot_serve_is_left_for_one_that_can() {
+    let w = gated_world().await;
+    publish(&w, target("child-unserved", "rateLimit")).await;
+    let to_rated = parent(&w, "child-unserved-parent", "child-unserved").await;
+    let unserved = Scheduler::new(
+        sagat_infra_postgres::PgRunStore::new(w.db.pool.clone(), w.cache.clone())
+            .with_flow_control(switches(true)),
+        sagat_application::execution::Engine::new(JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
+    .with_children(w.cache.clone());
+    let run = w.start(to_rated, &json!({"accountId": "acct-1"})).await;
+    let report = unserved.tick().await;
+    assert_eq!(
+        (report.children_finished, report.children_started),
+        (0, 0),
+        "{report:?}"
+    );
+    let (status, failure): (String, Option<String>) =
+        sqlx::query_as("SELECT status, failure_code FROM steps WHERE run_id = $1 AND node = 'c'")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the child node");
+    assert_ne!(status, "FAILED", "{failure:?}");
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    let children: i64 = sqlx::query_scalar("SELECT count(*) FROM runs WHERE parent_run_id = $1")
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("children");
+    assert_eq!(children, 1);
+}
+
 /// The body's case of FR-022-055: a `child` node inside a collection body is refused at publication on this tree (the
 /// body subset is activities, conditions, switches, timers and event waits), so no body instance reaches a child start.
 /// When a body `child` node is enabled, its start goes through the same pass and this test fails, to be replaced by the
@@ -215,11 +259,22 @@ async fn a_child_node_inside_a_collection_body_is_refused_at_publication() {
         ]
     });
     let refusal = try_publish_as(&w, &w.admin, doc).await;
+    let Err(sagat_application::error::AppError::InvalidDefinition(error)) = refusal else {
+        panic!("refused as an invalid definition: {refusal:?}");
+    };
+    // the body that holds the child node, by name, as a body this tree does not run: a child node is not in the body
+    // subset (review of 2026-11-25, correctness minor 4)
+    let problems: Vec<_> = sagat_application::definitions::problems_of(&error)
+        .into_iter()
+        .map(|problem| (problem.code, problem.node))
+        .collect();
+    assert_eq!(
+        problems,
+        vec![("UNSUPPORTED_NODE", Some("line".to_owned()))],
+        "{error:?}"
+    );
     assert!(
-        matches!(
-            refusal,
-            Err(sagat_application::error::AppError::InvalidDefinition(_))
-        ),
-        "{refusal:?}"
+        matches!(&*error, sagat_application::definitions::IrError::Unsupported { kind, .. } if kind == "body"),
+        "{error:?}"
     );
 }
