@@ -6123,7 +6123,7 @@ where
                     "this process has no flow-control digest key ring: it grants no queued step"
                 ),
                 // the step was read under the run's lock, so a domain refusal here is a defect, not a lost race
-                // (correctness review m4, 2026-11-19)
+                // (correctness review minor 4, 2026-11-19)
                 _ => tracing::error!(
                     error = %failure.error(),
                     run_id = %waiter.run_id,
