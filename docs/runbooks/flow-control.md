@@ -488,8 +488,14 @@ namespace's (plan, "Visibility of the rate gate").
 | `oldestWaitSince` | when its oldest waiter queued | the same |
 | `oldestHolderSince` / `nextSlotAt` | when its oldest holder took its permit | when the next counted grant stops counting for one of its first 256 waiters; `null` when nobody waits, when a grant is unleased, or when there is room already (the next pass grants) |
 
-For a caller without the reveal grant, `oldestWaitSince`, `oldestHolderSince` and `nextSlotAt` are cut to the minute
-toward the past (they derive from a run's own instants, D022-060, D022-061). A cursor is sealed for its namespace, its
+The table above is the page of a caller with the namespace's reveal grant (`view: KEYS`, one row per key in `items`).
+Every other caller reads `view: GROUPS`: `items` is empty and `groups` holds one row per pool, scope and group, with
+`holders`, `waiters`, `oldestWaitSince` and `oldestHolderSince` (concurrency) or `grantsInWindow`, `unleasedGrants`,
+`waiters` and `oldestWaitSince` (rate limits) summed over the group's keys, whole instants (D022-061, D022-086). A group
+row never says how many keys the group has, nor when its next slot frees: both would tell which runs share a key. A
+page of groups reads at most 200 key rows; a group with more keys is summed across the pages that read it, each page
+one snapshot (its counts may move between pages), and its row is on the page that reads its last key, so a page can
+hold no group and still have a `nextCursor`: follow the cursor. A cursor is sealed for its namespace, its
 kind of listing and the digest key version in force: an altered, foreign, other group's or forcibly retired one is a
 `400`; an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
 is a `404`.

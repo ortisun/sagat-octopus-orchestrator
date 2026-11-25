@@ -516,6 +516,12 @@ Added after the review of 2026-11-13:
 - **FR-022-022 — Visibility**: A run MUST show its concurrency state (holding or waiting, since, queue
   deadline, group, key label). A namespace view MUST list keys with holders, waiters and oldest wait, by key
   label only. Raw key values MUST NOT appear in any response, log, span, metric or audit.
+  *Amended 2026-11-25 (decisions D022-061, D022-085 item 6, D022-086; batch 4 reviews, correctness Major 1, security
+  Major 1 and minor 1):* the namespace view lists keys by label, with whole instants, only to a caller who may reveal
+  personal data in the namespace (`view: KEYS`); every other caller reads one row per pool, scope and group
+  (`view: GROUPS`) with its holders or counted grants, waiters and oldest instants, never how many keys a group has or
+  when its next slot frees. A page of groups reads at most 200 key rows; a larger group is summed across the pages that
+  read it, each page one snapshot, its partial sums carried in the sealed cursor.
 
 #### Standalone steps (US05)
 

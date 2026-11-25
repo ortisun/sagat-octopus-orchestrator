@@ -1810,6 +1810,24 @@ taken after `git grep D022-04` on every `origin/*` branch.
   Evidence: `integration_flow_control_step_policies::rest::{a_caller_without_the_reveal_right_reads_one_row_per_group_and_pages_them,
   a_page_of_groups_reads_only_its_own_groups, a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data}` and
   `rate_rest::the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protections`.
+  5. *Revised 2026-11-25 (batch 4 reviews, correctness Major 1, security Major 1 and minor 1, security minor 2).* (a) A
+     page summed each of its groups whole, and the lookahead group too: one group of 100,000 keys made every page a
+     `503` past the statement timeout, and no cursor got past it. A page now reads at most `GROUP_PAGE_KEY_ROWS` (200,
+     the per-key page bound) key rows in one `REPEATABLE READ` snapshot: each group is read in chunks of its primary-key
+     range after the last digest read, its sums accumulated; a group whose range ends within the budget is emitted, and
+     one that does not is carried in the cursor (`KeyPosition::partial`: the group's place, the last digest read, the
+     partial sums and oldest instants), sealed as before, so the next page resumes it. The lookahead is one probe of the
+     primary key for the next group, never its sums. A group's row is therefore summed across the pages that read it,
+     each page one snapshot (a rate group's counts each at its page's instant), and a page can hold no group and still
+     have a cursor; the order and the tags are unchanged, and a cursor of the earlier build (a place without partial
+     sums) still opens. Options weighed: a summary table per group (rejected in item 2: a lock on the gate's path); a
+     larger statement timeout (no bound at all); sampling (inexact). (b) The group row's count of keys told a caller
+     without the reveal right which runs share a key (a group of two runs and one key against two keys); it is removed
+     from both group bodies, the OpenAPI and the Studio. (c) A rate group's `nextSlotAt` linked a waiting run to a granted
+     one (the grant instant plus the window); it is omitted from the group view. Evidence:
+     `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached`,
+     `rest::a_page_of_groups_reads_at_most_its_budget_of_key_rows`,
+     `rest::a_group_view_tells_nothing_that_changes_with_the_number_of_keys`.
 
 ### Decisions of the Studio slice (2026-11-24)
 

@@ -735,8 +735,16 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                 page
             }
             KeyView::Groups => {
+                // the group view knows whether another page follows by its own probe of the next group, never by a
+                // group more (decision D022-086 item 5): it shows the page without the one more
                 self.store
-                    .concurrency_key_groups(tenant, namespace, group, after, limit)
+                    .concurrency_key_groups(
+                        tenant,
+                        namespace,
+                        group,
+                        after,
+                        limit.saturating_sub(1).max(1),
+                    )
                     .await?
             }
         }))
@@ -802,8 +810,16 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                 page
             }
             KeyView::Groups => {
+                // the group view knows whether another page follows by its own probe of the next group, never by a
+                // group more (decision D022-086 item 5): it shows the page without the one more
                 self.store
-                    .rate_limit_key_groups(tenant, namespace, group, after, limit)
+                    .rate_limit_key_groups(
+                        tenant,
+                        namespace,
+                        group,
+                        after,
+                        limit.saturating_sub(1).max(1),
+                    )
                     .await?
             }
         }))
