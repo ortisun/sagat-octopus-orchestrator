@@ -6,6 +6,11 @@
 T023-064..066 after the cross-feature review (coordinator decision C17), both on 2026-10-27; each sits in
 the phase where it runs. No task is checked; a task becomes `[x]` only with the evidence it
 names (test name and real result), never because this document exists.
+**Update 2026-11-24**: approved (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
+2026-11-24-1), prepared for build. T023-067..071 were added and T023-001, T023-009, T023-050, T023-061 and
+T023-062 amended for the currency check (research section 1a, Decisions 1234 to 1239 and 1625 to 1627). The
+work is cut into a foundation slice, two parallel lanes and join slices in `plan.md`, "Build slices
+(2026-11-24)"; the slice of each task is named there.
 **Format**: `[ID] [P?] [Story?] Description — files — evidence`. `[P]` means parallel: different files,
 no dependency on an unfinished task. Tests are written first and must fail before the code they prove.
 
@@ -14,7 +19,10 @@ no dependency on an unfinished task. Tests are written first and must fail befor
 - [ ] T023-001 Obtain owner acceptance of ADR-0057 and answers to O1200–O1202; record them in
   `specs/023-script-languages/research.md` §6 and the ADR status line — files
   `docs/adr/ADR-0057-additional-script-languages-reuse-the-sandbox-and-signed-artifacts.md`, `research.md`
-  — evidence: dated owner decision. Blocks every later task.
+  — evidence: dated owner decision. Blocks every later task. Status 2026-11-24: Architecture decision
+  0057 accepted with an amendment and Owner questions 1200 to 1202 answered, each as delegate
+  (OD-2026-11-24-4), in the ADR status block and `research.md` section 6; the row of
+  `docs/owner-decisions.md` is the coordinator's. The task is ticked when that row exists.
 - [ ] T023-002 [P] Add test targets `integration_script_languages`, `integration_script_languages_containers`,
   `e2e_script_languages`, `fault_script_languages`, `contract_rest_script_languages`, `perf_script_languages`
   and their directories under `tests/{integration,e2e,fault,contract,performance}/script-languages/` in
@@ -64,7 +72,9 @@ no dependency on an unfinished task. Tests are written first and must fail befor
   integration tests that artifact, signature, SBOM, provenance, version, job and audit commit together or
   not at all (injected failure before commit); that the same interpreted artifact digest built under two
   toolchains has two statements; and that a cache-finished version shows its build key's statement —
-  FR-023-006, 007, 020, SC-023-005, NFR-023-002.
+  FR-023-006, 007, 020, SC-023-005, NFR-023-002. Amended 2026-11-24 (Decision 1236): the statement is
+  built by design 046's `sagat-infra-packages` (Task T046-15, extended by T023-068), not
+  `crates/infra-schema/src/provenance.rs`. Depends on T046-15.
 - [ ] T023-010 Extend the runner: `SAGAT_RUNNER_LANGUAGES` (default the five 005 languages),
   `SAGAT_RUNNER_REQUIRED_LANGUAGES`, `SAGAT_RUNNER_RUST_TARGET` (equal to Go's when both set),
   `SAGAT_RUNNER_MAX_NATIVE_BUILDS` ("default 1, ceiling 4"), image variables, digest-pinning outside
@@ -214,7 +224,13 @@ host calls, on each native architecture separately.
   PostgreSQL (ready step refused; running attempt finishes and its retry is refused; re-enable lets a new
   attempt lease; concurrent policy update and lease never deadlock; crash before commit leaves the step
   ready; non-script activities untouched; poll and streaming paths both checked) — FR-023-017, 020,
-  SC-023-007.
+  SC-023-007. Amended 2026-11-24 (Decisions 1235 and 1627; depends on T046-17, whose statement it extends): one statement with no row lock instead of the policy
+  row `FOR SHARE`; the refusal releases a flow-control grant or permit through the ordinary failure
+  transition; and the budget test `tests/integration/claim-transition-efficiency/work_budget.rs` gains a
+  script-step shape costing exactly one more statement while every existing shape is unchanged — evidence
+  adds: the budget test seen failing before the shape is recorded, a test that a probed candidate with
+  nothing to lease costs nothing new, and a test that a lease in flight when a disabling update commits
+  finishes — SC-023-016.
 - [ ] T023-046 [P] [US06] Studio: admin policy page and the SBOM/provenance panel in
   `frontend/apps/studio/src/features/scripts/VersionView.tsx` (verified/reported fields labelled) —
   evidence: Vitest, real browser, accessibility checks.
@@ -235,6 +251,8 @@ host calls, on each native architecture separately.
 - [ ] T023-050 [P] Extend `sdks/typescript/src/workflow.ts` and `sdks/python/sagat_octopus_orchestrator/workflow.py`
   unions; add `tests/contract/sdk-conformance/scenarios/script-languages.json` with expected bytes; run all
   five SDKs — evidence: `cargo test -p sagat-tests --test sdk_conformance` — FR-023-024, SC-023-011.
+  Amended 2026-11-24: all six SDKs, the Rust SDK (`sdks/rust`) included; Go, C#, Java and Rust take any
+  language string and only need the scenario.
 - [ ] T023-051 Merge `contracts/openapi-script-languages.yaml` and `contracts/workflow-script-language.schema.json`
   into `specs/001-platform-foundation/contracts/{openapi.yaml,workflow.schema.json}` (correct the stale
   language descriptions, G1200; confirm no worker.proto or AsyncAPI change); Redocly lint; REST contract
@@ -262,7 +280,9 @@ host calls, on each native architecture separately.
   still passes — FR-023-026.
 - [ ] T023-058 Update `docs/runbooks/scripts.md` (variables, images, catalog review procedure, shell risks,
   policy, provenance verification), `docs/architecture/security-and-sandbox.md` (what a script can and
-  cannot do, per language) and the 005 gap cross-references — FR-023-026, NFR-023-006.
+  cannot do, per language) and the 005 gap cross-references — FR-023-026, NFR-023-006. Amended
+  2026-11-24: the upgrade section names the recording of `script-languages-v1` and when (Gaps 1225 and
+  1230), and the lease read without a row lock (Gap 1226).
 - [ ] T023-059 Final gates: independent correctness review, `scripts/check-architecture.py`, `cargo clippy
   --workspace --all-targets -- -D warnings`, workspace tests, frontend checks; fill "Recorded results" in
   `quickstart.md` with real outcomes, skips and failures.
@@ -276,11 +296,17 @@ host calls, on each native architecture separately.
   missing hash, extra package, wrong target), a v4 `python-data` fixture refused `SCRIPT_SANDBOX_UNAVAILABLE`
   on a runtime with another catalog digest, and `createScript` with `python-data` refused — FR-023-001,
   008, 027, SC-023-014. Feature 024 supplies the image, catalog content and the enabling evidence.
+  Amended 2026-11-24 (Decision 1625): this task builds only the reservation (the id, the constraint,
+  `LANGUAGE_NOT_BUILT` at every admission point, the version 4 schema value) — evidence: `createScript`,
+  `publishScriptVersion` and `createScriptTestRun` with `python-data` refused; the parser, the `pypi` kind
+  and the `runtimeCatalog` check moved to T023-071.
 - [ ] T023-063 Rollback observation (D1230): run a 0.2.0 control plane and runner against the migrated
   schema, first with no new-language row, then with one `bash` script and one provenance row; record the
   observed behaviour (expected: works, then the namespace's script listing fails with an internal error)
   in `quickstart.md` and the runbook — evidence: `tests/integration/script-languages/rollback.rs` or a
-  scripted run with its output — NFR-023-003.
+  scripted run with its output — NFR-023-003. Amended 2026-11-24: the previous release is 0.2.x, whose
+  processes predate the registry (Gap 1230); the task also records a registry-aware control plane without
+  `script-languages-v1` held by the gate once the requirement is recorded (Decision 1234).
 
 - [ ] T023-064 [P] Reserved host calls in the supervisor (FR-023-028, D1231–D1233):
   `checkpoint` and `stream.append` messages in `crates/infra-sandbox/src/protocol.rs`; lease-capability gate
@@ -301,7 +327,58 @@ host calls, on each native architecture separately.
   channel refused — evidence: e2e results; until 019/026 ship, this task stays open and T023-064/065 prove
   `NOT_GRANTED` — FR-023-028, SC-023-015.
 
+### Added 2026-11-24 (currency check)
+
+- [ ] T023-067 Fleet activation (FR-023-029, Decision 1234): capability `script-languages-v1` in
+  `crates/application/src/instances.rs` (`Capability`, kinds `CONTROL_PLANE` and `EXECUTION_ENGINE`) and in
+  the registry CHECK of migration `20270323000000_script_languages` (`NOT VALID`) validated by
+  `20270323000100_script_languages_validate`; `SCRIPT_LANGUAGES_CAPABILITY_DISABLED` for `createScript` of a
+  new language and for a narrowing `putScriptRuntimePolicy` until it is recorded; removal refused while a
+  new-language script or a policy row exists — evidence: `tests/integration/script-languages/activation.rs`
+  against real PostgreSQL (refusals before, acceptance after, removal refused, a process without the
+  capability held by the gate, the five 005 languages unchanged throughout) and the registry's closed-list
+  test — SC-023-016.
+- [ ] T023-068 Extend design 046's provenance and SBOM builders (Decisions 1236 and 1627) in
+  `crates/infra-packages` (built by Task T046-15) with the build type `ScriptBuild` and the SBOM components
+  of the new languages; use its port (or `crates/application/src/attestation.rs` if design 046 defines
+  none) and `Signer::sign_dsse` / `Verifier::verify_dsse` in `crates/application/src/script_signing.rs`
+  (unless T046-15 has added them); write the runner's SBOM through the same builder; and a rule of
+  `scripts/check-architecture.py` that keeps the in-toto statement type and the DSSE payload type out of
+  every other crate (unless design 046 has added it) — evidence: unit tests of the `ScriptBuild` statement
+  and of the new SBOM components, the SBOM package-set comparison over the T023-003 lock fixtures, and the
+  architecture rule seen failing on a planted literal. Depends on T046-15 — FR-023-006, 007.
+- [ ] T023-069 [P] Lake mode refuses the new runner variables (FR-023-015, Decision 1238): a unit test in
+  `apps/sandbox-runner/src/lake/config.rs` that names `SAGAT_RUNNER_LANGUAGES`,
+  `SAGAT_RUNNER_REQUIRED_LANGUAGES`, `SAGAT_RUNNER_RUST_TARGET`, `SAGAT_RUNNER_MAX_NATIVE_BUILDS` and each
+  new image variable — evidence: the test, seen failing with the prefix check removed.
+- [ ] T023-070 Warm residue fixtures per new language (FR-023-030, Decision 1239): Bash background process,
+  PHP static and output-buffer state, PowerShell runspace state, Rust process state, added to feature 019's
+  warm residue suite — evidence: the suite passing per language and target. Needs feature 019's suite.
+- [ ] T023-071 `python-data` image-catalog mechanism (FR-023-027, Decision 1625): the hash-pinned
+  requirements lock parser and catalog kind `pypi` in `crates/infra-schema/src/catalog.rs`, the
+  `runtimeCatalog` check at load in `crates/infra-sandbox/src/docker.rs`, and the import-path restriction of
+  the Python shim — evidence: the fixture tests T023-062 named before its amendment — SC-023-014. Built only
+  if feature 024 confirms it needs the image catalog rather than design 046's layer (Gap 1227).
+
+### Dependencies on design 046 (2026-11-24, research Decision 1627)
+
+Design 046 owns and builds first the three pieces both features share; these tasks wait for the named
+task of design 046 to merge, for the part that uses it:
+
+- T023-006 (the language section of the policy, not its own table), T023-011 (policy reads at admission)
+  and T023-044 (the policy operations): Task T046-2, the namespace script policy document and its migration,
+  and design 046's REST task for its endpoint.
+- T023-009, T023-047 and T023-068 (provenance and SBOM): Task T046-15, the provenance and SBOM builders in
+  `crates/infra-packages`.
+- T023-061 (the language reason at lease, extending the same statement): Task T046-17, the lease-time
+  check on `runnable` and `blocked_reason`.
+
 ## Dependencies & execution order
+
+Updated 2026-11-24: the order is that of `plan.md`, "Build slices (2026-11-24)". T023-067 joins slice A1,
+T023-068 slice A2 (and B6 for the runner's SBOM), T023-069 slice B1; T023-070 and T023-071 are outside the
+slices until their inputs exist. The list below is kept as written on 2026-10-27.
+
 
 - T023-001 gates everything. Phase 2 blocks all stories. T023-014 must pass before T023-023/024.
 - US01 and US02 are independent after Phase 2. US05 tasks for a language follow that language's wiring

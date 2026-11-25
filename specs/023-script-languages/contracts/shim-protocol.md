@@ -33,6 +33,12 @@ Workflow Streams to feature 026 (FR-026-013..020, ADR-0068: channels, `emits`, s
 deduplication, the feed). Until 019 or 026 ships, the supervisor answers the corresponding call with
 `NOT_GRANTED` and the scripts behave as on a lease without the capability.
 
+Worker protocol (checked 2026-11-24, research Decision 1238): `develop` speaks minor 1.6 and the sandbox
+runner registers `protocol_version: "1"`, that is minor 0. This feature allocates no minor. The checkpoint
+and stream minors are allocated by features 019 and 026 in merge order; the runner offers one only once it
+implements the corresponding call, so a runner that has not been upgraded never negotiates it and every
+reserved call stays `NOT_GRANTED`.
+
 **Gate.** The supervisor refuses a reserved call (`ok: false`, `reason: "NOT_GRANTED"`) unless the step's
 current lease grants the capability: for `checkpoint`, the runner's worker session negotiated 019's
 checkpoint minor and the lease is a workflow step lease; for `stream.append`, the session negotiated

@@ -4,7 +4,20 @@
 
 **Created**: 2026-10-26
 
-**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented. Part of release 0.3.0 (Owner decision 2026-11-24-1). Prepared for build on 2026-11-24 against `develop` at `2c94064f`: stale items corrected, the three owner questions answered and Architecture decision 0057 accepted, each as delegate (OD-2026-11-24-4) ([research.md](research.md) sections 1a, 3 and 6)
+
+## In short
+
+Today a script in the platform can be written in TypeScript, Python, C#, Go or Java. This feature adds
+four languages that operators and integrators ask for: Bash (and plain POSIX shell), PowerShell, PHP and
+Rust. Nothing about how scripts are kept safe changes: each build and each run still happens in a fresh,
+locked-down container with no network, started by a separate runner, and every artifact is signed before
+it runs. Rust and PHP scripts may use packages, but only from a short list reviewed in advance and baked
+into the platform's images; nothing is downloaded while a customer's script is built or run. Every build
+now also gets a signed record of how it was made, and an administrator can switch a language off in a
+namespace. Deno and Bun are measured as other engines for TypeScript, and not adopted. Packages for
+TypeScript and Python scripts from npm and PyPI are a separate design (046) that shares with this feature
+the build record, the namespace policy and the check made when a step starts.
 
 **Input**: Add Bash/POSIX shell, PowerShell, PHP and Rust script runtimes, and evaluate Deno and Bun as
 TypeScript runtime variants, in the feature-005 model: isolated per-language builders, pinned toolchain
@@ -37,7 +50,16 @@ of drafts belong to 022. Generic resources and variables belong to 021. Encrypte
 to 031; this feature only states how an encrypted field behaves in a script form and step. The template
 hub (028) may later import starters; it is not required here.
 
-The [proposed ADR-0057](../../docs/adr/ADR-0057-additional-script-languages-reuse-the-sandbox-and-signed-artifacts.md)
+Since 2026-11-24 three further boundaries apply. Open package dependencies for TypeScript and Python
+(npm and PyPI, resolved at publication through a package gateway) belong to design 046, which takes
+bundle version 5 and owns and builds first three pieces this feature extends: the namespace script policy
+document and its endpoint (this feature's language policy is a section of it), the lease-time check, and
+the provenance and SBOM builders. This feature keeps closed offline catalogs for its own languages
+(research Decisions 1236, 1237 and 1627). Step logs of scripts follow design 041. The sandbox runner's lake mode (feature 035, Architecture
+decision 0079) serves no script language.
+
+The [ADR-0057](../../docs/adr/ADR-0057-additional-script-languages-reuse-the-sandbox-and-signed-artifacts.md)
+(accepted 2026-11-24, delegate (OD-2026-11-24-4), with an amendment)
 records the hard-to-reverse choices: artifact families per language, bundle v4, closed offline catalogs,
 non-PIE static Rust through the sealed-memory loader, signed provenance and the decision not to adopt
 Deno or Bun.
@@ -211,7 +233,8 @@ provenance statement offline with the control plane's public key.
 
 **Acceptance Scenarios**:
 
-1. **Given** an admin with `script:policy:manage`, **When** they disable `bash` in namespace `prod` with
+1. **Given** an admin with `script:policy:manage` in a deployment where `script-languages-v1` is recorded
+   (Requirement 023-029), **When** they disable `bash` in namespace `prod` with
    the current policy revision, **Then** creating a Bash script (a draft's language is fixed at
    creation), publishing a Bash version and starting a Bash test run are refused with
    `VALIDATION_FAILED` reason `LANGUAGE_DISABLED`, publishing a workflow whose script node pins a Bash
@@ -228,7 +251,9 @@ provenance statement offline with the control plane's public key.
    reported.
 
 **Failure scenarios**: a policy update with a stale revision is `409 CONFLICT`; another tenant's
-namespace is an opaque `404`; an author without `script:policy:manage` gets `403`.
+namespace is an opaque `404`; an author without `script:policy:manage` gets `403`; before
+`script-languages-v1` is recorded, a narrowing update is `422` with reason
+`SCRIPT_LANGUAGES_CAPABILITY_DISABLED`.
 
 ---
 
@@ -280,6 +305,13 @@ Deno and Bun images under the unchanged container profile, outside product code.
   server's own scan would refuse it too; nothing is stored.
 - A field classified `secret` in the input schema: never prefilled from a previous run nor kept in
   browser storage.
+- A rolling upgrade with control planes or engines of two releases (added 2026-11-24): until
+  `script-languages-v1` is recorded, a new-language script and a narrowing policy are refused
+  `SCRIPT_LANGUAGES_CAPABILITY_DISABLED`; after it is recorded, a process without the capability is held by
+  the registry gate. Processes of release 0.2.x predate the registry, so the runbook records the
+  requirement only once none is left (research Gap 1230).
+- A sandbox runner started in lake mode with `SAGAT_RUNNER_LANGUAGES` set (added 2026-11-24): it refuses to
+  start, as it does for every `SAGAT_RUNNER_` variable.
 
 ## Requirements *(mandatory)*
 
@@ -325,12 +357,15 @@ Deno and Bun images under the unchanged container profile, outside product code.
   keyed by tenant and build key (not on the content-addressed artifact row), so the same artifact digest
   produced by builds with different toolchains has one statement per build and a version finished from
   an identical build key shares that build's statement; it MUST be retrievable with `script:read`
-  through the version.
+  through the version. The statement format, its DSSE signing and the SBOM package-set rule MUST be one
+  shared implementation, design 046's provenance and SBOM builders in `crates/infra-packages`, which this
+  feature reuses (research Decisions 1236 and 1627).
 - **FR-023-008 — Additive artifact formats**: Bash and PowerShell MUST use bundle v1 text (entries
   `main.sh`, `main.ps1`); Rust MUST use bundle v3 (`target` `linux-amd64|linux-arm64`, ABI
   `sagat-inline-v1`, entry `script.elf`, encoding `base64+gzip`); PHP (and the reserved `python-data`, FR-023-027) MUST
   use the new bundle v4 tree with the bounds of FR-023-019. Validation MUST happen before signing and again at the runner's load; stored
-  v1, v2 and v3 artifacts and their verification MUST be unchanged.
+  v1, v2 and v3 artifacts and their verification MUST be unchanged. Version 4 is the only bundle version
+  this feature adds; version 5 is design 046's.
 - **FR-023-009 — Native Rust execution**: A Rust artifact MUST be a static, non-position-independent
   executable for one signed Linux target with no interpreter, no writable-executable segment and a
   non-executable stack, executed from a four-seal memory file with input on sealed fd 3 and host
@@ -368,13 +403,16 @@ Deno and Bun images under the unchanged container profile, outside product code.
   A failed probe of a language in `SAGAT_RUNNER_REQUIRED_LANGUAGES` MUST fail startup and readiness.
   Outside development, a tag-only image MUST fail the probe. Rust MUST have exactly one configured native
   target, equal to the Go target when both are set, and each target is enabled only by its own native
-  proof.
+  proof. Languages are served only in the runner's script mode (`serve`); its lake mode (Architecture
+  decision 0079) MUST keep refusing every `SAGAT_RUNNER_` variable, the new ones included.
 - **FR-023-016 — Typed schemas and forms**: FR-005-006 MUST apply unchanged to the new languages: declared
   input and output JSON Schemas validated by the supervisor before and after execution, inferred schemas
   from test runs, and a Studio test form generated from the input schema. The `script` node's optional
   `outputSchema` remains the classification carrier of FR-016-002 (ADR-0033). Fields classified `secret`
   (feature 016) MUST NOT be prefilled or kept in browser storage; a field declared encrypted by feature
-  031 MUST be handled as an opaque value and never decrypted by the platform.
+  031 MUST be handled as an opaque value and never decrypted by the platform. Script schemas are
+  validated by the feature 005 validator in the runner; a workflow's run input is checked by design 043
+  before the run exists, whatever the languages of its scripts.
 - **FR-023-017 — Namespace script runtime policy**: An admin MUST be able to enable or disable each built
   language per namespace and restrict a language to a subset of the deployment catalog, with an
   optimistic revision. The language policy MUST be checked at five points: draft creation (a draft's
@@ -382,7 +420,13 @@ Deno and Bun images under the unchanged container profile, outside product code.
   script step attempt. At lease, the engine MUST NOT lease a step whose artifact language is disabled: it
   fails the step in the lease transaction as non-retryable `SCRIPT_DENIED` and writes a
   `script.policy_denied` audit record (point `lease`); an attempt already leased finishes. Package
-  narrowing applies at the first four points. The policy MUST NOT widen the deployment catalog.
+  narrowing applies at the first four points. The policy MUST NOT widen the deployment catalog. The lease
+  check MUST be one read with no row lock, made only for script activities (research Decision 1235), so a
+  lease in flight when a disabling update commits may still be granted once and then finishes. The
+  language policy is a section of the one namespace script policy document, which design 046 owns and
+  builds with its endpoint; the lease check is design 046's statement, which this feature extends with the
+  language reason, with no second read (research Decision 1627); the section's per-language object grows
+  only additively.
 - **FR-023-018 — Discovery**: The API MUST list, per namespace, each language with whether the platform
   builds it, whether a runner of the tenant advertised it within 120 s (advisory), its toolchain summary
   and native targets, and MUST list the catalog of a language with the exact lock text for a selection.
@@ -404,14 +448,17 @@ Deno and Bun images under the unchanged container profile, outside product code.
   attempt spans stay journal-derived, ADR-0017) with a
   closed `language` label and no tenant, script, digest, package or run identifier as a label; logs MUST
   carry no source, input, result, lock content or secret. Policy changes and policy denials MUST be
-  audited in the transaction of the decision; refusals inside a run follow `script.violation`.
+  audited in the transaction of the decision; refusals inside a run follow `script.violation`. A script
+  step's log of any new language MUST stay in the script execution as feature 005 stores it, with the
+  marker and the read rule of design 041 (Requirements 041-016 and 041-022).
 - **FR-023-023 — Studio**: The Studio MUST highlight Bash, PowerShell, PHP and Rust with Monaco's
   definitions, offer a starter per language, drive the enabled languages from the discovery API with the
   reason when disabled, offer a catalog picker that writes the canonical lockfile, and show SBOM and
   provenance of a version, with design tokens and WCAG AA. It MUST NOT draw a language or package as
   available without data (FR-007-010).
-- **FR-023-024 — Five SDKs**: The `script` node builders of TypeScript, Go, Python, C# and Java MUST accept
-  the four new language ids and emit byte-identical canonical IR in a shared conformance scenario.
+- **FR-023-024 — Six SDKs** (five when written; the Rust SDK joined on 2026-10-27): The `script` node
+  builders of TypeScript, Go, Python, C#, Java and Rust MUST accept the four new language ids and emit
+  byte-identical canonical IR in a shared conformance scenario.
 - **FR-023-025 — Deno and Bun evaluation**: The feature MUST produce a report of Deno and Bun against the
   TypeScript fixtures and the start/memory benchmark under the unchanged profile, and MUST NOT add any
   product path that selects them.
@@ -428,7 +475,10 @@ Deno and Bun images under the unchanged container profile, outside product code.
   catalog digest (`SCRIPT_SANDBOX_UNAVAILABLE`) and MUST put only locked packages on the import path.
   Probes, allowlist, digest pinning, SBOM, provenance and namespace policy apply as to every new language.
   Feature 024 owns the image, the package set, the execution environment and their evidence; until it
-  ships them, `python-data` is not built.
+  ships them, `python-data` is not built. Amended 2026-11-24 (research Decision 1625): this feature
+  builds the reservation (the id, the constraint, `LANGUAGE_NOT_BUILT` at every admission point, the
+  bundle version 4 value); the image-catalog parts above are built only once feature 024 confirms it needs
+  an image catalog rather than design 046's dependency layer, and are then bound by this requirement.
 - **FR-023-028 — Reserved host calls `checkpoint` and `stream.append`**: The shim protocol, owned by this
   feature for every script language (the five of feature 005 through their shims, the four of this
   feature and `python-data`), MUST reserve two host calls with the shapes, gate, bounds and redaction net
@@ -441,6 +491,18 @@ Deno and Bun images under the unchanged container profile, outside product code.
   the log, the execution record, telemetry or audit. A refusal never fails the step by itself. The
   previous checkpoint delivered with the lease MUST be readable by the script. Until 019 or 026 ships, the
   corresponding call is always `NOT_GRANTED`.
+- **FR-023-029 — Fleet activation** (added 2026-11-24, research Decision 1234): The new language ids and
+  every narrowing namespace policy MUST be activated through the instance registry (Architecture decision
+  0082) as capability `script-languages-v1`, required of kinds `CONTROL_PLANE` and `EXECUTION_ENGINE`.
+  Until an operator records it, creating a script of `bash`, `powershell`, `php` or `rust` and storing a
+  policy that disables a language or narrows packages MUST be refused `422 VALIDATION_FAILED` with
+  `details.reason` `SCRIPT_LANGUAGES_CAPABILITY_DISABLED`, while the five 005 languages and the default
+  policy keep working. Removing the requirement MUST be refused while a script of a new language or a
+  stored policy row exists.
+- **FR-023-030 — Warm containers** (added 2026-11-24, research Decision 1239): A warm-container policy of
+  feature 019 (Architecture decision 0052) MUST NOT apply to an artifact of `bash`, `powershell`, `php` or
+  `rust` until the warm residue suite has a passing fixture for that language on each enabled target; this
+  feature supplies the fixtures and feature 019 owns the refusal.
 
 ### Non-functional requirements
 
@@ -462,10 +524,10 @@ Deno and Bun images under the unchanged container profile, outside product code.
 - **Script language**: a closed id with its builder/runtime images, shim, artifact family and probe.
 - **Package catalog**: a deployment-wide, image-baked, reviewed list of packages per language, with a digest.
 - **Artifact bundle v4**: a signed, bounded tree of text files for PHP.
-- **Build provenance**: a signed in-toto/SLSA statement bound to one artifact digest.
+- **Build provenance**: a signed in-toto/SLSA statement bound to one artifact digest, stored once per
+  build key; the version reaches it through its build key.
 - **Script runtime policy**: a namespace-scoped, revisioned narrowing of languages and packages.
 - **Runner presence**: a bounded, advisory record of what a runner of the tenant advertised recently.
-- **Build provenance**: one signed statement per build key; the version reaches it through its build key.
 - **Image-catalog runtime**: a reserved runtime (`python-data`) whose packages are in a pinned image and
   whose artifacts bind that image's catalog digest; content owned by feature 024.
 
@@ -485,19 +547,23 @@ All evidence below is required future evidence, not completed tests.
 | SC-023-008 | Runner death during build, test run and step of each language, duplicate completion, lost broker hint, cancellation racing completion, and restart produce no duplicate version, artifact or step transition, and identical idempotency keys across attempts | FR-023-020, NFR-023-002 |
 | SC-023-009 | Metric labels stay within the closed sets; source, input, lock and secret canaries are absent from logs, spans, metrics and audit | FR-023-022 |
 | SC-023-010 | Real-browser tests highlight, start, test and publish each language from its starter, show disabled languages with their reason and pass the accessibility checks | FR-023-016, 018, 023 |
-| SC-023-011 | All five SDKs emit byte-identical IR for script nodes of the four new languages | FR-023-024 |
+| SC-023-011 | All six SDKs (five when written; Rust joined on 2026-10-27) emit byte-identical IR for script nodes of the four new languages | FR-023-024 |
 | SC-023-012 | Requests above ceilings are refused `ABOVE_CEILING`; native build concurrency, v4 bounds and `script_jobs` hold under load | FR-023-019 |
 | SC-023-013 | The performance report covers every language on each enabled target with environment and failures; the Deno/Bun report lists per-fixture parity and measurements | FR-023-025, 026, NFR-023-005 |
 | SC-023-014 | `python-data` is refused `LANGUAGE_NOT_BUILT` until enabled; with a fixture catalog, a v4 `python-data` artifact runs only on a runtime whose catalog digest equals its `runtimeCatalog` and is refused `SCRIPT_SANDBOX_UNAVAILABLE` on any other, in 100% of the contract and container tests | FR-023-001, 008, 027 |
 | SC-023-015 | In every language's container suite, `checkpoint` and `stream.append` are `NOT_GRANTED` in test runs and without the capability, oversized and secret-bearing payloads are refused before forwarding, budgets stop at 600 and 1,000 calls, and neither payload appears in logs, records, spans, metrics or audit (100% of cases); with 019 and 026 present, a checkpoint reaches the next attempt and events get offsets | FR-023-011, 028 |
+| SC-023-016 | Added 2026-11-24. Before `script-languages-v1` is recorded, 100% of new-language creations and narrowing policy updates are refused `SCRIPT_LANGUAGES_CAPABILITY_DISABLED` and the five 005 languages behave unchanged; after it is recorded, removing it is refused while a new-language script or policy row exists; in the budget test of design 038 a non-script lease costs the same statements as before and a script-step lease exactly one more | FR-023-017, 029 |
 
 ## Assumptions
 
 - Feature 005's registry, runner, signing and channel are the base; its gaps G97–G119 that remain open
-  stay open (research section 1).
+  stay open (research section 1); Gap 97 is answered for Rust and PHP here and for TypeScript and Python
+  by design 046.
 - Only Linux AMD64 and ARM64 runners exist; Windows containers are not a target, so PowerShell runs on Linux.
 - Pinned versions (Bash 5.x, PowerShell 7.6 LTS, current stable PHP, Rust 1.98.0 for the builder) are
-  chosen at implementation and recorded by digest; this document names lines, not digests.
+  chosen at implementation and recorded by digest; this document names lines, not digests. Updated
+  2026-11-24: the workspace now pins Rust 1.100.0 (`rust-toolchain.toml`); the builder image starts from
+  the workspace's pinned compiler and is then pinned on its own.
 - External effects stay at-least-once; scripts receive an idempotency key and nothing more.
 
 ## Dependencies
@@ -511,12 +577,27 @@ All evidence below is required future evidence, not completed tests.
   FR-026-013..020, ADR-0068) own the meaning of the reserved host calls of FR-023-028 and cite them. If 019's proposed
   ADR-0052 (per-artifact warm containers) is accepted, it applies to artifacts of the new languages only
   on its own terms; this feature assumes one container per run, and Bash background processes and PHP or
-  PowerShell session state are residue its warm-residue suite would have to cover.
+  PowerShell session state are residue its warm-residue suite would have to cover. Decided 2026-11-24
+  (research Decision 1239, Requirement 023-030): new languages become eligible one by one, each once that
+  suite has a passing fixture for it.
+- Added 2026-11-24 (features and designs written or accepted since the drafts): 018's instance registry
+  (Architecture decision 0082) for the fleet activation of Requirement 023-029; design 038's claim-path
+  budget, which the lease-time read moves by one statement for script steps; feature 022's flow control
+  (Architecture decisions 0088 and 0089), whose grants and permits a step refused at lease releases through
+  its ordinary failure transition; design 041's step logs (Architecture decisions 0084 and 0085); design
+  043's run-input validation (Architecture decisions 0090 and 0092), unchanged by this feature; feature 035's
+  lake mode of the sandbox runner (Architecture decision 0079), which serves no script language; design 046
+  (Architecture decisions 0120 and 0121), which builds first the namespace script policy document (Task
+  T046-2), the provenance and SBOM builders (Task T046-15) and the lease-time check (Task T046-17) that
+  this feature extends, and takes bundle version 5 (research Decision 1627).
 
 ## Out of Scope
 
 - Live package installation from crates.io, Packagist, the PowerShell Gallery or npm; arbitrary
-  dependency managers; Composer scripts and plugins; Cargo build scripts of the author.
+  dependency managers; Composer scripts and plugins; Cargo build scripts of the author. (Since 2026-11-24
+  npm and PyPI dependencies of TypeScript and Python scripts are design 046's, resolved at publication
+  through its package gateway, never during a customer build or run; this feature's languages keep closed
+  catalogs.)
 - Windows containers, other shells (zsh, fish, Nushell), other languages, WASM runtimes.
 - Enabling Deno or Bun; warm or shared script workers (019); test secrets (G104).
 - Signature-derived schema inference (G1209); SLSA level certification; reproducible-build cross-checks.
@@ -526,3 +607,8 @@ All evidence below is required future evidence, not completed tests.
 See [research section 6](research.md#6-owner-questions): O1200 (initial catalogs), O1201 (default
 namespace policy), O1202 (Deno/Bun follow-up). Each has a recommended default that this specification
 already assumes.
+
+Answered on 2026-11-24, delegate (OD-2026-11-24-4), in research section 6: Owner question 1200, a small
+reviewed starter catalog per language under stated criteria (at most 32 root packages each in release
+0.3.0); Owner question 1201, every built language enabled by default; Owner question 1202, Deno and Bun not
+adopted, the spike kept as input to the published benchmark. No owner question of this feature is open.

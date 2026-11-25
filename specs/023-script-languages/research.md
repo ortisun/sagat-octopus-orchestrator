@@ -40,6 +40,36 @@ time evidence), G98 (runc strength; gVisor/Kata not shipped), G99 (one tenant pe
 G108 (artifacts in PostgreSQL, 2 MiB), G116 (tags move; digests required), G118 (a stolen runner
 token can get code signed for its own tenant), G119 (wedged engine not exercised).
 
+Update of 2026-11-24: Gap 97 of feature 005 is now answered in two parts. This feature answers it for
+Rust and PHP with closed offline catalogs (Bash and PowerShell take no packages); design 046 answers it
+for TypeScript and Python with resolved, policy-governed dependency layers (Architecture decision 0120,
+which supersedes Decision 105 of feature 005 for those two languages only). The point-in-time nature of
+catalog evidence stays open for the catalogs of this feature (Gap 1205).
+
+### 1a. Currency check against `develop` (2026-11-24)
+
+The drafts were written against `70f09435` (release 0.2.0). On 2026-11-24 they were read again against
+`origin/develop` at `2c94064f`, by opening the files below; nothing was built or run. What changed, and
+what this feature does about it:
+
+| Area | Evidence on `develop` (2026-11-24) | Effect on this feature |
+|---|---|---|
+| Bundle versions | `crates/infra-schema/src/bundle.rs` still reads only `v` 1, 2 and 3 (`decoded_files`, `target`); no other bundle version exists in `crates/infra-schema`, `crates/infra-sandbox` or the lake modules | This feature takes version 4 and only version 4; design 046 takes version 5 (Decision 1236) |
+| Runner modes | `apps/sandbox-runner/src/cli.rs` has two commands, `serve` (scripts) and `lake` (feature 035, Architecture decision 0079); `apps/sandbox-runner/src/lake/config.rs` refuses to start lake mode when any variable starting with `SAGAT_RUNNER_` is set (`SCRIPT_MODE_PREFIX`, `script_mode_variable`) | New languages, images and variables belong to `serve` mode only; because every new variable starts with `SAGAT_RUNNER_`, lake mode already refuses them; a test keeps it so (Decision 1238) |
+| Runner configuration | `apps/sandbox-runner/src/config.rs` `RunnerConfig` has `images`, `go_target`, `go_required`, `max_concurrent`, `ceiling`, `trusted_keys`, no language allowlist; `Runner::start` (`apps/sandbox-runner/src/lib.rs`) probes every language it knows and keeps those whose probe passes | The allowlist, required set, Rust target and native build limit of Decision 1214 and Decision 1225 are still new; nothing to undo |
+| Worker protocol | `crates/application/src/worker.rs` `PROTOCOL_MINOR = 6`; the sandbox runner registers `protocol_version: "1"` (`apps/sandbox-runner/src/lib.rs`), that is minor 0 | This feature adds no minor. The reserved host calls stay `NOT_GRANTED` until the runner negotiates the minors of features 019 and 026, which it offers only once it implements them (Decision 1238, Gap 1229) |
+| Instance registry | `crates/application/src/instances.rs` `Capability` (closed list, kinds `CONTROL_PLANE` and `EXECUTION_ENGINE`); the CHECK in `20270113000000_instance_registry.up.sql`, widened by `20270118000000_run_input_validation.up.sql` (`NOT VALID`, then validated by `20270118000100`); Architecture decision 0082 accepted | The policy checks and the new language ids need every control-plane and engine process to honour them during a rolling upgrade: capability `script-languages-v1` (Decision 1234). Runners are not registry instances; what a runner serves stays advertised on its sessions and claims |
+| Claim path | Design 038 (`docs/designs/038-claim-transition-efficiency.md`, Requirements 038-001, 038-002 and 038-005), its budget test `tests/integration/claim-transition-efficiency/work_budget.rs`; contention on `LWLock:MultiXactGen` measured there; `lease_one` in `crates/application/src/worker.rs` | The lease-time check becomes one plain read with no row lock, paid only by script activities, recorded in the budget (Decision 1235) |
+| Flow control | Architecture decisions 0088 and 0089 (accepted): a claim never reads a rate window; a gated step waits outside `READY` and its permit is released by its terminal transition | A step refused at lease takes the ordinary non-retryable failure transition, so its grant and permit are released as for any failed step; the check reads no window (Decision 1235) |
+| Step logs | Design 041, Architecture decisions 0084 and 0085 (accepted): a script step's log stays in `script_executions.log` (Requirement 041-016), the run's Logs tab shows a marker, and the `log` of a script execution with a run is read under the step-log rule, not `script:read` alone (Requirement 041-022) | New languages inherit both unchanged; the plan's authorization table and Requirement 023-022 say so (Decision 1238) |
+| Run input validation | Design 043, Architecture decisions 0090 and 0092 (accepted): the run-input validator lives in `crates/infra-schema/src/run_input/` and checks a workflow run's input before the run is created. Script input and output schemas are still validated by the runner with `sagat_infra_schema::schema` over the `jsonschema` crate (`crates/infra-sandbox/src/docker.rs`, `SchemaViolation`) | Script schemas of new languages use the feature 005 validator, unchanged; a workflow's run input is checked by design 043 whatever languages its scripts use (Decision 1238) |
+| Warm containers | Architecture decision 0052 (feature 019) is still Proposed | New languages are not eligible for warm containers until the warm residue suite covers them (Decision 1239) |
+| SDKs | Six SDKs exist: `sdks/rust` joined on 2026-10-27; `sdks/rust/src/workflow/primitives.rs` takes the script language as `Option<String>`, like Go, C# and Java; TypeScript (`sdks/typescript/src/workflow.ts`) and Python (`sdks/python/sagat_octopus_orchestrator/workflow.py`) still list the five 005 languages | Requirement 023-024 and the conformance scenario cover six SDKs |
+| Toolchain | `rust-toolchain.toml` pins `1.100.0` (the drafts said 1.98.0) | The Rust builder image starts from the workspace's pinned compiler and is then pinned on its own |
+| Contracts | `specs/001-platform-foundation/contracts/openapi.yaml`: `CreateScriptRequest.language` now names all five built languages; `Script`, `ScriptSummary`, `ScriptVersion` and `ScriptVersionSummary` still carry inline five-value enums; Studio `languages.ts` still marks Go and Java `built: false` | Gap 1200 is half closed (Studio remains) |
+| Migrations | Newest on `develop`: `20270119000000_batch_purge`; newest on any open branch: `20270209000100` | Proposed reservation `20270323000000` and `20270323000100` (Gap 1213) |
+| Design 046 | `docs/adr/ADR-0120-…` and `docs/adr/ADR-0121-…` (being written beside this update) take bundle version 5, a policy that is "part of the script language policy of feature 023", and a block "materialized in the row the lease path already reads for the language check of ADR-0057" | The boundary is Decision 1237; the shared attestation code is Decision 1236 |
+
 ## 2. External semantics consulted
 
 - Windmill Bash/PowerShell/Nu quickstart, https://www.windmill.dev/docs/getting_started/scripts_quickstart/bash :
@@ -323,6 +353,183 @@ None of these sources is evidence that the platform behaves as described; they b
   or audit; refusals are recorded as `checkpoint` or `stream.append <channel>` like other refusals. The
   feature stores neither: 019 and 026 own storage, retention and erasure (C8).
 
+The decisions below were taken on 2026-11-24 by the agent preparing the feature for build, under the
+owner's delegation for release 0.3.0: delegate (OD-2026-11-24-4), which widens OD-2026-11-20-6. Each
+weighs the options and chooses the most architectural and business advantage, never simplicity alone.
+
+- **D1234 — New language ids and the namespace policy are activated through the instance registry.**
+  Release 0.3.0 is upgraded by rolling N and N-1 (OD-2026-11-24-1), so for a while control planes and
+  engines of two releases serve together. A control plane of the previous release cannot decode a
+  `bash` row (`language_of` in `crates/infra-postgres/src/scripts.rs`, Gap 1220) and an engine of the
+  previous release never checks the language policy at lease. Options weighed: (a) document the upgrade
+  order and hope; (b) a feature flag per process (Architecture decision 0081, which the registry
+  replaces for fleet-wide behaviour); (c) a capability of the instance registry (Architecture decision
+  0082), as features 029, 031 and design 043 do. Chosen (c): capability `script-languages-v1`, required
+  of kinds `CONTROL_PLANE` and `EXECUTION_ENGINE`, recorded by an operator through the registry's
+  audited activation, which is refused while a live process lacks it. Until it is recorded, a request
+  that would create the first row of a new language (`createScript` with `bash`, `powershell`, `php` or
+  `rust`) and a `putScriptRuntimePolicy` whose document disables a language or narrows packages are
+  refused `422 VALIDATION_FAILED` with `details.reason` `SCRIPT_LANGUAGES_CAPABILITY_DISABLED`; the five
+  languages of feature 005 and the default policy keep working. Removing the requirement is refused while
+  a script of a new language or a stored policy row exists. After it is recorded, a process of a release
+  that has the registry but not the capability is held by the registry gate (`503
+  BINARY_CAPABILITY_MISSING`) instead of failing listings with an internal error, which turns Gap 1220
+  from a fault into a stated refusal. Processes of release 0.2.x predate the registry and are invisible to
+  it, so for the upgrade from 0.2.x the requirement is recorded only once no 0.2.x control plane or engine
+  is left, which the runbook states and the activation cannot check (Gap 1230). Runners are
+  not registry instances: whether a runner serves a language stays what it advertises on its worker
+  sessions, build claims and presence row (Decision 1214, Decision 1219), because a language capability
+  of one runner is a fact about one machine, not a rule every process must honour. The capability value
+  joins the closed list in `crates/application/src/instances.rs` and in the registry CHECK, widened
+  `NOT VALID` and validated in a second migration as `20270118000000` and `20270118000100` did.
+- **D1235 — The lease-time check is one plain read, paid only by script activities (refines Decision
+  1226).** Decision 1226 read the artifact row and then the policy row `FOR SHARE`. Design 038 measured
+  `LWLock:MultiXactGen` among the waits of the claim path: many lessees taking a shared row lock on the
+  same policy row of a busy namespace create exactly those multixacts. Options weighed: (a) keep `FOR
+  SHARE`; (b) cache the policy in the engine (stale for an unbounded time, and a second source of
+  truth); (c) one plain read with no row lock; (d) denormalize the language into
+  `workflow_version_scripts` at publication (one more write path, and still one read at lease). Chosen
+  (c): inside the lease transaction, after the run lock and only once the step to lease is chosen and its
+  activity starts with `script.sha256-`, one statement reads the artifact's language by `(tenant_id,
+  digest)` (primary key of `script_artifacts`) joined to the namespace's policy row, if any, by its
+  primary key, with no row lock. A disabled language takes the non-retryable failure transition of
+  Decision 1226 instead of the lease. What is given up: a lease whose transaction read the policy just
+  before a disabling update committed may still lease once; that attempt finishes like an attempt
+  already leased (Gap 1226), which is the documented behaviour of Requirement 023-017. What is gained: no
+  row lock on the claim path, no wait between a policy update and the leases, and an exact cost for
+  design 038: a non-script lease costs no new statement, a probed candidate with nothing to lease costs
+  nothing new (Requirement 038-002), and a script-step lease costs exactly one more statement, recorded in
+  `tests/integration/claim-transition-efficiency/work_budget.rs` with a script-step shape in the change
+  that adds it (Requirement 038-001). It skips no lock, authority, quota or capacity read (Requirement
+  038-005). The engine always runs the statement for a script activity, whether or not `script-languages-v1`
+  is recorded, so no window exists in which a recorded requirement and a stale view in one process let a
+  disabled language lease. The refusal is the same transition a worker's non-retryable report causes, so
+  the step's flow-control grant and permit are released as for any failed step (Architecture decisions
+  0088 and 0089) and no rate window is read. Design 046's lease-time refusal of a package marked
+  malicious after publication (Architecture decision 0121) MUST extend this same statement, not add a
+  second one; if it cannot, it moves the budget with its reason. Revised the same day by Decision 1627:
+  design 046 builds the statement first (Task T046-17: a `runnable` and `blocked_reason` pair on the
+  artifact row) and this feature extends it with the language reason; the rest of this decision (one
+  statement, no row lock, script activities only, the budget) stands. Admission points (draft creation,
+  publication, test run, workflow publication) keep the policy row `FOR SHARE`: they are rare, they write,
+  and there an edit and a publication must see one serial order.
+- **D1236 — Provenance and SBOM code is one shared module that design 046 also uses; this feature uses
+  bundle versions 1, 3 and 4 only.** Design 046 attests every dependency-layer build with the same
+  statement (DSSE envelope, in-toto Statement v1, SLSA Provenance v1, Architecture decision 0057 decision
+  6, Task 023-047) and applies the same SBOM rule. Options weighed for where the code lives: (a) inside
+  `crates/infra-schema` (the draft's `provenance.rs`), which already holds bundles, classification and the
+  run-input validator and links `jsonschema`, `regex-automata` and Tokio; (b) inside the control plane
+  only, which the runner also needs for the SBOM it writes; (c) an adapter crate outside
+  `crates/infra-schema`. Chosen (c), for cohesion and so that design 046's code and the runner do not link
+  a schema engine they do not use. As first written this was a new crate `crates/infra-attestation`;
+  revised the same day by Decision 1627, the crate is design 046's new adapter `crates/infra-packages`
+  (package `sagat-infra-packages`, Task T046-15), whose provenance and SBOM builders hold: the in-toto
+  statement and SLSA predicate with a closed build type (this feature adds `ScriptBuild` with `buildType`
+  `https://sagat-octopus-orchestrator.io/script-build/v1`, design 046 has its own), the DSSE envelope with
+  its bounds and shape check, and the CycloneDX 1.5 document a runner writes with the control plane's
+  comparison of its package set with a locked package set; their file layout is design 046's. The port is `crates/application/src/attestation.rs` (an `Attestations` trait, as `BundleChecker`
+  is for bundles); signing stays with the key in `crates/application/src/script_signing.rs`, which gains
+  the DSSE pre-authentication encoding and `Signer::sign_dsse` / `Verifier::verify_dsse`, so no adapter
+  ever holds the key. `crates/infra-sandbox` moves its SBOM writing (`docker.rs`, build completion) onto
+  `sbom.rs`. Storage is each feature's own: this feature's statements are rows of
+  `script_build_provenance` with a foreign key to `script_artifacts`; design 046 keeps its layer
+  attestations where its layers are recorded. Design 046 builds the crate first (Decision 1627); this
+  feature depends on it and adds its build type. A check of `scripts/check-architecture.py` keeps the
+  in-toto statement type and the DSSE payload type out of every crate but `sagat-infra-packages`
+  (AGENTS.md rule 21). Bundle versions: Bash and PowerShell use version 1 and Rust version 3, both
+  unchanged formats; PHP, and the reserved `python-data`, use version 4, the only number this feature
+  adds. Design 046 takes version 5 for its additive bundle; neither feature takes another number.
+- **D1237 — The boundary with design 046: closed catalogs here, open dependencies there, one policy
+  surface.** Bash and PowerShell take no packages; Rust and PHP keep closed offline catalogs baked into
+  builder images (Decision 1207, Decision 1208, Architecture decision 0057 decision 4); C# keeps its
+  catalog (Architecture decision 0021). TypeScript and Python open dependencies (npm `package-lock.json`
+  version 3; wheels only under a PEP 751 `pylock.toml`) are design 046's, resolved at publication
+  through its package gateway (Architecture decision 0120). Options weighed for the policy: (a) two
+  policy documents, one per feature; (b) one document per namespace that design 046 extends. Chosen (b),
+  because an administrator governs "what code may run in this namespace" in one place, with one revision,
+  one audit action and one lease-time read. Revised the same day by Decision 1627: the one document stays,
+  but design 046 owns and builds it and its endpoint (Task T046-2), and this feature's language policy
+  (User story 023-06) is a section of it; the rules below are what that section must hold. The per-language object of the policy document stays closed
+  for each release (an unknown property is refused) and grows only additively: this feature defines
+  `enabled` for every language and `packages` (`catalog`, `none`, `{"allow": [...]}`) for languages with a
+  closed catalog (`csharp`, `rust`, `php`, `python-data`); for `typescript` and `python` the `packages`
+  property and any rule property are reserved for design 046 and refused `PACKAGE_NOT_ALLOWED` until it
+  ships. The draft's bounds were inconsistent (256 allowed names of up to 214 bytes cannot fit a 16 KiB
+  document): the document bound becomes 64 KiB, the 256-name bound per language stays, and a request over
+  either is refused `ABOVE_CEILING`. Design 046's rules that need more room (large deny lists, waivers)
+  live in rows of its own that the document references, so the document and the lease read stay small.
+- **D1238 — What changed beside the feature, and how it applies (currency, 2026-11-24).** (1) New
+  languages, images and runner variables exist only in the runner's `serve` mode; lake mode (Architecture
+  decision 0079) already refuses any `SAGAT_RUNNER_` variable, and a unit test in
+  `apps/sandbox-runner/src/lake/config.rs` names each new variable so a renaming cannot slip past. The
+  `python-data` runtime is not the lake image (`runners/lake`) and never runs under the lake profile. (2)
+  A script step's log of any language stays in `script_executions.log`, with the marker row and read rule
+  of design 041 (Requirements 041-016 and 041-022); a test run's log is unchanged. (3) Script input and
+  output schemas of new languages are validated by the runner with the feature 005 validator
+  (`sagat_infra_schema::schema`); the run-input validator of design 043 is not used for scripts and is not
+  changed. (4) This feature adds no worker-protocol minor (develop speaks 1.6; the sandbox runner offers
+  minor 0); the reserved host calls are gated on the minors that features 019 and 026 allocate in merge
+  order, which the runner offers only when it implements them. (5) Six SDKs: the Rust SDK accepts any
+  language string, like Go, C# and Java; the conformance scenario runs in all six.
+- **D1239 — New languages are not eligible for warm containers until the warm residue suite covers
+  them.** Architecture decision 0052 (feature 019, still Proposed) lets an opted-in artifact reuse a
+  container. Bash background processes, PHP static and output-buffer state, a PowerShell runspace and
+  native Rust process state are residue the suite of 0052 does not test yet. Options weighed: (a) let 019's
+  policy apply to every language at once; (b) forbid warm containers for new languages for good; (c) make
+  each language eligible only once that suite has a residue fixture for it and passes on each target.
+  Chosen (c): it keeps the business value of warm starts for the languages that start slowest (PowerShell
+  on .NET) while holding Constitution principle V. This feature supplies the per-language residue
+  fixtures (Task 023-070); feature 019 owns the eligibility check and refuses a warm policy on an artifact
+  whose language has no passing fixture.
+- **D1625 — Build the `python-data` reservation now, its image-catalog mechanism only when feature 024
+  confirms it.** Design 046 gives `python` a policy-governed dependency layer kept in the blob store and
+  mounted read-only, which is not bounded by the 2 MiB artifact and is the very constraint that made
+  Decision 1229 an exception. Building the reserved mechanism now would leave two Python packaging paths
+  (an image catalog with a hash-pinned requirements lock, and design 046's layer with a PEP 751 lock).
+  Options weighed: (a) build all of Task 023-062 now; (b) drop `python-data`; (c) reserve the id now
+  (enum, database constraint, `LANGUAGE_NOT_BUILT` at every admission point, the bundle version 4 schema
+  value) and build the image-catalog parts (requirements lock parser, `pypi` catalog kind,
+  `runtimeCatalog` check at load) only when feature 024 confirms that it needs an image catalog rather than
+  design 046's layer. Chosen (c): the reservation is cheap and additive and keeps feature 024 unblocked;
+  the mechanism is built once, for a confirmed need, and the platform keeps one Python dependency path if
+  024 can use 046's. Requirement 023-027 is amended accordingly; the choice between the two paths is
+  feature 024's and design 046's, put to the coordinator (Gap 1227).
+- **D1626 — Two builders, two lanes, joined per language.** The feature is cut into slices so that two
+  builders never edit the same crate at the same time: after one foundation slice, a control-plane lane
+  owns `sagat-domain`, `sagat-application`, `sagat-infra-schema`, its additions to design 046's
+  `sagat-infra-packages` once that crate has merged, `sagat-infra-postgres`, `sagat-api-http`, the contracts,
+  Studio and the SDKs; a runner lane owns
+  `sagat-infra-sandbox`, `sagat-sandbox-runner`, `runners/` and the native CI job. Each language is closed by
+  a join slice that flips `is_built` once both lanes have delivered its parts. The slices are in
+  `plan.md`, "Build slices (2026-11-24)".
+- **D1627 — Design 046 owns and builds first the three pieces both features share; this feature extends
+  them (the coordinator's boundary decision of 2026-11-24, delegate (OD-2026-11-24-4)).** Decisions 1235,
+  1236 and 1237 were first written with this feature owning the namespace policy document, owning the
+  lease-time statement and building a crate of its own for attestation, with "whichever is built first"
+  for the crate. The coordinating session decided the boundary the other way, and this feature applies
+  it: (1) the namespace script policy document and its endpoint are design 046's (Task T046-2 for the
+  document and its migration, its REST task for the endpoint); this feature's language policy is a section
+  of that document, keeps the rules of Decision 1237 (closed per release, additive growth, `enabled`,
+  `packages` for closed catalogs, 64 KiB and 256 names) and the operations `getScriptRuntimePolicy` and
+  `putScriptRuntimePolicy` of `contracts/openapi-script-languages.yaml` become the shape of the language
+  section in design 046's endpoint, named as design 046 names them; (2) the lease-time check is design
+  046's statement over a `runnable` and `blocked_reason` pair on the per-tenant artifact row (Task
+  T046-17), and Task T023-061 adds the language reason to the same statement, with no second read; (3) the
+  provenance and SBOM builders live in design 046's new adapter `crates/infra-packages` (Task T046-15),
+  and Task T023-047 and Task T023-068 reuse them. Why this is the better boundary, weighed against keeping
+  the first text: design 046 is built in slice 1 of its own plan and needs all three pieces for its first
+  user-visible result (a policy-checked, attested, lease-blockable dependency layer), while this feature
+  needs them only from its slices A1, A2 and A4; one owner per shared piece removes the "whichever first"
+  coordination, which would have left two builders free to start the same crate; and the crate that
+  already parses locks and builds SBOMs for two ecosystems is the natural home of the SBOM rule. One
+  variance is recorded: a namespace's language policy is per namespace while the artifact row is per
+  tenant (a digest may serve scripts of several namespaces), so the language reason cannot be materialized
+  in `runnable`; this feature's extension joins the namespace's language section to the same statement,
+  still one statement, with no row lock (Decision 1235). Bundle numbers are unchanged: this feature keeps
+  version 4, design 046 uses version 5. This feature's own pieces stay its own: `script_build_provenance`,
+  the presence table, the language constraint, the registry capability `script-languages-v1` (Decision
+  1234) and every refusal of the language section.
+
 ## 4. Gaps
 
 | # | Gap | State |
@@ -352,6 +559,29 @@ None of these sources is evidence that the platform behaves as described; they b
 | G1222 | A test run cannot exercise `checkpoint` or `stream.append` (always `NOT_GRANTED`), so an author tries them only in a real run | Accepted; 022's draft test runs may later grant them |
 | G1223 | C#, Go and Java link their trusted API at build time, so versions built before the shim change cannot call the reserved host calls; TypeScript and Python receive them with the runner upgrade | Accepted; republish to use them |
 | G1224 | Feature 026's draft contract names the script request `stream.publish`; C17 names it `stream.append` | 026 to cite this contract; noted for the coordinator | Resolved 2026-10-27: 026 now uses `stream.append`.
+| G1225 | Until an operator records `script-languages-v1`, new languages and narrowing policies are refused (Decision 1234); a deployment that forgets the step sees `SCRIPT_LANGUAGES_CAPABILITY_DISABLED` | Accepted; the runbook's upgrade section names the step (Task 023-058) |
+| G1226 | The lease reads the policy without a row lock (Decision 1235): a lease transaction that read the policy before a disabling update committed may lease once more; that attempt finishes | Accepted; bounded by the lease transactions in flight at the commit; stated in the runbook |
+| G1227 | Whether feature 024 needs the `python-data` image catalog or can use design 046's dependency layer is not settled | Open; for the coordinator between 024 and 046 (Decision 1625); until then only the reservation is built |
+| G1228 | Warm containers for new languages wait for per-language residue fixtures in feature 019's suite (Decision 1239) | Open; Task 023-070 after 019 ships the suite |
+| G1229 | The sandbox runner registers worker protocol minor 0; the reserved host calls need it to negotiate the minors of 019 and 026 | Open; part of Task 023-064 and Task 023-066 |
+| G1230 | Control planes and engines of release 0.2.x predate the instance registry, so recording `script-languages-v1` cannot see them; recorded too early, a 0.2.x control plane fails listings that contain a new-language row (Gap 1220) | Accepted; the upgrade runbook records the requirement only after the last 0.2.x process is gone, and Task 023-063 observes the case |
+
+Updates of 2026-11-24 (states above are kept as history):
+
+- Gap 1200: the OpenAPI `CreateScriptRequest.language` description on `develop` now names the five built
+  languages; Studio `languages.ts` still marks Go and Java `built: false`. Half closed; Task 023-019 closes
+  the rest.
+- Gap 1201: feature 019 is approved and in release 0.3.0 (OD-2026-11-11-1, OD-2026-11-24-1); the rule stays
+  until its target-aware routing is built.
+- Gap 1213: proposed reservation `20270323000000_script_languages` and `20270323000100_script_languages_validate`
+  (the second validates the widened registry CHECK, as `20270118000100` does). Newest on `develop` is
+  `20270119000000`, newest on any open branch `20270209000100`; the coordinator confirms the reservation,
+  and the builder checks again before the slice merges.
+- Gap 1220: once `script-languages-v1` is recorded, a control plane of a registry-aware release without the
+  capability is held by the registry gate (`503 BINARY_CAPABILITY_MISSING`) instead of failing a listing
+  (Decision 1234); a 0.2.x control plane is outside the registry (Gap 1230).
+- Gap 1221: the lookup is now one plain statement for script activities only, counted in the budget test
+  of design 038 (Decision 1235); its time cost stays to be measured by Task 023-056.
 
 ## 5. Shell-specific risks (stated honestly)
 
@@ -389,3 +619,51 @@ None of these sources is evidence that the platform behaves as described; they b
 - **O1202 — Deno/Bun follow-up.** Recommended default: do not adopt either; revisit only if the US07
   report shows a measured warm-start or memory advantage on the reference environment together with
   identical TypeScript conformance results, through a new ADR.
+
+### Answers (2026-11-24), delegate (OD-2026-11-24-4)
+
+The three questions were open when the drafts were approved (OD-2026-11-11-1). Under the owner's
+delegation for release 0.3.0 they are decided here; each answer is reported to the owner, who may
+overrule it.
+
+- **Owner question 1200 (initial catalogs): a small reviewed starter catalog per language, chosen by
+  stated criteria, not a single proof package.** Options weighed: (a) the draft's minimum (Rust: the
+  `serde_json` closure only; PHP: one zero-dependency package), which proves the mechanism and little
+  else; (b) a starter catalog sized for the work scripts actually do (JSON, text and regular expressions,
+  encodings, hashing, time, identifiers, CSV), admitted entry by entry under criteria; (c) no packages in
+  the first release. Chosen (b): Windmill lets Rust and PHP scripts take any crates.io or Packagist
+  package, and a catalog of one package would leave those two languages a demonstration rather than a
+  tool, while the cost of each entry is bounded and paid once (a review, the archive checks, the advisory
+  audit at image build, a new image digest), and the architecture is identical for one entry or thirty.
+  Criteria, binding on every entry: a permissive SPDX licence; no network code that could only fail in
+  the sandbox; for Rust, no Cargo build script that compiles foreign code and no feature selection by the
+  author (each crate is compiled once with fixed features); a proc-macro only when a widely used derive
+  needs it (`serde_derive`), because it runs in the builder container on every build that uses it
+  (Decision 1228); for PHP, pure PHP, no extension outside the runtime's closed set, no
+  `composer-plugin`, and `autoload.files` only after a reviewed reason (Gap 1214). Cap: at most 32 root
+  packages per language in release 0.3.0, closures included in the 512-entry ceiling. Rust starts from
+  `serde_json` with `serde` and `serde_derive`, then candidates such as `regex`, `base64`, `hex`, `sha2`,
+  `time` (without its macros), `uuid` and `csv`; PHP starts from candidates such as `league/csv`,
+  `ramsey/uuid` with `brick/math`, and a YAML parser if one meets the criteria. The final lists are
+  fixed with the security review of Task 023-023 and Task 023-035 and written into each catalog's
+  `review` fields; a candidate that fails a criterion is left out, not waived. Bash and PowerShell ship no
+  packages. TypeScript and Python open dependencies are design 046's.
+- **Owner question 1201 (default namespace policy): every built language enabled by default.** Options
+  weighed: (a) enabled everywhere, narrowed by namespace administrators; (b) disabled everywhere until a
+  namespace administrator enables each; (c) a new deployment setting on the control plane that chooses
+  the default. Chosen (a): a deployment already opts in twice before a language can run, once by
+  releasing a runner whose `SAGAT_RUNNER_LANGUAGES` names it (default: the five 005 languages, so an
+  upgrade serves nothing new by itself) and once by recording `script-languages-v1` (Decision 1234); a
+  third switch (c) would be one more place that can disagree with the other two and with the namespace
+  policy, and (b) makes every namespace administrator repeat what the operator already decided. A
+  namespace that must not run a language, for example a production namespace without Bash, disables it
+  with one audited policy update, which also stops admitted runs at their next lease (Decision 1226).
+- **Owner question 1202 (Deno and Bun): not adopted; the spike stays in release 0.3.0 as input to the
+  published benchmark.** Options weighed: (a) adopt Bun or Deno as a TypeScript variant now; (b) not
+  adopt, and keep the bounded spike; (c) not adopt, and drop the spike. Chosen (b): Windmill runs
+  TypeScript on Bun, and release 0.3.0 publishes a benchmark against Windmill (OD-2026-11-24-1), so
+  measured start time and memory of Node, Deno and Bun under the same container profile are evidence the
+  business needs whatever the answer; adopting either now would bind a third JavaScript engine into the
+  toolchain identity and the conformance suite without that evidence (Decision 1201). Adoption later
+  takes a new architecture decision, identical conformance results and a measured advantage on the
+  reference environment.

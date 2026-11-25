@@ -7,6 +7,10 @@ a reference across tenants. This feature adds one constraint change and three ta
 migration `crates/infra-postgres/migrations/<next>_script_languages.{up,down}.sql`; the
 version number is allocated at implementation because parallel features share the sequence (G1213).
 
+Updated 2026-11-24: two migrations, proposed as `20270323000000_script_languages` (everything below, and
+the registry capability CHECK widened `NOT VALID`) and `20270323000100_script_languages_validate` (validates
+that CHECK), following `20270118000000` and `20270118000100` of design 043 (research Gap 1213, Decision 1234).
+
 ## Changes to existing tables
 
 | Table | Change | Notes |
@@ -37,6 +41,12 @@ before this feature have no row (G1217).
 
 ## New table `script_runtime_policies`
 
+Updated 2026-11-24 (research Decision 1627): the namespace script policy document, its table and its
+endpoint are design 046's (Task T046-2). This section is kept as the requirement on the **language
+section** of that document: its shape, bounds, revision and refusals below. If design 046's table carries
+the whole document, this feature adds no table of its own for the policy; the columns below then describe
+what that table must offer the language section.
+
 One current, revisioned policy document per namespace. A missing row means the deployment default
 (every built language enabled, the whole catalog allowed; O1201).
 
@@ -45,7 +55,7 @@ One current, revisioned policy document per namespace. A missing row means the d
 | `tenant_id` | `uuid` | `NOT NULL`, part of PK |
 | `namespace_id` | `uuid` | `NOT NULL`, part of PK; `FOREIGN KEY (tenant_id, namespace_id) REFERENCES namespaces (tenant_id, id)` |
 | `revision` | `bigint` | `NOT NULL CHECK (revision >= 1)` |
-| `document` | `jsonb` | `NOT NULL CHECK (jsonb_typeof(document) = 'object' AND octet_length(document::text) <= 16384)` |
+| `document` | `jsonb` | `NOT NULL CHECK (jsonb_typeof(document) = 'object' AND octet_length(document::text) <= 16384)`. Corrected 2026-11-24 to `<= 65536` (Decision 1237: 256 allowed names of up to 214 bytes do not fit 16 KiB) |
 | `updated_by` | `text` | `NOT NULL CHECK (octet_length(updated_by) BETWEEN 1 AND 255)` |
 | `updated_at` | `timestamptz` | `NOT NULL DEFAULT clock_timestamp()` |
 
@@ -64,6 +74,16 @@ write; the CHECK only bounds it):
 at most 256 names, each present in the deployment catalog of that language at write time. A language not
 built by the platform cannot appear. An update is `UPDATE … WHERE revision = $expected` (`409` with the
 current revision otherwise) or an insert when no row exists and the expected revision is 0.
+
+Added 2026-11-24. Extension (Decision 1237): the per-language object is closed for each release (an
+unknown property is refused) and grows only additively. `packages` is defined for languages with a
+closed catalog (`csharp`, `rust`, `php`, `python-data`); for `typescript` and `python`, `packages` and
+any rule property are reserved for design 046, which defines them, and are refused `PACKAGE_NOT_ALLOWED`
+until it ships. Design 046 keeps large rule sets in rows of its own that the document references. Fleet
+activation (Decision 1234): a document that disables a language or narrows packages is accepted only once
+`script-languages-v1` is recorded in the instance registry. Lease read (Decision 1235): the engine reads
+this row with no row lock, in one statement joined to the artifact row, only for script activities;
+admission points keep `FOR SHARE`.
 
 ## New table `script_runner_presence`
 
@@ -139,6 +159,7 @@ lockfile, toolchain, canonical policy and schemas, scoped to the tenant. Example
 
 - `build=sha256:…;runtime=sha256:…;protocol=artifact-v1;lang=bash;version=bash-5.x;shim=sha256:…`
 - `build=sha256:…;runtime=sha256:…;protocol=artifact-v3;lang=rust;version=rustc-1.98.0;target=linux-arm64;abi=sagat-inline-v1;compression=gzip-canonical-v1;shim=sha256:…;catalog=sha256:…`
+  (the compiler version is whatever the builder image pins; the workspace pinned 1.100.0 on 2026-11-24)
 - `build=sha256:…;runtime=sha256:…;protocol=artifact-v4;lang=php;version=php-8.x;composer=2.x;extensions=sha256:…;shim=sha256:…;catalog=sha256:…`
 
 ## Data this feature does not store
@@ -163,7 +184,9 @@ A policy has revisions `1, 2, …`; each update replaces the document. Presence 
 - An artifact's SBOM package set equals its version's lockfile package set; otherwise it was not signed.
 - A provenance row names exactly its build's artifact digest as subject and verifies with its `key_id`.
 - A `python-data` artifact never runs on a runtime whose catalog digest differs from its `runtimeCatalog`.
-- A script step whose artifact language is disabled in its namespace is never leased (D1226).
+- A script step whose artifact language is disabled in its namespace is never leased (D1226), except
+  once by a lease transaction that read the policy before the disabling update committed; that attempt
+  finishes (Decision 1235, Gap 1226).
 - A policy never names a language the platform does not build or a package outside the catalog.
 - Admission and leasing never read presence; publication of a workflow never depends on a runner being up.
 - No row, log, audit entry, metric label or error holds a secret value, a source, an input or a result.
@@ -177,7 +200,11 @@ retention (1–365 days, namespace ceiling) governs test runs and executions of 
 ## Migration
 
 Up: drop and re-add the language constraint, create the three tables with grants and classification
-entries. Down: refuses (raises) if any `scripts` row has a new language, any provenance row or any policy
+entries. Since 2026-11-24 also: widen the instance registry's three capability CHECKs (named
+`serving_instances_capabilities_known`, `platform_requirements_capability_known` and
+`platform_requirement_history_capability_known` on `develop` since `20270118000000`) `NOT VALID` with `script-languages-v1`, restating every value already
+there, and validate them in the second migration; the down migration of the first refuses while
+`script-languages-v1` is recorded. Down: refuses (raises) if any `scripts` row has a new language, any provenance row or any policy
 row exists; otherwise drops the tables and restores the five-language constraint. Forward and refused
 rollback are tested with data present.
 

@@ -1,15 +1,34 @@
 # ADR-0057: Additional script languages reuse the container-per-run sandbox, the signed artifact families and closed offline catalogs
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
-**Refines / supersedes:** refines ADR-0006, ADR-0013, ADR-0021 and ADR-0024; supersedes none of them
+**Status:** Accepted (2026-11-24, delegate (OD-2026-11-24-4)), with the amendment below; proposed 2026-10-26
+**Decided by:** agent proposal of 2026-10-26; accepted on 2026-11-24 by the agent preparing feature 023 for
+build, under the owner's delegation for release 0.3.0 (OD-2026-11-24-4, which lets the agents accept or reject
+architecture decisions, each recorded with its reasoning and reported to the owner, who may overrule it).
+Options weighed: (a) accept as written; (b) reject, for a registry proxy in the builder or WASM runtimes
+(options 3 and 4 below); (c) accept with an amendment that brings the text up to `develop` of 2026-11-24.
+Chosen (c). The core is still the strongest choice: one sandbox and one signing path for every language,
+no network in any customer build or run, dependencies bound into what is signed. Design 046 (Architecture
+decision 0120) reached the same conclusion for TypeScript and Python and builds on this decision rather
+than beside it, which would be impossible if it were rejected. What had gone stale since 2026-10-26 (the
+rolling N and N-1 upgrade of release 0.3.0, the instance registry, the claim-path budget of design 038,
+the runner's lake mode, design 046) changes how decisions 2, 4, 5, 6 and 8 are carried out, not what they
+decide, so an amendment is enough and no new decision record is needed
+**Refines / supersedes:** refines ADR-0006, ADR-0013, ADR-0021 and ADR-0024; supersedes none of them.
+Since 2026-11-24 it is itself refined by ADR-0121 (design 046 adds package rules to the lease check of
+decision 8) and refined in its own amendment below; it relates to ADR-0082 (the registry that activates it),
+ADR-0079 (lake mode serves no script language), ADR-0052 (warm containers, decision 11 below) and ADR-0120
+(design 046's open dependencies for TypeScript and Python, which keeps decision 4 for every other language)
 **Enforced by:** `crates/infra-schema` bundle and catalog unit tests over the fixtures of T023-003; the
 real-container suites `integration_script_languages_containers` (probes, hostile battery per language)
 in the `native-runners` CI job on AMD64 and ARM64; `contract_rest_script_languages`; the provenance
 contract tests (T023-047) and per-build provenance tests (T023-009); the lease-time policy tests
 (T023-061); the `python-data` binding fixtures (T023-062); the reserved host-call gate, budget and secret-net
 tests (T023-064, T023-065); `scripts/check-architecture.py` for crate placement. The rule "no product
-configuration selects Deno or Bun" is checked by T023-049.
+configuration selects Deno or Bun" is checked by T023-049. Added 2026-11-24: the fleet-activation tests
+(T023-067), the budget test of design 038 with its script-step shape (T023-061), the rule of
+`scripts/check-architecture.py` that keeps the in-toto and DSSE types inside `sagat-infra-packages`
+(T023-068), and the lake-mode refusal test (T023-069). None exists yet; until they do, this decision is
+review only.
 
 ## Context
 
@@ -100,6 +119,45 @@ The forces:
    (never in a test run), MUST bound sizes and per-run budgets, MUST assign sequences itself, MUST refuse
    a payload carrying a secret handed to the run, and MUST NOT log, record or audit either payload.
 
+### Amendment of 2026-11-24 (delegate, OD-2026-11-24-4)
+
+The decisions above stand. The following refine them; each is argued in
+`specs/023-script-languages/research.md` (Decisions 1234 to 1239 and 1625 to 1627).
+
+- **Decision 2, bundle numbers.** Version 4 is the only bundle version this decision adds. Bash and
+  PowerShell use version 1 and Rust version 3, unchanged. Design 046 takes version 5 for its additive
+  bundle (ADR-0120 decision 5); no other number is taken by either (research Decision 1236).
+- **Decision 4, scope.** The closed offline catalogs hold for Rust and PHP (and C#, ADR-0021); Bash and
+  PowerShell take no packages. TypeScript and Python open dependencies are governed by ADR-0120 instead,
+  resolved at publication through a platform package gateway and never during a customer build or run. The
+  `python-data` exception is reserved: its id is built now, its image-catalog mechanism only once feature
+  024 confirms it needs an image catalog rather than design 046's dependency layer (research Decision 1625).
+- **Decision 5, where languages are served.** Only the runner's script mode (`serve`) serves a language.
+  Lake mode (ADR-0079) refuses every `SAGAT_RUNNER_` variable, which covers the new ones.
+- **Decision 6, one implementation.** The statement, the DSSE envelope and the SBOM package-set rule are
+  one implementation, design 046's provenance and SBOM builders in `crates/infra-packages`, built first by
+  design 046 and extended by feature 023 with its build type, behind an application port, with the DSSE
+  signature made beside the key in `crates/application/src/script_signing.rs` (research Decisions 1236 and
+  1627).
+- **Decision 8 and the policy, ownership.** The namespace script policy document and its endpoint, and the
+  lease-time statement (a `runnable` and `blocked_reason` pair on the per-tenant artifact row), are design
+  046's and built first by it (ADR-0121); feature 023's language policy is a section of that document and
+  its language reason extends that statement, with no second read (research Decision 1627).
+- **Decision 8, the lease read.** The check at lease is one statement with no row lock, made only for
+  script activities once the step to lease is chosen; it costs a non-script lease nothing and a script-step
+  lease one statement in design 038's budget. A lease transaction that read the policy before a disabling
+  update committed may lease once more, and that attempt finishes like one already leased. Design 046
+  extends this same statement (ADR-0121) instead of adding one (research Decision 1235).
+- **Decision 10 (new), fleet activation.** The new language ids and every narrowing namespace policy are
+  activated through the instance registry (ADR-0082) as capability `script-languages-v1`, required of
+  `CONTROL_PLANE` and `EXECUTION_ENGINE`. Until an operator records it, a script of a new language and a
+  narrowing policy are refused `SCRIPT_LANGUAGES_CAPABILITY_DISABLED`; removing it is refused while such a
+  script or a policy row exists. For the upgrade from 0.2.x, whose processes predate the registry, it is
+  recorded only once none is left (research Decision 1234).
+- **Decision 11 (new), warm containers.** A warm-container policy (ADR-0052) does not apply to an artifact
+  of a new language until the warm residue suite has a passing fixture for that language on each enabled
+  target (research Decision 1239).
+
 ## Considered options
 
 1. **Reuse the 005 model with per-language images, existing families plus v4, closed catalogs and signed
@@ -143,6 +201,11 @@ The forces:
   a script listing that contains one. Runners without the new configuration behave exactly as before.
 - Rollback: disable the languages (runner allowlists, namespace policy) and roll forward; roll binaries
   back to 0.2.0 only while no new-language row exists. Stored artifacts remain verifiable.
+- Added 2026-11-24: an operator records `script-languages-v1` after the control planes and engines are
+  upgraded; until then the four languages and narrowing policies are refused with a reason that says so.
+  The claim path of a script step pays one statement and takes no row lock; non-script steps pay nothing.
+  Feature 023 adds no crate: it extends design 046's `sagat-infra-packages`, its policy document and its
+  lease statement, and so depends on design 046's Tasks T046-2, T046-15 and T046-17 for those parts.
 
 ## Evidence
 

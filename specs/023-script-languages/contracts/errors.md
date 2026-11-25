@@ -12,6 +12,7 @@ and never a source line, input value, lock content, package selection or secret.
 | `LANGUAGE_DISABLED` | `createScript` (a draft's language is fixed at creation; `UpdateScriptRequest` has no language), `publishScriptVersion`, `createScriptTestRun` | The namespace script runtime policy disables the language |
 | `PACKAGE_NOT_ALLOWED` | `publishScriptVersion`, `createScriptTestRun`, `getScriptPackageCatalog?select=`, `putScriptRuntimePolicy` | A lock or selection names a package outside the catalog, or one the namespace policy excludes |
 | `LOCKFILE_INVALID` | `createScript`, `updateScript`, `publishScriptVersion`, `createScriptTestRun` | The lockfile does not parse as the language's format, has a foreign root, dev packages or an incomplete closure, or is non-empty for Bash/PowerShell |
+| `SCRIPT_LANGUAGES_CAPABILITY_DISABLED` (added 2026-11-24) | `createScript` of `bash`, `powershell`, `php` or `rust`; `putScriptRuntimePolicy` with a document that disables a language or narrows packages | The instance registry does not have `script-languages-v1` recorded yet (research Decision 1234); the five 005 languages and the default policy are unaffected |
 
 Existing reasons keep their meaning: `LANGUAGE_NOT_BUILT` (also for the reserved `python-data` until
 feature 024 ships it), `ABOVE_CEILING`, `BUNDLE_MISMATCH` (now also
