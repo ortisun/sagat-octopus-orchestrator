@@ -631,8 +631,9 @@ async fn a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_gra
 }
 
 /// SC-022-004 at run level (gap G022-013, task T022-110): five same-key starts of `limit: 1`. The first holds the permit
-/// and four queue; each time the holder ends, one pass grants the oldest waiter. At no instant is there more than one
-/// holder, and the permits are granted in admission order.
+/// and four queue; each time the holder ends, one pass grants the oldest waiter. After each step of the sequence (a start,
+/// a holder's end, a pass) the key has at most one holder, and the permits are granted in admission order; what happens
+/// inside a commit is the readiness and grant suites' (review of 2026-11-25, correctness nit).
 #[tokio::test]
 async fn five_same_key_starts_hold_at_most_one_permit_and_are_granted_in_admission_order() {
     let w = gated_world().await;

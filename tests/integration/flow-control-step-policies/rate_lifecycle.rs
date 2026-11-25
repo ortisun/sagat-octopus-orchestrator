@@ -57,10 +57,7 @@ async fn slot_rows(w: &World, run: RunId) -> (i64, i64) {
 
 /// Makes every rate key with waiters due now, as the owner (a hint only says when a pass may look).
 async fn keys_due(w: &World) {
-    sqlx::query("UPDATE rate_limit_windows SET next_eligible_at = now() WHERE waiters > 0")
-        .execute(&w.db.pool)
-        .await
-        .expect("due");
+    crate::support::flow_control::keys_due(&w.db.pool).await;
 }
 
 /// FR-022-044: a buffered start whose run deadline passes is dequeued (`rate_limit.dequeued`) and the run ends at its

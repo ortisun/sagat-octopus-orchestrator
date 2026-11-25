@@ -145,6 +145,15 @@ describe('the flow-control fields of a node', () => {
     expect(canonical(seen.latest)).toBe(canonical(expected));
     expect(JSON.stringify(seen.latest.nodes.find((n) => n.id === 'notify')?.['concurrency'])).toBe('{"key":"steps.price.output.region","limit":2}');
   });
+  it("says a step's key reads input, steps or state, never the run's identity (decision D022-081)", async () => {
+    const expected = fixture('account-serial.workflow.json');
+    const start: IrDocument = { ...expected, nodes: expected.nodes.map((n) => (n.id === 'notify' ? { id: n.id, type: n.type, activity: n['activity'], next: n.next } : n)) };
+    const { user } = mount(start, { level: 'node', nodeId: 'notify' });
+    await user.click(screen.getByRole('button', { name: 'Add a concurrency limit' }));
+    const key = screen.getByRole('textbox', { name: 'Concurrency key' });
+    expect(key).toHaveAccessibleDescription(/input, steps or state/);
+    expect(key).not.toHaveAccessibleDescription(/or run/);
+  });
 });
 
 type SavedIr = { nodes: Record<string, unknown>[]; [k: string]: unknown };

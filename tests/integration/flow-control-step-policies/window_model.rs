@@ -226,12 +226,7 @@ async fn run_sequence(
             }
             Op::Pass => {
                 let instants = anchor(w, &granted).await;
-                sqlx::query(
-                    "UPDATE rate_limit_windows SET next_eligible_at = now() - interval '1 second' WHERE waiters > 0",
-                )
-                .execute(&w.db.pool)
-                .await
-                .expect("due");
+                crate::support::flow_control::keys_due(&w.db.pool).await;
                 let before = database_now_us(&w.db.pool).await;
                 let report = w.scheduler.grant_gates().await;
                 let after = database_now_us(&w.db.pool).await;

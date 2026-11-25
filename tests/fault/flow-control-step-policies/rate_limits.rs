@@ -1848,10 +1848,7 @@ async fn replicas_with_offset_process_clocks_grant_on_the_database_clock() {
 
 /// Makes every rate key of the database with waiters due now, as the owner: a hint only says when a pass may look.
 async fn keys_due(w: &World) {
-    sqlx::query("UPDATE rate_limit_windows SET next_eligible_at = now() - interval '1 second' WHERE waiters > 0")
-        .execute(&w.db.pool)
-        .await
-        .expect("due");
+    crate::support::flow_control::keys_due(&w.db.pool).await;
 }
 
 /// Sets the instants of `run`'s run-level grant row to `at_us` (microseconds since the epoch), as the owner, with the guard

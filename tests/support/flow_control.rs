@@ -689,3 +689,13 @@ pub async fn key_consistency(
         .map(sagat_domain::execution::RunId::new)
         .collect())
 }
+
+/// Makes every rate-limit key of the database that has waiters due a second ago, as the owner: a hint only says when a
+/// pass may look, and the second of margin keeps a pass that reads `now()` from finding the key not yet due. The one
+/// helper of the integration and fault suites (review of 2026-11-25, correctness nit).
+pub async fn keys_due(pool: &sqlx::PgPool) {
+    sqlx::query("UPDATE rate_limit_windows SET next_eligible_at = now() - interval '1 second' WHERE waiters > 0")
+        .execute(pool)
+        .await
+        .expect("due");
+}
