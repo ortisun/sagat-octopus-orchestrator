@@ -67,6 +67,7 @@ describe('the words of a key', () => {
   it('names a hidden label, scopes and pools in words; an unknown one is unsupported', () => {
     expect(keyLabelWords(null)).toBe('Hidden');
     expect(keyLabelWords('3f9a1c02be7d')).toBe('3f9a1c02be7d');
+    expect(keyLabelWords(undefined)).toBe('Unsupported (no label sent)');
     expect([scopeWords('RUN'), scopeWords('STEP'), scopeWords('BODY')]).toEqual(['Run starts', 'Step attempts', 'Unsupported (BODY)']);
     expect([poolWords('ORDINARY'), poolWords('DRAFT_TEST'), poolWords('BATCH')]).toEqual(['Ordinary', 'Draft test', 'Unsupported (BATCH)']);
   });

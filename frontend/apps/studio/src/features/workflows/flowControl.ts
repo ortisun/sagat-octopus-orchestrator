@@ -66,20 +66,23 @@ export type PolicyView =
   | { state: 'unreadable' };
 
 /** What a gate's value is: none, a policy (with the members this Studio does not know named), or something else. */
-export function readPolicy(value: unknown): PolicyView {
+export function readPolicy(value: unknown, gate: Gate): PolicyView {
   if (value === undefined) return { state: 'absent' };
   if (!isObject(value)) return { state: 'unreadable' };
-  const known = new Set<string>(MEMBERS.rateLimit);
+  const known = new Set<string>(MEMBERS[gate]);
   return { state: 'policy', policy: value, unknownMembers: Object.keys(value).filter((member) => !known.has(member)) };
 }
 
 /** The known members of a gate first, in the canonical order, then the others untouched in their own order. */
 export function ordered(gate: Gate, policy: Record<string, unknown>): Record<string, unknown> {
   const known = MEMBERS[gate];
-  const out: Record<string, unknown> = {};
-  for (const member of known) if (policy[member] !== undefined) out[member] = policy[member];
-  for (const [member, value] of Object.entries(policy)) if (!(known as readonly string[]).includes(member) && value !== undefined) out[member] = value;
-  return out;
+  const own = (member: string): unknown => (Object.prototype.hasOwnProperty.call(policy, member) ? policy[member] : undefined);
+  // built from entries, never by assignment: a member named `__proto__` stays an ordinary member and cannot replace
+  // the policy's prototype (security review of 2026-11-24, minor 1)
+  const entries: Array<[string, unknown]> = [];
+  for (const member of known) if (own(member) !== undefined) entries.push([member, own(member)]);
+  for (const [member, value] of Object.entries(policy)) if (!(known as readonly string[]).includes(member) && value !== undefined) entries.push([member, value]);
+  return Object.fromEntries(entries);
 }
 
 export function policyOf(doc: IrDocument, owner: Owner, gate: Gate): unknown {

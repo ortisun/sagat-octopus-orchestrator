@@ -62,6 +62,11 @@ describe('the words of a gate', () => {
     expect(rateWords(slot({ keyLabel: null }))?.key).toBe('Hidden: you may not reveal personal data in this namespace, so the platform does not show the key label.');
   });
 
+  it('says an estimate withheld from a caller who may not see the label, not one the platform could not compute', () => {
+    expect(rateWords(slot({ keyLabel: null, estimatedGrantAt: null }))).toMatchObject({ estimate: null, estimateWithheld: true });
+    expect(rateWords(slot({ estimatedGrantAt: null }))).toMatchObject({ estimate: null, estimateWithheld: false });
+  });
+
   it('a waiting slot with its place and the platform estimate, called an estimate', () => {
     expect(rateWords(slot())).toMatchObject({ state: 'Waiting for a rate-limit slot', limit: 'At most 100 a minute', position: '2 ahead of it in the queue', estimate: at(40), unsupported: [] });
     expect(rateWords(slot({ position: 1 }))?.position).toBe('Next in the queue');

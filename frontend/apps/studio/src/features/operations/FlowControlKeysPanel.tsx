@@ -131,7 +131,7 @@ function KeyListing<T extends { group: string }>({ listing, namespace, queryKey 
 const common = <T extends { scope: string; pool: string; keyLabel: string | null }>(): Column<T>[] => [
   { header: 'Applies to', cell: (key) => scopeWords(key.scope) },
   { header: 'Pool', cell: (key) => poolWords(key.pool) },
-  { header: 'Key label', cell: (key) => (key.keyLabel === null ? keyLabelWords(null) : <code>{keyLabelWords(key.keyLabel)}</code>) },
+  { header: 'Key label', cell: (key) => (typeof key.keyLabel === 'string' ? <code>{keyLabelWords(key.keyLabel)}</code> : keyLabelWords(key.keyLabel)) },
 ];
 
 /**

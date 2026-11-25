@@ -37,7 +37,11 @@ function Gate({ view }: { view: GateView }) {
         {view.estimate !== undefined ? (
           <Fact label="Estimated grant">
             {view.estimate === null ? (
-              'None at this read: the platform gives an estimate only when it can compute one.'
+              view.estimateWithheld ? (
+                'Withheld: you may not reveal personal data in this namespace, so the platform does not give an estimate.'
+              ) : (
+                'None at this read: the platform gives an estimate only when it can compute one.'
+              )
             ) : (
               <>
                 <Moment at={view.estimate} /> (an estimate, not a promise)

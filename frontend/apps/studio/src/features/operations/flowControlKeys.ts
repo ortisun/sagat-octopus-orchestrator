@@ -39,8 +39,10 @@ function shown(value: unknown): string {
 }
 
 /** A `null` label is one the platform withheld from this caller (FR-022-057); the reason is said once beside the table. */
-export function keyLabelWords(label: string | null): string {
-  return label === null ? 'Hidden' : shown(label);
+export function keyLabelWords(label: unknown): string {
+  if (label === null) return 'Hidden';
+  // a label the platform did not send at all breaks the contract: shown as unsupported, as the run view does (FR-007-010)
+  return typeof label === 'string' ? shown(label) : 'Unsupported (no label sent)';
 }
 
 const SCOPES: Record<string, string> = { RUN: 'Run starts', STEP: 'Step attempts' };

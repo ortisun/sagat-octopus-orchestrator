@@ -27,6 +27,11 @@ export interface GateView {
   position?: string;
   /** The platform's estimate; `null` when it gave none. */
   estimate?: string | null;
+  /**
+   * No estimate because the caller may not see the key's label: the platform withholds it from such a caller, which is
+   * not the same as an estimate it could not compute (security review of 2026-11-24, nit 2).
+   */
+  estimateWithheld?: boolean;
   /** A granted slot counts against the limit until then (its grant plus the window). */
   countsUntil?: string;
   /** The values of a newer platform this Studio does not know, in words. */
@@ -178,6 +183,7 @@ export function rateWords(slot: RunRateLimit | undefined): GateView | undefined 
   if (state === 'WAITING') {
     view.position = positionWords(raw['position']);
     view.estimate = instant(raw['estimatedGrantAt']) ?? null;
+    view.estimateWithheld = view.estimate === null && raw['keyLabel'] === null;
   }
   if (state === 'GRANTED' && since !== undefined && known) {
     view.countsUntil = new Date((parseTime(since) ?? 0) + (WINDOW_MS[per] ?? 0)).toISOString();

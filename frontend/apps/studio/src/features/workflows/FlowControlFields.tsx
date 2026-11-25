@@ -112,7 +112,7 @@ function LimitInput({
 
 function GateFields({ doc, owner, gate, disabled, change }: { doc: IrDocument; owner: Owner; gate: Gate; disabled: boolean; change: Change }) {
   const words = WORDS[gate];
-  const view = readPolicy(policyOf(doc, owner, gate));
+  const view = readPolicy(policyOf(doc, owner, gate), gate);
   const limitRef = useRef<HTMLInputElement | null>(null);
   const [focusLimit, setFocusLimit] = useState(false);
   useEffect(() => {

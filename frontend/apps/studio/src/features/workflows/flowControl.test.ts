@@ -64,11 +64,11 @@ describe('the Studio writes the shared flow-control fixtures', () => {
   it('reads back what it wrote and removes a gate entirely', () => {
     const doc = fixture('account-serial.workflow.json');
     const node = { level: 'node', nodeId: 'notify' } as const;
-    expect(readPolicy(policyOf(doc, node, 'concurrency'))).toEqual({ state: 'policy', policy: { key: 'steps.price.output.region', limit: 2 }, unknownMembers: [] });
+    expect(readPolicy(policyOf(doc, node, 'concurrency'), 'concurrency')).toEqual({ state: 'policy', policy: { key: 'steps.price.output.region', limit: 2 }, unknownMembers: [] });
     const without = removePolicy(removePolicy(doc, node, 'concurrency'), WORKFLOW, 'concurrency');
     expect('concurrency' in without).toBe(false);
     expect('concurrency' in (without.nodes.find((n) => n.id === 'notify') ?? {})).toBe(false);
-    expect(readPolicy(policyOf(without, WORKFLOW, 'concurrency'))).toEqual({ state: 'absent' });
+    expect(readPolicy(policyOf(without, WORKFLOW, 'concurrency'), 'concurrency')).toEqual({ state: 'absent' });
   });
 
   it('turning a gate on writes an empty policy and invents no member (decision D022-150 item 1)', () => {
@@ -87,11 +87,11 @@ describe('the Studio writes the shared flow-control fixtures', () => {
     doc = setPolicyField(doc, owner, 'concurrency', 'group', undefined);
     doc = setPolicyField(doc, owner, 'concurrency', 'key', 'input.accountId');
     expect(JSON.stringify(doc['concurrency'])).toBe('{"key":"input.accountId","limit":3,"burst":5}');
-    expect(readPolicy(doc['concurrency'])).toEqual({ state: 'policy', policy: { key: 'input.accountId', limit: 3, burst: 5 }, unknownMembers: ['burst'] });
+    expect(readPolicy(doc['concurrency'], 'concurrency')).toEqual({ state: 'policy', policy: { key: 'input.accountId', limit: 3, burst: 5 }, unknownMembers: ['burst'] });
   });
 
   it('a gate value that is not an object is unreadable and stays as it is', () => {
-    for (const value of ['serial', 3, [1], null, true]) expect(readPolicy(value)).toEqual({ state: 'unreadable' });
+    for (const value of ['serial', 3, [1], null, true]) expect(readPolicy(value, 'concurrency')).toEqual({ state: 'unreadable' });
     const doc: IrDocument = { ...fixture('account-serial.workflow.json'), rateLimit: 'fast' };
     expect(setPolicyField(doc, WORKFLOW, 'rateLimit', 'limit', 3)['rateLimit']).toBe('fast');
   });
@@ -156,5 +156,27 @@ describe('where a gate may be declared', () => {
     expect(mayDeclareGates(node('activity'))).toBe(true);
     expect(mayDeclareGates(node('script'))).toBe(true);
     for (const type of ['database', 'timer', 'condition', 'child', 'end', 'forEach', 'unknownKind']) expect(mayDeclareGates(node(type))).toBe(false);
+  });
+});
+
+// Security review of 2026-11-24, minor 1 and nit 1: a member the Studio does not know is kept as an ordinary member,
+// whatever its name, and it is named whichever gate it is on.
+describe('members this Studio does not know', () => {
+  it('keeps a member called __proto__ as an ordinary member and never as the policy prototype', () => {
+    const doc = readDocument(JSON.parse('{"id":"w","version":1,"nodes":[],"concurrency":{"__proto__":{"key":"input.accountId","limit":1}}}')).doc;
+    const next = setPolicyField(doc, WORKFLOW, 'concurrency', 'limit', 3);
+    const policy = policyOf(next, WORKFLOW, 'concurrency') as Record<string, unknown>;
+    expect(Object.getPrototypeOf(policy)).toBe(Object.prototype);
+    expect(Object.keys(policy)).toEqual(['limit', '__proto__']);
+    expect(policy['key']).toBeUndefined();
+    const view = readPolicy(policy, 'concurrency');
+    expect(view.state === 'policy' ? view.unknownMembers : []).toEqual(['__proto__']);
+  });
+
+  it('names a rate-limit member written on a concurrency policy as unknown', () => {
+    const view = readPolicy({ limit: 2, per: 'second' }, 'concurrency');
+    expect(view.state === 'policy' ? view.unknownMembers : []).toEqual(['per']);
+    const rate = readPolicy({ limit: 2, per: 'second' }, 'rateLimit');
+    expect(rate.state === 'policy' ? rate.unknownMembers : []).toEqual([]);
   });
 });
