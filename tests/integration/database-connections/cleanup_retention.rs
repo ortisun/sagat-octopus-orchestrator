@@ -115,6 +115,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
                 pools: vec![],
                 max_inflight: 4,
                 protocol_version: "1.6".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

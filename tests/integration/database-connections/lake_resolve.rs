@@ -231,6 +231,7 @@ pub async fn run(
                 pools: vec![],
                 max_inflight: 32,
                 protocol_version: "1.6".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

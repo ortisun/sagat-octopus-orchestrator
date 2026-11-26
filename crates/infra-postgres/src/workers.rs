@@ -328,9 +328,9 @@ impl WorkerStore for PgRunStore {
         let stored: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO worker_sessions \
              (id, tenant_id, namespace_id, subject, worker_name, token_hash, activities, languages, \
-              pools, max_inflight, accepted_protocol_minor, expires_at) \
+              pools, max_inflight, accepted_protocol_minor, expires_at, declines_acknowledgement) \
              SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
-                    $11, clock_timestamp() + $12 * interval '1 microsecond' \
+                    $11, clock_timestamp() + $12 * interval '1 microsecond', $14 \
              WHERE EXISTS (SELECT 1 FROM worker_sessions \
                            WHERE tenant_id = $2 AND subject = $4 AND worker_name = $5) \
                 OR (SELECT count(*) FROM worker_sessions \
@@ -340,7 +340,8 @@ impl WorkerStore for PgRunStore {
                     activities = EXCLUDED.activities, languages = EXCLUDED.languages, \
                     pools = EXCLUDED.pools, max_inflight = EXCLUDED.max_inflight, \
                     accepted_protocol_minor = EXCLUDED.accepted_protocol_minor, \
-                    expires_at = EXCLUDED.expires_at \
+                    expires_at = EXCLUDED.expires_at, \
+                    declines_acknowledgement = EXCLUDED.declines_acknowledgement \
              RETURNING id",
         )
         .bind(session.id)
@@ -359,6 +360,7 @@ impl WorkerStore for PgRunStore {
         )
         .bind(micros(session.ttl))
         .bind(i64::from(sagat_application::worker::MAX_SESSIONS_PER_IDENTITY))
+        .bind(session.declines_acknowledgement)
         .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -401,7 +403,7 @@ impl WorkerStore for PgRunStore {
             "UPDATE worker_sessions SET expires_at = clock_timestamp() + $4 * interval '1 microsecond' \
              WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 AND expires_at > clock_timestamp() \
              RETURNING id, tenant_id, namespace_id, subject, worker_name, activities, max_inflight, \
-                       accepted_protocol_minor, expires_at, \
+                       accepted_protocol_minor, expires_at, declines_acknowledgement, \
                        EXISTS (SELECT 1 FROM worker_drains d \
                                WHERE d.tenant_id = worker_sessions.tenant_id \
                                  AND d.namespace_id = worker_sessions.namespace_id \
@@ -430,6 +432,7 @@ impl WorkerStore for PgRunStore {
                         .map_err(|_| corrupt("accepted protocol minor"))?,
                     expires_at: col(&row, "expires_at")?,
                     draining: col(&row, "draining")?,
+                    declines_acknowledgement: col(&row, "declines_acknowledgement")?,
                 })
             })
             .transpose()?;

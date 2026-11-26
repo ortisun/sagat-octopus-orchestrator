@@ -188,6 +188,7 @@ async fn scoped_graph_delta_and_telemetry_keep_the_complete_instance_identity() 
                 pools: Vec::new(),
                 max_inflight: 2,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

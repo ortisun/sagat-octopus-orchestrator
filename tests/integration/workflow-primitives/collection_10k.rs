@@ -188,6 +188,7 @@ async fn ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bo
                 pools: Vec::new(),
                 max_inflight: 256,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

@@ -365,6 +365,7 @@ fn capabilities(languages: Vec<String>) -> Capabilities {
         pools: vec![],
         max_inflight: 10,
         protocol_version: "1".into(),
+        declines_acknowledgement: false,
     }
 }
 

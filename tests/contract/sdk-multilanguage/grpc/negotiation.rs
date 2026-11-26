@@ -236,3 +236,70 @@ async fn the_versions_workers_were_served_at_are_counted_so_an_operator_knows_wh
     );
     assert_eq!(registrations_at(&engine, "2").await, 0);
 }
+
+/// What the session row holds of the last registration under `worker_name`: whether it declines acknowledgement, and the
+/// minor it was accepted at.
+async fn stored_session(p: &crate::support::worker::Platform, worker_name: &str) -> (bool, i32) {
+    sqlx::query_as(
+        "SELECT declines_acknowledgement, accepted_protocol_minor FROM worker_sessions \
+          WHERE tenant_id = $1 AND subject = 'wendy' AND worker_name = $2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(worker_name)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the session row")
+}
+
+/// Feature 006, Task 006-048 (decision D006-105): `declines_acknowledgement` (protocol 1.8) is stored on the session from
+/// each registration, so a later registration under the same name that does not decline clears it; the claim of Task
+/// 006-047 reads it. A worker that offers 1.8 is still answered at this build's own minor.
+#[tokio::test]
+async fn a_registration_that_declines_is_stored_and_a_later_one_that_does_not_clears_it() {
+    let p = platform().await;
+    let mut w = p.worker("wendy").await;
+    let register = |declines: bool| {
+        let mut message = Worker::register_message(&["act.a"], 10);
+        let capabilities = message.capabilities.as_mut().expect("capabilities");
+        capabilities.protocol_version = "1.8".into();
+        capabilities.declines_acknowledgement = declines;
+        message
+    };
+
+    let declining = w
+        .client
+        .register_worker(w.req(register(true)))
+        .await
+        .expect("a declining registration")
+        .into_inner();
+    assert_eq!(declining.accepted_protocol_version, version(SERVER_MINOR));
+    let minor = i32::try_from(SERVER_MINOR).expect("a minor");
+    assert_eq!(
+        stored_session(&p, "wire-test-worker").await,
+        (true, minor),
+        "the declining registration is stored"
+    );
+
+    let again = w
+        .client
+        .register_worker(w.req(register(false)))
+        .await
+        .expect("a registration that does not decline")
+        .into_inner();
+    assert_eq!(
+        again.worker_id, declining.worker_id,
+        "the same session, replaced"
+    );
+    assert_eq!(
+        stored_session(&p, "wire-test-worker").await,
+        (false, minor),
+        "a registration without the flag clears it"
+    );
+
+    // and declining again sets it again on the same row
+    w.client
+        .register_worker(w.req(register(true)))
+        .await
+        .expect("declining again");
+    assert_eq!(stored_session(&p, "wire-test-worker").await, (true, minor));
+}

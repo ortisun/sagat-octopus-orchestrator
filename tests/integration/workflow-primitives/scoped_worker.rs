@@ -141,6 +141,7 @@ async fn register_scoped(world: &World, workers: &ScopedWorkers) -> Session {
                 pools: Vec::new(),
                 max_inflight: 8,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await
@@ -390,6 +391,7 @@ async fn fixture_document_with_progress(
                 pools: Vec::new(),
                 max_inflight: 8,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

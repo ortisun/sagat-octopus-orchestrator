@@ -1163,6 +1163,7 @@ pub async fn registration(w: &World) {
         pools: vec![],
         max_inflight: 4,
         protocol_version: version.into(),
+        declines_acknowledgement: false,
     };
     let write = "sagat.database.iceberg.write";
     let sql = "sagat.database.postgresql";

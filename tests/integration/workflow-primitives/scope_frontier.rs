@@ -83,6 +83,7 @@ async fn rig() -> Rig {
                 pools: Vec::new(),
                 max_inflight: 64,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

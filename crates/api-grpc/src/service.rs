@@ -592,6 +592,8 @@ where
                 max_inflight: u32::try_from(wanted.max_inflight)
                     .map_err(|_| invalid("max_inflight must be positive"))?,
                 protocol_version: wanted.protocol_version.clone(),
+                // protocol 1.8: stored on the session from each registration (Task 006-048)
+                declines_acknowledgement: wanted.declines_acknowledgement,
             };
             let registered = self
                 .workers

@@ -523,6 +523,7 @@ async fn a_late_scoped_heartbeat_needs_no_history_after_its_collection_and_run_f
                 pools: vec![],
                 max_inflight: 1,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await
@@ -774,6 +775,7 @@ async fn a_scoped_lease_is_withdrawn_in_its_path_for_either_cause() {
                     pools: vec![],
                     max_inflight: 1,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 },
             )
             .await
@@ -984,6 +986,7 @@ async fn a_scoped_claim_whose_consumer_goes_before_its_commit_is_rolled_back() {
                 pools: vec![],
                 max_inflight: 1,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

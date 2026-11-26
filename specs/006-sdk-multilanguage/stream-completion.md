@@ -421,8 +421,9 @@ to `WORKER_ERROR` at every minor (Decision 006-028 of the SDK build), and keep a
 - The server's minor becomes 8 (`DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR = 8`) in Task 006-057, after the gate of Task 006-056,
   never before: until then the tests of the 1.8 paths raise a session's stored minor, as Decision 006-030 of the server build does.
   Minors are cumulative: `protocol_ceiling` answers 8 for an ordinary worker when it would answer 7 (design 041, Task 041-7) and the
-  store proves `supports_delivery_acknowledgement()`, a constant of the adapter. Nothing else gates the minor. The database runner
-  keeps 6.
+  store proves `supports_delivery_acknowledgement()`, a constant of the adapter, never above the compiled `PROTOCOL_MINOR`.
+  Nothing else gates the minor. The database runner keeps 6. The PostgreSQL adapter's proof stays false until its paths of 1.8
+  are built (Decision 006-105, Gap 006-042).
 - From the same task every engine of the build lists `delivery-acknowledgement-v1`, meaning it serves `AcknowledgeTasks`, replays
   the cause `NOT_ACKNOWLEDGED`, refuses capabilities to provisional leases, and withdraws a marked provisional lease at its deadline
   and on its hand-back (Architecture decision 0082 decision 7: nothing is listed that the process will not do). The requirement is

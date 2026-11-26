@@ -654,6 +654,7 @@ async fn the_breaker_of_one_namespace_does_not_hold_back_the_same_activity_in_an
         pools: vec![],
         max_inflight: 100,
         protocol_version: "1".into(),
+        declines_acknowledgement: false,
     };
     let registered = w
         .workers

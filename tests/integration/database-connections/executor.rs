@@ -133,6 +133,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         pools: vec![],
         max_inflight: 32,
         protocol_version: "1.6".into(),
+        declines_acknowledgement: false,
     };
     for principal in [&w.admin, &w.worker, &w.runner_identity] {
         w.bind_everything(principal).await;

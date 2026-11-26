@@ -3252,6 +3252,7 @@ async fn a_bounded_reconciliation_persists_its_companion_and_manual_review_statu
                     pools: Vec::new(),
                     max_inflight: 1,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 },
             )
             .await
@@ -3431,6 +3432,7 @@ async fn a_bounded_scheduler_fence_lasts_to_commit_and_deadlines_are_exact_path(
                 pools: Vec::new(),
                 max_inflight: 2,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

@@ -517,6 +517,7 @@ pub(crate) async fn register_scoped(
                 pools: Vec::new(),
                 max_inflight: 1,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

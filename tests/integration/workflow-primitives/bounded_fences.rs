@@ -717,6 +717,7 @@ async fn assert_session_room_post_wait(bounded: bool) {
                 pools: vec![],
                 max_inflight: 8,
                 protocol_version: "1.5".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

@@ -81,18 +81,43 @@ pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
 /// Managed database capabilities first became available in protocol 1.6 (decision D600).
 pub const DATABASE_PROTOCOL_MINOR: u32 = 6;
 
-/// The newest minor this session may negotiate. Scoped identity (1.5) needs a store that proves the
-/// scoped claim and report path; the managed database minor (1.6) is a superset of 1.5 for ordinary
-/// workers, so it needs both proofs. The dedicated database runner only ever handles root work, so
-/// it reaches 1.6 on a store that proves the database path alone.
-fn protocol_ceiling(role: Role, scoped: bool, database: bool) -> u32 {
-    if database && (scoped || role == Role::DatabaseRunner) {
-        DATABASE_PROTOCOL_MINOR
-    } else if scoped {
+/// Delivery acknowledgement (feature 006, ADR-0099): the minor that marks a lease provisional until its host acknowledges
+/// it, and that reserves `TASK_NOT_STARTED` for the host (decision D006-061). Negotiated only once the compiled ceiling,
+/// [`PROTOCOL_MINOR`], reaches it (Task 006-057) and the store proves the paths of 1.8.
+pub const DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR: u32 = HAND_BACK_PROTOCOL_MINOR;
+
+/// What a storage adapter proves it serves, each the precondition of a minor (minors are cumulative proofs, decision
+/// D006-041).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoreProofs {
+    /// The scoped claim and report path (1.5).
+    scoped: bool,
+    /// The managed database path (1.6).
+    database: bool,
+    /// The paths of delivery acknowledgement (1.8): the marks, the acknowledgement, the capability record and the
+    /// withdrawals of a marked lease.
+    delivery_acknowledgement: bool,
+}
+
+/// The newest minor this session may negotiate, never above `compiled` (this build's [`PROTOCOL_MINOR`]). Scoped
+/// identity (1.5) needs a store that proves the scoped claim and report path; the managed database minor (1.6) is a
+/// superset of 1.5 for ordinary workers, so it needs both proofs. The dedicated database runner only ever handles root
+/// work, so it reaches 1.6 on a store that proves the database path alone, and it stays there (ADR-0099 decision 11).
+/// Delivery acknowledgement (1.8) is answered to an ordinary worker when the minors below it are and the store proves
+/// it (decision D006-105).
+fn protocol_ceiling(role: Role, proofs: StoreProofs, compiled: u32) -> u32 {
+    let proven = if proofs.database && (proofs.scoped || role == Role::DatabaseRunner) {
+        if proofs.delivery_acknowledgement && role != Role::DatabaseRunner {
+            DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR
+        } else {
+            DATABASE_PROTOCOL_MINOR
+        }
+    } else if proofs.scoped {
         SCOPED_PROTOCOL_MINOR
     } else {
         ROOT_PROTOCOL_MINOR
-    }
+    };
+    proven.min(compiled)
 }
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
@@ -244,6 +269,9 @@ pub struct Capabilities {
     pub pools: Vec<String>,
     pub max_inflight: u32,
     pub protocol_version: String,
+    /// The host asks for no flagged lease (protocol 1.8, `WorkerCapabilities.declines_acknowledgement`): stored on the
+    /// session from each registration, so one without it clears it (decision D006-105).
+    pub declines_acknowledgement: bool,
 }
 
 /// A worker session as stored.
@@ -261,6 +289,9 @@ pub struct SessionRecord {
     pub expires_at: OffsetDateTime,
     /// Its identity is being drained in this namespace: it is given no new work.
     pub draining: bool,
+    /// What its last registration said: the host asks for no flagged lease (protocol 1.8). Read by the claim, which
+    /// marks no lease of a declining session (`declined`).
+    pub declines_acknowledgement: bool,
 }
 
 /// A session about to be created. Only the hash of the token is stored.
@@ -277,6 +308,8 @@ pub struct NewSession {
     pub pools: Vec<String>,
     pub max_inflight: u32,
     pub accepted_protocol_minor: u32,
+    /// Whether the host declines acknowledgement: the upsert writes it on insert and on replacement alike.
+    pub declines_acknowledgement: bool,
     pub ttl: Duration,
     /// Live sessions the tenant may hold (a quota), judged atomically with the insert.
     pub tenant_limit: u64,
@@ -292,6 +325,13 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
 
     /// Managed capabilities require an independently proven adapter boundary.
     fn supports_database_worker_protocol(&self) -> bool {
+        false
+    }
+
+    /// Whether this adapter serves every store path of delivery acknowledgement (protocol 1.8): the marks the claim
+    /// writes, the acknowledgement, the capability record and the withdrawals of a marked lease. A constant of the
+    /// adapter; without it no session negotiates 1.8 whatever the compiled ceiling (decision D006-105).
+    fn supports_delivery_acknowledgement(&self) -> bool {
         false
     }
 
@@ -831,8 +871,12 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         let server_minor = protocol_ceiling(
             principal.role(),
-            self.store.supports_scoped_worker_protocol(),
-            self.store.supports_database_worker_protocol(),
+            StoreProofs {
+                scoped: self.store.supports_scoped_worker_protocol(),
+                database: self.store.supports_database_worker_protocol(),
+                delivery_acknowledgement: self.store.supports_delivery_acknowledgement(),
+            },
+            PROTOCOL_MINOR,
         );
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
             negotiate_protocol_details(&capabilities.protocol_version, server_minor)
@@ -949,6 +993,7 @@ where
                 pools: dedup(&capabilities.pools),
                 max_inflight: capabilities.max_inflight,
                 accepted_protocol_minor,
+                declines_acknowledgement: capabilities.declines_acknowledgement,
                 ttl,
                 tenant_limit,
             })
@@ -3243,27 +3288,92 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        PROTOCOL_MINOR, ROOT_PROTOCOL_MINOR, SCOPED_PROTOCOL_MINOR, TaskRef, blob_report_identity,
-        json_escaped, negotiate_protocol, negotiate_protocol_details, report_scope,
-        require_supported_task, root_task_id,
+        DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR, PROTOCOL_MINOR, ROOT_PROTOCOL_MINOR,
+        SCOPED_PROTOCOL_MINOR, StoreProofs, TaskRef, blob_report_identity, json_escaped,
+        negotiate_protocol, negotiate_protocol_details, report_scope, require_supported_task,
+        root_task_id,
     };
+
+    /// The proofs of a store, in the order of the minors they open.
+    const fn proofs(scoped: bool, database: bool, delivery_acknowledgement: bool) -> StoreProofs {
+        StoreProofs {
+            scoped,
+            database,
+            delivery_acknowledgement,
+        }
+    }
 
     #[test]
     fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
         use sagat_domain::identity::Role;
+        let ceiling = |role, scoped, database| {
+            super::protocol_ceiling(role, proofs(scoped, database, false), PROTOCOL_MINOR)
+        };
         for role in [Role::Worker, Role::Runner, Role::Admin] {
-            assert_eq!(super::protocol_ceiling(role, false, true), 4);
-            assert_eq!(super::protocol_ceiling(role, true, false), 5);
-            assert_eq!(super::protocol_ceiling(role, true, true), 6);
+            assert_eq!(ceiling(role, false, true), 4);
+            assert_eq!(ceiling(role, true, false), 5);
+            assert_eq!(ceiling(role, true, true), 6);
         }
+        assert_eq!(ceiling(Role::DatabaseRunner, false, true), 6);
+        assert_eq!(ceiling(Role::DatabaseRunner, false, false), 4);
+    }
+
+    /// Feature 006, Task 006-048 (decision D006-105): the negotiation that answers 1.8, with the compiled ceiling raised
+    /// in this test only. This build's own ceiling stays below it, so no store's proof makes a session 1.8.
+    #[test]
+    fn delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof()
+    {
+        use sagat_domain::identity::Role;
+        let raised = DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR;
+        for role in [Role::Worker, Role::Runner, Role::Admin] {
+            // every proof and the raised ceiling: 1.8
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, true), raised),
+                8
+            );
+            // the proof of 1.8 without the minors below it opens nothing more
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(false, true, true), raised),
+                4
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, false, true), raised),
+                5
+            );
+            // without the store's proof the raised ceiling stops below 1.8
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, false), raised),
+                6
+            );
+            // this build's ceiling answers its own minor whatever the store proves
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, true), PROTOCOL_MINOR),
+                PROTOCOL_MINOR
+            );
+        }
+        // the dedicated database runner keeps 1.6 (ADR-0099 decision 11)
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, true),
+            super::protocol_ceiling(Role::DatabaseRunner, proofs(true, true, true), raised),
             6
         );
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, false),
-            4
+            super::protocol_ceiling(Role::DatabaseRunner, proofs(false, true, true), raised),
+            6
         );
+        // a worker that offers 1.8 is agreed at 1.8 under the raised ceiling and at this build's own below it
+        assert_eq!(
+            negotiate_protocol_details("1.8", raised),
+            Some(("1.8".to_owned(), 8))
+        );
+        assert_eq!(
+            negotiate_protocol_details("1.999", raised),
+            Some(("1.8".to_owned(), 8))
+        );
+        assert_eq!(
+            negotiate_protocol("1.8"),
+            Some(format!("1.{PROTOCOL_MINOR}"))
+        );
+        assert!(PROTOCOL_MINOR < DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR);
     }
 
     #[test]
@@ -3302,6 +3412,7 @@ mod tests {
             negotiate_protocol_details("1.5", ROOT_PROTOCOL_MINOR),
             Some(("1.4".to_owned(), ROOT_PROTOCOL_MINOR))
         );
+        // this build answers its own minor, below 1.8 (the compile-time assert of `withdrawal.rs` keeps it there)
         assert_eq!(
             negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),
             Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))

@@ -129,6 +129,7 @@ impl Platform {
                     pools: Vec::new(),
                     max_inflight: 1000,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 },
             )
             .await

@@ -1686,3 +1686,28 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   Not built: the 60 s owner hold across a running engine process and the registry connection failing while the pool works
   (both need an engine process with two pools; they belong to the fault suite of Task 006-051), and the boundary test with the
   beat's answer held. Closed by Task 006-051.
+- **D006-105 — The session keeps the host's word on declining, and the negotiation that answers 1.8 is written behind the
+  compiled ceiling** (Task 006-048; delegate, OD-2026-11-24-4). `WorkerCapabilities.declines_acknowledgement` (field 10)
+  reaches `Capabilities`, `NewSession` and `SessionRecord`; the session upsert writes it on the insert and on the replacement
+  alike, so a registration under the same name that does not decline clears it, and `use_session` returns it for the claim of
+  Task 006-047. It is stored as the host sent it at every minor; only the claim of a session judged at 1.8 or later reads it.
+  `protocol_ceiling` now takes what the store proves (the scoped path, the database path and, new,
+  `WorkerStore::supports_delivery_acknowledgement()`, false by default) and the compiled ceiling: it answers
+  `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` (8) to an ordinary worker when it would answer the newest minor below it and the
+  store proves the paths of 1.8, never to the dedicated database runner (ADR-0099 decision 11), and never above the compiled
+  `PROTOCOL_MINOR`. On this branch that constant is 6, not the 7 the task text names: design 041's Task 041-7, which serves
+  1.7, has not merged here, so "the newest minor below 1.8" is 1.6 until it does, and the chain becomes 6, 7, 8 with it. The
+  PostgreSQL adapter's proof stays false: it writes the marks (Task 006-047) but serves neither the acknowledgement, the
+  capability record nor the withdrawals of a marked lease yet. Options weighed: (a) the adapter proving 1.8 now, since the
+  compiled clamp keeps every session below it anyway — rejected: the proof would claim paths that do not exist, and the raise
+  of Task 006-057 alone would then offer an incomplete minor; (b) no store proof, the compiled constant alone — rejected:
+  minors are cumulative proofs of the store (Decision 006-041), and a store without the paths of 1.8 (a fake of the tests, an
+  adapter of another database) must never negotiate it; (c), chosen, the proof as a constant of the adapter, turned on by the
+  task that completes its paths. Tested: `delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof`
+  and `managed_support_does_not_enable_scoped_protocol_for_ordinary_workers` (the unit tests of `crates/application/src/worker.rs`,
+  the compiled ceiling raised to 8 in the test only), and
+  `a_registration_that_declines_is_stored_and_a_later_one_that_does_not_clears_it` (`contract_grpc_sdk_multilanguage`).
+- **G006-042 — No task turns the adapter's proof of 1.8 on.** `supports_delivery_acknowledgement()` of the PostgreSQL adapter
+  is false (D006-105); Task 006-057 raises the compiled minor and names no store proof, so after it the server would still
+  answer 1.6 (1.7 once design 041 merges). Closed when Task 006-057, or the last task that builds a store path of 1.8 (Task
+  006-052), turns the constant on with a test that a raised ceiling then answers 8 against the real store.

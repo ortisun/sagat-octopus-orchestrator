@@ -174,6 +174,7 @@ async fn complete_in(w: &World, ns: &Namespace, child: RunId) {
         pools: vec![],
         max_inflight: 1,
         protocol_version: "1".into(),
+        declines_acknowledgement: false,
     };
     let registered = w
         .workers
