@@ -89,13 +89,18 @@ fn alert_from_row(row: &PgRow) -> Result<AlertRecord, StoreError> {
         resolved_at: col(row, "resolved_at")?,
         fired_count: u32::try_from(fired).map_err(|_| corrupt("alert count"))?,
         items: u64::try_from(items).unwrap_or(0),
-        items_withheld: false,
         oldest_seconds: col(row, "oldest_seconds")?,
     })
 }
 
 const ALERT_COLUMNS: &str = "id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
      last_seen_at, resolved_at, fired_count, item_count, oldest_seconds";
+
+/// Whether a change of an alert of `kind` is sent to the namespace's subscriptions: never for a flow-control kind
+/// (decision D022-152).
+fn sends_event(kind: AlertKind) -> bool {
+    !AlertKind::FLOW_CONTROL.contains(&kind)
+}
 
 /// The body subscribers are sent for a change of an alert: identifiers, the kind, counts, ages and
 /// the runbook; never data of a run.
@@ -109,7 +114,6 @@ fn event_body(
         at.format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default()
     };
-    let flow_control = AlertKind::FLOW_CONTROL.contains(&alert.kind);
     serde_json::to_vec(&serde_json::json!({
         "id": format!("alert-{}-{}-{}", alert.id, alert.fired_count, event.as_str()),
         "type": event.as_str(),
@@ -123,10 +127,7 @@ fn event_body(
             "severity": alert.severity.as_str(),
             "state": alert.state.as_str(),
             "firstSeenAt": rfc3339(alert.first_seen_at),
-            // a subscription's endpoint holds no reveal right: a flow-control alert's count of its group's keys tells which
-            // runs share a key, so it is never sent (feature 022, decision D022-135)
-            "items": if flow_control { 0 } else { alert.items },
-            "itemsWithheld": flow_control,
+            "items": alert.items,
             "oldestSeconds": alert.oldest_seconds,
             "summary": alert.kind.summary(),
             "runbook": alert.runbook(runbook_base),
@@ -603,7 +604,9 @@ impl MonitorStore for PgRunStore {
             (&out.fired, OutboundKind::AlertFired),
             (&out.resolved, OutboundKind::AlertResolved),
         ] {
-            for alert in alerts {
+            // a flow-control alert is judged per key and tells which runs share a key: a subscription's endpoint holds no
+            // reveal right, so none is sent (feature 022, decision D022-152)
+            for alert in alerts.iter().filter(|alert| sends_event(alert.kind)) {
                 let body = event_body(alert, event, runbook_base, now);
                 let event_id = format!(
                     "alert-{}-{}-{}",
@@ -860,33 +863,6 @@ impl MonitorStore for PgRunStore {
 }
 
 impl AlertReader for PgRunStore {
-    async fn list_alerts(
-        &self,
-        tenant: TenantId,
-        namespace: NamespaceId,
-        state: Option<AlertState>,
-        before: Option<Uuid>,
-        limit: u32,
-    ) -> Result<Vec<AlertRecord>, StoreError> {
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ALERT_COLUMNS} FROM operational_alerts \
-             WHERE tenant_id = $1 AND namespace_id = $2 \
-               AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR id < $4) \
-             ORDER BY id DESC LIMIT $5"
-        )))
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(state.map(AlertState::as_str))
-        .bind(before)
-        .bind(i64::from(limit))
-        .fetch_all(self.pool())
-        .await
-        .map_err(store_error)?
-        .iter()
-        .map(alert_from_row)
-        .collect()
-    }
-
     async fn list_alerts_as(
         &self,
         tenant: TenantId,
@@ -923,6 +899,38 @@ impl AlertReader for PgRunStore {
         });
         let alerts = rows.iter().map(alert_from_row).collect::<Result<_, _>>()?;
         Ok((alerts, reveals))
+    }
+}
+
+impl PgRunStore {
+    /// Every alert of a namespace, newest first, whoever asks: for tests and the operators' tools only. The API reads
+    /// alerts through [`AlertReader::list_alerts_as`], which knows its reader (decision D022-152).
+    #[doc(hidden)]
+    pub async fn list_alerts(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        state: Option<AlertState>,
+        before: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<AlertRecord>, StoreError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {ALERT_COLUMNS} FROM operational_alerts \
+             WHERE tenant_id = $1 AND namespace_id = $2 \
+               AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR id < $4) \
+             ORDER BY id DESC LIMIT $5"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(state.map(AlertState::as_str))
+        .bind(before)
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(alert_from_row)
+        .collect()
     }
 }
 
@@ -1130,34 +1138,30 @@ mod tests {
             resolved_at: None,
             fired_count: 1,
             items: 7,
-            items_withheld: false,
             oldest_seconds: 1.0,
         }
     }
 
-    /// Decision D022-135: the events of a flow-control alert go to a subscription's endpoint, which holds no reveal right,
-    /// so they never carry the count of the group's keys in the condition (`items` 0, `itemsWithheld` true); the events of
-    /// another kind keep their count.
+    /// Decision D022-152: a change of a flow-control alert is never sent to a subscription (its endpoint holds no reveal
+    /// right); every other kind is, with its count.
     #[test]
-    fn the_events_of_a_flow_control_alert_carry_no_key_count() {
+    fn a_flow_control_alert_sends_no_event() {
         for kind in AlertKind::ALL {
-            let body: serde_json::Value = serde_json::from_slice(&event_body(
-                &alert(kind),
-                OutboundKind::AlertFired,
-                "docs/runbooks/alerts.md",
-                time::OffsetDateTime::UNIX_EPOCH,
-            ))
-            .expect("a body");
-            let flow_control = AlertKind::FLOW_CONTROL.contains(&kind);
             assert_eq!(
-                (&body["data"]["items"], &body["data"]["itemsWithheld"]),
-                (
-                    &serde_json::json!(if flow_control { 0 } else { 7 }),
-                    &serde_json::json!(flow_control)
-                ),
+                sends_event(kind),
+                !AlertKind::FLOW_CONTROL.contains(&kind),
                 "{}",
                 kind.as_str()
             );
         }
+        let body: serde_json::Value = serde_json::from_slice(&event_body(
+            &alert(AlertKind::DeadItems),
+            OutboundKind::AlertFired,
+            "docs/runbooks/alerts.md",
+            time::OffsetDateTime::UNIX_EPOCH,
+        ))
+        .expect("a body");
+        assert_eq!(body["data"]["items"], serde_json::json!(7));
+        assert!(body["data"].get("itemsWithheld").is_none());
     }
 }

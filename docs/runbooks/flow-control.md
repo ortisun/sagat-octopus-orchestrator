@@ -172,6 +172,10 @@ namespace lock (OD-2026-11-19-4; for the rate-limit keys OD-2026-11-20-11). So, 
 
 While the count is above the ceiling, a step whose key is new is refused; keys that exist are decided as before.
 
+The flow-control alerts (sections 8 to 10 and 14) are listed only to a caller with the namespace's reveal grant and are
+not sent to subscriptions (D022-152); `getRun`'s `rateLimit.position` and `estimatedGrantAt` are null without it
+(D022-153). Every surface and its gate is listed in decision D022-151.
+
 How close a namespace is to these ceilings is in its quota view (`GET /namespaces/{namespaceId}/quotas`): the `used` of
 `concurrency_live_keys`, `rate_limit_live_keys` and `flow_control_key_waiters` is shown only to a caller who may reveal
 personal data in the namespace (the reveal grant of the key listings); everyone else reads `usageWithheld: true` and no

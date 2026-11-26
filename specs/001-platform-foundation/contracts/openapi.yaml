@@ -7372,7 +7372,7 @@ components:
       properties:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
-        kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS, CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED]}
+        kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS, CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED], description: 'The four flow-control kinds of feature 022 (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) are listed only to a caller who may reveal personal data in the namespace, the right read with the alerts, since their state, count and ages depend on per-key conditions and tell which runs share a key; they are never delivered as an event (D022-152).'}
         subject: {type: string, maxLength: 120, description: 'What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS, a flow-control group (never a key) for the four flow-control kinds of feature 022; empty for the others.'}
         state: {type: string, enum: [FIRING, RESOLVED]}
         severity: {type: string, enum: [warning, critical]}
@@ -7382,8 +7382,7 @@ components:
         lastSeenAt: {type: string, format: date-time}
         resolvedAt: {type: [string, 'null'], format: date-time}
         firedCount: {type: integer, minimum: 1}
-        items: {type: integer, format: int64, minimum: 0, description: 'How many things are in the condition at the last look; 0 when itemsWithheld is true (D022-135).'}
-        itemsWithheld: {type: boolean, description: 'Present and true for a flow-control alert (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) when the caller may not reveal personal data in the namespace: the count of the group''s keys in the condition, which tells which runs share a key, is not shown (D022-135).'}
+        items: {type: integer, format: int64, minimum: 0, description: 'How many things are in the condition at the last look.'}
         oldestSeconds: {type: number, minimum: 0, description: 'The age of the oldest of them.'}
     ConcurrencyKey:
       type: object
@@ -7476,7 +7475,7 @@ components:
         per: {type: string, enum: [second, minute, hour]}
         since: {type: string, format: date-time, description: 'When the slot was granted (GRANTED) or the run was buffered (WAITING).'}
         queueDeadline: {type: [string, 'null'], format: date-time, description: 'WAITING: when the run fails RATE_LIMIT_WAIT_TIMEOUT if not granted before; null while GRANTED.'}
-        position: {type: [integer, 'null'], minimum: 1, description: 'WAITING, and only in getRun (null in listRuns and while GRANTED): the run''s rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
+        position: {type: [integer, 'null'], minimum: 1, description: 'WAITING, and only in getRun (null in listRuns, while GRANTED, and for a caller to whom keyLabel is null, since the rank counts the runs that share the key, D022-153): the run''s rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
         estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING, and only in getRun: an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position, or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2), in listRuns and while GRANTED.'}
     RunConcurrency:
       type: object

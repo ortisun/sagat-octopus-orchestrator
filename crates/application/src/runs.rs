@@ -2465,6 +2465,11 @@ where
                         place.estimated_grant_at = None;
                     }
                     slot.place(place);
+                    // the rank counts the runs waiting on the same key ahead of it: withheld, as the estimate is, from a
+                    // caller who may not see the key's label (decision D022-153)
+                    if slot.label().is_none() {
+                        slot.position = None;
+                    }
                 }
                 Ok(run)
             }

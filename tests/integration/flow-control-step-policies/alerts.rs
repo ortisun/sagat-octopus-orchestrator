@@ -421,13 +421,13 @@ async fn a_stuck_key_is_judged_against_the_tenants_concurrency_ceiling_below_its
     }
 }
 
-/// Security check of the quota fix, item 1 (decision D022-135): a flow-control alert's `items` is the number of its
-/// group's keys in the condition, which moves by one exactly when a key's last waiter is served, so it is shown only to a
-/// caller who may reveal personal data in the namespace. With `flow_control_key_waiters` at 1, one buffered start fires
-/// `RATE_LIMIT_QUEUE_SATURATED` for its group: a Viewer reads the alert with its count withheld (`items` 0), and a
-/// Developer given the reveal grant reads the count; an alert of another kind keeps its count for the Viewer.
+/// Security checks of the quota and alerts fixes (decisions D022-135 and D022-152): a flow-control alert is judged per
+/// key, so its state, count and ages tell which runs share a key; it is listed only to a caller who may reveal personal
+/// data in the namespace. With `flow_control_key_waiters` at 1, one buffered start fires `RATE_LIMIT_QUEUE_SATURATED` for
+/// its group: a Viewer does not see that alert at all, while an alert of another kind stays listed with its count; a
+/// Developer given the reveal grant reads both, with the counts.
 #[tokio::test]
-async fn a_flow_control_alert_counts_its_keys_only_for_a_caller_who_may_reveal_them() {
+async fn a_flow_control_alert_is_shown_only_to_a_caller_who_may_reveal_its_keys() {
     use sagat_application::clock::SystemClock;
     use sagat_application::operations::OperationsService;
     use sagat_domain::identity::Role;
@@ -461,7 +461,7 @@ async fn a_flow_control_alert_counts_its_keys_only_for_a_caller_who_may_reveal_t
     let read = |who: sagat_domain::identity::Principal| {
         let (service, w) = (&service, &w);
         async move {
-            let mut lines: Vec<(String, u64, bool)> = service
+            let mut lines: Vec<(String, u64)> = service
                 .alerts(
                     &who,
                     w.namespace.id(),
@@ -473,13 +473,7 @@ async fn a_flow_control_alert_counts_its_keys_only_for_a_caller_who_may_reveal_t
                 .await
                 .expect("the alerts")
                 .into_iter()
-                .map(|alert| {
-                    (
-                        alert.kind.as_str().to_owned(),
-                        alert.items,
-                        alert.items_withheld,
-                    )
-                })
+                .map(|alert| (alert.kind.as_str().to_owned(), alert.items))
                 .collect();
             lines.sort();
             lines
@@ -488,11 +482,8 @@ async fn a_flow_control_alert_counts_its_keys_only_for_a_caller_who_may_reveal_t
     let viewer = w.member("vera", Role::Viewer).await;
     assert_eq!(
         read(viewer).await,
-        [
-            ("DEAD_ITEMS".to_owned(), 3, false),
-            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 1, true),
-        ],
-        "the count of keys withheld from a caller without the reveal right"
+        [("DEAD_ITEMS".to_owned(), 3)],
+        "no flow-control alert for a caller without the reveal right"
     );
     let dave = w.member("dave", Role::Developer).await;
     sqlx::query(
@@ -507,10 +498,10 @@ async fn a_flow_control_alert_counts_its_keys_only_for_a_caller_who_may_reveal_t
     assert_eq!(
         read(dave).await,
         [
-            ("DEAD_ITEMS".to_owned(), 3, false),
-            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 1, false),
+            ("DEAD_ITEMS".to_owned(), 3),
+            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 1),
         ],
-        "shown with the reveal grant"
+        "shown with the reveal grant, with its count"
     );
     for run in [holder, waiter] {
         w.operate_run(run, RunOperation::Cancel).await;

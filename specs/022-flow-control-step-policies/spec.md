@@ -540,6 +540,11 @@ Added after the review of 2026-11-13:
 
 #### Standalone steps (US05)
 
+  *Amended 2026-11-26 (decisions D022-151 to D022-153; security check of the alerts fix):* no surface MUST tell a
+  caller who may not reveal personal data in the namespace which runs share a key: `getRun`'s `rateLimit.position` and
+  `estimatedGrantAt` are null for such a caller, and the flow-control alerts are shown only to a caller with the reveal
+  right and are never sent as `ops.alert.*` events. The sweep of every surface and its gate is D022-151; the timing of a
+  run's own gate events is gap G022-041.
 - **FR-022-023 — Standalone admission**: `POST /namespaces/{namespaceId}/step-executions` (idempotency key
   required) MUST accept exactly one `activity`, `script` or `database` node, input and an optional timeout;
   build a private one-node definition whose result is the node's output and whose `outputSchema` is the
@@ -682,9 +687,11 @@ Added after the review of 2026-11-13:
   metrics (decisions by outcome, wait time, waiters, grant lag behind a free slot) and raise per-namespace
   alerts when grants lag behind free slots (`rate_limit_grant_lagging`) and when a key's buffer nears its
   ceiling (`rate_limit_queue_saturated`), each with a runbook section. Labels follow FR-022-033.
-  *Amended 2026-11-26 (decision D022-135; security check of the quota fix):* the number of keys a flow-control alert
-  counts (`items`) MUST be shown only to a caller who may reveal personal data in the namespace, the right read with the
-  alerts in one statement, and never in an alert's event; any other caller reads `items: 0` and `itemsWithheld: true`.
+  *Amended 2026-11-26 (decisions D022-135 and D022-152; security checks of the quota and alerts fixes):* a flow-control
+  alert (`CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING`, `RATE_LIMIT_QUEUE_SATURATED`, `FLOW_CONTROL_WAITER_ORPHANED`)
+  MUST be shown only to a caller who may reveal personal data in the namespace, the right read with the alerts in one
+  statement, and MUST NOT be sent as an `ops.alert.*` event; operators keep the deployment-wide gauge
+  `alerts_firing{kind}`.
 - **FR-022-050 — Capability, SDKs and Studio**: `rateLimits` MUST be a capability enabled separately from
   `concurrencyKeys` under the rules of FR-022-031, and both MUST be activated through the instance-capability
   registry (FR-022-053). The six SDKs (TypeScript, Go, Python, C#, Java, Rust; FR-022-035 predates the Rust
@@ -763,6 +770,9 @@ Added after the review of 2026-11-13:
   `database`, `forEach` or `while` node, or a path that cannot be followed) MUST take the strictest level of every
   carrier of the document, never less than `pii`; a carrier whose classification walk did not complete MUST count as
   `secret`.
+  *Amended 2026-11-26 (decision D022-151):* a key's label is not the only per-key value: a key's rank, count, fullness
+  and the per-key conditions of an alert are shown under the same rule as its label (only to a caller who may reveal
+  personal data in the namespace), as the sweep of D022-151 lists.
 - **FR-022-058 — Namespace counters**: `queued_runs` and live keys per namespace MUST be usage rows of
   ADR-0050 slot 8b, sharded like `run_active_counts` (16 slots), changed in the transaction that changes
   what they count and maintained by `SECURITY DEFINER` triggers; the runtime role reads them only. A run

@@ -181,7 +181,8 @@ export function rateWords(slot: RunRateLimit | undefined): GateView | undefined 
     unsupported,
   };
   if (state === 'WAITING') {
-    view.position = positionWords(raw['position']);
+    // the platform withholds the place, as the estimate, from a caller who may not see the key's label (decision D022-153)
+    view.position = raw['position'] == null && raw['keyLabel'] === null ? 'Withheld: you may not reveal personal data in this namespace' : positionWords(raw['position']);
     view.estimate = instant(raw['estimatedGrantAt']) ?? null;
     view.estimateWithheld = view.estimate === null && raw['keyLabel'] === null;
   }

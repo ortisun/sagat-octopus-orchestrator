@@ -54,7 +54,6 @@ async function mount(options: { permissions?: string[]; drainFailure?: boolean }
         items: [
           alert('alert-1', { runbook: 'https://runbooks.example.test/alerts#outbox-stuck' }),
           alert('alert-unsafe', { kind: 'DEAD_ITEMS', severity: 'warning', runbook: 'javascript:alert(document.cookie)' }),
-          alert('alert-withheld', { kind: 'RATE_LIMIT_QUEUE_SATURATED', severity: 'warning', subject: 'accounts', items: 0, itemsWithheld: true }),
         ],
         nextCursor: 'alert-next',
       };
@@ -90,13 +89,6 @@ async function mount(options: { permissions?: string[]; drainFailure?: boolean }
 }
 
 describe('OperationsPage', () => {
-  it('says a flow-control alert withheld its count of keys instead of showing 0 (decision D022-135)', async () => {
-    await mount();
-    const withheld = (await screen.findByText('accounts')).closest('article') as HTMLElement;
-    expect(within(withheld).getByText(/withheld/i)).toBeInTheDocument();
-    expect(within(withheld).queryByText(/^0$/)).toBeNull();
-  });
-
   it('gates reads and worker actions with their separate permissions', async () => {
     const denied = await mount({ permissions: [] });
     expect(await screen.findByRole('heading', { name: 'Operations' })).toBeInTheDocument();

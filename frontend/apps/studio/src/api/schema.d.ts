@@ -5726,7 +5726,10 @@ export interface components {
             id: string;
             /** Format: uuid */
             namespaceId: string;
-            /** @enum {string} */
+            /**
+             * @description The four flow-control kinds of feature 022 (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) are listed only to a caller who may reveal personal data in the namespace, the right read with the alerts, since their state, count and ages depend on per-key conditions and tell which runs share a key; they are never delivered as an event (D022-152).
+             * @enum {string}
+             */
             kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS" | "CONCURRENCY_QUEUE_STUCK" | "RATE_LIMIT_GRANT_LAGGING" | "RATE_LIMIT_QUEUE_SATURATED" | "FLOW_CONTROL_WAITER_ORPHANED";
             /** @description What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS, a flow-control group (never a key) for the four flow-control kinds of feature 022; empty for the others. */
             subject: string;
@@ -5750,11 +5753,9 @@ export interface components {
             firedCount: number;
             /**
              * Format: int64
-             * @description How many things are in the condition at the last look; 0 when itemsWithheld is true (D022-135).
+             * @description How many things are in the condition at the last look.
              */
             items: number;
-            /** @description Present and true for a flow-control alert (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) when the caller may not reveal personal data in the namespace: the count of the group's keys in the condition, which tells which runs share a key, is not shown (D022-135). */
-            itemsWithheld?: boolean;
             /** @description The age of the oldest of them. */
             oldestSeconds: number;
         };
@@ -5901,7 +5902,7 @@ export interface components {
              * @description WAITING: when the run fails RATE_LIMIT_WAIT_TIMEOUT if not granted before; null while GRANTED.
              */
             queueDeadline?: string | null;
-            /** @description WAITING, and only in getRun (null in listRuns and while GRANTED): the run's rank among the waiters the grant pass visits ahead of it at read time (in the queue's order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2). */
+            /** @description WAITING, and only in getRun (null in listRuns, while GRANTED, and for a caller to whom keyLabel is null, since the rank counts the runs that share the key, D022-153): the run's rank among the waiters the grant pass visits ahead of it at read time (in the queue's order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2). */
             position?: number | null;
             /**
              * Format: date-time

@@ -65,6 +65,8 @@ describe('the words of a gate', () => {
   it('says an estimate withheld from a caller who may not see the label, not one the platform could not compute', () => {
     expect(rateWords(slot({ keyLabel: null, estimatedGrantAt: null }))).toMatchObject({ estimate: null, estimateWithheld: true });
     expect(rateWords(slot({ estimatedGrantAt: null }))).toMatchObject({ estimate: null, estimateWithheld: false });
+    // decision D022-153: the place is withheld from a caller who may not see the key's label, and is said withheld
+    expect(rateWords(slot({ keyLabel: null, position: null, estimatedGrantAt: null }))?.position).toBe('Withheld: you may not reveal personal data in this namespace');
   });
 
   it('a waiting slot with its place and the platform estimate, called an estimate', () => {

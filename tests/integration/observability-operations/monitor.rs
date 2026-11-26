@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use sagat_application::operations::{AlertReader, Bounds, Thresholds};
+use sagat_application::operations::{Bounds, Thresholds};
 use sagat_domain::operations::AlertKind;
 use sagat_scheduler::{Monitor, MonitorSettings};
 use serde_json::json;

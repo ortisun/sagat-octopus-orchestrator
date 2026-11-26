@@ -26,12 +26,8 @@ pub struct AlertBody {
     pub resolved_at: Option<OffsetDateTime>,
     /// How many times it has begun to fire.
     pub fired_count: u32,
-    /// How many things are in the condition at the last look; 0 when `items_withheld` (feature 022, decision D022-135).
+    /// How many things are in the condition at the last look.
     pub items: u64,
-    /// Present and true for a flow-control alert read by a caller who may not reveal personal data in the namespace:
-    /// its count of the group's keys is not shown (decision D022-135).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items_withheld: Option<bool>,
     /// The age of the oldest of them, in seconds.
     pub oldest_seconds: f64,
 }
@@ -52,8 +48,7 @@ impl AlertBody {
             last_seen_at: alert.last_seen_at,
             resolved_at: alert.resolved_at,
             fired_count: alert.fired_count,
-            items: if alert.items_withheld { 0 } else { alert.items },
-            items_withheld: alert.items_withheld.then_some(true),
+            items: alert.items,
             oldest_seconds: alert.oldest_seconds,
         }
     }
