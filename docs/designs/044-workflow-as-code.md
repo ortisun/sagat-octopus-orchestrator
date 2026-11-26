@@ -1,8 +1,14 @@
 # Workflow as code
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
-*   **Date:** 2026-11-25
+*   **Status:** Approved
+*   **Date:** 2026-11-26
+*   **Reviewed-commit:** 14513c8533b0a0a475d77fe21f3886c4e07c52cc
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/044-workflow-as-code.reviews/2026-11-26/approval/approval-egm-review.md sha256:b8a8e77cd1d674b3b7901fd6336c54c3a28a41044686b39d3a7ec4abbcde3b70; docs/designs/044-workflow-as-code.reviews/2026-11-26/approval/approval-architecture.md sha256:391a8d72863139c4f2f4ea9d085f913168314b29183b10676663abbf3d9973c5; docs/designs/044-workflow-as-code.reviews/2026-11-26/approval/approval-security.md sha256:4832edd48a5922af62ebf00a300d5e0ca8eb08bf8a64e64b65ca22ad662a9cfe; docs/designs/044-workflow-as-code.reviews/2026-11-26/approval/approval-correctness.md sha256:4af7a7b0452bec8c307ed234433db1ee5ab708d3c7a00e7d8cade862669beba5
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 19; OD-2026-11-26-441, OD-2026-11-26-442, OD-2026-11-26-443, OD-2026-11-26-444, OD-2026-11-26-445, OD-2026-11-26-446, OD-2026-11-26-447, OD-2026-11-26-448, OD-2026-11-26-449, OD-2026-11-26-450, OD-2026-11-26-451, OD-2026-11-26-452, OD-2026-11-26-453, OD-2026-11-26-454, OD-2026-11-26-455, OD-2026-11-26-456, OD-2026-11-26-457, OD-2026-11-26-458, OD-2026-11-26-459
 
 --------------------------------------------------------------------------------
 
@@ -3251,7 +3257,48 @@ a replaying worker derives from `ReadHistory`.
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T044-34 The lifetime of command-value blobs, answering the approval re-reads (correctness 1, 2, 6, 7; architecture 1,
+  4; egm-review 1, 2, 3, 7): the blob pass releases an uncommitted, unheld `COMMAND_VALUE` blob once its lease is no
+  longer the step's current one (an arm of `claim_expired`), so a run's 32 and the tenant's ceiling empty within a lease
+  cycle, not 24 hours; the ownership arm and the commit accept a blob of any earlier, unreleased lease of the run's
+  `~workflow` step, which the server resolves by run, SHA-256 and size, and every failed conditional commit is
+  `COMMAND_VALUE_RELEASED`; held blobs leave the tenant's and namespace's ceilings (bounded at one per open run); the
+  upload path only refuses and records a counting reason with the fenced one-row update, and the expiry pass or the
+  next run transaction applies the failure in chain, run, step order; Architecture decision 0107 states that it refines
+  Architecture decision 0023 decisions 5 and 7 for `COMMAND_VALUE` blobs; the backoff is anchored at the expiry; an
+  alert for runs blocked at the ceiling. The design text of sections 4.1 and 14 is amended through a review of its own.
+  Red tests: `integration_workflow_as_code::completion::a_crashed_lease_twice_with_new_events_does_not_review_the_run`,
+  `...::a_third_lease_uploads_after_the_pass_releases_the_earlier_ones`, `...::a_swept_earlier_blob_answers_command_value_released`,
+  `...::held_blobs_never_block_a_childs_upload`, `...::a_seventeenth_upload_racing_the_expiry_does_not_deadlock`.
+  Refs: Requirement 044-004, Non-functional requirement 044-006
+  Owner-gate: OD-2026-11-26-441
+- [ ] T044-35 Refusal counting in the journal (correctness 3; architecture 2; egm-review 4): only
+  `run_command_value_ceiling` feeds `uncounted_expiries`, `tenant_share` joining the reasons that never count; an
+  expiry after a reason that never counts leaves the streak as it is; `workflow_task.timed_out` carries whether it was
+  counted and the refusal's reason, and the reducer and `verify_run` derive the streak and `next_attempt_at` from it.
+  Red tests: `integration_workflow_as_code::completion::uncounted_expiries_replay_equal_to_the_stored_count`,
+  `...::a_tenant_share_refusal_never_counts`.
+  Refs: Requirement 044-008
+  Owner-gate: OD-2026-11-26-451
+- [ ] T044-36 Carried state against an `active` successor (correctness 4; architecture 3; egm-review 5): the SDK bounds
+  carried state against the current version only; the completion checks it against the resolved successor's
+  `state.maxBytes` and `state.schema` and refuses it as `COMMAND_INVALID` offering a retry, like a successor input
+  outside its `inputSchema`; Requirement 044-019 and Architecture decision 0105 decision 5 say so.
+  Red tests: `integration_workflow_as_code::children::a_carried_state_outside_the_active_successors_schema_is_refused`.
+  Refs: Requirement 044-019
+  Owner-gate: OD-2026-11-26-454
+- [ ] T044-37 The consumption list's inline reserve (correctness 5): the SDK reserves the consumption list's size, known
+  from the history, at the activation's start beside the state's reserve; Architecture decision 0107's limit says so.
+  Red tests (each SDK): `a gated call with a long consumption list throws at the same call live and in replay`.
+  Refs: Requirement 044-014, Non-functional requirement 044-006
+  Owner-gate: OD-2026-11-26-457
+- [ ] T044-38 A verifier session that is no longer live (egm-review 6, 8): the move discards the verdict and creates the
+  item's check again, deferred `REPLAY_PENDING`, without counting, at most three times, then ends `FAILED` with the
+  error code `VERIFIER_SESSION_ENDED`, which `code_moves_total` gains as a verdict label.
+  Red tests: `integration_workflow_as_code::moves::a_re_registered_verifier_session_recreates_the_check`,
+  `...::a_fourth_dead_verifier_session_ends_verifier_session_ended`.
+  Refs: Requirement 044-023
+  Owner-gate: OD-2026-11-26-458
 
 ### Verification Plan
 

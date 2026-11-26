@@ -184,7 +184,7 @@ disagree, see [Where the documents disagree](#where-the-documents-disagree).
 | 041 | Step logs per run | [design doc](designs/041-step-logs.md) | 2 of 32 | Approved | |
 | 042 | Stream operators | [design doc](designs/042-stream-operators.md) | 0 of 53 | Draft | |
 | 043 | Run input validation | [design doc](designs/043-run-input-validation.md) | 24 of 28 | Approved | [run input validation](runbooks/run-input-validation.md) |
-| 044 | Workflow as code | [design doc](designs/044-workflow-as-code.md) | 0 of 32 | Draft | |
+| 044 | Workflow as code | [design doc](designs/044-workflow-as-code.md) | 0 of 37 | Approved | |
 
 Feature numbers are shared by every branch. A number missing here (013, 015) may be in use on another branch; take the
 next one from `python3 scripts/next-feature-id.py`. The [release runbook](runbooks/release.md) applies to every feature, and the

@@ -758,6 +758,23 @@ finding was answered.
 - **D044-226** (2026-11-26, later state) The chain lock run transactions take is `lock_chain_for_run` (`PgRunStore`),
   which reads the chain's columns; `lock_member_chain_sql` reads none.
 
+### The approval (2026-11-26)
+
+- **D044-230** (2026-11-26) Design 044 is Approved on the path of OD-2026-11-25-2, delegate (OD-2026-11-24-4): round
+  11's fixes were re-read once by every reviewer whose findings they answer, one at a time, and each Major fixed; the
+  security reviewer re-read until a pass found no Major; the confirmation reports at 14513c85
+  (`docs/designs/044-workflow-as-code.reviews/2026-11-26/approval/`) hold 19 Majors (correctness 7, architecture 4,
+  egm-review 8, security 0), each settled by a row OD-2026-11-26-441 to OD-2026-11-26-459 and answered by the
+  follow-up Tasks 044-34 to 044-38. The Nits of those reports are left for the build, in the tasks that touch their
+  text. Architecture decisions 0103 to 0109 stay Proposed until their build-evidence conditions are met.
+- **D044-231** (2026-11-26) The later rules the approval re-reads added, recorded here because the earlier decisions
+  are partly superseded: a run holds at most 32 uncommitted command-value blobs (lease 16) and the tenant 1,024, a
+  namespace a quarter; refusals report `semaphore_full`, `tenant_share`, `command_value_ceiling` or
+  `run_command_value_ceiling`, the reason stored in `steps.unavailable_reason`; replay-check items expire 300 s after the
+  claim, extended by reading up to 3,600 s; a move requires equal gated entries and `state.maxBytes`; a child's output is
+  classified by the union of the parent's entry and the child's current version; the verifier's session is matched by
+  id, token hash and namespace; the continue-as-new suggestion fires at 2.5 MiB.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
