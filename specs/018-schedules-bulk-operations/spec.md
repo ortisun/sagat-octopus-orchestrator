@@ -166,7 +166,8 @@ items, and no item transaction holding two run locks.
 1. **Given** a filter, **When** previewed, **Then** the matched count (capped at `maxItems + 1`) and at
    most 20 run ids are returned and nothing changes.
 2. **Given** a job, **When** it runs, **Then** it takes the runs its filter matches that were created at or before its
-   creation, or exactly the runs of its namespace it names by id whatever their recorded creation (D2405), applies
+   creation, or the runs of its namespace it names by id, up to `maxItems`, lowest run id first, whatever their
+   recorded creation (D2405), applies
    the action one run per transaction at the job rate and records `SUCCEEDED`, `SKIPPED` (reason) or
    `FAILED` (error code) per item with progress counters.
 3. **Given** a running job, **When** cancelled, **Then** no further item is applied, applied items stay
@@ -395,11 +396,15 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   creation has finished (`pg_snapshot_xmin` past the horizon recorded at creation), then page by run id
   over the runs of the job's tenant and namespace that the selector matches, in bounded transactions, up to `maxItems`:
   a filter selector matches the runs created at or before the creation instant (`selection_bound_at`), a selector of
-  run ids matches the runs it names with no time bound, since a list of ids is already a closed set (D2405). The
+  run ids matches the runs of the namespace it names, up to `maxItems`, lowest run id first, with no time bound, since a
+  list of ids is already a closed set (D2405). A named run created after the job's creation (a child run, whose id can
+  be known before it exists) is taken or missed depending on whether its id sorts above the selection's cursor when it
+  appears; the job ends either way (D2405). The
   result is evaluated per round and fixed once an item is materialized; a materialized item's filter is
   not re-evaluated. With feature 020 the selector is 020's `RunSelector` (`contracts/list-query.md`:
   creator's rights re-resolved each round, keyset `RunId` (`select_cursor`) bounded by `selection_bound_at`, corrected 2026-11-26
-  from feature 020's readiness review; bounded preview); a query while
+  from feature 020's readiness review; bounded preview; a form of that query that names runs by id should follow D2405 and
+  take them with no time bound); a query while
   020's capability is off is refused `VALIDATION_FAILED`/`QUERY_UNSUPPORTED_OPERATOR`. A selection round
   that fails (a statement over its time limit, a deadlock, an error that comes again) rolls back its own
   work and MUST be recorded durably, so that the count survives a restart and a move of the shard lease;
