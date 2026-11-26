@@ -6,7 +6,8 @@ resolver's words in a response, or a secret.
 ## Where each refusal appears
 
 - **Author lock:** the publication request itself answers `422` with the first reason below (or `503
-  PACKAGE_GATEWAY_UNAVAILABLE`, retryable, when the metadata call fails).
+  PACKAGE_GATEWAY_UNAVAILABLE`, retryable, when the metadata call fails, or `503 SCRIPT_POLICY_BUSY`, retryable, when
+  the policy inputs changed under five evaluations in a row).
 - **Platform resolution:** publication answers `202` with the version `BUILDING`; a refusal later makes the version
   `FAILED` with the reason in its build record, a `script.supply_chain_refused` audit record and an event. Reasons 3 to
   13 appear on this path when the resolved lock breaks them; the gateway's cut and wheel filter mean that a manifest

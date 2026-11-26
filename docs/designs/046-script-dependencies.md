@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
 2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2 (pull request 284). Every other choice,
 including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
-recorded in research.md as Decisions 046-001 to 046-074 with the register's literal marker "delegate (OD-2026-11-24-4)".
+recorded in research.md as Decisions 046-001 to 046-075 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -369,7 +369,7 @@ sequenceDiagram
 A version without a manifest takes feature 005's path unchanged.
 
 **Jobs.** Dependency jobs are rows of `script_dependency_jobs` with the version's namespace, the states of builds
-(`QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`), and the same claim, heartbeat, retry and `not_before`. The `script_jobs`
+(`QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`) plus `CANCELLED`, and the same claim, heartbeat, retry and `not_before`. The `script_jobs`
 quota counts them with builds and test runs (`crates/infra-postgres/src/quotas.rs`). `script_build_jobs` keeps one row per
 version. Every transition is one transaction fenced by the job's lease token; a duplicate completion answers
 `AlreadyDone` and changes nothing, as feature 005 answers today.
@@ -385,7 +385,9 @@ version. Every transition is one transaction fenced by the job's lease token; a 
   version `FAILED`, then fail the version's build job (`FOR UPDATE SKIP LOCKED` on its `QUEUED` row; the build claim
   skips locked rows too) and set its `QUEUED` sibling dependency jobs `CANCELLED` the same way. No transaction waits on a
   sibling's row: a sibling already `RUNNING`, or one a claim held at that moment, finds the version no longer `BUILDING`
-  at its completion or claim and ends `CANCELLED` itself. The unique key of dependency jobs is
+  at its completion or claim and ends `CANCELLED` itself. The claim's sweep of expired leases does the same: when it
+refuses a version because an install's last attempt was lost, it runs these refusal steps too, and it sets every
+expired `RUNNING` job of a version that is no longer `BUILDING` to `CANCELLED`. The unique key of dependency jobs is
   `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`.
 - **The build** waits until every install job of the version succeeded. The build claim, the dependency-job claim and the
   `script_jobs` quota count only `RESOLVE` and `INSTALL` jobs and build jobs of versions that are `BUILDING` (the quota
@@ -410,7 +412,8 @@ install jobs and the build job directly.
 (resolve completion, an author-lock publication, the finish) takes the snapshot, policy and reservation revisions and the
 earliest waiver expiry the application evaluated against, locks their rows `FOR SHARE` itself, compares, and answers
 `StaleInputs` when any differs or the waiver time has passed; the application then evaluates again and retries, at
-most 5 times in a row before the job fails retryable (`crates/infra-postgres/src/scripts.rs`, `finish_build` and
+most 5 times in a row before the job fails retryable, or, for an author-lock publication, which has no job, before the
+request answers `503 SCRIPT_POLICY_BUSY`, retryable (`crates/infra-postgres/src/scripts.rs`, `finish_build` and
 `finish_build_cached` gain these parameters).
 
 ### 2. The manifest and the lockfile gate
@@ -648,8 +651,9 @@ A layer record is a separate signed statement per (artifact digest, target): `sa
 digest ‖ target ‖ layer digest ‖ unpacker`, Ed25519 with the script signing key, kept in `script_layer_records`, which is
 the one place per-target digests live once a version is `READY`. Because records are separate from the bundle, a
 deployment that adds a target later runs a backfill pass (leased, the platform operator starts it, audited): it inserts
-one install job of the phase `BACKFILL` per (artifact, target) lacking a record, on the earliest `READY` version of that
-artifact; a backfill completion signs and inserts the new record in its own transaction and does not touch the version's
+one install job of the phase `BACKFILL` per (artifact, target) lacking a record and without a queued or running one
+(a failed one is queued again by the next pass), the version being picked at claim among the artifact's `READY`
+versions; a backfill completion signs and inserts the new record in its own transaction and does not touch the version's
 state; a record already present with the same layer digest answers `AlreadyDone`, and one with a different digest fails
 the job with `LAYER_DIGEST_MISMATCH` and an alert (layers are reproducible, so this is a defect to explain); nothing is
 republished.
@@ -662,7 +666,9 @@ The finishing transaction of a bundle version 5, on the new-build path and on th
 2. compares them, and the earliest waiver expiry, with what the application passed (it evaluated on the stored
    metadata, no network, just before the call); on any difference, or a waiver expiry passed, it answers `StaleInputs`
    and changes nothing, and the application evaluates again and calls again; after 5 such answers in a row the build
-   job fails retryable and the next claim starts over; a changed verdict refuses the version;
+   job fails retryable and the next claim starts over; when they match, it writes the evaluation it was given (findings
+   and report) and those revisions to `script_version_dependencies`, so a `READY` version carries the verdict it was
+   admitted under; a changed verdict refuses the version;
 3. writes the SBOM to `script_version_sboms` (CycloneDX 1.5, at most 4 MiB);
 4. writes, for a new build, the provenance to `script_build_provenance` (this design's migration creates the table with
    feature 023's columns; its envelope names the lock and SBOM digests and marks the runner-reported fields, so it stays
@@ -991,7 +997,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `resolve_again_makes_a_new_version`, `an_author_lock_is_validated_synchronously`,
   `a_refused_install_and_a_sibling_completion_do_not_deadlock` (a barrier),
   `a_refused_install_releases_the_quota_count` (asserting the count), `a_queued_sibling_of_a_refused_version_is_cancelled`,
-  `a_backfill_of_a_shared_artifact_records_once`,
+  `a_backfill_of_a_shared_artifact_records_once`, `a_failed_backfill_is_retried_by_the_next_pass`,
+  `a_lost_last_install_attempt_fails_the_build_job`,
   `a_target_added_later_gets_records_without_republishing`, `a_refused_install_stops_the_build_job_and_the_quota`,
   `a_duplicate_completion_changes_nothing`, `an_undeclared_import_fails_at_import_time_and_changes_nothing`.
   Refs: Requirement 046-002, Requirement 046-003, Requirement 046-008
