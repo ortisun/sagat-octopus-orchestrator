@@ -445,7 +445,7 @@ adapter-only hint for the candidate query, written from the definition, and the 
 host features (`StepTimeouts::required_host_features()`) against the session's.
 
 **Two migrations** in `crates/infra-postgres/migrations/`, named to sort after feature 022's (`20270210…`) and Architecture decision
-0098's (`20270208…`), and built by the checklist of `.claude/skills/migration`. The first adds the six columns of `steps` and the
+0098's (`20270208…`), and built by the checklist of `.claude/skills/migration`. The first adds the seven columns of `steps` and the
 level of `workflow_versions`, the `CHECK` constraints `NOT VALID`, the two capabilities to the registry's three closed lists (replacing
 `serving_instances_capabilities_known`, `platform_requirements_capability_known` and
 `platform_requirement_history_capability_known`, as design 043's migration did), the hold function and the replay-floor rule (Technical Plan 13), the partial index on the level, and the two
@@ -787,9 +787,11 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
   $$;
   ```
 
-  The first of Task 044-6, Task 045-6 and Task 054-18 to merge creates it; the others compare and fail on a difference. Every
-  publication calls it through one shared store helper that sets `lock_timeout` to 1 s for its transaction, so no feature can forget
-  it. Because the parameter is generic, the runtime role can hold any requirement's row `FOR SHARE` for the length of one
+  Task 054-18, a prerequisite pull request, is planned to create it; whichever of Tasks 044-6, 045-6 and 054-18 merges first creates
+  it if it is absent, and the others compare and fail on a difference. Every
+  publication calls it through one shared store helper that sets `lock_timeout` to 1 s just before the hold and restores it after
+  (as the step-log migration `20270210000000` does), so no feature can forget it and no earlier statement of the publication is
+  limited by it. Because the parameter is generic, the runtime role can hold any requirement's row `FOR SHARE` for the length of one
   transaction, which delays an operator's removal of that requirement by at most that transaction (the removal's own `lock_timeout`
   then refuses it, and the operator retries); `docs/architecture/security-and-sandbox.md` records this power (Task 045-1).
 - **The floor for a rollback.** A rule of Architecture decision 0098's replay-floor trigger on `platform_requirements` (with its check
@@ -827,9 +829,13 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 
 Each rule below is stated once, here.
 
-- **The server's bound on renewals.** A renewal of a lease of a level-1 or level-2 node within 500 ms of its previous renewal (the
-  lease's expiry less its time-to-live) is refused `RESOURCE_EXHAUSTED` with the reason `HEARTBEAT_TOO_FREQUENT` and a retry hint, in
-  the renewal's own statement; a lease of a level-0 node is renewed as today. Tested by Task 045-16.
+- **The server's bound on renewals.** A seventh column, `steps.lease_renewed_at` (`timestamptz NULL`), is written by a renewal of a
+  lease of a level-1 or level-2 node (not by the claim, so an attempt's first beat, sent as its handler starts, is never refused). A
+  later renewal that arrives within 500 ms of it is refused `RESOURCE_EXHAUSTED` with the reason `HEARTBEAT_TOO_FREQUENT` and a retry
+  hint, in the renewal's own statement, so the bound holds when the expiry is capped by the attempt deadline; an SDK host honours the
+  hint (`sdks/SPEC.md` §6.4) and a refused beat delivers no `cancel_requested`, which the next accepted beat does. The bound limits
+  writes, not requests: a refused beat still costs its one statement. A lease of a level-0 node is renewed as today. Tested by Task
+  045-16, with a case whose expiry is capped.
 - **Design 044's workflow-task step** (`WORKFLOW_TASK`) is not a leased step of this design: it gets no deadline, the lost-lease
   pass records no `deadline` cause for it, `step_deadlines` never reads it, and the static check does not cover it; a named test
   asserts it (Gap 044-020).
@@ -843,8 +849,8 @@ Each rule below is stated once, here.
 - **Reserved codes** are the codes decided before row 3 or reported only by the platform: every code the domain builds with `FailureCode::system` (the seven outcome-unknown codes, `CANCELLED`,
   `TASK_NOT_STARTED`, `SECRET_IN_OUTPUT`, `WORKER_ERROR`, `WAIT_TIMED_OUT`, `EXPRESSION_ERROR`, `RUN_DATA_LIMIT`, `BLOB_UNAVAILABLE`,
   `BLOB_CORRUPT`, `COMPENSATION_FAILED`, `MARKED_FOR_REVIEW`, the `CHILD_*` codes, feature 022's wait timeouts and the two schedule
-  timeouts among them); the reserved set is built from that one list, and a domain test lists every system code and asserts each is
-  reserved. One fixture of every
+  timeouts among them); the domain gains one `const SYSTEM_CODES` list, `FailureCode::system` checks membership in it, a test asserts
+  every `Self::system` literal of `crates/domain/src/execution/event.rs` is in it, and the reserved set is built from it. One fixture of every
   refusal and its reason, `tests/contract/sdk-conformance/fixtures/activity-timeouts-refusals.json`, is read by the domain tests, the six SDKs and the Studio.
 - **The overlay** is the domain's (`RetryRules`), not `retry_at`'s, which would default an absent `strategy` to exponential; `RetryRules`
   replaces the `RetryPolicy` fields of `NodeKind::Activity` and of the effect policy, and `Node::retry_rules()` returns it by reference.
@@ -869,7 +875,7 @@ Each rule below is stated once, here.
 | Once a version uses these fields, rollback below this release is refused | Stated in the release notes and the runbook; the operator records the requirement only when the fleet is upgraded and a rollback is no longer planned |
 | Security: a worker asks for a short delay to retry faster than the author's policy allows | The delay is the longer of the worker's and the policy's, and the journal says it came from the worker |
 | Security: a worker reports a platform timeout code to claim that nothing ran | The server records it as `WORKER_ERROR`; timeouts are counted where the platform decides them |
-| Security: one tenant floods deadlines or short heartbeats | The pass is fair across tenants with its own window; the server refuses a renewal of a lease of a level-1 or level-2 node that arrives less than 500 ms after its previous renewal (`RESOURCE_EXHAUSTED`, reason `HEARTBEAT_TOO_FREQUENT`, with a retry hint), so the server carries at most two beats per second per such lease whatever the host does; an SDK host at the minimum heartbeat timeout beats every 6,000 ms; an older host is never given a timeout below 30 s |
+| Security: one tenant floods deadlines or short heartbeats | The pass is fair across tenants with its own window; the server refuses a renewal of a lease of a level-1 or level-2 node that arrives less than 500 ms after its previous renewal (`RESOURCE_EXHAUSTED`, reason `HEARTBEAT_TOO_FREQUENT`, with a retry hint), so the server writes at most two renewals per second per such lease whatever the host sends; an SDK host at the minimum heartbeat timeout beats every 6,000 ms; an older host is never given a timeout below 30 s |
 | Security: a requirement is removed while a publication that needs it commits, or publications starve the operator | The publication reads the requirement's row `FOR SHARE` inside its own transaction until it commits; only a publication that needs the requirement holds it, and a removal is refused while a version of its level exists |
 | A host clock far from the database's distorts an older host's interval | An older host is served only nodes whose time-to-live is at least today's 30 s |
 | The deadline pass falls behind under load | Its lag is a histogram with an alert in the runbook, and its criterion includes a one-tenant flood |
@@ -892,7 +898,7 @@ Each rule below is stated once, here.
 
 | Addition | Why it is needed | Simpler alternative rejected |
 |---|---|---|
-| Six columns and two indexes on `steps`, one column on `workflow_versions` | A deadline must be a durable fact the claim and a pass can read on the database clock; the cutoff and the window keep the claim's hint, the pass and the pause exact without reading the definition; the version's level makes old documents safe and the rollback floor cheap | Timer rows per deadline: one more row and statement per attempt on the hot path; computing the floor in SQL: it depends on the node |
+| Seven columns and two indexes on `steps`, one column on `workflow_versions` | A deadline must be a durable fact the claim and a pass can read on the database clock; the cutoff and the window keep the claim's hint, the pass and the pause exact without reading the definition; the version's level makes old documents safe and the rollback floor cheap | Timer rows per deadline: one more row and statement per attempt on the hot path; computing the floor in SQL: it depends on the node |
 | `min_protocol_minor` on `steps` and in the candidate query | A step that needs 1.9 must never reach an older host, and such rows must not fill an older host's candidate window | Refuse to publish until every host is at 1.9: the server cannot know the hosts |
 | `byErrorCode` beside `nonRetryableErrorCodes` | The owner's brief asks for a retry policy per error type; a rate limit and a bug need different patience, and a worker's delay cannot give a rate limit more attempts than a bug | Only the list: forces an author to choose between giving up and retrying a provider faster than it accepts |
 | `heartbeat_timeout_ms` on the lease although an older host derives its interval from the expiry | The expiry is an instant on the database's clock; a duration lets a host beat in time whatever its clock says, as protocol 1.8 chose for its own fields | The instant alone: a host whose clock is off by more than the window beats too late |
