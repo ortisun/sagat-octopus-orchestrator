@@ -1072,3 +1072,51 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
   verified by their integrity and provenance. Every advisory known for esbuild concerns its development server
   (fixed in 0.25.0), which the bundler does not start. The gap closes with this review; the CI step
   `TypeScript workflows bundler` runs `npm audit signatures` on each change.
+- **D044-315** (2026-11-26) The independent security review of pull request 290 (2 Major, 5 Minor, Nits, and one
+  suspected Major) is fixed, every finding first seen failing by a test of
+  `sdks/typescript/test/workflows/isolation.test.ts`; none is settled without a fix (OD-2026-11-24-4 does not reach a
+  security finding):
+  - Suspected, confirmed (Major): a dynamic `import()` in workflow code was refused by Node with an error of the host's
+    realm, from which the host's `Function`, and with it `process`, was reachable (the test read `object`). The workflow
+    thread now starts with `--experimental-vm-modules`, every script of a context is compiled with an import callback
+    that throws a primitive string, and a context refuses to exist where that callback cannot be given; the bundler
+    compiles `import()` into esbuild's `require` shim, which fails inside the context at the same point live and in
+    replay (Node's loader would settle it outside the activation).
+  - Major: workflow code could turn the bridge's input property into a setter that the host would run outside any
+    deadline. Both properties the host writes are made non-configurable data properties before the bundle runs, and
+    every request to the workflow thread has a watchdog (120,000 ms by default, the longest lease of a workflow task)
+    that ends the thread rather than hang.
+  - Major: a failure on the host after an activation left a half-run context reusable. The host side of an activation
+    no longer throws: a bridge failure or an answer it refuses fails the workflow task `NONDETERMINISM_RISK` and drops
+    the run, a failure while committing drops the run, a failed request marks a threaded run broken, and the depth of a
+    declared or carried state is checked at the call against the body that carries it.
+  - Minor: free text of workflow code crossed back in host errors. Host errors carry an error's name, checked against
+    the exception-type pattern by the host, never its message; the thread relays only the SDK's own texts.
+  - Minor: the host trusted the failure fields the context returned. Every field (cause, command number, kinds,
+    targets, exception type, inconclusive point, log lines) is checked, and one outside its pattern is dropped.
+  - Minor: values were checked at the call and serialized later. Each value is taken at the call as its canonical text
+    parsed again, the whole body is taken as the host will hash it, and the host checks the bounds again (commands,
+    metadata, the state's and a side effect's sizes, what one completion can carry), deciding which values stay inline
+    from the kinds and the gated entries rather than from the context's flags.
+  - Minor: one run's memory could end the worker's process. The thread has a heap bound (1,024 MiB by default), no
+    environment variable, and answers longer than 8 MiB are refused; a thread that ends fails only its own runs
+    (`WorkflowThreadExited`).
+  - Minor: the real clock was reachable through `Intl.DateTimeFormat.prototype.format()` without a date and through
+    `Temporal.Now` (Node 26 has `Temporal`). Both answer the workflow time, in UTC.
+  - Nit, settled otherwise: the reviewer proposed telling Node's timeout from a forged one by `instanceof Error`, but Node
+    makes that error in the context's realm (measured), so a deadline is judged by the clock: an evaluation that ends
+    before its allowance is never a deadline, whatever it threw.
+  - Nits: `WebAssembly` is removed (its shared memory handed out a `SharedArrayBuffer`); the bridge's version is read
+    as a number only.
+  - Suspected, confirmed: stack traces made inside the context held the host's frames with their absolute paths. The
+    context formats stack traces with the bundle's frames only, and every bundle is compiled under the fixed name
+    `workflow-bundle.js`.
+- **G044-304** (2026-11-26) The heap bound of the workflow thread does not bound the backing stores of `ArrayBuffer`s,
+  which live outside the V8 heap: a run that keeps allocating them can exhaust the worker's process. The code is the
+  tenant's own, in the tenant's worker (Gap 044-008); Task 044-25 measures a cached run's memory, and the worker's
+  memory alert is the operator's guard.
+- **G044-302** (2026-11-26, later state) A replay through the workflow thread cost 56 to 78 µs per visible event on the
+  development machine (Node 26.13.1, a loop of 2,000 and 4,000 activities, 8,004 and 16,004 visible events, cold
+  replay with every event's evaluation under a deadline); within the 97.65625 µs of Non-functional requirement 044-001
+  but without much room. Task 044-25 measures it on the reference host; the first lever is fewer timed evaluations per
+  activation.

@@ -18,7 +18,9 @@ exported histories and the test environment. [context.ts:WorkflowContext] [run.t
 - A context is created with `vm.constants.DONT_CONTEXTIFY`, `microtaskMode: 'afterEvaluate'` and no code generation from strings or WebAssembly; no host object is placed in it: one number before the bundle, one primitive string per call, one primitive string back. [sandbox.ts:WorkflowSandbox]
 - Inside, `Date` and `Date.now` give the time of the activation's last `workflow_task.started`; `Math.random`, `random`, `randomInt` and `uuid` draw from xoshiro256** seeded by the run; timers are durable timer commands; the locale is `en-US` and the default time zone UTC; `WeakRef`, `FinalizationRegistry`, `SharedArrayBuffer` and `Atomics` are removed. A module-level read of the clock or the generator is refused. [context.ts:installGlobals]
 - Each event of the window is applied in its own evaluation, so the context's microtasks drain completely between two events; an activation run that does not yield within its deadline (2 s by default, at least 100 ms) fails `ACTIVATION_DEADLINE` and its context is dropped. [run.ts:CodeRun]
-- Contexts live on a worker thread started with no inherited command-line options, which ignores the unhandled rejections of workflow code. [thread.ts] [threaded.ts:WorkflowThread]
+- Contexts live on a worker thread started with `--experimental-vm-modules` only (no inherited option), no environment and a heap bound; it ignores the unhandled rejections of workflow code, and each request has a watchdog that ends the thread rather than hang. [thread.ts] [threaded.ts:WorkflowThread]
+- A dynamic `import()` gets a primitive string, never an error of the host's realm; the two properties the host writes are non-configurable data properties; a host error carries a checked error name, never a message of the context; stack traces show the bundle's frames only. [sandbox.ts:WorkflowSandbox] [context.ts:installStackTraces]
+- Every value is taken at its call as canonical text; the host checks every field of the context's answer and the bounds again, and fails the workflow task `NONDETERMINISM_RISK` on an answer it refuses. [context.ts:snapshot] [run.ts:checkResult] [run.ts:prepareChecked]
 - A replay compares each command's kind and target with the record of its number, and a deferred terminal command with its deferral; a difference fails `NONDETERMINISM` with the command number and the actual kind and target, or answers `INCONCLUSIVE_REDACTED` once a withheld value was given. [context.ts:Run.issue]
 - An activation's commands come in the order of `research.md` Decision 044-305; bodies follow the corpus table of Decision 044-232; the bounds of Requirement 044-012 and Non-functional requirement 044-006 throw `CommandBatchLimitExceeded` or `InlineValuesExceeded` at the same call live and in replay. [context.ts:Run.finishActivation] [context.ts:Run.admitInlineValue]
 - Loading the host entry point checks Node 22.8 or later; registering workflow types needs the process time zone UTC. [preconditions.ts:checkWorkflowRuntime]
@@ -35,4 +37,4 @@ Run from the repository root:
 cd sdks/typescript && npm ci --ignore-scripts && npm test
 ```
 
-The workflow tests run with `TZ=UTC` (`dist/test/workflows/*.test.js`).
+The workflow tests run with `TZ=UTC` and `--experimental-vm-modules` (`dist/test/workflows/*.test.js`).
