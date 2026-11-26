@@ -1,8 +1,14 @@
 # Hot-path dispatch: a bounded and spread poll, wake on commit, and a throughput gate
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-26
+*   **Reviewed-commit:** d770bb0c159f12d11e62f45cc4f327cb95a920df
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/052-hot-path-dispatch.reviews/2026-11-26/approval-egm-review.md sha256:b5c4772f1c51c6b603dccec708e559f81bfca97625768f3888fb387f0c2b37ae; docs/designs/052-hot-path-dispatch.reviews/2026-11-26/approval-architecture.md sha256:e67dc81db30d46bef9b611ee87f4262279fc6855a776d0a7c05dcabe85b255c3; docs/designs/052-hot-path-dispatch.reviews/2026-11-26/approval-security.md sha256:b5e104a162717b1ca9502a9cb8a5d7bf1db97621565bdfa447bde4f825da4b7d; docs/designs/052-hot-path-dispatch.reviews/2026-11-26/approval-correctness.md sha256:98e00f3f5af125ff44efcee194cddcd2d44703472e39e9bbabca5a6a86632abc
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 3; OD-2026-11-24-527, OD-2026-11-24-528, OD-2026-11-24-529
 
 --------------------------------------------------------------------------------
 
@@ -458,7 +464,8 @@ subject it cannot parse).
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T052-13 Settle the findings left open at the approval (Owner decisions 2026-11-24-527 to 2026-11-24-529), each test first, with Tasks 052-2 to 052-8: (a) the wake's payload is exactly 16 bytes, any other length malformed, dropped and counted, as Requirement 052-054 says, and the Technical Plan's Compatibility paragraph says the same (a later payload takes a new subject version), with `a_long_wake_payload_is_dropped_as_malformed`; (b) a run failure or a timeout of the merge base's scenario against the head fails the gate; only a compile failure is "not comparable", after the head's scenario has been tried on both builds, and then passes only with a reviewer's acknowledgement recorded on the pull request, the residual risk the release benchmark's, with a `scripts/tests/` case where the head's run times out; (c) the spread keeps processes apart while each asks for at most `len / n` and reduces their overlap up to `len`; (d) statements per lease are measured as a `pg_stat_statements` delta over the benchmark run divided by its leases (Task 052-9), beside `worker_poll_statements_total` and the claim transactions' statements; (e) a permit is handed only to a parked stream not already handed one, and the check before the park and the marking as parked are one critical section under the registry's mutex, with a barrier between them; (f) the check-before-park barrier test is also in `integration_claim_transition_efficiency`; (g) a parked stream registers a `std::task::Waker` (or a waiter port `api-grpc` implements), which the registry calls under its mutex, ADR-0092's check unchanged; (h) the Constitution Check's Delivery Constraints row also names the chart checker's step; (i) unit tests in `crates/infra-nats` of the subject's parse, the payload rule, a process's own message and the per-key rate limit, named in ADR-0134's Enforced by; (j) the cross-instance test runs against a broker of the test support that refuses anonymous connections and carries the wake user; the development profile (`environment: dev`) skips the anonymous-connection check; in the chart, the wake is `wake.enabled`, its credentials the secret `nats.wakeCredentialsSecret` mounted as `SAGAT_NATS_WAKE_CREDENTIALS_FILE`, the broker's users the runbook's; (k) `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` commits between the empty claim and the park, and `a_commit_after_the_scan_before_the_claim_commits_wakes_the_stream` at Requirement 052-051's moment; (l) Requirement 052-054's "the chart's contract test" reads `scripts/check-chart-wake.py`, and Task 052-5 creates `integration_hot_path_wake`, which Task 052-6 extends; (m) CUJ 1 reads "fetches its window again from its turn's position without the runs it probed" and "the contended map"; (n) an error neither counts towards nor resets the run of 8; (o) ADR-0134's Enforced by lists `a_permit_added_while_a_stream_is_parked_is_handed_to_it` under Task 052-5.
+  Refs: Requirement 052-030, Requirement 052-041, Requirement 052-042, Requirement 052-051, Requirement 052-054, Success criterion 052-005
 
 ### Verification Plan
 
