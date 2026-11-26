@@ -389,11 +389,16 @@ pub enum Permission {
     /// Apply one action to many runs. Needs the permissions of the single action as well; a batch
     /// multiplies the blast radius of an action by up to 100,000 (`O1002`).
     RunBatch,
+    /// Read the lines a run's steps logged (feature 041, FR-041-013); every read also needs the
+    /// namespace's PII reveal grant.
+    RunLogsRead,
+    /// Delete a run's step logs, for an incident (feature 041, FR-041-023).
+    RunLogsDelete,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 55] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -447,6 +452,8 @@ impl Permission {
         Self::ScheduleWrite,
         Self::ScheduleOperate,
         Self::RunBatch,
+        Self::RunLogsRead,
+        Self::RunLogsDelete,
     ];
 
     #[must_use]
@@ -505,6 +512,8 @@ impl Permission {
             Self::ScheduleWrite => "schedule:write",
             Self::ScheduleOperate => "schedule:operate",
             Self::RunBatch => "run:batch",
+            Self::RunLogsRead => "run:logs:read",
+            Self::RunLogsDelete => "run:logs:delete",
         }
     }
 }
@@ -587,6 +596,8 @@ impl Role {
         Permission::ScheduleWrite,
         Permission::ScheduleOperate,
         Permission::RunBatch,
+        Permission::RunLogsRead,
+        Permission::RunLogsDelete,
     ];
 
     #[must_use]
@@ -609,10 +620,10 @@ impl Role {
             ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
             DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
             EventRead, NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead,
-            RunBatch, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
-            RunUpdate, ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute,
-            ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
-            WorkerExecute, WorkerManage, WorkspaceRead,
+            RunBatch, RunLogsRead, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal,
+            RunStart, RunUpdate, ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild,
+            ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
+            VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
             Self::Admin => Self::ADMIN_PERMISSIONS,
@@ -646,6 +657,7 @@ impl Role {
                 ScheduleRead,
                 ScheduleWrite,
                 ScheduleOperate,
+                RunLogsRead,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -672,6 +684,7 @@ impl Role {
                 ScheduleRead,
                 ScheduleOperate,
                 RunBatch,
+                RunLogsRead,
             ],
             Self::Viewer => &[
                 WorkspaceRead,

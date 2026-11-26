@@ -689,7 +689,8 @@ All evidence below is required future evidence; none exists.
 Namespace-defined resource types (refused: Owner question 1122, decided 2026-11-24; curated hub type
 versions are design 047's, see below); SES/SNS, SendGrid, Postmark (Gap 1127); an SMTP server; MIME
 parsing; provider-specific route signatures (GitHub, Stripe, Shopify); synchronous routes (026);
-standalone operations (022); database engines (024); operations inside bodies (G1120);
+standalone operations (022); database engines (024); operations inside bodies (G1120); an open marketplace (since constitution 5.0.0
+the curated hub is feature 028's and design 047's);
 cross-resource distributed transactions.
 
 Owned by design 047 (`docs/designs/047-oauth-integration-hub.md`), not by this feature (revised

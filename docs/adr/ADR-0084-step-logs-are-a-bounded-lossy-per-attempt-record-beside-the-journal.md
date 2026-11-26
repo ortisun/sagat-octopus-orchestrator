@@ -1,6 +1,6 @@
 # ADR-0084: Step logs are a bounded, lossy, per-attempt record beside the journal
 
-**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo"); revised the same day after review, before any code (see Revision)
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo"); revised the same day after review, before any code (see Revision); partly superseded by [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md) and [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md) (both accepted 2026-11-20, OD-2026-11-20-15; see the Notes of 2026-11-19 and 2026-11-20)
 **Decided by:** owner, on the agent's proposal (OD-2026-11-13-17, accepting the text of commit 35b752b3). The owner chose the feature
 (OD-2026-11-13-9) and, among the options of the design, the store (O041-004), the ceilings (O041-005), the retention (O041-006), what
 is kept at a ceiling (O041-007) and the tail route (O041-008) (OD-2026-11-13-14). The revision of 2026-11-13 is the agent's, answering
@@ -226,6 +226,40 @@ the namespace secrets lock no longer applies to an ingest. In decision 9, "and t
 scan ended because no row below the horizon was left in the index range it reads, neither the page limit nor the scan
 bound having stopped it, whether or not a filter matched" (design 041, D041-084): a filtered read can otherwise declare
 the log complete before it has scanned to the end.
+
+Note (2026-11-18, OD-2026-11-16-11): the owner answered O041-025 with (a), "Sim, como os reports" ("yes, as the
+reports"). Decision 5's "a run neither finished nor stopping" reads: a batch is accepted when a report of its attempt
+would be, short of the run lock: the step is not cancel-requested, the run is not finished, and the run is not stopping
+unless the node is a compensation or reconciliation node. One domain function, `report_fence_allows`
+(`crates/domain/src/execution/state.rs`), states that rule, and both `attempt_authority_fence` and the ingest's lease
+read call it. Decision 11's order starts, for every writer of step logs, with the shared policy fences of the
+namespace's step-log resources (tenant then namespace), before the stream row, as ADR-0027 asks of every authoritative
+limit read; then the stream row, then at commit the fences of the charged classes and the tenant usage row.
+
+Note (2026-11-19, design 041 T041-31): the spike before the schema ran
+(`specs/041-step-logs/validation-report.md`). Workload (a) failed SC-041-007 at both rows, so the condition of this
+ADR's "Enforced by" fired: the feature stops for a design change and a new review, asked as O041-036 of
+`specs/041-step-logs/research.md`. The completion's wait on the tenant usage row was small on average; whether it
+explains the tail is not settled by that run.
+
+Note (2026-11-19, OD-2026-11-19-1): the owner answered O041-036 with (d), "Redesenhar (CompleteStep)". The text above is
+unchanged. [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md), Proposed, would supersede
+decisions 2, 6 and 11 and the session clause of decision 5 for a carry (an attempt's last records ride on its report,
+at most five or six statements in the report's transaction) and refine decisions 3, 7 and 9, once the owner accepts it (O041-038)
+after design 041's spike T041-35.
+
+Note (2026-11-20, design 041's D041-108 and D041-112): [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md),
+Proposed, would supersede, for an ingest, the clause of the Revision's decision 3 that a batch "MUST NOT take the tenant's
+`tenant_retained_usage` row before its commit" and is refused "by the commit-time finalizer's raise", and the ingest's
+reading of decision 11: a batch's rows are charged at its insert to its writer's own step-log quota lease (after the
+quota class fences, shared), the usage row is taken only by a refill under the ingest's lock timeout, and a refusal raises
+at the insert and is answered `RETRY_LATER` as before. Nothing above changes until ADR-0097 is accepted; on acceptance this
+ADR is marked "partly superseded by ADR-0097".
+
+Note (2026-11-20, OD-2026-11-20-15): the owner accepted ADR-0095 and ADR-0097 ("Accept both"). The two Notes above now
+apply: decisions 2, 6 and 11 and the session clause of decision 5 for a carry are superseded by ADR-0095, which refines
+decisions 3, 7 and 9; the clauses of decision 3 and the reading of decision 11 named in the Note of 2026-11-20 and the
+delay clause of decision 7 are superseded by ADR-0097.
 
 ## Evidence
 

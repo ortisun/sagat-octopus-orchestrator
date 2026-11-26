@@ -362,7 +362,10 @@ Original text of the questions (2026-10-26):
   protected namespaces; alternative: admin only, like `database:write`. Default assumed: yes.
 - **O1122 — Should namespaces define custom resource types in this feature?** Recommended: no;
   platform-provided types only, revisited with 028's curated template hub (the constitution excludes
-  a connector marketplace in V1). Default assumed: no.
+  a connector marketplace in V1). Default assumed: no. *Note (2026-11-24):* constitution 5.0.0 admits a
+  curated hub (021, 028, design 047) and excludes only an open marketplace; a resource type taken from
+  the hub would be a draft from a signed or operator-pinned source and carry no code the server
+  executes. Whether namespaces may define types is still this question, now design 047's to revisit.
 - **O1123 — Accept the placement rule of ADR-0055 decision 11 for every parity draft?** (a)
   tenant-authored requests only in managed executors; (b) non-database fixed-shape deliveries to
   tenant destinations may be sent by the engine through the guarded client, holding only that

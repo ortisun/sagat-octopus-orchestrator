@@ -235,7 +235,12 @@ pub async fn schedule_trigger_handover(
             ));
         }
     };
-    let pool = open_pool(db, db.statement_timeout).await?;
+    let pool = open_pool(
+        db,
+        db.statement_timeout,
+        sagat_infra_postgres::PoolName::Process("handover"),
+    )
+    .await?;
     let result = run(&pool, request, operator.as_ref()).await;
     pool.close().await;
     result

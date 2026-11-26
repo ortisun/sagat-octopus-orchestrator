@@ -226,6 +226,19 @@ async fn on_a_clean_schema_the_rollback_restores_the_checks_and_the_trigger_and_
     .await
     .expect("an old-style entry");
 
+    // What the newest schema holds, for the `up` that applies everything again at the end.
+    let newest = (
+        quota_checks(&f).await,
+        definition(&f, FAILURE_CHECK).await,
+        definition(&f, GUARD).await,
+    );
+    // The lists the rollback is judged against are read at this migration's own schema, not at the newest one: a later
+    // migration that adds a name (the step-log quotas of 041, the limits of 022) is undone by the rollback too, so
+    // reading them at the newest schema would expect that name back. Undoing to THIS first makes the expectation exactly
+    // what this migration added, whatever comes after it.
+    undo_to(&f.w.db, THIS)
+        .await
+        .expect("the rollback of the later migrations");
     let (checks, failure, guard) = (
         quota_checks(&f).await,
         definition(&f, FAILURE_CHECK).await,
@@ -331,9 +344,9 @@ async fn on_a_clean_schema_the_rollback_restores_the_checks_and_the_trigger_and_
 
     // the up applies again, to a register that has entries, and gives back what the first time gave
     migrate(&f.w.db.pool).await.expect("forward again");
-    assert_eq!(quota_checks(&f).await, checks);
-    assert_eq!(definition(&f, FAILURE_CHECK).await, failure);
-    assert_eq!(definition(&f, GUARD).await, guard);
+    assert_eq!(quota_checks(&f).await, newest.0);
+    assert_eq!(definition(&f, FAILURE_CHECK).await, newest.1);
+    assert_eq!(definition(&f, GUARD).await, newest.2);
     let column: bool = sqlx::query_scalar(HAS_COLUMN)
         .fetch_one(&f.w.db.pool)
         .await
