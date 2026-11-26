@@ -123,3 +123,89 @@ impl std::fmt::Debug for pb::step_log_field::Value {
         f.write_str("StepLogField::Value(<redacted>)")
     }
 }
+
+// Every message with a field whose name ends in `_token` (a lease token or a session token, the bearer authority of a worker)
+// skips the generated `Debug` and prints counts and fences only (delivery acknowledgement, Task 006-043; `stream-completion.md`,
+// "Wire"): no token, no identity, no payload.
+impl std::fmt::Debug for pb::RegisterWorkerResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterWorkerResponse")
+            .field("accepted_protocol_version", &self.accepted_protocol_version)
+            .field("step_logs", &self.step_logs.is_some())
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::PollTasksRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollTasksRequest")
+            .field("max_tasks", &self.max_tasks)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::TaskLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskLease")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .field("input_bytes", &self.input_json.len())
+            .field("acknowledge_before_start", &self.acknowledge_before_start)
+            .field("attempt_deadline_epoch_ms", &self.attempt_deadline_epoch_ms)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::HeartbeatRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeartbeatRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::CompleteStepRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteStepRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::FailStepRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailStepRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::ResolveSecretsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolveSecretsRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::WriteBlobHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteBlobHeader")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::ReadBlobRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadBlobRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::TaskAcknowledgement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskAcknowledgement")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}

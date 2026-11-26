@@ -627,6 +627,8 @@ impl<S: Sandbox + 'static> Runner<S> {
                     pools: vec![],
                     max_inflight: i32::try_from(self.config.max_concurrent).unwrap_or(i32::MAX),
                     protocol_version: "1".to_owned(),
+                    // an internal runner keeps its minor and is never marked (ADR-0099 decision 11)
+                    declines_acknowledgement: false,
                 }),
             })
             .await?;

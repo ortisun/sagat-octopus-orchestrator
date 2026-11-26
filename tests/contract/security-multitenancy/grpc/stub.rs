@@ -79,6 +79,12 @@ impl WorkerService for Stub {
     ) -> Result<Response<sagat_api_grpc::pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    async fn acknowledge_tasks(
+        &self,
+        _: Request<sagat_api_grpc::pb::AcknowledgeTasksRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::AcknowledgeTasksResponse>, Status> {
+        Err(Status::unimplemented("AcknowledgeTasks"))
+    }
     async fn resolve_database(
         &self,
         _: Request<ResolveSecretsRequest>,

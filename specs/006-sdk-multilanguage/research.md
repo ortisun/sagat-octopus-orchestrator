@@ -1606,3 +1606,32 @@ one receive call.
   Architecture decision 0099 is not accepted; if the gate fails, the owner chooses between shipping 1.8 as "the code reserved, the flag
   never set", which fixes that meaning of 1.8 for good and moves delivery acknowledgement to a later minor, and releasing it (Decision
   006-057). Asked through the coordinator. **Answered 2026-11-21: "Reserve 1.8 now" (Owner decision 2026-11-21-6).**
+
+### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-119, G006-039 to G006-049)
+
+The server tasks of protocol 1.8, built dormant on `feature/delivery-acknowledgement` in the order of the task list. Each
+decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
+
+- **D006-101 — The contract of 1.8 is published before anything serves it** (Task 006-043). `worker.proto` gains
+  `TaskLease.acknowledge_before_start = 23`, `TaskLease.attempt_deadline_epoch_ms = 24`,
+  `WorkerCapabilities.declines_acknowledgement = 10`, the call `AcknowledgeTasks` with `TaskAcknowledgement`,
+  `AcknowledgeTasksRequest`, `AcknowledgementVerdict` (with `CANCELLED` and `RETRY`), `TaskAcknowledgementResult`
+  (`lease_time_left_ms`, `attempt_time_left_ms`) and `AcknowledgeTasksResponse`, and `TASK_NOT_ACKNOWLEDGED` in the error
+  comment, as `stream-completion.md` ("Wire") gives them. The baseline (`worker.baseline.json`) was regenerated and holds only
+  additions. Every implementation of the generated trait (the server's `WorkerGrpc`, the two test stubs, the two proxies, the
+  database runner's fake and the Rust SDK's test service) answers `UNIMPLEMENTED` until Task 006-049; the server sets the two
+  lease fields to their empty values until Task 006-047, and the database runner, the sandbox runner and the command line
+  register with `declines_acknowledgement = false` and keep their minors (ADR-0099 decision 11). Every message with a field
+  whose name ends in `_token` (eleven: the registration answer, the poll request, the lease, the five fenced reports and
+  capability requests, the blob read request, the step-log batch and the acknowledgement) skips the generated `Debug` in the
+  server, the Rust SDK and its conformance crate, and prints fences and counts only; `crates/api-grpc/tests/token_debug.rs`
+  prints each with a canary token, alone and nested, and fails, from the contract's descriptor, for a message that gains such a
+  field without being covered (the descriptor-driven test of Task 006-052 extends the rule to every lease-token method). The
+  six SDK copies were written by each SDK's own script and are byte-identical to the contract; the Go stubs were regenerated
+  with the pinned plugins (`protoc-gen-go` v1.36.11, `protoc-gen-go-grpc` v1.6.1, `protoc` 36.2, the versions the headers
+  record) and the Python stubs with the pinned `grpcio-tools`; no SDK gained host behaviour. Weighed: one commit per SDK (the
+  copies would differ from the contract between commits, which their byte-equality tests refuse).
+- **G006-039 — Three SDKs' full checks of the contract change ran in CI only.** The byte-equality tests ran locally for Go,
+  Python and .NET and the Rust SDK's whole suite ran; the TypeScript (`npm test`) and Java (`./mvnw -q verify`) suites, and
+  the token canaries of the four SDKs whose host forms come with their own tasks, were left to CI and to Tasks 006-059 to
+  006-064 (the copies were compared byte for byte by hand). Closed by the pull request's CI.

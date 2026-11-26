@@ -100,6 +100,7 @@ async fn complete_old_ready_activity(api: &TestApi, run: RunId) {
                     pools: Vec::new(),
                     max_inflight: 8,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 }),
             },
         ))

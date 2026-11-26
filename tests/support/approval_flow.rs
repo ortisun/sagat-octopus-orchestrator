@@ -205,6 +205,7 @@ impl ApprovalFlow {
                         pools: Vec::new(),
                         max_inflight: 16,
                         protocol_version: "1.5".into(),
+                        declines_acknowledgement: false,
                     }),
                 },
             ))

@@ -19,17 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_RegisterWorker_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
-	WorkerService_PollTasks_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
-	WorkerService_StreamTasks_FullMethodName     = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
-	WorkerService_Heartbeat_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
-	WorkerService_CompleteStep_FullMethodName    = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
-	WorkerService_FailStep_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
-	WorkerService_ResolveSecrets_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets"
-	WorkerService_ResolveDatabase_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase"
-	WorkerService_WriteBlob_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
-	WorkerService_ReadBlob_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
-	WorkerService_AppendStepLogs_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs"
+	WorkerService_RegisterWorker_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
+	WorkerService_PollTasks_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
+	WorkerService_StreamTasks_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
+	WorkerService_Heartbeat_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
+	WorkerService_CompleteStep_FullMethodName     = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
+	WorkerService_FailStep_FullMethodName         = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
+	WorkerService_ResolveSecrets_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets"
+	WorkerService_ResolveDatabase_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase"
+	WorkerService_WriteBlob_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
+	WorkerService_ReadBlob_FullMethodName         = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
+	WorkerService_AppendStepLogs_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs"
+	WorkerService_AcknowledgeTasks_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/AcknowledgeTasks"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -51,6 +52,9 @@ const (
 //	INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
 //	ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
 //	                    cancelled or finished): stop, do not retry the report
+//	FAILED_PRECONDITION x-sagat-error: TASK_NOT_ACKNOWLEDGED  (added in 1.8) a capability call on a
+//	                    lease the host has not acknowledged yet (acknowledge_before_start): acknowledge
+//	                    it first; never run anything for it before the answer ACKNOWLEDGED
 //	                    x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
 //	RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
 //	UNAVAILABLE         storage unavailable; retry with the same idempotency key
@@ -109,6 +113,15 @@ type WorkerServiceClient interface {
 	//	above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
 	//	by admission; UNAVAILABLE the database or the serving gate.
 	AppendStepLogs(ctx context.Context, in *AppendStepLogsRequest, opts ...grpc.CallOption) (*AppendStepLogsResponse, error)
+	// Added in protocol 1.8 (delivery acknowledgement, ADR-0099). The host acknowledges the flagged leases of one frame, or of
+	// one PollTasks answer, before it runs or calls anything else for them. Idempotent: the same lease may be acknowledged
+	// again. One result per task, in request order; the acknowledgement renews nothing.
+	//
+	//	Errors: UNAUTHENTICATED; PERMISSION_DENIED; INVALID_ARGUMENT a malformed request (no task or more than 64, tasks of
+	//	more than one namespace, a repeated task_id, an attempt below 1); RESOURCE_EXHAUSTED (x-sagat-error
+	//	ACKNOWLEDGEMENT_SHED) shed by admission; UNAVAILABLE (x-sagat-error ACKNOWLEDGEMENT_DEADLINE or
+	//	ACKNOWLEDGEMENT_STORE_UNREACHABLE) the call's deadline passed or the database could not be reached: ask again.
+	AcknowledgeTasks(ctx context.Context, in *AcknowledgeTasksRequest, opts ...grpc.CallOption) (*AcknowledgeTasksResponse, error)
 }
 
 type workerServiceClient struct {
@@ -250,6 +263,16 @@ func (c *workerServiceClient) AppendStepLogs(ctx context.Context, in *AppendStep
 	return out, nil
 }
 
+func (c *workerServiceClient) AcknowledgeTasks(ctx context.Context, in *AcknowledgeTasksRequest, opts ...grpc.CallOption) (*AcknowledgeTasksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AcknowledgeTasksResponse)
+	err := c.cc.Invoke(ctx, WorkerService_AcknowledgeTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
@@ -269,6 +292,9 @@ func (c *workerServiceClient) AppendStepLogs(ctx context.Context, in *AppendStep
 //	INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
 //	ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
 //	                    cancelled or finished): stop, do not retry the report
+//	FAILED_PRECONDITION x-sagat-error: TASK_NOT_ACKNOWLEDGED  (added in 1.8) a capability call on a
+//	                    lease the host has not acknowledged yet (acknowledge_before_start): acknowledge
+//	                    it first; never run anything for it before the answer ACKNOWLEDGED
 //	                    x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
 //	RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
 //	UNAVAILABLE         storage unavailable; retry with the same idempotency key
@@ -327,6 +353,15 @@ type WorkerServiceServer interface {
 	//	above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
 	//	by admission; UNAVAILABLE the database or the serving gate.
 	AppendStepLogs(context.Context, *AppendStepLogsRequest) (*AppendStepLogsResponse, error)
+	// Added in protocol 1.8 (delivery acknowledgement, ADR-0099). The host acknowledges the flagged leases of one frame, or of
+	// one PollTasks answer, before it runs or calls anything else for them. Idempotent: the same lease may be acknowledged
+	// again. One result per task, in request order; the acknowledgement renews nothing.
+	//
+	//	Errors: UNAUTHENTICATED; PERMISSION_DENIED; INVALID_ARGUMENT a malformed request (no task or more than 64, tasks of
+	//	more than one namespace, a repeated task_id, an attempt below 1); RESOURCE_EXHAUSTED (x-sagat-error
+	//	ACKNOWLEDGEMENT_SHED) shed by admission; UNAVAILABLE (x-sagat-error ACKNOWLEDGEMENT_DEADLINE or
+	//	ACKNOWLEDGEMENT_STORE_UNREACHABLE) the call's deadline passed or the database could not be reached: ask again.
+	AcknowledgeTasks(context.Context, *AcknowledgeTasksRequest) (*AcknowledgeTasksResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -369,6 +404,9 @@ func (UnimplementedWorkerServiceServer) ReadBlob(*ReadBlobRequest, grpc.ServerSt
 }
 func (UnimplementedWorkerServiceServer) AppendStepLogs(context.Context, *AppendStepLogsRequest) (*AppendStepLogsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AppendStepLogs not implemented")
+}
+func (UnimplementedWorkerServiceServer) AcknowledgeTasks(context.Context, *AcknowledgeTasksRequest) (*AcknowledgeTasksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AcknowledgeTasks not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -564,6 +602,24 @@ func _WorkerService_AppendStepLogs_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_AcknowledgeTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AcknowledgeTasksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).AcknowledgeTasks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_AcknowledgeTasks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).AcknowledgeTasks(ctx, req.(*AcknowledgeTasksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -602,6 +658,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AppendStepLogs",
 			Handler:    _WorkerService_AppendStepLogs_Handler,
+		},
+		{
+			MethodName: "AcknowledgeTasks",
+			Handler:    _WorkerService_AcknowledgeTasks_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

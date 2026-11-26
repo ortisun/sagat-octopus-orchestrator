@@ -1071,6 +1071,13 @@ where
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    // Protocol 1.8 (delivery acknowledgement): served from Task 006-049; until then, as against an older replica.
+    async fn acknowledge_tasks(
+        &self,
+        _: Request<pb::AcknowledgeTasksRequest>,
+    ) -> Result<Response<pb::AcknowledgeTasksResponse>, Status> {
+        Err(Status::unimplemented("AcknowledgeTasks"))
+    }
     async fn resolve_database(
         &self,
         request: Request<pb::ResolveSecretsRequest>,
@@ -1762,6 +1769,9 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
             .unwrap_or_default(),
         instance,
         target_instance,
+        // protocol 1.8: no lease is marked provisional before the claim writes the marks (Task 006-047)
+        acknowledge_before_start: false,
+        attempt_deadline_epoch_ms: 0,
     }
 }
 
