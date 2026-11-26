@@ -66,6 +66,17 @@ writers:   every other credential write is UPDATE ... SET fence = fence + 1, ...
            AND state IN (<the states that transition allows>)
 ```
 
+## Vault references of token revisions
+
+Each revision has one write-once reference on the OAuth mount (KV version 2). Every write to it is a check-and-set write
+with `cas=0`, so it succeeds only where nothing was ever written: the holder's token write, and the tombstone with which
+the adopt step and the sweeper claim an unmarked row's reference before abandoning or closing it (Decision 047-063). A
+tombstone is a fixed payload (`{"sagat_tombstone": true}`) with the custom metadata `sagat-tombstone=true`; a probe reads
+it as claimed, never as a token, so a claim interrupted before its row is marked abandoned is finished by the next probe,
+which abandons the row. Destroying a revision destroys the versions' data and keeps the key's metadata, so the reference
+can never be written again. Tests: `a_claim_interrupted_before_the_abandon_mark_is_finished_by_the_next_probe`,
+`a_destroyed_reference_cannot_be_written_again`.
+
 ## Lock order
 
 The credential row first, always; then its revision rows; then any of feature 021's resource rows. A deletion of resources
