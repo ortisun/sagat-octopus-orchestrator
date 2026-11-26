@@ -788,7 +788,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 |---|---|
 | Connection, mapping rules, owning connection, provisioning policy, session policy, SCIM patch semantics; the OIDC claim rules (`iss`, `aud`, `azp`, `nonce`, the tenant restriction, the subject claim) and the SAML profile's rules over parsed values (pure) | `crates/domain/src/federation.rs`, `crates/domain/src/federation/{oidc,saml}.rs` |
 | The identity egress policy (any name, global addresses only, allowlisted hosts never to loopback, link-local or metadata, port 443 unless listed) | `crates/domain/src/egress.rs`, beside `EgressPolicy`, with unit tests |
-| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (two handles, both asynchronous and obtained before `BEGIN`, returned as the application's trait objects `type MacVerifier = Box<dyn MacVerify + Send + Sync>` and `type MacMinter = Box<dyn MacMint + Send + Sync>`, declared in `crates/application/src/federation/` with the application's own `RefreshKeyId(i64)` and `RefreshMac([u8; 32])`, which the adapter converts to `KeyId` and `Tag`, so `crates/application` names no adapter type: `verifier(key_id) -> Result<MacVerifier, UnknownKey | Unavailable>`, the named key in memory, never refused because the ring is stale, which does the single-flight re-read of an unknown id and is `Unavailable` only when that re-read fails or cannot run, Technical Plan 4; `minter() -> Result<MacMinter, Unavailable>`, the active key, refused when the ring is stale or empty; `MacVerifier::verify(sid, generation, random, mac)` and `MacMinter::mint(sid, generation, random) -> (RefreshKeyId, RefreshMac)` run in memory only, inside the transaction, as `TokenSigner`'s handle does; redemption takes the minter, the refresh grant both, logout the verifier only) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
+| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (two handles, both asynchronous and obtained before `BEGIN`, returned as the application's trait objects `type MacVerifier = Box<dyn MacVerify + Send + Sync>` and `type MacMinter = Box<dyn MacMint + Send + Sync>`, declared in `crates/application/src/federation/` with the application's own `RefreshKeyId(i64)` and `RefreshMac([u8; 32])`, which the adapter converts to `KeyId` and `Tag`, so `crates/application` names no adapter type: `verifier(key_id) -> Result<MacVerifier, UnknownKey | Unavailable>`, the named key in memory, never refused because the ring is stale, which does the single-flight re-read of an unknown id and is `Unavailable` only when that re-read fails or cannot run, Technical Plan 4; `minter() -> Result<MacMinter, Unavailable>`, the active key, refused when the ring is stale or empty; `MacVerifier::verify(sid, generation, random, mac)` and `MacMinter::mint(sid, generation, random) -> (RefreshKeyId, RefreshMac)` run in memory only, inside the transaction, as `TokenSigner`'s handle does; a `cli` redemption takes the minter (a `studio` redemption mints no refresh token and takes none), the refresh grant both, logout the verifier only) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
 | The platform key set's fetcher: maps `FederationStore::signing_keys()` to a `JwkSet` for the verifier's `JwksCache` | `crates/api-http/src/auth/issuers.rs` |
 | `EgressClient` with no redirects under the identity policy; `JwksCache` and its `JwksFetcher` trait, moved here from `crates/api-http/src/auth/jwks.rs` so that `api-http` and `infra-federation` share them without `api-http` depending on the federation crate | `crates/infra-egress` |
 | `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), both reaching the identity mount only through `openbao::identity_mount` (Technical Plan 12), whose paths can never name a ring; the adapters of `RefreshTokenMac` (holding the `IdentityKeyRing<CliRefresh>`) and `AttemptSealer` (holding the attempt ring), which call only the rings' public operations (Technical Plan 12), none of which returns key material | `crates/infra-secrets` |
@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the label
-literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, `read_versioned` or `write_cas`, names a `rings/` path or implements `RingPurpose`, the OpenBao client's private request helpers stay private, `openbao` has no child module but `identity_ring`, `identity_mount` and tests, `openbao.rs` adds no non-private item, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
+literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, `read_versioned` or `write_cas`, names a `rings/` path or implements `RingPurpose`, the OpenBao client's private request helpers stay private, `openbao` has no child module but `identity_ring`, `identity_mount` and tests, `openbao.rs` adds no non-private item beyond the two of Technical Plan 12, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -982,13 +982,15 @@ token; refuses after the absolute expiry.
 purpose key `cli-refresh` derived from the `cli-refresh` ring's key named by `<key id>` (Technical Plan 12), over the
 session id, the generation and a random value kept on the session. The server recomputes the MAC of any generation, so
 it stores no per-generation secret. A successor is always minted under the ring's active key, with the highest
-generation issued plus one; a number is never reused. Every field has one spelling: `<sid>` the lowercase hyphenated
+generation issued plus one; a number is never reused, and generations start at 1 (`CHECK (current_generation >= 1)`
+on `signin_sessions`, `a_redeemed_cli_token_refreshes_at_generation_one`). Every field has one spelling: `<sid>` the lowercase hyphenated
 UUID, `<generation>` and `<key id>` decimal without sign or leading zero (`[1-9][0-9]{0,18}`, at most `i64::MAX`),
 `<mac>` 43 base64url characters without padding and with zero trailing bits. A token longer than 256 bytes, or with any field not in that form, is `invalid_grant` with no effect before any ring or session lookup
 (`a_malformed_refresh_token_is_invalid_grant_before_any_lookup`).
 
 *Before the transaction.* The key id is in the clear in the token, so the use case takes its handles before `BEGIN`:
-redemption the minter, the refresh grant the verifier of the token's key and the minter, logout the verifier only.
+a `cli` redemption the minter (a `studio` redemption takes none, so an empty or stale `cli-refresh` ring never refuses
+Studio sign-in), the refresh grant the verifier of the token's key and the minter, logout the verifier only.
 Key ids are positive integers that `rotate` and `revoke` assign as the highest id ever written plus one, never reused
 (Technical Plan 12), so a replica can tell a dropped key from one it has not loaded yet:
 - an id the replica holds gives the verifier at once, even when the ring is stale, so an OpenBao outage stops no
@@ -1014,7 +1016,10 @@ do not depend on whether the session exists. Inside the transaction the MAC chec
 session row's random value without a lock and verifies the MAC in constant time (`Mac::verify_slice`, inside
 `IdentityKeyRing<CliRefresh>::verify`); only a token
 that verifies takes the row `FOR UPDATE` and checks that the random value has not changed since (if it has, the token
-is `invalid_grant` with no effect), so a forged token never takes the row lock and cannot queue the owner's refresh,
+is `invalid_grant` with no effect); the generation's class (current, grace or reuse) and the grace rows are then read
+from the locked row, so two requests of one token are classified one after the other (the second gets the grace
+successor and retires the first's, `two_simultaneous_refreshes_of_one_token_leave_one_live_successor`, a barrier test
+holding both after the unlocked MAC check), so a forged token never takes the row lock and cannot queue the owner's refresh,
 logout or a `revoke` batch behind it (`a_forged_refresh_token_takes_no_row_lock`); the successor is minted from the
 locked row, so a refresh racing a random-value rotation never
 promotes a token of the old value (`a_refresh_racing_a_random_value_rotation_mints_nothing_old`, a barrier test). The
@@ -1130,8 +1135,8 @@ rolls back and restarts with the exclusive fence (`an_assignment_naming_the_grou
 a barrier test); a connection's disable, activation or raised context takes the
 settings row and the connection row only (its sessions are refused by the per-request check and marked later in
 batches); the refresh grant and logout take the session row and its grace rows only, in slot 4a, and read the other
-rows without locks; a batch of `identity cli-refresh-key revoke` locks its session rows in (tenant, id) order in
-slot 4a. No transaction of this design writes a feature 027 app-session
+rows without locks; a batch of `identity cli-refresh-key revoke` and a batch of the maintenance loop that marks
+sessions revoked both lock their session rows in (tenant, id) order in slot 4a, so they cannot deadlock. No transaction of this design writes a feature 027 app-session
 row (slot 1). A writer that takes the access fence exclusively sets `lock_timeout` to 2 seconds, as feature 029's
 writers do, and answers a timeout as a retryable `503`. In `tests/support/lock_order.rs`, a writer that checks the federation requirement reads
 `Slot::RegistryEpoch` first; the code is `Slot::Receipt`; the settings row and the connection row are the first rows of
@@ -1215,8 +1220,9 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   running only once `identity-federation-v1` is recorded) purges expired attempts, the grace rows of ended CLI sessions, codes (a code row past its 60 seconds has its identity columns cleared and is kept until
   the attempt's own expiry, so its unique attempt id still refuses a second callback), replays and
   ended sessions in
-  bounded batches, marks revoked in bounded batches the sessions of a disabled or deleted connection and those
-  below a context floor (selected by the floor, already refused by the per-request check), clears a floor once its
+  bounded batches, marks revoked in bounded batches (each batch locking its session rows by a subquery `ORDER BY
+  tenant_id, id FOR UPDATE`, the order of `revoke`'s batches, a path in `tests/support/lock_order.rs`) the sessions of
+  a disabled or deleted connection and those below a context floor (selected by the floor, already refused by the per-request check), clears a floor once its
   sessions are marked, runs the recomputation jobs, updates the
   expiry and owner gauges and the gauge `identity_connections_scim_failing` from each connection's `scimFailing`,
   which a connection's health row (`identity_connection_health`: consecutive refused SCIM requests, last success)
@@ -1331,7 +1337,8 @@ CA variable and the egress rule present with its configured peers, every `config
 `control-plane-identity.hcl` with the identity role (with `openbao.enabled`, the three existing entries plus that
 one); in both modes the control plane's `serviceAccountName` equal to `<fullname>-control-plane`,
 `SAGAT_IDENTITY_FEDERATION=on` and `SAGAT_PUBLIC_ORIGIN`, every path named by a `SAGAT_*_FILE` variable of the
-control-plane container under one of its `volumeMounts`, and no two mounts sharing a `mountPath`; the same with `openbao.network.to: []`, with neither native TLS nor `allowPlaintextSecrets` for
+control-plane container under one of its `volumeMounts`, no two mounts sharing a `mountPath`, and every
+`volumeMounts[].name` of every container and init container of the pod naming an entry of its `volumes`; the same with `openbao.network.to: []`, with neither native TLS nor `allowPlaintextSecrets` for
 the control plane, without `identity.publicOrigin`, or with `--kube-version 1.28`, fails the render; and the
 federation-only case that renders sets nothing on `engine.grpc`). The policy name
 `sagat-identity` is fixed, not a setting, since both clients check it; `docs/runbooks/federated-login.md` and
@@ -1474,10 +1481,10 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
 **Operator commands.** The commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
-`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate|revoke` (the `cli-refresh` ring, below); `identity attempt-key rotate|revoke` (the attempt ring, in the same stored-document form and with the same two steps as the
+`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate|revoke [--resume]` (the `cli-refresh` ring, below); `identity attempt-key rotate|revoke` (the attempt ring, in the same stored-document form and with the same two steps as the
 `cli-refresh` ring below: the new key is added `PENDING`, which opens and never seals, and after two refresh intervals
-it becomes the sealing key; a `RETAINED` key is dropped 10 minutes, an attempt's lifetime, after its successor became
-active; an attempt under an unknown key id newer than the replica's newest causes the same single-flight re-read, so an
+it becomes the sealing key; a `RETAINED` key is dropped by the next `identity attempt-key rotate` once its successor has been active for
+10 minutes, an attempt's lifetime, plus two intervals, the longest a stale replica may still seal under it; an attempt under an unknown key id newer than the replica's newest causes the same single-flight re-read, so an
 attempt sealed on an updated replica opens on every replica;
 `an_attempt_sealed_after_a_rotation_opens_on_every_replica`, with a replica whose last read failed; `revoke`, for a
 leaked attempt key, activates a new key at once and drops every other with the `cli-refresh` ring's check-and-set
@@ -1518,10 +1525,11 @@ written plus one, never reused, the highest also kept in the document), material
   ring fails to compile; they and the `AttemptSealer` adapter call only the serving operations.
 - *Transport.* The OpenBao client of `crates/infra-secrets/src/openbao.rs` reads only version 1 of credential paths
   and writes only with `cas: 0`, so the ring documents get their own transport, in the submodule
-  `identity_ring::transport`: `read_versioned(path: RingPath) -> Result<(u32, RingDocument), RingError>` and
+  `identity_ring::transport` (both `pub(super)`, so only `identity_ring` calls them): `read_versioned(path: RingPath) -> Result<(u32, RingDocument), RingError>` and
   `write_cas(path: RingPath, version: u32, body: RingDocument) -> Result<u32, RingError>`. The ring operations, the
   transport and `identity_mount`'s operations take an `IdentityOpenBao`, a newtype over the client, defined in
-  `identity_ring` with a private field, whose one constructor, `IdentityOpenBao::from_lookup(get, development)`, reads only its own
+  `identity_ring` with a private field and one accessor, `pub(in crate::openbao) fn client(&self) -> &OpenBao`, which
+  `identity_mount`'s operations and the transport use, whose one constructor, `IdentityOpenBao::from_lookup(get, development)`, reads only its own
   settings, `SAGAT_IDENTITY_OPENBAO_ADDRESS`, `_CA_FILE`, `_MOUNT`, `_TOKEN_FILE`, `_TIMEOUT_MS` and `_DEVELOPMENT` (the
   last with the same two-key gate as `OpenBaoSettings::from_lookup`: it holds only when `development` is true, that is
   under `SAGAT_ENV=dev`), never a `SAGAT_OPENBAO_*` setting, and builds the client itself; so federation never turns on
@@ -1596,8 +1604,9 @@ written plus one, never reused, the highest also kept in the document), material
   (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose` (sealed by `pub trait Purpose` in a private `sealed`
   submodule, the usual pattern that the `private_bounds` lint accepts; named apart from the type `Sealed`), the two purpose markers, `KeyId`, `KeyState`,
   `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError`, `IdentityOpenBao` (with `from_lookup` as its only
-  constructor) and, to the module itself only, `RingPath`
-  and `RingDocument`; the operations above, the key-id and state accessors, `KeyId::new(i64) -> Option<KeyId>` and
+  constructor and `client` as its only accessor, `pub(in crate::openbao)`) and, to the module itself only, `RingPath`
+  and `RingDocument`; the operations above (the serving and command operations, and `read_versioned` and `write_cas` at `pub(super)`),
+  the key-id and state accessors, `KeyId::new(i64) -> Option<KeyId>` and
   `KeyId::get`, `Tag::from_bytes([u8; 32])` and `Tag::as_bytes` (a tag is not key material, but it is the secret part of a refresh
   token, so `Tag`, like the application's `RefreshMac`, has a hand-written `Debug` printing `[REDACTED]` and no
   `Display` or `Serialize`), and read-only accessors of
@@ -1615,11 +1624,14 @@ written plus one, never reused, the highest also kept in the document), material
   refreshes on both sides; `a_second_rotate_finishes_an_interrupted_rotation`, driven by a controlled clock with skew).
 - `revoke` (audited) activates a new key at once, drops every key it did not create (`ACTIVE`, `RETAINED`, `PENDING`),
   and must win: on a failed check-and-set it reads again and writes again, up to five times, then exits non-zero with
-  an audited failure that names the conflict. Only after its write has committed does it rotate every CLI session's
-  random value, in bounded batches tenant by tenant, each batch locking its session rows `FOR UPDATE` in (tenant,
+  an audited failure that names the conflict. Only after its write has committed does it rotate the random value of every CLI session whose random value is older
+  than that commit point (the new key id and its time, recorded in the audit row), so a session signed in under the
+  new key is never signed out again, in bounded batches tenant by tenant, each batch locking its session rows `FOR UPDATE` in (tenant,
   id) order in slot 4a, a path in `tests/support/lock_order.rs`; a failure after the ring write is safe, because tokens under the
-  dropped keys no longer verify, and running `revoke` again finishes the rotation
+  dropped keys no longer verify, and `identity cli-refresh-key revoke --resume` continues the batches from the recorded
+  commit point without writing the ring (a plain `revoke` is a new revocation)
   (`a_cli_refresh_key_revoke_rotates_every_random_value` starting mid-rotation,
+  `a_session_signed_in_after_a_revoke_keeps_refreshing`, `a_resumed_revoke_writes_no_ring_version`,
   `a_rotation_resumed_after_a_revoke_writes_nothing`, `a_revoke_racing_a_rotation_promotion_still_replaces_every_key`).
 - A background task of the control plane reads both identity rings (`cli-refresh` and the attempt ring) at start and
   every refresh interval, single-flight with the unknown-id re-read, and keeps them on a failed read; a request that
@@ -1794,7 +1806,7 @@ ticked: **A** Tasks 013-1 to 013-6, 013-8 to 013-16 and 013-18; **B** Task 013-7
 its part of Success criterion 013-001.
 
 **Targets.** New `[[test]]` entries in `tests/Cargo.toml`, made by the first task that needs each:
-`integration_federated_login` (`integration/federated-login/main.rs`), `contract_federated_login`
+`integration_federated_login` (`integration/federated-login/main.rs`, its key tests in the module `keys.rs` and its sign-in tests in `signin.rs`, so the verification filters `keys` and `signin` select them), `contract_federated_login`
 (`contract/federated-login/main.rs`), `security_federated_login` (`security/federated-login/main.rs`, with the SAML
 corpus and the oracle in `security/federated-login/saml/`), `fault_federated_login` (`fault/federated-login/main.rs`)
 and `e2e_federated_login` (`e2e/federated-login/main.rs`, driving `frontend/e2e/tests/federated-login.spec.ts`, added
@@ -1813,7 +1825,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   the SAML profile), `docs/runbooks/federated-login.md` (enabling, settings, the identity mount, the commands, provider
   guides, SCIM, break-glass, the alerts, rollback), `docs/glossary.md` (connection, external identity, sign-in
   session), the refinement of Architecture decision 0062 decision 8, feature 015's roadmap row (Decision 013-019), and
-  the rows of `docs/engineering/architecture-principles.md` for the three new rules.
+  the rows of `docs/engineering/architecture-principles.md` for the four new rules.
   Verification: `python3 scripts/check-docs-index.py`, `python3 scripts/check-plain-words.py --base origin/develop`,
   `python3 scripts/check-design-docs.py`.
   Refs: Requirement 013-001, Requirement 013-014, Requirement 013-030
@@ -1908,27 +1920,34 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   serving operations, the command operations `rotate_begin`,
   `rotate_finish`, `revoke` and `drop_retained`, `RingChange` and `RingError`; `KeyRing` unchanged), which the commands
   call;
-  the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
-  `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
-  `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a `pub(crate)` request or
-  body helper in `openbao.rs`, a `mod identity_secrets;` declared in `openbao.rs`, a `pub(crate) fn` on `OpenBao` taking
-  a `&str` path, a `pub(crate) fn` taking a `&str` path in `identity_mount.rs`, an `IdentityPath` field of any type other than `u32`, the tenant id, the connection id and `IdentitySecretName`
-  (for example a `String`, `Box<str>` or a newtype over `String` such as `SecretName`), a data-carrying
-  `IdentitySecretName` variant (`IdentitySecretName` is a fieldless enum), a ring or identity-mount operation called
-  with a plain `OpenBao`, a non-private `IdentityOpenBao` constructor taking an `OpenBao` or an `OpenBaoConfig`, an
-  `impl From<OpenBao> for IdentityOpenBao`, a non-private field of `IdentityOpenBao`;
+  the architecture rule on the label literals, the derivation's call sites and the allowlists, with its negative
+  fixtures: a literal `"cli-refresh"`, a `"rings/cli-refresh"` literal outside the module, a call of the derivation
+  outside the module, an `impl RingPurpose` outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
+  `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a non-private function
+  returning `RingKey`, `PurposeKey` or `RingDocument`, a `pub(crate)` request or body helper in `openbao.rs`, a
+  `mod identity_secrets;` declared in `openbao.rs`, a `pub(crate) fn` on `OpenBao` taking a `&str` path, a
+  `pub(crate) fn` taking a `&str` path in `identity_mount.rs`, an `IdentityPath` field of any type other than `u32`,
+  the tenant id, the connection id and `IdentitySecretName` (for example a `String`, `Box<str>` or a newtype over
+  `String` such as `SecretName`), a data-carrying `IdentitySecretName` variant (`IdentitySecretName` is a fieldless
+  enum), a ring or identity-mount operation called with a plain `OpenBao`, a non-private `IdentityOpenBao` constructor
+  taking an `OpenBao` or an `OpenBaoConfig`, an `impl From<OpenBao> for IdentityOpenBao`, and any non-private field
+  or accessor of `IdentityOpenBao` other than `client`; the command name `identity cli-refresh-key` passes. Its tests:
   `identity_openbao_never_reads_the_secrets_mount_settings`,
-  `an_identity_client_refuses_a_token_without_only_the_identity_policy`,
-  `a_secrets_client_refuses_a_token_with_the_identity_policy`, a non-private function returning `RingKey`, `PurposeKey` or `RingDocument`; the shared table
-  `tests/fixtures/sealed_envelope_malformed.json` (entries at most 512 bytes; created by whichever of Tasks 050-4 and
-  013-8 merges first, extended by the other) run against the attempt cookie's codec; the alert test covering the
-  three values of `key`; a `"rings/cli-refresh"` literal and an
-  `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
+  `an_identity_client_refuses_a_token_without_only_the_identity_policy` and
+  `a_secrets_client_refuses_a_token_with_the_identity_policy` (in `cargo test -p sagat-infra-secrets --test openbao`,
+  against OpenBao started with `-dev-tls` and its CA copied out, as
+  `production_tls_scoped_short_lived_token_and_sealed_provider_fail_closed` does, since a development client over
+  plain HTTP skips lookup-self); `an_identity_key_ring_never_prints_key_material` over the ring types (Task 013-9
+  adds the adapters and `RefreshMac`); the shared table `tests/fixtures/sealed_envelope_malformed.json` (entries at
+  most 512 bytes; created by whichever of Tasks 050-4 and 013-8 merges first, extended by the other; Task 013-9 runs
+  it against the attempt cookie's codec); the alert test covering the three values of `key`; the gauge and Prometheus
+  rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
   `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_second_rotate_finishes_an_interrupted_rotation`,
   `a_cli_refresh_key_revoke_rotates_every_random_value` (starting from a ring in the middle of a rotation),
+  `a_session_signed_in_after_a_revoke_keeps_refreshing`, `a_resumed_revoke_writes_no_ring_version`,
   `a_rotation_resumed_after_a_revoke_writes_nothing` (a barrier holds `rotate` between its steps while `revoke`
   commits), `a_revoke_racing_a_rotation_promotion_still_replaces_every_key` (a barrier holds `revoke` between its
   read and its write while `rotate`'s second step commits),
@@ -1969,7 +1988,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
 - [ ] T013-9 Server builder, milestone A, after Tasks 013-8 and 013-10. Sign-in: authorize with the attempt sealed
   through the port `AttemptSealer`, the OIDC callback, redemption, the refresh grant (rotation, the grace, revocation on reuse), renewal,
   logout, the refresh grant over the port `RefreshTokenMac` (its adapter holding the `IdentityKeyRing<CliRefresh>`;
-  redemption takes the minter, the refresh grant the verifier and the minter, logout the verifier only), the link and test flow, just-in-time provisioning, sessions, origins and the start-up refusals, the blob
+  a `cli` redemption takes the minter, the refresh grant the verifier and the minter, logout the verifier only), the link and test flow, just-in-time provisioning, sessions, origins and the start-up refusals, the blob
   upload bounded by the session (`crates/api-http/src/blobs.rs`), the lock order of Technical Plan 4.
   Red tests (`integration_federated_login` unless named): `a_response_injected_into_another_browser_is_refused`,
   `a_sign_in_started_by_another_site_establishes_no_session`, `a_provider_cannot_choose_the_tenant`,
@@ -1993,7 +2012,10 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `an_unknown_newer_key_id_without_a_fresh_read_is_unavailable`, `a_forged_refresh_token_takes_no_row_lock`,
   `a_malformed_refresh_token_is_invalid_grant_before_any_lookup` (a sign, a leading zero, a braced or uppercase UUID,
   a `<mac>` whose last character sets a trailing bit),
-  `a_malformed_attempt_cookie_is_refused_before_any_lookup` (the same trailing-bit case),
+  `a_malformed_attempt_cookie_is_refused_before_any_lookup` (the same trailing-bit case, and the shared table
+  `tests/fixtures/sealed_envelope_malformed.json` run against the cookie's codec), `an_identity_key_ring_never_prints_key_material`
+  extended to both adapters and `RefreshMac`, `two_simultaneous_refreshes_of_one_token_leave_one_live_successor`
+  (barrier), `a_redeemed_cli_token_refreshes_at_generation_one`,
   `a_replica_with_a_stale_attempt_ring_seals_nothing`, `an_attempt_key_revoke_ends_every_sign_in_in_flight`,
   `a_logout_under_an_unknown_key_with_a_failed_read_is_unavailable`, `an_outage_reads_the_ring_at_most_once_per_interval`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
@@ -2044,7 +2066,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   Prometheus rules of Technical Plan 11 with their runbook sections.
   Red tests (`integration_federated_login`): `the_purges_are_bounded`,
   `the_sessions_of_a_disabled_connection_are_marked_in_batches`, `an_expiring_client_secret_shows_and_fires_its_rule`,
-  `ten_refused_scim_requests_set_scim_failing`, `a_disabled_owner_counts_its_members`.
+  `ten_refused_scim_requests_set_scim_failing`, `a_disabled_owner_counts_its_members`, the maintenance batches'
+  path in `tests/support/lock_order.rs` (session rows in (tenant, id) order, as `revoke`'s).
   Verification: `cargo test -p sagat-tests --test integration_federated_login maintenance`.
   Refs: Requirement 013-001, Requirement 013-028
 - [ ] T013-14 Clients builder, milestone A, after pull request #267; its end-to-end parts after Tasks 013-9 and
