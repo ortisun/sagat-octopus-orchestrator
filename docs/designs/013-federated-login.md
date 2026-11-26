@@ -1481,7 +1481,11 @@ written plus one, never reused, the highest also kept in the document), material
   child of `openbao`, `identity_mount`, whose path type `IdentityPath` is an enum of fixed prefixes other than `rings/`
   (`signing-keys/<version>`, `connections/<tenant id>/<connection id>/<name>`) whose components are checked against
   `[A-Za-z0-9_-]{1,64}`, so neither `/` nor `..` can appear and no path it builds reaches a ring
-  (`an_identity_path_cannot_reach_a_ring`).
+  (`an_identity_path_cannot_reach_a_ring`); it has no variant that carries free text. Its operations, all taking an
+  `IdentityPath`, are the ones the protocol of Architecture decision 0035 decision 7 needs: `read_version(path,
+  version)`, `read_metadata(path)`, `write_checked(path, version, value)` (a check-and-set) and `destroy_version(path,
+  version)`, values as
+  the existing `SecretValue`.
 - *Errors and printing.* The module parses the document with its own code, not a `Deserialize` on `RingKey`; every failure is a `RingError` of fixed text that never contains input: `Unreadable`, `Malformed { key_id,
   rule }` (a material that is not base64 or not 32 bytes is `Malformed` with the rule `material`), `Conflict {
   version }` and `Cancelled { version }`. The audited "rotation cancelled" and the conflict failure of `revoke` record
@@ -1497,7 +1501,11 @@ written plus one, never reused, the highest also kept in the document), material
   `bounded_body`, `url` and fields, any child module of `openbao` other than `identity_ring`, `identity_mount` and
   `#[cfg(test)]` ones, and any non-private item of `openbao.rs` beyond those public today (`OpenBaoConfig` and its
   fields, `OpenBao` with `new`, `OpenBaoSettings` with `from_lookup`, `provider` and `intent_key`, and the trait
-  implementations `SecretProvider`, `Debug` and `Drop`), and is an allowlist over the module and its submodules: in any form other than private
+  implementations `SecretProvider`, `Debug` and `Drop`) and the two added by this design, `pub(crate) mod
+  identity_mount;` and `pub use identity_ring::{IdentityKeyRing, RingPurpose, CliRefresh, SigninAttempt, KeyId,
+  KeyState, Tag, Verdict, Sealed, RingChange, RingError};`, and is an allowlist over both children of `openbao`. `identity_mount` exposes, in any form other than private, only
+  `IdentityPath` and its four operations; no non-private function of either child takes a `&str`, `String`, `Url` or
+  `ProviderReference` as a path. `identity_ring` and its submodules: in any form other than private
   (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose`, the two
   purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError` and, to the module itself only, `RingPath`
   and `RingDocument`; the operations above
@@ -1804,7 +1812,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
   `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a `pub(crate)` request or
   body helper in `openbao.rs`, a `mod identity_secrets;` declared in `openbao.rs`, a `pub(crate) fn` on `OpenBao` taking
-  a `&str` path, a `"rings/cli-refresh"` literal and an
+  a `&str` path, a `pub(crate) fn` taking a `&str` path in `identity_mount.rs`, an `IdentityPath` variant holding a
+  `String`, a `"rings/cli-refresh"` literal and an
   `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
