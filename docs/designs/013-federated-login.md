@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the `cli-refresh`
-string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
+string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, `read_versioned` or `write_cas`, names a `rings/` path or implements `RingPurpose`, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -1447,8 +1447,9 @@ written plus one, never reused, the highest also kept in the document), material
 `identity_ring`, owns everything that touches the material of either ring, so the two-step code is written once and
 `KeyRing`, `SecretCipher` and every other module never see it:
 - *Types.* `IdentityKeyRing<P>` holds its key bytes by id itself (it does not wrap `KeyRing`, whose code does not
-  change) and is typed by its purpose, `CliRefresh` or `SigninAttempt`, through the trait `RingPurpose`, whose
-  associated items are the document's path in the identity mount (`P::PATH`), the label (`P::LABEL`) and the salt type
+  change) and is typed by its purpose, `CliRefresh` or `SigninAttempt`, through the trait `RingPurpose`, sealed by a
+  private supertrait so that no code outside the module can implement it, whose associated items are the document's
+  path in the identity mount (`P::PATH`: `rings/cli-refresh`, `rings/signin-attempt`), the label (`P::LABEL`) and the salt type
   (`P::Salt`: `()` for `CliRefresh`, `[u8; 16]` for `SigninAttempt`, so an attempt key derived without a salt does not
   compile). Key bytes and derived keys live in the module-private newtypes `RingKey` and `PurposeKey`, held as
   `Zeroizing`, with no `Clone`, `Serialize`, `Deserialize`, `Display`, `AsRef`, `Borrow`, `Deref`, `Index` or derived
@@ -1467,9 +1468,13 @@ written plus one, never reused, the highest also kept in the document), material
   ring. The `RefreshTokenMac` handles (`MacVerifier`, `MacMinter`) take `IdentityKeyRing<CliRefresh>`, so passing the
   secrets ring or the attempt ring fails to compile, and they and the `AttemptSealer` adapter call only the serving
   operations.
-- *Errors and printing.* The module reads the document through the existing OpenBao client, which never propagates a
-  response body (`crates/infra-secrets/src/openbao.rs`), and parses it with its own code, not a `Deserialize` on
-  `RingKey`; every failure is a `RingError` of fixed text that never contains input: `Unreadable`, `Malformed { key_id,
+- *Transport.* The OpenBao client of `crates/infra-secrets/src/openbao.rs` reads only version 1 of credential paths
+  and writes only with `cas: 0`, so the ring documents get their own transport, in the submodule
+  `identity_ring::transport`: `read_versioned(path: RingPath) -> Result<(u32, Zeroizing<Vec<u8>>), RingError>` and
+  `write_cas(path: RingPath, version: u32, body: Zeroizing<Vec<u8>>) -> Result<u32, RingError>`, built on the client's
+  request helper and its bounded body, never putting a body in an error. `RingPath` is constructible only inside the
+  module, from `P::PATH`, so no other code can name a ring document to these functions.
+- *Errors and printing.* The module parses the document with its own code, not a `Deserialize` on `RingKey`; every failure is a `RingError` of fixed text that never contains input: `Unreadable`, `Malformed { key_id,
   rule }` (a material that is not base64 or not 32 bytes is `Malformed` with the rule `material`), `Conflict {
   version }` and `Cancelled { version }`. The audited "rotation cancelled" and the conflict failure of `revoke` record
   only a `RingChange` or a `RingError`. `IdentityKeyRing`, `RingChange` and `RingError` have hand-written `Debug`
@@ -1478,9 +1483,10 @@ written plus one, never reused, the highest also kept in the document), material
   errors, audit rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of
   31 bytes, and of a cancelled rotation and a `revoke` that loses five check-and-sets).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
-  in the module as `P::LABEL`, and is an allowlist over the module and its submodules: in any form other than private
+  in the module as `P::LABEL`, refuses outside it any string literal containing `rings/`, any call of `read_versioned`
+  or `write_cas` and any `impl RingPurpose`, and is an allowlist over the module and its submodules: in any form other than private
   (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose`, the two
-  purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange` and `RingError`; the operations above
+  purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError` and, to the module itself only, `RingPath`; the operations above
   and the key-id and state accessors; and the trait implementations `Debug` (hand-written), `Drop` and `Zeroize`. Task
   013-8 adds them with the `hmac` and `hkdf` crates.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
@@ -1775,12 +1781,15 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
   `IdentityKeyRing<P>` read by the one loader from its purpose's path, `a_ring_loads_only_from_its_own_path`);
   the module `identity_ring` of Technical Plan 12 (`IdentityKeyRing<P>`, `RingPurpose`, the private `RingKey`,
-  `PurposeKey` and `derive_purpose_key`, the serving operations, the command operations `rotate_begin`,
+  `PurposeKey` and `derive_purpose_key`, the sealed `RingPurpose`, the submodule `transport` with `RingPath`, the
+  serving operations, the command operations `rotate_begin`,
   `rotate_finish`, `revoke` and `drop_retained`, `RingChange` and `RingError`; `KeyRing` unchanged), which the commands
   call;
   the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
   `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
-  `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>` and an `AsRef<[u8]>` on `RingKey`; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
+  `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a `pub(crate) fn` in
+  `openbao.rs` returning the raw body of an identity-mount path, a `"rings/cli-refresh"` literal and an
+  `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
