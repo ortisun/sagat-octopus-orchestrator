@@ -90,8 +90,8 @@ writers together.
 - Harder: authors must think about N-1 for every change, and each capability must name its fence and its scenario; the
   lint and the mixed-writer test make that mechanical.
 - Compatibility: the columns and functions are added, and the registry's guard, its two feature guards,
-  `platform_requirement_remove`, `schedule_trigger_handover_complete` and `lease_withdrawal_required()` replaced in
-  place, all in 0.3.0's stopped upgrade; the migrations of 0.3.0 and before are outside the online rules.
+  `platform_requirement_remove`, `schedule_trigger_handover_complete`, `lease_withdrawal_required()` and
+  `instance_register` replaced in place, all in 0.3.0's stopped upgrade; the migrations of 0.3.0 and before are outside the online rules.
 - Rollback: before the capability switch, roll the binaries back onto the expanded schema; after it, drain the
   capability in two phases first.
 
