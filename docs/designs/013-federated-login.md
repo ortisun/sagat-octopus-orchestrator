@@ -421,9 +421,10 @@ already has.
   access token and a refresh token (`<sid>.<generation>.<key id>.<mac>`, where the MAC is an HMAC-SHA256, under a purpose key
   `cli-refresh` derived from the ring key named by the token's key id (`KeyRing::derive_purpose_key(key_id, label,
   info)`, which keeps key bytes by id and answers none for an id it does not know; added to `crates/infra-secrets` by
-  whichever of Tasks 050-4 and 013-9 runs first) of a dedicated `cli-refresh` ring in the identity mount, read by the
+  whichever of design 050's Task 050-4 and this design's Task 013-8 runs first) of a dedicated `cli-refresh` ring in the identity mount, read by the
   control plane only and never `SAGAT_SECRETS_KEYS`, which every execution engine also holds (Requirement 013-025); the identity ring has its own type, `IdentityKeyRing`
-  wrapping `KeyRing`, built only by the identity-mount loader, and the refresh MAC code takes that type, so passing the
+  wrapping `KeyRing` in `crates/infra-secrets`, whose only constructor is the identity-mount loader in the same module
+  (no public constructor, no `From<KeyRing>`), and the refresh MAC code takes that type, so passing the
   secrets ring fails to compile, and an architecture rule keeps the `cli-refresh` label inside that type's module, and never the access-token key, of
   the session id, the generation and a random value kept on the session; a successor is always minted under the
   active key with the highest generation issued plus one, a number never reused (after a database restore,
@@ -435,8 +436,9 @@ already has.
   a test of the command with a session kept alive by refreshes on both sides of the rotation); `rotate` on an empty
   ring creates a key that is active at once (no token exists yet); start-up with federation on refuses an empty ring
   with a named error and never falls back to another ring; `identity cli-refresh-key revoke` (audited) is the
-  emergency path for a leaked key: it activates a new key at once, drops the old one and rotates every CLI session's
-  random value, so no forged refresh token survives; one use, rotated on every refresh by
+  emergency path for a leaked key: it activates a new key at once, drops every key it did not create (the active one, a
+  retained predecessor and a pending one), cancels any unfinished rotation and rotates every CLI session's random value,
+  so no forged refresh token survives; one use, rotated on every refresh by
   compare-and-set on its generation; the server can verify any generation by recomputing its MAC, so it stores no
   per-generation secret and its storage per session is bounded; the access token is signed with a handle obtained
   before the transaction; a session refreshes at most six times a minute, counted by a window start and a count on `signin_sessions` (a fixed
@@ -1349,8 +1351,9 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
 **Operator commands.** The commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
-`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate` (Requirement 013-026: two steps, the old key kept 7 days and one refresh
-interval after its successor became active); `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
+`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate|revoke` (Requirement 013-026: `rotate` in two steps, the old key kept 7 days and one refresh
+interval after its successor became active; `revoke` replaces every key and rotates every CLI session's random
+value); `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
 keys do: the new key is added as an opening key, and after one refresh interval it becomes the sealing key, so an
 attempt sealed on an updated replica opens on every replica; keys older than one rotation plus 10 minutes, an
 attempt's lifetime, are dropped; every control plane reads the ring at start and on the key set's refresh;
@@ -1626,13 +1629,13 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
-  `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_cli_refresh_key_revoke_rotates_every_random_value`,
+  `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_cli_refresh_key_revoke_rotates_every_random_value` (starting from a ring in the middle of a rotation),
   `start_up_refuses_an_empty_cli_refresh_ring`, the negative fixture of the `cli-refresh` rule,
   `a_client_secret_write_follows_intent_write_verify_activate`; the alert rule's test in
   `contract_observability_operations`.
   Verification: `cargo test -p sagat-tests --test integration_federated_login keys`; `python3 scripts/check-architecture.py`;
   `cargo test -p sagat-tests --test contract_observability_operations`.
-  Refs: Requirement 013-007, Requirement 013-025
+  Refs: Requirement 013-007, Requirement 013-025, Requirement 013-026
   Owner-gate: OD-2026-11-24-717
 - [ ] T013-10 Server builder, milestone A, before Task 013-9. Verification and revocation: `IssuerVerifiers` and the
   platform verifier (`at+jwt`, audience, `client_id`, 300 seconds, `federated:` refused from the deployment issuer,

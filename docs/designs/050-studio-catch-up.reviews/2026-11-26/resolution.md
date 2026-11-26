@@ -159,3 +159,5 @@ key gets the same `400` and the Studio starts from the first page).
 The security re-read of round 7 (`approval/reread-7-security.md`, at `9a19411f`) found nothing.
 
 The security re-read of round 8 (`approval/reread-8-security.md`, at `dcfd91b1`) found nothing.
+
+The security re-read at `db9e8a50` found nothing in design 050.

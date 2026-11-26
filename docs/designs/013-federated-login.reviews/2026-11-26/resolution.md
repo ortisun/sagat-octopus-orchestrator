@@ -208,3 +208,11 @@ first, then the connection row, as redemption does, and Architecture decision 00
 
 The test of the rotation is renamed `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, since a CLI
 session idle for a day expires (the reviewer's note for correctness).
+
+## Security re-read, round 10 (`approval/reread-10-security.md`, at `db9e8a50`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: `IdentityKeyRing` lives in `crates/infra-secrets`; the identity-mount loader in the same module is its only constructor; no public constructor, no `From<KeyRing>` | Requirement 013-026 |
+| 2 | Nit | Fixed: revoke drops every key it did not create and cancels an unfinished rotation; the test starts mid-rotation | Requirement 013-026, Task 013-8 |
+| 3 | Nit | Fixed: Task 013-8 owns the derivation; the commands paragraph names `rotate|revoke`; Task 013-8's Refs include Requirement 013-026 | Requirement 013-026, Technical Plan 12, Task 013-8 |
