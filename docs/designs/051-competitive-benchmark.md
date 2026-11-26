@@ -123,11 +123,14 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   constraints of Technical Plan, "Fixed constraints"; each constraint and each excluded feature is a deviation line, and
   the report publishes each product's tuning budget (the configurations tried and the runner minutes spent). Durability
   is never changed: at the start of each turn `pg_settings` shows the fixed constraints' values and
-  `pg_db_role_setting` holds no setting for the product's roles and database; each product's connection options are
-  published; the start probe refuses any connection startup parameter outside an allowlist (`application_name`, `search_path`,
+  `pg_db_role_setting` holds no setting for the product's roles and database and `pg_proc.proconfig` none on any
+  function, both read at the start and at the end of each turn; each product's connection options are published, and
+  `check_competitive_benchmark` refuses `options`, `-c` and `PGOPTIONS` in the compose files, the products'
+  configurations and their connection options; the start probe refuses any connection startup parameter outside an allowlist (`application_name`, `search_path`,
   `client_encoding`, `TimeZone`, `DateStyle`, from `pg_stat_activity` and each product's published options); the
-  products' roles are not superusers and hold no `SET` grant on `synchronous_commit` or `commit_delay`, checked through
-  SQL; and after every rung a scan of `pg_stat_statements` for `SET` or `set_config` of `synchronous_commit` or
+  products' roles are not superusers and hold no `SET` grant on `commit_delay`, checked through SQL (`synchronous_commit`
+  has user context, so any role may set it, which only the scan below catches); and, with `pg_stat_statements.track =
+  all` so that statements inside functions are seen, after every rung a scan of `pg_stat_statements` for `SET` or `set_config` of `synchronous_commit` or
   `commit_delay` fails the rung (`pg_stat_statements_reset()` runs after each restore and at each rung's start, so
   the scan and the statement latency of Requirement 051-007 cover that rung alone). This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's
   task that adds the setting is in the commit, as a single node requires, stated.
@@ -313,7 +316,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
 - **Requirement 051-018 Fair accounting.** This platform's per-run script containers MUST run under its set: during its
   turn the container daemon's default control-group parent (`/etc/docker/daemon.json`) is a slice whose CPU set is the
   product's, the daemon restarted between turns, and the processor time of the daemon and its shims during the turn is
-  measured and charged to this platform (Windmill's sandbox runs inside its worker); the report gives the combined
+  read by `run.sh` from the host's `/proc` (so that no metrics container needs a privilege) and charged to this platform (Windmill's sandbox runs inside its worker); the report gives the combined
   processor seconds of the product and its database server per thousand transitions beside each maximum.
 - **Requirement 051-019 The disk is budgeted.** The pilot MUST measure the bytes each product writes per workflow of each
   variant; `run.sh` frees the runner's preinstalled tool caches at start and records the free space at every rung, and
@@ -322,7 +325,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   whose worst-case minutes exceed 340.
 - **Requirement 051-020 Nothing on the runner can reach the repository.** The benchmark workflow MUST have exactly the
   top-level block `permissions: contents: read` and no job-level `permissions:`, no `secrets: inherit`, no
-  `${{ github.token }}`, no cache action, no `${{ secrets.` reference at all, `persist-credentials: false` on its
+  `${{ github.token }}`, no cache (the release workflow's cache rule below), no `${{ secrets.` reference at all, `persist-credentials: false` on its
   checkout, every `uses:` pinned to a
   40-character commit, no `${{ inputs. }}` or `${{ github.event. }}` inside a `run:` (inputs pass through `env:`), and
   refuse any ref but `develop`, `main`, `release/**` and `v*`. Every compose file under `tests/performance/competitive/`
@@ -334,22 +337,28 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `--network none`, as a non-root user, from images of `images.lock`, which a check after each turn confirms from
   `docker inspect` of every run container; every third-party program, the Temporal sidecar and `omes`
   included, runs as a compose service under these rules, and the rule refuses a third-party binary started from
-  `run.sh` on the host; the driver, built at the commit under test, runs its load as a container on each product's
+  `run.sh` on the host and a `docker run` or `docker create` in `run.sh` of any image not built at the commit, and
+  applies the compose rules' list as flags to the rest (no `--privileged`, engine socket mount, host network, process or IPC
+  namespace, added capability or device, or unconfined profile); the driver, built at the commit under test, runs its load as a container on each product's
   internal network, started by `run.sh` once per turn in the order `driver plan` prints, it and the metrics containers
   with an explicit `cgroup_parent` pinned to the driver's thread (their effective CPU sets confirmed from `docker
   inspect` at each turn's start, so that this platform's turn's default parent does not capture them), while its fault injector runs
   on the host in `run.sh`'s process (it needs the engine to kill and start containers), writing each fault's time as
-  `CLOCK_REALTIME` into the shared record directory; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
+  `CLOCK_REALTIME` into a host-only directory that no container can write (mounted read-only into the driver), where
+  `run.sh` also gathers every file it uploads; the injector opens each execution record with `O_NOFOLLOW|O_NONBLOCK`,
+  confirms with `fstat` that it is a regular file and reads at most 1 MB of it; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
   address, the pilots included (a Windmill step language that needs packages at run time is pre-resolved into an image
   built from pinned inputs, or excluded). Every image is named in one manifest (`images.lock`: name, digest taken from the vendor's
   registry, and the vendor's signature checked where the vendor signs), read by the compose files and by `run.sh`, every
   `SAGAT_RUNNER_IMAGE_*` of this platform set from it (this platform's own images exempt as "built at the commit under
   test"); after each turn `docker image ls --digests` is compared with it and an image not in it fails the job. `omes`
-  is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of files (no
+  is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of regular files copied into the host-only directory
+  (a link or any other kind of file refused; no
   environment dumps, `docker inspect`, `docker compose config` or logs with statements; `log_statement` stays `none`).
   The release workflow (`.github/workflows/release.yml`) downloads its artifacts by name and refuses a duplicate file
-  name, and no job of it restores a cache (`recovery`'s `rust-cache` removed, `cache: false` on every setup action such
-  as the `sdks` job's `setup-go`), checked by `scripts/tests/test_ci_workflow.py` and by the competitive rule `run.sh`
+  name, and no job of it restores a cache (`recovery`'s `rust-cache` removed; `cache: false` on `setup-go` and `setup-dotnet`, no
+  `cache:` input on `setup-node`, `setup-python` or `setup-java` and `package-manager-cache: false` on `setup-node`; no
+  `actions/cache`, `rust-cache` or `type=gha` anywhere), the one cache rule the benchmark workflow obeys too, checked by `scripts/tests/test_ci_workflow.py` and by the competitive rule `run.sh`
   runs first, a change of its own pull request before the first dispatch (Task
   051-0), since code with root on a runner of the default branch could otherwise plant a cache entry a tag's build
   restores.
@@ -459,8 +468,8 @@ lists what a later release would ask the owner for.
 `check_competitive_benchmark` in `scripts/check-architecture.py`, with a flag `--competitive-root DIR` for its fixtures
 in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key by key with a line match (no YAML
 library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
-(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules, the image
-manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
+(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (with `options`, `-c` and `PGOPTIONS`), `run.sh`'s `docker run` and `docker create`
+lines, the image manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
 `run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
 does; the workflow is required once `campaign.json` exists. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
 tests/performance/competitive/driver/Cargo.toml`, the default features and all of them) and builds the Go modules, on a
@@ -630,7 +639,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 
 ## Detailed Implementation Plan
 
-- [ ] T051-0 In a pull request of its own, make `.github/workflows/release.yml`'s `publish` download its artifacts by name (`pattern`, `merge-multiple: false`) and refuse a duplicate file name, and no job of it restore a cache (`recovery`'s `rust-cache` removed, `cache: false` on every setup action), with the workflow test of `scripts/tests/test_ci_workflow.py` extended to check both.
+- [ ] T051-0 In a pull request of its own, make `.github/workflows/release.yml`'s `publish` download its artifacts by name (`pattern`, `merge-multiple: false`) and refuse a duplicate file name, and no job of it restore a cache (`recovery`'s `rust-cache` removed; `cache: false` on `setup-go` and `setup-dotnet`; no `cache:` input on `setup-node`, `setup-python` or `setup-java` and `package-manager-cache: false` on `setup-node`; no `actions/cache`, `rust-cache` or `type=gha`), with the workflow test of `scripts/tests/test_ci_workflow.py` extended to check both.
   Refs: Requirement 051-020
 - [ ] T051-1 Write `tests/performance/competitive/shapes.md` (the method version, the shapes, the activity body, outcomes, transitions, completion records, the execution records' grammar, the ceilings with their reasoning, timeouts and retry budgets, idempotency, early arrivals, the timer mechanisms), committed before any pilot; check the licences of the pinned competitor versions; write `images.lock` by the version rule with the vendors' signatures checked; and record GitHub's page of the standard runner's specification and its date.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-006, Requirement 051-009, Requirement 051-020
@@ -642,9 +651,9 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the durability checks, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+- [ ] T051-6 Write `run.sh` and `campaign.json`: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the durability checks (`pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end), the daemon's and shims' processor time from `/proc`, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
-- [ ] T051-7 Add the fault injector on the host (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the record directory), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded fault time against a child process's death seen through `pidfd` on the driver's monotonic clock, within 100 ms.
+- [ ] T051-7 Add the fault injector on the host (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, each execution record opened with `O_NOFOLLOW|O_NONBLOCK`, checked by `fstat` and read bounded), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded fault time against a child process's death seen through `pidfd` on the driver's monotonic clock, within 100 ms.
   Refs: Requirement 051-009
 - [ ] T051-8 Add the `competitive-benchmark` workflow (Requirement 051-020's rules, the stages and matrices of `campaign.json`, the `concurrency` group, the refusal of a private repository and of other refs), publish the method and configurations, run the pilots once for the method version and publish them.
   Refs: Requirement 051-004, Requirement 051-012, Requirement 051-014, Requirement 051-019, Requirement 051-020
