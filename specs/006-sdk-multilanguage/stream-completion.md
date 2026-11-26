@@ -89,8 +89,9 @@ rpc StreamTasks(PollTasksRequest) returns (stream PollTasksResponse);
    polls PostgreSQL internally. It does not require a durable NATS subscription or promise fewer
    database queries than the polling transport.
 8. On token expiry or a stream error, stop admitting new claims and stop exposing buffered leases
-   under invalid credentials. Already committed leases still recover by expiry; they are never
-   requeued immediately merely because their response was suppressed.
+   under invalid credentials. A committed lease whose frame was never handed to the transport is
+   withdrawn ("Leases that never reach a host", rule 1); a lease handed to the transport recovers
+   by expiry and is never requeued merely because its response was suppressed.
 
 Revocation is checked at each admission boundary. A claim admitted before a membership change can
 finish under the existing transaction semantics; the next claim must observe the changed authority.
@@ -103,7 +104,8 @@ revocation service. The stream must not silently extend those semantics.
 |---|---|
 | Waiting for work or queue capacity | No new claim; all temporary/lifetime resources released when the stream ends |
 | Before the claim transaction commits | Transaction rollback; no leased event or task token exposed |
-| After commit, before delivery | Lease remains durable; expiration/reaper creates later fenced attempt |
+| After commit, before the frame is handed to the transport | Withdrawn once every live process honours it ("Leases that never reach a host" below): the step goes back to `READY`, no attempt consumed, no review; until then the lease lapses |
+| After the frame is handed to the transport, lost on the wire | Lapses (G006-001). Since feature 037 a lapsed lease of an `Activity` is an unknown outcome and goes to reconciliation or review; delivery acknowledgement (O006-001, OD-2026-11-20-12) closes this |
 | After one or more frames reached SDK | Those tasks keep their handler, heartbeat and reporting lifecycle; only future receiving is retried |
 | Server error after a successful frame | Preserve that frame; classify trailer error normally and back off/re-register as required |
 | SDK stop during an idle receive | Cancel the receive promptly; preserve existing bounded handler drain |
@@ -126,8 +128,10 @@ buffer, no lease is acknowledged by a transport read, and external effects remai
   handler/report lifecycle finishes, including across reconnection, lease expiry and registration.
 - Dispatch a frame immediately and start heartbeats using the same activity path as unary polling.
   Defend against a server emitting more than the remaining credit or local capacity: accept only
-  bounded valid work, cancel the receive, record a closed diagnostic and leave excess leases to
-  expire. Never grow an unbounded queue of handlers or concatenate all frames.
+  bounded valid work, cancel the receive, record a closed diagnostic and, from protocol 1.8, hand the
+  excess leases back with `TASK_NOT_STARTED` (`sdks/SPEC.md` §6.2; at most eight hand-backs on their way at once); below
+  1.8 they lapse (D006-080).
+  Never grow an unbounded queue of handlers or concatenate all frames.
 - Normal filled EOF may reopen immediately if capacity remains. Underfilled termination obeys the
   positive retry hint with existing jitter and the host's bounded wait rules; task completion can
   wake that wait. A malformed empty frame with no positive hint still receives a minimum wait.
@@ -210,3 +214,40 @@ measurement of a working transport; no universal throughput improvement is assum
 Independent SDK implementation can proceed against the agreed schema while server tests are being
 completed. Shared files have one owner. Closing this document's gates requires the integrated
 server and SDKs, not five isolated unit-test results.
+
+
+## Leases that never reach a host
+
+Decisions D006-001 to D006-018, D006-030 to D006-039 and D006-080 to D006-093 of [`research.md`](research.md); ADR-0098. A committed lease that no host received used to be
+left to lapse; since feature 037 a lapse of an `Activity` opens a review for work that never ran. The rules:
+
+1. **The server withdraws what it knows it did not send.** A lease is *handed to the transport* when `TaskBody::poll_next`
+   returns the frame that carries it (for a unary `PollTasks`, when the handler returns its answer). Every lease committed by a
+   claim and not handed to the transport is withdrawn: the leases of a claim that ends after the producer was told to stop, of
+   a frame queued when the window deadline passes, of a frame drained at token expiry or when the body is dropped, of a frame
+   sent into a closed queue, and of a unary poll whose handler is dropped before it returns.
+2. **The producer is told to stop, never aborted in a claim.** The run transaction it is in finishes (it is bounded by the
+   store's timeouts); if that transaction wrote nothing but its leases and its consumer is gone when it reaches its commit,
+   it is rolled back instead, and nothing is leased (D006-092); the claim leases no further run once its consumer is gone; nothing more is
+   queued; what it holds goes to the withdrawal. The producer and the unary claim run on the tracker a graceful shutdown
+   waits for (D006-035, D006-036).
+3. **A withdrawal is fenced.** One transaction per run, under the run lock; it acts only on a step that is still `LEASED` with
+   the generation and lease-token hash the server issued. It appends `step.lease_withdrawn` (`node`, `attempt`, `generation`,
+   `cause`: `NOT_SENT` or `NOT_STARTED`), clears the lease, returns the step to `READY` and sets its attempt back by one, so
+   the next lease reuses that attempt number with the next generation. A fence that does not hold changes nothing and is
+   counted (`worker_leases_undelivered_total{cause, outcome="fence_missed"}`). One attempt is withdrawn at most four times
+   (D006-031); the fifth is counted `capped`. At most a quarter of the engine's pool withdraws at once (D006-038).
+4. **Only when every live process honours it.** The engine withdraws only while the requirement `lease-withdrawal-v1` is
+   recorded for control planes and engines (instance-capability registry, ADR-0082; `control-plane capability-activate
+   lease-withdrawal-v1`). Until then the lease lapses as before and `worker_leases_undelivered_total{cause, outcome="lapsed"}`
+   counts it. The requirement cannot be removed once a journal holds the event; `SAGAT_LEASE_WITHDRAWAL=off` stops an engine
+   writing new withdrawals (D006-032).
+5. **A host of 1.8 or later hands back what it drops** (`sdks/SPEC.md` §6.2; below 1.8 the lease lapses, D006-080): `FailStep` with `TASK_NOT_STARTED`, retryable, before any
+   handler of the task runs; a handler that raises the code has it rewritten by its SDK. The server withdraws it (cause
+   `NOT_STARTED`) only when the session that holds the lease negotiated 1.8 or later, the requirement is recorded, the step
+   is still `LEASED` and the cap is not reached (D006-030). On a fleet that does not withdraw (the requirement not recorded,
+   the switch off) it records nothing and answers `STALE_ATTEMPT`, and the lease lapses (D006-089); otherwise it is an
+   ordinary failure with the host's `retryable` flag, never an unknown outcome.
+6. **What is not covered.** A frame lost on the wire after it was handed to the transport, and a lost unary answer, still
+   lapse (G006-001) until delivery acknowledgement (O006-001). A process that stops between a claim and its withdrawal leaves
+   the lease to lapse (G006-002).

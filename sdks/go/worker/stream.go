@@ -43,6 +43,7 @@ func (h *Host) receive(ctx context.Context, l *link, sess *session, credit int) 
 		return 0, errorOfStatus(ctx, "StreamTasks", err, nil, nil)
 	}
 	received, bytes := 0, 0
+	w := newWindow(sess)
 	for {
 		frame, err := stream.Recv()
 		if err == io.EOF {
@@ -55,30 +56,41 @@ func (h *Host) receive(ctx context.Context, l *link, sess *session, credit int) 
 			header, _ := stream.Header()
 			return 0, errorOfStatus(ctx, "StreamTasks", err, header, stream.Trailer())
 		}
+		tasks := frame.GetTasks()
+		if h.frameReceived != nil {
+			h.frameReceived(len(tasks))
+		}
 		if h.stopping.Load() {
+			// A host that is stopping starts nothing new: what it read is handed back (from protocol 1.8).
+			for _, lease := range tasks {
+				h.take(l, w, lease, handBackStopping)
+			}
 			return 0, sagat.NewError(sagat.CodeCancelled, "task receiving stopped")
 		}
-		tasks := frame.GetTasks()
 		if len(tasks) == 0 {
 			return int32(pollWait(frame.GetRetryAfterMs()) / time.Millisecond), nil
 		}
 		allowed := min(credit-received, h.cfg.maxInflight-h.inflight())
-		excess := len(tasks) > allowed
-		if excess {
-			tasks = tasks[:max(0, allowed)]
-		}
+		why, taken := "", 0
+		var broken error
 		for _, lease := range tasks {
 			size := len(lease.GetInputJson())
-			if size > (8<<20)-bytes {
-				return 0, sagat.NewError(sagat.CodeValidationFailed, "task stream exceeded its input budget")
+			switch {
+			case why != "":
+			case taken >= allowed:
+				why, broken = handBackCredit, sagat.NewError(sagat.CodeValidationFailed, "task stream exceeded receive credit")
+			case size > (8<<20)-bytes:
+				why, broken = handBackMalformed, sagat.NewError(sagat.CodeValidationFailed, "task stream exceeded its input budget")
 			}
-			bytes += size
-			received++
-			h.dispatch(l, lease)
+			if h.take(l, w, lease, why) {
+				bytes += size
+				received++
+				taken++
+			}
 		}
-		h.emit(Event{Type: EventPoll, Tasks: len(tasks)})
-		if excess {
-			return 0, sagat.NewError(sagat.CodeValidationFailed, "task stream exceeded receive credit")
+		h.emit(Event{Type: EventPoll, Tasks: taken})
+		if broken != nil {
+			return 0, broken
 		}
 	}
 }

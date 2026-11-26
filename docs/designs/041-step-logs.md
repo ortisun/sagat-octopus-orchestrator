@@ -2631,8 +2631,9 @@ Slice B, the server stores:
       (`registry_pool_config`, `apps/control-plane/src/registry.rs:53-58`) takes the same name, since it serves the
       same instance; the one-shot processes use `sagat-octopus-orchestrator/<process kind>`: migrate, inventory,
       handover, cleanup, `seed_dev`, `seed_dev_namespace`, `provision_tenant`, `grant_quota_ceiling`,
-      `set_scheduling_weight` and `reseal_secrets` (`apps/control-plane/src/lib.rs:171-417`, the pool builders of
-      `apps/control-plane/src/{cleanup.rs,inventory.rs,handover.rs}`);
+      `set_scheduling_weight`, `reseal_secrets` and `capability_activate` (`apps/control-plane/src/lib.rs:171-417`, the pool
+      builders of `apps/control-plane/src/{cleanup.rs,inventory.rs,handover.rs,capability_activation.rs}`; the last one added
+      when the lease withdrawal of feature 006 merged with this design);
     - the test replicas (`tests/support/engine.rs:756-765`, `replica_with_pool`) name each pool
       `sagat-octopus-orchestrator/<a fresh UUID>`, so that in-process replicas do not share wait slots, and task
       T041-37's setup asserts that every replica's connections show a distinct name in `pg_stat_activity`;

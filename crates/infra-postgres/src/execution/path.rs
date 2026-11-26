@@ -277,6 +277,22 @@ impl PathExecutionTx for PgPathExecutionTx {
         .map_err(store_error)
     }
 
+    async fn lease_withdrawals(&mut self, step_id: Uuid, attempt: u32) -> Result<u32, StoreError> {
+        super::lease_withdrawals(&mut self.tx, &self.snapshot.info, step_id, attempt).await
+    }
+
+    async fn lease_holder_minor(
+        &mut self,
+        step_id: Uuid,
+        token_hash: &[u8],
+    ) -> Result<Option<u32>, StoreError> {
+        super::lease_holder_minor(&mut self.tx, &self.snapshot.info, step_id, token_hash).await
+    }
+
+    async fn lease_withdrawal_required(&mut self) -> Result<bool, StoreError> {
+        super::lease_withdrawal_required(&mut self.tx).await
+    }
+
     async fn replay(&mut self, idempotency: &Idempotency) -> Result<Option<String>, StoreError> {
         replay(
             &mut self.tx,
@@ -420,6 +436,7 @@ impl PgPathExecutionTx {
             !matches!(
                 event.event(),
                 RunEvent::StepLeased { .. }
+                    | RunEvent::StepLeaseWithdrawn { .. }
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
@@ -612,6 +629,7 @@ impl PgPathExecutionTx {
                 event,
                 RunEvent::StepReleased { .. }
                     | RunEvent::StepRetryDue { .. }
+                    | RunEvent::StepLeaseWithdrawn { .. }
                     | RunEvent::StepRetryRequested { .. }
             ) {
                 hinted.insert(instance.clone());

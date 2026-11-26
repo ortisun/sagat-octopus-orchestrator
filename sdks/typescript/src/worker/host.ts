@@ -73,6 +73,12 @@ interface Registered {
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_POLL = 64;
 const MAX_RECEIVE_INPUT_BYTES = 8 * 1024 * 1024;
+// At most this many hand-backs are on their way at once; the others wait their turn in the order received (SPEC §6.2,
+// decision D006-026): a server that answers with tens of thousands of leases does not get a report each at once.
+const MAX_HAND_BACKS = 8;
+// The first protocol minor on which the host hands a lease back: its server reserves TASK_NOT_STARTED, and an older one
+// would record it as an ordinary failure that spends the attempt (decision D006-080).
+const HAND_BACK_MINOR = 8;
 const CODE = /^[A-Z0-9_]{1,64}$/;
 
 function minorOf(version: string): number {
@@ -88,6 +94,9 @@ function inflightKey(lease: TaskLease): string {
   const path = lease.instance?.instance_path ?? [];
   return path.reduce((key, segment) => `${key}/${segment.scope_node_id}[${segment.iteration_index}]`, lease.task_id);
 }
+
+/** Why a lease the host received is not run (SPEC §6.2). */
+type HandBackReason = 'stopping' | 'credit' | 'malformed';
 
 function instanceOf(lease: TaskLease, minor: number): TaskLease['instance'] {
   return minor >= 5 ? lease.instance : undefined;
@@ -138,6 +147,16 @@ export class WorkerHost {
   private loop: Promise<void> | undefined;
   private wake: (() => void) | undefined;
   private readonly inflight = new Map<string, { abort: AbortController; done: Promise<void> }>();
+  // The hand-backs on their way, queued ones included, by in-flight key: `stop` waits for them like the tasks in flight,
+  // and a lease leased again while its hand-back is on its way is a duplicate (decision D006-027). They hold no slot.
+  readonly #handBacks = new Map<string, Promise<void>>();
+  // The hand-backs waiting their turn, in the order received, from `#handBackNext` on, and how many are being made.
+  #handBackQueue: Array<{ lease: TaskLease; run: () => Promise<void>; drop: () => void }> = [];
+  #handBackNext = 0;
+  #handBacksRunning = 0;
+  // Called with the number of leases after a poll answer or a stream frame is read and before it is looked at; unset
+  // except in the tests, which hold the loop there while `stop` begins.
+  private frameReceived: ((leases: number) => Promise<void> | void) | undefined;
 
   constructor(config: WorkerConfig) {
     this.#config = config;
@@ -233,8 +252,9 @@ export class WorkerHost {
   }
 
   /**
-   * Stops polling, waits up to `timeoutMs` (30 s by default) for the tasks in flight, then cancels the
-   * tokens of the ones left (reason `shutdown`). A task that did not finish keeps its lease until it lapses.
+   * Stops polling, waits up to `timeoutMs` (30 s by default) for the tasks in flight and for the leases it hands
+   * back (the ones it received and will not run, SPEC §6.2), then cancels the tokens of the tasks left (reason
+   * `shutdown`). A task that did not finish keeps its lease until it lapses.
    * The whole of it is bounded by the timeout: a poll the server holds is cancelled, and the heartbeats of
    * a task that will not end stop with the host.
    */
@@ -262,16 +282,27 @@ export class WorkerHost {
       clearTimeout(timer);
       return outcome;
     };
-    // The receive in progress ends and no other starts; what it leased is in flight from here on.
+    // The receive in progress ends and no other starts; what it received while stopping is handed back from protocol 1.8
+    // (below it the leases lapse), and the hand-backs are waited for with the tasks in flight, before the channel closes
+    // (SPEC §6.2).
     if (this.loop && (await within(this.loop, timeoutMs)) === 'late') {
       // Only receives are cancelled: a report on its way may still arrive within the grace.
       this.#rpc?.cancelReceives();
       await this.loop.catch(() => undefined);
     }
-    const pending = Promise.all([...this.inflight.values()].map((task) => task.done));
+    const pending = Promise.all([...[...this.inflight.values()].map((task) => task.done), ...this.#handBacks.values()]);
     if ((await within(pending, grace - Date.now())) === 'late') {
       for (const task of this.inflight.values()) task.abort.abort('shutdown');
       await Promise.race([pending, sleep(2000).catch(() => undefined)]);
+    }
+    // The hand-backs still waiting their turn when the grace ends are not made: their leases lapse.
+    const left = this.#handBackQueue.slice(this.#handBackNext);
+    this.#handBackQueue = [];
+    this.#handBackNext = 0;
+    for (const queued of left) {
+      this.#emit({ type: 'task.dropped', taskId: queued.lease.task_id, reason: 'CANCELLED' });
+      this.log.error('the hand-back could not be made: the host has stopped', { task: queued.lease.task_id });
+      queued.drop();
     }
     // Whatever is left keeps its lease until it lapses; its heartbeats end with the host.
     for (const stopBeat of this.#beats) stopBeat();
@@ -364,30 +395,38 @@ export class WorkerHost {
           let inputBytes = 0;
           let waitMs: number | undefined;
           let malformed = false;
-          const ids = new Set<string>();
+          // The in-flight keys this receive window dispatched or dropped.
+          const seen = new Set<string>();
           for await (const response of this.#channel().streamTasks(request)) {
-            if (this.stopping) return;
+            if (this.frameReceived) await this.frameReceived(response.tasks.length);
+            if (this.stopping) {
+              // A host that is stopping starts nothing new: what it read is handed back (from protocol 1.8).
+              for (const lease of response.tasks) this.#take(lease, seen, 'stopping');
+              return;
+            }
             if (response.tasks.length === 0) {
               waitMs = response.retry_after_ms > 0 ? response.retry_after_ms : 1000;
               malformed = response.retry_after_ms <= 0;
               break;
             }
             if (response.retry_after_ms !== 0) malformed = true;
+            const allowed = Math.min(asked - received, this.maxInflight - this.inflight.size);
+            // The first lease beyond the credit or the free slots, or over the input budget, ends the receive; it and
+            // the rest of the frame are not run.
+            let why: HandBackReason | undefined;
             let accepted = 0;
             for (const lease of response.tasks) {
               const bytes = Buffer.byteLength(lease.input_json, 'utf8');
-              if (received >= asked || this.inflight.size >= this.maxInflight
-                || inputBytes + bytes > MAX_RECEIVE_INPUT_BYTES || ids.has(lease.task_id)) {
-                malformed = true;
-                break;
+              if (!why && accepted >= allowed) why = 'credit';
+              else if (!why && inputBytes + bytes > MAX_RECEIVE_INPUT_BYTES) why = 'malformed';
+              if (this.#take(lease, seen, why)) {
+                received += 1;
+                accepted += 1;
+                inputBytes += bytes;
+                meaningful = true;
               }
-              ids.add(lease.task_id);
-              received += 1;
-              accepted += 1;
-              inputBytes += bytes;
-              meaningful = true;
-              this.dispatch(lease);
             }
+            if (why) malformed = true;
             this.#emit({ type: 'poll', tasks: accepted });
             if (malformed) break;
           }
@@ -404,13 +443,21 @@ export class WorkerHost {
           continue;
         }
         const response = await this.#channel().pollTasks({ worker_id: this.workerId, session_token: this.#session, max_tasks: asked });
+        if (this.frameReceived) await this.frameReceived(response.tasks.length);
         if (response.tasks.length > 0) failures = 0;
         refused = 0;
         this.#emit({ type: 'poll', tasks: response.tasks.length });
-        // At most as many as there is room for: the platform honours `max_tasks`, a broken one is not believed.
-        for (const lease of response.tasks.slice(0, free)) this.dispatch(lease);
-        if (response.tasks.length > free) {
-          this.log.warn('the platform leased more tasks than were asked for; the others are left to lapse', { asked: free, got: response.tasks.length });
+        // At most as many as were asked for, and nothing once the host is stopping: the platform honours `max_tasks`,
+        // a broken one is not believed, and the rest are not run (SPEC §6.2).
+        const stopping = this.stopping;
+        if (!stopping && response.tasks.length > asked) {
+          this.log.warn('the platform leased more tasks than were asked for; the others are not run', { asked, got: response.tasks.length });
+        }
+        const seen = new Set<string>();
+        let taken = 0;
+        for (const lease of response.tasks) {
+          const why: HandBackReason | undefined = stopping ? 'stopping' : taken >= asked ? 'credit' : undefined;
+          if (this.#take(lease, seen, why)) taken += 1;
         }
         if (response.tasks.length === 0) {
           const wait = Math.min(MAX_WAIT_MS, Math.max(50, response.retry_after_ms > 0 ? response.retry_after_ms : 1000));
@@ -454,8 +501,76 @@ export class WorkerHost {
 
   // ------------------------------------------------------------------------------------------- tasks
 
-  private dispatch(lease: TaskLease): void {
+  /**
+   * Dispatches a lease, or drops it when `why` is set (handing it back from protocol 1.8), and tells whether it
+   * dispatched it. A lease whose in-flight
+   * key is in flight, or was already seen in this poll answer or receive window (`seen`), is a duplicate: it is ignored
+   * and never reported, since its fence may be the one of the running handler. The key is never the task id alone,
+   * which sibling iterations of a collection share.
+   */
+  #take(lease: TaskLease, seen: Set<string>, why: HandBackReason | undefined): boolean {
     const key = inflightKey(lease);
+    if (this.inflight.has(key) || this.#handBacks.has(key) || seen.has(key)) {
+      this.log.warn('a task that is in flight or was already received was leased again: ignored', { task: lease.task_id });
+      return false;
+    }
+    seen.add(key);
+    if (why) {
+      this.#handBack(lease, key, why);
+      return false;
+    }
+    this.dispatch(lease, key);
+    return true;
+  }
+
+  /**
+   * Reports a lease the host received and will not run: FailStep TASK_NOT_STARTED, retryable, before any handler of it
+   * runs (SPEC §6.2), on a session of protocol 1.8 or later. The server gives the step back without consuming the attempt
+   * when it can. Below 1.8 the lease is only logged and left to lapse. At most eight are made at once, and `stop` waits
+   * for them like the tasks in flight, so the channel is still open. Until its report ends, its key counts as in flight.
+   */
+  #handBack(lease: TaskLease, key: string, why: HandBackReason): void {
+    const minor = minorOf(this.accepted);
+    if (minor < HAND_BACK_MINOR) {
+      this.log.warn('the host drops a task it did not start; its lease lapses', { task: lease.task_id, reason: why });
+      return;
+    }
+    this.log.warn('the host hands back a task it did not start', { task: lease.task_id, reason: why });
+    // The channel of this run of the host: a report still being repeated after `stop` never opens another one.
+    const rpc = this.#channel();
+    const done: Promise<void> = new Promise<void>((resolve) => {
+      this.#handBackQueue.push({
+        lease,
+        run: () => this.fail(lease, minor, 'TASK_NOT_STARTED', 'the host did not start this task', true, Date.now(), rpc)
+          .catch(() => undefined)
+          .finally(resolve),
+        drop: resolve,
+      });
+    }).finally(() => {
+      if (this.#handBacks.get(key) === done) this.#handBacks.delete(key);
+    });
+    this.#handBacks.set(key, done);
+    this.#nextHandBacks();
+  }
+
+  /** Starts the hand-backs that wait their turn while fewer than eight are being made. */
+  #nextHandBacks(): void {
+    while (this.#handBacksRunning < MAX_HAND_BACKS && this.#handBackNext < this.#handBackQueue.length) {
+      const next = this.#handBackQueue[this.#handBackNext]!;
+      this.#handBackNext += 1;
+      if (this.#handBackNext === this.#handBackQueue.length) {
+        this.#handBackQueue = [];
+        this.#handBackNext = 0;
+      }
+      this.#handBacksRunning += 1;
+      void next.run().finally(() => {
+        this.#handBacksRunning -= 1;
+        this.#nextHandBacks();
+      });
+    }
+  }
+
+  private dispatch(lease: TaskLease, key: string): void {
     const abort = new AbortController();
     const done = this.execute(lease, abort)
       .catch((error: unknown) => {
@@ -622,7 +737,10 @@ export class WorkerHost {
       return;
     }
     if (failure) {
-      await this.fail(lease, minor, failure.code, failure.message, failure.retryable, started);
+      // TASK_NOT_STARTED is the host's word that no handler ran (SPEC §6.2): a handler that uses it reports an ordinary
+      // failure, with its own message and retryable.
+      const code = failure.code === 'TASK_NOT_STARTED' ? 'WORKER_ERROR' : failure.code;
+      await this.fail(lease, minor, code, failure.message, failure.retryable, started);
       return;
     }
 
@@ -871,11 +989,11 @@ export class WorkerHost {
     }
   }
 
-  private async fail(lease: TaskLease, minor: number, code: string, message: string, retryable: boolean, started: number): Promise<void> {
+  private async fail(lease: TaskLease, minor: number, code: string, message: string, retryable: boolean, started: number, rpc?: WorkerRpc): Promise<void> {
     const safeCode = CODE.test(code) ? code : 'WORKER_ERROR';
     try {
       const answer = await this.withRetries(() =>
-        this.#channel().failStep(
+        (rpc ?? this.#channel()).failStep(
           {
             task_id: lease.task_id,
             run_id: lease.run_id,
