@@ -5,7 +5,8 @@
  */
 import { bodyDigest, EMPTY_CHAIN, extendChain } from './chain.js';
 import {
-  BLOB_CAPABLE_FIELD, canonicalSize, MAX_INLINE_BYTES, TERMINAL_KINDS,
+  BLOB_CAPABLE_FIELD, canonicalSize, MAX_BLOB_CARRIED_BYTES, MAX_BLOBS, MAX_FUNCTION_COMMANDS, MAX_FUNCTION_METADATA_BYTES,
+  MAX_INLINE_BYTES, MAX_SIDE_EFFECT_BYTES, metadataSize, TERMINAL_KINDS,
   type ActivationResult, type ExpectedRecord, type HistoryEvent, type LogLine, type RunInit, type WorkflowCommand, type WorkflowTaskFailure,
 } from './context.js';
 import { appliedEvents, beginOf, type ReplayActivation } from './history.js';
@@ -108,15 +109,21 @@ export class CodeRun {
       this.#broken = true;
       return { kind: 'failure', failure: result.failure };
     }
-    const deferred = activation.deferral !== undefined;
-    this.#sandbox.call(JSON.stringify({ op: 'commit', deferred }), this.#deadlineMs);
-    const numbered = result.commands.filter((command) => command.commandNumber !== undefined);
-    for (const command of numbered) this.#chainCommand(command);
-    const terminal = result.commands.find((command) => TERMINAL_KINDS.includes(command.kind));
-    if (deferred && terminal) this.#deferredDigest = bodyDigest(terminal);
-    else if (terminal) { this.#deferredDigest = undefined; this.#closed = true; }
-    this.#windowStart = activation.started.seq;
-    return { kind: 'replayed' };
+    try {
+      const deferred = activation.deferral !== undefined;
+      const numbered = result.commands.filter((command) => command.commandNumber !== undefined);
+      checkNumbering(numbered, this.#accepted);
+      for (const command of numbered) this.#chainCommand(command);
+      const terminal = result.commands.find((command) => TERMINAL_KINDS.includes(command.kind));
+      if (deferred && terminal) this.#deferredDigest = bodyDigest(terminal);
+      else if (terminal) { this.#deferredDigest = undefined; this.#closed = true; }
+      this.#windowStart = activation.started.seq;
+      this.#sandbox.call(JSON.stringify({ op: 'commit', deferred }), this.#deadlineMs);
+      return { kind: 'replayed' };
+    } catch {
+      this.#broken = true;
+      return { kind: 'failure', failure: { cause: 'NONDETERMINISM_RISK' } };
+    }
   }
 
   /** Runs the live activation of a lease's window and prepares its completion or its failure. */
@@ -128,7 +135,16 @@ export class CodeRun {
       this.#broken = true;
       return { kind: 'failure', failure: result.failure, logs: result.logs };
     }
-    const prepared = prepare(result.commands);
+    let prepared: PreparedCommand[];
+    try {
+      // The runtime's bounds are checked again here, on values the context can no longer change: a context whose code
+      // defeated its own checks fails the workflow task as a risk instead of sending what the server would refuse.
+      checkNumbering(result.commands.filter((command) => command.commandNumber !== undefined), this.#accepted);
+      prepared = prepareChecked(result.commands, this.init);
+    } catch {
+      this.#broken = true;
+      return { kind: 'failure', failure: { cause: 'NONDETERMINISM_RISK' }, logs: result.logs };
+    }
     const completion: Completion = {
       kind: 'completion',
       appliedThroughSeq: started.seq,
@@ -142,28 +158,35 @@ export class CodeRun {
     return completion;
   }
 
-  /** Applies the server's answer to the completion in flight: the run's state moves to S(k). */
+  /**
+   * Applies the server's answer to the completion in flight: the run's state moves to S(k). A failure here leaves the
+   * run broken (dropped from the cache and replayed by the next lease); the server's state is not affected.
+   */
   commit(answer: CompletionAnswer): void {
     const inFlight = this.#inFlight;
     if (!inFlight) throw new Error('no completion of this run is waiting for an answer');
     this.#inFlight = undefined;
     const deferred = answer === 'ACCEPTED_DEFERRED';
-    this.#sandbox.call(JSON.stringify({ op: 'commit', deferred }), this.#deadlineMs);
-    const { commands, deferredCommand } = inFlight.completion;
-    const last = commands[commands.length - 1];
-    const firstTimeTerminal = last && TERMINAL_KINDS.includes(last.kind) ? last : undefined;
-    for (const command of commands) {
-      if (deferred && command === firstTimeTerminal) continue;
-      this.#chainCommand(command);
+    try {
+      const { commands, deferredCommand } = inFlight.completion;
+      const last = commands[commands.length - 1];
+      const firstTimeTerminal = last && TERMINAL_KINDS.includes(last.kind) ? last : undefined;
+      for (const command of commands) {
+        if (deferred && command === firstTimeTerminal) continue;
+        this.#chainCommand(command);
+      }
+      if (deferred) {
+        const held = firstTimeTerminal ?? deferredCommand;
+        if (held) this.#deferredDigest = held.bodyDigest;
+      } else {
+        if (deferredCommand) this.#chainCommand({ ...deferredCommand, commandNumber: this.#accepted + 1 });
+        if (firstTimeTerminal || deferredCommand) { this.#deferredDigest = undefined; this.#closed = true; }
+      }
+      this.#windowStart = inFlight.startedSeq;
+      this.#sandbox.call(JSON.stringify({ op: 'commit', deferred }), this.#deadlineMs);
+    } catch {
+      this.#broken = true;
     }
-    if (deferred) {
-      const held = firstTimeTerminal ?? deferredCommand;
-      if (held) this.#deferredDigest = held.bodyDigest;
-    } else {
-      if (deferredCommand) this.#chainCommand({ ...deferredCommand, commandNumber: this.#accepted + 1 });
-      if (firstTimeTerminal || deferredCommand) { this.#deferredDigest = undefined; this.#closed = true; }
-    }
-    this.#windowStart = inFlight.startedSeq;
   }
 
   /** The completion in flight was lost or refused: the run must be replayed by whoever takes it next. */
@@ -176,6 +199,8 @@ export class CodeRun {
     if (this.#broken) throw new Error('this run\'s context was dropped after a failure or a deadline');
   }
 
+  // Never throws: a deadline is ACTIVATION_DEADLINE, and anything else that goes wrong between the host and the context
+  // (a bridge that fails, an answer the host refuses) is NONDETERMINISM_RISK; either way the context is dropped.
   #activate(window: HistoryEvent[], begin: ReturnType<typeof beginOf>): ActivationResult {
     const started = this.#clock();
     const remaining = (): number => {
@@ -191,11 +216,9 @@ export class CodeRun {
       }
       return checkResult(this.#sandbox.call(JSON.stringify({ op: 'end' }), remaining()));
     } catch (error) {
-      if (error instanceof ActivationDeadlineExceeded) {
-        this.#broken = true;
-        return { commands: [], failure: { cause: 'ACTIVATION_DEADLINE' }, logs: [], open: true };
-      }
-      throw error;
+      this.#broken = true;
+      const cause = error instanceof ActivationDeadlineExceeded ? 'ACTIVATION_DEADLINE' : 'NONDETERMINISM_RISK';
+      return { commands: [], failure: { cause }, logs: [], open: true };
     }
   }
 
@@ -219,19 +242,108 @@ const KINDS = new Set<string>([
   'saga_abort', 'marker_patch', 'marker_side_effect', 'update_accept', 'update_reject', 'update_complete', 'consume_signals',
   'set_state', 'complete', 'fail', 'continue_as_new', 'acknowledge_cancellation',
 ]);
+const SDK_CAUSES = new Set<string>(['NONDETERMINISM', 'WORKFLOW_TASK_FAILED', 'ACTIVATION_DEADLINE', 'VALIDATOR_COMMAND', 'NONDETERMINISM_RISK']);
+const EXCEPTION_TYPE = /^[A-Za-z_][A-Za-z0-9_.$]{0,127}$/;
+// Every target of Technical Plan 6.2: a name, an identifier `c-<n>` or `s-<n>`, a script digest, a decimal sequence, or empty.
+const TARGET = /^$|^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+/** The SDK's share of an activation (Requirement 044-012) and a completion's commands (Non-functional requirement 044-006). */
+const MAX_SDK_COMMANDS = 147;
+const MAX_COMPLETION_COMMANDS = 403;
 
-// The answer comes from the context: its shape is checked before the host uses it.
+class AnswerRefused extends Error {
+  constructor(what: string) { super(`the context answered ${what}`); this.name = 'AnswerRefused'; }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// The answer comes from the context, whose code may have replaced the runtime's own checks: every field the host uses,
+// or that may reach a report, is checked here, and a field outside its pattern is dropped rather than relayed.
 function checkResult(answer: Record<string, unknown>): ActivationResult {
   const commands = answer['commands'];
-  if (!Array.isArray(commands)) throw new Error('the activation answered no command list');
-  for (const command of commands as Record<string, unknown>[]) {
-    if (!command || typeof command !== 'object' || !KINDS.has(command['kind'] as string) || typeof command['target'] !== 'string'
-      || !command['body'] || typeof command['body'] !== 'object'
-      || (command['commandNumber'] !== undefined && !Number.isSafeInteger(command['commandNumber']))) {
-      throw new Error('the activation answered a malformed command');
+  if (!Array.isArray(commands) || commands.length > MAX_COMPLETION_COMMANDS) throw new AnswerRefused('no command list');
+  for (const command of commands as unknown[]) {
+    if (!isRecord(command) || !KINDS.has(command['kind'] as string) || typeof command['target'] !== 'string' || !TARGET.test(command['target'])
+      || !isRecord(command['body']) || typeof command['issuedBySdk'] !== 'boolean' || typeof command['alwaysInline'] !== 'boolean'
+      || (command['commandNumber'] !== undefined && (!Number.isSafeInteger(command['commandNumber']) || (command['commandNumber'] as number) < 1))
+      || (command['sagaScope'] !== undefined && !/^s-[1-9][0-9]{0,15}$/.test(String(command['sagaScope'])))) {
+      throw new AnswerRefused('a malformed command');
     }
   }
-  return answer as unknown as ActivationResult;
+  const result: ActivationResult = { commands: commands as WorkflowCommand[], logs: [], open: answer['open'] === true };
+  const failure = answer['failure'];
+  if (failure !== undefined) {
+    if (!isRecord(failure) || !SDK_CAUSES.has(failure['cause'] as string)) throw new AnswerRefused('a failure of no cause the SDK raises');
+    const checked: WorkflowTaskFailure = { cause: failure['cause'] as WorkflowTaskFailure['cause'] };
+    if (Number.isSafeInteger(failure['commandNumber']) && (failure['commandNumber'] as number) >= 0) checked.commandNumber = failure['commandNumber'] as number;
+    if (typeof failure['actualKind'] === 'string' && (failure['actualKind'] === '' || KINDS.has(failure['actualKind']))) checked.actualKind = failure['actualKind'];
+    if (typeof failure['actualTarget'] === 'string' && TARGET.test(failure['actualTarget'])) checked.actualTarget = failure['actualTarget'];
+    if (typeof failure['exceptionType'] === 'string' && EXCEPTION_TYPE.test(failure['exceptionType'])) checked.exceptionType = failure['exceptionType'];
+    result.failure = checked;
+  }
+  if (answer['inconclusiveAt'] !== undefined) {
+    if (!Number.isSafeInteger(answer['inconclusiveAt'])) throw new AnswerRefused('an inconclusive point that is no command number');
+    result.inconclusiveAt = answer['inconclusiveAt'] as number;
+  }
+  // The function's log lines are the tenant's own output for its own logger (Technical Plan 12, design 041's row), bounded.
+  let logBytes = 0;
+  for (const line of Array.isArray(answer['logs']) ? answer['logs'].slice(0, 1000) : []) {
+    if (!isRecord(line) || !LOG_LEVELS.has(line['level'] as string) || typeof line['message'] !== 'string') continue;
+    const message = line['message'].slice(0, 8192);
+    logBytes += message.length;
+    if (logBytes > 256 * 1024) break;
+    result.logs.push({ level: line['level'] as LogLine['level'], message });
+  }
+  return result;
+}
+
+function checkNumbering(numbered: WorkflowCommand[], accepted: number): void {
+  numbered.forEach((command, index) => {
+    if (command.commandNumber !== accepted + index + 1) throw new AnswerRefused('commands numbered out of order');
+  });
+}
+
+// The bounds of Requirement 044-012 and Non-functional requirement 044-006, on the values as they will be sent; the
+// host decides which values stay inline from the kind and the gated entries, not from the context's flags.
+function prepareChecked(commands: WorkflowCommand[], init: RunInit): PreparedCommand[] {
+  const gated = new Set(init.gatedEntries);
+  let functionCommands = 0;
+  let functionMetadata = 0;
+  let sdkCommands = 0;
+  const checked = commands.map((command) => {
+    const terminal = TERMINAL_KINDS.includes(command.kind);
+    if (command.issuedBySdk) sdkCommands++;
+    else if (!terminal) {
+      functionCommands++;
+      functionMetadata += metadataSize(command.kind, command.target, command.body);
+    }
+    if (command.kind === 'set_state' && canonicalSize(command.body['state']) > init.stateMaxBytes) throw new AnswerRefused('a declared state over its maxBytes');
+    if (command.kind === 'continue_as_new' && command.body['state'] !== null && canonicalSize(command.body['state']) > init.stateMaxBytes) {
+      throw new AnswerRefused('a carried state over its maxBytes');
+    }
+    if (command.kind === 'marker_side_effect' && canonicalSize(command.body['value']) > MAX_SIDE_EFFECT_BYTES) throw new AnswerRefused('a side-effect value over its bound');
+    const alwaysInline = command.kind === 'approval' || (command.kind === 'activity' && gated.has(command.target));
+    return { ...command, alwaysInline };
+  });
+  if (functionCommands > MAX_FUNCTION_COMMANDS || functionMetadata > MAX_FUNCTION_METADATA_BYTES || sdkCommands > MAX_SDK_COMMANDS + 1) {
+    throw new AnswerRefused('more commands than an activation may make');
+  }
+  const prepared = prepare(checked);
+  let inline = 0;
+  let blobs = 0;
+  let blobBytes = 0;
+  for (const command of prepared) {
+    const field = BLOB_CAPABLE_FIELD[command.kind];
+    for (const key of ['input', 'value', 'result', 'output', 'state', 'subject', 'signals']) {
+      if (!(key in command.body)) continue;
+      const size = canonicalSize(command.body[key]);
+      if (key === field && command.valueAsBlob) { blobs++; blobBytes += size; } else inline += size;
+    }
+  }
+  if (inline > MAX_INLINE_BYTES || blobs > MAX_BLOBS || blobBytes > MAX_BLOB_CARRIED_BYTES) throw new AnswerRefused('values one completion cannot carry');
+  return prepared;
 }
 
 /**

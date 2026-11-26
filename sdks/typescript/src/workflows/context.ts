@@ -319,6 +319,15 @@ export function canonicalSize(value: unknown): number {
   return utf8Length(rfc8785(value));
 }
 
+/**
+ * A value as the call made it: its RFC 8785 text parsed again, with its size. Later changes of the caller's object, a
+ * `toJSON` that answers differently, or a getter, cannot change what the command carries or what its bounds checked.
+ */
+export function snapshot(value: unknown): { value: unknown; size: number } {
+  const text = rfc8785(value === undefined ? null : value);
+  return { value: JSON.parse(text) as unknown, size: utf8Length(text) };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The deterministic generator (Technical Plan 1.8): xoshiro256** over the run's seed.
 
@@ -509,6 +518,7 @@ class Run {
   inconclusiveAt: number | undefined;
   sawRedacted = false;
   logs: LogLine[] = [];
+  logBytes = 0;
   inValidator = false;
 
   // Inline budget of the activation (Non-functional requirement 044-006, Tasks 044-36 and 044-37).
@@ -568,6 +578,7 @@ class Run {
     this.inconclusiveAt = undefined;
     this.sawRedacted = false;
     this.logs = [];
+    this.logBytes = 0;
     this.next = this.accepted + 1;
     this.alwaysInlineBytes = 0;
     this.blobValueSizes = [];
@@ -705,8 +716,8 @@ class Run {
 
   private terminalCommand(outcome: { kind: 'complete'; output: unknown } | { kind: 'error'; error: unknown }): WorkflowCommand | undefined {
     if (outcome.kind === 'complete') {
-      const output = outcome.output === undefined ? null : outcome.output;
-      if (!this.admitBlobValue(canonicalSize(output))) {
+      const { value: output, size } = snapshot(outcome.output);
+      if (!this.admitBlobValue(size)) {
         this.failTask(new InlineValuesExceeded('the output of the workflow cannot be carried by one completion'));
         return undefined;
       }
@@ -732,7 +743,9 @@ class Run {
   issue(kind: CommandKind, target: string | ((n: number) => string),
     bodyOf: Record<string, unknown> | ((n: number) => Record<string, unknown>),
     options: { sdk?: boolean; alwaysInline?: boolean; scope?: string } = {}): number {
-    const body = typeof bodyOf === 'function' ? bodyOf(this.next) : bodyOf;
+    // The body is taken as the host will hash it: a value nested too deep, or with no canonical form, throws here, at the
+    // call, inside the context.
+    const body = JSON.parse(rfc8785(typeof bodyOf === 'function' ? bodyOf(this.next) : bodyOf)) as Record<string, unknown>;
     if (!this.activating) throw new NotInWorkflow('a workflow command');
     if (this.failure) throw new ActivationStopped();
     if (this.inValidator) {
@@ -833,7 +846,11 @@ class Run {
       promise = Promise.reject(error);
     }
     promise.then(
-      (output) => { if (!this.mainOutcome && !this.terminal) this.mainOutcome = { kind: 'complete', output }; },
+      (output) => {
+        if (this.mainOutcome || this.terminal) return;
+        // The output as the function returned it, not as it may be changed before the activation ends.
+        try { this.mainOutcome = { kind: 'complete', output: snapshot(output).value }; } catch (error) { this.mainOutcome = { kind: 'error', error }; }
+      },
       (error: unknown) => { if (!this.mainOutcome && !this.terminal) this.mainOutcome = { kind: 'error', error }; },
     );
   }
@@ -949,8 +966,8 @@ class Run {
     try { promise = Promise.resolve(entry.handler(args)); } catch (error) { promise = Promise.reject(error); }
     promise.then(
       (result) => {
-        const value = result === undefined ? null : result;
-        if (!this.admitBlobValue(canonicalSize(value))) {
+        const { value, size } = snapshot(result);
+        if (!this.admitBlobValue(size)) {
           this.issue('update_complete', target, { admittedSeq: seq, failureCode: 'RETAINED_BYTES_LIMIT' }, { sdk: true });
           return;
         }
@@ -971,8 +988,10 @@ class Run {
 
   log(level: LogLine['level'], args: unknown[]): void {
     if (this.replaying || !this.activating) return;
-    if (this.logs.length >= 1000) return;
-    this.logs.push({ level, message: args.map(formatLogArgument).join(' ').slice(0, 8192) });
+    if (this.logs.length >= 1000 || this.logBytes >= 256 * 1024) return;
+    const message = args.map(formatLogArgument).join(' ').slice(0, 8192);
+    this.logBytes += message.length;
+    this.logs.push({ level, message });
   }
 }
 
@@ -1066,11 +1085,10 @@ function scheduleActivity<T>(name: string, input: unknown, options: ActivityOpti
     // The literal keys of feature 022 enter the code profile with Task 044-27.
     throw new TypeError('concurrencyKey and rateLimitKey wait for feature 022 in the code profile (design 044, Task 044-27)');
   }
-  const value = input === undefined ? null : input;
+  const { value, size } = snapshot(input);
   const fragment: Record<string, unknown> = { type: 'activity', activity: name, input: value };
   if (options?.retry) fragment['retry'] = { ...options.retry };
   if (options?.timeoutMs !== undefined) fragment['timeoutMs'] = options.timeoutMs;
-  const size = canonicalSize(value);
   const gated = r.gated.has(name);
   // A gated activity's input is always inline; any other may travel as a blob.
   if (gated) r.admitInlineValue(size, `the input of the gated activity ${name}`);
@@ -1083,10 +1101,10 @@ function scheduleScript<T>(digest: string, input: unknown, options: ScriptOption
   const r = run('script');
   if (scope && scope.state !== 'open') throw new TypeError(`the saga scope ${scope.id} is not open`);
   if (options?.timeoutMs !== undefined) throw new TypeError('the code profile of a script has no timeoutMs: its artifact bounds it');
-  const value = input === undefined ? null : input;
+  const { value, size } = snapshot(input);
   const fragment: Record<string, unknown> = { type: 'script', artifactDigest: digest, input: value };
   if (options?.retry) fragment['retry'] = { ...options.retry };
-  if (!r.admitBlobValue(canonicalSize(value))) throw new InlineValuesExceeded(`the input of the script ${digest} cannot be carried by this activation's completion`);
+  if (!r.admitBlobValue(size)) throw new InlineValuesExceeded(`the input of the script ${digest} cannot be carried by this activation's completion`);
   const number = r.issue('script', digest, fragment, scope ? { scope: scope.id } : {});
   return commandPromise<T>(number, stepOutcome, scope);
 }
@@ -1194,12 +1212,12 @@ export function waitForEvent<T = unknown>(eventType: string, correlationKey: str
 /** Starts a child run of a listed workflow and resolves with its output. */
 export function child<T = unknown>(workflowId: string, input?: unknown, options?: ChildOptions): CommandPromise<T> {
   const r = run('child');
-  const value = input === undefined ? null : input;
+  const { value, size } = snapshot(input);
   const fragment: Record<string, unknown> = { type: 'child', workflowId, input: value };
   // cancelPolicy and businessId are fragment keys; the input is the command's value.
   if (options?.cancelPolicy !== undefined) fragment['cancelPolicy'] = options.cancelPolicy;
   if (options?.businessId !== undefined) fragment['businessId'] = options.businessId;
-  if (!r.admitBlobValue(canonicalSize(value))) throw new InlineValuesExceeded(`the input of the child ${workflowId} cannot be carried by this activation's completion`);
+  if (!r.admitBlobValue(size)) throw new InlineValuesExceeded(`the input of the child ${workflowId} cannot be carried by this activation's completion`);
   const number = r.issue('child', workflowId, fragment);
   return commandPromise<T>(number, (resolve, reject) => ({
     settle(event: HistoryEvent): void {
@@ -1213,8 +1231,8 @@ export function child<T = unknown>(workflowId: string, input?: unknown, options?
 /** Asks for a person's approval under a named policy of the envelope. */
 export function approval(policyName: string, subject: unknown): CommandPromise<'approved' | 'rejected' | 'expired'> {
   const r = run('approval');
-  const value = subject === undefined ? null : subject;
-  r.admitInlineValue(canonicalSize(value), `the subject of the approval ${policyName}`);
+  const { value, size } = snapshot(subject);
+  r.admitInlineValue(size, `the subject of the approval ${policyName}`);
   const number = r.issue('approval', policyName, { type: 'approval', policyName, subject: value }, { alwaysInline: true });
   return commandPromise(number, (resolve) => ({
     settle(event: HistoryEvent): void { if (event.kind === 'approval.decided') resolve(event.decision); },
@@ -1267,8 +1285,9 @@ export function onUpdate(name: string, validator: (args: unknown) => void, handl
 /** Sets the declared state; the last value of an activation is committed with its completion. */
 export function setState(state: unknown): void {
   const r = run('setState');
-  const value = state === undefined ? null : state;
-  const size = canonicalSize(value);
+  const { value, size } = snapshot(state);
+  // The body the host hashes holds the state one level deeper: checked now, at the call.
+  rfc8785({ state: value });
   if (size > r.stateMaxBytes) throw new InlineValuesExceeded(`the declared state of ${size} bytes is over its maxBytes of ${r.stateMaxBytes}`);
   r.stateValue = { value };
 }
@@ -1310,9 +1329,9 @@ export function sideEffect<T>(compute: () => T): T {
   const r = run('sideEffect');
   const record = r.replaying ? r.expected.get(r.next) : undefined;
   // A replay returns the recorded value instead of computing it again; the checks are the same live and replayed.
-  const value = record && record.kind === 'marker_side_effect' ? record.value as T : compute();
-  const stored = value === undefined ? null : value;
-  const size = canonicalSize(stored);
+  const computed = record && record.kind === 'marker_side_effect' ? record.value as T : compute();
+  const { value: stored, size } = snapshot(computed);
+  const value = stored as T;
   if (size > MAX_SIDE_EFFECT_BYTES) throw new InlineValuesExceeded(`a side-effect value is at most ${MAX_SIDE_EFFECT_BYTES} bytes, not ${size}`);
   if (!r.admitBlobValue(size)) throw new InlineValuesExceeded('the side-effect value cannot be carried by this activation\'s completion');
   r.issue('marker_side_effect', SIDE_EFFECT_MARKER_ID, { markerId: SIDE_EFFECT_MARKER_ID, value: stored });
@@ -1342,18 +1361,19 @@ export function uuid(): string {
 /** Ends this run and starts its successor with the input and, optionally, the carried state. */
 export function continueAsNew(input: unknown, options?: ContinueAsNewOptions): never {
   const r = run('continueAsNew');
-  const value = input === undefined ? null : input;
-  const body: Record<string, unknown> = { input: value, state: null, version: options?.version ?? 'same' };
-  let size = canonicalSize(value);
+  const taken = snapshot(input);
+  const body: Record<string, unknown> = { input: taken.value, state: null, version: options?.version ?? 'same' };
+  let size = taken.size;
   if (options && 'state' in options && options.state !== undefined) {
     // The carried state is bounded by the current version only; the server checks the resolved successor (Task 044-36).
-    const stateSize = canonicalSize(options.state);
-    if (stateSize > r.stateMaxBytes) {
-      throw new InlineValuesExceeded(`the carried state of ${stateSize} bytes is over the current version's maxBytes of ${r.stateMaxBytes}`);
+    const state = snapshot(options.state);
+    if (state.size > r.stateMaxBytes) {
+      throw new InlineValuesExceeded(`the carried state of ${state.size} bytes is over the current version's maxBytes of ${r.stateMaxBytes}`);
     }
-    body['state'] = options.state;
-    size += stateSize;
+    body['state'] = state.value;
+    size += state.size;
   }
+  rfc8785(body);
   r.admitInlineValue(size, 'the input and carried state of continue-as-new');
   throw new ContinueAsNewRequest(body);
 }
@@ -1464,13 +1484,48 @@ function installGlobals(global: Record<string, unknown>): void {
     log: logger('info'), info: logger('info'), debug: logger('debug'), warn: logger('warn'), error: logger('error'),
   });
 
-  for (const name of ['WeakRef', 'FinalizationRegistry', 'SharedArrayBuffer', 'Atomics', 'crypto', 'performance', 'process']) {
+  // WebAssembly cannot compile here (no code generation) and its shared memory would hand out a SharedArrayBuffer.
+  for (const name of ['WeakRef', 'FinalizationRegistry', 'SharedArrayBuffer', 'Atomics', 'WebAssembly', 'crypto', 'performance', 'process']) {
     delete global[name];
   }
-  installLocale(global);
+  installTemporal(global, timeNow);
+  installStackTraces(global);
+  installLocale(global, timeNow);
 }
 
-function installLocale(global: Record<string, unknown>): void {
+// Temporal.Now reads the real clock and the process's time zone: it answers the workflow time in UTC instead.
+function installTemporal(global: Record<string, unknown>, timeNow: () => number): void {
+  const temporal = global['Temporal'] as Record<string, unknown> | undefined;
+  if (!temporal || typeof temporal !== 'object') return;
+  const Instant = temporal['Instant'] as { fromEpochMilliseconds(ms: number): { toZonedDateTimeISO(zone: string): Record<string, () => unknown> } };
+  const instant = (): ReturnType<typeof Instant.fromEpochMilliseconds> => Instant.fromEpochMilliseconds(timeNow());
+  const zoned = (zone?: unknown): Record<string, () => unknown> => instant().toZonedDateTimeISO(zone === undefined ? 'UTC' : String(zone));
+  Object.defineProperty(temporal, 'Now', {
+    value: Object.freeze({
+      instant,
+      timeZoneId: (): string => 'UTC',
+      zonedDateTimeISO: (zone?: unknown): unknown => zoned(zone),
+      plainDateTimeISO: (zone?: unknown): unknown => zoned(zone)['toPlainDateTime']!(),
+      plainDateISO: (zone?: unknown): unknown => zoned(zone)['toPlainDate']!(),
+      plainTimeISO: (zone?: unknown): unknown => zoned(zone)['toPlainTime']!(),
+    }),
+    writable: true, configurable: true,
+  });
+}
+
+// A stack trace lists only the frames of the bundle: the host's frames name its files, which differ between workers
+// and are not the workflow's to see.
+function installStackTraces(global: Record<string, unknown>): void {
+  const ErrorConstructor = global['Error'] as ErrorConstructor & { prepareStackTrace?: unknown };
+  ErrorConstructor.prepareStackTrace = (error: Error, frames: { getFileName(): string | null; getFunctionName(): string | null; getLineNumber(): number | null; getColumnNumber(): number | null }[]): string => {
+    let header: string;
+    try { header = `${error.name}: ${error.message}`; } catch { header = 'Error'; }
+    const own = frames.filter((frame) => frame.getFileName() === 'workflow-bundle.js');
+    return header + own.map((frame) => `\n    at ${frame.getFunctionName() ?? '<anonymous>'} (workflow-bundle.js:${frame.getLineNumber() ?? 0}:${frame.getColumnNumber() ?? 0})`).join('');
+  };
+}
+
+function installLocale(global: Record<string, unknown>, timeNow: () => number): void {
   const intl = global['Intl'] as Record<string, unknown> | undefined;
   if (!intl) return;
   const fixed = (locales: unknown): unknown => (locales === undefined ? WORKFLOW_LOCALE : locales);
@@ -1488,6 +1543,27 @@ function installLocale(global: Record<string, unknown>): void {
     Object.defineProperty(Wrapped, 'prototype', { value: Original.prototype, writable: false });
     if (typeof Original['supportedLocalesOf'] === 'function') Wrapped['supportedLocalesOf'] = Original['supportedLocalesOf'];
     intl[name] = Wrapped;
+    if (name === 'DateTimeFormat') {
+      // format() and formatToParts() without a date read the real clock: they take the workflow time instead.
+      const proto = Original.prototype as Record<string, unknown>;
+      const formatGetter = Object.getOwnPropertyDescriptor(proto, 'format')?.get;
+      if (formatGetter) {
+        Object.defineProperty(proto, 'format', {
+          get(this: unknown) {
+            const bound = formatGetter.call(this) as (date?: unknown) => string;
+            return (date?: unknown): string => bound(date === undefined ? timeNow() : date);
+          },
+          configurable: true,
+        });
+      }
+      const formatToParts = proto['formatToParts'] as ((date?: unknown) => unknown) | undefined;
+      if (typeof formatToParts === 'function') {
+        Object.defineProperty(proto, 'formatToParts', {
+          value: function (this: unknown, date?: unknown): unknown { return formatToParts.call(this, date === undefined ? timeNow() : date); },
+          writable: true, configurable: true,
+        });
+      }
+    }
   }
   const patch = (target: unknown, method: string): void => {
     const proto = target as Record<string, unknown>;

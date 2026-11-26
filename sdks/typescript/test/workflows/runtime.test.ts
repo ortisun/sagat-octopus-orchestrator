@@ -73,7 +73,8 @@ test('the random numbers and identifiers of a run follow its seed', async () => 
 test('a module-level read of the clock or the generator is refused', async () => {
   for (const prelude of ['const loadedAt = Date.now();', 'const salt = Math.random();']) {
     await assert.rejects(WorkflowThread.shared().loadBundle(bundleOf({ noop: async () => null }, prelude).code),
-      (error: unknown) => (error as Error).name === 'InvalidWorkflowBundle' && /available only inside a workflow function/.test((error as Error).message));
+      // The error's name crosses back, never its message.
+      (error: unknown) => (error as Error).name === 'InvalidWorkflowBundle' && /\(NotInWorkflow\)/.test((error as Error).message));
   }
 });
 

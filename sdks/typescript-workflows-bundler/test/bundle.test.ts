@@ -61,7 +61,7 @@ test('two builds of the same code are the same bytes, and the manifest names the
 });
 
 test('a workflow module that reads the clock at its top level is refused', async () => {
-  await assert.rejects(bundleWorkflows({ entry: fixture('toplevel-clock.ts') }), /available only inside a workflow function/);
+  await assert.rejects(bundleWorkflows({ entry: fixture('toplevel-clock.ts') }), /at its top level, where no activation runs/);
 });
 
 test('the sagat-workflows command writes the bundle and the manifest', () => {
@@ -79,4 +79,13 @@ test('the sagat-workflows command writes the bundle and the manifest', () => {
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+test('a dynamic import fails inside the context, at the same point live and in replay', async () => {
+  const { code } = await bundleWorkflows({ entry: fixture('dynamic-import.ts') });
+  const env = new WorkflowTestEnvironment({ bundle: { code }, workflowType: 'dynamic', coldReplay: true }).start({ module: 'node:fs' });
+  const outcome = await env.runUntilBlocked();
+  assert.equal(outcome.status, 'COMPLETED');
+  assert.deepEqual(outcome.output, { price: 2500, refused: 'Error', at: true });
+  assert.equal((await env.replay()).verdict, 'MATCH');
 });

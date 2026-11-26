@@ -99,6 +99,9 @@ export async function bundleWorkflows(options: BundleOptions): Promise<BundleRes
       conditions: ['sagat-workflow'],
       mainFields: ['module', 'main'],
       keepNames: true,
+      // A dynamic import() becomes a call of esbuild's own require shim, which fails inside the context at the same point
+      // live and in replay; left as syntax, Node's module loader would settle it outside the activation.
+      supported: { 'dynamic-import': false },
       legalComments: 'none',
       charset: 'utf8',
       logLevel: 'silent',
@@ -118,6 +121,12 @@ export async function bundleWorkflows(options: BundleOptions): Promise<BundleRes
   let workflowTypes: readonly string[];
   try {
     workflowTypes = (await thread.loadBundle(code, BUNDLE_FILE)).workflowTypes;
+  } catch (error) {
+    if (error instanceof Error && /\(NotInWorkflow\)/.test(error.message)) {
+      throw new Error('a workflow module calls the clock, the random generator or a workflow function at its top level, '
+        + 'where no activation runs; move the call into a workflow function (NotInWorkflow)');
+    }
+    throw error;
   } finally {
     await thread.terminate();
   }

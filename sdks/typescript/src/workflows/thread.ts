@@ -15,6 +15,15 @@ import type { ReplayActivation } from './history.js';
 import { CodeRun, type CompletionAnswer } from './run.js';
 import { WorkflowBundle } from './sandbox.js';
 
+/** An error of this thread's own making, whose message is the SDK's text. */
+class ThreadRequestError extends Error {
+  constructor(message: string) { super(message); this.name = 'WorkflowThreadRequestRefused'; }
+}
+
+// The errors whose message the thread relays: each is the SDK's own text, never one that a context's value or error
+// could have shaped. Any other error crosses as its kind alone.
+const RELAYED = new Set(['WorkflowThreadRequestRefused', 'InvalidWorkflowBundle', 'WorkflowRuntimeUnavailable', 'ActivationDeadlineExceeded', 'HistoryOrderError']);
+
 export type ThreadRequest =
   | { op: 'bundle'; bundleKey: string; code: string; filename: string }
   | { op: 'forgetBundle'; bundleKey: string }
@@ -47,14 +56,14 @@ function stateOf(run: CodeRun): RunState {
 
 function runOf(runKey: string): CodeRun {
   const run = runs.get(runKey);
-  if (!run) throw new Error(`the workflow thread holds no run ${runKey}`);
+  if (!run) throw new ThreadRequestError(`the workflow thread holds no run ${runKey}`);
   return run;
 }
 
 function handle(request: ThreadRequest): unknown {
   switch (request.op) {
     case 'bundle': {
-      const bundle = bundles.get(request.bundleKey) ?? new WorkflowBundle(request.code, request.filename);
+      const bundle = bundles.get(request.bundleKey) ?? new WorkflowBundle(request.code);
       bundles.set(request.bundleKey, bundle);
       return { workflowTypes: [...bundle.workflowTypes] };
     }
@@ -63,7 +72,7 @@ function handle(request: ThreadRequest): unknown {
       return {};
     case 'create': {
       const bundle = bundles.get(request.bundleKey);
-      if (!bundle) throw new Error(`the workflow thread holds no bundle ${request.bundleKey}`);
+      if (!bundle) throw new ThreadRequestError(`the workflow thread holds no bundle ${request.bundleKey}`);
       const options = request.activationDeadlineMs === undefined ? {} : { activationDeadlineMs: request.activationDeadlineMs };
       const run = new CodeRun(bundle, request.init, options);
       runs.set(request.runKey, run);
@@ -105,8 +114,9 @@ if (parentPort) {
     try {
       port.postMessage({ id: message.id, ok: handle(message.request) });
     } catch (error) {
-      const name = error instanceof Error ? error.name : 'Error';
-      const text = error instanceof Error ? error.message : 'the workflow thread failed';
+      const relayed = error instanceof Error && RELAYED.has(error.name);
+      const name = relayed ? (error as Error).name : 'WorkflowThreadFailure';
+      const text = relayed ? (error as Error).message : 'the workflow thread failed to serve the request';
       port.postMessage({ id: message.id, error: { name, message: text } });
     }
   });

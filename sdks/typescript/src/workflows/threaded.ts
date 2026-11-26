@@ -36,34 +36,65 @@ export class WorkflowThreadError extends Error {
 
 let shared: WorkflowThread | undefined;
 
+export interface WorkflowThreadOptions {
+  /**
+   * The longest a request may take before the thread is ended and every run it holds is lost (they are replayed by the
+   * next lease): a request runs one activation, whose own deadline is at most the workflow task timeout of 60 s, or a
+   * replay of one, so the default is the longest lease of a workflow task, 120,000 ms.
+   */
+  requestTimeoutMs?: number;
+  /** The heap of the thread in MiB: one run's memory cannot take the worker's process with it (default 1,024). */
+  maxOldGenerationSizeMb?: number;
+}
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+export const DEFAULT_THREAD_HEAP_MB = 1024;
+
 export class WorkflowThread {
   readonly #worker: Worker;
-  readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
+  readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void; timer: NodeJS.Timeout }>();
+  readonly #requestTimeoutMs: number;
   #nextId = 1;
   #nextRun = 1;
   #dead: Error | undefined;
 
-  constructor() {
+  constructor(options: WorkflowThreadOptions = {}) {
     checkNodeVersion();
-    // No inherited command-line options: a preloaded module (an instrumentation agent) would run in the thread.
-    this.#worker = new Worker(new URL('./thread.js', import.meta.url), { execArgv: [], stdout: false, stderr: false });
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    // No inherited command-line options (a preloaded instrumentation agent would run here and enable async hooks), only
+    // the one that lets node:vm refuse a dynamic import with a primitive; no environment variable; a bounded heap.
+    this.#worker = new Worker(new URL('./thread.js', import.meta.url), {
+      execArgv: ['--experimental-vm-modules', '--no-warnings'],
+      env: {},
+      stdout: false,
+      stderr: false,
+      resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb ?? DEFAULT_THREAD_HEAP_MB },
+    });
     this.#worker.unref();
     this.#worker.on('message', (message: { id: number; ok?: unknown; error?: { name: string; message: string } }) => {
       const pending = this.#pending.get(message.id);
       if (!pending) return;
       this.#pending.delete(message.id);
+      clearTimeout(pending.timer);
       if (this.#pending.size === 0) this.#worker.unref();
       if (message.error) pending.reject(new WorkflowThreadError(message.error.name, message.error.message));
       else pending.resolve(message.ok);
     });
-    const fail = (error: Error): void => {
-      this.#dead = error;
-      for (const pending of this.#pending.values()) pending.reject(error);
-      this.#pending.clear();
-    };
-    this.#worker.on('error', (error) => fail(error));
-    this.#worker.on('exit', (code) => fail(new Error(`the workflow thread ended with code ${code}`)));
+    this.#worker.on('error', () => this.#fail(new WorkflowThreadError('WorkflowThreadExited', 'the workflow thread failed and its runs are lost')));
+    this.#worker.on('exit', () => this.#fail(new WorkflowThreadError('WorkflowThreadExited', 'the workflow thread ended and its runs are lost')));
   }
+
+  #fail(error: Error): void {
+    this.#dead ??= error;
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.#pending.clear();
+  }
+
+  /** Whether the thread ended (a failure, a stuck request or `terminate`): its runs are gone. */
+  get dead(): boolean { return this.#dead !== undefined; }
 
   /** The thread the replayer and the test environment share when none is given. */
   static shared(): WorkflowThread {
@@ -75,7 +106,13 @@ export class WorkflowThread {
     if (this.#dead) return Promise.reject(this.#dead);
     const id = this.#nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      // A request that never answers (code of a context that escaped its deadline) ends the thread rather than hanging.
+      const timer = setTimeout(() => {
+        this.#fail(new WorkflowThreadError('WorkflowThreadStuck', 'a request to the workflow thread did not answer in time; the thread is ended'));
+        void this.#worker.terminate();
+      }, this.#requestTimeoutMs);
+      timer.unref();
+      this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       this.#worker.ref();
       this.#worker.postMessage({ id, request });
     });
@@ -102,6 +139,7 @@ export class WorkflowThread {
   /** Ends the thread; the runs it held are gone. */
   async terminate(): Promise<void> {
     if (shared === this) shared = undefined;
+    this.#fail(new WorkflowThreadError('WorkflowThreadExited', 'the workflow thread was ended'));
     await this.#worker.terminate();
   }
 }
@@ -124,26 +162,32 @@ export class ThreadedRun implements RunHandle {
   get closed(): boolean { return this.#state.closed; }
   get deferredBodyDigest(): Uint8Array | undefined { return this.#state.deferredBodyDigest; }
 
+  // Any failure of a request leaves the run's context in an unknown state: the run is broken and must be replayed.
+  async #call<T extends { state?: RunState }>(request: ThreadRequest): Promise<T> {
+    try {
+      const answer = await this.#thread.request<T>(request);
+      if (answer.state) this.#state = answer.state;
+      return answer;
+    } catch (error) {
+      this.#state = { ...this.#state, broken: true };
+      throw error;
+    }
+  }
+
   async replay(activation: ReplayActivation): Promise<ReplayStep> {
-    const answer = await this.#thread.request<{ step: ReplayStep; state: RunState }>({ op: 'replay', runKey: this.#runKey, activation });
-    this.#state = answer.state;
-    return answer.step;
+    return (await this.#call<{ step: ReplayStep; state: RunState }>({ op: 'replay', runKey: this.#runKey, activation })).step;
   }
 
   async activate(window: HistoryEvent[], started: ReplayActivation['started']): Promise<Completion | Failure> {
-    const answer = await this.#thread.request<{ answer: Completion | Failure; state: RunState }>({ op: 'activate', runKey: this.#runKey, window, started });
-    this.#state = answer.state;
-    return answer.answer;
+    return (await this.#call<{ answer: Completion | Failure; state: RunState }>({ op: 'activate', runKey: this.#runKey, window, started })).answer;
   }
 
   async commit(answer: CompletionAnswer): Promise<void> {
-    const reply = await this.#thread.request<{ state: RunState }>({ op: 'commit', runKey: this.#runKey, answer });
-    this.#state = reply.state;
+    await this.#call<{ state: RunState }>({ op: 'commit', runKey: this.#runKey, answer });
   }
 
   async abandon(): Promise<void> {
-    const reply = await this.#thread.request<{ state: RunState }>({ op: 'abandon', runKey: this.#runKey });
-    this.#state = reply.state;
+    await this.#call<{ state: RunState }>({ op: 'abandon', runKey: this.#runKey });
   }
 
   async bodyDigests(): Promise<Uint8Array[]> {

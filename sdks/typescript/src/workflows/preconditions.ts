@@ -11,8 +11,8 @@ export const MINIMUM_NODE = [22, 8] as const;
 const UTC_ZONES = new Set(['UTC', 'Etc/UTC']);
 
 export class WorkflowRuntimeUnavailable extends Error {
-  readonly reason: 'NODE_VERSION' | 'TIME_ZONE';
-  constructor(reason: 'NODE_VERSION' | 'TIME_ZONE', message: string) {
+  readonly reason: 'NODE_VERSION' | 'TIME_ZONE' | 'VM_MODULES';
+  constructor(reason: 'NODE_VERSION' | 'TIME_ZONE' | 'VM_MODULES', message: string) {
     super(message);
     this.name = 'WorkflowRuntimeUnavailable';
     this.reason = reason;

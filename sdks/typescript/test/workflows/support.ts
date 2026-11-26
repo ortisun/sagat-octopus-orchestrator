@@ -29,7 +29,7 @@ export function bundleOf(workflows: Record<string, TestWorkflow | string>, prelu
 
 /** A test bundle compiled in the test's own thread, for the tests that drive a `CodeRun` directly. */
 export function localBundle(workflows: Record<string, TestWorkflow | string>, prelude = ''): WorkflowBundle {
-  return new WorkflowBundle(bundleSource(workflows, prelude), 'test-bundle.js');
+  return new WorkflowBundle(bundleSource(workflows, prelude));
 }
 
 export const SEED = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f';
