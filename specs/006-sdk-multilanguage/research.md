@@ -1635,3 +1635,21 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   Python and .NET and the Rust SDK's whole suite ran; the TypeScript (`npm test`) and Java (`./mvnw -q verify`) suites, and
   the token canaries of the four SDKs whose host forms come with their own tasks, were left to CI and to Tasks 006-059 to
   006-064 (the copies were compared byte for byte by hand). Closed by the pull request's CI.
+- **D006-102 — The marks are nine nullable columns of `steps` and one defaulted column of `worker_sessions`** (Task 006-044;
+  migration `20270216000000_delivery_acknowledgement_marks`, stamped after every migration of `develop` and of the open
+  branches, feature 022's included). Each `ADD COLUMN` is nullable or carries a constant default, so the catalog changes and no
+  row is rewritten; no row is backfilled and no `CHECK` constrains a mark (a constraint on a new column scans `steps` under its
+  lock; the assignments are checked statically by Task 006-047 instead, and `withdrawn_lease_token_hash` is written only from
+  a hash the server computed, classified `protected_system` as `reported_lease_token_hash` is). The table-level grants of
+  `sagat_app` cover the columns. The down holds `steps` in SHARE mode and refuses while a `LEASED` step's lease is the one
+  marked provisional (`lease_offered_generation = generation`), the one state a binary without the marks would misread; it
+  then drops the columns. The runtime role reads `pg_postmaster_start_time()`, the claim's incarnation, as the owner reads
+  it. Tested: `the_marks_of_1_8_are_added_and_roll_back_only_while_no_provisional_mark_counts` and
+  `the_runtime_role_reads_the_start_time_of_the_server` (`integration_platform_foundation`), the storage manifest test and
+  the runtime privilege audit. Weighed: a `CHECK` that the marks pair up (a scan of `steps` at migration time, and the pairs
+  are a property of the statements that write them, which the static check of Task 006-047 holds).
+- **G006-040 — That a crash the postmaster recovers keeps `pg_postmaster_start_time()` is recorded, not tested here.** D006-062
+  rests on it (a crash without a restart loses the unwritten journal and keeps the start time, so the acknowledgement and the
+  capability record commit with `synchronous_commit` at least `local`). Provoking that crash means killing a backend of the
+  test server, which every test of the process shares. Closed by the failover drill of Task 006-054 (`infra/dr/drill.sh`),
+  which reads the start time before and after each disaster.
