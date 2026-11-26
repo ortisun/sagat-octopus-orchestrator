@@ -1,4 +1,4 @@
-# Approval confirmation of design 052: correctness (2026-11-26)
+# Targeted re-read 2 of design 052: correctness (2026-11-26)
 
 Doc: docs/designs/052-hot-path-dispatch.md
 Reviewed-commit: 58b6fd20e8723d36fdac8be920b5cf5ca13dd3cb
@@ -33,3 +33,5 @@ No Blocker.
    state when it acts and measure it on and off with two pollers per instance.
 
 Counts: Blocker 0, Major 3, Nit 3
+
+The three Majors and three Nits were fixed at the next commit, with the architecture confirmation beside it.
