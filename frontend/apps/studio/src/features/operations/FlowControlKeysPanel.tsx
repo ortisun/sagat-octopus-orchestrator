@@ -5,7 +5,7 @@ import { isApiError } from '../../api/errors';
 import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import { Moment } from '../runs/Now';
-import { keyLabelWords, noNextSlotWords, poolWords, queuedWords, scopeWords } from './flowControlKeys';
+import { keyLabelWords, noNextSlotWords, poolWords, queuedWords, scopeWords, spansPagesWords } from './flowControlKeys';
 import type { ConcurrencyKey, ConcurrencyKeyGroup, FlowControlKeysApi, KeyQuery, RateLimitKey, RateLimitKeyGroup } from './flowControlKeys';
 import './flowControlKeys.css';
 
@@ -42,7 +42,7 @@ interface Listing<T, G> {
  * platform answers a caller who may reveal personal data with keys, any other with groups (decision D022-086); a
  * platform that does not say which lists keys.
  */
-function KeyListing<T extends { group: string }, G extends { group: string }>({ listing, namespace, queryKey }: { listing: Listing<T, G>; namespace: string; queryKey: readonly unknown[] }) {
+function KeyListing<T extends { group: string }, G extends { group: string; spansPages?: boolean }>({ listing, namespace, queryKey }: { listing: Listing<T, G>; namespace: string; queryKey: readonly unknown[] }) {
   const [draft, setDraft] = useState('');
   const [group, setGroup] = useState('');
   const headingId = useId();
@@ -112,16 +112,21 @@ function KeyListing<T extends { group: string }, G extends { group: string }>({ 
               </thead>
               <tbody>
                 {groupView
-                  ? groups.map((row, index) => (
-                      <tr key={index}>
-                        <th scope="row">
-                          <code>{row.group}</code>
-                        </th>
-                        {listing.groupColumns.map((column) => (
-                          <td key={column.header}>{column.cell(row)}</td>
-                        ))}
-                      </tr>
-                    ))
+                  ? groups.map((row, index) => {
+                      const spans = spansPagesWords(row);
+                      return (
+                        <tr key={index}>
+                          <th scope="row">
+                            <code>{row.group}</code>
+                            {/* in the row header, so assistive technology reads it with every count of the row (decision D022-111) */}
+                            {spans === null ? null : <span className="operations-key-spans"> {spans}</span>}
+                          </th>
+                          {listing.groupColumns.map((column) => (
+                            <td key={column.header}>{column.cell(row)}</td>
+                          ))}
+                        </tr>
+                      );
+                    })
                   : items.map((item, index) => (
                       <tr key={index}>
                         <th scope="row">

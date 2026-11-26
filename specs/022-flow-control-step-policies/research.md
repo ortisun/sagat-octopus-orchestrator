@@ -2081,6 +2081,36 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `scoped_event_storage::receiver::the_quota_refusal_future_kept_on_the_test_thread_stays_small` (red without the box:
   78,272 bytes with the gates boxed, 80,592 before); the plan's table "Stack and future sizes of a run creator" holds the bounds.
 
+- **D022-110 — The fragments and the canonical contracts say the same thing for the slice, and a test holds them
+  together (2026-11-26; tasks T022-060 narrowed to the concurrency parts, T022-087 the rate-limit parts).** Delegate
+  (OD-2026-11-24-4). The branch merged each part into the canonical documents with the code that serves it (T022-013,
+  T022-026, T022-078, T022-111, D022-100, D022-101), so the task was to find what was still missing and where the two
+  documents disagreed. Read on 2026-11-26 against the code: already merged were both key listings with their `group`,
+  cursor and `Limit` parameters, the six key and group schemas (`spansPages` included), `Run.concurrency`
+  (`RunConcurrency`), `Run.rateLimit` (`RunRateLimit`), the `waitingOn` values `rate_limit` and `concurrency`, the
+  quota resources, the alert kinds, the refusal reasons but one, and both IR policies with the same shape as the
+  fragment. Where they disagreed the code decided, and the fragment was wrong each time: the listings take the canonical
+  `Limit` parameter (default 50, values outside 1 to 200 clamped, as `routes/concurrency.rs` reads it), not
+  `PageLimit`; their `200` carries the trace and request headers like every canonical answer; `ConcurrencyKeyPage` is
+  closed (`additionalProperties: false`), as `RateLimitKeyPage` already was; `Run.concurrency` and `Run.rateLimit` are
+  absent, never `null`, on a run without a gate (`skip_serializing_if` in `dto_exec.rs`), and `Run.concurrency.since` is
+  always sent. The fragment is corrected. Missing from the canonical documents, and merged: `RATE_LIMIT_QUEUE_FULL` in
+  `Error.details` (the server gives it since T022-012); the publication codes of the two gates in
+  `DefinitionProblem.code` (`CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`, `FLOW_CONTROL_KEY_UNBOUNDED`,
+  `FLOW_CONTROL_KEY_SECRET`, `FLOW_CONTROL_COMBINATION` and the warnings `CONCURRENCY_SELF_CHILD`,
+  `CONCURRENCY_LIMIT_MISMATCH`, `RATE_LIMIT_MISMATCH`, `FLOW_CONTROL_KEY_PII`); the step and child node failure codes in
+  `RuntimeNode.failureCode`; and, in the IR schema's descriptions, the rules the fragment kept in `x-semantic-rules`
+  (the two warnings, the declaration bounds, the strict window). No operation, parameter or response of the canonical
+  OpenAPI changed, so its pinned baseline (`tests/contract/iceberg-writes/fixtures/openapi-operations.json`) does not
+  move; the ten journal events are the journal vocabulary (`crates/domain/src/execution/event.rs`), not AsyncAPI
+  messages, and the AsyncAPI fragment holds only `run.result_returned` (US3, not in the slice), so neither
+  `events.asyncapi.yaml` nor `events.baseline.json` changes. Options for keeping the two documents together: (a) delete
+  the fragment's merged parts (the fragment would no longer say what the feature adds); (b) words in the README only;
+  (c) a contract test that compares the shapes, prose removed, and checks that every code the server gives is named in
+  the canonical document. Chosen (c), as Rule 21 asks: `contract_flow_control_step_policies::contracts`, five tests,
+  each seen red before the merge (the fragment's seven differences, `RATE_LIMIT_QUEUE_FULL`, nine publication codes,
+  three IR rules, nine failure codes).
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
@@ -2131,6 +2161,17 @@ taken after `git grep D022-04` on every `origin/*` branch.
      group; the group filter is sent as typed and the platform's `422` is shown, so the Studio keeps no second copy of
      the derived-group rule. The namespace's `queuedRuns` is shown once per listing, as the platform reads it.
 
+- **D022-111 — The Studio says which group rows were read across pages (2026-11-26; batch 5 correctness minor 5,
+  decision D022-101; task T022-056).** Delegate (OD-2026-11-24-4). A group row with `spansPages: true` mixes the
+  snapshots of several pages and may show more holders, or grants, than its keys allow; an operator who reads it as one
+  snapshot could think a limit is broken. Options: (a) a column of its own (a whole column for a value that is
+  `false` on nearly every row, and a cell read apart from the counts it qualifies); (b) a sign beside the counts with
+  a tooltip (a tooltip is not reachable by touch and is easy to miss with a screen reader); (c) words under the group
+  name in the row's header cell: "Totals read across pages; may be above the limit". Chosen (c): the row header is
+  read by assistive technology with every cell of the row, so the warning reaches whoever reads a count, and it is
+  text, not colour (WCAG 1.4.1). A row with `spansPages: false`, or from a platform that does not send it, shows the
+  group name alone. Test: `FlowControlKeysPanel.test.tsx`, "says on a group row whose sums were read across pages
+  that its totals may be above the limit" (red before the words existed).
 
 ### Decisions of the documentation slice (2026-11-26)
 

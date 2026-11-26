@@ -65,6 +65,15 @@ export function queuedWords(queued: number): string {
   return `${queued} ${queued === 1 ? 'run of this namespace is' : 'runs of this namespace are'} queued (waiting for a permit or a slot, each run counted once).`;
 }
 
+/**
+ * A group whose sums were begun by an earlier page mixes the snapshots of the pages that read it, so its totals may be
+ * above its keys' limits (`spansPages`, decision D022-101); `null` for a row read in one page, or a platform that does
+ * not say.
+ */
+export function spansPagesWords(group: { spansPages?: boolean }): string | null {
+  return group.spansPages === true ? 'Totals read across pages; may be above the limit' : null;
+}
+
 /** Why a rate-limit key, or group, has no instant for its next slot, in the contract's words. */
 export function noNextSlotWords(key: { waiters: number; unleasedGrants: number }): string {
   if (key.waiters === 0) return 'Nobody waits';
