@@ -196,8 +196,11 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   only, and of those a row without a vault mark only once it is older than 60 s (the 30 s lease, the 15 s call bound
   and three 5 s vault writes; `timings.md`), and after claiming its reference with a tombstone (so a vault write still
   running is never left behind); such a late row downgrades `revocation_outcome` until it is revoked,
-  and is audited. A holder whose vault write is refused because a tombstone won revokes the token it received itself,
-  and a row closed by a tombstone records `UNKNOWN`, never `REVOKED`, until that revocation is confirmed. A stale
+  and is audited. A holder whose vault write is refused because a tombstone won revokes the token it received itself
+  only when the credential is `DISCONNECTING` or `DISCONNECTED` (as step 5 of Technical Plan 4 does); for a live
+  credential it discards the token under the abandoned-revision rule of Technical Plan 4 (revoked only with a different
+  value hash and `revocation: "per-token"`). A row of a disconnected credential closed by a tombstone records `UNKNOWN`,
+  never `REVOKED`, until that revocation is confirmed. A stale
   `PENDING` row of a live credential is never revoked: the next acquire adopts it (step 2 of
   Technical Plan 4), and once a newer revision replaces it, it is abandoned and destroyed in the vault only, as
   Technical Plan 4 says. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
@@ -331,7 +334,7 @@ integration runner waits on the same clause (feature 021, Decision 021-022).
 
 None open. The design follows Owner decision 2026-11-24-1, the 5.0.0 amendment (Owner decision 2026-11-24-2) and the
 third declared set of 5.1.0 (Owner decision 2026-11-25-3); its choices were taken under Owner decisions 2026-11-20-6 and
-2026-11-24-4 and are recorded as Decisions 047-001 to 047-066 in research.md, with the register's literal marker
+2026-11-24-4 and are recorded as Decisions 047-001 to 047-067 in research.md, with the register's literal marker
 "delegate (OD-2026-11-24-4)". Architecture decisions 0122 and 0123 are accepted with the approval of this design, under
 Owner decision 2026-11-24-4 (Owner decision 2026-11-24-320), on the approval rule of Owner decision 2026-11-25-2 (pull
 request 284).
@@ -559,8 +562,11 @@ set.
   adds the new token to the redaction set before answering. Test runs are refused.
 - **Activities.** The same method, in a fourth limit class `resource_delivery` added beside `discovery`, `lease` and
   `transfer` in `crates/api-grpc/src/limits.rs` (stated in `sdks/SPEC.md`), under this design's protocol minor; the six
-  SDKs expose `resource(name)`. The class is shed at the `discovery` threshold or below, has its own process cap and a
-  per-tenant cap, and never waits while it holds an admission place: a call that would wait for a refresh or a full
+  SDKs expose `resource(name)`. The class is shed at the `discovery` threshold or below and has its own process cap in
+  the admission layer, which chooses the class from the request path before authentication; its per-tenant cap is
+  applied after the capability token is verified, keyed on the verified tenant (as `TaskStreams::admit` of
+  `crates/api-grpc/src/limits.rs` does), never on an unverified claim; and it never waits while it holds an admission
+  place: a call that would wait for a refresh or a full
   request window gives its place back and answers a retryable `RESOURCE_ASK_LIMIT`-style refusal with a retry delay,
   so delivery cannot take the places kept for heartbeats and completions.
 
@@ -882,6 +888,7 @@ the hub needs feature 028's Tasks 028-062 to 028-067. The tasks that deliver a d
   `revocation_with_the_provider_down_ends_unknown`, `withdrawal_disconnects_after_seven_days`,
   `a_holder_crashing_after_a_late_store_leaves_no_live_token`, `a_retired_revision_is_never_revoked_at_the_provider`,
   `a_stale_pending_revision_of_a_live_credential_is_adopted_not_revoked`,
+  `a_holder_refused_by_an_adopters_tombstone_does_not_revoke_a_live_grant`,
   `the_sweeper_waits_for_a_vault_write_still_running`, `a_suspended_holder_cannot_write_after_its_row_was_closed`.
   Refs: Requirement 047-012, Requirement 047-013
 - [ ] T047-9 Feature 021's `oauth` scheme served by the broker inside `ResolveResource`; the binding rule; resource deletion

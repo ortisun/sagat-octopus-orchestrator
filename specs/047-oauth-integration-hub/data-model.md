@@ -51,7 +51,9 @@ acquire:   UPDATE oauth_credentials SET fence = fence + 1, lease_until = now() +
                unexpired leases of its credentials plus unexpired oauth_broker_calls rows is below 4 (below 1 for the
                tenant on a deployment registration), and count_this_second is below the per-second limit>
            RETURNING fence, grant_epoch, refresh_revision, now()
-           (one transaction of three statements: SELECT the credential row FOR UPDATE; SELECT the registration's
+           (one READ COMMITTED transaction of three statements, its window rows created beforehand with the
+           registration and at opt-in, or by an INSERT ... ON CONFLICT DO NOTHING first, so that the lock always finds a
+           row: SELECT the credential row FOR UPDATE; SELECT the registration's
            window row and, on a deployment registration, the tenant's window row FOR UPDATE, each in its own statement;
            then this UPDATE, a later statement, so its snapshot is taken after the window locks were granted and its
            count of unexpired leases and broker calls sees every acquire that committed before it; the window rows are
