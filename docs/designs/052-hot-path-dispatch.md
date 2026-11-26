@@ -107,7 +107,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
 ### The next step in a completion
 
 - **Requirement 052-020 Opt-in, by session.** A worker session MAY set `want_next` on `CompleteStep` in the protocol
-  minor that follows delivery acknowledgement's (minor 1.8, pull request 264, ordered by decision D041-139 of feature 041), together
+  minor that follows delivery acknowledgement's (minor 1.8, reserved for it by Owner decision 2026-11-21-6, pull request 264), together
   with its session token; a completion without a session (task token, push) MUST refuse `want_next` with a closed reason.
 - **Requirement 052-021 One list of checks.** When the completion makes a step of the same run ready that the session
   serves, the completion's transaction MUST call the claim's own per-run routine for it, taking its locks in the claim's

@@ -11,9 +11,9 @@ and tests (constitution, same-delivery rule). Nothing here is implemented.
 | [openapi.fragment.yaml](openapi.fragment.yaml) | `openapi.yaml` (`/v1`, additive) | T020-012, T020-023, T020-030, T020-042, T020-044 |
 | [errors.md](errors.md) | `Error.details` description, `sdks/error-catalog.json` remediation refinements | T020-010, T020-012 |
 | [analytics-model.schema.json](analytics-model.schema.json) | new canonical `analytics.schema.json` beside the others | T020-021 |
-| [analytics-export-protocol.md](analytics-export-protocol.md) | `worker.proto` (next additive minor) and `worker.baseline.json` | T020-049 |
+| [analytics-export-protocol.md](analytics-export-protocol.md) | `worker.proto` (the next free additive minor when it merges, 1.10 or later at the time of writing) and `worker.baseline.json` | T020-049 |
 | [asyncapi.fragment.yaml](asyncapi.fragment.yaml) | `events.asyncapi.yaml` and `events.baseline.json` | T020-038 |
-| [sinks.md](sinks.md) | `crates/infra-analytics` adapter contract, `docs/runbooks/analytics.md` | T020-026, T020-036..038 |
+| [sinks.md](sinks.md) | the batch entry points of feature 035's writers in `apps/database-runner` (`crates/infra-database`, `crates/infra-lake`; corrected 2026-11-24, no `crates/infra-analytics`), `docs/runbooks/analytics.md` | T020-026, T020-036..038, T020-062 |
 | [run-history.schema.json](run-history.schema.json) | new canonical `run-history.schema.json` | T020-042 |
 | [run-archive.schema.json](run-archive.schema.json) | new canonical `run-archive.schema.json` | T020-045 |
 

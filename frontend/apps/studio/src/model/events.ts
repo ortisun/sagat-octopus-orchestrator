@@ -17,6 +17,7 @@ const LABELS: Record<string, string> = {
   'step.cancel_requested': 'The step was asked to stop',
   'step.cancelled': 'The step was cancelled',
   'step.needs_review': 'The step needs a person to decide',
+  'step.lease_withdrawn': 'A lease no worker started was taken back; the attempt was not spent',
   'step.retry_requested': 'An operator asked for another attempt',
   'step.skipped': 'An operator gave up on the step',
   'step.resolved': 'An operator settled the step',

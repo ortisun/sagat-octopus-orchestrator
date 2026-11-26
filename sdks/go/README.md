@@ -235,8 +235,8 @@ said, and `errors.Is` reaches what it returned. That it was the source is someth
 * **What the server says is bounded.** An answer is read up to 32 MiB (then `PROTOCOL`); a wait the server asks for
   (`Retry-After`, `retry-after-ms`, the pause after an empty poll) is capped at 60 s; the `message` of a server error
   is cut to 512 characters and its `reason` to 128; a `traceId` that is not 32 hexadecimal characters is not
-  repeated; a poll answer with more tasks than the host asked for runs only the first ones and logs how many were
-  left to lapse. A server that registers a worker and refuses it at once is not hammered: the second refusal in a
+  repeated; a poll answer with more tasks than the host asked for runs only the first ones and drops the others;
+  more generally, a lease the host received and will not run (it arrived while the host was stopping, beyond the tasks the host asked for or has room for, or in the rest of a frame over the input budget) is handed back at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back instead of leaving the lease to lapse into a review, from protocol 1.8; below it the lease lapses (sdks/SPEC.md section 6.2). A server that registers a worker and refuses it at once is not hammered: the second refusal in a
   row waits for the backoff first.
 * **Secrets end with the handler.** `Task.Secrets` and the methods of a `*Secrets` kept past the end of the handler return `VALIDATION_FAILED` ("the attempt is over"); the values are wiped.
 * **Ids and names in a URL path.** A run id is a UUID (`VALIDATION_FAILED` otherwise, before any request); a signal

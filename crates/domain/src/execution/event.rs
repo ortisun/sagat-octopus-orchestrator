@@ -433,6 +433,40 @@ pub enum ReconcileResult {
     Review(FailureCode),
 }
 
+/// Why a lease that never reached a handler was withdrawn (feature 006, decisions D006-001 and D006-005; ADR-0098; the third
+/// cause is ADR-0099's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WithdrawalCause {
+    /// The server committed the lease and never handed the frame that carried it to the transport.
+    NotSent,
+    /// A host received the lease and handed it back (`TASK_NOT_STARTED`) before any handler of it ran.
+    NotStarted,
+    /// A provisional lease of protocol 1.8 that its host never acknowledged before its deadline (ADR-0099). This build only
+    /// replays it (Task 006-068, Decision 006-059 request (2)), so that it can be the rollback floor of a build that writes it.
+    NotAcknowledged,
+}
+
+impl WithdrawalCause {
+    /// Every cause, in the order of the closed set.
+    pub const ALL: [Self; 3] = [Self::NotSent, Self::NotStarted, Self::NotAcknowledged];
+
+    /// The closed token the journal stores and the timeline shows.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotSent => "NOT_SENT",
+            Self::NotStarted => "NOT_STARTED",
+            Self::NotAcknowledged => "NOT_ACKNOWLEDGED",
+        }
+    }
+
+    /// The cause a stored token names; `None` for any other text.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|cause| cause.as_str() == token)
+    }
+}
+
 /// How an operator resolved a step that waited for a decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewOutcome {
@@ -664,6 +698,15 @@ pub enum RunEvent {
         node: NodeId,
         attempt: u32,
         generation: u64,
+    },
+    /// A lease that never reached a handler was taken back: the step is `READY` again, the attempt is given back (the next
+    /// lease reuses its number) and the generation is kept (the next lease has the next one). Nothing ran, so no attempt
+    /// was spent and no review is owed (feature 006, decision D006-003; ADR-0098).
+    StepLeaseWithdrawn {
+        node: NodeId,
+        attempt: u32,
+        generation: u64,
+        cause: WithdrawalCause,
     },
     /// The worker confirmed it started (first heartbeat).
     StepStarted {
@@ -1106,6 +1149,7 @@ impl RunEvent {
             Self::StepRouted { .. } => "step.routed",
             Self::StepReleased { .. } => "step.released",
             Self::StepLeased { .. } => "step.leased",
+            Self::StepLeaseWithdrawn { .. } => "step.lease_withdrawn",
             Self::StepStarted { .. } => "step.started",
             Self::StepCompleted { .. } => "step.completed",
             Self::StepRetryScheduled { .. } => "step.retry_scheduled",
@@ -1176,6 +1220,7 @@ impl RunEvent {
             Self::StepRouted { node, .. }
             | Self::StepReleased { node }
             | Self::StepLeased { node, .. }
+            | Self::StepLeaseWithdrawn { node, .. }
             | Self::StepStarted { node, .. }
             | Self::StepCompleted { node, .. }
             | Self::StepRetryScheduled { node, .. }
@@ -1358,6 +1403,7 @@ impl RunEvent {
                 reason: LoopDrainReason::TimedOut,
                 ..
             } => cause("failure", FailureCode::run_timed_out().as_str()),
+            Self::StepLeaseWithdrawn { cause: why, .. } => cause("withdrawal", why.as_str()),
             Self::RunPaused => cause("request", "PAUSE"),
             Self::RunResumed => cause("request", "RESUME"),
             Self::RunFinished { status } => cause("outcome", status.as_str()),
@@ -1370,6 +1416,7 @@ impl RunEvent {
     pub const fn attempt(&self) -> Option<u32> {
         match self {
             Self::StepLeased { attempt, .. }
+            | Self::StepLeaseWithdrawn { attempt, .. }
             | Self::StepStarted { attempt, .. }
             | Self::StepCompleted { attempt, .. }
             | Self::StepRetryScheduled { attempt, .. } => Some(*attempt),
