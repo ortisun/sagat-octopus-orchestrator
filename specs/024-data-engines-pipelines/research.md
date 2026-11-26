@@ -4,10 +4,41 @@ Investigation date: 2026-10-26, on the worktree branch `feature/018-032-parity-s
 `origin/develop` at `70f09435` (release 0.2.0). Nothing below is implemented by this feature.
 Numbers used: D1240–D1279, G1240–G1256, O1240–O1243 (allocated range 1240–1279).
 
+Status: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
+2026-11-24-1); Architecture decision 0058 accepted (delegate, Owner decision 2026-11-26-164); not started.
+
+Revised 2026-11-26 against `develop` at `e5bda041` after an independent audit. The evidence rows marked
+*(2026-11-26)* were read on that revision and replace the older rows they contradict. Register entries
+added on that date use the feature-scoped form (D024-001 and G024-001 onward), because the bare numbers
+after D1279 and G1256 belong to other features. Owner questions 1240 to 1243 are decided (Owner
+decisions 2026-11-26-160 to 2026-11-26-163).
+
 ## Repository evidence (verified paths)
 
 | Observation | Where |
 |---|---|
+| *(2026-11-26)* `ConnectionConfig` has two variants, `Postgres` (with `egress_ceiling: EgressCeiling`) and the boxed `Iceberg` of feature 035; `driver()` answers `postgresql` or `iceberg`; `secret_slots()` names each secret with its `SecretRole` (`Primary`, `Catalog`, `Storage`); `ManagedKind::{Sql, Lake, LakeProbe}` with `activity()` and `profile()`; `MANAGED_DATABASE_ACTIVITY` is still `sagat.database.postgresql` | `crates/domain/src/database.rs` lines 37-38, 188-201, 245-266, 403-430, 445-479 |
+| *(2026-11-26)* `BindingProfile::{Database, Lake}`; the column `worker_bindings.profile` with `CHECK (profile IN ('database', 'lake'))`; a dedicated runner registers only as its own profile, so a stolen lake token cannot ask for PostgreSQL credentials | `crates/domain/src/binding.rs` lines 39-61; migration `20270109000000_worker_binding_profile.up.sql` |
+| *(2026-11-26)* Step credential pins are keyed by the secret's role (`primary`, `catalog`, `storage`) | migration `20270110000000_step_credential_roles.up.sql` |
+| *(2026-11-26)* The lease of a lake attempt writes `step_lease_blobs` rows (tenant, run, node, attempt, generation, blob), and `ReadBlob` of that attempt is allowed only a blob named there; the rows are released with the terminal run's retention a day after it ended; the foreign key restricts deleting a pinned blob | migrations `20270111000000_lake_blob_pins.up.sql`, `20270112000000_lake_blob_pin_release.up.sql` |
+| *(2026-11-26)* The lake runner (`apps/database-runner`, lake profile) stages an attempt directory, binds a Unix socket that admits only the slot's user, and asks a lake-mode sandbox runner for an attempt over a node-local socket (`start`, `wait`, `kill`; slot, class `small`/`large`, deadline; never an image, mount, command or limit); the wire types and `uid_for_slot` live in `crates/infra-lake/src/sandbox_api.rs`; the container profile in `crates/infra-sandbox/src/lake.rs`, the engine in `crates/infra-sandbox/src/lake/engine.rs`, the server in `apps/sandbox-runner/src/lake/` | `crates/infra-lake/src/{attempt.rs,staging.rs,relay.rs,supervisor.rs,sandbox_api.rs}`; `apps/database-runner/src/lake/`; Architecture decision 0079 (Proposed) |
+| *(2026-11-26)* `scripts/check-architecture.py` has package rules, not a general allowlist: `ICEBERG_TEST_ONLY_PACKAGES` (lines 61-62) and `LAKE_RUNNER_PACKAGES` with `CONTAINER_ENGINE_CRATES` (lines 64-67, Architecture decision 0079 rule 2) | `scripts/check-architecture.py` |
+| *(2026-11-26)* The canonical OpenAPI already has the union `DatabaseConnectionConfig` (`postgresql`, `iceberg`, `object_storage`, `clickhouse`, discriminated by `driver`), `EgressCeiling` (`public`, `internal`, `pii`, default `internal`) on `PostgresConnectionConfig`, and `DatabaseDriverList` (at most 4 items, `DatabaseDriver` with `id: [postgresql]` or `LakeDatabaseDriver`) | `specs/001-platform-foundation/contracts/openapi.yaml` lines 6341-6359, 6523-6535, 6615-6646 |
+| *(2026-11-26)* `ResolvedDatabase` uses fields 1-15: 13 `iceberg`, 14 `object_storage`, 15 `clickhouse` (feature 035); `WriteBlobHeader` uses 1-10; `CompleteStepRequest` uses 1-12 | `specs/001-platform-foundation/contracts/worker.proto` lines 153-159, 182-193, 318-337 |
+| *(2026-11-26)* The register of worker-protocol minors: 1.7 is feature 041's (step logs); each later draft takes the next free minor when its contract merges | `sdks/SPEC.md` section 9; Owner decision 2026-11-15-8 |
+| *(2026-11-26)* The IR has 19 node kinds, among them `database` (with optional `destinations`, feature 035) and `icebergWrite`, whose `records.blobs` names 1 to 32 blobs of `application/x-ndjson` or `application/vnd.apache.parquet` committed by earlier steps of the same run | `specs/001-platform-foundation/contracts/workflow.schema.json` (`$defs.node`, `database`, `icebergWrite`, `lakeRecords`, `stepDestination`) |
+| *(2026-11-26)* `Permission::ALL` has 55 entries; seven built-in roles; `runner` holds `worker:execute`, `script:build`, `script:execute`; `database-runner` holds `worker:execute`, `database:execute` | `crates/domain/src/identity.rs` lines 401, 541, 611-612, 702-703 |
+| *(2026-11-26)* The instance registry's closed capability lists are three CHECKs (`serving_instances_capabilities_closed`, `platform_requirements_capability_valid`, `platform_requirement_history_capability_valid`), extended by later migrations; `Capability::ALL` has four entries | migrations `20270113000000_instance_registry.up.sql`, `20270118000000_run_input_validation.up.sql`; `crates/application/src/instances.rs` line 121; Architecture decision 0082 |
+| *(2026-11-26)* The reset-rule registry is an exhaustive `match` over `RunEvent` with the rules `Copy`, `Rematerialize`, `Exclude` and `Refuse` | `crates/domain/src/execution/reset.rs` lines 25-50 |
+| *(2026-11-26)* The latest migration is `20270210000100_step_logs_validate` | `crates/infra-postgres/migrations/` |
+| *(2026-11-26)* The credential codec port is `DatabaseCredentialsCodec` (`decode`, `contains_credential`) with a `{username, password}` shape; its adapter is `JsonDatabaseCredentials` | `crates/application/src/database.rs` lines 260-280; `crates/infra-secrets/src/database.rs` |
+| *(2026-11-26)* The SDK error catalog has 44 codes, among them the `worker`-origin Iceberg and destination codes of feature 035 and `OUTCOME_UNKNOWN`; `DatabaseFailure` adds feature 035's codes to feature 017's | `sdks/error-catalog.json`; `crates/domain/src/database/failure.rs` lines 42-75 |
+| *(2026-11-26)* Database runner metrics are `database_runner_execution_total{outcome}`, `database_runner_attempts_total{outcome}` and `database_runner_attempt_seconds`; the lake sandbox's are `lake_sandbox_*` | `apps/database-runner/src/attempt.rs` line 79, `runner.rs` lines 209-210 and 487-489 |
+| *(2026-11-26)* Every path that creates a run goes through one run-input gate: an event trigger is row 9, an ad hoc database execution and a connection probe are row 13 | `docs/designs/043-run-input-validation.md` (rows 1 to 14); `crates/infra-schema/src/run_input/`; Architecture decisions 0090 and 0092 |
+| *(2026-11-26)* The statement budget of a lease and a completion is enforced by `integration_claim_transition_efficiency` | `docs/designs/038-claim-transition-efficiency.md`; `tests/integration/claim-transition-efficiency/work_budget.rs` |
+| *(2026-11-26)* Steps the platform runs keep their output where their path keeps it and are refused step logs; the ingest refuses the runner roles and managed steps (check C0) | `docs/designs/041-step-logs.md` (Requirement 041-016, section 2a) |
+| *(2026-11-26)* Design 046 (approved on `origin/docs/windmill-parity-readiness`, Architecture decisions 0120 and 0121 accepted there): a Python script with packages is bundle version 5 with its own PEP 751 lock; the runner materializes a signed read-only layer before it offers the activity and mounts it at `/opt/sagat/deps` (not `noexec`); a block stops the lease with `PACKAGE_BLOCKED` | `docs/designs/046-script-dependencies.md` sections 8, 11 and 12 |
+| *(2026-11-26)* ADR-0050 slot 4 is split: 4a namespace fences (the feature 024 data-catalog fence for writers), 4b catalog heads (feature 024 asset heads after feature 021's variable heads) | `docs/adr/ADR-0050-many-run-operations-admit-under-stable-keys-and-never-buffer-or-reopen.md` line 91 |
 | `ConnectionConfig` has one variant, `Postgres`; the reserved activity is `sagat.database.postgresql` under the prefix `sagat.database.`; `DatabaseLimits::MAX` caps the query deadline at 30 s and results at 10,000 rows / 4 MiB | `crates/domain/src/database.rs` |
 | The managed failure vocabulary is closed (18 codes, `OUTCOME_UNKNOWN` and `WORKER_ERROR` included) | `crates/domain/src/database/failure.rs` |
 | The target adapter is PostgreSQL only (`tokio-postgres =0.7.18`, `sqlparser =0.63.0`); its `NetworkPolicy` holds IP networks only ("never unresolved host patterns") | `crates/infra-database/Cargo.toml`, `crates/infra-database/src/network.rs` |
@@ -24,7 +55,7 @@ Numbers used: D1240–D1279, G1240–G1256, O1240–O1243 (allocated range 1240�
 | The inbox key is `(tenant, namespace, source, event_id)`; event triggers filter on `eventType`, `source` and a condition over `event`/`data`; slugs cannot contain a dot, so a source named `sagat.data` cannot collide with an endpoint or connector | `crates/infra-postgres/migrations/20261012000000_events.up.sql`, `workflow.schema.json` (`triggers`), `crates/domain/src/identity.rs` (`Slug`) |
 | Webhook subscriptions accept `run.finished`, `ops.alert.fired`, `ops.alert.resolved` | `openapi.yaml` (subscription `events` enum) |
 | The guarded HTTP client checks each resolved address inside its resolver and ignores proxies | `crates/infra-egress/src/lib.rs` |
-| `scripts/check-architecture.py` checks the domain allowlist, layer edges and cycles; it has no per-crate client allowlist (ADR-0023's "only infra-blobstore may depend on a storage client" is therefore review-only today) | `scripts/check-architecture.py` |
+| `scripts/check-architecture.py` checks the domain allowlist, layer edges and cycles; it has no per-crate client allowlist (ADR-0023's "only infra-blobstore may depend on a storage client" is therefore review-only today). *Superseded 2026-11-26: it now has package rules for the Iceberg crate and the lake runner (row above).* | `scripts/check-architecture.py` |
 | Classification uses `x-sagat-classification` with `public < internal < pii < secret`; carriers are closed and exclude the database node | `specs/016-payload-classification/spec.md` (FR-016-001/002), ADR-0036 decision 6 |
 | Tenant content quota default is 10 GiB | ADR-0027 (`tenant_content_bytes`) |
 | A stored connection row whose driver is not `postgresql` makes the 0.2.0 store raise `corrupt("database driver")`, i.e. `StoreError::Internal`, so the whole connection list fails after a binary rollback | `crates/infra-postgres/src/database.rs` (`config_from`), `crates/infra-postgres/src/identity.rs` (`corrupt`) |
@@ -85,7 +116,10 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   `ConnectionConfig`, new rows in the driver catalog and new reserved activities under
   `sagat.database.`. Feature 021 decided (ADR-0055 decision 1) that database connections stay in the
   017 catalog, so the drivers extend it; 021 refuses them as resource types (`managedBy:
-  connections`).
+  connections`). *(revised 2026-11-26)* The catalog already holds feature 035's lake kinds, so the new
+  drivers join the existing `ConnectionConfig` beside `Postgres` and `Iceberg` and the existing OpenAPI
+  union `DatabaseConnectionConfig`; each new variant carries feature 035's `egressCeiling` (Decision
+  024-005).
 - **D1241 — MySQL and MariaDB are two driver IDs sharing one adapter.** Their wire protocol is
   compatible but server behaviour differs (JSON is a `LONGTEXT` alias in MariaDB; RETURNING support
   and authentication plugins differ). Separate IDs keep the type table and probe evidence honest.
@@ -99,6 +133,10 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   memory cgroup (the size mechanism, since there is no XFS project quota). Parts leave `/out` through
   a framed output channel on standard output before the container exits (D1276). ADR-0058 supersedes ADR-0013
   in part for this profile only; a unit test over the container spec asserts the profile.
+  *Superseded in part 2026-11-26 by Decision 024-001:* the claimant is the data runner, which asks a
+  data-mode sandbox runner for an attempt (Architecture decision 0079); `/in` is the read-only attempt
+  directory, the output channel is the attempt socket, and ADR-0058 now refines ADR-0013 as the lake
+  profile did.
 - **D1243 — Warehouses use a public-endpoint profile in their own runner deployment.** CIDR
   allowlists cannot describe Google or Snowflake public endpoints, and a NetworkPolicy cannot list
   host names, so mixing public HTTPS egress with private customer-database routes in one pod is what
@@ -108,7 +146,10 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   otherwise; the process additionally enforces the driver-fixed host form and the deployment host
   allowlist, which namespace policy can only narrow, and refuses reserved, metadata and platform
   addresses. The private profile keeps the 017 policy and has no public egress. Same binary, same
-  `database-runner` role, so ADR-0036 decision 1 is unchanged.
+  `database-runner` role, so ADR-0036 decision 1 is unchanged. *(revised 2026-11-26)* The warehouse
+  deployment is bound to a third `BindingProfile`, `Warehouse` (Architecture decision 0071 decision 1),
+  so the server hands it only BigQuery and Snowflake tasks and never a private database's credential
+  (Decision 024-002).
 - **D1244 — Closed credential codecs, fixed authorities.** The BigQuery codec accepts a Google
   service-account key (`type=service_account`, `client_email`, `private_key_id`, `private_key`) and
   ignores no field silently: a `token_uri` or `universe_domain` other than the fixed Google values is
@@ -130,7 +171,8 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   derive from (tenant, run, node, attempt) by a keyed hash so they reveal nothing. After an
   ambiguous response the runner looks the work up a bounded number of times inside the same lease.
   Managed database operations keep one attempt (017); a lost attempt still ends `OUTCOME_UNKNOWN`
-  and manual review shows the opaque identity (automation is G1240).
+  and manual review shows the opaque identity (automation is G1240). *(revised 2026-11-26)* This is
+  each driver's recovery rule in Architecture decision 0071 decision 7's vocabulary (Decision 024-006).
 - **D1249 — Query mode uses the strongest mechanism per engine, never parsing alone.** MySQL/MariaDB:
   `START TRANSACTION READ ONLY` (temporary tables stay writable, so the statement allowlist refuses
   DDL and the role must lack `CREATE TEMPORARY TABLES`); SQL Server: an explicit transaction always
@@ -158,7 +200,8 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   and lineage comes from declarations and recorded provenance; SQL text is never parsed for lineage.
 - **D1254 — Managed snapshots are Parquet parts in the blob store.** Parts use the ADR-0023 catalog
   with a new purpose `DATA_SNAPSHOT_PART` and the exact attempt fence; each part is at most the blob
-  ceiling (64 MiB); Parquet is the only format of the first delivery (O1240).
+  ceiling (64 MiB); Parquet is the only format of the first delivery (O1240, decided by Owner decision
+  2026-11-26-160: the platform blob backend under the namespace, counted in `tenant_data_bytes`).
 - **D1255 — Separate data quotas.** Snapshot bytes count against `tenant_data_bytes` (10 GiB
   default) instead of `tenant_content_bytes`, and data part uploads have their own pending ceiling,
   so a pipeline cannot starve run payloads or step-output uploads.
@@ -188,7 +231,8 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
 - **D1262 — Transforms are retryable.** A transform's only effects are staged objects keyed by its
   attempt and a pointer moved in a PostgreSQL transaction, so a retry is safe. Default 2 attempts,
   hard 5. Remote database writes keep one attempt.
-- **D1263 — No eighth role.** The `runner` role gains `data:execute`; a sandbox runner advertises
+- **D1263 — No eighth role.** *Superseded 2026-11-26 by Decision 024-001: a machine role `data-runner`
+  holds `data:execute`; the `runner` role is unchanged.* The `runner` role gains `data:execute`; a sandbox runner advertises
   the data activities only when its data image is configured and its start-up probe passed (the
   FR-005-009 pattern). This changes ADR-0013's exact `runner` permission set, which ADR-0058 declares
   as a partial supersession. A new machine role was rejected: the data container is the same trust
@@ -202,6 +246,8 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   total depends on the order in which the parallel drafts (022, 025, 029 also add permissions) land,
   so the matrix test asserts the set, not a count chosen here. The same holds for roles: 024 adds
   none, 021 adds `integration-runner` and 025 `agent-runner`, so tests assert the agreed set.
+  *(revised 2026-11-26)* `Permission::ALL` holds 55 on `develop`; this feature adds four permissions
+  and one machine role, `data-runner` (Decision 024-001); tests still assert sets, never counts.
 - **D1265 — No new endpoint; `dataQuery` outputs are 016 carriers.** Asset values leave the platform
   only as `dataQuery` step outputs (≤ 256 KiB inline). That output is a classification carrier whose
   schema the platform derives (the 017 typed-cell result shape) and annotates with the highest level
@@ -228,8 +274,11 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   excludes `DATA_SNAPSHOT_PART` from run purge; ADR-0058 owns `DATA_SNAPSHOT_PART` retention. Only
   that purpose may go from `COMMITTED` to `DELETING`, under FR-024-034 and ADR-0023's tombstone/retry
   semantics. Because ADR-0027 does not authorize deleting customer data, the destructive step waits
-  for O1243; until then retention only marks snapshots `RETIRED`.
-- **D1270 — Polars runs on 023's image-catalog runtime `python-data`; 024 owns its content.** 023
+  for O1243; until then retention only marks snapshots `RETIRED`. *(revised 2026-11-26)* Owner decision
+  2026-11-26-163 answers O1243 (a): retention deletes the bytes under the declared retention, audited.
+- **D1270 — Polars runs on 023's image-catalog runtime `python-data`; 024 owns its content.**
+  *Superseded 2026-11-26 by Decision 024-008 (Owner decision 2026-11-26-162): no image catalog; the
+  packages come from the script version's own lock and design 046's layer.* 023
   reserves the language id (FR-023-027, 023 D1229): bundle v4 with `runtimeCatalog`, a hash-pinned
   requirements lock matching catalog entries exactly, catalog digest in the toolchain identity and
   build key, and a runner that refuses an artifact whose `runtimeCatalog` differs from its runtime
@@ -244,18 +293,20 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   which versions to republish; a version whose catalog image is withdrawn fails
   `SCRIPT_SANDBOX_UNAVAILABLE`, never runs against other packages. No runtime installation, no index
   access (O1242).
-- **D1271 — New worker messages need a protocol minor.** `ResolveData` and the data completion
+- **D1271 — New worker messages need a protocol minor.** *Revised 2026-11-26 by Decision 024-014:
+  1.7 is feature 041's; this feature takes the next free minor when its contract merges.* `ResolveData` and the data completion
   fields are additive in the next minor after 1.6 (written 1.7 here; the coordinator allocates the
   number across the parallel drafts). Engine-specific connection messages for `ResolveDatabase` are
   added in the same minor; a 1.6 runner never receives a new task kind.
 - **D1272 — Fake servers in CI, real services as a release gate.** BigQuery and Snowflake are
   exercised in CI by protocol-faithful fake HTTP servers written from the documented API; the
   real-service suite is `ignore`d until accounts exist, and the drivers stay hidden until it passes
-  (the G70 pattern of ADR-0023; O1241).
+  (the G70 pattern of ADR-0023; O1241, decided by Owner decision 2026-11-26-161).
 - **D1273 — Lock order.** Run admission follows the merged admission lock order that ADR-0050
   (feature 018) holds for every draft (coordinator decision C4): authority → request receipt →
-  run-creating aggregates → catalog heads and pins (slot 4: 019 fences → 017 connection heads → 021
-  resource and variable heads → **024 asset heads**, ascending id → 025 → 030) → secrets and ACLs →
+  run-creating aggregates → catalog heads and pins (slot 4b: 019 fences → 017 connection heads → 021
+  resource and variable heads → **024 asset heads**, ascending id → 025 → 030; a writer of the asset
+  catalog also takes the 024 data-catalog fence in slot 4a) → secrets and ACLs →
   run rows → 022 semaphores → usage. Transactions on an existing run keep "run row first": the run
   row, then the authority guards it needs (current membership, binding/session for managed
   attempts), then asset head rows in ascending id, then usage (ADR-0027). Asset heads are locked
@@ -282,19 +333,41 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
   engine refuses a completion whose audited digests differ from the committed parts. Reading back
   costs a second transfer of the snapshot; a runner-held copy or a host tmpfs shared by both
   containers was rejected because it would keep tenant output outside the container's memory
-  accounting.
+  accounting. *(revised 2026-11-26)* The frames travel over the attempt's peer-checked Unix socket,
+  not standard output, and the audit is a second attempt of the data mode (Decision 024-001).
 - **D1277 — `from` reads only audited snapshots.** A same-run staged input must be `AUDITED` or
   `PUBLISHED`; a quarantined one fails `DATA_INPUT_QUARANTINED`, so an error route cannot derive
   publishable data from data that failed its audit.
 - **D1278 — Data bytes are charged once, at upload.** As ADR-0027 does for every external blob, a
   part is charged to `tenant_data_bytes` when its upload is reserved and measured; committing the
   snapshot does not charge again, and quota exhaustion therefore surfaces during upload.
-- **D1279 — DuckDB is a data node, not a database driver (coordinator decision on review B2).** A
+- **D1279 — DuckDB is a data node, not a database driver (coordinator decision on Blocker 2 of the
+  coordinator's architecture review of 2026-10-27).** A
   `duckdb` driver would have put a managed database task in the sandbox runner (against ADR-0036
   decision 1) and needed a classification gate on the 017 result view (against ADR-0035 decision 10
   and ADR-0036 decision 6). A `dataQuery` node runs in the data sandbox like `dataTransform`, writes
   nothing, returns the 017 typed-cell shape as an inline, classified step output, and leaves the 017
   catalog, role rules and result view untouched.
+
+### Decisions added on 2026-11-26 (audit against develop)
+
+| ID | Decision | Why |
+|---|---|---|
+| D024-001 | **The data runner asks a data-mode sandbox runner for an attempt.** A new application `apps/data-runner` (package `sagat-data-runner`, machine role `data-runner` with `worker:execute` and `data:execute`, bound with `BindingProfile::Data`) claims `sagat.data.transform` and `sagat.data.query`, resolves them with `ResolveData`, stages the pinned inputs into an attempt directory (the lake runner's `AttemptDir` and whole-blob reader), binds the attempt's Unix socket with the peer check of the lake relay (`uid_for_slot`), and asks a sandbox runner in the exclusive **data mode** for an attempt through Architecture decision 0079's three calls (attempt id, slot, class `small`/`large`, deadline). The data mode builds the container from its own configuration (image by digest, class budget, the mounts of Architecture decision 0058 decision 1) and has its own slot and user range. The request, the framed parts and the result travel over the socket; the request file and the socket live in the attempt directory, mounted read-only. An author's `limits` choose the smallest class that covers them and lower what the host program and the data runner enforce in software (DuckDB `memory_limit`, staged and output bytes); admission refuses limits no configured class covers. The data runner links neither `bollard` nor `sagat-infra-sandbox` (checked). Replaces the sandbox-runner claim of D1242 and the `runner` grant of D1263. | Owner decision 2026-11-26-164 requires the attempt API. A process that parses untrusted frames and stages other tenants' inputs must not hold the host-root engine socket (Architecture decision 0079); a separate binary makes that a dependency fact, not a configuration. A role of its own keeps a stolen data token from claiming script steps and their declared secrets, which the `runner` role could. |
+| D024-002 | **Managed kinds and profiles.** `ManagedKind::Sql` gains the driver (`ManagedKind::Sql(SqlDriver)`, `activity()` is `sagat.database.<driver>`, `profile()` is `Database` for `postgresql`, `mysql`, `mariadb`, `sqlserver` and the new `Warehouse` for `bigquery`, `snowflake`); `ManagedKind::DataTransform` and `ManagedKind::DataQuery` (activities `sagat.data.transform`, `sagat.data.query`, profile `Data`). `BindingProfile` gains `Warehouse` and `Data`; one migration widens `worker_bindings_profile_valid`. `crates/application/tests/managed_kind_sites.rs` is extended so a worker path asks `Node::managed_kind`, never a driver name or a `sagat.data.` prefix. A runner is handed a step only when it offers that kind's activity (D035-150). | One predicate for "which runner runs this step" already exists; a second one per feature is how a data step would reach an ordinary worker. |
+| D024-003 | **Instance-registry capabilities.** `database-engines-v1` (MySQL, MariaDB, SQL Server), `database-warehouses-v1` (BigQuery, Snowflake) and `data-pipelines-v1` (assets, data nodes, retention), each for the kinds `CONTROL_PLANE` and `EXECUTION_ENGINE`, are added to the three closed CHECKs of the registry and to `Capability::ALL` by one migration (Architecture decisions 0082 and 0050 decision 9). A process lists a capability only when its build serves it; publication, admission and catalog writes that need an unrecorded one are refused (`DRIVER_NOT_ENABLED`, `DATA_PIPELINES_NOT_ENABLED`). `database-warehouses-v1` is recorded only after the real-service suite passes (Owner decision 2026-11-26-161). Within a recorded capability, a deployment still lists which drivers its runners serve. | A per-process flag lets one replica accept a connection row another cannot decode; the registry makes the requirement fleet-wide and refuses a process that lacks it, which is also the binary-rollback guard of Requirement 024-038. |
+| D024-004 | **Principle V's two sets, no amendment.** The five remote drivers are feature 017 managed database capabilities: their credential is disclosed only to the lease-owning `database-runner` with `database:execute` (Principle V's second set), through the existing two-phase `ResolveDatabase` and the role-keyed credential pin (`secret_role = 'primary'`). The data runner and its containers receive no secret and no credential: they read only pinned blobs through lease-authorized reads, and `ResolveData` carries no secret. | Both cases fit the constitution as written; a third set is not needed. |
+| D024-005 | **The `pii`-egress rule.** Every new driver connection carries feature 035's `egressCeiling` (default `internal`); a written field's level is the stricter of its source and any annotation (Architecture decision 0071 decision 8). Under the uniform rule of Owner question 1081 (decided 2026-11-24 for feature 020, Decision 1617): `pii` is set only by an administrator holding the namespace reveal grant (`ConnectionConfig::authorize_egress_ceiling`), rechecked at each `ResolveDatabase` of a step that writes a `pii` value, revocation pauses the connection, each such attempt is audited, `secret` never leaves. The publication event and its webhook deliveries carry asset metadata only (names, ids, counts), never a column value. | One control for every place `pii` leaves the platform. |
+| D024-006 | **Recovery rules in feature 035's vocabulary.** Each new driver declares the recovery rule of Architecture decision 0071 decision 7: `bigquery` lookup by deterministic job id, `snowflake` lookup by deterministic `requestId`, both within the lease (D1248); `mysql`, `mariadb`, `sqlserver` none, so an ambiguous write ends `OUTCOME_UNKNOWN` and waits for a person. The new drivers are not destination kinds of feature 035 in this delivery (Gap 024-004). | One vocabulary for "what can the platform prove after a lost response". |
+| D024-007 | **Pinned reads reuse `step_lease_blobs`.** The lease transaction of every data attempt writes one `step_lease_blobs` row per pinned part (snapshot parts of any producing run in the namespace, or a step-output blob of the same run); the existing `ReadBlob` gate of feature 035 admits exactly those; the audit phase's read-back of the attempt's own uploads is admitted by the upload fence (same attempt and generation). The rows are released with the run's retention a day after it ends, which matches the 24-hour pin grace of retention; until then the foreign key keeps the blob row. A data attempt pins at most 32 inputs of at most 32 parts. | One allow-list for every managed attempt that reads blobs, already tested. |
+| D024-008 | **Polars through design 046's package layer (Owner decision 2026-11-26-162, answering O1242).** There is no platform-curated Python catalog image. A Polars transform references a published script version of language `python-data` (reserved by feature 023), whose artifact is design 046's bundle version 5 (the Python text bundle plus `dependencies`, ecosystem `pypi`) with the version's own PEP 751 lock, resolved through the package gateway, checked by the namespace's supply-chain policy and blocked at lease with `PACKAGE_BLOCKED` like any script. The `python-data` runtime (`runners/data/Dockerfile.runtime`, Python line of design 046's dependency runtime) carries the interpreter and the data contract host only; Polars, PyArrow and any library come from the version's signed read-only layer at `/opt/sagat/deps`. The repository ships a reviewed starter lock for Polars and PyArrow (`runners/data/python-data/starter/`) as a template. A `python-data` version runs only as a Polars transform, never as an ordinary script step. Feature 023's image-catalog parts of Requirement 023-027 are not needed. | Users pin their versions under the namespace's policy; the platform keeps no catalog cadence and strands no version at a re-pin. |
+| D024-009 | **Overlap with feature 035's Iceberg writes.** A managed snapshot's authority stays the PostgreSQL pointer (Architecture decision 0058 option 5). An Iceberg table written by an `icebergWrite` step is an external asset: the external declaration may name an Iceberg connection and a table locator, and the closed `icebergWrite` node gains the same optional `assets` property as the `database` node, so a successful declared write records an observation. Exporting a snapshot to an Iceberg table is an `icebergWrite` step whose `records.blobs` names the snapshot's Parquet parts (Gap 024-004, not built here). Data nodes declare no `destinations` in this delivery. Warehouse-native write-audit-publish on an Iceberg branch (`ref`) is recorded under Gap 1244. | No second lake writer and no second catalog. |
+| D024-010 | **Graph model only.** Data nodes and the `assets` property exist only in graph-model versions. A procedural workflow (Principle IV, design 044, not yet written) reaches them only through a child graph workflow its envelope declares (Gap 024-003). Producer bindings name a graph node. | The procedural envelope rules are not written; a producer binding needs a node id. |
+| D024-011 | **No new run creator.** A run started by an event trigger on `data.asset.published` passes design 043's gate at row 9; a connection probe and an ad hoc execution of a new driver pass at row 13. A standalone `dataQuery` (feature 022) is a creator row that feature 022 adds to design 043's table. | Architecture decision 0090: every path that creates a run passes one gate. |
+| D024-012 | **Claim and completion budgets.** The lease and completion of ordinary steps keep their recorded statement budget unchanged; the first lease of a data node (pins, `step_lease_blobs` rows, journal) and the data completion get budget shapes of their own in `integration_claim_transition_efficiency`, recorded at the first measurement and moved only with a reason (design 038). | The hot path's cost is a tested number, not a hope. |
+| D024-013 | **Step logs.** Data steps are managed steps run by the platform: they are refused step logs (Requirement 041-016, check C0). The host program's bounded, redacted log reaches the data runner over the attempt socket and is kept as a script step's log is (Requirement 005-007, its quota), never as step logs. | A tenant line on a platform runner's report would bypass the managed paths' redaction. |
+| D024-014 | **Protocol minor and field numbers.** The worker-protocol additions take the next free minor of the register in `sdks/SPEC.md` section 9 when their contract merges (1.7 is feature 041's, Owner decision 2026-11-15-8); the merge adds the register row. `ResolvedDatabase` gains its new fields from number 16 (13 to 15 are feature 035's); `WriteBlobHeader` gains `purpose = 11`; `CompleteStepRequest` gains `data_result = 13`; the numbers are confirmed against the canonical file at merge. | Two drafts naming one minor, or one field number, is a wire break. |
+| D024-015 | **Error catalog.** No new REST `Error.code`. `DATABASE_COST_LIMIT` and the data failure codes become `worker`-origin entries of `sdks/error-catalog.json`, of `sdks/SPEC.md` section 2 and of every SDK's embedded copy (the Iceberg codes of feature 035 are the precedent); new REST meanings are `details.reason` values with remediation rows in `crates/api-http/src/error.rs`. | An SDK must be able to name every code a step can end with. |
 
 ## Gaps
 
@@ -304,25 +377,30 @@ existing job ID, the retention of a Snowflake `requestId`) are recorded as gaps,
 | G1241 | Unverified provider facts: BigQuery's answer to a second insert with an existing job ID; how long Snowflake keeps a `requestId`; the dry-run statement-type field for every statement form. Contract tests must establish them before the drivers are advertised. | Open |
 | G1242 | BigQuery IAM cannot be introspected with a scoped key; least privilege (and cross-project reads) is the customer's control. | Accepted limitation |
 | G1243 | SQL Server Entra ID service principals and Windows authentication. | Open |
-| G1244 | Warehouse-native write-audit-publish (Snowflake `SWAP WITH`, BigQuery copy/clone) and verification of a warehouse table's schema against a contract. | Open |
+| G1244 | Warehouse-native write-audit-publish (Snowflake `SWAP WITH`, BigQuery copy/clone, or an Iceberg branch written by feature 035's `icebergWrite` with `ref` and fast-forwarded after audit) and verification of a warehouse table's schema against a contract. | Open |
 | G1245 | Partitioned assets, incremental append, range backfill (Windmill offers these). | Open |
 | G1246 | Customer-owned buckets as snapshot storage, and DuckDB reads of customer object storage. Under ADR-0055 a 021 S3 resource's credentials resolve only in `apps/integration-runner`, never in the sandbox or the engine, so this needs that runner to stage objects for the data sandbox or a new decision. Ingestion of one object per step through a 021 S3 get operation already works (D1274). | Open, depends on 021 |
 | G1247 | Snapshot bytes pass through the engine process (ADR-0023); ceilings are set below what that path can carry and must be measured. Direct or presigned transfer needs a new ADR. | Open |
 | G1248 | Asset declarations are not in 011 GitOps manifests; cross-namespace asset reads (030). | Open |
 | G1249 | Row-level audit outcomes are computed in a sandbox; a sandbox escape (G98) could forge them. Footer-level checks are the engine's own. | Accepted limitation |
 | G1250 | Erasure of individual records inside retained snapshots; only whole snapshot or asset deletion exists. | Open |
-| G1251 | The DuckDB extension set is fixed by the image (Parquet, JSON); spatial, Iceberg, Delta and DuckLake are not offered. | Open |
+| G1251 | The DuckDB extension set is fixed by the image (Parquet, JSON); spatial, Iceberg, Delta and DuckLake are not offered. Iceberg tables are reached through feature 035, not through DuckDB (Decision 024-009). | Open |
 | G1252 | After a regional failover (032) the pointer can be ahead of replicated objects; readers must verify part presence. | Open, depends on 032 |
 | G1253 | Nested Parquet types (list, struct, map) are not in the contract vocabulary. | Open |
-| G1254 | Snapshot metadata (snapshot, part, provenance and audit rows, publication history) is excluded from 020's run purge and owned by ADR-0058, because a published snapshot's pointer, pins and provenance reference it whatever happens to its producer run. Pruning metadata of `RETIRED` snapshots that nothing references is not designed yet; the rows are bounded in size and grow with completed transforms. Snapshot *bytes* are deleted by retention (after O1243). | Open |
-| G1255 | Re-pinning the `python-data` catalog strands older script versions (023 G1219): the procedure of D1270 keeps the previous image for 90 days, but republication stays a manual author action. | Accepted cost, depends on 023 |
+| G1254 | Snapshot metadata (snapshot, part, provenance and audit rows, publication history) is excluded from 020's run purge and owned by ADR-0058, because a published snapshot's pointer, pins and provenance reference it whatever happens to its producer run. Pruning metadata of `RETIRED` snapshots that nothing references is not designed yet; the rows are bounded in size and grow with completed transforms. Snapshot *bytes* are deleted by retention (Owner decision 2026-11-26-163). | Open |
+| G1255 | Re-pinning the `python-data` catalog strands older script versions (023 G1219): the procedure of D1270 keeps the previous image for 90 days, but republication stays a manual author action. | Closed 2026-11-26: there is no catalog (Decision 024-008); each version keeps its own lock and layer |
 | G1256 | The Parquet footer decoder runs in the engine process (bounded, panic-isolated, fuzzed); if fuzzing finds an unbounded case, it moves to a separate unprivileged verifier process. | Open |
+| G024-001 | Architecture decision 0079 is Proposed, and its Kubernetes half (Task 035-029: whether a node-local socket and work volume can be shared between two processes, and whether `SO_PEERCRED` separates them) is open. The data mode and the data runner inherit both; a change of that decision changes Architecture decision 0058 decision 1 with it. | Open, depends on 035; blocks the data deployment on Kubernetes, not on Compose |
+| G024-002 | Design 046 materializes a layer in the runner that holds a control-plane token and the engine; under Architecture decision 0079's split the data runner holds the token and the data-mode sandbox runner holds the engine. Which process fetches the locked files, which builds and verifies the volume, and how the data mode learns that a layer digest is signed, is designed in Task 024-076 before Polars is built (the data-mode request member `layer` of Architecture decision 0058 decision 1 assumes it). | Open; blocks User story 024-07 only |
+| G024-003 | The procedural model (Principle IV, design 044) is not yet written; whether its envelope gains a data entry is undecided. Data nodes are graph-only (Decision 024-010). | Open, depends on design 044 |
+| G024-004 | Exporting a managed snapshot to a customer Iceberg table (an `icebergWrite` step reading the snapshot's parts, which needs `step_lease_blobs` to admit `DATA_SNAPSHOT_PART` parts for a lake attempt), and the five new drivers as feature 035 destination kinds. | Open, not in this delivery |
+| G024-005 | Whether PostgreSQL and the lake kinds of features 017 and 035 already meet the recheck-at-resolution and pause-on-revocation clauses of the uniform `pii`-egress rule is recorded at build start (Task 024-002); a difference goes to their owners and is not changed by this feature. | Open |
 
 ## Owner questions
 
-| ID | Question | Options | Recommended default |
-|---|---|---|---|
-| O1240 | Where do managed snapshots live? | (a) platform blob backend under the namespace; (b) a customer bucket per namespace, which under ADR-0055 means the integration runner stages objects; (c) both from the start | (a), with `tenant_data_bytes`; (b) as G1246 |
-| O1241 | How are BigQuery and Snowflake released without free emulators? | (a) hidden until the real-service suite passes on owner-provided accounts; (b) advertised as preview on fake-server evidence; (c) out of the feature | (a) |
-| O1242 | Does the project maintain a curated Python data catalog for Polars (content specified here, mechanism 023's `python-data`)? | (a) yes, one hash-pinned catalog re-pinned on a stated cadence; (b) no, DuckDB only | (a); if (b), US07 is dropped |
-| O1243 | May the platform destroy superseded snapshot data (ADR-0027 does not authorize deleting customer data; ADR-0023 never deletes committed blobs)? | (a) yes, under the retention the asset manager declares, audited; (b) only on an explicit, audited operator action; (c) never in this delivery (bytes kept, `RETIRED` is a label) | (a); until decided, (c) |
+| ID | Question | Options | Recommended default | Decision |
+|---|---|---|---|---|
+| O1240 | Where do managed snapshots live? | (a) platform blob backend under the namespace; (b) a customer bucket per namespace, which under ADR-0055 means the integration runner stages objects; (c) both from the start | (a), with `tenant_data_bytes`; (b) as G1246 | **(a)**, delegate, Owner decision 2026-11-26-160; a customer bucket stays Gap 1246 |
+| O1241 | How are BigQuery and Snowflake released without free emulators? | (a) hidden until the real-service suite passes on owner-provided accounts; (b) advertised as preview on fake-server evidence; (c) out of the feature | (a) | **(a)**, delegate, Owner decision 2026-11-26-161: built and tested against the fake protocol servers, not offered (`DRIVER_NOT_ENABLED`, `database-warehouses-v1` unrecorded) until the real-service suite passes on accounts the owner provides; agents create no account and spend no money (Owner decision 2026-11-25-1) |
+| O1242 | Does the project maintain a curated Python data catalog for Polars (content specified here, mechanism 023's `python-data`)? | (a) yes, one hash-pinned catalog re-pinned on a stated cadence; (b) no, DuckDB only | (a); if (b), US07 is dropped | **Neither: decided through design 046's package layer**, delegate, Owner decision 2026-11-26-162: no platform-curated catalog image; the `python-data` runtime carries the interpreter and the data contract host; Polars, PyArrow and any library come from the script version's own lock and signed read-only layer (design 046, Architecture decision 0120); a reviewed starter lock ships as a template; User story 024-07 stays (Decision 024-008) |
+| O1243 | May the platform destroy superseded snapshot data (ADR-0027 does not authorize deleting customer data; ADR-0023 never deletes committed blobs)? | (a) yes, under the retention the asset manager declares, audited; (b) only on an explicit, audited operator action; (c) never in this delivery (bytes kept, `RETIRED` is a label) | (a); until decided, (c) | **(a)**, delegate, Owner decision 2026-11-26-163; Architecture decision 0058 supersedes ADR-0023 and ADR-0027 in part for that purpose only |

@@ -6,8 +6,10 @@ info:
     Draft fragment merged by T024-008 into specs/001-platform-foundation/contracts/events.asyncapi.yaml
     under the growth rule of docs/event-schema-evolution.md (minor version bump; new message; enum
     values appended; nothing removed or made required). The baseline events.baseline.json is
-    regenerated only after reading its diff. Payloads are metadata only: no snapshot content, no SQL,
-    no locator, no credential.
+    regenerated only after reading its diff. Payloads are metadata only: no snapshot content, no column
+    value, no SQL, no locator, no credential, so a webhook delivery of this message sends nothing that
+    the uniform pii-egress rule (Owner question 1081, Decision 1617) governs; asset names and counts are
+    internal metadata. Revised 2026-11-26 against develop at e5bda041.
 channels:
   dataAssetPublished:
     address: webhook-subscriptions

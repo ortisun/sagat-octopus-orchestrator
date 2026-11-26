@@ -9,7 +9,11 @@ info:
     ValidationError, TooManyRequests, Unavailable, InternalError, NamespaceId, TraceId and
     HttpRequestId, referenced here by the same names. Every route resolves tenant and namespace from
     the authenticated context; a foreign resource is an opaque 404. No response carries snapshot
-    content, SQL text of transforms, credential values or provider routing.
+    content, SQL text of transforms, credential values or provider routing. Every asset and lineage
+    route answers 422 VALIDATION_FAILED reason DATA_PIPELINES_NOT_ENABLED until the instance-registry
+    capability data-pipelines-v1 is recorded. Revised 2026-11-26 against develop at e5bda041: the
+    canonical connection union, lake drivers and EgressCeiling already exist (feature 035) and are
+    extended here, not replaced.
 paths:
   /namespaces/{namespaceId}/data-assets:
     parameters:
@@ -301,8 +305,8 @@ components:
             workflow: {type: string, maxLength: 128}
             node: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'}
         description: {type: string, maxLength: 1024}
-        connection: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
-        locator: {type: string, minLength: 1, maxLength: 512, description: 'Opaque to the platform (for example PROJECT.DATASET.TABLE); never logged or used as a metric label'}
+        connection: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$', description: 'A connection of a SQL driver, or a feature 035 iceberg connection whose table an icebergWrite producer writes'}
+        locator: {type: string, minLength: 1, maxLength: 512, description: 'Opaque to the platform (for example PROJECT.DATASET.TABLE, or an Iceberg namespace and table); never logged or used as a metric label'}
         freshness: {$ref: '#/components/schemas/FreshnessPolicy'}
     DataAssetDeclaration:
       oneOf:
@@ -483,19 +487,47 @@ components:
               to: {type: string}
               source: {type: string, enum: [declared, recorded]}
         truncated: {type: boolean}
-    # Connection settings union (replaces the single PostgresConnectionConfig reference in
-    # DatabaseConnection.config and PutDatabaseConnectionRequest.config; PostgreSQL is unchanged).
+    # Connection settings union: the canonical DatabaseConnectionConfig (feature 035) already holds
+    # postgresql, iceberg, object_storage and clickhouse; this fragment appends four variants and five
+    # discriminator mapping entries (mysql and mariadb share MysqlConnectionConfig). Nothing existing
+    # changes.
     DatabaseConnectionConfig:
       oneOf:
         - {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        - {$ref: '#/components/schemas/IcebergConnectionConfig'}
+        - {$ref: '#/components/schemas/ObjectStorageConnectionConfig'}
+        - {$ref: '#/components/schemas/ClickHouseConnectionConfig'}
         - {$ref: '#/components/schemas/MysqlConnectionConfig'}
         - {$ref: '#/components/schemas/SqlServerConnectionConfig'}
         - {$ref: '#/components/schemas/BigQueryConnectionConfig'}
         - {$ref: '#/components/schemas/SnowflakeConnectionConfig'}
-      discriminator: {propertyName: driver}
+      discriminator:
+        propertyName: driver
+        mapping:
+          postgresql: '#/components/schemas/PostgresConnectionConfig'
+          iceberg: '#/components/schemas/IcebergConnectionConfig'
+          object_storage: '#/components/schemas/ObjectStorageConnectionConfig'
+          clickhouse: '#/components/schemas/ClickHouseConnectionConfig'
+          mysql: '#/components/schemas/MysqlConnectionConfig'
+          mariadb: '#/components/schemas/MysqlConnectionConfig'
+          sqlserver: '#/components/schemas/SqlServerConnectionConfig'
+          bigquery: '#/components/schemas/BigQueryConnectionConfig'
+          snowflake: '#/components/schemas/SnowflakeConnectionConfig'
     PostgresConnectionConfig:
-      description: Canonical 017 schema, unchanged; referenced here for the union.
+      description: Canonical 017 schema with feature 035's egressCeiling, unchanged; referenced here for the union.
       type: object
+    IcebergConnectionConfig:
+      description: Canonical feature 035 schema, unchanged.
+      type: object
+    ObjectStorageConnectionConfig:
+      description: Canonical feature 035 schema, unchanged.
+      type: object
+    ClickHouseConnectionConfig:
+      description: Canonical feature 035 schema, unchanged.
+      type: object
+    EgressCeiling:
+      description: Canonical feature 035 schema (public, internal, pii; default internal), unchanged. Setting pii needs the namespace reveal grant; under the uniform pii-egress rule (Owner question 1081, Decision 1617) it is rechecked at each resolution and revocation pauses the connection.
+      type: string
     MysqlConnectionConfig:
       type: object
       additionalProperties: false
@@ -508,6 +540,7 @@ components:
         tls: {$ref: '#/components/schemas/DatabaseTls'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
         limits: {$ref: '#/components/schemas/DatabaseLimits'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
     SqlServerConnectionConfig:
       type: object
       additionalProperties: false
@@ -522,6 +555,7 @@ components:
         hostNameInCertificate: {type: string, maxLength: 253}
         secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
         limits: {$ref: '#/components/schemas/DatabaseLimits'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
     BigQueryConnectionConfig:
       type: object
       additionalProperties: false
@@ -533,6 +567,7 @@ components:
         maximumBytesBilled: {type: string, pattern: '^[1-9][0-9]{0,12}$', description: 'Bytes, 1..1 TiB, decimal string; also bounded by the database_bytes_billed quota'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
         limits: {$ref: '#/components/schemas/DatabaseLimits'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
     SnowflakeConnectionConfig:
       type: object
       additionalProperties: false
@@ -547,17 +582,18 @@ components:
         schema: {type: string, minLength: 1, maxLength: 255}
         secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
         limits: {$ref: '#/components/schemas/DatabaseLimits'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
     DatabaseTls:
       description: Canonical 017 schema, unchanged.
       type: object
     DatabaseLimits:
       description: Canonical 017 schema; timeoutMs maximum becomes per driver (30000, or 600000 for bigquery and snowflake).
       type: object
-    DatabaseDriverListItem:
-      description: Grows the canonical DatabaseDriverList item; maxItems grows from 1 to 6. DuckDB is not a driver (it is the dataQuery data node).
+    DatabaseDriver:
+      description: Grows the canonical DatabaseDriver item of DatabaseDriverList (whose items are DatabaseDriver or feature 035's LakeDatabaseDriver, unchanged); DatabaseDriverList.items maxItems grows from 4 to 9 (six SQL drivers and three lake drivers). authModes is a new optional field. DuckDB is not a driver (it is the dataQuery data node).
       type: object
       additionalProperties: false
-      required: [id, operations, parameterTypes, authModes, defaultLimits, maximumLimits]
+      required: [id, operations, parameterTypes, defaultLimits, maximumLimits]
       properties:
         id: {type: string, enum: [postgresql, mysql, mariadb, sqlserver, bigquery, snowflake]}
         operations: {type: array, items: {type: string, enum: [query, execute]}}
