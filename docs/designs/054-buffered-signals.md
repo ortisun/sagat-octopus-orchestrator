@@ -121,7 +121,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   4,194,304 (`SIGNAL_BYTES_OVER_RUN`); in a graph document, a name that is not the `eventType` of at least one `waitEvent` node of
   the root graph (`SIGNAL_WITHOUT_CONSUMER`); in a graph document that has a `continueAsNew` node, an entrypoint that is a
   `waitEvent` of a declared name (`SIGNAL_ENTRY_WAIT_CONTINUES`: a continuation's handoff opens such a wait without the planner,
-  Technical Plan 7; an author puts an activity first). A code document (design 044) declares its signals in the same shape, with the
+  Technical Plan 7; an author puts an activity first; Decision 054-013). A code document (design 044) declares its signals in the same shape, with the
   additions design 044 gives them. *Acceptance:* a publication test per refusal and per boundary value, the IR schema test, the
   Studio's form test.
 - **Requirement 054-002 — The level and the fleet requirement.** Publication MUST record the version's level (Terms). A version of
@@ -167,7 +167,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   up to `maxPending` pending signals of a name, each of at most `maxBytes`; publication guarantees that the declared bounds fit in
   what a run may retain; at run time a signal within them is refused only when the run's step outputs and pending payloads together
   would pass 4 MiB (`429`). With `maxBytes` of 262,144 a version can declare at most 16 pending signals in all (4,194,304 / 262,144);
-  with the default of 65,536, at most 64. *Acceptance:* the guide page and the Studio's message, reviewed in Task 054-14.
+  with the default of 65,536, at most 64. *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
 - **Requirement 054-008 — Pending payloads count in the retained bytes.** Every check of the 4 MiB bound MUST count the run's
   pending payloads with its step outputs, so that consuming a pending signal never takes a run over the bound. They are charged to
   the run's existing byte ledger (`run_instance_usage`, Technical Plan 6), whose check enforces the sum in the database.
@@ -284,17 +284,19 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
 
 ## Open Questions
 
-None. The questions raised while designing are decided in `specs/054-buffered-signals/research.md` (Decisions 054-001 to 054-012).
+None. The questions raised while designing are decided in `specs/054-buffered-signals/research.md` (Decisions 054-001 to 054-013).
 
 ## Owner decisions needed
 
-None open. Tasks 054-9, 054-10 and 054-11 change code that features 014 (the continuation handoff) and 018 (Signal-with-Start and
-reset reapply) own, and Task 054-1 changes their contracts and feature 004's signal rule; they are gated by Owner decision
+None open. Tasks 054-3 (the reset rules of the new event types), 054-8 (the chain-addressed signal path and batch `SIGNAL` items),
+054-9, 054-10 and 054-11 change code that features 014 (the continuation handoff, the chain's signal path) and 018 (Signal-with-Start,
+reset, batch items) own, and Task 054-1 changes their contracts and feature 004's signal rule; they are gated by Owner decision
 2026-11-26-540, a delegate's row under Owner decision 2026-11-24-4 whose `Covers` names them. The owner's decisions this design rests
 on: Owner decision 2026-11-24-1 (the scope), Owner decisions 2026-11-20-6 and 2026-11-24-4 (the delegation of its questions, of
 its architecture decision and of its approval; the coordinating session's decision that buffered signals are design 054 and that
 superseding Architecture decision 0050 decision 4 in part is within the delegation), and Owner decision 2026-11-25-2 (the approval
-rule of 0.3.0 designs). Each question below was decided under that delegation, with its options and reasoning in the register:
+rule of 0.3.0 designs) and Owner decision 2026-11-20-8 (documentation first). For the record, not open: each question below was
+decided under that delegation, with its options and reasoning in the register:
 
 - Feature 004's look-back as the substrate, or an inbox of the run? An inbox of the run; the inbox is read first (Decision 054-001).
 - Opt in per version and name, or buffer everything? Opt in (Decision 054-002).
@@ -548,7 +550,7 @@ predecessor and credits the successor; a discard debits.
 
 ### 7. Continue-as-new
 
-A continuation has two handoff paths in `crates/infra-postgres/src/chain_progress.rs`: `continue_as_new` and `continue_evaluated`
+Decision 054-006 (move what the successor declares) and Decision 054-013 (the handoffs). A continuation has two handoff paths in `crates/infra-postgres/src/chain_progress.rs`: `continue_as_new` and `continue_evaluated`
 (the scheduler's, called from `crates/scheduler/src/passes.rs`). Both lock the chain, then the run, and insert the successor with the
 events they already write for it (its `run.started` and its entry's release, at fixed sequences). In both, and only when
 `runs.pending_signals > 0` (read with the run's row):
@@ -582,7 +584,7 @@ point a high-volume queue to a code version (design 044), which handles it in on
 
 ### 8. The end of a run
 
-A run ends on several paths, and each MUST discard its pending signals in its transaction and journal `signal.discarded {count,
+Decisions 054-007 and 054-013. A run ends on several paths, and each MUST discard its pending signals in its transaction and journal `signal.discarded {count,
 cause: "run_ended"}` immediately before `run.finished`, when the count is above zero:
 
 - **The planner**, for a run that completes, fails, is cancelled, compensates or ends partial (an effect that cannot be undone,
@@ -724,7 +726,7 @@ refusals in six languages. The worker protocol does not change.
   own (Task 054-18), which whichever of designs 044, 045 and 054 builds first lands and the other two depend on; each design then
   adds only its capability to the closed lists and its predicate to the floor. A later migration that finds the function still
   compares its security, configuration, owner and whitespace-normalized body with that text and fails on any difference, as a guard
-  against drift, not as the way it is shared. The store calls it inside the
+  against drift, not as the way it is shared (Gap 054-007). The store calls it inside the
   publication's transaction under a `lock_timeout`; `false` is `SIGNAL_INBOX_NOT_ACTIVE`, a lock timeout `UNAVAILABLE` with the
   reason `REQUIREMENT_BUSY`.
 - **The floor for a rollback.** A rule in the replay-floor trigger on `platform_requirements` (Architecture decision 0098's build,
@@ -866,6 +868,14 @@ caller of a signature it changes, so the workspace builds after each.
   release paths never enter a `waitEvent` of a declared name without the planner. Unit tests first; replay equals projection over a corpus that buffers,
   consumes, moves and discards; journals written before this design decode as before.
   Refs: Requirement 054-004, Requirement 054-006, Requirement 054-011, Requirement 054-020
+  Owner-gate: OD-2026-11-26-540
+- [ ] T054-18 The shared prerequisite (Gap 054-007; listed here, in the order of its slice 2a, though numbered last), its own
+  migration and pull request, built only if neither design 044 nor design 045 has
+  landed it: `platform_requirement_hold` with the exact body of Decision 044-206, its `REVOKE` and grant, and the scaffold of the
+  replay-floor trigger on `platform_requirements` (with its `READ COMMITTED` check) that each design extends with one predicate.
+  `integration_platform_foundation` tests first: the function's privileges and configuration, a hold against a concurrent removal,
+  the trigger's refusal through a test capability.
+  Refs: Requirement 054-002
 - [ ] T054-4 The migration of Technical Plan 2 (the table with its `version_id` and index, the new columns and their checks, the
   check on `runs` that a terminal status has no pending signal, the ledger's replaced check, the capability in the three closed
   lists, the comparison guard of the hold function, the floor's predicate, the grants, the classification, the down migration's
@@ -894,7 +904,8 @@ caller of a signature it changes, so the workspace builds after each.
   `apps/execution-engine/src/settings.rs`). Contract tests first (`contract_rest_durable_execution`), then a test per refusal and
   its order (`NO_CONSUMER_AHEAD` included), the idempotency answer and its `#` receipt (with-start replay included), and a wait's
   entry per entry path.
-  Refs: Requirement 054-003, Requirement 054-004, Requirement 054-005, Requirement 054-006, Requirement 054-009, Requirement 054-013, Requirement 054-016
+  Refs: Requirement 054-002, Requirement 054-003, Requirement 054-004, Requirement 054-005, Requirement 054-006, Requirement 054-009, Requirement 054-013, Requirement 054-016
+  Owner-gate: OD-2026-11-26-540
 - [ ] T054-9 Continue-as-new and the store-side ends: the move and the discard in both handoffs (`continue_as_new`,
   `continue_evaluated`) in the order of Technical Plan 7, their tolerance of a run version advanced only by `signal.buffered` (and
   `finalize_continuation_expression`'s), the discard in `finalize_chain` and the collection's finish with their shape matchers.
@@ -917,15 +928,16 @@ caller of a signature it changes, so the workspace builds after each.
 - [ ] T054-12 The suites `integration_buffered_signals` and `fault_buffered_signals` (their `[[test]]` entries in
   `tests/Cargo.toml`, `main.rs` files and entries in `scripts/integration-suite-durations.toml`): every race of Technical Plan 12
   with its barrier, the crash and restart, the look-back precedence, the run-driven barrier test with a pending signal, the metrics
-  text test, the read tests (no payload, another tenant's run), the replay corpus; every suite also with
+  text test, the read tests (no payload, another tenant's run), the replay corpus, and the chain of CUJ 2 handling 500 `order`
+  signals one per segment, each consumed once and in order, with every signal accounted for in the chain's journals; every suite also with
   `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
-  Refs: Requirement 054-009, Requirement 054-014, Requirement 054-015, Requirement 054-018, Requirement 054-019, Requirement 054-020
+  Refs: Requirement 054-009, Requirement 054-014, Requirement 054-015, Requirement 054-018, Requirement 054-019, Requirement 054-020, Success criterion 054-002, Success criterion 054-003
 - [ ] T054-13 The six SDKs: the client's `buffered` and `sequence`, `listPendingSignals`, the builder's `signals` with the shared
   fixture; the conformance scenario `buffered-signals`; each SDK's checks of `sdks/AGENTS.md`.
-  Refs: Requirement 054-016
+  Refs: Requirement 054-016, Success criterion 054-001
 - [ ] T054-14 The Studio: the declarations in the inspector with the bound and the warning, the run's pending signals and discarded
   counts; component tests first, then the journeys.
-  Refs: Requirement 054-007, Requirement 054-016
+  Refs: Requirement 054-001, Requirement 054-007, Requirement 054-016
 - [ ] T054-15 Documents for people: a guide page on signals (declared and undeclared names, one consumer, the bound, the look-back
   precedence, the comparison with Temporal, at least once); the runbook `docs/runbooks/buffered-signals.md` (the requirement and its
   floor, the metrics, a full inbox); `docs/sdk-compatibility.md`; the release notes; `contract_developer_experience` regenerated only
@@ -939,13 +951,6 @@ caller of a signature it changes, so the workspace builds after each.
 - [ ] T054-17 The released 0.2 and mixed-fleet scenarios: runs from 0.2 finish unchanged, publication refused before the requirement,
   the floor, rollback before the requirement, a 0.2 client against a declared name.
   Refs: Requirement 054-002, Non-functional requirement 054-004
-
-- [ ] T054-18 The shared prerequisite, its own migration and pull request, built only if neither design 044 nor design 045 has
-  landed it: `platform_requirement_hold` with the exact body of Decision 044-206, its `REVOKE` and grant, and the scaffold of the
-  replay-floor trigger on `platform_requirements` (with its `READ COMMITTED` check) that each design extends with one predicate.
-  `integration_platform_foundation` tests first: the function's privileges and configuration, a hold against a concurrent removal,
-  the trigger's refusal through a test capability.
-  Refs: Requirement 054-002
 
 #### Follow-up tasks
 

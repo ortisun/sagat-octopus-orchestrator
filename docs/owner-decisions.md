@@ -14,7 +14,7 @@ them. Ids OD-2026-11-26-540 to OD-2026-11-26-559 are reserved for design 054.
 
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
-| OD-2026-11-26-540 | Design 054 may build into features 014 (the continuation handoff moves pending signals), 018 (Signal-with-Start buffers for a declared name, reset rematerializes and reapplies buffered signals, four rows of its reset registry, the refinement of FR-018-024 and FR-018-039) and 004 (its sentence that a signal is accepted only by a waiting step) at the tasks named here: buffered signals are a 0.3.0 feature (Owner decision 2026-11-24-1) that cannot exist without these changes, each made under the owning feature's rules and tests | delegate (OD-2026-11-24-4) | Decided | docs/designs/054-buffered-signals.md T054-1, T054-9, T054-10, T054-11 |
+| OD-2026-11-26-540 | Design 054 may build into features 014 (the continuation handoff moves pending signals), 018 (Signal-with-Start buffers for a declared name, reset rematerializes and reapplies buffered signals, four rows of its reset registry, the refinement of FR-018-024 and FR-018-039) and 004 (its sentence that a signal is accepted only by a waiting step) at the tasks named here: buffered signals are a 0.3.0 feature (Owner decision 2026-11-24-1) that cannot exist without these changes, each made under the owning feature's rules and tests | delegate (OD-2026-11-24-4) | Decided | docs/designs/054-buffered-signals.md T054-1, T054-3, T054-8, T054-9, T054-10, T054-11 |
 
 ## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
 
