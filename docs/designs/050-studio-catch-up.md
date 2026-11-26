@@ -861,8 +861,13 @@ caller (the principal's `Subject`), so a cursor reveals no row key and opens onl
 tuples encode alike. Its wire form is
 `<key id>.<salt>.<nonce>.<ciphertext>` (the key id in decimal, the rest in base64url), and `open` derives the key from the cursor's own key id and salt.
 
-The use cases seal and open cursors through a port, `InboxCursorSealer`, whose methods are asynchronous (`async
-seal(scope, key) -> Result<String, SealerError>`, `async open(scope, &str) -> Result<Option<key>, SealerError>`) in
+The use cases seal and open cursors through a port, `InboxCursorSealer`, whose methods are asynchronous and
+object-safe, so it is wired as `Arc<dyn InboxCursorSealer>` as the application's other ports are (`async
+seal(&InboxScope, &InboxKey) -> Result<String, SealerError>`, `async open(&InboxScope, &str) ->
+Result<Option<InboxKey>, SealerError>`, where `InboxKey { at: OffsetDateTime, id: Uuid }` is the deadline and the
+approval request's id, or the request time and the publication request's id, and `InboxScope { list: InboxList,
+tenant, namespace, subject }` names the closed `InboxList` (`Approvals`, `Publications`) that picks the HKDF label, so
+a cursor of one list never opens on the other: `an_approval_cursor_does_not_open_on_the_publication_list`) in
 `crates/application/src/approval_inbox.rs`, shared by both inbox use cases; its adapter is
 `crates/infra-postgres/src/inbox_cursor.rs`, wired by `apps/control-plane` and `tests/support/api.rs`, so no
 dependency edge is added. The adapter loads the keys at start and reads the table again on a timer every minute,
@@ -879,7 +884,13 @@ and the ciphertext at least 16 (`a_cursor_with_a_wrong_field_is_malformed`: `+1`
 as a malformed cursor (`400`), which costs the Studio only a fresh first page. With no key loaded (an empty table, or
 no successful read since start), `SealerError::Unavailable` answers `503` with `Error.code` `UNAVAILABLE`,
 `details.reason` `INBOX_CURSOR_KEYS_UNAVAILABLE`, retryable, and `Retry-After` set to the seconds until the next timer
-read, and the metric outcome is `unavailable`; start-up still succeeds. Tests:
+read, and the metric outcome is `unavailable`; start-up still succeeds. Every timer read is counted,
+`inbox_cursor_key_reads_total{outcome}` (`ok`, `failed`), the gauge `inbox_cursor_keys_last_read_age_seconds` gives the
+time since the last successful read (no tenant label), and a failed read is logged once per run of failures, so a
+replica sealing under a deleted key is seen before its cursors fail elsewhere
+(`a_failed_key_read_is_counted_and_logged_once`). The envelope `<key id>.<salt>.<nonce>.<ciphertext>` has the same
+form as design 013's sign-in attempt cookie; each adapter keeps its own codec, so no crate edge is added, and both are
+tested against one table of malformed inputs, `tests/fixtures/sealed_envelope_malformed.json`. Tests:
 `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`,
 `a_rotate_within_two_minutes_of_the_last_is_refused`, `an_unknown_key_id_is_a_malformed_cursor_without_a_read`,
 `a_replica_with_no_key_loaded_is_unavailable`, `migrate_after_two_rotations_creates_no_key`.
@@ -1039,7 +1050,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 | Risk | Mitigation |
 |---|---|
 | The inbox adds a disclosure | It adds none beyond what the caller can already read: an approval's policy is in the workflow version (`definition:read`), and the initiator and deciders are actors of the journal (`run:read`); the inbox returns only the caller's own eligibility, and a contract test holds its item to its field list (Architecture decision 0144) |
-| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a cursor sealed under a per-tenant key derived from the cursor key; the performance journey includes a caller who sees one folder of many; the count of hidden rows per window is the one aggregate disclosed (Requirement 029-017) |
+| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a cursor sealed under a key derived per cursor (a random salt, the tenant in `info`) from the cursor key; the performance journey includes a caller who sees one folder of many; the count of hidden rows per window is the one aggregate disclosed (Requirement 029-017) |
 | A legacy node is lost on save | The canonical form keeps unknown members; a test saves and reloads one |
 | A capability shown by one replica is refused by another | The server's validation decides; the problem appears at validation (Gap 050-001) |
 | Parallel Studio branches rewrite the same files | The order of Technical Plan 1; new primitives in new files |
@@ -1143,8 +1154,9 @@ primitive goes in a new file of `src/ui/`.
   `InboxCursorSealer`, its adapter `crates/infra-postgres/src/inbox_cursor.rs`, the table `inbox_cursor_keys` in the
   migration with its entries in `crates/infra-postgres/storage-classification.json`, its first key created by
   `sagat_infra_postgres::migrate` and `control-plane inbox-cursor-key rotate --operator`, both with the schema-owning
-  role under the table lock, the runtime role granted `SELECT` only; `aes-gcm` moved to the workspace's dependencies,
-  `aes-gcm`, `hkdf` 0.13 and `getrandom` 0.4 added to `infra-postgres`; `ApprovalInboxStore`, its use case and adapter, the migration with the
+  role under the table lock, the runtime role granted `SELECT` only; `aes-gcm` and `hkdf` 0.13 moved to (or added to) the
+  workspace's dependencies, `aes-gcm`, `hkdf` and `getrandom` 0.4 added to `infra-postgres`; the table
+  `tests/fixtures/sealed_envelope_malformed.json`; `ApprovalInboxStore`, its use case and adapter, the migration with the
   partial index and its `down`; the route, its metrics and `x-implemented`; `youMayDecide` on the per-run list through
   `list_for_run`; the adapter's ended-run guard moved after authorization; the route removed from `not_built`; the new
   target `integration_studio_catch_up` (`tests/integration/studio-catch-up/main.rs` and its `[[test]]` entry in
@@ -1161,7 +1173,8 @@ primitive goes in a new file of `src/ui/`.
   `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`, `a_cursor_with_a_wrong_field_is_malformed`,
   `a_rotate_within_two_minutes_of_the_last_is_refused`, `an_unknown_key_id_is_a_malformed_cursor_without_a_read` (an
   overflowing key id included), `a_replica_with_no_key_loaded_is_unavailable`, `migrate_after_two_rotations_creates_no_key`,
-  `two_concurrent_rotations_leave_the_two_newest_keys`, `a_cursor_refusal_never_precedes_the_namespace_refusal`, `the_runtime_role_cannot_write_the_cursor_key`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
+  `two_concurrent_rotations_leave_the_two_newest_keys`, `a_cursor_refusal_never_precedes_the_namespace_refusal`,
+  `an_approval_cursor_does_not_open_on_the_publication_list`, `a_failed_key_read_is_counted_and_logged_once`, `the_runtime_role_cannot_write_the_cursor_key`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
   `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
