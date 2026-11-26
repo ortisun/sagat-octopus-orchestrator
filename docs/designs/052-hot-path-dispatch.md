@@ -153,12 +153,15 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   platform with a wake user of its own, on a connection and credentials of its own (`nats.wakeCredentialsSecret`, or a
   Redis wake URL secret, `redis.wakeUrlSecret`; the outbox keeps its own user, which needs the JetStream API), whose
   permissions are: for engines, publish and subscribe on `sagat.wake.v1.>`; for the control plane, publish only; no
-  JetStream API and no other subject (NATS), no other channel or key (a Redis ACL `resetchannels &sagat.wake.v1.*`); and
+  JetStream API and no other subject (NATS), no other command, channel or key (Redis ACLs, asserted by the chart's contract test: engines
+  `-@all +publish +subscribe +psubscribe resetchannels &sagat.wake.v1.*`, the control plane
+  `-@all +publish resetchannels &sagat.wake.v1.*`); and
   when no other user or anonymous connection may publish or subscribe on those channels (Redis's `default` user disabled
   or given `resetchannels`; no NATS `no_auth_user` and no open account). The chart refuses to render the wake on without
   the wake's credentials secret, outside the development profile; and each process checks at start, before it turns the
-  cross-process wake on, that the broker refuses an anonymous connection (NATS) or that `ACL WHOAMI` is not `default`
-  and an unauthenticated probe is refused (Redis); otherwise it stays local-only, counts it and logs why. Compose's
+  cross-process wake on, that the broker refuses an anonymous connection (NATS), or that `ACL WHOAMI` is not `default`
+  and an unauthenticated connection's `SUBSCRIBE` and `PUBLISH` on the probe channel `sagat.wake.v1.probe` are both
+  refused (Redis); otherwise it stays local-only, counts it and logs why. Compose's
   development broker is the development profile. The control plane's egress to the broker is opened only when the wake
   is on (`infra/helm/templates/networkpolicy-egress.yaml`).
 - **Requirement 052-055 A deadline window reopens at once.** A stream window that ends by its deadline with credit left
