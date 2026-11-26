@@ -53,7 +53,7 @@ export function AlertsPanel({ api, namespaceId, sessionKey }: { api: OperationsA
                 <p>{item.summary}</p>
                 <dl className="operations-facts">
                   {item.subject ? <><dt>Subject</dt><dd><code>{item.subject}</code></dd></> : null}
-                  <dt>Items</dt><dd>{item.items}</dd>
+                  <dt>Items</dt><dd>{item.itemsWithheld ? 'Withheld: you may not reveal personal data in this namespace' : item.items}</dd>
                   <dt>Oldest</dt><dd>{item.oldestSeconds} seconds</dd>
                   <dt>Last seen</dt><dd><Moment at={item.lastSeenAt} empty="Not recorded" /></dd>
                   <dt>Firings</dt><dd>{item.firedCount}</dd>

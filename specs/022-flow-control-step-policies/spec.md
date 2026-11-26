@@ -682,6 +682,9 @@ Added after the review of 2026-11-13:
   metrics (decisions by outcome, wait time, waiters, grant lag behind a free slot) and raise per-namespace
   alerts when grants lag behind free slots (`rate_limit_grant_lagging`) and when a key's buffer nears its
   ceiling (`rate_limit_queue_saturated`), each with a runbook section. Labels follow FR-022-033.
+  *Amended 2026-11-26 (decision D022-135; security check of the quota fix):* the number of keys a flow-control alert
+  counts (`items`) MUST be shown only to a caller who may reveal personal data in the namespace, the right read with the
+  alerts in one statement, and never in an alert's event; any other caller reads `items: 0` and `itemsWithheld: true`.
 - **FR-022-050 — Capability, SDKs and Studio**: `rateLimits` MUST be a capability enabled separately from
   `concurrencyKeys` under the rules of FR-022-031, and both MUST be activated through the instance-capability
   registry (FR-022-053). The six SDKs (TypeScript, Go, Python, C#, Java, Rust; FR-022-035 predates the Rust

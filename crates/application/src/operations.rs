@@ -158,6 +158,9 @@ pub struct AlertRecord {
     pub resolved_at: Option<OffsetDateTime>,
     pub fired_count: u32,
     pub items: u64,
+    /// Whether `items` is withheld from the reader (a flow-control alert read without the reveal right, decision
+    /// D022-135); the store reads every alert with it `false`.
+    pub items_withheld: bool,
     pub oldest_seconds: f64,
 }
 
@@ -463,6 +466,19 @@ pub trait AlertReader: NamespaceDirectory {
         before: Option<Uuid>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<AlertRecord>, StoreError>> + Send;
+
+    /// [`Self::list_alerts`] for the reader `subject`, and whether it may reveal personal data in the namespace (its
+    /// current role may use a reveal grant and it holds one there), both read in one statement, so one snapshot (feature
+    /// 022, decision D022-135).
+    fn list_alerts_as(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
+        state: Option<AlertState>,
+        before: Option<Uuid>,
+        limit: u32,
+    ) -> impl Future<Output = Result<(Vec<AlertRecord>, bool), StoreError>> + Send;
 }
 
 /// Reads alerts for the API.
@@ -665,10 +681,28 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
         // A caller that asks for one more than its page, to know whether another follows, is
         // answered with that one more.
         let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
-        Ok(self
+        let (mut alerts, reveals) = self
             .store
-            .list_alerts(principal.tenant_id(), namespace, state, before, limit)
-            .await?)
+            .list_alerts_as(
+                principal.tenant_id(),
+                namespace,
+                principal.subject(),
+                state,
+                before,
+                limit,
+            )
+            .await?;
+        // a flow-control alert counts the keys of its group in the condition, which moves exactly when a key's last run
+        // leaves it and so tells which runs share a key: shown only to a caller who may reveal personal data in the
+        // namespace (feature 022, decision D022-135)
+        if !reveals {
+            for alert in &mut alerts {
+                if AlertKind::FLOW_CONTROL.contains(&alert.kind) {
+                    alert.items_withheld = true;
+                }
+            }
+        }
+        Ok(alerts)
     }
 }
 

@@ -850,7 +850,8 @@ components:
               severity: {type: string, enum: [warning, critical]}
               state: {type: string, enum: [FIRING, RESOLVED]}
               firstSeenAt: {type: string, format: date-time}
-              items: {type: integer, minimum: 0}
+              items: {type: integer, minimum: 0, description: 'How many things are in the condition; 0 when itemsWithheld is true.'}
+              itemsWithheld: {type: boolean, description: 'True for the four flow-control kinds: a subscription endpoint holds no reveal right, and the count of a group''s keys in the condition tells which runs share a key (feature 022, decision D022-135).'}
               oldestSeconds: {type: number, minimum: 0}
               summary: {type: string}
               runbook: {type: string}

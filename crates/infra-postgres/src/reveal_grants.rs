@@ -146,9 +146,9 @@ pub(crate) async fn step_log_usage_if_revealed(
 
 /// The value of `usage` (a statement over tenant `$1` and namespace `$2` answering one `bigint`) for `namespace`, or
 /// `None` unless `subject`'s current role may use a reveal grant and it holds one for the namespace, as
-/// [`may_reveal_payload_unlocked`] reads it (feature 022, decision D022-133). The right and the usage are read in one
-/// `REPEATABLE READ READ ONLY` snapshot, so a read that runs after a revoke commits never answers `Some`; the usage is
-/// read only when the right is held.
+/// [`may_reveal_payload_unlocked`] reads it (feature 022, decisions D022-133 and D022-135 item 2). The membership role,
+/// the grant and the usage are one `SELECT`, so one snapshot, as in [`step_log_usage_if_revealed`]: a statement that runs
+/// after a revoke commits sees no grant and answers no usage, and the usage is computed only when the grant exists.
 ///
 /// # Errors
 /// A store error (the view then fails whole rather than show the usage).
@@ -159,41 +159,46 @@ pub(crate) async fn usage_if_revealed_in_namespace(
     subject: &Subject,
     usage: &'static str,
 ) -> Result<Option<u64>, StoreError> {
-    let mut tx = crate::pool::BeginSafely::begin_safely(pool)
-        .await
-        .map_err(store_error)?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-    let roles: Vec<String> = sqlx::query_scalar(
-        "SELECT m.role FROM memberships m \
-          WHERE m.tenant_id = $1 AND m.subject = $3 \
-            AND EXISTS (SELECT 1 FROM payload_reveal_grants g \
-                         WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.subject = $3)",
-    )
+    let row: Option<(String, Option<i64>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT m.role, \
+                CASE WHEN EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                                   WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.subject = $3) \
+                     THEN ({usage}) END \
+           FROM memberships m WHERE m.tenant_id = $1 AND m.subject = $3"
+    )))
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())
     .bind(subject.as_str())
-    .fetch_all(&mut *tx)
+    .fetch_optional(pool)
     .await
     .map_err(store_error)?;
-    let revealed = roles
-        .iter()
-        .any(|role| role.parse::<Role>().is_ok_and(role_can_use_reveal_grant));
-    let used = if revealed {
-        let used: i64 = sqlx::query_scalar(usage)
-            .bind(tenant.as_uuid())
-            .bind(namespace.as_uuid())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        Some(u64::try_from(used).map_err(|_| corrupt("flow-control usage"))?)
-    } else {
-        None
+    let Some((role, Some(used))) = row else {
+        return Ok(None);
     };
-    tx.commit().await.map_err(store_error)?;
-    Ok(used)
+    if !may_use_reveal_grant(&role) {
+        return Ok(None);
+    }
+    u64::try_from(used)
+        .map(Some)
+        .map_err(|_| corrupt("flow-control usage"))
+}
+
+/// A scalar subquery, for a statement that reads something with the reveal right in its own snapshot: the stored
+/// membership role of the subject `subject` in tenant `tenant` when it holds the reveal grant for namespace `namespace`
+/// (each a placeholder of the statement, such as `$1`), else null; [`may_use_reveal_grant`] then says whether that role
+/// may use it (feature 022, decision D022-135). The one place outside this file's functions that reads the grants.
+pub(crate) fn reveal_role_sql(tenant: &str, namespace: &str, subject: &str) -> String {
+    format!(
+        "(SELECT m.role FROM memberships m WHERE m.tenant_id = {tenant} AND m.subject = {subject} \
+           AND EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                        WHERE g.tenant_id = {tenant} AND g.namespace_id = {namespace} AND g.subject = {subject}))"
+    )
+}
+
+/// Whether a stored membership role may use a reveal grant (feature 009's rule, its one implementation); an unknown role
+/// may not.
+pub(crate) fn may_use_reveal_grant(role: &str) -> bool {
+    role.parse::<Role>().is_ok_and(role_can_use_reveal_grant)
 }
 
 fn role_can_use_reveal_grant(role: Role) -> bool {

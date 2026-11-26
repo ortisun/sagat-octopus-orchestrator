@@ -586,6 +586,17 @@ components:
             queueDeadline: {type: [string, 'null'], format: date-time}
             position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
             estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), or when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2).'}
+    AlertFlowControlFields:
+      description: |
+        Additive optional property of the canonical `Alert` schema and amended description of its `items` (merge into
+        them, decision D022-135). For the four flow-control kinds, `items` counts the group's keys in the condition, which
+        moves exactly when a key's last waiter is served or its last holder ends; it is shown only to a caller who may
+        reveal personal data in the namespace (read in the same statement as the alerts); any other caller reads
+        `items: 0` and `itemsWithheld: true`.
+      type: object
+      properties:
+        items: {type: integer, format: int64, minimum: 0, description: 'How many things are in the condition at the last look; 0 when itemsWithheld is true (D022-135).'}
+        itemsWithheld: {type: boolean, description: 'Present and true for a flow-control alert (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) when the caller may not reveal personal data in the namespace: the count of keys is not shown (D022-135).'}
     QuotaUsageFlowControlFields:
       description: |
         Amends the descriptions of the canonical `Quota.used` and `Quota.usageWithheld` (merge into them; no new

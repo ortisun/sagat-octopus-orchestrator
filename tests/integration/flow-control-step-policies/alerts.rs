@@ -420,3 +420,99 @@ async fn a_stuck_key_is_judged_against_the_tenants_concurrency_ceiling_below_its
         w.operate_run(run, RunOperation::Cancel).await;
     }
 }
+
+/// Security check of the quota fix, item 1 (decision D022-135): a flow-control alert's `items` is the number of its
+/// group's keys in the condition, which moves by one exactly when a key's last waiter is served, so it is shown only to a
+/// caller who may reveal personal data in the namespace. With `flow_control_key_waiters` at 1, one buffered start fires
+/// `RATE_LIMIT_QUEUE_SATURATED` for its group: a Viewer reads the alert with its count withheld (`items` 0), and a
+/// Developer given the reveal grant reads the count; an alert of another kind keeps its count for the Viewer.
+#[tokio::test]
+async fn a_flow_control_alert_counts_its_keys_only_for_a_caller_who_may_reveal_them() {
+    use sagat_application::clock::SystemClock;
+    use sagat_application::operations::OperationsService;
+    use sagat_domain::identity::Role;
+    let w = gated_world().await;
+    set(&w, QuotaResource::FlowControlKeyWaiters, 1).await;
+    let workflow = publish(&w, rated_start("alert-withheld", 1)).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    let waiter = w.start(workflow, &input).await;
+    monitor(&w).await.run_once().await;
+    assert_eq!(
+        alerts(&w, "RATE_LIMIT_QUEUE_SATURATED").await,
+        [("accounts".to_owned(), "FIRING".to_owned(), 1)]
+    );
+    // an alert of another kind, seeded, keeps its count for every reader
+    sqlx::query(
+        "INSERT INTO operational_alerts (id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
+                last_seen_at, fired_count, item_count, oldest_seconds) \
+         VALUES (gen_random_uuid(), $1, $2, 'DEAD_ITEMS', 'events', 'FIRING', 'warning', now(), now(), 1, 3, 0)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("an alert of another kind");
+    let service = OperationsService::new(
+        runtime_store(&w).await,
+        SystemClock,
+        "docs/runbooks/alerts.md",
+    );
+    let read = |who: sagat_domain::identity::Principal| {
+        let (service, w) = (&service, &w);
+        async move {
+            let mut lines: Vec<(String, u64, bool)> = service
+                .alerts(
+                    &who,
+                    w.namespace.id(),
+                    None,
+                    None,
+                    None,
+                    &crate::support::engine::ctx(),
+                )
+                .await
+                .expect("the alerts")
+                .into_iter()
+                .map(|alert| {
+                    (
+                        alert.kind.as_str().to_owned(),
+                        alert.items,
+                        alert.items_withheld,
+                    )
+                })
+                .collect();
+            lines.sort();
+            lines
+        }
+    };
+    let viewer = w.member("vera", Role::Viewer).await;
+    assert_eq!(
+        read(viewer).await,
+        [
+            ("DEAD_ITEMS".to_owned(), 3, false),
+            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 1, true),
+        ],
+        "the count of keys withheld from a caller without the reveal right"
+    );
+    let dave = w.member("dave", Role::Developer).await;
+    sqlx::query(
+        "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+         VALUES ($1, $2, 'dave', 'admin', clock_timestamp())",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("the reveal grant");
+    assert_eq!(
+        read(dave).await,
+        [
+            ("DEAD_ITEMS".to_owned(), 3, false),
+            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 1, false),
+        ],
+        "shown with the reveal grant"
+    );
+    for run in [holder, waiter] {
+        w.operate_run(run, RunOperation::Cancel).await;
+    }
+}
