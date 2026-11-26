@@ -153,6 +153,14 @@ place. Every owner question below was decided under the owner's delegation (Owne
   Major 7): a shared transaction advisory lock on the requirement's key, which the operator's functions take exclusively; advisory
   locks queue in order, so publications cannot starve the operator, and the runtime role takes no row lock on the registry. It refines
   Architecture decision 0082 decision 1, and features 020, 029 and 031 may use the same function.
+- **Decision 045-028 — Starvation of the operator is settled by a test** (2026-11-26, Owner decision 2026-11-26-564, after
+  Architecture decision 0112 replaced the hold's row lock by the requirement epoch `FOR SHARE`): Task 045-21 and design 054's Task
+  054-20 write first a held-lock test in which a relay of four publication sessions keeps the epoch held `FOR SHARE` for at least
+  8,000 ms (4 × the operator's `lock_timeout` of 2,000 ms); the operator's activate and remove must commit within 2,000 ms, and no
+  hold requested after they wait may be granted first. If they starve, the fair advisory lock of this decision's first text (or an
+  operator-intent row) returns as a gate before the epoch for every reader of it, chosen by the same test, and Architecture
+  decision 0112 is amended. Rejected: deciding it by reading alone; the order in which PostgreSQL serves a tuple lock's waiter and
+  new compatible lockers is a behaviour of the database version in use, which only a test of that version shows.
 
 ## Notes for other features (2026-11-26)
 

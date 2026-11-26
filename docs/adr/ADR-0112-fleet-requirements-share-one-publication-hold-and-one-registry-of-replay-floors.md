@@ -26,6 +26,7 @@ Three 0.3.0 designs add a fleet requirement that publication must hold and whose
 
 - A removal names the floor that refused it; a new requirement costs one row and one function.
 - The trigger runs dynamic SQL, bounded to `regprocedure` values only a migration can insert.
+- Whether the requirement epoch `FOR SHARE` lets a continuous stream of publications starve the operator's activate and remove is settled by a held-lock test written before any publication uses the hold (Tasks 045-21 and 054-20, Owner decision 2026-11-26-564); if they starve, this record is amended with a fairness gate before the epoch in the lock order.
 - Designs 044 and 045 cite this record in their next revisions (design 054, Gaps 054-007 and 054-010); Architecture decision 0098's floor becomes a row when both are built.
 
 ## Evidence

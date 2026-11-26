@@ -1210,6 +1210,18 @@ caller of a signature it changes, so the workspace builds after each.
   existing deferred flush, not an aggregate edge of Architecture decision 0050; the resolution of `tenant_pending_signal_bytes` and
   its default, tested at both sides of the boundary (Task 054-4); Open Questions read as citing Gaps 054-001 to 054-012.
   Refs: Requirement 054-005, Requirement 054-007, Requirement 054-010, Requirement 054-015, Requirement 054-020
+- [ ] T054-20 Before Task 054-18 merges, settle with evidence whether the epoch `FOR SHARE` of Technical Plan 15 lets a continuous
+  stream of publications starve the operator's `platform_requirement_activate` and `platform_requirement_remove` (Owner decision
+  2026-11-26-564): the held-lock test that Task 045-21 states lands with Task 054-18, written first (four publication sessions relay
+  holds under barriers so that the epoch is always held `FOR SHARE`, for at least 8,000 ms, four times the commands' `lock_timeout`
+  of 2,000 ms; pass: no hold requested after the command is seen waiting is granted before it commits, and it commits without
+  `REQUIREMENT_BUSY` within 2,000 ms). If the command starves, Technical Plan 15 and Task 054-18 gain the fairness gate Task 045-21
+  describes (an operator-intent row or a transaction-scoped advisory lock before the epoch in the lock order, for the hold and a
+  process's registration), chosen by the same tests, and Architecture decision 0112 is amended before any hold is used.
+  Red tests: `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
+  `...::a_removal_commits_under_a_continuous_stream_of_holds`.
+  Refs: Requirement 054-002
+  Owner-gate: OD-2026-11-26-564
 
 ### Verification Plan
 

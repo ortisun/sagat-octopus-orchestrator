@@ -1101,10 +1101,33 @@ changes every caller of a signature it changes, so the workspace builds after ea
   with design 054 after this design's approval: the hold's body is design 054's (Technical Plan 15 of 054: the requirement epoch
   `FOR SHARE`, the row read without a lock), the floor is a row of `platform_requirement_floors` with a `SECURITY DEFINER` function
   on `workflow_versions.activity_timeouts_level` instead of a rule of Architecture decision 0098's trigger, the drift guard follows
-  ADR-0112 decision 3, and Task 054-18 lands first; revise Technical Plan 13 and Tasks 045-5 and 045-6 in a re-approved revision,
-  and confirm with the security reviewer that the epoch `FOR SHARE` does not let publications starve the operator (this design's
-  second security review, Major 2).
+  ADR-0112 decision 3, and Task 054-18 lands first; the refusal `ACTIVITY_TIMEOUTS_NOT_ACTIVE` becomes the one reason `CAPABILITY_NOT_ACTIVE` with the
+  capability named (Gap 054-010); revise Technical Plan 13 and Tasks 045-5 and 045-6 in a re-approved revision.
+  Settle with evidence, not opinion, whether the epoch `FOR SHARE` lets publications starve the operator (this design's second
+  security review, Major 2; Owner decision 2026-11-26-564). A held-lock test, written first and seen failing or passing before any
+  publication uses the hold, lands with Task 054-18 (or with this task if Task 054-18 landed without it):
+  `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
+  `...::a_removal_commits_under_a_continuous_stream_of_holds`. Four publication sessions relay holds under barriers, never
+  sleeps: session k + 1 calls the hold once session k's hold is granted, and session k commits only once session k + 1's hold is
+  granted or is seen waiting (`pg_stat_activity.wait_event_type = 'Lock'`), so at every instant at least one hold has the epoch
+  `FOR SHARE`. The relay starts before the operator's command and runs until that command returns, and for at least 8,000 ms, four
+  times the command's `lock_timeout` of 2,000 ms (`RegistryBounds` in `crates/infra-postgres/src/instances.rs`, whose
+  `statement_timeout` is 3,000 ms). Once the operator's `platform_requirement_activate` (first test) or
+  `platform_requirement_remove` (second test) is seen waiting on the epoch, the test records whether the next hold requested is
+  granted before the command commits. Pass: no hold requested after the command is seen waiting is granted before the command
+  commits, so it waits only for the holds granted before it waited (at most two in the relay, each one publication's last
+  statement and its commit), and it commits without `REQUIREMENT_BUSY` within its 2,000 ms `lock_timeout`. If PostgreSQL's
+  tuple-lock queue grants a later `FOR SHARE` ahead of the waiting `FOR UPDATE` (the command starves and ends `REQUIREMENT_BUSY`
+  after 2,000 ms), the hold gains a fairness gate placed before the epoch in the registry's lock order and taken by every reader of
+  the epoch `FOR SHARE` (the hold and a process's registration): an operator-intent row that the operator's command sets first and
+  that a new hold reads, waiting behind or refusing `REQUIREMENT_BUSY` while it is set, or a transaction-scoped advisory lock taken
+  shared by the readers and exclusively by the operator's commands, whose lock-manager queue makes a later shared request wait
+  behind a waiting exclusive one (Decision 045-027's first text); the same two tests choose between them by passing. Architecture
+  decision 0112 is then amended (decision 1 and the lock order), with designs 044 and 054 following (Tasks 044-39 and 054-20).
+  Red tests: `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
+  `...::a_removal_commits_under_a_continuous_stream_of_holds`.
   Refs: Requirement 045-017
+  Owner-gate: OD-2026-11-26-564
 
 ### Verification Plan
 

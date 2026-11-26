@@ -174,29 +174,34 @@ approved.
   on a code run (`SIGNAL_NOT_DECLARED`). Design 054 states the inbox's contract for it (Technical Plan 10: rows are deleted on
   consumption, `consume_pending_signals` all or nothing, each row's `version_id` for its classification) and defers code runs' undeclared names to it (Requirement 054-003); design
   044's owner is to cite that contract in its next revision, and to drop from Architecture decision 0108 the statement that a code
-  version's consumer is its function, which Architecture decision 0111 decision 1 owns (architecture review, Nit 10).
+  version's consumer is its function, which Architecture decision 0111 decision 1 owns (architecture review, Nit 10). Answered by
+  design 044's follow-up Task 044-40 (Owner decision 2026-11-26-565).
 - **Gap 054-011** The journal read returns `payload_digest` as `payloadRef` to every `run:read` caller for events that carry one,
   step outputs included (`crates/infra-postgres/src/execution.rs`, `crates/api-http/src/dto_exec.rs`): a low-entropy output can be
   confirmed by hashing guesses. Design 054 withholds it for `signal.buffered`; the same exposure for step outputs is feature 016's
-  to settle (security review of design 054, Major 1).
+  to settle (security review of design 054, Major 1). Recorded as feature 016's Gap G665 and bugfix Task T016-066, severity
+  High (Owner decision 2026-11-26-566).
 - **Gap 054-012** Design 045 on this branch still gives the hold's older body, its drift guard and its floor as a rule of
   Architecture decision 0098's trigger (its Technical Plan 13), and design 044 the older body (its section 14). Under Architecture
   decision 0112 those texts must be revised before their migration tasks (Task 045-6, Task 044-6) are built; until then design
-  054's slice 2 accepts only the record's version of the hold (architecture re-read 1, Major 1).
+  054's slice 2 accepts only the record's version of the hold (architecture re-read 1, Major 1). Answered by follow-up Tasks
+  045-21 and 044-39 (Owner decision 2026-11-26-565); whether the epoch `FOR SHARE` can starve the operator is settled by the
+  held-lock tests of Tasks 045-21 and 054-20 (Owner decision 2026-11-26-564).
 - **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
   them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
   dependency in their next revisions (stage 5 zoom-out, its Major 4). Design 044's Decision 044-206 body is replaced by the one of
   design 054's Technical Plan 15 (Architecture decision 0112), which follows the registry's lock order (security review, Major 7).
+  Answered by follow-up Tasks 044-39 and 045-21 (Owner decision 2026-11-26-565).
 
 - **Gap 054-008** Design 044 refuses a code run's signals from 3 MiB of retained bytes, at a visible count of 50,176 and while a
   closing window is open (`HISTORY_HEADROOM`, `RUN_CLOSING`); Requirement 054-007's bound is stated for graph runs, and the 2 MiB
   cap fits under 044's headroom. Design 044 is to apply the 2 MiB publication cap to its signals' declarations and state its
-  headroom in its guide.
+  headroom in its guide. Answered by design 044's follow-up Task 044-41 (Owner decision 2026-11-26-565).
 - **Gap 054-009** `SIGNAL_ENTRY_WAIT_CONTINUES` exists because the scheduler's handoff (`continue_evaluated`) opens a successor's
   entry `waitEvent` without the planner. The fix belongs in the handoff: leave a declared name's entry wait to the planner. Until a
   later design does it, a segment that continues as new starts with an activity, and the guide says why.
 - **Gap 054-010** Design 045 names its refusal `ACTIVITY_TIMEOUTS_NOT_ACTIVE`; Decision 054-014 asks it to use
-  `CAPABILITY_NOT_ACTIVE` with the capability named, given by the shared hold of Task 054-18.
+  `CAPABILITY_NOT_ACTIVE` with the capability named, given by the shared hold of Task 054-18. Answered by follow-up Task 045-21.
 
 ## Owner questions
 
