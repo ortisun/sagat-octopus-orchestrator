@@ -651,6 +651,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     if let Some(gate) = &options.lease_withdrawal {
         workers = workers.with_lease_withdrawal(Arc::clone(gate));
     }
+    // the process's gate decides the capability use cases too (decision D006-100), as the engine wires it
+    if let Some(gate) = &options.serving_gate {
+        workers = workers.with_capability_gate(Arc::clone(gate));
+    }
     workers = workers
         .with_new_withdrawals(options.new_withdrawals)
         .with_hand_back_ceiling(options.hand_back_ceiling);

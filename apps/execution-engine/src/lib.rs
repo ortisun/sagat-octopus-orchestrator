@@ -810,6 +810,7 @@ pub async fn serve(
     // platform requires `lease-withdrawal-v1` of control planes and engines; the gate keeps the recorded requirements.
     let workers = workers
         .with_lease_withdrawal(Arc::clone(&gate))
+        .with_capability_gate(Arc::clone(&gate))
         .with_new_withdrawals(engine.lease_withdrawal);
     if !engine.lease_withdrawal {
         tracing::warn!(

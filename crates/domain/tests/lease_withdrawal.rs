@@ -27,7 +27,7 @@ const fn fence(attempt: u32, generation: u64) -> Fence {
 
 #[test]
 fn a_withdrawn_lease_gives_the_step_back_and_the_next_lease_reuses_its_attempt() {
-    for cause in [WithdrawalCause::NotSent, WithdrawalCause::NotStarted] {
+    for cause in WithdrawalCause::ALL {
         // a declared activity with an effect: a lapse of it would be a review (feature 037)
         let mut run = Harness::start(build("a", vec![effect("a", false)]));
         let first = run.lease("a");
@@ -217,9 +217,13 @@ fn a_reset_copies_a_withdrawal_like_a_lease() {
     );
 }
 
+/// The closed set, with `NOT_ACKNOWLEDGED`, the cause of protocol 1.8 (Task 006-068, Decision 006-059 request (2)): this build
+/// replays it before any build writes it, so that it can be the rollback floor of 1.8.
 #[test]
-fn the_cause_has_two_closed_values() {
-    for cause in [WithdrawalCause::NotSent, WithdrawalCause::NotStarted] {
+fn the_cause_has_three_closed_values() {
+    let tokens: Vec<&str> = WithdrawalCause::ALL.iter().map(|c| c.as_str()).collect();
+    assert_eq!(tokens, ["NOT_SENT", "NOT_STARTED", "NOT_ACKNOWLEDGED"]);
+    for cause in WithdrawalCause::ALL {
         assert_eq!(WithdrawalCause::parse(cause.as_str()), Some(cause));
     }
     assert_eq!(WithdrawalCause::NotSent.as_str(), "NOT_SENT");

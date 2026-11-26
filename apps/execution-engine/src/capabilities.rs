@@ -28,5 +28,8 @@ pub fn capabilities(config: &EngineConfig) -> Vec<Capability> {
     }
     // feature 006 (decision D006-004): every engine of this build replays `step.lease_withdrawn`, whatever it runs
     listed.push(Capability::LeaseWithdrawalV1);
+    // the follow-up of pull request #260 (decisions D006-096 and D006-098): it replays every cause of the event, and serves
+    // no capability call while its registry is silent
+    listed.push(Capability::LeaseWithdrawalV2);
     listed
 }

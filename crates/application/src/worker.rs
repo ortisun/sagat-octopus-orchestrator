@@ -650,6 +650,9 @@ pub struct WorkerService<S, C, E, R> {
     /// The gate whose recorded requirements say whether undelivered leases are withdrawn (feature 006, decision
     /// D006-004); `None`: never.
     lease_withdrawal: Option<Arc<crate::instances::ServingGate>>,
+    /// The gate whose capability decision a capability use case asks just before it commits what it hands out (decision
+    /// D006-100); none in a process with no registry.
+    capability_gate: Option<Arc<crate::instances::ServingGate>>,
     /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
     lease_withdrawal_disabled: bool,
     /// The highest session minor a hand-back is judged by: this build's own ceiling (ADR-0099 decision 9).
@@ -659,6 +662,53 @@ pub struct WorkerService<S, C, E, R> {
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerService").finish_non_exhaustive()
+    }
+}
+
+/// Which stops a report fence lets through: a cancellation requested of the step, or a run that is stopping (decision
+/// D006-097). A closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopAllowance {
+    /// Every other report: a cancellation or a stop refuses it.
+    None,
+    /// The acknowledgement of a cancellation (`CANCELLED`, not retryable): it settles a cancelled lease.
+    Cancellation,
+    /// A host's hand-back (`TASK_NOT_STARTED`): let through only while the step is still `LEASED`, so it reaches the verdict
+    /// of the withdrawal whatever the cancellation says (request (1) of decision D006-059). A step that started keeps the
+    /// fence.
+    HandBack,
+}
+
+impl StopAllowance {
+    /// The allowance of a failure report with `raw_code` and `retryable`, as the host sent them.
+    pub(crate) fn of_failure(raw_code: &str, retryable: bool) -> Self {
+        if raw_code == "CANCELLED" && !retryable {
+            Self::Cancellation
+        } else if raw_code == TASK_NOT_STARTED {
+            Self::HandBack
+        } else {
+            Self::None
+        }
+    }
+
+    /// The allowance of a fence that lets an acknowledged cancellation through, or none.
+    pub(crate) const fn cancellation(allowed: bool) -> Self {
+        if allowed {
+            Self::Cancellation
+        } else {
+            Self::None
+        }
+    }
+
+    /// Whether a step in `status` may report past a cancellation or a stop. `HandBack` is granted only to a session whose
+    /// minor reserves the code, judged at the build's ceiling (decision D006-100): below 1.8 the code may be a handler's, and
+    /// a fleet below 1.8 keeps the outcome it had.
+    pub(crate) fn allows(self, status: StepStatus) -> bool {
+        match self {
+            Self::None => false,
+            Self::Cancellation => true,
+            Self::HandBack => status == StepStatus::Leased,
+        }
     }
 }
 
@@ -690,6 +740,7 @@ where
             lake_probes: None,
             polls_in_flight: Arc::default(),
             lease_withdrawal: None,
+            capability_gate: None,
             lease_withdrawal_disabled: false,
             hand_back_ceiling: PROTOCOL_MINOR,
         }
@@ -2007,7 +2058,7 @@ where
             }
             // A receipt is replayable after expiry; a new report must not reach the catalog
             // without its exact live lease, even when cancellation is draining the scope.
-            Self::live_path_fence(&mut tx, task, true).await?;
+            Self::live_path_fence(&mut tx, task, StopAllowance::Cancellation).await?;
             let scope = Self::scope_from_info(&tx.snapshot().info, task);
             tx.commit().await?;
             return Ok(BlobCompletionTarget::Ready(scope));
@@ -2213,6 +2264,8 @@ where
         }
         let scope = Self::scope_of(&tx, task);
         if let Some((blob, trace_id)) = audit_read {
+            // the audit of a read commits only while the process may hand data out (decision D006-100)
+            self.capability_window_holds()?;
             let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist(&[], effects).await?;
             tx.commit().await?;
@@ -2286,7 +2339,7 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         if !task.instance.path().is_root() {
             let mut tx = self.open_worker_path(principal, task).await?;
-            Self::live_path_fence(&mut tx, task, true).await?;
+            Self::live_path_fence(&mut tx, task, StopAllowance::Cancellation).await?;
             let scope = Self::scope_from_info(&tx.snapshot().info, task);
             tx.commit().await?;
             return Ok(scope);
@@ -2485,6 +2538,13 @@ where
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
+        // a hand-back passes a cancellation only from a session whose minor reserves the code (decision D006-100)
+        let stop = match StopAllowance::of_failure(error_code, retryable) {
+            StopAllowance::HandBack if !self.root_reserves_the_code(&mut tx, task).await? => {
+                StopAllowance::None
+            }
+            stop => stop,
+        };
         let leaked = match self
             .checked_secret_report(
                 principal,
@@ -2492,7 +2552,7 @@ where
                 tx,
                 &idempotency,
                 error_code.as_bytes(),
-                error_code == "CANCELLED" && !retryable,
+                stop,
             )
             .await?
         {
@@ -2934,20 +2994,21 @@ where
         tx: &mut Tx,
         task: &TaskRef<'_>,
     ) -> Result<(), AppError> {
-        self.attempt_authority_fence(principal, tx, task, false)
+        self.attempt_authority_fence(principal, tx, task, StopAllowance::None)
             .await
     }
 
-    /// Only an explicit cancellation acknowledgement may settle a cancelled lease. Other reports
-    /// retain the live-capability fence, including a cancellation during provider I/O.
+    /// Only an explicit cancellation acknowledgement, or a host's hand-back of a lease still `LEASED` (decision D006-097),
+    /// may report past a cancellation or a stop. Other reports retain the live-capability fence, including a cancellation
+    /// during provider I/O.
     async fn report_authority_fence<Tx: RunTx>(
         &self,
         principal: &Principal,
         tx: &mut Tx,
         task: &TaskRef<'_>,
-        cancellation_acknowledgement: bool,
+        stop: StopAllowance,
     ) -> Result<(), AppError> {
-        self.attempt_authority_fence(principal, tx, task, cancellation_acknowledgement)
+        self.attempt_authority_fence(principal, tx, task, stop)
             .await
     }
 
@@ -2956,20 +3017,23 @@ where
         principal: &Principal,
         tx: &mut Tx,
         task: &TaskRef<'_>,
-        allow_cancellation_report: bool,
+        stop: StopAllowance,
     ) -> Result<(), AppError> {
         self.verify(tx, task).await?;
         // Binding authority precedes session/catalog/membership locks, matching revocation.
         self.ensure_bound(principal, tx, task).await?;
         let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
-        let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
+        let state = tx.parts().1;
+        let step = state.instance(task.instance);
+        let stop_allowed = step.is_some_and(|s| stop.allows(s.status()));
+        let valid_step = step.is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)
                 && s.generation() == task.fence.generation
-                && (allow_cancellation_report || !s.cancel_requested())
-        }) && (allow_cancellation_report
-            || tx.parts().1.stop_reason().is_none()
+                && (stop_allowed || !s.cancel_requested())
+        }) && (stop_allowed
+            || state.stop_reason().is_none()
             || task.instance.node().is_derived())
-            && !tx.parts().1.is_finished();
+            && !state.is_finished();
         if !valid_step
             || !tx
                 .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
@@ -2995,6 +3059,21 @@ where
             Ok(())
         } else {
             Err(AppError::StaleAttempt)
+        }
+    }
+
+    /// Refuses a capability use case whose process may no longer hand anything out (decision D006-100): asked inside its
+    /// transaction just before the commit of its audit, of a credential's pin or of a read's audit, so a refusal rolls them
+    /// back and nothing is recorded as handed out that was not.
+    ///
+    /// # Errors
+    /// [`AppError::RegistrySilent`] while the capability window of the gate has lapsed.
+    pub(super) fn capability_window_holds(&self) -> Result<(), AppError> {
+        match &self.capability_gate {
+            Some(gate) if gate.capability_window_lapsed(std::time::Instant::now()) => {
+                Err(AppError::RegistrySilent)
+            }
+            _ => Ok(()),
         }
     }
 

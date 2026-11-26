@@ -41,6 +41,7 @@ fn an_engine_in_report_mode_does_not_list_run_input_validation() {
             expected.push(Capability::RunInputValidationV1);
         }
         expected.push(Capability::LeaseWithdrawalV1);
+        expected.push(Capability::LeaseWithdrawalV2);
         assert_eq!(list, expected, "SAGAT_RUN_INPUT_VALIDATION={mode:?}");
     }
 }
@@ -90,11 +91,13 @@ fn an_engine_lists_schedules_v1_when_and_only_when_its_configuration_runs_the_sc
                     Capability::SchedulesV1,
                     Capability::RunInputValidationV1,
                     Capability::LeaseWithdrawalV1,
+                    Capability::LeaseWithdrawalV2,
                 ]
             } else {
                 vec![
                     Capability::RunInputValidationV1,
                     Capability::LeaseWithdrawalV1,
+                    Capability::LeaseWithdrawalV2,
                 ]
             },
             "SAGAT_SCHEDULES_ENABLED={flag:?}"
@@ -113,7 +116,8 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
         list,
         vec![
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ],
         "{list:?}"
     );
@@ -127,7 +131,8 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
         vec![
             Capability::SchedulesV1,
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ]
     );
 }
@@ -296,20 +301,22 @@ fn every_loop_the_engine_spawns_obeys_the_gate_and_the_set_of_loops_is_the_one_l
 #[test]
 fn the_default_engine_lists_schedules_v1() {
     // schedules on by default (OD-2026-11-13-8), `enforce` by default (design 043), and every engine of this build lists
-    // `lease-withdrawal-v1` (feature 006)
+    // `lease-withdrawal-v1` (feature 006) and, since the follow-up of pull request #260, `lease-withdrawal-v2`
     assert_eq!(
         capabilities(&config(&[])),
         vec![
             Capability::SchedulesV1,
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ]
     );
     assert_eq!(
         capabilities(&config(&[("SAGAT_SCHEDULES_ENABLED", "false")])),
         vec![
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ]
     );
 }

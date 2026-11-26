@@ -365,7 +365,8 @@ COMMANDS:
                   the deployment's job: schedule-trigger-handover --auto [--stable N] [--horizon D] [--min-live N]
                   [--wait D] [--retire-role] [--run-id UUID] [--dry-run], as sagat_handover
     capability-activate  Record a fleet requirement of the instance-capability registry (lease-withdrawal-v1: the engines
-                  withdraw the leases they never handed to a host); with the owner role:
+                  withdraw the leases they never handed to a host; lease-withdrawal-v2, after it: the floor of protocol
+                  1.8); with the owner role:
                   capability-activate <capability> --operator NAME [--expect-live N] [--dry-run]
     input-schema-inventory [--all]  List the stored workflow versions whose inputSchema is outside the supported subset (every
                   start of them is refused in enforce mode), and for information those with an inputSchema and a trigger;

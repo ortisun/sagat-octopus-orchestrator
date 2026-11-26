@@ -290,7 +290,14 @@ where
             database_secret_in_output
         } else {
             match self
-                .checked_secret_report(principal, task, tx, &idempotency, output, false)
+                .checked_secret_report(
+                    principal,
+                    task,
+                    tx,
+                    &idempotency,
+                    output,
+                    StopAllowance::None,
+                )
                 .await?
             {
                 SecretReport::Ready(current, leaked) => {
