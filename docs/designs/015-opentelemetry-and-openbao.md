@@ -112,11 +112,11 @@ it for regulated work.
 
 - **Requirement 015-010** A deployment MUST choose its key authority, `local` or `transit`, and the passage between them,
   `migrating`. The mode is recorded in PostgreSQL (`key_authority_state.mode`, one row), changed only by the commands of
-  Technical Plan 6, and every process MUST refuse to start when its configuration disagrees with it. Both `local` and
-  `transit` are supported in production. Under `transit` no platform key exists outside OpenBao: a process MUST refuse to
-  start if `SAGAT_SECRETS_KEYS`, `SAGAT_SCRIPT_SIGNING_KEY` or `SAGAT_OPENBAO_INTENT_KEY_FILE` is set, and a process in
-  `migrating` or `transit` mode MUST refuse to start without its Transit configuration; the Helm chart's validation
-  follows.
+  Technical Plan 6. A process whose configuration disagrees with it follows ADR-0082: it stays up with its gate closed
+  and serves nothing but its liveness probe; it never exits. Both `local` and `transit` are supported in production.
+  Under `transit` no platform key exists outside OpenBao: a process with `SAGAT_SECRETS_KEYS`,
+  `SAGAT_SCRIPT_SIGNING_KEY` or `SAGAT_OPENBAO_INTENT_KEY_FILE` set, or in `migrating` or `transit` mode without its
+  Transit configuration, keeps its gate closed; the Helm chart's validation follows.
 - **Requirement 015-011** Under `migrating` and `transit`, every new secret version MUST be sealed by envelope
   encryption: a fresh data key from `transit/datakey/plaintext/sagat-secrets` at the recorded sealing version
   (`key_authority_state.seal_version`) with the tenant's derivation context, AES-256-GCM over the value, the plaintext
@@ -136,7 +136,8 @@ it for regulated work.
   `control-plane secrets rekey --issued-before <time>` re-seals the rows whose data keys were issued before it with new
   data keys, after the stolen tokens were revoked. `control-plane secrets retire-key-versions --below N` first raises
   `key_authority_state.min_seal_version` to `N` in a transaction that locks that row, which a trigger then enforces on
-  every insert of a `transit` row (a seal at an older version fails and is retried with a fresh data key), then counts
+  every insert and every update of `wrapped_key` or `wrapped_key_version` of a `transit` row (seals, re-seals and
+  re-keys alike) (a seal at an older version fails and is retried with a fresh data key), then counts
   the rows and failed rows below `N`, and only when both are zero sets Transit's `min_decryption_version` through the
   operator's token.
 - **Requirement 015-013** Under `transit`, scripts MUST be signed by Transit (`transit/sign/sagat-scripts`, Ed25519) over
@@ -428,7 +429,7 @@ secret's logical identity, not its sealed bytes (Requirement 015-022).
 
 | Command | What it does | Guard |
 |---|---|---|
-| `key-authority begin-migration` | sets `migrating` | every live control plane, execution engine and secret cleanup job lists `key-authority-transit-v1` (instance registry) |
+| `key-authority begin-migration` | sets `migrating` | the requirement `key-authority-transit-v1` is recorded for the control plane and the execution engine (instance registry, ADR-0082) |
 | `reseal-secrets --to transit` (existing, extended) | re-seals `local` rows, one per transaction, audited | the mode is `migrating`; without `--to` it keeps today's behaviour for `local` rows only |
 | `scripts resign` | re-signs every artifact at the newest published script-key version | per artifact, `WHERE key_id = $old` |
 | `key-authority finish-migration` | sets `transit` | zero `local` rows, zero pending version-1 intents, zero artifacts signed by the local key, in one transaction |
@@ -490,9 +491,11 @@ dump holds key material.
 `local` is the default, so an upgrade changes nothing until the operator acts. The columns and the state row are
 additive. A binary older than this design reads a `transit` row as corrupt (it has no key id and no provider reference)
 and fails closed on every path, the output scan included (Requirement 015-011), so a stale replica can refuse work but
-never accept unscanned output. `begin-migration` is gated by the instance registry (ADR-0082): every control plane,
-execution engine and secret cleanup job of 0.3.0 lists `key-authority-transit-v1`, and the registry refuses to record
-the requirement while a live process lacks it. Rolling back from `transit` to `local` is the reverse re-seal, a
+never accept unscanned output. `begin-migration` is gated by the instance registry as ADR-0082 provides: a control
+plane or execution engine lists the capability `key-authority-transit-v1` only when its Transit configuration is
+present, the operator records the requirement for both kinds, which the registry refuses while a live process lacks it,
+and a process restarted later without the configuration keeps its gate closed (ADR-0082 decisions 3 and 7). The secret
+cleanup job opens no secret and is not gated. Rolling back from `transit` to `local` is the reverse re-seal, a
 documented procedure, never automatic.
 
 ## Risks and Mitigations
@@ -634,8 +637,8 @@ Two lanes that touch no crate in common and can run at the same time.
   development OpenBao of `infra/docker/compose.database.yaml` and for Kubernetes, with the configured mount names
   validated; the exact allow-list policy test of Requirement 015-016.
   Refs: Requirement 015-016, Requirement 015-019
-- [ ] T015-18 Add the capability `key-authority-transit-v1` to the instance registry for the control plane, the
-  execution engine and the secret cleanup job, and the start-up refusals of Requirement 015-010.
+- [ ] T015-18 Add the capability `key-authority-transit-v1` to the instance registry for the control plane and the
+  execution engine, listed only with a Transit configuration, and the closed gate of Requirement 015-010 (ADR-0082).
   Refs: Requirement 015-010
 - [ ] T015-19 Integration tests on a real OpenBao: rotation, rewrap, recount and retire with no restart (Success
   criterion 015-002), cross-tenant unwrap refused (Success criterion 015-003), migration under load (Success criterion

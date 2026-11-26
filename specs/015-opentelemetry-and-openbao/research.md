@@ -34,6 +34,7 @@ The registers of design 015 (`docs/designs/015-opentelemetry-and-openbao.md`). A
 | D015-011 | Revision after the first security review (2026-11-26, `docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-26/round-1/security.md`): the authority is named `transit` (feature 017 already gives `openbao` to KV custody), a third custody `transit` beside `local` and `openbao`; the associated data names the custody, never the key version, so a rewrap leaves it valid; the version in an integer column; per-item rewrap with a cursor and failure counts; `retire-key-versions` with a recount; `secrets rekey`; script signing over the full message; intent binding over metadata and a digest, binding version 2; the output scan fails closed; runners get public keys from the control plane; one Agent per custody; exact allow-list policies; Raft snapshots and a paired restore; customer keys outside the platform's OpenBao; the cache refreshed in the background and bounded per tenant; header only over `https` or loopback; `redact.rs` extended; core dumps disabled. | 2026-11-26 |
 | D015-012 | The derivation context is `base64("sagat/secret/v1" || the tenant id's 16 bytes)`, fixed for ever once used. | 2026-11-26 |
 | D015-013 | Revision after the correctness review (2026-11-26, round 1): `transit` rows carry no key id, so older readers fail closed; `key_authority_state` holds the mode, the sealing version and the sealing floor, enforced by triggers; rotation advances the sealing version only once a snapshot (and a standby) holds it; retirement fences in the database before raising Transit's minimum; `rekey --issued-before` with `data_key_issued_at`; logical identity compared by delivery and reports; intent replays verified against the stored version; `scripts resign` and the runner's cache keyed by the verifying key; the migration finished by a command with its preconditions; three error kinds mapped on every reader; the cache only for current versions with a 10-second refresh (at least 50 seconds of outage); per-batch audit of rewrap; the operator's token for `min_decryption_version` and `min_available_version`. | 2026-11-26 |
+| D015-014 | After the architecture review (2026-11-26, round 1): the sealing floor's trigger covers updates as well as inserts; the gate follows ADR-0082 (a closed gate, never an exit; the capability listed only with a Transit configuration; the cleanup job not gated). The review's other findings are open for the next round (`docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-26/round-1/architecture.md`). | 2026-11-26 |
 
 ## Gaps
 
@@ -41,9 +42,9 @@ The registers of design 015 (`docs/designs/015-opentelemetry-and-openbao.md`). A
 |---|---|---|
 | G015-001 | OTLP over gRPC or protobuf is not spoken; the Collector translates JSON. | Open; follow-up |
 | G015-002 | TLS certificates are not issued by OpenBao's PKI engine. | Open; follow-up |
-| G015-003 | A revoked platform token leaves cached data keys usable for at most 300 seconds. | Accepted; stated in the runbook |
+| G015-003 | A revoked platform token leaves cached data keys usable for at most 300 seconds. | Open; a security residual risk, for the owner (not accepted under the delegation) |
 | G015-004 | Rolling back from `transit` to `local` is a manual re-seal procedure. | Accepted; documented |
-| G015-005 | A compromised process holds every token it uses; custodies are separated between process kinds and code paths, not inside one process. | Accepted; stated in the design |
+| G015-005 | A compromised process holds every token it uses; custodies are separated between process kinds and code paths, not inside one process. | Open; a security residual risk, for the owner (not accepted under the delegation) |
 
 ## Owner questions
 
@@ -56,6 +57,6 @@ All decided on 2026-11-26 under Owner decision 2026-11-24-4 (delegate); the reas
 | O015-003 | Is OpenBao required in production | No; two authorities | Decided, Owner decision 2026-11-26-112 |
 | O015-004 | Where secret values live | PostgreSQL, under wrapped data keys | Decided, Owner decision 2026-11-26-113 |
 | O015-005 | Tenant separation | Transit derivation by tenant id | Decided, Owner decision 2026-11-26-114 |
-| O015-006 | Rotation period | 90 days automatic; scripts by the operator | Decided, Owner decision 2026-11-26-115 |
+| O015-006 | Rotation | By the operator's command only, gated on a snapshot; no automatic period (amended 2026-11-26 after the correctness review) | Decided, Owner decision 2026-11-26-115 |
 | O015-007 | Unwrapped-key cache | 4,096 keys, 300 seconds | Decided, Owner decision 2026-11-26-116 |
 | O015-008 | Design 042's HMAC key | Stays in the database | Decided, Owner decision 2026-11-26-117 |
