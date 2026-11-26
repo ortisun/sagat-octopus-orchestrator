@@ -61,6 +61,64 @@ export interface StepOptions {
   irreversible?: boolean;
   highRisk?: boolean;
   onError?: string;
+  /** How many runs may execute this step at once for one key (feature 022). */
+  concurrency?: ConcurrencyPolicy;
+  /** How many leases of this step one key may have per window (feature 022). */
+  rateLimit?: RateLimitPolicy;
+}
+
+/**
+ * A concurrency gate (feature 022, FR-022-017): at most `limit` holders of one key. At the workflow level a run holds
+ * a permit from its start to its end and `key` reads `input`; on a step an attempt holds it and `key` reads the run
+ * data when the step becomes ready. Absent members are left out of the document; the server checks every bound.
+ */
+export interface ConcurrencyPolicy {
+  /** The most holders of one key (1 to 10000). */
+  readonly limit: number;
+  /** An expression whose value is the key; absent, the whole group is one key. */
+  readonly key?: string;
+  /** Definitions of a namespace that name the same group share its keys; absent, derived from the workflow (and node). */
+  readonly group?: string;
+  /** How long a run or a ready step waits for a permit (1 ms to 1 day; the server's default is 10 minutes). */
+  readonly queueTimeoutMs?: number;
+}
+
+/** The sliding window of a rate limit. */
+export type RatePeriod = 'second' | 'minute' | 'hour';
+
+/**
+ * A rate limit (feature 022, FR-022-039): at most `limit` grants of one key in any window of `per`. At the workflow
+ * level a run is granted at its start; on a step a grant counts from its lease. There is no burst: the window is
+ * strict. Absent members are left out of the document; the server checks every bound and the ceiling of each window.
+ */
+export interface RateLimitPolicy {
+  /** The most grants of one key in a window (1 to 10000; at most 100 a second and 6000 a minute). */
+  readonly limit: number;
+  /** The length of the sliding window. */
+  readonly per: RatePeriod;
+  /** An expression whose value is the key; absent, the whole group is one key. */
+  readonly key?: string;
+  /** Definitions of a namespace that name the same group share its window; absent, derived from the workflow (and node). */
+  readonly group?: string;
+  /** How long a run or a step waits for a slot (1 ms to 1 day; the server's default is 10 minutes). */
+  readonly queueTimeoutMs?: number;
+}
+
+/** The IR object of a concurrency policy: a copy of the members given, in the IR's names. */
+function concurrencyJson(policy: ConcurrencyPolicy): Record<string, Json> {
+  return clean({ key: policy.key, limit: policy.limit, group: policy.group, queueTimeoutMs: policy.queueTimeoutMs });
+}
+
+/** The IR object of a rate limit: a copy of the members given, in the IR's names. */
+function rateLimitJson(policy: RateLimitPolicy): Record<string, Json> {
+  return clean({ key: policy.key, limit: policy.limit, per: policy.per, group: policy.group, queueTimeoutMs: policy.queueTimeoutMs });
+}
+
+/** Writes the flow-control policies of a step onto its node; an absent policy writes nothing. */
+function gates(node: Node, concurrency: ConcurrencyPolicy | undefined, rateLimit: RateLimitPolicy | undefined): Node {
+  if (concurrency !== undefined) node['concurrency'] = concurrencyJson(concurrency);
+  if (rateLimit !== undefined) node['rateLimit'] = rateLimitJson(rateLimit);
+  return node;
 }
 
 export interface ScriptOptions {
@@ -71,6 +129,10 @@ export interface ScriptOptions {
   onError?: string;
   /** The JSON Schema of the script result carried by journal completion events. */
   outputSchema?: Record<string, Json>;
+  /** How many runs may execute this script at once for one key (feature 022). */
+  concurrency?: ConcurrencyPolicy;
+  /** How many leases of this script one key may have per window (feature 022). */
+  rateLimit?: RateLimitPolicy;
 }
 
 export interface WaitOptions {
@@ -310,11 +372,11 @@ export class Flow {
     for (const secret of options.secrets ?? []) {
       if (!SECRET.test(secret)) throw invalid(`step ${id} names a secret that is not a name: ${JSON.stringify(secret)}`);
     }
-    const { onError, outputSchema, ...rest } = options;
+    const { onError, outputSchema, concurrency, rateLimit, ...rest } = options;
     const node: Node = { id, type: 'activity', activity, ...clean(rest) };
     if (outputSchema !== undefined) node['outputSchema'] = copyJson(outputSchema);
     if (onError !== undefined) node['onError'] = onError;
-    return this.push(node);
+    return this.push(gates(node, concurrency, rateLimit));
   }
 
   /** A pinned script artifact executed by an isolated runner. */
@@ -323,8 +385,8 @@ export class Flow {
     for (const secret of options.secrets ?? []) {
       if (!SECRET.test(secret)) throw invalid(`script ${id} names a secret that is not a name: ${JSON.stringify(secret)}`);
     }
-    const { outputSchema, ...rest } = options;
-    return this.push({ id, type: 'script', artifactDigest, ...clean(rest), ...(outputSchema === undefined ? {} : { outputSchema: copyJson(outputSchema) }) });
+    const { outputSchema, concurrency, rateLimit, ...rest } = options;
+    return this.push(gates({ id, type: 'script', artifactDigest, ...clean(rest), ...(outputSchema === undefined ? {} : { outputSchema: copyJson(outputSchema) }) }, concurrency, rateLimit));
   }
 
   /** Sleep: waits for a duration. A timer, not a process: nothing is kept alive. */
@@ -542,6 +604,8 @@ export class WorkflowBuilder extends Flow {
   private stateDeclaration: Record<string, Json> | undefined;
   private workflowLimits: WorkflowLimits | undefined;
   private chain: ChainPolicy | undefined;
+  private runConcurrency: Record<string, Json> | undefined;
+  private runRateLimit: Record<string, Json> | undefined;
   private readonly namedBodies = new Map<string, Body>();
 
   constructor(private readonly name: string) {
@@ -642,6 +706,24 @@ export class WorkflowBuilder extends Flow {
       throw invalid('chainPolicy timeoutMs must be between 1 and 31622400000');
     }
     this.chain = { ...policy };
+    return this;
+  }
+
+  /**
+   * Gates the start of every run (feature 022): a run holds a permit of its key from its start to its end, and waits
+   * for one when the key has `limit` holders. `key` reads `input`. A second call replaces the first.
+   */
+  concurrency(policy: ConcurrencyPolicy): this {
+    this.runConcurrency = concurrencyJson(policy);
+    return this;
+  }
+
+  /**
+   * Limits the starts of runs (feature 022): at most `limit` runs of one key are granted in any window of `per`; the
+   * others wait, in admission order. `key` reads `input`. A second call replaces the first.
+   */
+  rateLimit(policy: RateLimitPolicy): this {
+    this.runRateLimit = rateLimitJson(policy);
     return this;
   }
 
@@ -746,6 +828,8 @@ export class WorkflowBuilder extends Flow {
     if (this.workflowLimits) document['limits'] = clean(this.workflowLimits);
     if (this.stateDeclaration) document['state'] = copyJson(this.stateDeclaration);
     if (this.chain) document['chainPolicy'] = { ...this.chain };
+    if (this.runConcurrency) document['concurrency'] = { ...this.runConcurrency };
+    if (this.runRateLimit) document['rateLimit'] = { ...this.runRateLimit };
     if (bodyNodes.size > 0) {
       document['bodies'] = Object.fromEntries([...bodyNodes].map(([name, body]) => [name, {
         entrypoint: body[0]!['id'],

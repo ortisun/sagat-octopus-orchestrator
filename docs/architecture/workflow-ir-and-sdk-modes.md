@@ -110,10 +110,12 @@ What the engine does with them (the readiness gate, the grant and timeout routin
 [execution semantics](execution-semantics.md#flow-control-gates-feature-022-release-030). The worker protocol does not
 change: a worker never sees a gate, only a step that is already granted.
 
-The six SDK builders of the two fields (tasks T022-048 to T022-052, T022-067 and T022-083) and the Studio's fields
-(T022-054, T022-085) are not built in this tree; until they are, a definition declares them in its JSON document. The
-shared conformance scenarios `flow-concurrency` and `flow-rate-limit` will hold the six languages to one canonical IR
-(FR-022-050).
+The six SDKs author both fields (tasks T022-048 to T022-052, T022-067 and T022-083): `concurrency` and `rateLimit`
+on the workflow builder and on activity and script steps (`ConcurrencyPolicy`, `RateLimitPolicy`, `RatePeriod`); a
+builder only assembles the policy, and the bounds of each window are the server's. Each SDK also reads a run's permit
+and slot (`Run.concurrency`, `Run.rateLimit`, task T022-120). The build-only conformance scenario
+`flow-control-builders` holds the six languages to one canonical IR, and `flow-concurrency` and `flow-rate-limit` play
+the gates end to end in each language (FR-022-050). The Studio's fields are tasks T022-054 and T022-085.
 
 ## TypeScript builder model (design API)
 

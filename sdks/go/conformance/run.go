@@ -78,6 +78,37 @@ func runJSON(run *client.Run) object {
 	if run.FailureCode != "" {
 		observed["failureCode"] = run.FailureCode
 	}
+	// Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under
+	// the platform's own key: whether one was disclosed is the observation, not its value.
+	if permit := run.Concurrency; permit != nil {
+		var label, deadline any
+		if permit.KeyLabel != "" {
+			label = "disclosed"
+		}
+		if !permit.QueueDeadline.IsZero() {
+			deadline = iso(permit.QueueDeadline)
+		}
+		observed["concurrency"] = object{
+			"state": permit.State, "pool": permit.Pool, "group": permit.Group, "keyLabel": label,
+			"since": iso(permit.Since), "queueDeadline": deadline,
+		}
+	}
+	// Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+	// the position as it came.
+	if slot := run.RateLimit; slot != nil {
+		var label, position any
+		if slot.KeyLabel != "" {
+			label = "disclosed"
+		}
+		if slot.Position != 0 {
+			position = slot.Position
+		}
+		observed["rateLimit"] = object{
+			"state": slot.State, "pool": slot.Pool, "group": slot.Group, "keyLabel": label, "limit": slot.Limit,
+			"per": slot.Per, "since": iso(slot.Since), "queueDeadline": iso(slot.QueueDeadline), "position": position,
+			"estimatedGrantAt": iso(slot.EstimatedGrantAt),
+		}
+	}
 	return observed
 }
 

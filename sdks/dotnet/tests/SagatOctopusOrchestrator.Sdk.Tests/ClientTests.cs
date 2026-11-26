@@ -445,6 +445,140 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARunRateLimitSlotIsCarriedWhileItCountsOrWaitsAndIsNullOtherwise()
+    {
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "WAITING";
+            run["rateLimit"] = new JsonObject
+            {
+                ["state"] = "WAITING",
+                ["pool"] = "ORDINARY",
+                ["group"] = "provider-starts",
+                ["keyLabel"] = "0123456789ab",
+                ["limit"] = 2,
+                ["per"] = "minute",
+                ["since"] = "2026-11-20T10:00:00.123456Z",
+                ["queueDeadline"] = "2026-11-20T10:10:00Z",
+                ["position"] = 3,
+                ["estimatedGrantAt"] = "2026-11-20T10:01:00Z",
+            };
+        }));
+        Assert.Equal(
+            new RunRateLimit(
+                "WAITING",
+                "ORDINARY",
+                "provider-starts",
+                "0123456789ab",
+                2,
+                "minute",
+                new DateTimeOffset(2026, 11, 20, 10, 0, 0, TimeSpan.Zero).AddTicks(1_234_560),
+                new DateTimeOffset(2026, 11, 20, 10, 10, 0, TimeSpan.Zero),
+                3,
+                new DateTimeOffset(2026, 11, 20, 10, 1, 0, TimeSpan.Zero)),
+            (await NewClient().GetAsync(Ids.Run)).RateLimit);
+
+        server.Handler = _ => Reply(200, Run(run => run["rateLimit"] = new JsonObject
+        {
+            ["state"] = "GRANTED",
+            ["pool"] = "ORDINARY",
+            ["group"] = "g",
+            ["keyLabel"] = null,
+            ["limit"] = 1,
+            ["per"] = "fortnight",
+            ["since"] = "2026-11-20T10:00:00Z",
+        }));
+        var granted = (await NewClient().GetAsync(Ids.Run)).RateLimit;
+        Assert.NotNull(granted);
+        Assert.Null(granted.KeyLabel);
+        Assert.Null(granted.QueueDeadline);
+        Assert.Null(granted.Position);
+        Assert.Null(granted.EstimatedGrantAt);
+        Assert.Equal("fortnight", granted.Per);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).RateLimit);
+
+        JsonObject Whole() => new()
+        {
+            ["state"] = "WAITING",
+            ["pool"] = "ORDINARY",
+            ["group"] = "g",
+            ["limit"] = 1,
+            ["per"] = "second",
+            ["since"] = "2026-11-20T10:00:00Z",
+        };
+        var withoutPer = Whole();
+        withoutPer.Remove("per");
+        var zeroLimit = Whole();
+        zeroLimit["limit"] = 0;
+        var fractionalLimit = Whole();
+        fractionalLimit["limit"] = 1.5;
+        var withoutSince = Whole();
+        withoutSince.Remove("since");
+        var zeroPosition = Whole();
+        zeroPosition["position"] = 0;
+        foreach (var broken in new JsonNode[] { withoutPer, zeroLimit, fractionalLimit, withoutSince, zeroPosition, JsonValue.Create("WAITING") })
+        {
+            server.Handler = _ => Reply(200, Run(run => run["rateLimit"] = broken.DeepClone()));
+            var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
+            Assert.Equal(SagatErrorCode.Protocol, error.Code);
+        }
+    }
+
+    [Fact]
+    public async Task ARunPermitIsCarriedWhenTheRunHoldsOrWaitsForOneAndIsNullOtherwise()
+    {
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "WAITING";
+            run["concurrency"] = new JsonObject
+            {
+                ["state"] = "WAITING",
+                ["pool"] = "ORDINARY",
+                ["group"] = "orders",
+                ["keyLabel"] = "0123456789ab",
+                ["since"] = "2026-11-20T10:00:00.123456Z",
+                ["queueDeadline"] = "2026-11-20T10:10:00Z",
+            };
+        }));
+        var waiting = (await NewClient().GetAsync(Ids.Run)).Concurrency;
+        Assert.Equal(
+            new RunConcurrency("WAITING", "ORDINARY", "orders", "0123456789ab", new DateTimeOffset(2026, 11, 20, 10, 0, 0, TimeSpan.Zero).AddTicks(1_234_560), new DateTimeOffset(2026, 11, 20, 10, 10, 0, TimeSpan.Zero)),
+            waiting);
+
+        server.Handler = _ => Reply(200, Run(run => run["concurrency"] = new JsonObject
+        {
+            ["state"] = "LENDING",
+            ["pool"] = "DRAFT_TEST",
+            ["group"] = "g",
+            ["keyLabel"] = null,
+            ["since"] = "2026-11-20T10:00:00Z",
+            ["queueDeadline"] = null,
+        }));
+        var holding = (await NewClient().GetAsync(Ids.Run)).Concurrency;
+        Assert.NotNull(holding);
+        Assert.Null(holding.KeyLabel);
+        Assert.Null(holding.QueueDeadline);
+        Assert.Equal("LENDING", holding.State);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).Concurrency);
+
+        foreach (var broken in new JsonNode[]
+        {
+            new JsonObject { ["pool"] = "ORDINARY", ["group"] = "g", ["since"] = "2026-11-20T10:00:00Z" },
+            new JsonObject { ["state"] = "HOLDING", ["pool"] = "ORDINARY", ["group"] = "g" },
+            JsonValue.Create("HOLDING"),
+        })
+        {
+            server.Handler = _ => Reply(200, Run(run => run["concurrency"] = broken.DeepClone()));
+            var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
+            Assert.Equal(SagatErrorCode.Protocol, error.Code);
+        }
+    }
+
+    [Fact]
     public async Task ARunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone()
     {
         server.Handler = _ => Reply(200, Run(run =>

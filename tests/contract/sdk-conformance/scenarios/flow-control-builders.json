@@ -1,0 +1,42 @@
+{
+  "name": "flow-control-builders",
+  "buildOnly": true,
+  "description": "Builder-only parity of feature 022's flow control (FR-022-035, FR-022-050): concurrency and rateLimit at the workflow level and on activity and script steps give the same document and canonical text in the six SDKs. provider-sync and account-serial are the shared fixtures of tests/contract/flow-control-step-policies/fixtures, which the SDKs must write byte for byte; gated-script carries every member at the bounds of the IR schema. The builders only assemble the policies; the server checks them at publication. The harness does not publish or execute these workflows: runtime behaviour is flow-concurrency and flow-rate-limit.",
+  "workflows": {
+    "provider-sync": {
+      "name": "provider-sync",
+      "concurrency": { "key": "input.accountId", "limit": 1 },
+      "rateLimit": { "group": "provider-starts", "key": "input.providerId", "limit": 100, "per": "minute", "queueTimeoutMs": 900000 },
+      "program": [
+        { "op": "step", "id": "fetch", "activity": "provider.fetch", "options": { "rateLimit": { "key": "input.providerId", "limit": 10, "per": "second" } } },
+        { "op": "end", "id": "done" }
+      ]
+    },
+    "account-serial": {
+      "name": "account-serial",
+      "concurrency": { "group": "orders-by-account", "key": "input.accountId", "limit": 1, "queueTimeoutMs": 600000 },
+      "program": [
+        { "op": "step", "id": "price", "activity": "catalog.price" },
+        { "op": "step", "id": "notify", "activity": "crm.notify", "options": { "concurrency": { "key": "steps.price.output.region", "limit": 2 } } },
+        { "op": "end", "id": "done" }
+      ]
+    },
+    "gated-script": {
+      "name": "flow-gated-script",
+      "rateLimit": { "limit": 10000, "per": "hour" },
+      "program": [
+        {
+          "op": "script",
+          "id": "transform",
+          "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "options": {
+            "concurrency": { "group": "z.0123456789-0123456789.0123456789-0123456789.0123456789-0123456", "key": "input.tenant", "limit": 10000, "queueTimeoutMs": 86400000 },
+            "rateLimit": { "group": "a", "key": "input.tenant", "limit": 100, "per": "second", "queueTimeoutMs": 1 }
+          }
+        },
+        { "op": "step", "id": "notify", "activity": "crm.notify", "options": { "concurrency": { "limit": 1 }, "rateLimit": { "limit": 6000, "per": "minute" } } },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  }
+}

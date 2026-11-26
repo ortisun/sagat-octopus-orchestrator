@@ -15,6 +15,7 @@ Typed async/blocking REST facade, local workflow/database authoring and optional
 - [_proto](./_proto/README.md) — component contract.
 - [worker](./worker/README.md) — component contract.
 - Module ops is the collection operator factory (filter, map, flat_map, skip, take, distinct, window) returning Operator; for_each and map take operators= as a keyword, and None or empty writes no operators (design 042). [ops.py:Operator] [workflow.py:for_each]
+- ConcurrencyPolicy and RateLimitPolicy (frozen dataclasses; RatePeriod is second, minute or hour) gate a run's start through WorkflowBuilder.concurrency and rate_limit, and an activity or script through the concurrency= and rate_limit= keywords; they write the IR's names as given and leave every bound to the server (feature 022). [workflow.py:ConcurrencyPolicy] [workflow.py:RateLimitPolicy] [workflow.py:concurrency]
 
 ## Invariants
 

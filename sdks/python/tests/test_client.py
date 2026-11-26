@@ -13,7 +13,16 @@ from typing import Any
 import httpx
 import pytest
 
-from sagat_octopus_orchestrator import ClientConfig, RetryPolicy, Run, SagatClient, SagatError, parse_instant
+from sagat_octopus_orchestrator import (
+    ClientConfig,
+    RetryPolicy,
+    Run,
+    RunConcurrency,
+    RunRateLimit,
+    SagatClient,
+    SagatError,
+    parse_instant,
+)
 
 from .fakes import FakeHttpServer, Seen, reply
 
@@ -703,6 +712,115 @@ async def test_a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_on
     assert (await client.get(RUN)).failure_code == "CONTINUATION_INPUT_INVALID"
     http.serve(lambda _seen: reply(200, run_body()))
     assert (await client.get(RUN)).failure_code is None
+
+
+def answering(body: dict[str, Any]) -> Callable[[Seen], Any]:
+    return lambda _seen: reply(200, body)
+
+
+async def test_a_run_permit_is_carried_when_the_run_holds_or_waits_for_one_and_is_none_otherwise(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    waiting = {
+        "state": "WAITING",
+        "pool": "ORDINARY",
+        "group": "orders",
+        "keyLabel": "0123456789ab",
+        "since": "2026-11-20T10:00:00.123456Z",
+        "queueDeadline": "2026-11-20T10:10:00Z",
+    }
+    http.serve(lambda _seen: reply(200, run_body(status="WAITING", concurrency=waiting)))
+    client = make_client()
+    assert (await client.get(RUN)).concurrency == RunConcurrency(
+        state="WAITING",
+        pool="ORDINARY",
+        group="orders",
+        key_label="0123456789ab",
+        since=datetime(2026, 11, 20, 10, 0, 0, 123456, tzinfo=timezone.utc),
+        queue_deadline=datetime(2026, 11, 20, 10, 10, tzinfo=timezone.utc),
+    )
+    holding = {
+        "state": "LENDING",
+        "pool": "DRAFT_TEST",
+        "group": "g",
+        "keyLabel": None,
+        "since": "2026-11-20T10:00:00Z",
+    }
+    http.serve(lambda _seen: reply(200, run_body(concurrency=holding)))
+    permit = (await client.get(RUN)).concurrency
+    assert (
+        permit is not None and permit.key_label is None and permit.queue_deadline is None and permit.state == "LENDING"
+    )
+    http.serve(lambda _seen: reply(200, run_body()))
+    assert (await client.get(RUN)).concurrency is None
+    for broken in (
+        {"pool": "ORDINARY", "group": "g", "since": "2026-11-20T10:00:00Z"},
+        {"state": "HOLDING", "pool": "ORDINARY", "group": "g"},
+        "HOLDING",
+    ):
+        http.serve(answering(run_body(concurrency=broken)))
+        with pytest.raises(SagatError) as raised:
+            await client.get(RUN)
+        assert raised.value.code == "PROTOCOL"
+
+
+async def test_a_run_rate_limit_slot_is_carried_while_it_counts_or_waits_and_is_none_otherwise(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    waiting = {
+        "state": "WAITING",
+        "pool": "ORDINARY",
+        "group": "provider-starts",
+        "keyLabel": "0123456789ab",
+        "limit": 2,
+        "per": "minute",
+        "since": "2026-11-20T10:00:00.123456Z",
+        "queueDeadline": "2026-11-20T10:10:00Z",
+        "position": 3,
+        "estimatedGrantAt": "2026-11-20T10:01:00Z",
+    }
+    http.serve(answering(run_body(status="WAITING", rateLimit=waiting)))
+    client = make_client()
+    assert (await client.get(RUN)).rate_limit == RunRateLimit(
+        state="WAITING",
+        pool="ORDINARY",
+        group="provider-starts",
+        key_label="0123456789ab",
+        limit=2,
+        per="minute",
+        since=datetime(2026, 11, 20, 10, 0, 0, 123456, tzinfo=timezone.utc),
+        queue_deadline=datetime(2026, 11, 20, 10, 10, tzinfo=timezone.utc),
+        position=3,
+        estimated_grant_at=datetime(2026, 11, 20, 10, 1, tzinfo=timezone.utc),
+    )
+    granted = {"state": "GRANTED", "pool": "ORDINARY", "group": "g", "keyLabel": None, "limit": 1, "per": "fortnight"}
+    http.serve(answering(run_body(rateLimit={**granted, "since": "2026-11-20T10:00:00Z"})))
+    slot = (await client.get(RUN)).rate_limit
+    assert slot is not None
+    assert (slot.key_label, slot.queue_deadline, slot.position, slot.estimated_grant_at, slot.per) == (
+        None,
+        None,
+        None,
+        None,
+        "fortnight",
+    )
+    http.serve(answering(run_body()))
+    assert (await client.get(RUN)).rate_limit is None
+    whole = {"state": "WAITING", "pool": "ORDINARY", "group": "g", "limit": 1, "per": "second"}
+    since = {"since": "2026-11-20T10:00:00Z"}
+    for broken in (
+        {"state": "WAITING", "pool": "ORDINARY", "group": "g", "limit": 1, **since},
+        {**whole, **since, "limit": 0},
+        {**whole, **since, "limit": 1.5},
+        {**whole, **since, "limit": True},
+        whole,
+        {**whole, **since, "position": 0},
+        "WAITING",
+    ):
+        http.serve(answering(run_body(rateLimit=broken)))
+        with pytest.raises(SagatError) as raised:
+            await client.get(RUN)
+        assert raised.value.code == "PROTOCOL", broken
 
 
 async def test_rerun_as_new_names_the_new_run_and_the_new_run_names_its_origin(

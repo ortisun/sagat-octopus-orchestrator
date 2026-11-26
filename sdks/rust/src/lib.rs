@@ -30,8 +30,8 @@ pub use types::{
     ApprovalDecision, ApprovalDecisionReceipt, ApprovalListItem, ApprovalPage, ApprovalStatus,
     BlobDescriptor, Cause, ChainInspection, ChainLink, ChainRun, ChainRunPage, ChainSegment,
     CompletionKind, EventReceipt, EventStatus, JournalEvent, JournalPage, OperationResult, Page,
-    QueryResult, Run, RunPage, RunParent, RunResetFrom, RunSchedule, RunStatus, ScopeSegment,
-    SignalResult, UpdateReceipt,
+    QueryResult, Run, RunConcurrency, RunPage, RunParent, RunRateLimit, RunResetFrom, RunSchedule,
+    RunStatus, ScopeSegment, SignalResult, UpdateReceipt,
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

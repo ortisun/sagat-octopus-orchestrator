@@ -225,6 +225,22 @@ Rules:
 - A `Run` carries `failureCode` (design 043, FR-043-015), a string, when its stop carries a failure code (the code of the step whose failure
   failed it, a ceiling such as `STORAGE_QUOTA_EXCEEDED`, or `CONTINUATION_INPUT_INVALID`) and is absent/null/None/nil/empty otherwise; the
   conformance observation of a `Run` carries the key only when it is present, never as `null`.
+- A `Run` carries `concurrency` (feature 022, FR-022-022) while it holds or waits for a run-level concurrency permit, and none
+  otherwise: `state` (`HOLDING`, `WAITING`, or another string: the set only grows), `pool` (likewise), `group`, `keyLabel` (the
+  12-hex label of the key's keyed digest, null/None/nil/empty for a caller who may not reveal personal data in the run's
+  namespace), `since` (an instant) and `queueDeadline` (an instant while `WAITING`, null while `HOLDING`). A permit without
+  `state`, `pool`, `group` or a valid `since`, or one that is not an object, is the SDK's `PROTOCOL` error, never a run with half of
+  it (D022-096). The type is `RunConcurrency` (Java `Run.ConcurrencyOfRun`). The conformance observation carries the key only when
+  present, and writes a disclosed label as `"disclosed"`: its value is a digest under the platform's own key.
+- A `Run` carries `rateLimit` (feature 022, FR-022-048) while its run-level rate-limit slot still counts or while it is buffered,
+  and none otherwise: `state` (`GRANTED`, `WAITING`, or another string: the set only grows), `pool` (likewise), `group`,
+  `keyLabel` (as for `concurrency`), `limit` (an integer of at least 1: the effective limit the slot was decided with), `per`
+  (`second`, `minute`, `hour`, or another string), `since` (an instant), `queueDeadline` (an instant while `WAITING`), `position`
+  (an integer of at least 1, only from `get` while `WAITING`; null/None/nil/zero otherwise) and `estimatedGrantAt` (an instant, only
+  from `get` while `WAITING`, and absent for a caller who may not reveal personal data in the namespace). A slot without `state`,
+  `pool`, `group`, `per`, a valid `since` or a `limit` of at least 1, a `position` below 1, or one that is not an object, is the
+  SDK's `PROTOCOL` error (D022-098). The type is `RunRateLimit` (Java `Run.RateLimitOfRun`). The conformance observation carries
+  the key only when present, a disclosed label as `"disclosed"`, and the position as it came.
 - The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
   `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
   read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose
@@ -616,6 +632,31 @@ builders only assemble the list, in the order given: the chain's length (one to 
 operators allowed on a collection and the variables a stage expression reads (`element`, `position`, `input`, `steps`,
 `run`, `state`) are checked by the server at publication. A stage the factory did not build is `VALIDATION_FAILED`
 where the language can express one. The shared scenario is `collection-operators` (build only).
+
+### 7.4 Flow control: concurrency and rate limits (feature 022)
+
+A workflow (its start) and an `activity` or `script` step may carry `concurrency` (at most `limit` holders of one key) and
+`rateLimit` (at most `limit` grants of one key in any window of `per`: `second`, `minute` or `hour`; strict, no burst).
+Both take the optional `key` (an expression: over `input` at the workflow level, over the run data on a step), `group`
+and `queueTimeoutMs`; the IR's names are written as given and an absent member is left out. A workflow-level call
+replaces an earlier one. No client call is added: a waiting run is read through the run resource.
+
+| SDK | Workflow level | Step and script | Types |
+|---|---|---|---|
+| TypeScript | `.concurrency(policy)`, `.rateLimit(policy)` | `concurrency`, `rateLimit` of `StepOptions` / `ScriptOptions` | `ConcurrencyPolicy`, `RateLimitPolicy`, `RatePeriod` |
+| Go | `(*Builder).Concurrency`, `(*Builder).RateLimit` | options `Concurrency(p)`, `RateLimit(p)`, `ScriptConcurrency(p)`, `ScriptRateLimit(p)` | `ConcurrencyPolicy`, `RateLimitPolicy` (`QueueTimeout time.Duration`), `PerSecond`/`PerMinute`/`PerHour` |
+| Python | `.concurrency(policy)`, `.rate_limit(policy)` | keyword `concurrency=`, `rate_limit=` of `step` and `script` | frozen dataclasses `ConcurrencyPolicy`, `RateLimitPolicy`; `RatePeriod` literal |
+| C# | `.Concurrency(policy)`, `.RateLimit(policy)` | init properties `Concurrency`, `RateLimit` of `StepOptions` / `ScriptOptions` | records `ConcurrencyPolicy`, `RateLimitPolicy` (`QueueTimeout` a `TimeSpan`), enum `RatePeriod` |
+| Java | `.concurrency(policy)`, `.rateLimit(policy)` | `StepOptions.concurrency(…)`, `.rateLimit(…)`; the same on `ScriptOptions` | `ConcurrencyPolicy.of(limit)`, `RateLimitPolicy.of(limit, per)`, enum `RatePeriod` |
+| Rust | `Builder::concurrency`, `Builder::rate_limit` | fields `concurrency`, `rate_limit` of `StepOptions` / `ScriptOptions` | `ConcurrencyPolicy::new(limit)`, `RateLimitPolicy::new(limit, per)`, enum `RatePeriod` |
+
+The builders only assemble the policy (as for the collection operators, §7.3, D022-090): the limit's range and the
+ceiling of each window (100 a second, 6000 a minute, 10000 an hour), the timeout's range, the group's pattern, what a
+key may read, a gate on a body node (`SCOPED_CONCURRENCY`, `SCOPED_RATE_LIMIT`) and the combination with
+`continueAsNew` are checked by the server at publication, with the namespace's own ceilings. A builder refuses only what
+its language cannot write as the IR: a timeout that is not a whole number of milliseconds (Go, C#) and a window outside
+the three (C#, Java). The shared scenario is `flow-control-builders` (build only); the runtime scenarios are
+`flow-concurrency` and `flow-rate-limit`.
 
 ## 8. Serialization
 

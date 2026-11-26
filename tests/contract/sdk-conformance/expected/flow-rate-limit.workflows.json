@@ -1,0 +1,37 @@
+{
+  "canonical": {
+    "limited": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"fetch\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"One activity, its leases limited for every run, under a start limit per provider.\",\"name\":\"flow-rate-limited\"},\"nodes\":[{\"activity\":\"flow.fetch\",\"id\":\"fetch\",\"next\":\"done\",\"rateLimit\":{\"limit\":1,\"per\":\"second\"},\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}],\"rateLimit\":{\"key\":\"input.providerId\",\"limit\":2,\"per\":\"minute\"}}"
+  },
+  "workflows": {
+    "limited": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "fetch",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "One activity, its leases limited for every run, under a start limit per provider.",
+        "name": "flow-rate-limited"
+      },
+      "nodes": [
+        {
+          "activity": "flow.fetch",
+          "id": "fetch",
+          "next": "done",
+          "rateLimit": {
+            "limit": 1,
+            "per": "second"
+          },
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ],
+      "rateLimit": {
+        "key": "input.providerId",
+        "limit": 2,
+        "per": "minute"
+      }
+    }
+  }
+}

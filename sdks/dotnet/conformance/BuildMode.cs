@@ -98,6 +98,16 @@ internal static class BuildMode
             });
         }
 
+        if (ConcurrencyOf(definition["concurrency"] as JsonObject) is { } concurrency)
+        {
+            builder.Concurrency(concurrency);
+        }
+
+        if (RateLimitOf(definition["rateLimit"] as JsonObject) is { } rateLimit)
+        {
+            builder.RateLimit(rateLimit);
+        }
+
         foreach (var (name, bodyDefinition) in definition["bodies"]?.AsObject() ?? [])
         {
             var nested = Workflow.Body();
@@ -177,6 +187,8 @@ internal static class BuildMode
                         Secrets = options?["secrets"] is JsonArray secrets ? [.. secrets.Select(secret => (string)secret!)] : null,
                         OnError = (string?)options?["onError"],
                         OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
+                        Concurrency = ConcurrencyOf(options?["concurrency"] as JsonObject),
+                        RateLimit = RateLimitOf(options?["rateLimit"] as JsonObject),
                     });
                     break;
                 case "sleep":
@@ -444,6 +456,37 @@ internal static class BuildMode
             HighRisk = (bool?)options["highRisk"],
             OnError = (string?)options["onError"],
             OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
+            Concurrency = ConcurrencyOf(options["concurrency"] as JsonObject),
+            RateLimit = RateLimitOf(options["rateLimit"] as JsonObject),
+        };
+
+    /// <summary>A scenario's <c>concurrency</c> in the IR's names, through the public type (feature 022).</summary>
+    private static ConcurrencyPolicy? ConcurrencyOf(JsonObject? policy) => policy is null
+        ? null
+        : new ConcurrencyPolicy
+        {
+            Limit = (int)policy["limit"]!,
+            Key = (string?)policy["key"],
+            Group = (string?)policy["group"],
+            QueueTimeout = policy["queueTimeoutMs"] is { } timeout ? Ms(timeout) : null,
+        };
+
+    /// <summary>A scenario's <c>rateLimit</c> in the IR's names, through the public type (feature 022).</summary>
+    private static RateLimitPolicy? RateLimitOf(JsonObject? policy) => policy is null
+        ? null
+        : new RateLimitPolicy
+        {
+            Limit = (int)policy["limit"]!,
+            Per = (string?)policy["per"] switch
+            {
+                "second" => RatePeriod.Second,
+                "minute" => RatePeriod.Minute,
+                "hour" => RatePeriod.Hour,
+                var other => throw new InvalidOperationException($"unknown rate period {other}"),
+            },
+            Key = (string?)policy["key"],
+            Group = (string?)policy["group"],
+            QueueTimeout = policy["queueTimeoutMs"] is { } timeout ? Ms(timeout) : null,
         };
 
     private static StepRetry? RetryOf(JsonObject? retry) => retry is null

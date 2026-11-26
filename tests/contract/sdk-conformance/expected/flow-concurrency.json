@@ -1,0 +1,962 @@
+{
+  "faultsApplied": [],
+  "flowControlEvidence": [
+    {
+      "events": [
+        {
+          "event": "concurrency.acquired",
+          "key": "k1",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.released",
+          "key": "k1",
+          "scope": "RUN"
+        }
+      ],
+      "runId": "<uuid:7>"
+    },
+    {
+      "events": [
+        {
+          "event": "concurrency.queued",
+          "key": "k2",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.acquired",
+          "key": "k2",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.released",
+          "key": "k2",
+          "scope": "RUN"
+        }
+      ],
+      "runId": "<uuid:6>"
+    },
+    {
+      "events": [
+        {
+          "event": "concurrency.queued",
+          "key": "k2",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.dequeued",
+          "key": "k2",
+          "scope": "RUN"
+        }
+      ],
+      "runId": "<uuid:5>"
+    },
+    {
+      "events": [
+        {
+          "event": "concurrency.queued",
+          "key": "k2",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.acquired",
+          "key": "k2",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.released",
+          "key": "k2",
+          "scope": "RUN"
+        }
+      ],
+      "runId": "<uuid:4>"
+    },
+    {
+      "events": [
+        {
+          "event": "concurrency.acquired",
+          "key": "k2",
+          "scope": "RUN"
+        },
+        {
+          "event": "concurrency.released",
+          "key": "k2",
+          "scope": "RUN"
+        }
+      ],
+      "runId": "<uuid:1>"
+    }
+  ],
+  "observations": [
+    {
+      "id": "a1",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "HOLDING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a1-holds",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "a2",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a2-queued",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "a3",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a3-queued",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "a4",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a4-queued",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "b1",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "HOLDING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "b1-holds",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "a1-read-holding",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "HOLDING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a3-read-queued",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "cancel-a3",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "a3-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "a1-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "b1-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a2-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a4-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "a1-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.acquired"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.released"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a2-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.queued"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.acquired"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.released"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a3-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.queued"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.dequeued"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.cancelled"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a4-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.queued"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.acquired"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.released"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "b1-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.acquired"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "concurrency.released"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "flow.work",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:work",
+        "input": {
+          "accountId": "A"
+        },
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.work",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:work",
+        "input": {
+          "accountId": "A"
+        },
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.work",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:6>:work",
+        "input": {
+          "accountId": "A"
+        },
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:4>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.work",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:work",
+        "input": {
+          "accountId": "B"
+        },
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:5>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

@@ -100,6 +100,8 @@ function builderOf(definition: Obj): WorkflowBuilder {
   if (definition['limits']) builder.limits(definition['limits']);
   if (definition['state']) builder.state(definition['state'] as StateDefinition);
   if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
+  if (definition['concurrency']) builder.concurrency(definition['concurrency']);
+  if (definition['rateLimit']) builder.rateLimit(definition['rateLimit']);
   for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {
     const nested = body();
     apply(nested, bodyDefinition['program']);
@@ -157,6 +159,16 @@ function runJson(run: Run): Obj {
     ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
     // Present only for a run stopped with a failure code (design 043).
     ...(run.failureCode !== null ? { failureCode: run.failureCode } : {}),
+    // Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under the
+    // platform's own key: whether one was disclosed is the observation, not its value.
+    ...(run.concurrency !== null
+      ? { concurrency: { state: run.concurrency.state, pool: run.concurrency.pool, group: run.concurrency.group, keyLabel: run.concurrency.keyLabel === null ? null : 'disclosed', since: iso(run.concurrency.since), queueDeadline: iso(run.concurrency.queueDeadline) } }
+      : {}),
+    // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+    // the position as it came.
+    ...(run.rateLimit !== null
+      ? { rateLimit: { state: run.rateLimit.state, pool: run.rateLimit.pool, group: run.rateLimit.group, keyLabel: run.rateLimit.keyLabel === null ? null : 'disclosed', limit: run.rateLimit.limit, per: run.rateLimit.per, since: iso(run.rateLimit.since), queueDeadline: iso(run.rateLimit.queueDeadline), position: run.rateLimit.position, estimatedGrantAt: iso(run.rateLimit.estimatedGrantAt) } }
+      : {}),
   };
 }
 

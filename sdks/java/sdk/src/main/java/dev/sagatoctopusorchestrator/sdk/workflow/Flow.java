@@ -260,7 +260,18 @@ public final class Flow {
         if (o.outputSchema != null) {
             node.set("outputSchema", o.outputSchema.deepCopy());
         }
-        return push(node);
+        return push(gates(node, o.concurrency, o.rateLimit));
+    }
+
+    /** Writes the flow-control policies of a step onto its node (feature 022); an absent policy writes nothing. */
+    private static ObjectNode gates(ObjectNode node, ConcurrencyPolicy concurrency, RateLimitPolicy rateLimit) {
+        if (concurrency != null) {
+            node.set("concurrency", concurrency.toJson());
+        }
+        if (rateLimit != null) {
+            node.set("rateLimit", rateLimit.toJson());
+        }
+        return node;
     }
 
     /** Waits for a duration (a whole number of milliseconds, at least 1). A timer, not a process: nothing is kept alive. */
@@ -291,7 +302,7 @@ public final class Flow {
         }
         if (o.onError != null) node.put("onError", o.onError);
         if (o.outputSchema != null) node.set("outputSchema", o.outputSchema.deepCopy());
-        return push(node);
+        return push(gates(node, o.concurrency, o.rateLimit));
     }
 
     /** Waits for {@code durationMs} milliseconds (at least 1). */

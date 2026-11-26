@@ -1,0 +1,242 @@
+{
+  "name": "flow-rate-limit",
+  "description": "Feature 022 US07 (SC-022-023, contracts/conformance.md): a workflow whose start is limited to two runs of the key input.providerId per window, and whose activity is limited to one lease per second for all runs. Five runs of provider P and one of provider Q start one after the other: P's first two are granted at once (from_queue false) and never wait, the next three are buffered (rate_limit.queued); Q's run is granted at once. The fifth is cancelled while buffered: CANCELLED with rate_limit.dequeued and no grant. While it is buffered each SDK's Run reports its rateLimit WAITING with its position (third of the key's waiters) and a queue deadline; the granted runs report their slot GRANTED while it counts. The third and fourth are granted from the queue (from_queue true) in the order they were buffered, when the first grants age out. The run-level window is a minute, not the contract's second, so that the starts of a loaded machine cannot slip past the window and change which runs wait (D022-093); the activity keeps one lease a second. The worker starts once every start is decided and stops once q1 has completed; a second worker starts once p4's step has been decided, so a step whose slot is taken by a granted, not yet leased step waits whatever the machine's speed (D022-093). The harness checks from the journals' instants that no window held more than two run grants of P nor more than one lease of the activity, and that the buffered runs were granted in admission order; the golden holds only the event order and the states.",
+  "server": {
+    "flowControl": true
+  },
+  "flowControlEvidence": true,
+  "workflows": {
+    "limited": {
+      "name": "flow-rate-limited",
+      "description": "One activity, its leases limited for every run, under a start limit per provider.",
+      "rateLimit": {
+        "key": "input.providerId",
+        "limit": 2,
+        "per": "minute"
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "fetch",
+          "activity": "flow.fetch",
+          "options": {
+            "rateLimit": {
+              "limit": 1,
+              "per": "second"
+            }
+          }
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "flow-rate-worker",
+      "protocolVersion": "1.5",
+      "maxInflight": 4,
+      "autostart": false,
+      "activities": {
+        "flow.fetch": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    },
+    "w2": {
+      "workerName": "flow-rate-worker-late",
+      "protocolVersion": "1.5",
+      "maxInflight": 4,
+      "autostart": false,
+      "activities": {
+        "flow.fetch": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "p1",
+      "op": "start",
+      "workflow": "limited",
+      "input": {
+        "providerId": "P"
+      },
+      "idempotencyKey": "rate-p1-{{unique}}"
+    },
+    {
+      "id": "p2",
+      "op": "start",
+      "workflow": "limited",
+      "input": {
+        "providerId": "P"
+      },
+      "idempotencyKey": "rate-p2-{{unique}}"
+    },
+    {
+      "id": "p3",
+      "op": "start",
+      "workflow": "limited",
+      "input": {
+        "providerId": "P"
+      },
+      "idempotencyKey": "rate-p3-{{unique}}"
+    },
+    {
+      "id": "p3-buffered",
+      "op": "awaitJournal",
+      "run": "p3",
+      "eventType": "rate_limit.queued"
+    },
+    {
+      "id": "p4",
+      "op": "start",
+      "workflow": "limited",
+      "input": {
+        "providerId": "P"
+      },
+      "idempotencyKey": "rate-p4-{{unique}}"
+    },
+    {
+      "id": "p4-buffered",
+      "op": "awaitJournal",
+      "run": "p4",
+      "eventType": "rate_limit.queued"
+    },
+    {
+      "id": "p5",
+      "op": "start",
+      "workflow": "limited",
+      "input": {
+        "providerId": "P"
+      },
+      "idempotencyKey": "rate-p5-{{unique}}"
+    },
+    {
+      "id": "p5-buffered",
+      "op": "awaitJournal",
+      "run": "p5",
+      "eventType": "rate_limit.queued"
+    },
+    {
+      "id": "q1",
+      "op": "start",
+      "workflow": "limited",
+      "input": {
+        "providerId": "Q"
+      },
+      "idempotencyKey": "rate-q1-{{unique}}"
+    },
+    {
+      "id": "p5-read-buffered",
+      "op": "get",
+      "run": "p5"
+    },
+    {
+      "id": "cancel-p5",
+      "op": "cancel",
+      "run": "p5",
+      "reason": "not needed while it is buffered"
+    },
+    {
+      "id": "p5-done",
+      "op": "waitForCompletion",
+      "run": "p5",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "p1-done",
+      "op": "waitForCompletion",
+      "run": "p1",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "p2-done",
+      "op": "waitForCompletion",
+      "run": "p2",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "q1-done",
+      "op": "waitForCompletion",
+      "run": "q1",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "worker-stops",
+      "op": "stopWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "p4-step-decided",
+      "op": "awaitJournal",
+      "run": "p4",
+      "eventType": "rate_limit.queued",
+      "stepId": "fetch",
+      "timeoutMs": 180000
+    },
+    {
+      "id": "late-worker",
+      "op": "startWorker",
+      "worker": "w2"
+    },
+    {
+      "id": "p3-done",
+      "op": "waitForCompletion",
+      "run": "p3",
+      "timeoutMs": 180000
+    },
+    {
+      "id": "p4-done",
+      "op": "waitForCompletion",
+      "run": "p4",
+      "timeoutMs": 180000
+    },
+    {
+      "id": "p1-events",
+      "op": "events",
+      "run": "p1"
+    },
+    {
+      "id": "p2-events",
+      "op": "events",
+      "run": "p2"
+    },
+    {
+      "id": "p3-events",
+      "op": "events",
+      "run": "p3"
+    },
+    {
+      "id": "p4-events",
+      "op": "events",
+      "run": "p4"
+    },
+    {
+      "id": "p5-events",
+      "op": "events",
+      "run": "p5"
+    },
+    {
+      "id": "q1-events",
+      "op": "events",
+      "run": "q1"
+    }
+  ]
+}

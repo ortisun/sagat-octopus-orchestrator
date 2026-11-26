@@ -1,0 +1,55 @@
+{
+  "name": "flow-concurrency",
+  "description": "Feature 022 US02 (SC-022-012, contracts/conformance.md): a workflow whose start holds a permit of the key input.accountId, at most one at a time. The worker is not started, so the first run of key A holds its permit while the next three queue in admission order; a run of key B is not delayed by them. The third run of key A is cancelled while it queues: it ends CANCELLED with concurrency.dequeued and never holds a permit. Then the worker starts: the holder ends and gives its permit back, and the queued runs are granted one after the other in the order they were queued. A fourth run of key A (beyond the three of the contract) makes the grant order observable. The harness checks from the journals' instants that no two runs of key A held a permit at once and that the grants kept the admission order; the golden holds only the event order and the states. Each SDK's Run reports the permit the run holds or waits for (`concurrency`: HOLDING for a1, WAITING with its queue deadline for a3; whether a key label was disclosed, not its value).",
+  "server": { "flowControl": true },
+  "flowControlEvidence": true,
+  "workerLogOrder": "unordered",
+  "workflows": {
+    "serial": {
+      "name": "flow-serial",
+      "description": "One activity under a run permit of the account.",
+      "concurrency": { "key": "input.accountId", "limit": 1 },
+      "program": [
+        { "op": "step", "id": "work", "activity": "flow.work" },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "flow-concurrency-worker",
+      "protocolVersion": "1.5",
+      "maxInflight": 4,
+      "autostart": false,
+      "activities": {
+        "flow.work": { "behavior": { "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "a1", "op": "start", "workflow": "serial", "input": { "accountId": "A" }, "idempotencyKey": "flow-a1-{{unique}}" },
+    { "id": "a1-holds", "op": "awaitJournal", "run": "a1", "eventType": "concurrency.acquired" },
+    { "id": "a2", "op": "start", "workflow": "serial", "input": { "accountId": "A" }, "idempotencyKey": "flow-a2-{{unique}}" },
+    { "id": "a2-queued", "op": "awaitJournal", "run": "a2", "eventType": "concurrency.queued" },
+    { "id": "a3", "op": "start", "workflow": "serial", "input": { "accountId": "A" }, "idempotencyKey": "flow-a3-{{unique}}" },
+    { "id": "a3-queued", "op": "awaitJournal", "run": "a3", "eventType": "concurrency.queued" },
+    { "id": "a4", "op": "start", "workflow": "serial", "input": { "accountId": "A" }, "idempotencyKey": "flow-a4-{{unique}}" },
+    { "id": "a4-queued", "op": "awaitJournal", "run": "a4", "eventType": "concurrency.queued" },
+    { "id": "b1", "op": "start", "workflow": "serial", "input": { "accountId": "B" }, "idempotencyKey": "flow-b1-{{unique}}" },
+    { "id": "b1-holds", "op": "awaitJournal", "run": "b1", "eventType": "concurrency.acquired" },
+    { "id": "a1-read-holding", "op": "get", "run": "a1" },
+    { "id": "a3-read-queued", "op": "get", "run": "a3" },
+    { "id": "cancel-a3", "op": "cancel", "run": "a3", "reason": "not needed while it queues" },
+    { "id": "a3-done", "op": "waitForCompletion", "run": "a3", "timeoutMs": 60000 },
+    { "id": "worker", "op": "startWorker", "worker": "w1" },
+    { "id": "a1-done", "op": "waitForCompletion", "run": "a1", "timeoutMs": 120000 },
+    { "id": "b1-done", "op": "waitForCompletion", "run": "b1", "timeoutMs": 120000 },
+    { "id": "a2-done", "op": "waitForCompletion", "run": "a2", "timeoutMs": 120000 },
+    { "id": "a4-done", "op": "waitForCompletion", "run": "a4", "timeoutMs": 120000 },
+    { "id": "a1-events", "op": "events", "run": "a1" },
+    { "id": "a2-events", "op": "events", "run": "a2" },
+    { "id": "a3-events", "op": "events", "run": "a3" },
+    { "id": "a4-events", "op": "events", "run": "a4" },
+    { "id": "b1-events", "op": "events", "run": "b1" }
+  ]
+}

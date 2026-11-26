@@ -19,6 +19,8 @@ public final class StepOptions {
     Boolean highRisk;
     String onError;
     JsonNode outputSchema;
+    ConcurrencyPolicy concurrency;
+    RateLimitPolicy rateLimit;
 
     public static StepOptions create() {
         return new StepOptions();
@@ -92,6 +94,18 @@ public final class StepOptions {
             throw dev.sagatoctopusorchestrator.sdk.SagatException.invalid("outputSchema is a JSON object");
         }
         this.outputSchema = node.deepCopy();
+        return this;
+    }
+
+    /** How many attempts of one key may run at once (feature 022). Read when the step is added. */
+    public StepOptions concurrency(ConcurrencyPolicy value) {
+        this.concurrency = value;
+        return this;
+    }
+
+    /** How many leases of one key the step may have per window (feature 022). Read when the step is added. */
+    public StepOptions rateLimit(RateLimitPolicy value) {
+        this.rateLimit = value;
         return this;
     }
 }
