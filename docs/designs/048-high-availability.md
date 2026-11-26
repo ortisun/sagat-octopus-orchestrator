@@ -110,7 +110,7 @@ From the code and documents on `develop` at `546d5aa5`:
   Patroni's REST interface with its `allowlist`, the nodes' replication), carrying etcd's traffic in plaintext inside
   that network only; `db-access` (HAProxy and the nodes' client port); and the platform's, from which only HAProxy's
   port is reachable. `pg_hba` allows replication only from the node addresses, the superuser only on the local socket,
-  and through HAProxy only `sagat_app` and the owner with `scram-sha-256`. Every password (Patroni's roles, etcd's
+  and through HAProxy only `sagat_app` and the owner with `scram-sha-256`; it ends with `include_if_exists` of a node-local file that only the drill writes (Requirement 048-042). Every password (Patroni's roles, etcd's
   users, the REST authentication) comes from `.env` (`${VAR:?}`), listed in `.env.example`; no host port is published
   for the nodes, etcd or Patroni's REST interface; the platform's ports are on the loopback; images are pinned by digest;
   every service has a healthcheck (`AGENTS.md`, rule 16).
@@ -586,7 +586,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-016
 - [ ] T048-13 Add the two alerts with one rule file per manager, their rule tests in CI's `promtool` step, and the exporters' allow-list in the observability contract test.
   Refs: Requirement 048-012, Requirement 048-013
-- [ ] T048-14 Extend `dr_acked_workload` and `dr_verify` with the ledger's key and content and the open-loop rate, write `infra/dr/ha-drill.sh` with the six faults, the negative control and the revocation check (with the probe's `infra/dr/compose.ha-probe.yaml`, whose `pg_hba` line the drill puts in a node-local `hba_file` that Patroni does not manage, never in Patroni's configuration, and removes in a `trap` so that an aborted drill leaves nothing behind; the drill also asserts, as a positive control, that the probe answered at least one authorized request through `db-probe` after the isolation began), the `ha-drill` job on a free standard runner in the release workflow, replace `drill.sh`'s constant, and publish its section of the report with the runner named.
+- [ ] T048-14 Extend `dr_acked_workload` and `dr_verify` with the ledger's key and content and the open-loop rate, write `infra/dr/ha-drill.sh` with the six faults, the negative control and the revocation check (with the probe's `infra/dr/compose.ha-probe.yaml`, whose `pg_hba` line the drill writes to a node-local file that the reference's `pg_hba` includes with `include_if_exists`, placed before any line that rejects (a missing file changes nothing), and removes in a `trap` that then reloads PostgreSQL and asserts that a connection from the probe's subnet is refused, so that an aborted drill leaves nothing behind; the drill also asserts, as a positive control, that the probe answered at least one authorized request through `db-probe` after the isolation began), the `ha-drill` job on a free standard runner in the release workflow, replace `drill.sh`'s constant, and publish its section of the report with the runner named.
   Refs: Requirement 048-040, Requirement 048-041, Requirement 048-042, Requirement 048-043, Success criterion 048-001, Success criterion 048-002, Success criterion 048-003
 - [ ] T048-15 Write `tests/e2e/high-availability/smoke.sh` on three kind nodes and run it on a free runner, publishing its result as a smoke.
   Refs: Requirement 048-041
