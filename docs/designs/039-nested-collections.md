@@ -19,7 +19,7 @@ commands, fairness, receipt retention), states the activation that the gate of A
 and then opens the codec to nested documents.
 
 The rules are [Architecture decision 0078](../adr/ADR-0078-capacity-group-lock-order-and-possession-protocol.md)
-(accepted with this design, delegate) and
+(accepted, delegate) and
 [Architecture decision 0154](../adr/ADR-0154-nested-capacity-membership-is-created-by-the-engine-and-the-sweeper-serves-every-member.md),
 which decides its open items. The registers are in `specs/039-nested-collections/research.md`; feature 014's registers
 (`specs/014-workflow-primitives/research.md`, Decisions 701 to 715, Gaps 706 to 726) stay where they are and are cited.

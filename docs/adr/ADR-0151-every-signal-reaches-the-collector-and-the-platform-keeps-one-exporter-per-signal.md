@@ -1,6 +1,6 @@
 # ADR-0151: Every signal reaches an OpenTelemetry Collector, and each process keeps one exporter per signal that never blocks the work
 
-**Status:** Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4)
+**Status:** Proposed (2026-11-26). Returned from Accepted the same day: design 015's review is not complete; it is accepted with design 015's approval
 **Decided by:** agent proposal with design 015, accepted by the agent preparing design 015 for build under the owner's
 delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-118. The owner may overrule it.
 **Refines / supersedes:** refines ADR-0008 (observability is part of the feature) and ADR-0017 (OTLP to a Collector) by

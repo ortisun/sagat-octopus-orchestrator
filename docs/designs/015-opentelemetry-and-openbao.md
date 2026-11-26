@@ -29,7 +29,7 @@ guards. They are built by two lanes that touch different crates (Detailed Implem
 
 The decisions are [Architecture decision 0151](../adr/ADR-0151-every-signal-reaches-the-collector-and-the-platform-keeps-one-exporter-per-signal.md)
 and [Architecture decision 0152](../adr/ADR-0152-openbao-transit-holds-the-platform-keys-and-each-custody-has-its-own-mount-and-token.md),
-accepted with this design under the owner's delegation (Owner decision 2026-11-24-4). This revision answers the first
+proposed with this design and accepted with its approval, under the owner's delegation (Owner decision 2026-11-24-4). This revision answers the first
 security review of 2026-11-26 (`docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-26/round-1/security.md`). The
 registers are in `specs/015-opentelemetry-and-openbao/research.md`.
 

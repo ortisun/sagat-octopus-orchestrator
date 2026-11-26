@@ -1,6 +1,6 @@
 # ADR-0152: OpenBao Transit holds the platform's keys, secret values are sealed in PostgreSQL under tenant-derived wrapped data keys, and each custody has its own mount, token and policy
 
-**Status:** Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4)
+**Status:** Proposed (2026-11-26). Returned from Accepted the same day: design 015's first review round found decisions to revise (its architecture findings are open); it is accepted with design 015's approval
 **Decided by:** agent proposal with design 015, accepted by the agent preparing design 015 for build under the owner's
 delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-119. The owner may overrule it.
 **Refines / supersedes:** refines ADR-0006 (secrets are references resolved at execution time), ADR-0033 (the wrapped

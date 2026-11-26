@@ -1,6 +1,6 @@
 # ADR-0154: Nested capacity membership is created by the engine inside the admitting transaction, the sweeper serves every member state with a quantum, and the worker's lock sequence is a checked file
 
-**Status:** Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4)
+**Status:** Proposed (2026-11-26). Returned from Accepted the same day: the architecture review of design 039 (round 1) found decisions this record claims but does not yet make (the scoped-path guard, the release of the tenant unit, how the guard is enabled, descendant admission); it is accepted with design 039's approval
 **Decided by:** agent proposal with design 039, accepted by the agent preparing design 039 for build under the owner's
 delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-150. The owner may overrule it.
 **Refines / supersedes:** decides the items ADR-0078 lists under "Open and not decided here" (the creator, the sweeper's
