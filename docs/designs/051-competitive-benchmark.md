@@ -135,8 +135,10 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
     with the function, before the commit). A refused commit
     writes nothing asynchronously, so a refusal unseen (between the last read and fault (c)'s kill, which empties
     shared memory) turns nothing off. Its tests run a disposable server and refuse a commit after each of those ways
-    of setting `off`, and of a non-zero `commit_delay`, and accept `on` and `local`; a pilot that meets a refusal
-    reports it as that product's configuration, fixed before the campaign. At each turn's start, and after fault (c)'s
+    of setting `off`, and of a non-zero `commit_delay`, and accept `on` and `local`; a pilot that meets a refusal fixes
+    the product's configuration before the campaign where a configuration causes it, and a variant whose vendor code
+    itself cannot run under these rules is reported as "not run under the durability rule" (Requirement 051-013), never
+    run with the rule relaxed. At each turn's start, and after fault (c)'s
     restart, the harness's role runs a canary on the product's server (`SET LOCAL synchronous_commit = off`, a write,
     `COMMIT`), which must be refused and raise the count by exactly 1, the canary subtracted from the product's count;
     the probe's read errors, never returns 0, when the extension's shared memory is not initialised.
@@ -144,8 +146,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
     unlogged (`CREATE UNLOGGED TABLE` or `SEQUENCE`, `CREATE TABLE AS` and `SELECT INTO` unlogged, `ALTER ... SET
     UNLOGGED`), since an unlogged table's rows skip the write-ahead log whatever the commit's setting, and
     `pg_class` holds no relation with `relpersistence = 'u'` in any database at the turn's start (the restored
-    archive included), after every rung and at its end; a vendor schema that needs an unlogged table is reported by
-    the pilot and the table created logged, a deviation line; tests refuse each form.
+    archive included), after every rung and at its end; a product whose vendor schema creates an unlogged table, which the
+    hook refuses, is reported as "not run under the durability rule" (the vendor's source is not changed, Non-Goals); tests refuse each form.
   - *Server settings.* At the start and at the end of each turn `pg_settings` shows the fixed constraints' values
     (`fsync`, `full_page_writes` and the server's `synchronous_commit` among them); the products' roles are not
     superusers, are members, directly or by inheritance, of none of `pg_execute_server_program`,
@@ -238,7 +240,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   process, its frontend behind the load balancer staying up; Windmill's server process, "API only"); (b) `kill -9` of
   one of two worker processes, fired when the target worker's execution file shows at least four activities in flight,
   or after 30 s without, marked; (c) `docker kill -s KILL` of the database server's container and `docker start` of it
-  on the same volume, a `CHECKPOINT` having run 60 s before the fault, the WAL replayed reported (the insert LSN read just before the kill
+  on the same volume, a `CHECKPOINT` having run 60 s before the fault, the WAL replayed reported (the insert LSN and the refusal count read in one statement just before the kill
   minus the redo LSN of the last checkpoint, both through SQL). The killed process of
   faults (a) and (b) is restarted after a fixed 5 s. This platform's activities declare `reconcileWith` a reconciler
   registered by its worker whose verdict is "not applied", so an activity whose outcome is unknown is run again (a
@@ -383,7 +385,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   mounted into a product container: the driver's own, which only it writes, where it posts each rung's window
   boundaries and the baseline's and null fault's ends in a fixed grammar (a rung index and `CLOCK_REALTIME` integers,
   anything else refused), and the host-only directory, where the `host` subcommand writes an acknowledgement the
-  driver waits for before each rung (after the refusal count, the snapshot and the calibration); on the host only the `host` subcommand
+  driver waits for before each rung (after the previous window's end snapshot, the refusal count, the scan of `pg_class`
+  for unlogged relations and the calibration); on the host only the `host` subcommand
   reads either directory and copies files out of them, each directory from its own root handle under the
   rule below, and `run.sh` never reads a file of them by path; the injector writes each fault's time as
   `CLOCK_REALTIME` into a host-only directory that no container can write (mounted read-only into the driver), where
@@ -394,8 +397,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   address, the pilots included (a Windmill step language that needs packages at run time is pre-resolved into an image
   built from pinned inputs, or excluded). Every image is named in one manifest (`images.lock`: name, digest taken from the vendor's
   registry, and the vendor's signature checked where the vendor signs), read by the compose files and by `run.sh`, every
-  `SAGAT_RUNNER_IMAGE_*` of this platform set from it (this platform's own images exempt as "built at the commit under
-  test"); after each turn `docker image ls --digests` is compared with it and an image not in it fails the job. `omes`
+  `SAGAT_RUNNER_IMAGE_*` of this platform set from it (this platform's own images and the database server's image with `sagat_commit_check`, built in the history job,
+  exempt as "built at the commit under test"); after each turn `docker image ls --digests` is compared with it and an image not in it fails the job. `omes`
   is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of regular files copied into the host-only directory by
   the `host` subcommand, each opened the same way, checked by `fstat` on the open file, bounded in size and copied from that same open file (a link anywhere in
   the path or any other kind of file refused; no
@@ -518,7 +521,8 @@ database server from the image with `sagat_commit_check` and its `shared_preload
 lines, the image manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
 `run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
 does; the workflow is required once `campaign.json` exists. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
-tests/performance/competitive/driver/Cargo.toml`, the default features and all of them) and builds the Go modules, on a
+tests/performance/competitive/driver/Cargo.toml`, the default features and all of them), builds the Go modules, and builds `sagat_commit_check` and runs its
+disposable-server tests, on a
 `competitive_driver` output of `scripts/select-test-targets.py` set for changes of `tests/performance/competitive/`,
 `sdks/rust/` or `sdks/go/`, and on every full run, with a selector test.
 
@@ -553,7 +557,7 @@ the archive's restore (at most 10 minutes), a ladder of at most 10 rungs (70 min
 at 12 minutes), a per-rung overhead of at most 0.5 minutes (the calibration loop, the refusal count, the snapshots and the
 reads of commit times: 5), a per-turn overhead of at most 4 (the start probe, the image and `docker inspect` checks, and
 the container daemon's restarts around this platform's turn) and a final `CHECKPOINT` and stop (2): at most 103 minutes.
-A throughput job runs one variant: 3 × 103 + 20 of preparation + 7 for at most one re-run rung = 336 minutes. A
+A throughput job runs one variant: 3 × 103 + 20 of preparation + 7.5 for at most one re-run rung with its overhead = 336.5 minutes. A
 common-rate job runs one variant's common-rate rung first after each restore: 3 × (10 + 7 + 0.5 + 4 + 2) + 20, at most
 92 minutes (23.5 rounded up to 24 per product). A
 crash job is, per product, a restore (10), a warm-up (1), the baseline (at most 20 windows of 20 s, 7 minutes), the
@@ -571,14 +575,15 @@ times the highest rate the job's plan can reach (its starting rate × 2⁵), or 
 340 minutes, at most 2,040 runner minutes and about 340 of wall time, before the first campaign: on a small history,
 each product's configuration, database split, worker concurrency, starting rates, tuning budget, bytes per workflow and
 each pilot job builds this platform's images itself). Then, per campaign: the history job
-(this platform's images built once, at most 30 minutes, measured in the pilot, the archive within the disk budget; per
+(this platform's images and the database server's image with `sagat_commit_check` built once and saved with their
+SHA-256 pinned in the job's outputs, at most 30 minutes, measured in the pilot, the archive within the disk budget; per
 product at most 5 of start, 45 of loading and checking, and 10 of `VACUUM (ANALYZE)`, `CHECKPOINT`, archiving and a
 short confirmation of its configuration: 30 + 3 × 60 + 20 = 230 minutes); 8 variants × 5 repetitions = 40 throughput
-jobs (40 × 336 = 13,440); 2 variants × 5 = 10 common-rate jobs (10 × 92 = 920) and 5 timer-burst jobs (5 × 128 =
+jobs (40 × 336.5 = 13,460); 2 variants × 5 = 10 common-rate jobs (10 × 92 = 920) and 5 timer-burst jobs (5 × 128 =
 640), one matrix of 15 jobs; the crash confirmation job (185); 3 faults × 6 repetitions = 18 crash jobs (18 × 185 =
-3,330). A campaign is at most 230 + 13,440 + 920 + 640 + 185 + 3,330 = 18,745 runner minutes, at no cost; in order, at
-12 jobs at once, its wall time is at most 230 + ⌈40 / 12⌉ × 336 + ⌈15 / 12⌉ × 128 + 185 + ⌈18 / 12⌉ × 185 = 230 +
-1,344 + 256 + 185 + 370 = 2,385 minutes, about 39.8 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
+3,330). A campaign is at most 230 + 13,460 + 920 + 640 + 185 + 3,330 = 18,765 runner minutes, at no cost; in order, at
+12 jobs at once, its wall time is at most 230 + ⌈40 / 12⌉ × 336.5 + ⌈15 / 12⌉ × 128 + 185 + ⌈18 / 12⌉ × 185 = 230 +
+1,346 + 256 + 185 + 370 = 2,387 minutes, about 39.8 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
 and a campaign is not dispatched while the release-candidate CI run is pending, a manual step of the release
 procedure (`docs/runbooks/release.md`); one campaign is dispatched at a time, since a third dispatch would cancel a
 pending one under the `concurrency` group.
@@ -683,7 +688,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 - **Non-functional requirement 051-001 Reproducibility.** A new campaign at the same commit on the same runner class
   agrees with the published one as Requirement 051-012 defines it, or the report explains the difference.
 - **Non-functional requirement 051-002 Cost.** The campaign costs no money; each job stays within the plan check's 340
-  minutes and its disk budget, and a campaign within 18,745 runner minutes.
+  minutes and its disk budget, and a campaign within 18,765 runner minutes.
 - **Non-functional requirement 051-003 Security.** Requirement 051-020.
 
 --------------------------------------------------------------------------------
@@ -702,7 +707,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the server image with `sagat_commit_check` built from the pinned builder image without network and its tests (the utility hook refusing each unlogged form,a commit refused after a startup option, `SET`, `SET LOCAL`, `set_config`, a role's or database's setting of `off` and a non-zero `commit_delay`, `on` and `local` accepted), the durability checks (the canary at each turn's start and after fault (c)'s restart, the refusal count after every rung and at the turn's end with its read erroring when uninitialised, no relation with `relpersistence = 'u'` at start, after every rung and at end, `pg_settings` at each turn's start and end, the roles' grants: no membership in the three server-file and program roles, `pg_reload_conf` by `has_function_privilege`, `pg_parameter_acl` empty), the single reset of `pg_stat_statements` before the product starts with `dealloc` at 0, the snapshots at the planned window boundaries keyed with `toplevel` with their lag and the refusal of a missing key or falling `calls`, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the server image with `sagat_commit_check` built from the pinned builder image without network and its tests (the utility hook refusing each unlogged form,a commit refused after a startup option, `SET`, `SET LOCAL`, `set_config`, a role's or database's setting of `off` and a non-zero `commit_delay`, `on` and `local` accepted), the durability checks (the canary at each turn's start and after fault (c)'s restart, the refusal count after every rung and at the turn's end with its read erroring when uninitialised, no relation with `relpersistence = 'u'` at start, after every rung and at end, `pg_settings` at each turn's start and end, the roles' grants: no membership in the three server-file and program roles, `pg_reload_conf` by `has_function_privilege`, `pg_parameter_acl` empty), the single reset of `pg_stat_statements` before the product starts with `dealloc` at 0, the snapshots at the planned window boundaries keyed with `toplevel` with their lag and the refusal of a missing key or falling `calls`, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung (after the previous window's end snapshot, the refusal count, the `pg_class` scan and the calibration), both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-007, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
 - [ ] T051-7 Add the fault injector to the driver's `host` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the baseline's and null fault's ends read from the driver's posts, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath its own directory's root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
   Refs: Requirement 051-009
