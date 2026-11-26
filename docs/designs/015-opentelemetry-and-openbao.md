@@ -134,9 +134,10 @@ it for regulated work.
   transport error or `5xx`), counted by `openbao_requests_total{operation, outcome}` and timed by
   `openbao_request_seconds{operation}`, traced without a value, a wrapped key or a token, and refused with a typed error
   (`KEY_AUTHORITY_UNAVAILABLE`, retryable) that never names the key's material.
-- **Requirement 015-019** OpenBao MUST be in the repository's compose stack for development (`infra/docker/compose.yaml`
-  gains the service now in `compose.database.yaml`, pinned by digest, loopback-only, with a healthcheck) and its
-  bootstrap MUST enable Transit, create the three keys and install the policies of Requirement 015-016.
+- **Requirement 015-019** OpenBao stays the development service of `infra/docker/compose.database.yaml` (TLS, pinned by
+  digest, loopback-only, with a healthcheck, prepared by `docs/runbooks/openbao.md`); its bootstrap
+  (`infra/openbao/bootstrap-development.py`, and `bootstrap-kubernetes.py` for production) MUST enable Transit, create
+  the three keys and install the policies of Requirement 015-016.
 
 ### Non-functional
 
@@ -471,9 +472,9 @@ Two lanes that touch no crate in common and can run at the same time.
 - [ ] T015-16 Authenticate feature 017's provisioning receipts with Transit HMAC naming the key version; a rolling
   rotation test.
   Refs: Requirement 015-014
-- [ ] T015-17 Move OpenBao into `infra/docker/compose.yaml` (pinned by digest, loopback only, healthcheck) and extend the
-  bootstrap scripts with Transit, the three keys and the policies; a policy test that refuses any grant outside the
-  platform's mounts.
+- [ ] T015-17 Extend the bootstrap scripts of `infra/openbao/` with Transit, the three keys and the policies, for the
+  development OpenBao of `infra/docker/compose.database.yaml` and for Kubernetes; a policy test that refuses any grant
+  outside the platform's mounts.
   Refs: Requirement 015-016, Requirement 015-019
 - [ ] T015-18 Add the capability `key-authority-openbao-v1` to the instance registry and the start-up refusals of
   Requirement 015-010.
