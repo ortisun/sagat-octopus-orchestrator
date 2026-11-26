@@ -137,6 +137,14 @@ approved.
   test are in scope; the checks are added `NOT VALID` and validated by a companion migration; a Signal-with-Start signal keeps
   its origin (`via`) when buffered and is not reapplied. Delegate (Owner decision 2026-11-24-4).
 
+- **Decision 054-016 — Answers of the architecture review** (its Majors 1 to 7). Principle I's race is met as written (the timed-out
+  wait is untouched and the signal audited; its admission for a consumer still ahead is a separate transition, refused when none is
+  ahead), so no reading of the constitution is added. The hold and the floor become one record, Architecture decision 0112
+  (proposed with this design), refining 0082 and 0098. Owner decision 2026-11-26-540 covers every task that changes another
+  feature's code. Architecture decision 0111 states its refinement of 0032 decision 8 (a permanent floor), its handoff cost and its
+  pending evidence. The version tolerance is one helper kept by a source rule; the public `expectedRunVersion` keeps its meaning,
+  bounded by the inbox's fill. Delegate (Owner decision 2026-11-24-4).
+
 ## Gaps
 
 - **Gap 054-001** Payloads are never deleted today (`payloads` has no collector); a discarded or consumed signal's payload stays as
@@ -153,7 +161,8 @@ approved.
 - **Gap 054-006** Design 044 writes "the inbox rows marked consumed" (its table of command records) and refuses an undeclared name
   on a code run (`SIGNAL_NOT_DECLARED`). Design 054 states the inbox's contract for it (Technical Plan 10: rows are deleted on
   consumption, `consume_pending_signals` all or nothing, each row's `version_id` for its classification) and defers code runs' undeclared names to it (Requirement 054-003); design
-  044's owner is to cite that contract in its next revision.
+  044's owner is to cite that contract in its next revision, and to drop from Architecture decision 0108 the statement that a code
+  version's consumer is its function, which Architecture decision 0111 decision 1 owns (architecture review, Nit 10).
 - **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
   them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
   dependency in their next revisions (stage 5 zoom-out, its Major 4).

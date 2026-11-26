@@ -61,8 +61,9 @@ for versions that declare a buffered name and for nothing else. The register of 
   pending: received, not yet consumed, moved or discarded. Each settlement deletes the row and is journaled.
 - **The invariant.** A root wait of a declared name that is waiting and a pending signal of that name never exist in one run at
   one commit: a signal that finds the wait is delivered live, and a wait that finds the signal consumes it at its entry. Live
-  delivery, consumption, the handoff's refusal of an entry wait, the reset's rebuild and the races all keep it; the replay corpus
-  checks it at every commit (Requirement 054-020).
+  delivery, consumption, the handoff's refusal of an entry wait, the reset's rebuild and the races all keep it. One test helper,
+  `assert_inbox_invariant(tx)`, checks it after every commit of `integration_buffered_signals` and `fault_buffered_signals`
+  (Requirement 054-020).
 - **Sequence.** A pending signal is identified by the run's journal sequence of its `signal.buffered` event, so the inbox's order
   is the journal's.
 - **Consumer.** For a graph version, a `waitEvent` node of the root graph whose `eventType` is the name (signals reach root waits
@@ -236,8 +237,8 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   labels only: no tenant, namespace, run, signal name or payload as a label or in a log line. *Acceptance:* the metrics text test of
   `integration_buffered_signals`.
 - **Requirement 054-020 — Journal and replay.** The events of Technical Plan 11 are written only for runs of a version of level 1;
-  the invariant of Terms MUST hold after every commit (checked by the store tests after each commit, not by the replay, whose events
-  do not mark commits: the replay exempts the adjacent `wait.started` and `wait.satisfied` of a consumption); a run's replay MUST
+  the invariant of Terms MUST hold after every commit (checked by `assert_inbox_invariant(tx)` after each commit of the two suites,
+  not by the replay, whose events do not mark commits); a run's replay MUST
   equal its projection (the pending bytes derived by joining each settled sequence to its `signal.buffered`), the inbox rows, `runs.pending_signals` and the ledger's
   `pending_signal_bytes` included. *Acceptance:* the
   replay-equals-projection corpus of `integration_buffered_signals`.
@@ -304,9 +305,11 @@ None. The questions raised while designing are decided in `specs/054-buffered-si
 
 ## Owner decisions needed
 
-None open. Tasks 054-3 (the reset rules of the new event types), 054-8 (the chain-addressed signal path and batch `SIGNAL` items),
-054-9, 054-10 and 054-11 change code that features 014 (the continuation handoff, the chain's signal path) and 018 (Signal-with-Start,
-reset, batch items) own, and Task 054-1 changes their contracts and feature 004's signal rule; they are gated by Owner decision
+None open. Tasks 054-3 (the reset rules of the new event types), 054-7 (the byte checks of collections, loops and the event wake),
+054-8 (the chain-addressed signal path and batch `SIGNAL` items), 054-9 (the handoffs, the store-side ends of chains, collections
+and loops, the scheduler's collection passes), 054-10, 054-11 and 054-18 (the floor of Architecture decision 0098) change code that
+features 004 (the event wake), 014 (continuation, collections, loops) and 018 (Signal-with-Start, reset, batch items) and
+Architecture decision 0098 own, and Task 054-1 changes their contracts and feature 004's signal rule; they are gated by Owner decision
 2026-11-26-540, a delegate's row under Owner decision 2026-11-24-4 whose `Covers` names them. The owner's decisions this design rests
 on: Owner decision 2026-11-24-1 (the scope), Owner decisions 2026-11-20-6 and 2026-11-24-4 (the delegation of its questions, of
 its architecture decision and of its approval; the coordinating session's decision that buffered signals are design 054 and that
@@ -624,7 +627,13 @@ refuses the handoff as today. The same check, one store helper (`advanced_only_b
 serves every path that reads a run outside its lock and refuses at write time on a changed version: `finalize_chain` (the deadline
 and the segment limit), the loop's and the collection's store-side transitions (`loop_progress.rs`, `primitives.rs`), and the
 scheduler's collection passes (`crates/scheduler/src/passes/collection_controls.rs`, `collection_event_waits.rs`,
-`collection_timers.rs`); a barrier test lands a signal between the deadline pass's read and `finalize_chain`. The idempotent replay of `continue_evaluated`, which today looks for `continuation.selected` at
+`collection_timers.rs`); a barrier test lands a signal between the deadline pass's read and `finalize_chain`. A rule of
+`scripts/check-architecture.py` requires every comparison of `run_version` in `crates/infra-postgres` and `crates/scheduler` to
+go through the helper or to be on an allowlist with its reason, so a missed path fails the check. The public `expectedRunVersion`
+of the run operations (`crates/api-http/src/dto_exec.rs`) keeps its exact meaning, a client's compare-and-set on the journal it
+read: a buffered signal changes the journal, so such a request is refused as any change refuses it, and the client reads again. It
+cannot be starved without bound: a name accepts at most `maxPending` signals before refusing, so at most 1,000 buffered signals can
+advance a run's version before its inbox is full. The idempotent replay of `continue_evaluated`, which today looks for `continuation.selected` at
 `expected_run_version + 1`, looks for the first `continuation.selected` after the expected version instead, since buffered signals
 may precede it. A barrier test lands a signal between the evaluation and the handoff, and a replay test follows it.
 
@@ -651,7 +660,8 @@ cause: "run_ended"}` immediately before `run.finished`, when the count is above 
   count and the pending bytes to zero, and returns the count for the event. The exact event shapes these paths match (for example
   `[EndReached, RunFinished]` and the instance-limit shape in `primitives.rs`) admit the optional `SignalsDiscarded` before
   `RunFinished`. A rule in `scripts/check-architecture.py` lists every writer of `run.finished` outside the domain's planner (the
-  `RunEvent::RunFinished` constructions in `crates/infra-postgres`) against an allowlist whose entries each call the helper, so a
+  `RunEvent::RunFinished` constructions and the string literals `"run.finished"` and `'run.finished'` in `crates/infra-postgres/src`,
+  such as the loop's `append_run_event` at `routed_sequence + 2`) against an allowlist whose entries each call the helper, so a
   later path cannot be missed.
 
 **A database check holds every path to it:** `runs` gets `CHECK (pending_signals = 0 OR status IN ('RUNNING', 'WAITING', 'PAUSED',
@@ -790,7 +800,8 @@ refusals in six languages. The worker protocol does not change.
   Architecture decision 0082); until then publication of a version of level 1 answers `422 CAPABILITY_NOT_ACTIVE` with `capability: signal-inbox-v1`. Once recorded,
   a binary without the capability serves nothing (the closed gate). Both kinds need it: a control plane admits and buffers signals
   and publishes versions; an engine enters waits, ends runs and hands off continuations.
-- **The publication hold** is the function shared with designs 044 and 045, built once, with the floor's scaffold below, by a
+- **The publication hold** (Architecture decision 0112, proposed with this design) is the function shared with designs 044 and
+  045, built once, with the floor's scaffold below, by a
   prerequisite migration and pull request of its own (Task 054-18) that whichever of the three designs builds first lands and the
   other two depend on (Gap 054-007). It is `SECURITY DEFINER`, `SET search_path = pg_catalog, pg_temp`, uses schema-qualified
   names, and has `EXECUTE` revoked from `PUBLIC` and granted to `sagat_app`. It has no list of capabilities in its body: the closed
@@ -822,7 +833,7 @@ refusals in six languages. The worker protocol does not change.
   `platform_requirements_guard` refuses every `UPDATE`, and a removal is a `DELETE` made only inside `platform_requirement_remove`),
   which refuses unless the transaction is `READ COMMITTED` (so that, after waiting for a publication's `FOR SHARE`, it reads the
   committed versions) and calls the `holds` function registered for that capability (`EXECUTE
-  format('SELECT %s()', holds)`, a `regprocedure` that only a migration can insert) and refuses with `FLOOR_HELD` when it returns
+  format('SELECT %s', holds)`; a `regprocedure` prints its own argument list, and only a migration can insert one) and refuses with `FLOOR_HELD` when it returns
   true. Each design adds one row and one function. This design's: `signal_inbox_floor_holds() RETURNS boolean`, `SECURITY DEFINER`,
   fixed search path, `SELECT EXISTS (SELECT 1 FROM public.workflow_versions WHERE signal_inbox_level > 0)`, one probe of the partial
   index of Technical Plan 2, retired versions included: an older build cannot parse those versions or decode their runs' journals.
@@ -858,7 +869,10 @@ The signatures a builder needs, in the crates that own them:
   signal: Option<u64> }` with `WaitVia::Buffered`; `RunEvent::SignalsMoved { count: u16, to: RunId }`;
   `RunEvent::SignalsDiscarded { count: u16, cause: DiscardCause }` with `DiscardCause::{RunEnded, NotDeclared}`; four new
   `ReapplyReason` values (Technical Plan 9);
-  `buffer_signal(def, state, name, bytes, payload, now) -> Result<Progress, ExecutionError>`; `RunState::pending_signals() -> u16`.
+  `buffer_signal(def, state, name, bytes, payload, via, pending_of_name: u16, now) -> Result<Progress, SignalRefusal>`, in which the
+  domain owns the ordered refusals of Requirement 054-005 it can decide (`SIGNAL_TOO_LARGE`, `RUN_ENDED`, `RUN_STOPPING`,
+  `NO_CONSUMER_AHEAD`, `SIGNAL_INBOX_FULL` from the count the store read), the application then checking the ledger's bytes and the
+  tenant's quota, which only the store can, and a unit test fixes the order; `RunState::pending_signals() -> u16`.
   `Digest` is the existing `sagat_domain::workflow::Digest`, the SHA-256 of the payload and the key `payloads` uses; the
   application computes it (it already depends on `sha2`), and the store inserts the content under it, treats a mismatch as an
   invariant error, and writes it to the journal row's existing `run_events.payload_digest` column (through `append_event`'s digest
@@ -894,7 +908,7 @@ The signatures a builder needs, in the crates that own them:
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass | A buffering, a consumption, a move and a discard are journaled and written in the transaction that decides them, under the run lock; the inbox and its counters are a projection that the replay corpus checks. The principle's race of a timeout and a signal: the first commit wins; a signal that loses to a timeout is kept for a later wait rather than refused, which is the outcome principle IV states for code runs, and the timer's lost attempt stays today's recorded no-op |
+| I. State and retry semantics are explicit and durable | Pass | A buffering, a consumption, a move and a discard are journaled and written in the transaction that decides them, under the run lock; the inbox and its counters are a projection that the replay corpus checks. The principle's race of a timeout and a signal holds as written: the first commit wins; when the timeout wins, the signal is a no-op for the wait that timed out (nothing of that wait changes) and is audited (`run.signalled`), and when the signal wins, the timer's attempt is today's recorded no-op. What the signal then does is a separate transition, its admission for a consumer still ahead (another root wait of its name not yet entered, or a continuation); with none ahead it is refused `NO_CONSUMER_AHEAD`. This reading adds no exception to the principle; design 044 relies on principle IV's own sentence for code runs |
 | II. Modular domain, ports and adapters | Pass | `SignalDeclarations`, the events and the evaluation in `crates/domain` without `serde_json`; parsing in `infra-ir`; SQL in `infra-postgres`; the engine's resolve in `application`; no new crate edge (`scripts/check-architecture.py`) |
 | III. External effects are at-least-once; sagas compensate | Pass | A signal is not an external effect; a sender's retry is deduplicated by its key within the idempotency retention, and after it is a new signal, which the guide states (at least once, never exactly once); effects a consumption leads to are activities under the existing rules |
 | IV. Compatibility is versioned and pinned | Pass | Opt-in per version and name; level 0 unchanged, `409` included; one optional IR field behind a fleet requirement with a floor; optional REST fields; no protocol change; code versions consume through design 044's verified command |
@@ -908,6 +922,9 @@ The signatures a builder needs, in the crates that own them:
 
 | Addition | Why it is needed | Simpler alternative rejected |
 |---|---|---|
+| A tolerance of a run version advanced only by `signal.buffered`, on the paths that read a run outside its lock (one helper and a source rule) | A steady flow of buffered signals must not starve a continuation, a deadline's end or a collection's step | Retrying: bounded only by the inbox's fill, and every retry repeats the evaluation |
+| The shared hold and registry of floors (Architecture decision 0112) | Four requirements need a publication hold and a removal floor without one design replacing another's code | A function and a trigger rule per design, compared or replaced in landing order |
+| `SIGNAL_ENTRY_WAIT_CONTINUES` | The scheduler's handoff opens a successor's entry wait without the planner (Gap 054-009) | Consuming in the handoff: a satisfied step the handoff cannot plan on |
 | A table `run_signal_inbox` | Pending signals must be durable rows of the run with the run's lifecycle | Feature 004's `inbox_events` (Technical Plan 5) |
 | A count on `runs` and a column on the byte ledger | A transition of a run with an empty inbox must read and write nothing more, and pending bytes must count wherever outputs do | A count query in every transition; a second byte counter beside the ledger |
 | `workflow_versions.signal_inbox_level` and its partial index | The floor for a rollback in one indexed predicate | Scanning stored documents |
@@ -975,7 +992,10 @@ caller of a signature it changes, so the workspace builds after each.
   refinement of Requirements FR-018-024 and FR-018-039 in its spec; feature 004's signal sentence; "Superseded in part by
   Architecture decision 0111" in Architecture decisions 0030 (decision 17) and 0050 (decision 4); the "Refined by" pointer in
   Architecture decision 0082; `docs/architecture/execution-semantics.md` (the inbox and its lifecycle). The contract suites fail on
-  the new baselines until slices 2 and 3.
+  the new baselines until slices 2 and 3. The rows of `docs/engineering/architecture-principles.md` (AGENTS.md rule 21) for the
+  new rules and their checks: pending bytes in every 4 MiB check (the ledger's check of the sum), every writer of `run.finished`
+  discards (the source rule of Technical Plan 8), no store-side entry of a declared wait (the test of Task 054-9), the version
+  tolerance only through its helper (the source rule of Technical Plan 7); Architecture decisions 0111 and 0112 cited.
   Refs: Requirement 054-001, Requirement 054-016, Requirement 054-020, Non-functional requirement 054-004
   Owner-gate: OD-2026-11-26-540
 - [ ] T054-2 Domain declarations: `SignalDeclarations` with `max_pending` and `max_bytes`, the validation of Requirement 054-001
@@ -987,20 +1007,22 @@ caller of a signature it changes, so the workspace builds after each.
 - [ ] T054-3 Domain events and planning: `SignalBuffered`, `SignalsMoved`, `SignalsDiscarded`, `WaitVia::Buffered` and the
   `signal` field of `WaitSatisfied`; `RunState.pending_signals` and `restore`; `buffer_signal`; the choice of the first waiter
   (Requirement 054-004); `take_buffered` on `Evaluation::Correlation` and `taken` on `Resolution::Correlation`; the discard before `run.finished` for every
-  way the planner ends a run; the check of the invariant of Terms in the replay corpus; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the event codec of the new
+  way the planner ends a run; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the event codec of the new
   events and every exhaustive match, so the workspace builds. Unit tests first; replay equals projection over a corpus that buffers,
   consumes, moves and discards; journals written before this design decode as before.
   Refs: Requirement 054-004, Requirement 054-006, Requirement 054-011, Requirement 054-020
   Owner-gate: OD-2026-11-26-540
-- [ ] T054-18 The shared prerequisite (Gap 054-007; listed here, in the order of its slice 2a, though numbered last), its own
+- [ ] T054-18 The shared prerequisite of Architecture decision 0112 (Gap 054-007; listed here, in the order of its slice 2a, though
+  numbered last), its own
   migration and pull request, built only if neither design 044 nor design 045 has
   landed it: `platform_requirement_hold` with the body of Technical Plan 15, its `REVOKE` and grant, the one refusal reason
   `CAPABILITY_NOT_ACTIVE` naming the capability, and the floor's scaffold of Technical Plan 15 (the table
   `platform_requirement_floors`, the trigger function `platform_requirement_floor()` with its `READ COMMITTED` check) that each
   design extends with one row and one function.
   `integration_platform_foundation` tests first: the function's privileges and configuration, a hold against a concurrent removal,
-  the trigger's refusal through a test capability.
+  the trigger's refusal through a test capability, two capabilities registered at once.
   Refs: Requirement 054-002
+  Owner-gate: OD-2026-11-26-540
 - [ ] T054-4 The migration of Technical Plan 2 and its validating companion (the table with its `version_id` and index, the new columns and their checks, the
   check on `runs` that a terminal status has no pending signal, the ledger's replaced check, the capability in the three closed
   lists, the comparison guard of the hold function, the floor's row and its function `signal_inbox_floor_holds`, the grants, the classification, the down migration's
@@ -1028,6 +1050,7 @@ caller of a signature it changes, so the workspace builds after each.
   predicate first (the worker's and scoped outputs, the event wake, the `end` output, collections, loops,
   children, the signal paths): a run with pending payloads refuses, with its typed answer, an output that fits without them.
   Refs: Requirement 054-008
+  Owner-gate: OD-2026-11-26-540
 - [ ] T054-8 Admission: `deliver_signal` and the chain path through one decision (Technical Plan 3), the engine's resolve of a
   correlation with `take_buffered`, batch items; `crates/api-http`'s list route, the answers and reasons; the capability
   `signal-inbox-v1` known to both process kinds: `Capability::SignalInboxV1` in `crates/application/src/instances.rs` (the variant,
