@@ -1482,10 +1482,15 @@ written plus one, never reused, the highest also kept in the document), material
   `SAGAT_OPENBAO_DEVELOPMENT`, the last with the same two-key gate as `OpenBaoSettings::from_lookup` (it holds only
   when `development` is true, that is under `SAGAT_ENV=dev`), and builds the client itself; no other constructor and
   no conversion from an `OpenBao` or an `OpenBaoConfig` exists. The settings cannot point it at the wrong token
-  either: its token check (lookup-self) refuses a token whose policies are not exactly `identity` and `default`, so a
-  token file shared with the secrets mount is refused at start
-  (`an_identity_client_refuses_a_token_without_only_the_identity_policy`), and a development client, which skips
-  lookup-self, exists only under the gate above. The transport goes through the client's private `measured` wrapper with the closed operations `ring_read` and
+  either. The client's private token check, which re-reads the token file and runs lookup-self before every request,
+  takes a policy rule held in a private field of the client: the secrets-mount client keeps today's rule, and the
+  identity client, which only `from_lookup` builds, also requires the policies to be exactly `identity` and `default`.
+  A token file shared with the secrets mount is therefore refused before any ring or identity-mount request is sent,
+  at start, in every operator command and after the token file changes
+  (`an_identity_client_refuses_a_token_without_only_the_identity_policy`: the control plane's start, `rotate_begin`
+  driven with a secrets-policy token file, where only lookup-self reaches the server, and a token file swapped to a
+  secrets-policy token after one successful request, whose next `write_cas` is refused). A development client, which
+  skips lookup-self, exists only under the gate above. The transport goes through the client's private `measured` wrapper with the closed operations `ring_read` and
   `ring_write`, so ring reads appear in `secret_provider_requests_total`. Because `identity_ring` is a
   child of `openbao`, the transport uses the client's private request helper, `bounded_body` and fields as they are:
   none of them is widened, so no other module of the crate, `TokenSigner` and `IdentitySecrets` included, gains a raw
