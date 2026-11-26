@@ -1,6 +1,6 @@
 # ADR-NNNN: <the decision as a sentence>
 
-**Status:** Proposed | Accepted (<date>) | Superseded by ADR-NNNN
+**Status:** Proposed | Accepted (<date>) | Superseded by ADR-NNNN | Withdrawn (<date>), for a record never accepted
 **Decided by:** <owner | owner after review of an agent's proposal | agent, reviewed by name on date>
 **Refines / supersedes:** <ADR-NNNN, or "none">
 **Enforced by:** <the test, script or CI step that fails when the rule is broken, or "review only: why">

@@ -1,6 +1,6 @@
 # ADR-0029 — Worker task streams spend finite receive credit
 
-Status: **Accepted and implemented; server/five-SDK integration verified, comparative measurement recorded with explicit limits** | Date: 2026-10-12 | Feature: 006 | Refines ADR-0015; preserves ADR-0002 and ADR-0023
+Status: **Accepted and implemented; server/five-SDK integration verified, comparative measurement recorded with explicit limits** | Date: 2026-10-12 | Feature: 006 | Refines ADR-0015; preserves ADR-0002 and ADR-0023 | Decision 5 superseded in part by ADR-0098, for the leases the server never handed to the transport
 
 ## Context
 
@@ -66,7 +66,9 @@ subsequent claim is observed before that claim; a claim already admitted may fin
 existing transactional fences. No zero-duration revocation guarantee is invented for a JWT provider
 that itself has no immediate revocation mechanism.
 
-**5. A disconnected stream leaves its committed leases to the existing recovery machinery.**
+**5. A disconnected stream leaves its committed leases to the existing recovery machinery.** (Superseded by ADR-0098,
+accepted on 2026-11-21, for the leases the server never handed to the transport; it still holds for a frame that was
+handed over.)
 Lease commitment precedes delivery. Losing the response can strand a lease until it expires;
 stream closure never proves that a handler did not start. Never release a committed lease merely
 because a write, stream or client was cancelled. An uncommitted claim rolls back. A committed,

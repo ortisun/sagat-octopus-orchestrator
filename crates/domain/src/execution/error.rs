@@ -36,6 +36,10 @@ pub enum ExecutionError {
     StaleAttempt { node: NodeId },
     #[error("execution instance '{instance:?}': the attempt/generation is stale")]
     StaleInstanceAttempt { instance: ExecutionInstanceId },
+    /// The attempt was already withdrawn [`super::command::MAX_WITHDRAWALS_PER_ATTEMPT`] times (feature 006, decision D006-031): one
+    /// more is not a fault of a delivery, so the lease is not withdrawn again.
+    #[error("step '{node}': attempt {attempt} was withdrawn as often as one attempt may be")]
+    WithdrawalsSpent { node: NodeId, attempt: u32 },
     #[error("step '{0}' has already been scheduled")]
     AlreadyScheduled(NodeId),
     /// A timer, wait deadline or retry delay has not elapsed yet.
