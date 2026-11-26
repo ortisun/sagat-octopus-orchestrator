@@ -321,7 +321,7 @@ integration runner waits on the same clause (feature 021, Decision 021-022).
 
 None open. The design follows Owner decision 2026-11-24-1, the 5.0.0 amendment (Owner decision 2026-11-24-2) and the
 third declared set of 5.1.0 (Owner decision 2026-11-25-3); its choices were taken under Owner decisions 2026-11-20-6 and
-2026-11-24-4 and are recorded as Decisions 047-001 to 047-062 in research.md, with the register's literal marker
+2026-11-24-4 and are recorded as Decisions 047-001 to 047-063 in research.md, with the register's literal marker
 "delegate (OD-2026-11-24-4)". Architecture decisions 0122 and 0123 are accepted with the approval of this design, under
 Owner decision 2026-11-24-4 (Owner decision 2026-11-24-320), on the approval rule of Owner decision 2026-11-25-2 (pull
 request 284).
@@ -483,7 +483,10 @@ A refresh (the statements are in data-model.md):
    row.
 2. **Adopt.** A `PENDING` refresh revision of the same grant epoch from an earlier fence whose vault write is marked, or
    whose write-once vault reference is present when probed, is activated instead of calling the provider. A row whose
-   reference is absent is marked abandoned.
+   reference is absent is abandoned only after the adopter has claimed the reference with a tombstone (a check-and-set
+   write that succeeds only where nothing is written, the same kind of write as the holder's own), so a holder's late
+   write fails and cannot leave an untracked
+   token; the sweeper claims an unmarked row's reference the same way before closing it.
 3. **Call** the token endpoint, only if less than 15 s have passed since before the acquire on a clock that keeps counting
    while a virtual machine is suspended (`CLOCK_BOOTTIME` on Linux), with a deadline of 10 s. A timeout is an unknown outcome: the provider may have rotated the token (Gap 047-007).
 4. **Store**, unconditionally once the provider answered: insert `PENDING` rows (origin `REFRESH`, the held fence, the
@@ -848,7 +851,7 @@ feature 028's Tasks T028-062 to T028-066.
   `revocation_with_the_provider_down_ends_unknown`, `withdrawal_disconnects_after_seven_days`,
   `a_holder_crashing_after_a_late_store_leaves_no_live_token`, `a_retired_revision_is_never_revoked_at_the_provider`,
   `a_stale_pending_revision_of_a_live_credential_is_adopted_not_revoked`,
-  `the_sweeper_waits_for_a_vault_write_still_running`.
+  `the_sweeper_waits_for_a_vault_write_still_running`, `a_suspended_holder_cannot_write_after_its_row_was_closed`.
   Refs: Requirement 047-012, Requirement 047-013
 - [ ] T047-9 Feature 021's `oauth` scheme served by the broker inside `ResolveResource`; the binding rule; resource deletion
   moving a credential to `DISCONNECTING` with the credential row locked first. Files:
