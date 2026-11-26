@@ -262,11 +262,10 @@ pub const fn mapping(action: AuditAction) -> OcsfMapping { match action { /* one
 
 `crates/application/src/audit_ocsf.rs` turns an `AuditRecord` and its mapping into an `OcsfEvent` (an application type
 holding the attributes the five classes use) and applies the disclosure rules: the reason scrubbed as `GET /audit` does
-(`crates/telemetry/src/redact.rs`), and left out below a `pii` ceiling. `crates/api-http` owns the JSON codec of the read;
-the sink adapter in `crates/infra-postgres` and the HTTPS client reuse the same codec from a module of its own
-(`crates/application` defines the port `OcsfEncoder`, `crates/api-http` and the engine wire one implementation from a new
-small adapter module `crates/telemetry/src/ocsf.rs`, which already depends on `serde_json`). Per class, the required
-objects are filled as follows:
+(`sagat_telemetry::scrub`, `crates/telemetry/src/redact.rs`, as `crates/api-http/src/dto_ops.rs` uses it), and left out
+below a `pii` ceiling. `crates/application` defines a port `OcsfEncoder`; its one implementation is a new module
+`crates/telemetry/src/ocsf.rs` (that crate already depends on `serde_json`), used by the read in `crates/api-http` and by
+the export pass in the engine. Per class, the required objects are filled as follows:
 
 | Class | Required object | Filled from |
 |---|---|---|
@@ -309,7 +308,9 @@ SELECT ... FROM audit_records
 
 No record can later appear below a cursor that this query passed: every transaction below `xmin` has committed or
 aborted, and an aborted one's rows are invisible. A long transaction holds `xmin` back, which delays the stream (the lag
-metric shows it) and loses nothing. `xid8` is 64 bits and does not wrap around.
+metric shows it) and loses nothing. `xid8` is 64 bits and does not wrap around. A new sink starts at the cursor
+`(pg_snapshot_xmin(pg_current_snapshot()), 00000000-0000-0000-0000-000000000000)` read when it is created, so it receives
+every record committed after its creation, and perhaps a few committed just before it (at least once, never fewer).
 
 ### 5. Sinks and the export pass
 
