@@ -247,9 +247,10 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   build this platform's images at the commit under test and load each product's history through the product itself, at
   a bounded concurrency in a closed loop, checked to hold exactly 100,000 completed chains of three, with the settings
   the pilots chose (those an archive freezes, such as Temporal's number of history shards, listed); it stores this
-  platform's images (`docker save`) and each product's data directory as compressed archives, pinned by their SHA-256s
-  recorded in the job's summary, as workflow artifacts. Every later job loads the images and restores each archive
-  before the product's turn, refusing an archive whose SHA-256 is not the recorded one, any member outside the data
+  platform's images (`docker save`) and each product's data directory as compressed archives, pinned by their SHA-256s,
+  passed to later jobs only as the history job's outputs (`needs.<history job>.outputs`), as workflow artifacts. Every
+  later job downloads them by exact name, loads the images and restores each archive before the product's turn,
+  refusing an archive whose SHA-256 is not that output, any member outside the data
   directory and any symbolic link, and overwriting `postgresql.conf`, `postgresql.auto.conf` and `pg_hba.conf` from the
   repository before the server starts; then a `VACUUM (ANALYZE)` and a `CHECKPOINT` run. Every credential a product or
   its database uses is generated per campaign, never a development default; the archives are public, and the report
@@ -281,16 +282,22 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   whose worst-case minutes exceed 350.
 - **Requirement 051-020 Nothing on the runner can reach the repository.** The benchmark workflow MUST have exactly the
   top-level block `permissions: contents: read` and no job-level `permissions:`, no `secrets: inherit`, no
-  `${{ github.token }}`, no cache action, `persist-credentials: false` on its checkout, every `uses:` pinned to a
+  `${{ github.token }}`, no cache action, no `${{ secrets.` reference at all, `persist-credentials: false` on its
+  checkout, every `uses:` pinned to a
   40-character commit, no `${{ inputs. }}` or `${{ github.event. }}` inside a `run:` (inputs pass through `env:`), and
   refuse any ref but `develop`, `main`, `release/**` and `v*`. Every compose file under `tests/performance/competitive/`
   MUST have every service on networks declared `internal: true` (this platform's included), and none may be
   `privileged`, mount the container engine's socket, use the host's network, process or IPC namespace, add
   capabilities or devices, or run unconfined (Windmill's script variants then run with `nsjail` off if it needs any of
-  these, stated); the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
+  these, stated), with one named exception: this platform's sandbox-runner service may mount the socket, its image
+  built at the commit, `read_only`, `cap_drop: [ALL]` and `no-new-privileges`, and its per-run containers run with
+  `--network none`, as a non-root user, from images of `images.lock`, which a check after each turn confirms from
+  `docker inspect` of every run container; every third-party program, the Temporal sidecar, `omes` and the driver
+  included, runs as a compose service under these rules (the driver on each product's internal network), and the rule
+  refuses a third-party binary started from `run.sh` on the host; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
   address, the pilots included (a Windmill step language that needs packages at run time is pre-resolved into an image
-  built from pinned inputs, or excluded). Every image is named in one manifest (`images.lock`: name, digest, and the
-  vendor's signature checked where the vendor signs), read by the compose files and by `run.sh`, every
+  built from pinned inputs, or excluded). Every image is named in one manifest (`images.lock`: name, digest taken from the vendor's
+  registry, and the vendor's signature checked where the vendor signs), read by the compose files and by `run.sh`, every
   `SAGAT_RUNNER_IMAGE_*` of this platform set from it (this platform's own images exempt as "built at the commit under
   test"); after each turn `docker image ls --digests` is compared with it and an image not in it fails the job. `omes`
   is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of files (no
