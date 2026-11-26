@@ -129,21 +129,31 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
     can set; the others need a reload or a restart, which `pg_settings` shows); each product's other function
     settings are published (`search_path` and `lock_timeout` for this platform's migrations).
   - *Startup.* Every product reaches its database server only through the startup guard, a first-party proxy built at
-    the commit (in the driver's workspace) and run as a compose service in the product's set, the database server's
-    only network peer, `pg_hba.conf` admitting no other address (the host's probe uses the server container's local
-    socket). TLS is off on every hop (Requirement 051-002), so the guard reads each connection's startup message
+    the commit (in the driver's workspace, its allowlists compiled in with no configuration that can change them) and
+    run as a compose service in the product's set, the database server's only network peer: `pg_hba.conf` admits the
+    guard's address and, on the local socket, only the probe's role by `peer` authentication (the host's probe runs
+    through `docker exec` in the server container); at each turn's start `docker inspect` confirms that the server's
+    network has exactly one other endpoint, whose image is the guard built at the commit in this job, that no other
+    container shares a mount with the server, and that the server publishes no port. TLS is off on every hop (Requirement 051-002), so the guard reads each connection's startup message
     whatever its source (code, a URL's `options` or `options[...]` keys, `PGOPTIONS`, a service file): it refuses the
     connection, and fails the turn, on a parameter outside `user`, `database`, `application_name`, `client_encoding`,
     `DateStyle`, `TimeZone`, `extra_float_digits` and `search_path` (names compared without case) or on an `options`
     value holding anything but `-c` settings, parsed in all three forms (`-c name=value`, `-cname=value`,
     `--name=value`), of `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, `DateStyle` and
-    `TimeZone`; it answers a TLS or GSS encryption request with "not supported", forwards a cancel request, logs a refusal by parameter name only,
+    `TimeZone`; it answers a TLS or GSS encryption request with "not supported", forwards a cancel request, and fails closed on its
+    own framing: only protocol 3.0 is accepted (another version is refused, not copied), and a duplicate name
+    (compared without case), an empty name before the end, a byte after the terminator, a backslash or any whitespace
+    but single spaces in `options`, and an admitted `-c` value not matching its setting's pattern (a duration for the
+    three timeouts, `ISO` and `UTC` forms for the other two) are refused, a fixture for each; it logs a refusal by parameter name only,
     never a value, and then copies bytes both ways unchanged. It is charged to the product, and its added latency,
     measured by the pilot, is a deviation line common to the three. Fixtures refuse a direct `synchronous_commit`
     parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and a parameter of unknown name, and accept the
     startup messages this platform's pool and SQLx send.
-  - *Roles.* The products' roles are not superusers and hold no `SET` grant on `commit_delay` and no `EXECUTE` on
-    `pg_stat_statements_reset`, checked through SQL (`synchronous_commit` has user context, so any role may set it in
+  - *Roles.* The products' roles are not superusers, hold no row of `pg_parameter_acl` (no `SET` or `ALTER SYSTEM`
+    grant on any parameter) and no `EXECUTE` on `pg_stat_statements_reset` or `pg_reload_conf`, and no function's source
+    (`pg_proc.prosrc`, compared without case) names `pg_stat_statements_reset` or `pg_reload_conf`, so that no
+    `SECURITY DEFINER` wrapper hands them on (this platform's own `SECURITY DEFINER` functions name neither), checked
+    through SQL at the start and the end of each turn (`synchronous_commit` has user context, so any role may set it in
     a session, which only the scan below catches).
   - *Statements.* With `pg_stat_statements.track = all`, so that statements inside functions are seen,
     `pg_stat_statements_reset()` runs once per turn, after the restore and before the product starts (no session
@@ -151,19 +161,25 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
     since then (the start-up of connection pools and the waits between rungs included). The scan fails the turn when
     `pg_stat_statements_info.dealloc` is not 0 (an entry evicted) or its `stats_reset` is not the time of that one
     reset, except that fault (c), whose kill empties the statistics, admits one more reset between the injector's
-    recorded fault time and the first scan after the restart, with `dealloc` at 0 from then on, and runs a scan just
+    recorded fault time and the moment the server accepted connections again (which the host measures, Requirement
+    051-009), with `dealloc` at 0 from then on, and runs a scan just
     before the kill (a statement between that scan and the kill goes unseen, a stated residual; a session setting it
-    made ends with the kill, which ends every session). The scan also fails the turn on a `SET` of
-    `synchronous_commit` to `off` or of `commit_delay`, and on any `set_config` statement outside a per-product list
-    that the pilot fixes and publishes, since `pg_stat_statements` stores the setting's name of a `set_config` call as
-    a placeholder. A vendor's entry is a normalized statement text admitted only when every call site of the pinned
-    vendor source that produces that text, all of them listed, passes a literal setting name other than
-    `commit_delay`, and for `synchronous_commit` a literal value other than `off`, so that the list trusts only source
-    no pilot can change. For this platform, whose source changes between campaigns, `check_competitive_benchmark` finds
-    every `set_config(` call of the workspace's SQL and Rust at the commit under test and refuses one whose first
-    argument is not a string literal, one naming `commit_delay`, and one naming `synchronous_commit` with a value that
-    is not a literal other than `off` (feature 006's acknowledgement, which raises it to `local`, passes), a fixture
-    for each.
+    made ends with the kill, which ends every session). The scan also fails the turn on any
+    `SET`, `SET LOCAL`, `RESET` or `ALTER ... SET` naming `synchronous_commit` or `commit_delay` (names compared
+    without case, since `pg_stat_statements` may store the value as a placeholder) and on any `set_config` statement,
+    outside a per-product list that the pilot fixes and publishes, since `pg_stat_statements` stores a `set_config`
+    call's arguments as placeholders. An entry is a normalized statement text admitted only when every call site that
+    produces it, all of them listed, passes a literal setting name (compared without case) other than `commit_delay`,
+    and for `synchronous_commit` a value from an allowlist: a literal of `on`, `local`, `remote_write` or
+    `remote_apply` (compared without case), or a `CASE` whose every branch is one of those literals or
+    `current_setting('synchronous_commit')`; anything else (`off`, `false`, `no`, `0`, a parameter, a formatted string)
+    is refused. For vendors the call sites are those of the pinned source, which no pilot can change. For this
+    platform, whose source changes between campaigns, `check_competitive_benchmark` finds every call matching
+    `(?i)\bset_config\s*\(` and every `SET` statement naming the two settings in the workspace's SQL and Rust at the
+    commit under test, refuses one that breaks the rule or whose SQL is assembled at run time, and builds this
+    platform's list from the call sites it found and passed, never by hand (feature 006's acknowledgement passes when
+    written in the allowlisted form); fixtures refuse `'false'`, `'0'`, `OFF`, a name in another case and a
+    formatted value.
   - *Latency.* The statement latency of Requirement 051-007 for a rung is the difference of two snapshots of
     `pg_stat_statements`, taken by the host at the planned start and end of the rung's 300 s window, which the driver
     posts before the rung (its schedule is precomputed), the snapshot's lag after the planned time published and a
@@ -394,7 +410,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   reads either directory and copies files out of them, each directory from its own root handle under the
   rule below, and `run.sh` never reads a file of them by path; the injector writes each fault's time as
   `CLOCK_REALTIME` into a host-only directory that no container can write (mounted read-only into the driver), where
-  `run.sh` also gathers every file it uploads; the injector opens each execution record, and each file it reads or copies, from a handle on its directory's root with
+  the `host` subcommand gathers every uploaded file (`run.sh` copies nothing from a directory a container can write); the injector opens each execution record, and each file it reads or copies, from a handle on its directory's root with
   `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS` (so that no part of the path is a link) and `O_NONBLOCK`,
   confirms with `fstat` on that open file that it is a regular file, keeps that descriptor and reads on from its last
   offset, at most 1 MB per poll; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
@@ -520,8 +536,9 @@ lists what a later release would ask the owner for.
 `check_competitive_benchmark` in `scripts/check-architecture.py`, with a flag `--competitive-root DIR` for its fixtures
 in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key by key with a line match (no YAML
 library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
-(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (each database server's only network shared with its startup guard alone, and
-`pg_hba.conf` admitting the guard's address and the local socket only), every `set_config(` call of the workspace
+(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (each database server's only network shared with its startup guard alone, no
+`volumes_from`, no volume shared with the database service and no `ports:` on it, no YAML anchor, merge key or
+`extends:`, and `pg_hba.conf` admitting the guard's address and the probe's role on the local socket only), every `set_config(` call of the workspace
 checked as Requirement 051-004 states, `run.sh`'s `docker run` and `docker create`
 lines, the image manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
 `run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
@@ -709,9 +726,9 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the startup guard (its allowlists, the three `options` forms, the encryption refusal, the log by name only, its fixtures refusing a direct `synchronous_commit` parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and an unknown parameter and accepting this platform's pool and SQLx, the database server's network and `pg_hba.conf` admitting only it), the durability checks (`pg_settings`, `pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end, the roles' grants, the single reset before the product starts, the scan after every rung and at the turn's end with `dealloc` at 0 and `stats_reset` equal to that reset, and one reset between the fault time and the first scan after fault (c) with the scan before the kill, the per-product `set_config` list and this platform's `set_config(` call sites with a fixture each), the snapshots at the planned window boundaries keyed with `toplevel` with their lag, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the startup guard (its compiled allowlists, the three `options` forms, the encryption refusal, the fail-closed framing with a fixture per refusal, the log by name only, the `docker inspect` check of its single peer, image, shared mounts and ports, its fixtures refusing a direct `synchronous_commit` parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and an unknown parameter and accepting this platform's pool and SQLx, the database server's network and `pg_hba.conf` admitting only it), the durability checks (`pg_settings`, `pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end, the roles' grants (`pg_parameter_acl`, `pg_stat_statements_reset`, `pg_reload_conf`, no function source naming either), the single reset before the product starts, the scan after every rung and at the turn's end with `dealloc` at 0 and `stats_reset` equal to that reset, and one reset between the fault time and the server's acceptance of connections after fault (c) with the scan before the kill, the scan of `SET` forms of the two settings, the per-product `set_config` list with its value allowlist, and this platform's list built from the call sites found with the case-insensitive pattern, with the refusal fixtures), the snapshots at the planned window boundaries keyed with `toplevel` with their lag, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-007, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
-- [ ] T051-7 Add the fault injector to the driver's `host` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the baseline's and null fault's ends read from the driver's posts, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath the record root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
+- [ ] T051-7 Add the fault injector to the driver's `host` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the baseline's and null fault's ends read from the driver's posts, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath its own directory's root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
   Refs: Requirement 051-009
 - [ ] T051-8 Add the `competitive-benchmark` workflow (Requirement 051-020's rules, the stages and matrices of `campaign.json`, the `concurrency` group, the refusal of a private repository and of other refs), publish the method and configurations, run the pilots once for the method version and publish them.
   Refs: Requirement 051-004, Requirement 051-012, Requirement 051-014, Requirement 051-019, Requirement 051-020
