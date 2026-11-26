@@ -1,0 +1,482 @@
+{
+  "scenario": "code-saga",
+  "run": "main",
+  "runId": "dbe96133-9e73-4bbb-8923-feadba7f8a4f",
+  "workflowType": "booking",
+  "seedHex": "0e9bd9bee57e22edab377efcfe693b7bdbefa71460e54931aad1b1b51168e04e",
+  "input": {
+    "orderId": "ord-9",
+    "tripId": "trip-4"
+  },
+  "codeVersions": {
+    "v1": "sha256:2d229dad89b5caa70a6b013e5cb506e33fa5a7a6119f3c2fc182ff5745daf6ed"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "journalKind": "saga.entered"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "inventory.reserve",
+          "node": "c-2",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "inventory.reserve"
+          },
+          "value": {
+            "orderId": "ord-9"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "inventory.reserve",
+            "input": {
+              "sha256": "9df2069e14b79907d94c45c3f97d0747a96961c29f7df35d82d263889acaabd9",
+              "size": 19
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "f454bd26f20bf6f3547e5cb096fb55a11200596bf50cac336f24e3c836c41b91",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "402be659444a8fd3f7d860a95d7ecd028f391518ea3e3877600632353dd67a76",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 8
+      },
+      "nowUs": 1767225600001096,
+      "replayedChainHex": "402be659444a8fd3f7d860a95d7ecd028f391518ea3e3877600632353dd67a76",
+      "appliedThroughSeq": 8,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "activity",
+          "target": "payments.charge",
+          "node": "c-3",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "orderId": "ord-9",
+            "amountCents": 12000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "dee5cca0177b439ca4c12e5ca34fe0e768e3048639c1d0dd1760fad03203e666",
+              "size": 39
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "c5d0dbf8a17a546eabd33db45f171c2d47bda75fd2f7335f0704c386f1d16f6e",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 9,
+      "chainAfterHex": "fc1f7c838c52700dca4e6370ab938dfe0010e30d504598d9a78932be3df183a7",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 8,
+        "throughSeq": 13
+      },
+      "nowUs": 1767225600001781,
+      "replayedChainHex": "fc1f7c838c52700dca4e6370ab938dfe0010e30d504598d9a78932be3df183a7",
+      "appliedThroughSeq": 13,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "saga_close",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaClose": {
+              "target": "s-1"
+            }
+          },
+          "body": {
+            "scope": "s-1"
+          },
+          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
+          "journalKind": "saga.completed"
+        },
+        {
+          "commandNumber": 5,
+          "kind": "saga_open",
+          "target": "s-5",
+          "node": "s-5",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-5",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-5",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "259e9d5cc4fcc1550f73af12f5025c0edff3470ed42e496b7049266c41eb5f32",
+          "journalKind": "saga.entered"
+        },
+        {
+          "commandNumber": 6,
+          "kind": "activity",
+          "target": "hotel.book",
+          "node": "c-6",
+          "sagaScope": "s-5",
+          "fragment": {
+            "type": "activity",
+            "activity": "hotel.book"
+          },
+          "value": {
+            "tripId": "trip-4"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "hotel.book",
+            "input": {
+              "sha256": "6329a0f343cda498c6674c428f46881ecab68f3f29079dafe59b5bdf9f10f091",
+              "size": 19
+            },
+            "scope": "s-5"
+          },
+          "bodySha256": "aef41caa1f90e6789bd5a2a62709ae2db54215b4228fbe5dc6daee3ef38f9eb6",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 14,
+      "chainAfterHex": "e16f5a00e1e9a98b154f84052700887917802b481ccc84aa1e67ff4f96679180",
+      "commandCountAfter": 6
+    },
+    {
+      "k": 4,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 13,
+        "throughSeq": 20
+      },
+      "nowUs": 1767225600002740,
+      "replayedChainHex": "e16f5a00e1e9a98b154f84052700887917802b481ccc84aa1e67ff4f96679180",
+      "appliedThroughSeq": 20,
+      "commands": [
+        {
+          "commandNumber": 7,
+          "kind": "activity",
+          "target": "car.rent",
+          "node": "c-7",
+          "sagaScope": "s-5",
+          "fragment": {
+            "type": "activity",
+            "activity": "car.rent"
+          },
+          "value": {
+            "tripId": "trip-4",
+            "hotelBookingId": "h-1"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "car.rent",
+            "input": {
+              "sha256": "8b7ba416f1715c116806e5f34a807156a01ec1f8df69174730857f3141c75822",
+              "size": 42
+            },
+            "scope": "s-5"
+          },
+          "bodySha256": "0f37f5a2872dfa14cada098bd38e0031ab8e4861a9f478aa7c7c87dbff89e47e",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 21,
+      "chainAfterHex": "59a43ec0976a3299f67541abe53c46adcf0b3e7c93b39a6836457383bea5ba41",
+      "commandCountAfter": 7
+    },
+    {
+      "k": 5,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 20,
+        "throughSeq": 25
+      },
+      "nowUs": 1767225600003425,
+      "replayedChainHex": "59a43ec0976a3299f67541abe53c46adcf0b3e7c93b39a6836457383bea5ba41",
+      "appliedThroughSeq": 25,
+      "commands": [
+        {
+          "commandNumber": 8,
+          "kind": "activity",
+          "target": "flight.book",
+          "node": "c-8",
+          "sagaScope": "s-5",
+          "fragment": {
+            "type": "activity",
+            "activity": "flight.book"
+          },
+          "value": {
+            "tripId": "trip-4"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "flight.book",
+            "input": {
+              "sha256": "6329a0f343cda498c6674c428f46881ecab68f3f29079dafe59b5bdf9f10f091",
+              "size": 19
+            },
+            "scope": "s-5"
+          },
+          "bodySha256": "a0fea979d263a755659c74e51f22a963852e05aabedfb066b5be02520d213743",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 26,
+      "chainAfterHex": "04d22a5f4e60079671178b4785d6d3d04f579e7306fb3b865042c1d3b28e71a0",
+      "commandCountAfter": 8
+    },
+    {
+      "k": 6,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 25,
+        "throughSeq": 30
+      },
+      "nowUs": 1767225600004110,
+      "notes": "flight.book failed: the body throws, the SDK aborts the scope s-5.",
+      "replayedChainHex": "04d22a5f4e60079671178b4785d6d3d04f579e7306fb3b865042c1d3b28e71a0",
+      "appliedThroughSeq": 30,
+      "commands": [
+        {
+          "commandNumber": 9,
+          "kind": "saga_abort",
+          "target": "s-5",
+          "node": "s-5",
+          "typed": {
+            "sagaAbort": {
+              "target": "s-5"
+            }
+          },
+          "body": {
+            "scope": "s-5"
+          },
+          "bodySha256": "d713f3303a8772dcc7b8f5cf495971cfd349a7465716d7ced7cf3d764956d335",
+          "journalKind": "saga.aborting"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 31,
+      "chainAfterHex": "77ebaa14ec2961564bef338d5fecca4f0fd54cdda3f20486b9e3714b443afd44",
+      "commandCountAfter": 9
+    },
+    {
+      "k": 7,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 30,
+        "throughSeq": 39
+      },
+      "nowUs": 1767225600005343,
+      "notes": "saga() throws SagaCompensated, which the function catches.",
+      "replayedChainHex": "77ebaa14ec2961564bef338d5fecca4f0fd54cdda3f20486b9e3714b443afd44",
+      "appliedThroughSeq": 39,
+      "commands": [
+        {
+          "commandNumber": 10,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "orderId": "ord-9",
+              "order": "charged",
+              "trip": "compensated"
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "2f87cfac85b44457b38c14cfd81775dd3f2eaabb271b5e35ad6ba7ae481fe06c",
+              "size": 58
+            }
+          },
+          "bodySha256": "e8af0cc2a4b50462960e8d2347013ca029516a857de5c4d8d8ff49d7da6ce78c",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 40,
+      "chainAfterHex": "a5c7ef47a91c88ba4204d3a26bdec1fe959f8f1ec3931faa42b3f790d237388c",
+      "commandCountAfter": 10
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 6,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    },
+    {
+      "seq": 11,
+      "journalKind": "step.leased",
+      "node": "c-3"
+    },
+    {
+      "seq": 18,
+      "journalKind": "step.leased",
+      "node": "c-6"
+    },
+    {
+      "seq": 23,
+      "journalKind": "step.leased",
+      "node": "c-7"
+    },
+    {
+      "seq": 28,
+      "journalKind": "step.leased",
+      "node": "c-8"
+    },
+    {
+      "seq": 33,
+      "journalKind": "compensation.planned",
+      "scope": "s-5",
+      "entries": [
+        "c-6",
+        "c-7"
+      ]
+    },
+    {
+      "seq": 34,
+      "journalKind": "step.leased",
+      "node": "c-7~c",
+      "activity": "car.return"
+    },
+    {
+      "seq": 35,
+      "journalKind": "step.completed",
+      "node": "c-7~c"
+    },
+    {
+      "seq": 36,
+      "journalKind": "step.leased",
+      "node": "c-6~c",
+      "activity": "hotel.cancel"
+    },
+    {
+      "seq": 37,
+      "journalKind": "step.completed",
+      "node": "c-6~c"
+    },
+    {
+      "seq": 42,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "inventory.reserve",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 7
+    },
+    {
+      "node": "c-3",
+      "kind": "activity",
+      "target": "payments.charge",
+      "commandNumber": 3,
+      "issuedSeq": 8,
+      "outcomeSeq": 12
+    },
+    {
+      "node": "c-6",
+      "kind": "activity",
+      "target": "hotel.book",
+      "commandNumber": 6,
+      "issuedSeq": 13,
+      "outcomeSeq": 19
+    },
+    {
+      "node": "c-7",
+      "kind": "activity",
+      "target": "car.rent",
+      "commandNumber": 7,
+      "issuedSeq": 20,
+      "outcomeSeq": 24
+    },
+    {
+      "node": "c-8",
+      "kind": "activity",
+      "target": "flight.book",
+      "commandNumber": 8,
+      "issuedSeq": 25,
+      "outcomeSeq": 29
+    }
+  ],
+  "expectations": {
+    "compensationOrder": [
+      "c-7~c",
+      "c-6~c"
+    ],
+    "plannedEntries": [
+      {
+        "node": "c-6",
+        "issuedSeq": 13,
+        "outcomeSeq": 19
+      },
+      {
+        "node": "c-7",
+        "issuedSeq": 20,
+        "outcomeSeq": 24
+      }
+    ],
+    "rule": "c-7 depends on c-6 because outcomeSeq(c-6) <= issuedSeq(c-7); c-8 failed and is not compensated; c-2 and c-3 belong to the closed top-level scope s-1, whose compensations were dropped when it closed"
+  }
+}

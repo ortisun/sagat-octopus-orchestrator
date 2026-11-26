@@ -1,0 +1,254 @@
+{
+  "scenario": "code-cache-eviction",
+  "run": "main",
+  "runId": "5d8e5904-5eda-449a-a52f-e3443ec0b084",
+  "workflowType": "payment-flow",
+  "seedHex": "9369e7c24357d785e4c5403aada3b5e144b646f55388144e813b2882ba8a6821",
+  "input": {
+    "orderId": "ord-88"
+  },
+  "codeVersions": {
+    "v1": "sha256:8f8a88453f78b2a5e0067fa7841516ba0de6eccf512f02d1835e4d81ee32f1a1"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "worker": "A",
+      "cache": "cold",
+      "replayFromSeq": 1,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "payments.charge",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "orderId": "ord-88",
+            "requestId": "d48b64b1-9eb9-4276-ba7f-cd48b89df669"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "8c7a3ed6d9e935d8e252ad0eeaa3272ae45cbc1a7280d76118fd7f5737bd9368",
+              "size": 71
+            }
+          },
+          "bodySha256": "186586e3b8145fa6261f474b575eed2980d401c45b7f2a53eb85f63c5870067d",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "00f87110ac543ac88511ae85eb18f42748b46c67cc811b081ac976fa8ff09d07",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "worker": "A",
+      "cache": "hit",
+      "replayedChainHex": "00f87110ac543ac88511ae85eb18f42748b46c67cc811b081ac976fa8ff09d07",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "marker_side_effect",
+          "target": "fx-rate",
+          "typed": {
+            "marker": {
+              "markerId": "fx-rate",
+              "sideEffectValue": {
+                "pair": "EURUSD",
+                "rate": 1.0842
+              }
+            }
+          },
+          "body": {
+            "markerId": "fx-rate",
+            "value": {
+              "sha256": "94518d2303cf170d57593d1313521d0302e7609c0402097ef765c9823aec8a9d",
+              "size": 31
+            }
+          },
+          "bodySha256": "9f159f452f32de3f64fa94f97d22226ffb6e0fd7dbb52e1f610a1133b53a06b8",
+          "journalKind": "marker.recorded"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "wait_event",
+          "target": "payment.settled",
+          "node": "c-3",
+          "fragment": {
+            "type": "waitEvent",
+            "eventType": "payment.settled",
+            "correlationKey": "ord-88",
+            "timeoutMs": 3600000,
+            "lookbackMs": 60000
+          },
+          "body": {
+            "type": "waitEvent",
+            "eventType": "payment.settled",
+            "correlationKey": "ord-88",
+            "timeoutMs": 3600000,
+            "lookbackMs": 60000
+          },
+          "bodySha256": "dfe3035bf04e6db6315ec26f12e7be8e28a32b91b5b80c4cca9bb56949b45f38",
+          "journalKind": "wait.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "03761f3fde30ae607d6ee48738477236016c3585eb073fdd3ff68ec7b3753ec0",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": 12
+      },
+      "nowUs": 1767225602001644,
+      "worker": "B",
+      "cache": "cold",
+      "replayFromSeq": 1,
+      "notes": "Worker B holds nothing at S(2): it reads the history from sequence 1, replays activations 1 and 2 (the same uuid from the seed, the side effect's value from its marker) and carries the replayed chain.",
+      "replayedChainHex": "03761f3fde30ae607d6ee48738477236016c3585eb073fdd3ff68ec7b3753ec0",
+      "appliedThroughSeq": 12,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "script",
+          "target": "sha256:c4a45a6892a43d9557dab01899a89444a99702f4c9eb4b86e79bead5bc544d59",
+          "node": "c-4",
+          "fragment": {
+            "type": "script",
+            "artifactDigest": "sha256:c4a45a6892a43d9557dab01899a89444a99702f4c9eb4b86e79bead5bc544d59"
+          },
+          "value": {
+            "settlementId": "set-5",
+            "rate": 1.0842
+          },
+          "body": {
+            "type": "script",
+            "artifactDigest": "sha256:c4a45a6892a43d9557dab01899a89444a99702f4c9eb4b86e79bead5bc544d59",
+            "input": {
+              "sha256": "f4cab8abf982ca3afa7909209ddf260b32fc870adaad1b40c98e29fadfca9e0d",
+              "size": 38
+            }
+          },
+          "bodySha256": "36c72f8f341ef0ec1c82bec96c04d6f4f4c5cb1663237dbc156f9059517f5a9e",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 13,
+      "chainAfterHex": "482c06ef7aaec22097b00950fefd1e12d512ddc353c859a6e7121b0e5200220a",
+      "commandCountAfter": 4
+    },
+    {
+      "k": 4,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 12,
+        "throughSeq": 17
+      },
+      "nowUs": 1767225602002329,
+      "worker": "B",
+      "cache": "hit",
+      "replayedChainHex": "482c06ef7aaec22097b00950fefd1e12d512ddc353c859a6e7121b0e5200220a",
+      "appliedThroughSeq": 17,
+      "commands": [
+        {
+          "commandNumber": 5,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "orderId": "ord-88",
+              "requestId": "d48b64b1-9eb9-4276-ba7f-cd48b89df669",
+              "settlementId": "set-5"
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "4a5c5a905cc7d1ac784b6fad2776e9048b29d232b636ad86ec25667d965f2822",
+              "size": 94
+            }
+          },
+          "bodySha256": "c7cce7bf5971704c8643203b00ceb4ced055df86aae76f3515dc33b114710f54",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 18,
+      "chainAfterHex": "e6d70697bb035a53a4f15d7685d591cca66d6629ac82d1079af2fd2c1220bf9c",
+      "commandCountAfter": 5
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 15,
+      "journalKind": "step.leased",
+      "node": "c-4"
+    },
+    {
+      "seq": 20,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "payments.charge",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    },
+    {
+      "node": "c-3",
+      "kind": "wait_event",
+      "target": "payment.settled",
+      "commandNumber": 3,
+      "issuedSeq": 7,
+      "outcomeSeq": 11
+    },
+    {
+      "node": "c-4",
+      "kind": "script",
+      "target": "sha256:c4a45a6892a43d9557dab01899a89444a99702f4c9eb4b86e79bead5bc544d59",
+      "commandNumber": 4,
+      "issuedSeq": 12,
+      "outcomeSeq": 16
+    }
+  ],
+  "expectations": {
+    "requestId": "d48b64b1-9eb9-4276-ba7f-cd48b89df669",
+    "from": "the first uuid() of the run's seed"
+  }
+}

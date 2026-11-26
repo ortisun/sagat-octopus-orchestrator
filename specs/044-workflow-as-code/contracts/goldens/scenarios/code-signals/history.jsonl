@@ -1,0 +1,17 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJjYXJ0SWQiOiJjYXJ0LTkifQ=="}}}
+{"seq":"2","kind":"HISTORY_SIGNAL_BUFFERED","origin":"HISTORY_ORIGIN_EXTERNAL","atUs":"1767225600000274","signalBuffered":{"signalName":"item.added","payload":{"json":"eyJza3UiOiJTS1UtMSJ9"}}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000411","workflowTaskStarted":{}}
+{"seq":"4","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000548","workflowTaskCompleted":{}}
+{"seq":"5","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000685","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"cart.open","node":"c-1"}}
+{"seq":"6","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"2","atUs":"1767225600000822","commandRecord":{"kind":"COMMAND_CONSUME_SIGNALS"}}
+{"seq":"8","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001096","stepOutcome":{"node":"c-1","outcome":"STEP_OUTCOME_COMPLETED","output":{"json":"eyJvcGVuZWQiOnRydWV9"}}}
+{"seq":"9","kind":"HISTORY_SIGNAL_BUFFERED","origin":"HISTORY_ORIGIN_EXTERNAL","atUs":"1767225600001233","signalBuffered":{"signalName":"item.added","payload":{"json":"eyJza3UiOiJTS1UtMiJ9"}}}
+{"seq":"10","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001370","workflowTaskStarted":{}}
+{"seq":"11","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600001507","workflowTaskCompleted":{}}
+{"seq":"12","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"3","atUs":"1767225600001644","commandRecord":{"kind":"COMMAND_CONSUME_SIGNALS"}}
+{"seq":"13","kind":"HISTORY_SIGNAL_BUFFERED","origin":"HISTORY_ORIGIN_EXTERNAL","atUs":"1767225600001781","signalBuffered":{"signalName":"item.added","payload":{"json":"eyJza3UiOiJTS1UtMyJ9"}}}
+{"seq":"14","kind":"HISTORY_SIGNAL_BUFFERED","origin":"HISTORY_ORIGIN_EXTERNAL","atUs":"1767225600001918","signalBuffered":{"signalName":"checkout","payload":{"json":"eyJwYXltZW50TWV0aG9kIjoiY2FyZCJ9"}}}
+{"seq":"15","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600002055","workflowTaskStarted":{}}
+{"seq":"16","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600002192","workflowTaskCompleted":{}}
+{"seq":"17","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"4","atUs":"1767225600002329","commandRecord":{"kind":"COMMAND_CONSUME_SIGNALS"}}
+{"seq":"18","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"5","atUs":"1767225600002466","commandRecord":{"kind":"COMMAND_COMPLETE"}}

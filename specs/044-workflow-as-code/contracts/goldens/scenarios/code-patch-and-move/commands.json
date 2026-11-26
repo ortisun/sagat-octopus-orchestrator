@@ -1,0 +1,348 @@
+{
+  "scenario": "code-patch-and-move",
+  "run": "main",
+  "runId": "22a0030d-7220-45e4-9000-4159aa83c668",
+  "workflowType": "purchase",
+  "seedHex": "6f7c79254fcdab08cadb0e1c7a3d00bc72af24946e49cb598be11f45b37bb1db",
+  "input": {
+    "orderId": "ord-61"
+  },
+  "codeVersions": {
+    "v1": "sha256:c6501226ad5e9e45ffca2efaa5282078f94a5e09f6078bb57959fe77a95fc1d4",
+    "v2": "sha256:8289fb44fe366d5b72bef3647ef639ebd4a47654eeaebb7635ac60e9b19321f7"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "quote.fetch",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "quote.fetch"
+          },
+          "value": {
+            "orderId": "ord-61"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "quote.fetch",
+            "input": {
+              "sha256": "752d3fe9612edae389c21697d7574143a0fa9e6bc83d27f3cce53a6e566bcffc",
+              "size": 20
+            }
+          },
+          "bodySha256": "13611342ceaf0af468ebe80d70ad6b5905964fa123987ba32734184572f2c573",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "4a4478fa33eec06703e4fdfcb438180b5aa658c0bb010fe61888b042abd6397a",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 8
+      },
+      "nowUs": 1767225600001096,
+      "replayedChainHex": "4a4478fa33eec06703e4fdfcb438180b5aa658c0bb010fe61888b042abd6397a",
+      "appliedThroughSeq": 8,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "marker_patch",
+          "target": "use-fraud-check",
+          "typed": {
+            "marker": {
+              "markerId": "use-fraud-check"
+            }
+          },
+          "body": {
+            "markerId": "use-fraud-check"
+          },
+          "bodySha256": "7ee3ff41b35430673502de73f7de727d4e93ec84a56977c507bd1b23bc28efa7",
+          "journalKind": "marker.recorded"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "activity",
+          "target": "fraud.check",
+          "node": "c-3",
+          "fragment": {
+            "type": "activity",
+            "activity": "fraud.check"
+          },
+          "value": {
+            "orderId": "ord-61",
+            "quoteId": "q-1"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "fraud.check",
+            "input": {
+              "sha256": "ccdd0d149f4b5cf78b24413bb8519ebb90bf02556582335c7bbc7e80a013b43d",
+              "size": 36
+            }
+          },
+          "bodySha256": "a7644f45643895ecb2b0b678a365c23be2f9330acb99048b554f6b3a3a5e4474",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 9,
+      "chainAfterHex": "00ea8862d3d08e09a861be460f928da1b6cfa4e1aee5739a29e710275f57ef72",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 8,
+        "throughSeq": 14
+      },
+      "nowUs": 1767225600001918,
+      "replayedChainHex": "00ea8862d3d08e09a861be460f928da1b6cfa4e1aee5739a29e710275f57ef72",
+      "appliedThroughSeq": 14,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "activity",
+          "target": "order.place",
+          "node": "c-4",
+          "fragment": {
+            "type": "activity",
+            "activity": "order.place"
+          },
+          "value": {
+            "orderId": "ord-61",
+            "quoteId": "q-1"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "order.place",
+            "input": {
+              "sha256": "ccdd0d149f4b5cf78b24413bb8519ebb90bf02556582335c7bbc7e80a013b43d",
+              "size": 36
+            }
+          },
+          "bodySha256": "a860546f330224b66c35777a0f759fd1e55f36b87e7b9dec051645835c0e68c2",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 15,
+      "chainAfterHex": "c35c1f8fa346d8ca0ef40ddcb9b5777bd65bf8c28e67c2b13b5ef5ae3351e8c8",
+      "commandCountAfter": 4
+    },
+    {
+      "k": 4,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 14,
+        "throughSeq": 19
+      },
+      "nowUs": 1767225600002603,
+      "replayedChainHex": "c35c1f8fa346d8ca0ef40ddcb9b5777bd65bf8c28e67c2b13b5ef5ae3351e8c8",
+      "appliedThroughSeq": 19,
+      "commands": [
+        {
+          "commandNumber": 5,
+          "kind": "activity",
+          "target": "notify.send",
+          "node": "c-5",
+          "fragment": {
+            "type": "activity",
+            "activity": "notify.send"
+          },
+          "value": {
+            "orderId": "ord-61"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "notify.send",
+            "input": {
+              "sha256": "752d3fe9612edae389c21697d7574143a0fa9e6bc83d27f3cce53a6e566bcffc",
+              "size": 20
+            }
+          },
+          "bodySha256": "1c886574bd93d8fc98fd63db4c6874023a8cac68df2f58ff197b130f01a8ad99",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 20,
+      "chainAfterHex": "53d7ef0cc5e2c1ac19053beddba38de1b84a94b4bb871ccdefe06edce026e14c",
+      "commandCountAfter": 5
+    },
+    {
+      "k": 5,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 19,
+        "throughSeq": 24
+      },
+      "nowUs": 1767225600003288,
+      "replayedChainHex": "53d7ef0cc5e2c1ac19053beddba38de1b84a94b4bb871ccdefe06edce026e14c",
+      "appliedThroughSeq": 24,
+      "commands": [
+        {
+          "commandNumber": 6,
+          "kind": "timer_start",
+          "target": "c-6",
+          "node": "c-6",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "bodySha256": "d4f8b5b95e1e9b12ccd48ce671ecd96b1d3318f2b5c8346b7c9ae39172fde458",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 25,
+      "chainAfterHex": "8bfb4968fee8892256b729ff9b8f85df7eca1cb3ad21fadc582a9a30ee67ac46",
+      "commandCountAfter": 6
+    },
+    {
+      "k": 6,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 24,
+        "throughSeq": 28
+      },
+      "nowUs": 1767312000003836,
+      "replayedChainHex": "8bfb4968fee8892256b729ff9b8f85df7eca1cb3ad21fadc582a9a30ee67ac46",
+      "appliedThroughSeq": 28,
+      "commands": [
+        {
+          "commandNumber": 7,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "orderId": "ord-61",
+              "status": "placed"
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "afa653902d95447c689479a05d714a7e3402406df3e329c9e7ea125a3ca77325",
+              "size": 38
+            }
+          },
+          "bodySha256": "a48659cb765f8f964af984bc202aed1638b70354cfb29ca778128b8664547c1c",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 29,
+      "chainAfterHex": "b14e35819e015f32d093f00bb748b8767879d836c5be5cba8ec8d94da9b69b62",
+      "commandCountAfter": 7
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "run.code_version_moved",
+      "from": 1,
+      "to": 2,
+      "sK": 2
+    },
+    {
+      "seq": 6,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 12,
+      "journalKind": "step.leased",
+      "node": "c-3"
+    },
+    {
+      "seq": 17,
+      "journalKind": "step.leased",
+      "node": "c-4"
+    },
+    {
+      "seq": 22,
+      "journalKind": "step.leased",
+      "node": "c-5"
+    },
+    {
+      "seq": 31,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "quote.fetch",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 7
+    },
+    {
+      "node": "c-3",
+      "kind": "activity",
+      "target": "fraud.check",
+      "commandNumber": 3,
+      "issuedSeq": 8,
+      "outcomeSeq": 13
+    },
+    {
+      "node": "c-4",
+      "kind": "activity",
+      "target": "order.place",
+      "commandNumber": 4,
+      "issuedSeq": 14,
+      "outcomeSeq": 18
+    },
+    {
+      "node": "c-5",
+      "kind": "activity",
+      "target": "notify.send",
+      "commandNumber": 5,
+      "issuedSeq": 19,
+      "outcomeSeq": 23
+    },
+    {
+      "node": "c-6",
+      "kind": "timer_start",
+      "target": "c-6",
+      "commandNumber": 6,
+      "issuedSeq": 24,
+      "outcomeSeq": 27
+    }
+  ],
+  "expectations": {
+    "move": {
+      "from": 1,
+      "to": 2,
+      "replayedThroughActivation": 1,
+      "chainHex": "4a4478fa33eec06703e4fdfcb438180b5aa658c0bb010fe61888b042abd6397a",
+      "verdict": "SUCCEEDED (applied)",
+      "note": "the second version replays activation 1 with the same chain; the run continues on version 2"
+    }
+  }
+}

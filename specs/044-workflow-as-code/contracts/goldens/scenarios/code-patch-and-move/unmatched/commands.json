@@ -1,0 +1,175 @@
+{
+  "scenario": "code-patch-and-move",
+  "run": "unmatched",
+  "runId": "158d6784-586c-49aa-bc54-36694a6879e2",
+  "workflowType": "purchase",
+  "seedHex": "d231069d5d90113f12771604331de8eaad59d56251aea7cd0aa90c0c96526cbf",
+  "input": {
+    "orderId": "ord-62"
+  },
+  "codeVersions": {
+    "v1": "sha256:c6501226ad5e9e45ffca2efaa5282078f94a5e09f6078bb57959fe77a95fc1d4"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "quote.fetch",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "quote.fetch"
+          },
+          "value": {
+            "orderId": "ord-62"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "quote.fetch",
+            "input": {
+              "sha256": "354ad2b3168deaceedf0ab718f330c61934e4f711375a5eebe8c1388f1e5ab9a",
+              "size": 20
+            }
+          },
+          "bodySha256": "2800b34f9436ff0bdc6031810b8acd678df75bdc56151844b0ef0892a207e4a1",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "897cb2a743d58c7dfbc6d84777e71b7822d042b0a9e4a72653852a565ed3c98d",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "replayedChainHex": "897cb2a743d58c7dfbc6d84777e71b7822d042b0a9e4a72653852a565ed3c98d",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "order.place",
+          "node": "c-2",
+          "fragment": {
+            "type": "activity",
+            "activity": "order.place"
+          },
+          "value": {
+            "orderId": "ord-62",
+            "quoteId": "q-2"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "order.place",
+            "input": {
+              "sha256": "dc0df41555b9694df80b59c9a2eb4c906828930e63c8ca0511dec75ad3a142d5",
+              "size": 36
+            }
+          },
+          "bodySha256": "c3beec1e2475dad8c0d72eb51e3e790e5162cb94042a83d00bdb5ceda9e7d522",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "68a9ed24c453027bfb923ca4a43d3e64ef737bae2fcb18130088dbe26cec047b",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": 12
+      },
+      "nowUs": 1767225600001644,
+      "replayedChainHex": "68a9ed24c453027bfb923ca4a43d3e64ef737bae2fcb18130088dbe26cec047b",
+      "appliedThroughSeq": 12,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "timer_start",
+          "target": "c-3",
+          "node": "c-3",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "bodySha256": "d4f8b5b95e1e9b12ccd48ce671ecd96b1d3318f2b5c8346b7c9ae39172fde458",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 13,
+      "chainAfterHex": "3fb5b2d937e66807d86be99747994f17c5938ac5a56f6d2a426e205c89652db6",
+      "commandCountAfter": 3
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 10,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "quote.fetch",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    },
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "order.place",
+      "commandNumber": 2,
+      "issuedSeq": 7,
+      "outcomeSeq": 11
+    },
+    {
+      "node": "c-3",
+      "kind": "timer_start",
+      "target": "c-3",
+      "commandNumber": 3,
+      "issuedSeq": 12
+    }
+  ],
+  "expectations": {
+    "move": {
+      "from": 1,
+      "to": 2,
+      "verdict": "SKIPPED REPLAY_MISMATCH",
+      "firstDifference": 3,
+      "note": "patched(\"use-fraud-check\") is false at command 2 (the history has order.place there), so order.place matches; at command 3 the second version makes notify.send where the history has the timer c-3. The run stays on version 1."
+    }
+  }
+}

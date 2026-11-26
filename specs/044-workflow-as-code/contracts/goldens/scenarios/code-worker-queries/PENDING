@@ -1,0 +1,2 @@
+Pending until Task 044-29 (worker queries). Design 044, Verification Plan: code-worker-queries stays
+`.json.pending` until that task lands; this scenario has no commands, history or chain yet.

@@ -1,0 +1,10 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJmZWVkSWQiOiJmZWVkLTIifQ=="}}}
+{"seq":"2","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000274","workflowTaskStarted":{}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000411","workflowTaskCompleted":{}}
+{"seq":"4","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000548","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"feed.poll","node":"c-1"}}
+{"seq":"6","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000822","stepOutcome":{"node":"c-1","outcome":"STEP_OUTCOME_COMPLETED","output":{"json":"eyJpdGVtcyI6M30="}}}
+{"seq":"7","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000959","workflowTaskStarted":{}}
+{"seq":"9","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225603001233","workflowTaskStarted":{}}
+{"seq":"11","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225607001507","workflowTaskStarted":{}}
+{"seq":"13","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225613001781","workflowTaskStarted":{}}
+{"seq":"15","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225623002055","workflowTaskStarted":{}}

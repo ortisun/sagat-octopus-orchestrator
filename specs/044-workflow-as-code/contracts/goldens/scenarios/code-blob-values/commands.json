@@ -1,0 +1,215 @@
+{
+  "scenario": "code-blob-values",
+  "run": "main",
+  "runId": "ddb0dd74-9e2a-4207-aac3-384c2c44228c",
+  "workflowType": "warehouse-import",
+  "seedHex": "2f87f5b5216741036b025f08b9f7e0a1f14c37adfa35dbd437b74153999185dc",
+  "input": {
+    "rowCount": 14000
+  },
+  "codeVersions": {
+    "v1": "sha256:c6a11dc58a06cb90ff427bfcdca5de5848784610af5ffb30af61b8d65d0b4e25"
+  },
+  "declarations": {
+    "signals": {
+      "audit.note": {
+        "maxBytes": 4096
+      }
+    }
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "worker": "A",
+      "cache": "cold",
+      "replayFromSeq": 1,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "warehouse.import",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "warehouse.import",
+            "timeoutMs": 600000
+          },
+          "valueBlob": {
+            "generator": {
+              "rows": 14000,
+              "label": "row-"
+            },
+            "carrier": "blob written with WriteBlob under the workflow lease",
+            "descriptor": {
+              "sha256": "dc3f26360d10f14f03a8395ea25b4f4ab1c0e3372d7b398c395b54b8e31761f9",
+              "size": 425790
+            }
+          },
+          "body": {
+            "type": "activity",
+            "activity": "warehouse.import",
+            "timeoutMs": 600000,
+            "input": {
+              "sha256": "dc3f26360d10f14f03a8395ea25b4f4ab1c0e3372d7b398c395b54b8e31761f9",
+              "size": 425790
+            }
+          },
+          "bodySha256": "9b64cf9e2f2f57cd8301464786bdb0f2277060ddab90a6a669b1eb07ce1b1aa3",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "5a12acf29d02b7109606f2f2693e7bbbf612f9315eab946e52f5435b89330848",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "worker": "A",
+      "cache": "hit",
+      "replayedChainHex": "5a12acf29d02b7109606f2f2693e7bbbf612f9315eab946e52f5435b89330848",
+      "appliedThroughSeq": 7,
+      "commands": [],
+      "deferred": {
+        "kind": "complete",
+        "target": "",
+        "valueBlob": {
+          "generator": {
+            "rows": 14000,
+            "label": "out-"
+          },
+          "carrier": "blob written under the lease, held by the deferral",
+          "descriptor": {
+            "sha256": "a2d68236289e727016d8c03a794f13e24d73c19ee717fcbcac1799abec23e53b",
+            "size": 425790
+          }
+        },
+        "body": {
+          "output": {
+            "sha256": "a2d68236289e727016d8c03a794f13e24d73c19ee717fcbcac1799abec23e53b",
+            "size": 425790
+          }
+        },
+        "bodySha256": "40e4116c06782ac503dbfb9d6da096c61db71cbcfbb629c96d65a0387df7e01f",
+        "journalKind": "run.stop_requested",
+        "cause": "CAUSE_UNHANDLED_EVENTS"
+      },
+      "outcome": "WORKFLOW_TASK_ACCEPTED_DEFERRED",
+      "cause": "CAUSE_UNHANDLED_EVENTS",
+      "completedSeq": 9,
+      "chainAfterHex": "5a12acf29d02b7109606f2f2693e7bbbf612f9315eab946e52f5435b89330848",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": 10
+      },
+      "nowUs": 1767225600001370,
+      "worker": "B",
+      "cache": "cold",
+      "replayFromSeq": 1,
+      "notes": "Worker B replays activations 1 and 2 without uploading anything: it rebuilds both values and computes their descriptors. It re-emits the deferred completion naming the held blob by its descriptor alone.",
+      "replayedChainHex": "5a12acf29d02b7109606f2f2693e7bbbf612f9315eab946e52f5435b89330848",
+      "appliedThroughSeq": 10,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "audit.note",
+                  "seqs": [
+                    "8"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "audit.note",
+                "seqs": [
+                  8
+                ]
+              }
+            ]
+          },
+          "bodySha256": "9d9fe5f960d85054ec49af60bc39e65b9c3231481fd719c4aa3a29317d1684a8",
+          "journalKind": "signal.consumed"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "complete",
+          "target": "",
+          "valueBlob": {
+            "generator": {
+              "rows": 14000,
+              "label": "out-"
+            },
+            "carrier": "descriptor only: the blob the deferral holds",
+            "descriptor": {
+              "sha256": "a2d68236289e727016d8c03a794f13e24d73c19ee717fcbcac1799abec23e53b",
+              "size": 425790
+            }
+          },
+          "reEmitted": true,
+          "body": {
+            "output": {
+              "sha256": "a2d68236289e727016d8c03a794f13e24d73c19ee717fcbcac1799abec23e53b",
+              "size": 425790
+            }
+          },
+          "bodySha256": "40e4116c06782ac503dbfb9d6da096c61db71cbcfbb629c96d65a0387df7e01f",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 11,
+      "chainAfterHex": "6e8e497cfaa1ca841ab4b1869fe2d215192a423754c9579ff2175bf642e4373e",
+      "commandCountAfter": 3
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 14,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "warehouse.import",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ]
+}

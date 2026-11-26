@@ -2,7 +2,7 @@
 
 The corpus is what the six SDK runtimes, the server's command chain and the conformance suite agree on. It is produced by
 `generate.mjs` (Node 20 or later, no dependency: `node:crypto` for SHA-256, `BigInt` for the generator, its own RFC 8785
-serializer), so the goldens never come from the Rust code they check; `contract_workflow_as_code::the_goldens_parse_and_their_chains_recompute`
+serializer), so the goldens never come from the Rust code they check; `contract_workflow_as_code::goldens::the_goldens_parse_and_their_chains_recompute`
 recomputes them independently with `serde_json` and `sha2`, and checks that `node generate.mjs --check` reproduces the
 checked-in files. A golden changes only after its diff has been read (`AGENTS.md` rule 18).
 
@@ -38,7 +38,8 @@ A work command's fragment is the RFC 8785 code-profile fragment the SDK sends in
 
 | Kind | Body `B(k)` |
 |---|---|
-| `activity`, `script`, `child` | the fragment object with the key `"input"` set to `D(input)` |
+| `activity`, `script` | the fragment object with the key `"input"` set to `D(input)`, and the key `"scope"` set to `"s-<n>"` when the command is scheduled in a saga scope (`Command.saga_scope`; absent otherwise) |
+| `child` | the fragment object with the key `"input"` set to `D(input)` |
 | `approval` | the fragment object with the key `"subject"` set to `D(subject)` |
 | `timer_start`, `wait_event` | the fragment object |
 | `timer_cancel`, `step_cancel` | `{"target": "c-<m>"}` |
@@ -49,12 +50,33 @@ A work command's fragment is the RFC 8785 code-profile fragment the SDK sends in
 | `set_state` | `{"state": state}` (always inline, so the value itself) |
 | `update_accept` | `{"admittedSeq": n, "accepted": true}` |
 | `update_reject` | `{"admittedSeq": n, "accepted": false, "reason": code}` |
-| `update_complete` | `{"admittedSeq": n, "result": D(result)}`, or `{"admittedSeq": n, "failureCode": code}` for a failed handler |
+| `update_complete` | `{"admittedSeq": n, "result": D(result)}`, or `{"admittedSeq": n, "failureCode": code}` for a failed handler; a command with both or neither is `COMMAND_INVALID` |
 | `consume_signals` | `{"signals": [{"name": name, "seqs": [ascending sequences]}, ...]}`, the names in ascending UTF-16 order |
 | `complete` | `{"output": D(output)}` |
-| `fail` | `{"code": code, "message": D(message)}`, the message a JSON string (it is stored only as a `pii` payload) |
+| `fail` | `{"code": code, "message": D(message)}`, `D` of the message as a JSON string (`FailCommand.safe_message`; it is stored only as a `pii` payload) |
 | `continue_as_new` | `{"input": input, "state": state or null, "version": "same" or "active"}` (input and state always inline) |
 | `acknowledge_cancellation` | `{}` |
+
+Every body holds only integers within ±(2^53 − 1): RFC 8785 assumes I-JSON (RFC 7493), and a larger integer would be
+rounded by some serializers and not by others; a command whose body holds one is `COMMAND_INVALID`. (The vector of
+`2^53 + 1` in `vectors/rfc8785.json` checks a serializer, not a command.) Numbers that are not integers are printed
+as ECMAScript prints them, the closest shortest digits with ties to even; a language's default float printing (Rust's
+among them) can differ on a tie and must not be used.
+
+## Order and records
+
+- Within one activation the commands are, in this order: the function's commands in the order it made them (an update
+  is accepted or rejected when its `update.admitted` is applied, before the next event), then the consumption of
+  signals, then the set-state, then the terminal or continue-as-new command, last.
+- Every accepted command has exactly one visible record, delivered as `HISTORY_COMMAND_RECORDED` (a marker as
+  `HISTORY_MARKER_RECORDED`) with its command number, whatever the journal kind of Technical Plan 5.1 that writes it
+  (`step.released`, `timer.started`, `step.cancelled` of a timer cancel, `saga.entered`, `saga.completed` of a close,
+  `run.stop_requested` of a terminal command or an acknowledgement, and so on). Its outcomes (a timer that fired, a
+  step that ended) are other events.
+- Closing a saga scope writes only its command record; a saga outcome event (`compensated`, `partial`,
+  `compensation_failed`) exists only after an abort.
+- The closed list of update rejection reasons: `VALIDATION_FAILED` (the function's validator refused it) and the
+  engine's `RUN_ENDED` and `RUN_CONTINUED`.
 
 A deferred command is chained when it is accepted, with the number it takes then; until then its deferral record holds
 `hex(SHA(C(B)))`.
@@ -73,7 +95,9 @@ A deferred command is chained when it is accepted, with the number it takes then
   included).
 - `vectors/primitives.json`: seeds in hexadecimal and the first outputs of `next`, `random`, `randomInt` and `uuid`.
 - `vectors/chain.json`: command lists with each body, `d(k)` in hexadecimal and `H(k)`.
-- `scenarios/<scenario>/`: per conformance scenario of the design's Verification Plan, `function.md` (the reference
+- `scenarios/<scenario>/` (and `scenarios/<scenario>/<run>/` for the further runs of a scenario: a child, a successor, a moved
+  run; a scenario of a deferrable task holds a `PENDING` file until its task, the corpus's form of the suite's
+  `.json.pending`): per conformance scenario of the design's Verification Plan, `function.md` (the reference
   function in pseudo-code), `commands.json` (the expected commands per activation), `history.jsonl` (the run's visible
   history as `HistoryEvent` lines in the proto3 JSON mapping of `worker.proto`) and `chain.json` (the chain after each
   activation).

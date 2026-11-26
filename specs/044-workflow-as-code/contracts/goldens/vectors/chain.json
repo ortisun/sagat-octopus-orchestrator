@@ -1,0 +1,1227 @@
+{
+  "$comment": "Command chain vectors (README.md, The chain). Each command: `seq`, `kind`, `target`, the Command fields it carries (`fragment`, `value`, `sagaScope`, `typed`, readable as in commands.json), `body` B(k), `bodySha256` hex(SHA(C(B(k)))), `dHex` the bytes of d(k) and `chainHex` H(k). The two `-changed-` lists differ from sagas-state-signals in one value only.",
+  "lists": [
+    {
+      "name": "work-commands",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "activity",
+          "target": "payments.charge",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "retry": {
+              "maxAttempts": 5,
+              "initialDelayMs": 500,
+              "maxDelayMs": 60000,
+              "strategy": "exponential",
+              "jitter": true
+            },
+            "timeoutMs": 30000,
+            "compensateWith": "payments.refund"
+          },
+          "value": {
+            "orderId": "ord-1",
+            "amount": 12.5,
+            "currency": "EUR",
+            "note": "café ☕ 😀"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "retry": {
+              "maxAttempts": 5,
+              "initialDelayMs": 500,
+              "maxDelayMs": 60000,
+              "strategy": "exponential",
+              "jitter": true
+            },
+            "timeoutMs": 30000,
+            "compensateWith": "payments.refund",
+            "input": {
+              "sha256": "178befd9c0c4aff171d06bb116a0dc0c8cafc3a2b3212157381ba7e92670a088",
+              "size": 74
+            }
+          },
+          "bodySha256": "48a69a02ff8198dd056795a1cf6f2ee0fa60eb848c19b2f03a4f3eaa8e0e10b7",
+          "dHex": "7b22626f6479223a2234386136396130326666383139386464303536373935613163663666326565306661363065623834386331396232663033613466336561613865306531306237222c226b696e64223a226163746976697479222c22736571223a312c22746172676574223a227061796d656e74732e636861726765227d",
+          "chainHex": "43276ecb7faff053406d076a09da54acfacf9f917065928562fe8fd70d2f9f0d"
+        },
+        {
+          "seq": 2,
+          "kind": "script",
+          "target": "sha256:5bf0f7a2bb5dcd912a64db62a92fff507610014420d6fdf11b0100bdf2fe76db",
+          "fragment": {
+            "type": "script",
+            "artifactDigest": "sha256:5bf0f7a2bb5dcd912a64db62a92fff507610014420d6fdf11b0100bdf2fe76db",
+            "retry": {
+              "maxAttempts": 2
+            }
+          },
+          "value": {
+            "rows": [
+              1,
+              2.5,
+              -0.000001,
+              1.5e-7
+            ]
+          },
+          "body": {
+            "type": "script",
+            "artifactDigest": "sha256:5bf0f7a2bb5dcd912a64db62a92fff507610014420d6fdf11b0100bdf2fe76db",
+            "retry": {
+              "maxAttempts": 2
+            },
+            "input": {
+              "sha256": "95c106c46ed6c205d229f6f7bedad0bee6c0973ec2472bac025732c36adfb640",
+              "size": 33
+            }
+          },
+          "bodySha256": "e91d11e6f09b439b6392606630ea7475e7b339b02c7a1ae457ad30d587b5cf42",
+          "dHex": "7b22626f6479223a2265393164313165366630396234333962363339323630363633306561373437356537623333396230326337613161653435376164333064353837623563663432222c226b696e64223a22736372697074222c22736571223a322c22746172676574223a227368613235363a35626630663761326262356463643931326136346462363261393266666635303736313030313434323064366664663131623031303062646632666537366462227d",
+          "chainHex": "689429a91ec28405c6bca1f4365f7601908c8a34f3e87eeaba39eac2c3e0b2ec"
+        },
+        {
+          "seq": 3,
+          "kind": "timer_start",
+          "target": "c-3",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "bodySha256": "d4f8b5b95e1e9b12ccd48ce671ecd96b1d3318f2b5c8346b7c9ae39172fde458",
+          "dHex": "7b22626f6479223a2264346638623562393565316539623132636364343863653637316563643936623164333331386632623563383334366237633961653339313732666465343538222c226b696e64223a2274696d65725f7374617274222c22736571223a332c22746172676574223a22632d33227d",
+          "chainHex": "f7b557832d17d529fcf7489d68cd1f794d55474f2e369d8866b9753377b3facb"
+        },
+        {
+          "seq": 4,
+          "kind": "wait_event",
+          "target": "payment.settled",
+          "fragment": {
+            "type": "waitEvent",
+            "eventType": "payment.settled",
+            "correlationKey": "ord-1",
+            "timeoutMs": 3600000,
+            "lookbackMs": 60000
+          },
+          "body": {
+            "type": "waitEvent",
+            "eventType": "payment.settled",
+            "correlationKey": "ord-1",
+            "timeoutMs": 3600000,
+            "lookbackMs": 60000
+          },
+          "bodySha256": "93431a5939bec270a0ff0b5570bbae2841690a2bffadd80a370b729102a251ba",
+          "dHex": "7b22626f6479223a2239333433316135393339626563323730613066663062353537306262616532383431363930613262666661646438306133373062373239313032613235316261222c226b696e64223a22776169745f6576656e74222c22736571223a342c22746172676574223a227061796d656e742e736574746c6564227d",
+          "chainHex": "2f62dee31c3f01add7ca4db91280af78a44e958d4fecd1648c9a869ad7dbf00e"
+        },
+        {
+          "seq": 5,
+          "kind": "child",
+          "target": "shipping",
+          "fragment": {
+            "type": "child",
+            "workflowId": "shipping",
+            "cancelPolicy": "request_cancel",
+            "businessId": "ship-ord-1"
+          },
+          "value": {
+            "orderId": "ord-1",
+            "lines": []
+          },
+          "body": {
+            "type": "child",
+            "workflowId": "shipping",
+            "cancelPolicy": "request_cancel",
+            "businessId": "ship-ord-1",
+            "input": {
+              "sha256": "1a5dec8e9284db705105a60d54acb59931fa5d71a2ae07448aed5707fac622be",
+              "size": 30
+            }
+          },
+          "bodySha256": "fa3f2c2fca0af3bdc3bbd9842887e98fc27f1e63df12cc8ff19f1eb5df0b73d9",
+          "dHex": "7b22626f6479223a2266613366326332666361306166336264633362626439383432383837653938666332376631653633646631326363386666313966316562356466306237336439222c226b696e64223a226368696c64222c22736571223a352c22746172676574223a227368697070696e67227d",
+          "chainHex": "ce83322c1ba4b3a53b3f507680e26808b628d49e8226c21add7a8b15d72b336e"
+        },
+        {
+          "seq": 6,
+          "kind": "approval",
+          "target": "refund-review",
+          "fragment": {
+            "type": "approval",
+            "policyName": "refund-review"
+          },
+          "value": {
+            "refundId": "r-1",
+            "amountCents": 125000
+          },
+          "body": {
+            "type": "approval",
+            "policyName": "refund-review",
+            "subject": {
+              "sha256": "2caf14ccb39986565f7243bdb66cabb248f3b2a128329c32365c390ed7e1704b",
+              "size": 39
+            }
+          },
+          "bodySha256": "af404d765e771b7a801f7963a32618242da5da97059c17e3a5484e8e82aed207",
+          "dHex": "7b22626f6479223a2261663430346437363565373731623761383031663739363361333236313832343264613564613937303539633137653361353438346538653832616564323037222c226b696e64223a22617070726f76616c222c22736571223a362c22746172676574223a22726566756e642d726576696577227d",
+          "chainHex": "ce8bb45709b31ab074c8f5eebbb9a6586868ef4a4e13dffdc1fb3b15b5e7fee3"
+        },
+        {
+          "seq": 7,
+          "kind": "timer_cancel",
+          "target": "c-3",
+          "typed": {
+            "target": {
+              "target": "c-3"
+            }
+          },
+          "body": {
+            "target": "c-3"
+          },
+          "bodySha256": "2beec595479ecd67894dc767cb796d60970d878d54f8277dc31d0d5df7febe76",
+          "dHex": "7b22626f6479223a2232626565633539353437396563643637383934646337363763623739366436303937306438373864353466383237376463333164306435646637666562653736222c226b696e64223a2274696d65725f63616e63656c222c22736571223a372c22746172676574223a22632d33227d",
+          "chainHex": "c79d9cf45bb1d3b743b242b795e1df3ff5ef198553545073294d3a2add0d5536"
+        },
+        {
+          "seq": 8,
+          "kind": "step_cancel",
+          "target": "c-5",
+          "typed": {
+            "target": {
+              "target": "c-5"
+            }
+          },
+          "body": {
+            "target": "c-5"
+          },
+          "bodySha256": "6d766f8a95e1c75e7c24be596f1a7474478ed2db73f3f8e2c1db8b806c8d1b5e",
+          "dHex": "7b22626f6479223a2236643736366638613935653163373565376332346265353936663161373437343437386564326462373366336638653263316462386238303663386431623565222c226b696e64223a22737465705f63616e63656c222c22736571223a382c22746172676574223a22632d35227d",
+          "chainHex": "f3d15b54ddf8d22de5cd23beb0ab006711cd2a9e983bea9a659834e74db050a8"
+        },
+        {
+          "seq": 9,
+          "kind": "marker_patch",
+          "target": "use-fraud-check",
+          "typed": {
+            "marker": {
+              "markerId": "use-fraud-check"
+            }
+          },
+          "body": {
+            "markerId": "use-fraud-check"
+          },
+          "bodySha256": "7ee3ff41b35430673502de73f7de727d4e93ec84a56977c507bd1b23bc28efa7",
+          "dHex": "7b22626f6479223a2237656533666634316233353433303637333530326465373366376465373237643465393365633834613536393737633530376264316232336263323865666137222c226b696e64223a226d61726b65725f7061746368222c22736571223a392c22746172676574223a227573652d66726175642d636865636b227d",
+          "chainHex": "d1ce81d3ec2e1e4246b23de132d1cccfa5f4f32a83d39f260a160fa5a113f499"
+        },
+        {
+          "seq": 10,
+          "kind": "marker_side_effect",
+          "target": "exchange-rate",
+          "typed": {
+            "marker": {
+              "markerId": "exchange-rate",
+              "sideEffectValue": {
+                "rate": 1.0842,
+                "at": "2026-01-01T00:00:00Z"
+              }
+            }
+          },
+          "body": {
+            "markerId": "exchange-rate",
+            "value": {
+              "sha256": "37b44ec4f9d76e5469420bea2aef0f4b132fce4cef72f033082904fc35960441",
+              "size": 43
+            }
+          },
+          "bodySha256": "833559f4139961c55ffe7af6678c4b7760539866b518f1f33fe6be6dd2584536",
+          "dHex": "7b22626f6479223a2238333335353966343133393936316335356666653761663636373863346237373630353339383636623531386631663333666536626536646432353834353336222c226b696e64223a226d61726b65725f736964655f656666656374222c22736571223a31302c22746172676574223a2265786368616e67652d72617465227d",
+          "chainHex": "a729d7f7dcc5763898816248ae3ae55087268dbf0322f0a001bf61df29d9da17"
+        }
+      ]
+    },
+    {
+      "name": "sagas-state-signals",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "dHex": "7b22626f6479223a2237353966306634646236363332653733393366373463333562363664316431383731653435353935633430353232396539366138646264613331353137326164222c226b696e64223a22736167615f6f70656e222c22736571223a312c22746172676574223a22732d31227d",
+          "chainHex": "5df846172e9ed9a869c672b9b3793c7d1c56f62c5fc10f7611a5a196727cc59d"
+        },
+        {
+          "seq": 2,
+          "kind": "activity",
+          "target": "inventory.reserve",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "inventory.reserve"
+          },
+          "value": {
+            "sku": "SKU-1",
+            "quantity": 2
+          },
+          "body": {
+            "type": "activity",
+            "activity": "inventory.reserve",
+            "input": {
+              "sha256": "65dde5b1dcd585ecebd675545e5fefc57d8c4a01668c7e05dc0a942d3e6aefc8",
+              "size": 28
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "ba40c3b2c30f638c3acdbe06820192733f2b085a01159ba952077566a9b75ddb",
+          "dHex": "7b22626f6479223a2262613430633362326333306636333863336163646265303638323031393237333366326230383561303131353962613935323037373536366139623735646462222c226b696e64223a226163746976697479222c22736571223a322c22746172676574223a22696e76656e746f72792e72657365727665227d",
+          "chainHex": "727bc01f19a6c2ffec990ff03ee020498fa00bbe72b00fc57ba6fadf433e7e56"
+        },
+        {
+          "seq": 3,
+          "kind": "saga_open",
+          "target": "s-3",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-3",
+              "parentScope": "s-1",
+              "onCompensationFailure": "fail",
+              "cancelPolicy": "wait_in_flight_then_compensate"
+            }
+          },
+          "body": {
+            "scope": "s-3",
+            "parentScope": "s-1",
+            "onCompensationFailure": "fail",
+            "cancelPolicy": "wait_in_flight_then_compensate"
+          },
+          "bodySha256": "6d4acbe7f0b2fb65c055debd67157a02054f5f86ef74fc97d3048230d9765606",
+          "dHex": "7b22626f6479223a2236643461636265376630623266623635633035356465626436373135376130323035346635663836656637346663393764333034383233306439373635363036222c226b696e64223a22736167615f6f70656e222c22736571223a332c22746172676574223a22732d33227d",
+          "chainHex": "6d2dbd32229951e2d8e56c8a851f7cbe05dd3c744d06bf990e3eab9c1584d027"
+        },
+        {
+          "seq": 4,
+          "kind": "activity",
+          "target": "payments.charge",
+          "sagaScope": "s-3",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "orderId": "ord-2",
+            "amountCents": 4000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "0c175aec77fbb9f80c7c280e04031db37da94ad18e4963554f122a9762ff16e8",
+              "size": 38
+            },
+            "scope": "s-3"
+          },
+          "bodySha256": "516195c7eeaaa0d9e4cb194894d550ef10666eb61c0b6a74a9f5bc52aad442cd",
+          "dHex": "7b22626f6479223a2235313631393563376565616161306439653463623139343839346435353065663130363636656236316330623661373461396635626335326161643434326364222c226b696e64223a226163746976697479222c22736571223a342c22746172676574223a227061796d656e74732e636861726765227d",
+          "chainHex": "9517758842998e6b06c77a18b37eac131daabd6a3da9d858351d7b1053f3a33a"
+        },
+        {
+          "seq": 5,
+          "kind": "saga_close",
+          "target": "s-3",
+          "typed": {
+            "sagaClose": {
+              "target": "s-3"
+            }
+          },
+          "body": {
+            "scope": "s-3"
+          },
+          "bodySha256": "e2a45d196b1af943408c032459efade3de5c348fcbe159c2944707461e1b9adf",
+          "dHex": "7b22626f6479223a2265326134356431393662316166393433343038633033323435396566616465336465356333343866636265313539633239343437303734363165316239616466222c226b696e64223a22736167615f636c6f7365222c22736571223a352c22746172676574223a22732d33227d",
+          "chainHex": "454e061a28800054f8bb178fe703059429c78cb1d64c0ebda116f0c01b9f5a56"
+        },
+        {
+          "seq": 6,
+          "kind": "saga_abort",
+          "target": "s-1",
+          "typed": {
+            "sagaAbort": {
+              "target": "s-1"
+            }
+          },
+          "body": {
+            "scope": "s-1"
+          },
+          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
+          "dHex": "7b22626f6479223a2264656134383336613561633038393937303437353330343166363561323865626466333964616566633638346665386537663866623865333036633262663664222c226b696e64223a22736167615f61626f7274222c22736571223a362c22746172676574223a22732d31227d",
+          "chainHex": "864c1824e3dcc1bae73d45018b6e1c4f1990e284750ac18bae1887f4c9bda79d"
+        },
+        {
+          "seq": 7,
+          "kind": "set_state",
+          "target": "",
+          "typed": {
+            "setState": {
+              "status": "compensating",
+              "attempts": 2,
+              "flags": []
+            }
+          },
+          "body": {
+            "state": {
+              "status": "compensating",
+              "attempts": 2,
+              "flags": []
+            }
+          },
+          "bodySha256": "9cf173fcab75ea7e4cdaf15b78f5b4cda41a153edcd1b1f1e934cfd5a63eca97",
+          "dHex": "7b22626f6479223a2239636631373366636162373565613765346364616631356237386635623463646134316131353365646364316231663165393334636664356136336563613937222c226b696e64223a227365745f7374617465222c22736571223a372c22746172676574223a22227d",
+          "chainHex": "78b0892c0a8be4c9033f7b396dce08a2b8d9078e19b6cda5837671e468f229f8"
+        },
+        {
+          "seq": 8,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "alpha",
+                  "seqs": [
+                    "3",
+                    "7"
+                  ]
+                },
+                {
+                  "signalName": "zeta",
+                  "seqs": [
+                    "9"
+                  ]
+                },
+                {
+                  "signalName": "דּ",
+                  "seqs": [
+                    "11"
+                  ]
+                },
+                {
+                  "signalName": "😀",
+                  "seqs": [
+                    "12"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "alpha",
+                "seqs": [
+                  3,
+                  7
+                ]
+              },
+              {
+                "name": "zeta",
+                "seqs": [
+                  9
+                ]
+              },
+              {
+                "name": "דּ",
+                "seqs": [
+                  11
+                ]
+              },
+              {
+                "name": "😀",
+                "seqs": [
+                  12
+                ]
+              }
+            ]
+          },
+          "bodySha256": "ea368e2916cc95a134e69a3be387c027f90559ce2f05b2494ecbd297afb602d0",
+          "dHex": "7b22626f6479223a2265613336386532393136636339356131333465363961336265333837633032376639303535396365326630356232343934656362643239376166623630326430222c226b696e64223a22636f6e73756d655f7369676e616c73222c22736571223a382c22746172676574223a22227d",
+          "chainHex": "bb2f4b67c0aeec9a84a838cc6de167ad290e4973542507269d8556be92ee772e"
+        },
+        {
+          "seq": 9,
+          "kind": "fail",
+          "target": "",
+          "typed": {
+            "fail": {
+              "code": "PAYMENT_DECLINED",
+              "safeMessage": "The card was declined — try another"
+            }
+          },
+          "body": {
+            "code": "PAYMENT_DECLINED",
+            "message": {
+              "sha256": "1305fca0334efba4cdbc869cbf14e51f87460cb356f0cf686ab07f37b9bff998",
+              "size": 39
+            }
+          },
+          "bodySha256": "f686f687a93eff01924b752425c316465e3800a217fbfa1c1f3a80c406a66805",
+          "dHex": "7b22626f6479223a2266363836663638376139336566663031393234623735323432356333313634363565333830306132313766626661316331663361383063343036613636383035222c226b696e64223a226661696c222c22736571223a392c22746172676574223a22227d",
+          "chainHex": "a7724258ecc6245568a633f6f8982de7927ad95043911c1ccc57e8dd3ce1906f"
+        }
+      ]
+    },
+    {
+      "name": "updates-and-complete",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "update_accept",
+          "target": "4",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "4",
+              "accepted": true
+            }
+          },
+          "body": {
+            "admittedSeq": 4,
+            "accepted": true
+          },
+          "bodySha256": "eff29f2aeb95627f4ce49c433e5e288d6c2a3acbabd8a5f99590f5dbea308bbc",
+          "dHex": "7b22626f6479223a2265666632396632616562393536323766346365343963343333653565323838643663326133616362616264386135663939353930663564626561333038626263222c226b696e64223a227570646174655f616363657074222c22736571223a312c22746172676574223a2234227d",
+          "chainHex": "15d52e91d733a421787994e3a33b8050ac0dcfd6e562a8d81552fd72694b04a4"
+        },
+        {
+          "seq": 2,
+          "kind": "activity",
+          "target": "limits.apply",
+          "fragment": {
+            "type": "activity",
+            "activity": "limits.apply"
+          },
+          "value": {
+            "accountId": "acc-1",
+            "amount": 50
+          },
+          "body": {
+            "type": "activity",
+            "activity": "limits.apply",
+            "input": {
+              "sha256": "5b4e561ecddafb934f64c8c56695965d771f789f5143db4881019cb3ae12f8d0",
+              "size": 33
+            }
+          },
+          "bodySha256": "75cf88c11fc299de765834eae5bda222463f081ca0f357ebec261d4505c40bf9",
+          "dHex": "7b22626f6479223a2237356366383863313166633239396465373635383334656165356264613232323436336630383163613066333537656265633236316434353035633430626639222c226b696e64223a226163746976697479222c22736571223a322c22746172676574223a226c696d6974732e6170706c79227d",
+          "chainHex": "a36b81d75b2f177e256d8c66ce7150d5787fbe8a8270f5bece51d428f64b4817"
+        },
+        {
+          "seq": 3,
+          "kind": "update_reject",
+          "target": "6",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "6",
+              "rejectionReason": "VALIDATION_FAILED"
+            }
+          },
+          "body": {
+            "admittedSeq": 6,
+            "accepted": false,
+            "reason": "VALIDATION_FAILED"
+          },
+          "bodySha256": "1e76d7285a1dfe651fa1a31b66499d74e2c586a39d0dc8e4e905730d81629d6d",
+          "dHex": "7b22626f6479223a2231653736643732383561316466653635316661316133316236363439396437346532633538366133396430646338653465393035373330643831363239643664222c226b696e64223a227570646174655f72656a656374222c22736571223a332c22746172676574223a2236227d",
+          "chainHex": "e1c1f0c0ab8716ee0f0be7c81cac1bc8475117ebc671ca4b5606cbf26978fbda"
+        },
+        {
+          "seq": 4,
+          "kind": "update_complete",
+          "target": "4",
+          "typed": {
+            "updateResult": {
+              "admittedSeq": "4",
+              "result": {
+                "limit": 150
+              }
+            }
+          },
+          "body": {
+            "admittedSeq": 4,
+            "result": {
+              "sha256": "37f3df8e2e6a2eee38e91e63b70b388555ae47281ccfa695a857e5b2e5336d47",
+              "size": 13
+            }
+          },
+          "bodySha256": "600ada7ceead6e4879d17aa953b5f3c2c7586a4f717a84e129da3584e9ec9189",
+          "dHex": "7b22626f6479223a2236303061646137636565616436653438373964313761613935336235663363326337353836613466373137613834653132396461333538346539656339313839222c226b696e64223a227570646174655f636f6d706c657465222c22736571223a342c22746172676574223a2234227d",
+          "chainHex": "6e2193ab50830bda95cc572a780d9c557c372b0b7d8f72df7323934fe77e582f"
+        },
+        {
+          "seq": 5,
+          "kind": "update_accept",
+          "target": "9",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "9",
+              "accepted": true
+            }
+          },
+          "body": {
+            "admittedSeq": 9,
+            "accepted": true
+          },
+          "bodySha256": "3a8c4c035f6323eb42ea03c0853732dfda118e3df320ec640def7fcecd756bc1",
+          "dHex": "7b22626f6479223a2233613863346330333566363332336562343265613033633038353337333264666461313138653364663332306563363430646566376663656364373536626331222c226b696e64223a227570646174655f616363657074222c22736571223a352c22746172676574223a2239227d",
+          "chainHex": "23885c0fd17ca046168fe9807e154a22ad8f6f125d2d515bb52612b3f818ced8"
+        },
+        {
+          "seq": 6,
+          "kind": "update_complete",
+          "target": "9",
+          "typed": {
+            "updateResult": {
+              "admittedSeq": "9",
+              "failureCode": "RESULT_SCHEMA_VIOLATION"
+            }
+          },
+          "body": {
+            "admittedSeq": 9,
+            "failureCode": "RESULT_SCHEMA_VIOLATION"
+          },
+          "bodySha256": "80a852e33a6c350e172e2baffe694da2cea131df9922f4209a8b2d700c37cc07",
+          "dHex": "7b22626f6479223a2238306138353265333361366333353065313732653262616666653639346461326365613133316466393932326634323039613862326437303063333763633037222c226b696e64223a227570646174655f636f6d706c657465222c22736571223a362c22746172676574223a2239227d",
+          "chainHex": "890e959ce72b37c53bdfad0fef40c4aabe9e397ab2c33276663aa7b2913561c0"
+        },
+        {
+          "seq": 7,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "limit": 150,
+              "history": [
+                9007199254740991,
+                0.1,
+                0,
+                1e-7
+              ],
+              "label": "ü "
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "98c8fd60f46b265d5dc47cf6d6add274c9bb9699590ccc37ad6c373b4d9ee17b",
+              "size": 69
+            }
+          },
+          "bodySha256": "558e0b5ce1ee9451fc66257bccc144a20340be0aad2da1d4bb1924a80c193819",
+          "dHex": "7b22626f6479223a2235353865306235636531656539343531666336363235376263636331343461323033343062653061616432646131643462623139323461383063313933383139222c226b696e64223a22636f6d706c657465222c22736571223a372c22746172676574223a22227d",
+          "chainHex": "bd73481494b432d473d748fb7514bc5a440a1b400453bd409d7fd2856a3e7fde"
+        }
+      ]
+    },
+    {
+      "name": "continue-as-new",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "activity",
+          "target": "billing.charge",
+          "fragment": {
+            "type": "activity",
+            "activity": "billing.charge"
+          },
+          "value": {
+            "cycle": 1
+          },
+          "body": {
+            "type": "activity",
+            "activity": "billing.charge",
+            "input": {
+              "sha256": "9ea9926526cd16b40c70cd8988bfa74bb6c857dbb64faf55ea20a1c42d5ab122",
+              "size": 11
+            }
+          },
+          "bodySha256": "8409e205674c673ad84b81ff83e74f05414c76de9a339875abfb3135303aff15",
+          "dHex": "7b22626f6479223a2238343039653230353637346336373361643834623831666638336537346630353431346337366465396133333938373561626662333133353330336166663135222c226b696e64223a226163746976697479222c22736571223a312c22746172676574223a2262696c6c696e672e636861726765227d",
+          "chainHex": "b3bd9ef491e7629fd4b215d6c3738b5a62a5a12e384753dce9ccafb728afa4aa"
+        },
+        {
+          "seq": 2,
+          "kind": "continue_as_new",
+          "target": "",
+          "typed": {
+            "continueAsNew": {
+              "input": {
+                "cycle": 2
+              },
+              "state": {
+                "carried": [
+                  1,
+                  2
+                ]
+              },
+              "activeVersion": true
+            }
+          },
+          "body": {
+            "input": {
+              "cycle": 2
+            },
+            "state": {
+              "carried": [
+                1,
+                2
+              ]
+            },
+            "version": "active"
+          },
+          "bodySha256": "4d17410fcbaf15da7a6b7d418ead2e3e9e4f52eb257424b7abb4bb5680b6a8fe",
+          "dHex": "7b22626f6479223a2234643137343130666362616631356461376136623764343138656164326533653965346635326562323537343234623761626234626235363830623661386665222c226b696e64223a22636f6e74696e75655f61735f6e6577222c22736571223a322c22746172676574223a22227d",
+          "chainHex": "28a670ca7c64baf11ba71cd5043564c8f9477e857f2cd2382a7d4d22d0f36bce"
+        }
+      ]
+    },
+    {
+      "name": "acknowledge-cancellation",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "timer_start",
+          "target": "c-1",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 1000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 1000
+          },
+          "bodySha256": "856a0d507af711ebe58c4db990fe5ae518a350bbe7fc14b764d249e4e393c04b",
+          "dHex": "7b22626f6479223a2238353661306435303761663731316562653538633464623939306665356165353138613335306262653766633134623736346432343965346533393363303462222c226b696e64223a2274696d65725f7374617274222c22736571223a312c22746172676574223a22632d31227d",
+          "chainHex": "513620857d8a169128175ebb615b15e8b3144b1bbb0cbcb46d1aa006035c343c"
+        },
+        {
+          "seq": 2,
+          "kind": "acknowledge_cancellation",
+          "target": "",
+          "typed": {
+            "acknowledgeCancellation": {}
+          },
+          "body": {},
+          "bodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "dHex": "7b22626f6479223a2234343133366661333535623336373861313134366164313666376538363439653934666234666332316665373765383331306330363066363163616166663861222c226b696e64223a2261636b6e6f776c656467655f63616e63656c6c6174696f6e222c22736571223a322c22746172676574223a22227d",
+          "chainHex": "c83e4958c38d105afd363cea35dd9bfa40b760e1afd73f1c957bde7a2e981e86"
+        }
+      ]
+    },
+    {
+      "name": "sagas-state-signals-changed-input",
+      "$comment": "differs from sagas-state-signals only in the input of command 2: the chain differs from command 2 on",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "dHex": "7b22626f6479223a2237353966306634646236363332653733393366373463333562363664316431383731653435353935633430353232396539366138646264613331353137326164222c226b696e64223a22736167615f6f70656e222c22736571223a312c22746172676574223a22732d31227d",
+          "chainHex": "5df846172e9ed9a869c672b9b3793c7d1c56f62c5fc10f7611a5a196727cc59d"
+        },
+        {
+          "seq": 2,
+          "kind": "activity",
+          "target": "inventory.reserve",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "inventory.reserve"
+          },
+          "value": {
+            "sku": "SKU-1",
+            "quantity": 3
+          },
+          "body": {
+            "type": "activity",
+            "activity": "inventory.reserve",
+            "input": {
+              "sha256": "05f9a1fa46f826c0228adf21980a63b98586c2c9c125c619afde47fbe63351c7",
+              "size": 28
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "0c1acf8495f1fa3140b5b29a3b4a7fc79ef624de85b2b7bce0af7d1a4dc7cf35",
+          "dHex": "7b22626f6479223a2230633161636638343935663166613331343062356232396133623461376663373965663632346465383562326237626365306166376431613464633763663335222c226b696e64223a226163746976697479222c22736571223a322c22746172676574223a22696e76656e746f72792e72657365727665227d",
+          "chainHex": "4bf3321e31439d2a7a92bd1b4b33b1549c36a2ca822d6d289f014157f61dbd19"
+        },
+        {
+          "seq": 3,
+          "kind": "saga_open",
+          "target": "s-3",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-3",
+              "parentScope": "s-1",
+              "onCompensationFailure": "fail",
+              "cancelPolicy": "wait_in_flight_then_compensate"
+            }
+          },
+          "body": {
+            "scope": "s-3",
+            "parentScope": "s-1",
+            "onCompensationFailure": "fail",
+            "cancelPolicy": "wait_in_flight_then_compensate"
+          },
+          "bodySha256": "6d4acbe7f0b2fb65c055debd67157a02054f5f86ef74fc97d3048230d9765606",
+          "dHex": "7b22626f6479223a2236643461636265376630623266623635633035356465626436373135376130323035346635663836656637346663393764333034383233306439373635363036222c226b696e64223a22736167615f6f70656e222c22736571223a332c22746172676574223a22732d33227d",
+          "chainHex": "92e40a69fb3c571d46ddaf5b61056c26b6b2d0467dc03bc671f212f83165155c"
+        },
+        {
+          "seq": 4,
+          "kind": "activity",
+          "target": "payments.charge",
+          "sagaScope": "s-3",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "orderId": "ord-2",
+            "amountCents": 4000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "0c175aec77fbb9f80c7c280e04031db37da94ad18e4963554f122a9762ff16e8",
+              "size": 38
+            },
+            "scope": "s-3"
+          },
+          "bodySha256": "516195c7eeaaa0d9e4cb194894d550ef10666eb61c0b6a74a9f5bc52aad442cd",
+          "dHex": "7b22626f6479223a2235313631393563376565616161306439653463623139343839346435353065663130363636656236316330623661373461396635626335326161643434326364222c226b696e64223a226163746976697479222c22736571223a342c22746172676574223a227061796d656e74732e636861726765227d",
+          "chainHex": "686363beef17516c0bc166b7537a6d31a9c00379f494129c530d20a799bb9efa"
+        },
+        {
+          "seq": 5,
+          "kind": "saga_close",
+          "target": "s-3",
+          "typed": {
+            "sagaClose": {
+              "target": "s-3"
+            }
+          },
+          "body": {
+            "scope": "s-3"
+          },
+          "bodySha256": "e2a45d196b1af943408c032459efade3de5c348fcbe159c2944707461e1b9adf",
+          "dHex": "7b22626f6479223a2265326134356431393662316166393433343038633033323435396566616465336465356333343866636265313539633239343437303734363165316239616466222c226b696e64223a22736167615f636c6f7365222c22736571223a352c22746172676574223a22732d33227d",
+          "chainHex": "fc25a6c1b41eeb621677b68ad058acd9fcfd2860498df8c4e0a183b91754353e"
+        },
+        {
+          "seq": 6,
+          "kind": "saga_abort",
+          "target": "s-1",
+          "typed": {
+            "sagaAbort": {
+              "target": "s-1"
+            }
+          },
+          "body": {
+            "scope": "s-1"
+          },
+          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
+          "dHex": "7b22626f6479223a2264656134383336613561633038393937303437353330343166363561323865626466333964616566633638346665386537663866623865333036633262663664222c226b696e64223a22736167615f61626f7274222c22736571223a362c22746172676574223a22732d31227d",
+          "chainHex": "ce485fe78db59c3736818ad263522bfd2e9f15eb036ed956ca1922195b609e0a"
+        },
+        {
+          "seq": 7,
+          "kind": "set_state",
+          "target": "",
+          "typed": {
+            "setState": {
+              "status": "compensating",
+              "attempts": 2,
+              "flags": []
+            }
+          },
+          "body": {
+            "state": {
+              "status": "compensating",
+              "attempts": 2,
+              "flags": []
+            }
+          },
+          "bodySha256": "9cf173fcab75ea7e4cdaf15b78f5b4cda41a153edcd1b1f1e934cfd5a63eca97",
+          "dHex": "7b22626f6479223a2239636631373366636162373565613765346364616631356237386635623463646134316131353365646364316231663165393334636664356136336563613937222c226b696e64223a227365745f7374617465222c22736571223a372c22746172676574223a22227d",
+          "chainHex": "5ed9d9a73672b9ea86211f10c266d08851d73b34a8bbc99a1cd6325015e978c8"
+        },
+        {
+          "seq": 8,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "alpha",
+                  "seqs": [
+                    "3",
+                    "7"
+                  ]
+                },
+                {
+                  "signalName": "zeta",
+                  "seqs": [
+                    "9"
+                  ]
+                },
+                {
+                  "signalName": "דּ",
+                  "seqs": [
+                    "11"
+                  ]
+                },
+                {
+                  "signalName": "😀",
+                  "seqs": [
+                    "12"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "alpha",
+                "seqs": [
+                  3,
+                  7
+                ]
+              },
+              {
+                "name": "zeta",
+                "seqs": [
+                  9
+                ]
+              },
+              {
+                "name": "דּ",
+                "seqs": [
+                  11
+                ]
+              },
+              {
+                "name": "😀",
+                "seqs": [
+                  12
+                ]
+              }
+            ]
+          },
+          "bodySha256": "ea368e2916cc95a134e69a3be387c027f90559ce2f05b2494ecbd297afb602d0",
+          "dHex": "7b22626f6479223a2265613336386532393136636339356131333465363961336265333837633032376639303535396365326630356232343934656362643239376166623630326430222c226b696e64223a22636f6e73756d655f7369676e616c73222c22736571223a382c22746172676574223a22227d",
+          "chainHex": "86c42cf9dc42aaf4aadcbe9f1eb1cb46efe9738d39ff4a88579d9b94e9fd6305"
+        },
+        {
+          "seq": 9,
+          "kind": "fail",
+          "target": "",
+          "typed": {
+            "fail": {
+              "code": "PAYMENT_DECLINED",
+              "safeMessage": "The card was declined — try another"
+            }
+          },
+          "body": {
+            "code": "PAYMENT_DECLINED",
+            "message": {
+              "sha256": "1305fca0334efba4cdbc869cbf14e51f87460cb356f0cf686ab07f37b9bff998",
+              "size": 39
+            }
+          },
+          "bodySha256": "f686f687a93eff01924b752425c316465e3800a217fbfa1c1f3a80c406a66805",
+          "dHex": "7b22626f6479223a2266363836663638376139336566663031393234623735323432356333313634363565333830306132313766626661316331663361383063343036613636383035222c226b696e64223a226661696c222c22736571223a392c22746172676574223a22227d",
+          "chainHex": "836719c0725d9b23f58d75d9ef22103dec868690c9a83f6dd58e3dcb9985185a"
+        }
+      ]
+    },
+    {
+      "name": "sagas-state-signals-changed-state",
+      "$comment": "differs from sagas-state-signals only in the set-state body of command 7: the chain differs from command 7 on",
+      "commands": [
+        {
+          "seq": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "dHex": "7b22626f6479223a2237353966306634646236363332653733393366373463333562363664316431383731653435353935633430353232396539366138646264613331353137326164222c226b696e64223a22736167615f6f70656e222c22736571223a312c22746172676574223a22732d31227d",
+          "chainHex": "5df846172e9ed9a869c672b9b3793c7d1c56f62c5fc10f7611a5a196727cc59d"
+        },
+        {
+          "seq": 2,
+          "kind": "activity",
+          "target": "inventory.reserve",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "inventory.reserve"
+          },
+          "value": {
+            "sku": "SKU-1",
+            "quantity": 2
+          },
+          "body": {
+            "type": "activity",
+            "activity": "inventory.reserve",
+            "input": {
+              "sha256": "65dde5b1dcd585ecebd675545e5fefc57d8c4a01668c7e05dc0a942d3e6aefc8",
+              "size": 28
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "ba40c3b2c30f638c3acdbe06820192733f2b085a01159ba952077566a9b75ddb",
+          "dHex": "7b22626f6479223a2262613430633362326333306636333863336163646265303638323031393237333366326230383561303131353962613935323037373536366139623735646462222c226b696e64223a226163746976697479222c22736571223a322c22746172676574223a22696e76656e746f72792e72657365727665227d",
+          "chainHex": "727bc01f19a6c2ffec990ff03ee020498fa00bbe72b00fc57ba6fadf433e7e56"
+        },
+        {
+          "seq": 3,
+          "kind": "saga_open",
+          "target": "s-3",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-3",
+              "parentScope": "s-1",
+              "onCompensationFailure": "fail",
+              "cancelPolicy": "wait_in_flight_then_compensate"
+            }
+          },
+          "body": {
+            "scope": "s-3",
+            "parentScope": "s-1",
+            "onCompensationFailure": "fail",
+            "cancelPolicy": "wait_in_flight_then_compensate"
+          },
+          "bodySha256": "6d4acbe7f0b2fb65c055debd67157a02054f5f86ef74fc97d3048230d9765606",
+          "dHex": "7b22626f6479223a2236643461636265376630623266623635633035356465626436373135376130323035346635663836656637346663393764333034383233306439373635363036222c226b696e64223a22736167615f6f70656e222c22736571223a332c22746172676574223a22732d33227d",
+          "chainHex": "6d2dbd32229951e2d8e56c8a851f7cbe05dd3c744d06bf990e3eab9c1584d027"
+        },
+        {
+          "seq": 4,
+          "kind": "activity",
+          "target": "payments.charge",
+          "sagaScope": "s-3",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "orderId": "ord-2",
+            "amountCents": 4000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "0c175aec77fbb9f80c7c280e04031db37da94ad18e4963554f122a9762ff16e8",
+              "size": 38
+            },
+            "scope": "s-3"
+          },
+          "bodySha256": "516195c7eeaaa0d9e4cb194894d550ef10666eb61c0b6a74a9f5bc52aad442cd",
+          "dHex": "7b22626f6479223a2235313631393563376565616161306439653463623139343839346435353065663130363636656236316330623661373461396635626335326161643434326364222c226b696e64223a226163746976697479222c22736571223a342c22746172676574223a227061796d656e74732e636861726765227d",
+          "chainHex": "9517758842998e6b06c77a18b37eac131daabd6a3da9d858351d7b1053f3a33a"
+        },
+        {
+          "seq": 5,
+          "kind": "saga_close",
+          "target": "s-3",
+          "typed": {
+            "sagaClose": {
+              "target": "s-3"
+            }
+          },
+          "body": {
+            "scope": "s-3"
+          },
+          "bodySha256": "e2a45d196b1af943408c032459efade3de5c348fcbe159c2944707461e1b9adf",
+          "dHex": "7b22626f6479223a2265326134356431393662316166393433343038633033323435396566616465336465356333343866636265313539633239343437303734363165316239616466222c226b696e64223a22736167615f636c6f7365222c22736571223a352c22746172676574223a22732d33227d",
+          "chainHex": "454e061a28800054f8bb178fe703059429c78cb1d64c0ebda116f0c01b9f5a56"
+        },
+        {
+          "seq": 6,
+          "kind": "saga_abort",
+          "target": "s-1",
+          "typed": {
+            "sagaAbort": {
+              "target": "s-1"
+            }
+          },
+          "body": {
+            "scope": "s-1"
+          },
+          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
+          "dHex": "7b22626f6479223a2264656134383336613561633038393937303437353330343166363561323865626466333964616566633638346665386537663866623865333036633262663664222c226b696e64223a22736167615f61626f7274222c22736571223a362c22746172676574223a22732d31227d",
+          "chainHex": "864c1824e3dcc1bae73d45018b6e1c4f1990e284750ac18bae1887f4c9bda79d"
+        },
+        {
+          "seq": 7,
+          "kind": "set_state",
+          "target": "",
+          "typed": {
+            "setState": {
+              "status": "compensating",
+              "attempts": 3,
+              "flags": []
+            }
+          },
+          "body": {
+            "state": {
+              "status": "compensating",
+              "attempts": 3,
+              "flags": []
+            }
+          },
+          "bodySha256": "8058dba3b859b7ee07be9b67b43d8fd7dea5cc09655ac36f7609774c410a5ef2",
+          "dHex": "7b22626f6479223a2238303538646261336238353962376565303762653962363762343364386664376465613563633039363535616333366637363039373734633431306135656632222c226b696e64223a227365745f7374617465222c22736571223a372c22746172676574223a22227d",
+          "chainHex": "8f2a48d291ea1af39a3499d690015dbc971d3f4eb8594b44992800e4bd3e8e03"
+        },
+        {
+          "seq": 8,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "alpha",
+                  "seqs": [
+                    "3",
+                    "7"
+                  ]
+                },
+                {
+                  "signalName": "zeta",
+                  "seqs": [
+                    "9"
+                  ]
+                },
+                {
+                  "signalName": "דּ",
+                  "seqs": [
+                    "11"
+                  ]
+                },
+                {
+                  "signalName": "😀",
+                  "seqs": [
+                    "12"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "alpha",
+                "seqs": [
+                  3,
+                  7
+                ]
+              },
+              {
+                "name": "zeta",
+                "seqs": [
+                  9
+                ]
+              },
+              {
+                "name": "דּ",
+                "seqs": [
+                  11
+                ]
+              },
+              {
+                "name": "😀",
+                "seqs": [
+                  12
+                ]
+              }
+            ]
+          },
+          "bodySha256": "ea368e2916cc95a134e69a3be387c027f90559ce2f05b2494ecbd297afb602d0",
+          "dHex": "7b22626f6479223a2265613336386532393136636339356131333465363961336265333837633032376639303535396365326630356232343934656362643239376166623630326430222c226b696e64223a22636f6e73756d655f7369676e616c73222c22736571223a382c22746172676574223a22227d",
+          "chainHex": "d34567b63184707bdc4f2728b7a5f577ab29050ae09195e818076c855a6f16ed"
+        },
+        {
+          "seq": 9,
+          "kind": "fail",
+          "target": "",
+          "typed": {
+            "fail": {
+              "code": "PAYMENT_DECLINED",
+              "safeMessage": "The card was declined — try another"
+            }
+          },
+          "body": {
+            "code": "PAYMENT_DECLINED",
+            "message": {
+              "sha256": "1305fca0334efba4cdbc869cbf14e51f87460cb356f0cf686ab07f37b9bff998",
+              "size": 39
+            }
+          },
+          "bodySha256": "f686f687a93eff01924b752425c316465e3800a217fbfa1c1f3a80c406a66805",
+          "dHex": "7b22626f6479223a2266363836663638376139336566663031393234623735323432356333313634363565333830306132313766626661316331663361383063343036613636383035222c226b696e64223a226661696c222c22736571223a392c22746172676574223a22227d",
+          "chainHex": "7ce2af3b2637a1411707cff3bff46cc0b8b1eba9d5d784744d2cb326d08af751"
+        }
+      ]
+    }
+  ]
+}

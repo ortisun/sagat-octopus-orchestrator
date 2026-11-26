@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 mod events;
+mod goldens;
 mod history_export;
 mod openapi;
 mod protocol;

@@ -1,0 +1,188 @@
+{
+  "scenario": "code-update-with-start",
+  "run": "main",
+  "runId": "6665c30d-4d85-466a-ab7c-a394a37611fc",
+  "workflowType": "basket",
+  "seedHex": "b8bd00a51de758c234f886cdf3a6e1a0d2e2aca09778631b512ff45cb95db41a",
+  "input": {
+    "basketId": "b-12"
+  },
+  "codeVersions": {
+    "v1": "sha256:565c7cfeb0f4e82ea0da774c58fffe42f582d2d524e5d260b21c82004b8ad1a7"
+  },
+  "declarations": {
+    "updates": {
+      "addItem": {
+        "argsSchema": {
+          "type": "object",
+          "properties": {
+            "sku": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sku"
+          ]
+        },
+        "disclosure": "declared-business-result-v1",
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "items"
+          ]
+        }
+      }
+    }
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 3
+      },
+      "nowUs": 1767225600000411,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 3,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "timer_start",
+          "target": "c-1",
+          "node": "c-1",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 600000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 600000
+          },
+          "bodySha256": "63dad56d628ea316c6df88663fcc72546dcab89126f11bcde2d5764b70f61b8b",
+          "journalKind": "timer.started"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "update_accept",
+          "target": "2",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "2",
+              "accepted": true
+            }
+          },
+          "body": {
+            "admittedSeq": 2,
+            "accepted": true
+          },
+          "bodySha256": "d0ca169859f7af0a6b25ef91b27a552eda00db82fbe2c1ae1756bf4476d57bbf",
+          "journalKind": "update.accepted"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "update_complete",
+          "target": "2",
+          "typed": {
+            "updateResult": {
+              "admittedSeq": "2",
+              "result": {
+                "items": 1
+              }
+            }
+          },
+          "body": {
+            "admittedSeq": 2,
+            "result": {
+              "sha256": "fd0914227f3350ac388e96804913d94f7dbc94b4eac89de19e695f28cba3c0c6",
+              "size": 11
+            }
+          },
+          "bodySha256": "47831590d7fcdec89d7743f53bc557facd57d01f568249a73cf26107d4cc72b7",
+          "journalKind": "update.completed"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 4,
+      "chainAfterHex": "24dc3e922d8dd3e306d29491ca3715caa3073ea75452a055a557f7ca8862018a",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 3,
+        "throughSeq": 9
+      },
+      "nowUs": 1767226200001233,
+      "replayedChainHex": "24dc3e922d8dd3e306d29491ca3715caa3073ea75452a055a557f7ca8862018a",
+      "appliedThroughSeq": 9,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "basketId": "b-12",
+              "items": [
+                "SKU-1"
+              ]
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "a5809b493658fdff4557fdd68bbb18dcb574d886953b8fdd88192c2df7ad847a",
+              "size": 37
+            }
+          },
+          "bodySha256": "38e317ad22706a2dd868e69aaee511a95589af76e501973bd0a94b673bbc4958",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 10,
+      "chainAfterHex": "20db2e671a731e2d539fb6b9497fcf6dbce8f99a74495c7de4c49eff11055011",
+      "commandCountAfter": 4
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 12,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "timer_start",
+      "target": "c-1",
+      "commandNumber": 1,
+      "issuedSeq": 3,
+      "outcomeSeq": 8
+    }
+  ],
+  "requests": [
+    {
+      "request": "Update-with-Start (feature 018) of the code version of basket",
+      "body": {
+        "input": {
+          "basketId": "b-12"
+        },
+        "update": "addItem",
+        "updateKey": "u-1",
+        "args": {
+          "sku": "SKU-1"
+        }
+      },
+      "admittedSeq": 2,
+      "answer": "200 with the result {\"items\": 1}; the run and the update.admitted commit in one transaction"
+    }
+  ]
+}

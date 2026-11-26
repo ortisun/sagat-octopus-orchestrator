@@ -1,0 +1,9 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJhbW91bnRDZW50cyI6NTAwMCwiaW52b2ljZUlkIjoiaW52LTgifQ=="}}}
+{"seq":"2","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000274","workflowTaskStarted":{}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000411","workflowTaskCompleted":{}}
+{"seq":"4","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000548","commandRecord":{"kind":"COMMAND_SAGA_OPEN","target":"s-1","node":"s-1"}}
+{"seq":"5","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"2","atUs":"1767225600000685","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"payments.charge","node":"c-2"}}
+{"seq":"10","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001370","stepOutcome":{"node":"c-2","outcome":"STEP_OUTCOME_COMPLETED","output":{"json":"eyJjaGFyZ2VJZCI6ImNoLTc3IiwicmVjb25jaWxlZCI6dHJ1ZX0="}}}
+{"seq":"11","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001507","workflowTaskStarted":{}}
+{"seq":"12","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600001644","workflowTaskCompleted":{}}
+{"seq":"13","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"3","atUs":"1767225600001781","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"ledger.post","node":"c-3"}}

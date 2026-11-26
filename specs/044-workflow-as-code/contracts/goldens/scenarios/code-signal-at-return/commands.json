@@ -1,0 +1,226 @@
+{
+  "scenario": "code-signal-at-return",
+  "run": "main",
+  "runId": "99f6f63c-a320-4aeb-b371-9fea49faf36f",
+  "workflowType": "report",
+  "seedHex": "ff941a514bc1097f82f91ec942d171aed1ea6265b1805c6738678a3165ac8f62",
+  "input": {
+    "reportId": "rep-5"
+  },
+  "codeVersions": {
+    "v1": "sha256:aa63b24f0b15b256be88382e34ef46ddfe1678651418e2db6a16c639156dec3d"
+  },
+  "declarations": {
+    "signals": {
+      "note": {
+        "maxBytes": 4096
+      }
+    }
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "report.build",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "report.build"
+          },
+          "value": {
+            "reportId": "rep-5"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "report.build",
+            "input": {
+              "sha256": "df3c472515b78181182774485a87fda4b4e279f13571c351dca667cc2d370dc4",
+              "size": 20
+            }
+          },
+          "bodySha256": "4c55e333fe4b19a5de56a49d156a8d613fb13a9a49e2c7effe7c443642de6678",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "3ec97ee5ffdb13468bd5956e73b78bd47eeda9b14e8cdb997c4bfd003e766333",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 9
+      },
+      "nowUs": 1767225600001233,
+      "notes": "The window holds note a, the outcome of c-1, then note b. The function returns after the outcome with the notes it has (a); the SDK applies note b before it sends the terminal command, so the consumption comes first.",
+      "replayedChainHex": "3ec97ee5ffdb13468bd5956e73b78bd47eeda9b14e8cdb997c4bfd003e766333",
+      "appliedThroughSeq": 9,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "note",
+                  "seqs": [
+                    "6",
+                    "8"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "note",
+                "seqs": [
+                  6,
+                  8
+                ]
+              }
+            ]
+          },
+          "bodySha256": "12bf75d37bbc64856080bb6a73e841964755edd64e746d58f2ee030269c4ad62",
+          "journalKind": "signal.consumed"
+        }
+      ],
+      "deferred": {
+        "kind": "complete",
+        "target": "",
+        "typed": {
+          "complete": {
+            "reportId": "rep-5",
+            "url": "https://reports.example/rep-5",
+            "notes": [
+              "a"
+            ]
+          }
+        },
+        "body": {
+          "output": {
+            "sha256": "55afe1c3aa679ff8e7d5fe5885eb004c4809c6744c33f8e1a50408acd2d7b3fc",
+            "size": 72
+          }
+        },
+        "bodySha256": "af753c8691a58f04d409c5fe4e703f68cb79e1c152a39208353e5bd6b2aa22c8",
+        "journalKind": "run.stop_requested",
+        "cause": "CAUSE_UNHANDLED_EVENTS"
+      },
+      "outcome": "WORKFLOW_TASK_ACCEPTED_DEFERRED",
+      "cause": "CAUSE_UNHANDLED_EVENTS",
+      "completedSeq": 11,
+      "chainAfterHex": "80365c8ac5c4bd665fa996df63bb8857ae462de2ee998c9ac9d57eddda01c1d7",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 9,
+        "throughSeq": 13
+      },
+      "nowUs": 1767225600001781,
+      "notes": "The SDK applies note c, consumes it, and re-emits the deferred completion last, unchanged.",
+      "replayedChainHex": "80365c8ac5c4bd665fa996df63bb8857ae462de2ee998c9ac9d57eddda01c1d7",
+      "appliedThroughSeq": 13,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "note",
+                  "seqs": [
+                    "10"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "note",
+                "seqs": [
+                  10
+                ]
+              }
+            ]
+          },
+          "bodySha256": "adc133512babcbc11d34f13362ec7a7c82e891f5cd9c92b82b885c95c89999b0",
+          "journalKind": "signal.consumed"
+        },
+        {
+          "commandNumber": 4,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "reportId": "rep-5",
+              "url": "https://reports.example/rep-5",
+              "notes": [
+                "a"
+              ]
+            }
+          },
+          "reEmitted": true,
+          "body": {
+            "output": {
+              "sha256": "55afe1c3aa679ff8e7d5fe5885eb004c4809c6744c33f8e1a50408acd2d7b3fc",
+              "size": 72
+            }
+          },
+          "bodySha256": "af753c8691a58f04d409c5fe4e703f68cb79e1c152a39208353e5bd6b2aa22c8",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 14,
+      "chainAfterHex": "a49f4ff3ba7fb8a4b3b13e0d8df9fa30db8238bde3de59a87698b112096c513b",
+      "commandCountAfter": 4
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 17,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "report.build",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 7
+    }
+  ]
+}
