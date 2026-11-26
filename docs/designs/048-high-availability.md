@@ -114,7 +114,8 @@ From the code and documents on `develop` at `546d5aa5`:
   (Requirement 048-042). Every password (Patroni's roles, etcd's
   users, the REST authentication) comes from `.env` (`${VAR:?}`), listed in `.env.example`; no host port is published
   for the nodes, etcd or Patroni's REST interface; the platform's ports are on the loopback; images are pinned by digest;
-  every service has a healthcheck (`AGENTS.md`, rule 16).
+  every service has a healthcheck (`AGENTS.md`, rule 16); the platform's services run with `SAGAT_LEASE_TTL_SECS: 90`
+  (Requirement 048-016).
 - **Requirement 048-003 One address.** The platform MUST connect through one address that the HA manager moves to the
   primary. No platform process may need a person, a restart or new configuration after a promotion.
 - **Requirement 048-004 Spread that insists.** The chart MUST expose `topologySpread.whenUnsatisfiable` (default
