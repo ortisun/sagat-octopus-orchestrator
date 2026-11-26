@@ -134,13 +134,13 @@ From the code and documents on `develop` at `546d5aa5`:
   first moves the capability to `draining` and records `draining_since`; processes stop starting new uses of it at their
   next heartbeat. The second removes it and is refused until every live process has heartbeated after `draining_since`
   (at least 12 s, the heartbeat's jittered bound), the drain check its design states passes (for design 049, no run of a
-  dated bucket is live), and no contract migration naming the capability is applied. Only after the second phase may the
+  dated bucket exists), and no contract migration naming the capability is applied. Only after the second phase may the
   binaries roll back to N-1. A capability whose design declares it permanent is refused by both phases: in 0.3.0, design
   049's `journal-buckets-v1`, since a binary of the release before it cannot read a dated run's content.
 - **Requirement 053-009 Old and new writers run together.** `scripts/test-mixed-writers.py` MUST run engines and control
   planes of N-1 (built from its release's tag) and N on one database under the chain shape: apply N's migrations during
-  the load, roll the processes one at a time, activate N's capabilities, deactivate those that are not permanent in both
-  phases and roll one process back to N-1 (with a permanent capability active, the rollback is not exercised), and pass the integrity oracle, with the 99th percentile transition latency during the migrations
+  the load, roll the processes one at a time, activate N's capabilities that are not permanent, deactivate them in both
+  phases and roll one process back to N-1, then roll it forward and activate the permanent ones, and pass the integrity oracle, with the 99th percentile transition latency during the migrations
   no more than 2 s (the lock timeout) above a baseline run. Release N MUST NOT be published unless it passes against N-1.
   The test first gates a release when 0.3.0 is N-1, since 0.2.x binaries have no handshake; until then it runs in CI with
   both sides built from `develop` at two commits, which proves the migration rules and the oracle but not the version

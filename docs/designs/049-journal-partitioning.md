@@ -121,12 +121,14 @@ From the code on `develop` at `546d5aa5`:
   transaction's first statement already reads, `clock_timestamp()` in `execution.rs`, or, for a root chain's next
   segment, its command's time) and whether the process has learned of the switch
   (Requirement 049-010), which the application's registry state (`crates/application/src/instances.rs`) passes to the
-  store as an explicit flag of the creation command, except that a root whose `created_at` falls in a month that ended
-  more than 24 hours before the process's clock (whose skew from the database's is seconds against that margin; the
-  trigger checks with `clock_timestamp()`) takes the legacy bucket, so that no root
-  lands in a month a retirement may be dropping; a child's from the parent run row it already holds under the run lock. A trigger on `runs`
+  store as an explicit flag of the creation command, except that a root whose `created_at` falls in a month earlier than
+  the process's current month takes the legacy bucket, so that a dated root is only ever created in the current month and
+  never lands in a month a retirement may be dropping; a child's from the parent run row it already holds under the run lock. A trigger on `runs`
   (before insert) MUST refuse a root whose bucket is neither legacy nor its month, a dated root whose month ended more
-  than 24 hours before `clock_timestamp()`, and a child whose bucket is not its
+  than 24 hours before `clock_timestamp()` (a margin of a day over the process's rule, so only a clock wrong by a day can
+  meet it), and, for a dated root whose month has ended at all, MUST take the bucket's advisory lock in shared mode and
+  refuse while `journal_bucket_retiring` says a retirement of the month is active, so that a retirement's start waits for
+  such a creation and none can follow it; and a child whose bucket is not its
   root's (one lookup of the root by key, which the existing self-referencing foreign key guarantees exists); a trigger
   MUST refuse a change of `journal_bucket`, `created_at` or `root_run_id`. A legacy root is always accepted: one created by
   a process in the 12 s before it learns of the switch is processed by every release and purged run by run like any
@@ -259,8 +261,8 @@ From the code on `develop` at `546d5aa5`:
   a dated run therefore erases its whole tree: it checks the caller's `retention:manage` permission and the eligibility
   of every run of the tree (none live, none with an unresolved effect, an open review or a leaf certificate that
   decision D298 keeps), and marks every run of the tree `PURGING` (feature 020's job state, under which its guard refuses
-  a rerun, a review or an append) in the same transaction, which holds the root's row and then each run's row in key
-  order; only then do its purge chunks run. It erases nothing if one run is refused, and its report names every run erased or,
+  a rerun, a review or an append) in the same transaction, which holds the runs' rows locked in the order of their depth, then
+  identifier (a parent before its child, as the platform's writers lock them); only then do its purge chunks run. It erases nothing if one run is refused, and its report names every run erased or,
   when refused, the run that blocks and the content that survives (feature 020's requirement 020-037).
   The purge of a legacy run keeps feature 020's reference check (Requirement 049-007). Every purge of a dated run but the
   mark-only form runs at `READ COMMITTED`, takes the bucket's advisory lock in shared mode for its transaction and then,
@@ -332,9 +334,8 @@ From the code on `develop` at `546d5aa5`:
   `journal_retire_drop`, `journal_retire_release`, `journal_retire_abandon`), owned by the owner; the platform's processes
   and the chart hold no credential of either role. `sagat_quota_release_bytes` is executable by those functions' owner
   only. `journal_retire_start` itself, not only the command, refuses the legacy bucket and any month that ended less than
-  24 hours ago by the database clock (a root's `created_at` is the database clock or the application's time of the
-  command it is processing, which differ by the clocks' skew of seconds, so no root can be created in a month that ended
-  a day before); `journal_retire_drop` accepts only `run_events` or `run_payloads` as its table and confirms the
+  24 hours ago by the database clock, since the `runs` trigger of Requirement 049-001 refuses a dated root in such a
+  month after that and serializes with the start before it; `journal_retire_drop` accepts only `run_events` or `run_payloads` as its table and confirms the
   partition through `pg_partition_tree` before it drops; the functions build partition names from the date with `%I`
   quoting. The pre-drop report of sessions comes from an owner-owned definer function that returns only the process
   identifier, user, application name and transaction start, so `sagat_retirer` needs no `pg_read_all_stats`; it reports
@@ -710,7 +711,7 @@ Each task's files are named; the test suites are those of the Verification Plan.
 - [ ] T049-11 After Task 049-3's measurement, build the partial legacy reference indexes (Requirement 049-007) that feature 020's Task T020-046 uses for its reference check of a legacy run (which, with the re-check after the delete, is that task's, not this one's), with a test that the check's plan uses them.
   Refs: Requirement 049-007
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
-- [ ] T049-12 With dated runs made by activating the capability through `activate` of `tests/support/instances.rs`, write the per-tree copy rules for resets, reruns, root chains' next segments, cross-namespace operations and rows of no run, with a test per path that the new tree references only its own payloads and a child chain's next segment shares its tree's.
+- [ ] T049-12 With dated runs made by setting the store's creation flag directly, as Task 049-5's tests do, write the per-tree copy rules for resets, reruns, root chains' next segments, cross-namespace operations and rows of no run, with a test per path that the new tree references only its own payloads and a child chain's next segment shares its tree's.
   Refs: Requirement 049-005, Requirement 049-014
 - [ ] T049-13 Add `journal-buckets-v1` to the `Capability` enum of `crates/application/src/instances.rs` and the schema's closed lists (step 4), and write `control-plane journal switch` in `apps/control-plane/src/cli.rs` on the registry's activation, with a suite that runs after it across a month boundary with two dated partitions; tests before the command exists activate the capability through the registry's test fixture.
   Refs: Requirement 049-002, Requirement 049-010
