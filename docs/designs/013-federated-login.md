@@ -1292,12 +1292,15 @@ and its policy (`infra/openbao/policies/identity.hcl`, installed as `sagat-ident
 `infra/openbao/bootstrap-development.py` (its token in `identity-mount/token`, since `identity/token` already holds the
 database runner's development token), and for the suites by `start_openbao` in `tests/support/bounded.rs`. For
 production, `infra/openbao/bootstrap-kubernetes.py` creates the `sagat-identity/` KV version 2 mount, the policy and a
-Kubernetes role `sagat-identity` bound to the control plane's service account, issued with `token_no_default_policy`;
+Kubernetes role `sagat-identity` bound by name to `<fullname>-control-plane` alone, never to an account another
+component shares, issued with `token_no_default_policy`;
 and the chart, when its new value `identity.federation.enabled` is true, renders an OpenBao Agent for the control
 plane's identity token, separate from the management agent because one agent logs in with one role. It does so
 whether or not `openbao.enabled` is set: the agent image, the CA secret and volume, the auth mount and audience, the
 agent ConfigMap `<fullname>-openbao-agent` (holding, in a federation-only deployment, only `control-plane-identity.hcl`)
-and the pod's `checksum/openbao-agent` annotation, the `<fullname>-control-plane` ServiceAccount object, the projected
+and the pod's `checksum/openbao-agent` annotation, the `<fullname>-control-plane` ServiceAccount object (and
+`sagat.openbao.serviceAccount` returns it for the control-plane component whenever either value is true, so the pod
+runs under its own account; the engine and the secret cleanup stay on `openbao.enabled`), the projected
 token volume `openbao-identity` that the agent's `token_path` reads, and the control plane's egress rule to OpenBao are
 rendered when `openbao.enabled` or `identity.federation.enabled` is true, and so are the chart's checks that go with
 them: the Kubernetes 1.29 native-sidecar check, when `networkPolicy.enabled`,
@@ -1320,7 +1323,8 @@ the address, CA secret, auth mount, audience, image and `openbao.roles.identity`
 `tests/contract/scalability-ha/identity_chart.rs`: with `openbao.enabled` both agents, distinct container names, roles
 and sinks; with federation on and `openbao.enabled=false` the identity agent alone, no `SAGAT_OPENBAO_*` variable, the
 CA variable and the egress rule present with its configured peers, every `configMap` and `secret` volume and the
-`serviceAccountName` resolving to a rendered object or a set value, and the ConfigMap holding exactly
+`serviceAccountName` resolving to a rendered object or a set value, and in both modes the control plane's
+`serviceAccountName` equal to `<fullname>-control-plane`, and the ConfigMap holding exactly
 `control-plane-identity.hcl` with the identity role; in both modes `SAGAT_IDENTITY_FEDERATION=on` and
 `SAGAT_PUBLIC_ORIGIN`; the same with `openbao.network.to: []`, with neither native TLS nor `allowPlaintextSecrets` for
 the control plane, without `identity.publicOrigin`, or with `--kube-version 1.28`, fails the render; and the
