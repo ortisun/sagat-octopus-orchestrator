@@ -2,14 +2,15 @@
 
 Draft; nothing is migrated. One additive migration, `crates/infra-postgres/migrations/<timestamp>_payload_encoding.up.sql`
 (timestamp chosen at implementation, later than every migration on `develop` and on the parity branches; the latest at
-the base commit is `20261220000000_reveal_grants_role_change`), follows `.claude/skills/migration/SKILL.md`.
+the base commit is `20261220000000_reveal_grants_role_change`; on `develop` on 2026-11-24 it is
+`20270119000000_batch_purge`), follows `.claude/skills/migration/SKILL.md`.
 
 ## 1. Domain types (`crates/domain/src/payload_encoding.rs`, new; no serde_json, no crypto)
 
 | Type | Meaning | Invariants |
 |---|---|---|
 | `Encoding` | `Encrypted` \| `Compressed` | closed; parsed from the two strings |
-| `PointerPattern` | RFC 6901 segments, `*` = every element | 0–16 segments, at most 4 `*`, segment ≤ 128 bytes, total ≤ 512 bytes; no literal `*` property |
+| `PointerPattern` | RFC 6901 segments, `*` = every element | 0–16 segments, at most 4 `*`, segment ≤ 128 bytes, total ≤ 512 bytes both as UTF-8 and in its JSON-escaped form (D031-013); no literal `*` property |
 | `CarrierRef` | `Input`, `Output`, `Node(NodeId)`, `Heartbeat(NodeId)`, `Stream(ChannelName)` | closed; the last two are the side-channel carriers (019, 026) |
 | `EncodedLocation` | `{carrier, pointer, encoding, level}` | `level` is a 016 `Level` |
 | `PayloadPlan` | locations of one version | ≤ 64 per carrier; no location is a prefix of another (no nesting) |
@@ -21,7 +22,7 @@ the base commit is `20261220000000_reveal_grants_role_change`), follows `.claude
 | `CodecLevelCeiling` | `Public` \| `Internal` \| `Pii` | never `Secret` |
 | `CodecAudience` | the highest level an assertion may carry | `max_level(roles, grant, reveal_requested, ceiling, ceiling_confirmed)` |
 | `KeyUsageScanState` | `Queued`, `Running`, `Succeeded`, `Failed`, `Cancelled` | transitions below |
-| `EncodingActivation` | `Inactive` \| `Active{since, by}` | publication with rules 1 requires `Active` |
+| `EncodingActivation` | `Inactive` \| `Active` | read from 018's registry through the publication fence (§3.7); publication with rules 1 requires `Active`; who and when live in `platform_requirement_history` |
 
 Pure rules: `EnvelopeHeader::verdict(&EncodedLocation, &EnvelopeContext) -> EnvelopeVerdict` (cipher present for
 `Encrypted`, `lvl == level`, `ctx` equal to the run's context and the location pattern); `CarriageCheck::evaluate`;
@@ -31,7 +32,8 @@ checkpoint or stream plan, `AnyCodec` if only `Compressed`, `None` otherwise). N
 `ENVELOPE_CONTEXT_MISMATCH`, `ENCODING_CARRIAGE_MISMATCH`. New permission `CodecManage` (`codec:manage`, admin only)
 in `crates/domain/src/identity.rs`; new audit actions in `crates/domain/src/audit.rs`: `codec.endpoint_set`,
 `codec.endpoint_removed`, `codec.assertion_issued`, `codec.assertion_denied`, `payload.key_usage_scan_started`,
-`payload.key_usage_scan_finished`, `run.encoding_refused`, `payload.encoding_activated`, `payload.encoding_deactivated`.
+`payload.key_usage_scan_finished`, `run.encoding_refused` (seven; corrected 2026-11-24: the two activation actions are
+dropped, D031-005).
 
 The strict JSON parser of envelopes, the undeclared-envelope walk, the schema walk that derives plans and the
 expression access-path analysis are adapter code in `crates/infra-ir` behind application ports, like the 016 walker.
@@ -44,7 +46,8 @@ Key-usage scan:  QUEUED --claim(lease)--> RUNNING --batch commit--> RUNNING ... 
                  RUNNING --scanned limit--> FAILED(SCAN_LIMIT_REACHED)      QUEUED|RUNNING --cancel--> CANCELLED
 Codec endpoint:  absent --PUT--> revision 1 --PUT(expectedRevision)--> revision n+1 --DELETE--> absent
                  (levelCeiling = pii and its setter loses the grant: ceilingConfirmed = false until a new PUT)
-Activation:      Inactive --activate (018 registry: every live instance capable)--> Active --deactivate--> Inactive
+Activation:      Inactive --activate (018 registry: every live instance capable)--> Active
+                 Active --deactivate (only while no version has encoding_rules = 1)--> Inactive
 ```
 
 No run or step state machine changes: refusals reuse the existing failed-step, failed-run and refused-admission paths.
@@ -66,7 +69,9 @@ workflow_version_id, carrier, carrier_key, ordinal)`.
 
 Codec nodes: `tenant_id`, `workflow_version_id`, `node_id text`, `needs_cipher boolean`; PK `(tenant_id,
 workflow_version_id, node_id)`; one row per node whose decode, output, checkpoint or stream plan is non-empty (with an
-encoded input, every task-producing node). The claim filter joins it on the run's version (FR-031-015).
+encoded input, every task-producing node). The candidate queries anti-join it on the run's version only for a session
+that lacks the codec and only once the requirement is recorded; the locked recheck reads the same need from the pinned
+definition and issues no statement (FR-031-015, D031-010).
 
 Both tables: `BEFORE UPDATE OR DELETE` trigger raises (`ENABLE ALWAYS`); versions are never deleted. Grants: `sagat_app`
 SELECT, INSERT. Classification: `pointer`, `carrier_key` and `node_id` are `content` (author-derived text, a second
@@ -126,16 +131,28 @@ in `specs/018-schedules-bulk-operations/data-model.md`):
 
 - Every control-plane and execution-engine binary that implements this feature lists the capability
   `payload-encoding-v1` in its `serving_instances.capabilities`.
-- `payload_encoding_activation` (new, singleton, the feature's own activation row that 018's rule 4 writes):
-  `state` (`'INACTIVE'|'ACTIVE'`), `changed_by`, `changed_at`. Changed only by the audited operator command
-  `control-plane payload-encoding activate|deactivate`, which runs 018's activation transaction: lock
-  `platform_requirement_epoch` `FOR UPDATE`, verify that every live `CONTROL_PLANE` and `EXECUTION_ENGINE` instance lists
-  `payload-encoding-v1`, insert the requirement (kinds both) and bump the epoch, write this row, audit. Deactivation
-  removes the requirement only when no version with `encoding_rules = 1` is still publishable, and never relaxes the
-  validation of already published rules-1 versions.
+- Corrected 2026-11-24 (D031-005): the registry is built
+  (`crates/infra-postgres/migrations/20270113000000_instance_registry.up.sql`, ADR-0082), and its closed capability
+  lists already contain `payload-encoding-v1`. The draft's singleton `payload_encoding_activation` table is dropped: the
+  row of `platform_requirements` for `payload-encoding-v1` with kinds `{CONTROL_PLANE, EXECUTION_ENGINE}` **is** the
+  activation, and `platform_requirement_history` (actor, database role, epoch, time) is its evidence, since an
+  `audit_records` row needs a tenant.
+- Activation: `control-plane payload-encoding-activate --operator NAME`, with the schema-owning role, calls
+  `platform_requirement_activate('payload-encoding-v1', '{CONTROL_PLANE,EXECUTION_ENGINE}', NAME)` and reports its
+  outcome (`RECORDED`, `ALREADY_RECORDED`, `KINDS_DIFFER`, `INSTANCES_LACK_CAPABILITY` with up to sixteen instance ids).
+  This feature's step adds nothing.
+- Deactivation: `control-plane payload-encoding-deactivate --operator NAME` takes `platform_requirement_lock()`, then its
+  step reads, without a lock, whether any `workflow_versions` row in any tenant has `encoding_rules = 1`; if one does it
+  is refused (exit 1, nothing changes), otherwise it calls `platform_requirement_remove`. Older binaries that ignore the
+  annotation can therefore never serve rules-1 versions.
+- `payload_encoding_publication_fence() RETURNS boolean` (new, `SECURITY DEFINER`, `SET search_path = pg_catalog,
+  pg_temp`, `EXECUTE` granted to `sagat_app`): reads `platform_requirement_epoch` `FOR SHARE` and returns whether the
+  requirement `payload-encoding-v1` is recorded. The publish transaction of a document that declares encoding calls it
+  before it writes the version, and refuses `ENCODING_NOT_ACTIVATED` when it returns false. Because the deactivation
+  holds the epoch `FOR UPDATE`, the two serialize. This is the definer-function pattern that Gap 2001 of feature 018
+  describes for request paths that fence on the epoch. Its wait is bounded by the publish transaction's lock timeout.
 
-Grants: the runtime role reads `payload_encoding_activation`; only the operator command changes it. Registry grants
-are 018's. Closed values: `protected_system`.
+Grants: `EXECUTE` on the fence for `sagat_app`; registry grants are 018's. No table of this section is new.
 
 ### 3.8 Unchanged
 
@@ -145,8 +162,9 @@ stored as ordinary payload bytes; their size is charged by the existing triggers
 ## 4. Down migration
 
 Refuses (`RAISE EXCEPTION ... ERRCODE = 'object_not_in_prerequisite_state'`) when any version has `encoding_rules = 1`,
-the activation row is `ACTIVE`, any endpoint or scan row exists, or any delivery has a `refusal_code`: older code would
-ignore declared encodings and accept plaintext. Otherwise drops the new objects; 018's registry tables are not touched.
+the requirement `payload-encoding-v1` is recorded, any endpoint or scan row exists, or any delivery has a
+`refusal_code`: older code would ignore declared encodings and accept plaintext. Otherwise drops the new objects and the
+fence function; 018's registry tables are not touched.
 
 ## 5. Retention
 

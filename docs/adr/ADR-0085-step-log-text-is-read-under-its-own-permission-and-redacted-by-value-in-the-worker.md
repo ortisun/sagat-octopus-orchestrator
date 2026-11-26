@@ -1,6 +1,7 @@
 # ADR-0085: Step-log text is read under its own permission and redacted by value in the worker, by shape on the server
 
 **Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo"); revised the same day after review, before any code (see Revision). It states a limit on principle V of the constitution.
+**Refined by:** feature 031 (Requirement 031-038, approved draft, 2026-11-26): the set of rule 1 also holds the decoded values of the planned locations of every attempt in flight, so a decoded value never reaches a step log.
 **Decided by:** owner, on the agent's proposal (OD-2026-11-13-17, accepting the text of commit 35b752b3). The owner chose, among the
 options of the design, that capture is on by default (O041-001), who may read (O041-002), that reads are audited once per window
 (O041-003) and that the limit of redaction is accepted as stated (O041-011) (OD-2026-11-13-14), and, after review, that classified
