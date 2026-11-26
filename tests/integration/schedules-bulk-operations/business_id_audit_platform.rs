@@ -6,23 +6,27 @@
 //! seen in `pg_stat_activity`, never with a sleep.
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use sagat_application::batch::JobRecord;
-use sagat_application::reset_completion::Completed;
+use sagat_application::clock::SystemClock;
+use sagat_application::reset_completion::{Completed, ResetCompleter};
 use sagat_application::schedules::ShardFence;
 use sagat_application::shards::Lease;
 use sagat_domain::batch::{Action, Selector};
 use sagat_domain::business_ids::{ConflictPolicy, ReusePolicy};
 use sagat_domain::execution::RunId;
 use sagat_domain::sharding::Shard;
+use sagat_infra_postgres::{PgIdentityStore, PgRunStore};
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::batch_executor::{create, due, executor, items, live, select, write};
 use crate::business_ids::{business, cancel, key, start};
-use crate::cancel_source::{asking, completer, due_of, request};
+use crate::cancel_source::{Completer, Completions, asking, completer, due_of, request};
 use crate::firing::Fixture;
 use crate::support::bounded::within;
 
@@ -161,6 +165,56 @@ async fn takeover(
     )
     .await;
     (pid, release, task)
+}
+
+/// Waits until the takeover whose backend is `mover` holds the row of `shard` with its update: the row as other
+/// transactions see it names the takeover's transaction as the one that replaced it (`xmax`). A takeover that only waits
+/// for the row has not replaced it, and one that has is what a fence read must then wait for.
+async fn takeover_holds(f: &Fixture, mover: i32, shard: Shard) {
+    within(
+        "the takeover holds the lease",
+        StdDuration::from_secs(120),
+        async {
+            loop {
+                let holds: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM scheduler_shards s JOIN pg_stat_activity a ON a.pid = $1 \
+                     WHERE s.shard = $2 AND a.backend_xid IS NOT NULL AND s.xmax = a.backend_xid)",
+                )
+                .bind(mover)
+                .bind(i16::from(shard.index()))
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("look at the lease");
+                if holds {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+}
+
+/// A completer whose own transactions (the read of the entry, its failure) begin on a pool of **one** connection, returned
+/// with it, as the role the world's services run as. The run the completion tries to make is the world's, on the world's
+/// pool. A test that holds the one connection keeps the failure's transaction, and the fence read it begins with, back.
+async fn completer_on_one_connection(f: &Fixture) -> (Completer, PgPool) {
+    let pool = if crate::support::as_runtime_role() {
+        f.w.db.runtime_pool_with(1).await
+    } else {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&f.w.db.url)
+            .await
+            .expect("a pool of one connection")
+    };
+    let completer = ResetCompleter::new(
+        PgRunStore::new(pool.clone(), f.w.cache.clone()),
+        Completions(Arc::clone(&f.w)),
+        PgIdentityStore::new(f.w.db.pool.clone()),
+        SystemClock,
+    );
+    (completer, pool)
 }
 
 /// A run that held `id` and ended, and an open run that holds it now.
@@ -304,11 +358,11 @@ async fn a_reset_completion_that_finds_its_id_held_is_audited_once_by_the_engine
     lease(&f.w.db.pool, shard, "replica-old", 11).await;
 
     let (binding, binder) = hold_binding(&f, &id).await;
+    let (stale_completer, writes) = completer_on_one_connection(&f).await;
     let step = tokio::spawn({
-        let completer = completer(&f);
         let due = due_of(&f, made.reset.id);
         let stale = fence(shard, "replica-old", 11);
-        async move { completer.step(&due, Some(stale)).await }
+        async move { stale_completer.step(&due, Some(stale)).await }
     });
     blocked_on(
         &f,
@@ -317,8 +371,17 @@ async fn a_reset_completion_that_finds_its_id_held_is_audited_once_by_the_engine
         "the completion waits for the binding",
     )
     .await;
+    // The completion holds the lease's row in shared mode while it waits (its fence comes before the binding), so the
+    // takeover can only queue behind it ([`takeover`] returns once it is seen waiting) and takes the row when that
+    // transaction ends. The failure of the entry reads the fence first thing in a transaction of its own, which begins on
+    // the completer's one connection: the test holds it until the takeover's update holds the row. Without it the order of
+    // the two was the server's: the row was handed to the queued takeover at once and the fence read was round trips away,
+    // likely but not forced.
     let (mover, release, moved) = takeover(&f, shard).await;
+    let held = writes.acquire().await.expect("the completer's connection");
     binding.commit().await.expect("release the binding");
+    takeover_holds(&f, mover, shard).await;
+    drop(held);
     blocked_on(
         &f,
         mover,

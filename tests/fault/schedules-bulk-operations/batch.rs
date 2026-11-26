@@ -82,12 +82,28 @@ fn due(job: &JobRecord) -> DueJob {
     }
 }
 
+/// Starts `n` runs, sorted by id, and dates their creation an hour back on the database's clock.
+///
+/// A job selects the runs created at or before its bound, an instant it reads from the database's clock when it is
+/// created (`selection_bound_at`, D1033), and a run's `created_at` is an instant of the same clock. A clock that steps back
+/// between the two leaves a run that committed before the job outside its selection. The VM a laptop runs PostgreSQL in
+/// steps it back: Colima's guest agent set the clock back to the host's every ten seconds on 2026-11-26, by 110 to 150 ms
+/// and, for two hours, by up to two seconds (`lima-guestagent` in the VM's journal, with journald's "Time jumped
+/// backwards"). The jobs of these tests are created a few milliseconds after their runs, so a step in between left the one
+/// run of a job outside it: `last item cut off: selected` was 0 for 1. What these tests prove is a death at a write and a
+/// restart, not the bound, so their runs are dated before any step could reach; the bound and a run that commits while a
+/// job is created are proved where they are the subject (`batch_selection`, and `batch_executor` of the integration suite).
 pub(crate) async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
     let mut ids = Vec::new();
     for _ in 0..n {
         ids.push(f.w.start(f.workflow, &json!({})).await.as_uuid());
     }
     ids.sort_unstable();
+    sqlx::query("UPDATE runs SET created_at = created_at - interval '1 hour' WHERE id = ANY($1)")
+        .bind(&ids)
+        .execute(&f.w.db.pool)
+        .await
+        .expect("date the runs an hour back");
     ids
 }
 
