@@ -16,6 +16,15 @@ pub struct Canary {
 }
 
 impl Canary {
+    /// One canary of `class`, unique to this call: `canary-<label>-<class>-<uuid>`.
+    #[must_use]
+    pub fn unique(label: &str, class: &'static str) -> Self {
+        Self {
+            class,
+            value: format!("canary-{label}-{class}-{}", Uuid::now_v7().simple()),
+        }
+    }
+
     #[must_use]
     pub fn value(&self) -> &str {
         &self.value
@@ -235,18 +244,27 @@ pub fn audience_cases() -> Vec<AudienceCase> {
 }
 
 pub fn assert_absent(surface: &str, bytes: impl AsRef<[u8]>, forbidden: &[&Canary]) {
+    if let Some(class) = found(bytes, forbidden).first() {
+        panic!("surface {surface} leaked the {class} canary");
+    }
+}
+
+/// The classes of the canaries of `forbidden` that `bytes` carries, plainly or encoded (base64 of the text, or of a JSON
+/// document holding it); [`assert_absent`] panics on the first. A test that reports every surface at once collects these.
+#[must_use]
+pub fn found(bytes: impl AsRef<[u8]>, forbidden: &[&Canary]) -> Vec<&'static str> {
     let bytes = bytes.as_ref();
     let json = serde_json::from_slice::<Value>(bytes).ok();
-    for canary in forbidden {
-        assert!(
-            !contains(bytes, canary.value.as_bytes())
-                && !json.as_ref().is_some_and(|value| {
-                    encoded_json_contains(value, canary.value.as_bytes(), 0)
-                }),
-            "surface {surface} leaked the {} canary",
-            canary.class
-        );
-    }
+    forbidden
+        .iter()
+        .filter(|canary| {
+            contains(bytes, canary.value.as_bytes())
+                || json
+                    .as_ref()
+                    .is_some_and(|value| encoded_json_contains(value, canary.value.as_bytes(), 0))
+        })
+        .map(|canary| canary.class)
+        .collect()
 }
 
 fn encoded_json_contains(value: &Value, needle: &[u8], depth: usize) -> bool {

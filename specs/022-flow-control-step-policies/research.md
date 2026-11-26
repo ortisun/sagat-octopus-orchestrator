@@ -2111,6 +2111,31 @@ taken after `git grep D022-04` on every `origin/*` branch.
   each seen red before the merge (the fragment's seven differences, `RATE_LIMIT_QUEUE_FULL`, nine publication codes,
   three IR rules, nine failure codes).
 
+- **D022-103 — What the tenant battery holds of flow control, and where its raw-key canary looks (2026-11-26; tasks
+  T022-058, T022-090; FR-022-022, FR-022-048, FR-022-057; SC-022-010, SC-022-023; NFR-022-002).** Delegate
+  (OD-2026-11-24-4). The tasks name the battery and "raw-key canaries in logs, spans, metrics and listings"; they leave
+  open which surfaces a canary reads and whether a key's label, not only its value, is a leak outside the listings.
+  Options: (a) the raw value only, in response bodies; (b) the raw value in every body any caller reads, every log line,
+  span and metric series, every audit record and every journal event of the gates, and a key's label in no log line,
+  span or series and in no body a caller without the reveal right reads; (c) (b) and the grant pass of the scheduler
+  driven by a real engine. Chosen (b). A label is the start of the keyed digest: the telemetry vocabulary
+  (`crates/telemetry/src/flow_control.rs`) already keeps it out of spans and series, and in a log line read by an
+  operator without the reveal right it would link runs as the group view forbids (D022-086). (c) adds nothing: the grant
+  pass reads keys by their digests and never holds a raw value, which is evaluated at admission only, and every start of
+  the test is admitted. The capture must show the gates' span names and series, or the canary would prove nothing, and
+  the test collects every surface at fault before it fails, so that one hand mutation planting a key in several places
+  turns each of them red at once. What the battery found: no leak. The listings' tenant boundary holds in three layers
+  (the route's admission, the service's `authorize` and `require_namespace`, the store's tenant filter): removing the
+  route's admission alone leaves the battery green, so the hand mutation that proves the cross-tenant clause removes
+  the first two. The same raw value files one label per gate and namespace whatever its group or level (the digest
+  reads the gate, the tenant, the namespace and the value: a step's slot shares the run's label), and unrelated labels
+  in another namespace or tenant. Tests: `battery::flow_control_keys_stay_in_their_tenant_and_namespace_and_never_show_their_value`
+  and `battery::every_implemented_operation_resists_an_administrator_of_another_tenant` (its victim now holds keys whose
+  value is a canary), in `contract_rest_security_multitenancy`. The two tests hold one lock for their whole run: a
+  `tracing` call site of the gates that one reaches while the other installs its capture can be cached as wanted by
+  nobody (`tests/support/logs.rs`), and the first runtime-role run missed the `workflow.rate_limit.admit` span that
+  way; the capture's own check of the gates' span names caught it.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
