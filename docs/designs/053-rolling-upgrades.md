@@ -157,7 +157,11 @@ From the code and documents on `develop` at `546d5aa5`:
   migrations' owner role, the effective grants (`aclexplode(coalesce(proacl, acldefault('f', proowner)))`) to hold no
   `PUBLIC` and no grant option, and the definer functions and their grantees to equal a hand-written allowlist in both
   directions (a function that is listed but missing or no longer a definer fails it too); the allowlist holds design
-  049's `sagat_retirer` set, this design's functions and each capability's fence functions.
+  049's `sagat_retirer` set, this design's functions and each capability's fence functions. The same test asserts
+  `sagat_retirer`'s whole privilege set in both directions: no row of `pg_auth_members` with it as member, its table
+  privileges (`has_table_privilege` over every table) exactly `SELECT` on `registry_first_confirmation`, and its
+  `EXECUTE` over every function of `pg_proc` (definer or not, through `aclexplode`) exactly the functions Requirement
+  053-005 names.
 - **Requirement 053-004 The runner.** `sagat_infra_postgres::migrate()` MUST become the loop below, and
   `scripts/check-architecture.py` refuses a direct `MIGRATOR.run` outside it, so that the integration suites exercise
   it; `control-plane migrate` calls `migrate_online()`, which is the same loop with design 048's confirmation before each
