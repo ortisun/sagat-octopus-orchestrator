@@ -49,7 +49,7 @@ workflow document's schema, `workflow.schema.json`), the worker protocol or the 
 
 The owner is the product owner of the platform; the decisions of this design are taken under the owner's delegation
 (Owner decision 2026-11-24-4 in [`docs/owner-decisions.md`](../owner-decisions.md)), and the reviews it settles are in
-[`050-studio-catch-up.reviews/`](050-studio-catch-up.reviews/2026-11-25/resolution.md).
+[`050-studio-catch-up.reviews/`](050-studio-catch-up.reviews/) (the resolutions of 2026-11-25 and 2026-11-26).
 
 ### Terms
 
@@ -76,14 +76,17 @@ The owner is the product owner of the platform; the decisions of this design are
   value, and the Queries that read it and the Updates that change it; `expectedStateRevision` makes an Update refuse
   when the state moved; `reapplyOnReset` keeps an Update's arguments so a reset can apply it again.
 - **Admitted iteration.** An iteration the engine has started (its scoped instances exist); a large collection admits
-  iterations as concurrency allows. A **compensation** (`~c` suffix) undoes a step in a saga; a **reconciliation**
-  (`~r` suffix) finds out whether a step with an unknown outcome happened (feature 003).
+  iterations as concurrency allows.
+- **Compensation.** A step, drawn with the `~c` suffix, that undoes a step in a saga (feature 003).
+- **Reconciliation.** A step, drawn with the `~r` suffix, that finds out whether a step with an unknown outcome
+  happened (feature 003).
 - **The Studio served from another build.** An operator may point the server at a Studio bundle of another build
   (`SAGAT_STUDIO_DIR`, Architecture decision 0016), so the Studio and the server can differ in version; the Studio
   therefore treats what it bundles as suggestions and the server's answers as the authority.
-- **Test terms.** The cross-tenant battery is the shared contract suite that calls every route with another tenant's
-  identifiers and expects the answer of a missing resource; the runtime role is the database role the deployed server
-  runs as (`SAGAT_TEST_AS_RUNTIME_ROLE=1` runs a suite as it).
+- **Cross-tenant battery.** The shared contract suite that calls every route with another tenant's identifiers and
+  expects the answer of a missing resource.
+- **Runtime role.** The database role the deployed server runs as (`SAGAT_TEST_AS_RUNTIME_ROLE=1` runs a suite as
+  it).
 - **Referenced features.** 003 sagas; 004 events and webhooks; 007 the Studio; 011 versions and publication; 013
   federated login; 014 workflow primitives (loops, approvals, declared state, chains); 018 schedules and batches; 020
   run search; 022 flow control; 026 forms and notifications; 027 internal apps; 028 developer tooling; 029 roles and
@@ -361,7 +364,10 @@ over its options and recorded with its reasoning in the register below; every de
 - **Decision 050-003 — A refused kind is kept and shown, never dropped.** Options: drop it on load; convert it on load;
   keep it read-only and offer a guided replacement. Chosen: keep and offer. Dropping loses work; an automatic
   conversion guesses `result` for a `forEach` and the policy for an `approval`, which have no exact source.
-- **Decision 050-004 — The inbox decides eligibility on the server.** See Architecture decision 0144.
+- **Decision 050-004 — The inbox decides eligibility on the server.** Options: the Studio asks every run; the server
+  returns the policy and the Studio computes; the server answers the caller's own eligibility by the rule that
+  decides. Chosen: the last, one rule for listing and deciding with nothing of the policy in the answer (Architecture
+  decision 0144).
 - **Decision 050-005 — Publication requests join the inbox.** Options: approvals only; approvals and publication
   requests. Chosen: both, because both are "a person must decide before the work goes on", and the second needs only
   a list route over rows that exist.
@@ -578,8 +584,8 @@ read-only with the reason and kept on save, as a node of a disabled kind is.
 Each other 0.3.0 feature adds its names, with a variant and a row here, when it ships: feature 035
 (`workflow.step-destinations`), feature 022
 (`workflow.flow-control.concurrency`, `workflow.flow-control.rate`), 027 (`apps.*`), 028 (`testing.*`), 029
-(`access.*`), 013 (`identity.*`). The instance registry (Architecture decision
-[0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md))
+(`access.*`), 013 (`identity.*`). The instance registry
+([Architecture decision 0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md))
 is unrelated to the Studio's node registry: every server process registers in it as a member and sends a beat every
 few seconds; an operator records a requirement there (a capability every process must have), which raises an epoch;
 a process that lacks a recorded requirement keeps a closed gate. This work is not part of design 050. A name that
@@ -675,7 +681,9 @@ until the author deletes it (a read-only node can be deleted). The author fills 
 
 ### 5. The run view
 
-- **Iterations.** The engine stops a collection or a loop at its first permanent iteration failure: the failed
+- **Iterations.**
+
+  *Outcomes.* The engine stops a collection or a loop at its first permanent iteration failure: the failed
   iteration is named by `CollectionDrainStarted` or `LoopDrainStarted` with the reason `Failed { iteration, code }`,
   admission stops, and each iteration already in flight ends either with a result (`...Returned`, then
   `...Checkpointed`) or without one (`CollectionIterationDrained`, `LoopIterationDrained`); a drain for the run-data
@@ -686,10 +694,13 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   retried step is `RUNNING` in its iteration: its own node shows the retry, and the iteration's outcome does not
   change. Under this rule a step that failed and was routed by `onError` belongs to a succeeded iteration, and
   compensations and reconciliations are not iterations.
-  The runtime graph projection gains, on a collection or loop owner node, `iterations`: the counts by outcome and, for a
+
+  *Counts on the owner.* The runtime graph projection gains, on a collection or loop owner node, `iterations`: the counts by outcome and, for a
   collection, `notAdmitted` and `total`; an additive field of `RuntimeNode`. Every iteration event names the owner
   node, so `graph/changes` re-sends the owner whenever a count changes and the counts stay current (Decision 050-012).
-  No field is added to scoped instances. The outcome of each iteration is read from a new paged route,
+  No field is added to scoped instances.
+
+  *The iteration route.* The outcome of each iteration is read from a new paged route,
   `GET /runs/{runId}/graph/iterations?owner=&outcome=&after=&limit=` (`run:read`; the route admits the run first, as
   `crates/api-http/src/routes/execution.rs` does for its other run routes, and reads the query by hand only after, so no
   refusal about the query comes before the refusal about the run; `owner` is the owner's `RuntimeNode.id`, at most 1 KiB
@@ -697,7 +708,8 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   page with no detail about the run; answers carry `Cache-Control: no-store`, as the per-run list does; `limit` 1 to 500, default 100; `after` the last index
   returned, with the outcome filter applied in the query, so the keyset holds under a filter; items `index`,
   `outcome`, `failureCode` on the failed one, `entryInstanceId`).
-  **The source.** Both read the engine's progress tables, written in the transactions that append the iteration
+
+  *The source.* Both read the engine's progress tables, written in the transactions that append the iteration
   events: `iteration_scopes` and `collection_iterations` for a collection, `loop_scopes` and `loop_iterations` for a
   loop (iteration lifecycles `ADMITTED`, `CHECKPOINTED`, `DRAINED`). They hold no failed index, so a migration adds
   `failed_iteration integer` and `failure_code text` to `iteration_scopes` and `loop_scopes`, written by the statements
@@ -712,7 +724,8 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   `crates/api-http/src/dto_exec.rs`; `graph_changes` reads the snapshot again on every poll, so a re-sent owner carries
   current counts. The page is `RunService::iteration_page` over a new `RunStore::iteration_page`, adapter
   `crates/infra-postgres/src/iteration_read.rs`, route in `crates/api-http/src/routes/execution.rs`.
-  `model/runGraph.ts` groups `RuntimeNode`s by `instancePath` and `nodeId` (never by parsing `id`) under their
+
+  *Drawing.* `model/runGraph.ts` groups `RuntimeNode`s by `instancePath` and `nodeId` (never by parsing `id`) under their
   outermost scope node and draws: the card shows the reported counts; the iteration strip (`useWindowedRows` of
   `features/runs/useWindow.ts`) pages the iteration list for the rows in view, filterable by outcome, and reads the
   rows in view again when the owner arrives in `graph/changes`; choosing an iteration draws its body graph from the
@@ -744,10 +757,15 @@ until the author deletes it (a read-only node can be deleted). The author fills 
 ### 6. The inbox
 
 **Server, approvals.** `GET /namespaces/{namespaceId}/approvals?decidable=true|false&cursor=&limit=`
-lists pending approvals only and needs `run:read` and `approval:read`. The rule stays where it is:
+lists pending approvals only and needs `run:read` and `approval:read` (admission `ApiOperation::ApprovalRead` with
+`ApiTarget::Namespace`, which answers another tenant's namespace as missing).
+
+*Eligibility rule.* The rule stays where it is:
 `crates/domain/src/execution/approval.rs` gains `ApprovalRequest::may_decide(&Principal, run_ended) -> bool`,
 extracted from `authorize_decision` (tenant, `approval:decide`, the policy snapshot's subjects and roles, the initiator
-exclusion), and `decide` calls it with the same inputs. A new port
+exclusion), and `decide` calls it with the same inputs.
+
+*Port and adapter.* A new port
 `ApprovalInboxStore` (`crates/application/src/approval_inbox.rs`) has one method,
 `pending_page(tenant, namespace, after: Option<(OffsetDateTime, ApprovalRequestId)>, scan: u32) -> InboxScan`, where
 `InboxScan` holds the rows (`ApprovalRequest` with its policy snapshot and initiator, the run's status, the workflow's
@@ -762,30 +780,42 @@ point-in-time hint, where the decision reads it again in its own transaction) an
 `may_decide(principal, run_ended)`, then drops the undecidable rows when `decidable=true`. The per-run
 list computes the flag from the same row type, read for one run by one statement as well; the session principal the
 request already carries is built from the current membership on every request, so the use case may take it instead of
-a second read. `decide` takes the same `run_ended` input, derived by the adapter from `RunStatus::is_terminal`
+a second read.
+
+*Ended runs.* `decide` takes the same `run_ended` input, derived by the adapter from `RunStatus::is_terminal`
 (today the adapter refuses an ended run itself before it reads the caller's principal, and answers a retryable
 `503`; that guard in `crates/infra-postgres/src/approval_progress.rs` is deleted, not remapped, so an ineligible caller
 never learns that the run ended): the domain then refuses with `RunEnded`, which the route answers `409` with `details.reason` `RUN_ENDED`, and
 the inbox leaves such rows out. Inside `decide` the order is kept: authorization first, then a winning receipt under
 the key replays (also on an ended run), then a settled status answers `ALREADY_DECIDED`, and only a `PENDING` request
 with no winning receipt on an ended run answers `RunEnded`; `may_decide` mirrors that order, so the golden
-`approval-settlement.json` of the SDK conformance suite keeps its answers. No SQL predicate repeats the rule; the snapshots never leave the use case. A page reads
+`approval-settlement.json` of the SDK conformance suite keeps its answers. No SQL predicate repeats the rule; the snapshots never leave the use case.
+
+*Paging and access filters.* A page reads
 at most 2,000 rows; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
 returned, so a page that drops every row it scanned still returns a cursor, and it is null only when no row remains
 (Architecture decision 0144, decision 5). Because the cursor names a scanned row, every access filter is a predicate
 of the scan, never a filter after it: feature 029's `visibleFolders` is added to the statement's `WHERE` (an access
 filter, not the eligibility rule, which stays in the domain), so a row the caller may not see is never scanned and
 never named by a cursor. The test `a_cursor_never_names_a_row_in_a_hidden_folder` is written by whichever of this
-design and 029's slice 0 merges second; the publication inbox follows the same rule. The run view does not use this route: the items of the existing
+design and 029's slice 0 merges second; the publication inbox follows the same rule.
+
+*Per-run list.* The run view does not use this route: the items of the existing
 `GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, computed the same way (`ApprovalListItem`, a
-closed schema, gains the property; the flag concerns only the caller and reveals no policy, initiator or decider). A run end is
+closed schema, gains the property; the flag concerns only the caller and reveals no policy, initiator or decider).
+
+*Run ends.* A run end is
 checked to cancel its pending approvals (the test `every_run_end_cancels_its_pending_approvals`); a path found not to
 becomes a follow-up task of its own scope, and until it is fixed such rows are left out of the inbox by the
-`run_ended` input. A migration adds `CREATE INDEX IF NOT EXISTS approval_requests_pending_deadline_idx ON approval_requests
+`run_ended` input.
+
+*Index.* A migration adds `CREATE INDEX IF NOT EXISTS approval_requests_pending_deadline_idx ON approval_requests
 (tenant_id, namespace_id, deadline, request_id) WHERE status = 'PENDING'`; the runbook tells an operator with a large
 table to build it `CONCURRENTLY` before upgrading, as earlier migrations do, and to check `pg_index.indisvalid`
 first, dropping and rebuilding an invalid index left by a failed concurrent build, which `IF NOT EXISTS` would
-otherwise skip; its `down` drops it. Items: `approvalId`, `runId`, `workflowId`, `workflowName`, `businessId`,
+otherwise skip; its `down` drops it.
+
+*Items.* `approvalId`, `runId`, `workflowId`, `workflowName`, `businessId`,
 `nodeId`, `instancePath`, `status`, `deadline`, `openedAt` (the request's `created_at`), `youMayDecide`; `limit` 1 to
 200, as the per-run list. No policy member, initiator, decider or
 reason. Feature 026 adds its summary flag additively when it builds the summary.
@@ -793,14 +823,19 @@ reason. Feature 026 adds its summary flag additively when it builds the summary.
 **Server, publication requests.** `GET /namespaces/{namespaceId}/publication-requests?decidable=&cursor=&limit=`
 lists the open requests that still need an approval under the namespace's current effective policy (`PENDING`, and
 `APPROVED` with fewer approvals than the policy now requires, because publication recounts) and needs
-`definition:read`. `crates/domain/src/versioning.rs` gains `PublicationRequest::may_decide(&Subject) -> bool` with the
+`definition:read` (admission `ApiOperation::DefinitionRead` with `ApiTarget::Namespace`).
+
+*Eligibility rule.* `crates/domain/src/versioning.rs` gains `PublicationRequest::may_decide(&Subject) -> bool` with the
 open-state clause and the three clauses of Architecture decision 0018 decision 4 (not the requester, not the last
-editor, not a person who already decided it), which `decide` calls; the use case adds `publication:approve`. Order:
+editor, not a person who already decided it), which `decide` calls; the use case adds `publication:approve`.
+
+*Paging, port and index.* Order:
 `requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; a port `PublicationInboxStore::open_page` returns each request with its decisions, requester and last editor (for
 `may_decide`, never in the item) and `approvalsRequiredNow`, read by the same policy resolution that publication's
 recount uses (`crates/application/src/versioning.rs`), in one query per page; a migration adds `publication_requests_open_requested_idx ON publication_requests
-(tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`. Items:
-`requestId`, `workflowId`, `workflowName`, `kind`, `state`, `draftRevision`, `requestedBy`, `requestedAt`,
+(tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`.
+
+*Items.* `requestId`, `workflowId`, `workflowName`, `kind`, `state`, `draftRevision`, `requestedBy`, `requestedAt`,
 `approvals`, `approvalsRequiredNow` (what the current effective policy requires), `youMayDecide`. The item never
 carries `decisions` or `editedBy`: the inbox says what waits and whether the caller may decide it, and who decided or
 last edited stays on the workflow's own list, which discloses them under the same `definition:read`; the requester is
@@ -960,7 +995,8 @@ and `scope` when 022's branch has merged, or 022 does it when it merges second; 
 primitive goes in a new file of `src/ui/`.
 
 - [ ] T050-1 Studio builder, after pull request #267: accept Architecture decision 0101 with its two conditions (its
-  status set in #267, or a follow-up on `develop`, to accepted under OD-2026-11-24-700); the bundle budget test in
+  status set in #267, or a follow-up on `develop`, to accepted under OD-2026-11-24-700); the Overview's link to it
+  becomes the relative `../adr/` link once #267 has merged; the bundle budget test in
   `frontend/apps/studio` with the figures measured on the merged branch; the performance journey recorded in
   `specs/007-workflow-studio/quickstart.md`.
   Verification: `npm test -- bundle-budget` fails on an entry script 11% larger; the quickstart names the result and

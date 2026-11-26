@@ -27,7 +27,7 @@ From release 0.3.0 each tenant (an organization) connects its own identity provi
   ([Architecture decision 0141](../adr/ADR-0141-saml-responses-are-verified-by-the-platforms-own-strict-profile-verifier-in-memory-safe-code-with-xmlsec-as-the-test-oracle.md)).
 - **Provisioning**: just-in-time on first sign-in, and SCIM 2.0 for users and groups, so a person removed from the
   company's directory loses access on their next request after the directory's SCIM call reaches the platform (how
-  soon the directory calls is the provider's: Technical Plan 6). Groups arrive as durable rows that feature 029 assigns roles and
+  soon the directory calls is the provider's: Gap 013-014). Groups arrive as durable rows that feature 029 assigns roles and
   folder access to, and a connection may map groups to the built-in role
   ([Architecture decision 0142](../adr/ADR-0142-a-federated-person-is-a-member-linked-to-external-identities-and-provisioning-and-groups-arrive-as-durable-rows-claims-never-authorize.md)).
 - **Session security**: server-side sessions with absolute and idle expiry, five-minute access tokens renewed from the
@@ -57,10 +57,12 @@ for break-glass. `apps/dev-idp` grows a development OIDC provider, and SAML runs
 - **Break-glass.** Signing in through the deployment issuer to a tenant that requires federated sign-in, by a subject
   the operator named, audited and alerted.
 - **Platform token.** An access token the sign-in service issues (`iss` the platform issuer, `aud` `<public origin>/v1`,
-  the platform API's resource identifier); a **deployment token** is one of the deployment issuer. The **issuer kind**
-  is which of the two verified a request's token.
-- **Owning connection** and **pin.** The one connection whose SCIM and mapping rules may change a member's role and
-  status (Decision 013-013); a pin is an administrator's mark that keeps a member's role unchanged by mapping.
+  the platform API's resource identifier).
+- **Deployment token.** An access token of the deployment issuer.
+- **Issuer kind.** Which of the two issuers verified a request's token.
+- **Owning connection.** The one connection whose SCIM and mapping rules may change a member's role and status
+  (Decision 013-013).
+- **Pin.** An administrator's mark that keeps a member's role unchanged by mapping.
 - **Neutral page.** The sign-in service's answer when it cannot start a sign-in (an unknown organization, or one
   without an active connection): the same page, byte for byte, in both cases (Requirement 013-006).
 - **Slot.** A position in the fixed order in which every write transaction of the platform takes its row locks, so
@@ -79,14 +81,15 @@ for break-glass. `apps/dev-idp` grows a development OIDC provider, and SAML runs
   [Architecture decision 0035](../adr/ADR-0035-database-connections-and-managed-execution.md) decision 7 for a secret
   written through the API: record the intent in PostgreSQL, write the secret to OpenBao, read it back, then mark it
   active, so a crash never leaves a reference to a secret that does not exist.
-- **Reveal grants, secret access entries, feature 026 links.** A member's permission to see one run's payloads in
-  clear (feature 011), an entry of a secret's access list (feature 017), and a signed link by which a person decides an
-  approval or submits a form (feature 026).
-- **Test terms.** The cross-tenant battery is the shared contract suite that calls every route with another tenant's
-  identifiers and expects the answer of a missing resource; the canary scan plants marked values and searches logs,
-  spans, audit records and responses for them; the test composition is the server, PostgreSQL, OpenBao and the
-  development providers that `tests/support` starts for a suite; the development overlay is
-  `infra/docker/compose.database.yaml`, which a developer starts on a laptop.
+- **Reveal grant.** A member's permission to see one run's payloads in clear (feature 011).
+- **Secret access entry.** An entry of a secret's access list (feature 017).
+- **Feature 026 link.** A signed link by which a person decides an approval or submits a form (feature 026).
+- **Cross-tenant battery.** The shared contract suite that calls every route with another tenant's identifiers and
+  expects the answer of a missing resource.
+- **Canary scan.** A test that plants marked values and searches logs, spans, audit records and responses for them.
+- **Test composition.** The server, PostgreSQL, OpenBao and the development providers that `tests/support` starts for a
+  suite.
+- **Development overlay.** `infra/docker/compose.database.yaml`, which a developer starts on a laptop.
 
 ## The Problem
 
@@ -124,7 +127,7 @@ already has.
 
 ### Functional
 
-**Connections**
+#### Connections
 
 - **Requirement 013-001** A tenant administrator (new permission `identity:manage`, built-in `admin` only, reserved
   and administrator-equivalent in feature 029's catalog) MUST be able to create, change, test, activate, disable and
@@ -169,7 +172,7 @@ already has.
   `emailAddress` subject are refused at activation; a key rotation of the only active connection of a federated-only
   tenant succeeds.
 
-**Sign-in**
+#### Sign-in
 
 - **Requirement 013-005** The sign-in service MUST be an OpenID provider for the clients `studio` and `cli`:
   discovery, key set, authorization endpoint and token endpoint under `/v1/auth/`. The authorization endpoint MUST
@@ -214,7 +217,7 @@ already has.
   the requirement MUST revoke, in its transaction, the connection's sessions whose recorded context does not meet it.
   *Acceptance:* refusal and acceptance tests with the development providers; the revocation on a raised requirement.
 
-**Identities and provisioning**
+#### Identities and provisioning
 
 - **Requirement 013-011** A federated identity MUST be (tenant, connection, the provider's stable identifier) linked to
   exactly one membership subject (Architecture decision 0142); the platform MUST NOT link identities by e-mail. A link
@@ -273,7 +276,7 @@ already has.
   `POST`, so a larger group is synced by patches, as Okta and Entra ID send them). *Acceptance:* the cross-tenant battery entries, a rotation
   test and the limit tests.
 
-**Sessions and tokens**
+#### Sessions and tokens
 
 - **Requirement 013-018** Redeeming a code with its PKCE verifier MUST create the session row (absolute expiry 12
   hours by default, 8 hours on a connection without SCIM, at most 24; idle expiry 2 hours by default) and, for the `studio` client only, set a
@@ -313,6 +316,8 @@ already has.
   decision 0140: `a_revoked_session_is_refused_on_its_next_request` (a barrier holds a request after its membership read
   while the revocation commits: that request completes, the next one is refused), `a_stream_ends_within_ten_seconds_of_its_session`
   (measured), `a_stream_resumes_with_last_event_id`.
+#### Members and tenant policy
+
 - **Requirement 013-020** Member management: `GET /members` (with role, status, owning connection, last sign-in),
   `POST /members` (pre-provision an external identity of a connection with a role), `PATCH /members/{subject}` (role,
   pin, status, owning connection), `DELETE /members/{subject}`, `DELETE /members/{subject}/identities/{id}` (unlink,
@@ -341,10 +346,14 @@ already has.
   `a_scim_suspension_and_a_member_demotion_cannot_remove_the_last_admin` (barrier).
 - **Requirement 013-022** Domain verification and discovery by e-mail domain are deferred from 0.3.0 (Decision
   013-011, Gap 013-010); a later delivery adds them without changing the slug path.
+#### Sign-out
+
 - **Requirement 013-023** Sign-out: `POST /v1/auth/logout` MUST revoke the session and clear the cookie; for an OIDC
   connection whose discovery has `end_session_endpoint`, and a SAML connection with a single logout address, the
   Studio MUST offer to sign out at the provider too (front-channel redirect). *Acceptance:* tests with the development
   providers.
+#### Provider calls and identity secrets
+
 - **Requirement 013-024** Every outbound call to a provider (discovery, key set, token endpoint, metadata, userinfo)
   MUST go through a new identity egress guard in `crates/infra-egress` (Technical Plan 2): `https` on port 443 (or a
   port the deployment lists), any name, and every resolved address classified by the existing `classify` and refused
@@ -371,6 +380,8 @@ already has.
   it has not cached (a restarted process, or a rotation); there, people are signed out as their tokens expire, within
   five minutes, and the process raises `IDENTITY_SIGNING_UNAVAILABLE`; verification keeps working from the in-process key set. OpenBao Transit signing is
   deferred (Gap 013-012).
+#### Clients
+
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (one use, rotated on every refresh by compare-and-set on its generation, the new
   token signed before the commit; a reuse of the immediately previous generation within 30 seconds of its rotation, while
@@ -388,7 +399,7 @@ already has.
   control the person cannot use is shown unavailable with the permission it needs. *Acceptance:* component tests and
   the journey of Success criterion 013-001.
 
-**Cross-cutting**
+#### Cross-cutting
 
 - **Requirement 013-028** Audit: connection created, changed, tested, activated, disabled and deleted; sign-in
   succeeded; sign-in refused (collapsed per connection, reason and five minutes); member provisioned (just in time,
@@ -435,7 +446,7 @@ already has.
   an identity linked by e-mail; a request to a private address on behalf of a connection; a secret, token, code or
   assertion in a log, span, audit record, response or error; a suspended member served after its next request; a
   revoked session's token served on a request that began after the revocation committed, or a stream of it alive more
-than one re-check interval (10 seconds) after; a platform token reaching
+  than one re-check interval (10 seconds) after; a platform token reaching
   apps-origin script; a session created by a sign-in that another site started.
 - **Non-functional requirement 013-002 (durability)** A provisioning, a role change, a suspension and a session
   revocation commit with their audit in one transaction; a crash leaves the previous state; a repeated SCIM request
@@ -450,7 +461,7 @@ than one re-check interval (10 seconds) after; a platform token reaching
 
 ### Success criteria
 
-- **Success criterion 013-001** One journey per milestone, in the test composition. Milestone A: an administrator
+- **Success criterion 013-001** One journey per milestone (Decision 013-020), in the test composition. Milestone A: an administrator
   configures an OIDC connection against the development provider, tests and activates it, enables SCIM, and a person
   pushed by SCIM signs in and starts a run; deactivating the person by SCIM refuses their next request at once,
   including the request of a live token. Milestone B: the same sign-in through a SAML connection against the pinned
@@ -507,8 +518,9 @@ decision 2026-11-24-4, each weighed over its options and recorded below as "dele
 
 ### Decisions
 
-- **Decision 013-001 — Broker in the control plane.** See Architecture decision 0140 (options: a multi-issuer resource
-  server, an external broker, opaque sessions).
+- **Decision 013-001 — Broker in the control plane.** Options: a resource server that trusts every provider's tokens;
+  an external broker; opaque sessions; the control plane as broker issuing its own short tokens. Chosen: the broker in
+  the control plane, one token format and a tenant binding the platform owns (Architecture decision 0140).
 - **Decision 013-002 — SCIM is in 0.3.0.** Options: just-in-time provisioning only; SCIM too. Chosen: SCIM. Without it,
   leaving the company does not end access until a person's token expires and an administrator remembers to remove
   them, groups can only come from sign-in snapshots, and an enterprise buyer's security review fails (Temporal Cloud
@@ -538,8 +550,12 @@ decision 2026-11-24-4, each weighed over its options and recorded below as "dele
   feature 029, each a source of the defects the reviews found, for a result SCIM gives durably and revocably. A
   connection without SCIM gets its default role and roles administrators assign (Gap 013-011 names the providers that
   lose group sync). SCIM groups do not expire by silence (Architecture decision 0142, option 5).
-- **Decision 013-008 — SAML through the platform's own verifier.** See Architecture decision 0141.
-- **Decision 013-009 — Feature 029's Owner question 1440 and 1442 are answered by this design.** Identity-provider
+- **Decision 013-008 — SAML through the platform's own verifier.** Options: `samael` with `xmlsec1` and `libxml2`; a
+  sidecar verifier; OIDC only; a strict-profile verifier in memory-safe Rust with `xmlsec1` as a test oracle. Chosen:
+  the last, no C XML code in the control plane and a profile narrow enough to refuse wrapping (Architecture decision
+  0141).
+- **Decision 013-009 — Feature 029's Owner question 1440 and 1442 are answered by this design** (a record of scope,
+  not a choice between options). Identity-provider
   groups come from design 013 (SCIM) and member management is design 013's (Requirement 013-020); see the
   readiness pass of feature 029.
 - **Decision 013-010 — Keycloak as the SAML provider for development and tests, and the interoperability target.**
@@ -591,13 +607,13 @@ decision 2026-11-24-4, each weighed over its options and recorded below as "dele
   doubles the operated surface before any measurement shows a need. Revisit when a parser advisory affects the SAML
   stack, when SCIM load is measured to disturb the API, or when design 048's topology gives the control plane a
   network position that the anonymous surface should not share.
-- **Decision 013-019 — What this design builds in other features' code.** For 0.3.0 this design owns only the identity
+- **Decision 013-019 — What this design builds in other features' code** (a record of scope). For 0.3.0 this design owns only the identity
   mount and the signing key, behind ports feature 015 may re-home when it is designed; it adds the external-group
   columns to feature 029's tables (Decision 013-017), the `ACTIVE` predicate to the membership reads every feature uses
   (Requirement 013-016). The in-process redemption port for feature 027's embedded apps is built by 027's delivery
   against the contract of Requirement 013-005. Recorded as Owner decision 2026-11-24-717 (a delegate's), which
   the tasks that touch those features cite in an `Owner-gate:` line.
-- **Decision 013-020 — Four milestones.** Settling Major 1 of the Stage 5 review, the plan ships in milestones, each
+- **Decision 013-020 — Four milestones** (a record of delivery order). Settling Major 1 of the Stage 5 review, the plan ships in milestones, each
   with its own acceptance and gate: **A** OIDC connections, the broker and platform tokens, sessions and revocation,
   just-in-time provisioning, the member routes, the CLI, slug sign-in, the required context, SCIM users (offboarding
   works at the end of A); **B** the SAML verifier and SAML connections; **C**, gated on feature 029's migration, SCIM
@@ -732,7 +748,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | The OIDC client (its connection key sets are `JwksCache` instances over a fetcher through the identity egress guard); the SAML parser, canonicalization and signature check | `crates/infra-federation` (new adapter crate) |
 | Tables, stores, the redefined `sagat_lock_memberships`, the session join of the membership read | `crates/infra-postgres` (migration `<ts>_federated_login`, `src/federation.rs`, `src/identity.rs`) |
 | Routes `/v1/auth/*`, `/scim/v2/*`, `/identity/*`, `/members*`; the multi-issuer verifier; `Core::authenticate` widened to take the issuer kind, `sid` and `jti` | `crates/api-http/src/routes/{signin,scim,identity_admin,members}.rs`, `crates/api-http/src/auth/issuers.rs`, `crates/api-http/src/core.rs` |
-| Configuration, the `identity-federation-v1` capability, the operator commands `identity signing-key create|rotate` and `identity break-glass`, the start-up refusals (a deployment issuer equal to the platform issuer; origins that break Architecture decision 0062 decision 8) | `apps/control-plane` |
+| Configuration, the `identity-federation-v1` capability, the operator commands of Technical Plan 12, the start-up refusals (a deployment issuer equal to the platform issuer; origins that break Architecture decision 0062 decision 8) | `apps/control-plane` |
 | The leased maintenance passes (Technical Plan 6) | `crates/scheduler/src/identity.rs`, run by the execution engine under the engine lease `identity-maintenance`, only once `identity-federation-v1` is recorded |
 | The development OIDC provider on its own paths (SAML runs against the pinned Keycloak) | `apps/dev-idp` |
 | `sagat login`, key store | `apps/cli` |
@@ -778,7 +794,9 @@ case-insensitive.
 
 ### 4. Sign-in flows
 
-**Begin.** The Studio's sign-in page starts the flow itself: `startLogin` gains the optional `organization` and
+#### Begin
+
+The Studio's sign-in page starts the flow itself: `startLogin` gains the optional `organization` and
 `login_hint` parameters and keeps making `state` and PKCE in the page, then navigates to
 `GET /v1/auth/authorize?client_id=studio&redirect_uri=…&code_challenge=…&code_challenge_method=S256&state=…&organization=acme`
 (with an optional `login_hint` passed through to the provider; there is no form post, so the Studio's
@@ -793,7 +811,9 @@ endpoint always sends the person to the provider: a reload, a new tab or a deep 
 session renews through `POST /v1/auth/session/token` instead, which keeps the session's authentication time, so only a
 round trip to the provider is a recent sign-in.
 
-**Complete.** `GET /v1/auth/callback/oidc/{connectionId}` or `POST /v1/auth/callback/saml/{connectionId}` (the global
+#### Complete
+
+`GET /v1/auth/callback/oidc/{connectionId}` or `POST /v1/auth/callback/saml/{connectionId}` (the global
 identifier) opens the attempt (for a sign-in, the cookie named by `state` or `RelayState`; for a link or a test, its row and its
 binding cookie) and checks it (this browser, unexpired, same connection), verifies the provider's answer
 (Requirement 013-007 or Architecture decision 0141), checks the tenant restriction and the required authentication
@@ -804,7 +824,9 @@ redirect URI with a one-use code (Requirement 013-005). For a link or a test att
 page instead, with no code. It writes no membership, no session and no cookie. Provider error text is never forwarded
 (Requirement 013-030).
 
-**Test sign-in and link.** Linking a provider identity to an existing member, and the test sign-in that moves a
+#### Test sign-in and link
+
+Linking a provider identity to an existing member, and the test sign-in that moves a
 connection to `TESTED`, are one flow, started and finished by the signed-in person, whichever issuer signed them in:
 
 1. The Studio calls `POST /v1/auth/links` with the person's bearer token (deployment or platform), the exact `Origin`
@@ -827,7 +849,9 @@ connection to `TESTED`, are one flow, started and finished by the signed-in pers
 No session row is created and no code is issued, so a link or a test never signs anyone in. A cross-site page can start
 nothing (step 1 needs the bearer token) and confirm nothing (step 4 needs it again).
 
-**Redeem.** `POST /v1/auth/token` with `grant_type=authorization_code`, the code and the PKCE verifier (`studio` and
+#### Redeem
+
+`POST /v1/auth/token` with `grant_type=authorization_code`, the code and the PKCE verifier (`studio` and
 `cli`) is one transaction, in this order:
 
 1. Consume the code: `UPDATE ... SET redeemed_at = now() WHERE hash = $1 AND redeemed_at IS NULL RETURNING ...`
@@ -849,11 +873,15 @@ It returns the access token (and for `cli` a refresh token) and, for `studio`, s
 `grant_type=refresh_token` (`cli` only) rotates the refresh token by compare-and-set on its generation; the grace for a
 lost response and the revocation on any other reuse are Requirement 013-026's.
 
-**Renew.** `POST /v1/auth/session/token` (`studio` only): cookie, the Studio's exact `Origin`, header
+#### Renew
+
+`POST /v1/auth/session/token` (`studio` only): cookie, the Studio's exact `Origin`, header
 `X-Sagat-Renew: 1`, no CORS; the re-checks of Requirement 013-019; extends the idle expiry and returns a new access
 token; refuses after the absolute expiry.
 
-**Verify.** `crates/api-http/src/auth/issuers.rs` reads `iss` from the unverified token only to select the verifier:
+#### Verify
+
+`crates/api-http/src/auth/issuers.rs` reads `iss` from the unverified token only to select the verifier:
 the deployment issuer's `TokenVerifier` (whose rules do not change; the new refusal of a subject starting `federated:`
 is applied after it, in `authenticate_bearer`) or the platform issuer's verifier, whose key set is a `JwksCache` over a `JwksFetcher` that reads
 `identity_signing_keys` (one cache, one set of fault tests), `typ` `at+jwt`, the API
@@ -862,20 +890,28 @@ receives the issuer kind, `sid` and `jti` (its signature becomes `authenticate(&
 `VerifiedCaller { tenant, subject, issuer: IssuerKind, sid, jti, client_id }`, in all five implementations:
 `crates/api-http/src/core.rs`, `exec.rs`, `governance.rs`, `routes/declared_operations.rs`, `routes/primitives.rs`;
 `Core::verifier` returns the `IssuerVerifiers` of `auth/issuers.rs`, which the execution engine builds deployment-only,
-so its worker gRPC path refuses a platform token), and the request path resolves, through one new store method
-`IdentityStore::resolve_caller(slug, subject, session: Option<SessionRef>) -> Option<CallerRow>`, and the request path resolves, in one statement that merges today's two
-reads (`find_tenant_by_slug`, `find_membership`), the tenant and its identity-settings row (with `federated_only`), the membership with its
+so its worker gRPC path refuses a platform token).
+
+The request path then resolves, through one new store method
+`IdentityStore::resolve_caller(slug, subject, session: Option<SessionRef>) -> Option<CallerRow>`, in one statement that
+merges today's two reads (`find_tenant_by_slug`, `find_membership`), the tenant and its identity-settings row (with `federated_only`), the membership with its
 status and its effective role (Technical Plan 13), and, for a platform token, its session by (`tenant`, `sid`) with the session's subject and client equal to the
 token's, its connection `ACTIVE` at the session's `identity_revision`, and the token's `kid` not `REVOKED` (primary-key
 lookups in the same statement); a suspended member or a revoked or expired session is refused with `401` and the reason `MEMBER_SUSPENDED` or
-`SESSION_REVOKED`. For a deployment token every failure keeps today's single answer; a platform token's caller has
+`SESSION_REVOKED`.
+
+For a deployment token every failure keeps today's single answer; a platform token's caller has
 already proved who they are, so its two reasons tell the Studio and the CLI to sign in again, and the test
-`authenticate_gives_the_same_answer_for_every_kind_of_failure` is narrowed to deployment tokens. A stream's `Who`
+`authenticate_gives_the_same_answer_for_every_kind_of_failure` is narrowed to deployment tokens.
+
+A stream's `Who`
 (`crates/api-http/src/routes/execution.rs`) gains the issuer kind and `sid`, and `StreamLimits`
 (`crates/api-http/src/streams.rs`) re-checks a platform token's stream every 10 seconds and keeps 30 seconds for a
 deployment token. The execution engine verifies the deployment issuer only (Decision 013-016).
 
-**Signing keys.** The platform key set is a `JwksCache` whose three settings are named here and not inherited from
+#### Signing keys
+
+The platform key set is a `JwksCache` whose three settings are named here and not inherited from
 the deployment cache (whose time to live is 600 seconds): time to live and minimum refresh interval both equal the
 refresh interval, a control-plane setting of 30 seconds by default, and no staleness window: a replica whose last
 successful read is older than two intervals stops signing (the signer records the time of its view of the active key)
@@ -888,12 +924,13 @@ longest token lifetime) and the leeway, 390 seconds at the defaults; it never re
 per-request statement refuses a token whose `kid` is `REVOKED` at once, on every replica.
 `control-plane identity signing-key revoke` (audited) is the emergency path for a leaked key: it activates a new key at
 once without waiting (accepting that replicas sign nothing until they read it, at most one interval), marks the leaked
-key `REVOKED`, and the runbook's emergency page lists the steps. the cache's
-existing rules refresh it on an unknown `kid` (at most once per minimum interval) and bound its staleness, and a
-replica stops signing when its set is older than two intervals. The serving process
+key `REVOKED`, and the runbook's emergency page lists the steps. The cache's
+existing rules refresh it on an unknown `kid` (at most once per minimum interval). The serving process
 never creates a key. The rotation test drives the refreshes by a controlled clock.
 
-**Lock order.** Every write transaction of this design follows the slots of Architecture decision 0050 (Terms):
+#### Lock order
+
+Every write transaction of this design follows the slots of Architecture decision 0050 (Terms):
 redemption as its steps above (the code in slot 2; then the settings row, the connection row, the membership and the
 fence in slot 4a; the session and attempt rows after them); a SCIM user request takes the membership, then the fence; a SCIM group request takes
 the affected memberships in subject order (slot 4a, first), then the 029 tenant access fence (slot 4a, after
@@ -911,7 +948,9 @@ row (slot 1). In `tests/support/lock_order.rs`, a writer that checks the federat
 `Slot::Authority`. The paths are added to `tests/support/lock_order.rs` and feature 029's
 `lock_order.rs`.
 
-**Break-glass.** With federated sign-in required, `IdentityService::authenticate` refuses a deployment-issuer token
+#### Break-glass
+
+With federated sign-in required, `IdentityService::authenticate` refuses a deployment-issuer token
 for a human member of that tenant unless the subject is in the tenant's break-glass list, which only `control-plane
 identity break-glass` (schema-owning role) writes; machine members (`worker`, `runner`, `database-runner`) are exempt by
 their membership role. Each use is audited once per token `jti`, raises the alert `IDENTITY_BREAK_GLASS_USED`, and is
@@ -1043,8 +1082,10 @@ production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/
 
 ### 11. Contracts and errors
 
-- `specs/001-platform-foundation/contracts/openapi.yaml`: the `/v1/auth/*` operations that return JSON (discovery, key
-  set, token, renewal, logout, links), `/identity/*` and `/members*`, their schemas and errors, `x-implemented:
+#### Routes
+
+`specs/001-platform-foundation/contracts/openapi.yaml`: the `/v1/auth/*` operations that return JSON (discovery, key
+set, token, renewal, logout, links), `/identity/*` and `/members*`, their schemas and errors, `x-implemented:
   '013'`; the SCIM routes in a separate fragment `specs/013-federated-login/contracts/scim.openapi.yaml` (SCIM's own
   media type and error format).
 
@@ -1074,7 +1115,10 @@ production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/
   | `GET`, `PATCH /identity/settings` | `identity:manage` | federated-only (milestone D), session lifetimes, ceilings |
   | the `/members` routes of Requirement 013-020 | `membership:manage` | member management |
   | `GET /auth/sessions`, `DELETE /auth/sessions/{sid}` | an authenticated caller, their own only | the caller's sessions |
-- `details.reason` values (new): `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `SIGNIN_ATTEMPT_INVALID`,
+
+#### Errors
+
+`details.reason` values (new): `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `SIGNIN_ATTEMPT_INVALID`,
   `SIGNIN_PROVIDER_REFUSED`, `SIGNIN_TOKEN_INVALID`, `SAML_PROFILE_VIOLATION`, `AUTH_CONTEXT_REQUIRED`,
   `IDENTITY_NOT_PROVISIONED`, `IDENTITY_LINK_CONFLICT`, `FEDERATION_REQUIRED`, `LOCKOUT_GUARD`,
   `PROVIDER_DESTINATION_DENIED`, `REFRESH_TOKEN_REUSED`, `SESSION_REVOKED`,
@@ -1092,6 +1136,7 @@ production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/
   | `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `IDENTITY_LINK_CONFLICT`, `LOCKOUT_GUARD`, `FEDERATION_NOT_ACTIVATED`, `CONNECTION_GROUPS_NAMED` | `CONFLICT` | 409 |
   | `PROVIDER_DESTINATION_DENIED`, `ISSUER_IMMUTABLE`, `TENANT_RESTRICTION_REQUIRED`, `SUBJECT_FORMAT_REFUSED` | `VALIDATION_FAILED` | 422 |
   | `IDENTITY_SIGNING_UNAVAILABLE` | `UNAVAILABLE` | 503 |
+  | `CODE_CLIENT_MISMATCH`, `REFRESH_TOKEN_REUSED`, `SESSION_CONFLICT` | the token endpoint's `error` (below) | 400 |
 
   `POST /v1/auth/token` is an OAuth token endpoint: it takes `application/x-www-form-urlencoded` and answers errors in
   the form of RFC 6749 section 5.2, `400` with `error` (`invalid_request`, `invalid_grant`, `invalid_client`,
@@ -1099,8 +1144,12 @@ production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/
   `REFRESH_TOKEN_REUSED`, `SESSION_CONFLICT` and the others above), with the trace identifier; every other route
   answers the platform's envelope. The sign-in pages show a sentence per reason.
 
+#### SCIM
+
   SCIM is served at `<public origin>/scim/v2` (`/Users`, `/Groups`, `/ServiceProviderConfig`, `/ResourceTypes`,
   `/Schemas` below it); the token names the connection, and no path segment does.
+
+#### Cross-tenant battery and access classes
 
   The cross-tenant battery treats the anonymous sign-in routes as it treats the probes (they take no tenant from the
   caller); `contract_federated_login` checks instead that a callback of connection A with the attempt of connection B
@@ -1109,17 +1158,23 @@ production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/
   operation's description states the intended class (`anonymous sign-in`, `SCIM token`, `tenant`), which T029-015
   turns into classes.
 
+#### Alerts
+
   Alerts: `IDENTITY_BREAK_GLASS_USED`, `IDENTITY_SCIM_SILENT`, `IDENTITY_OWNER_DISABLED` and
   `IDENTITY_CREDENTIAL_EXPIRING` are product alerts (new `AlertKind` variants of `crates/domain/src/operations.rs`,
   scoped to the tenant), each tested where it is raised; `IDENTITY_SIGNING_UNAVAILABLE` concerns one process and is a
   Prometheus rule in `infra/observability/alerts.yaml` over the gauge `identity_signing_available`, tested with the
   other rules by `contract_observability_operations`. Each has a runbook section.
+#### Documents and CI
+
 - `docs/runbooks/federated-login.md`: enabling federation, the public origin, keys and their rotation, provider
   guides, SCIM setup, break-glass, revocation, the alerts.
 - `.github/workflows/ci.yml`: the OpenAPI lint step also lints `specs/013-federated-login/contracts/scim.openapi.yaml`.
 - `docs/architecture/security-and-sandbox.md`: the sign-in service, the token issuers, the SAML profile.
 
 ### 12. Settings, commands and rollout
+
+**Settings.**
 
 | Setting | Default | Read by |
 |---|---|---|
@@ -1129,13 +1184,14 @@ production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/
 | `SAGAT_IDENTITY_KEYSET_REFRESH` | 30 seconds | the control plane and the API verifier (Technical Plan 4) |
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
-Operator commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
+**Operator commands.** The commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
 `--operator <name>`): `identity signing-key create|rotate|revoke`; `identity sealing-key create|rotate` (the active
 version recorded in `identity_signing_keys` with the kind `SEALING`, loaded by every control plane at start and on the
 same refresh); `identity break-glass add|remove --tenant <slug> --subject <subject>`; `identity federation
 activate|remove`, which records or removes the `identity-federation-v1` requirement through the registry's functions
 (Architecture decision 0082 decision 1), its step refusing a removal while any tenant requires federated sign-in.
 
+**Rollout.**
 
 1. Deploy 0.3.0 with federation off: nothing changes.
 2. The operator sets `SAGAT_PUBLIC_ORIGIN` and the identity mount, enables federation in the configuration of every
@@ -1144,7 +1200,7 @@ activate|remove`, which records or removes the `identity-federation-v1` requirem
    `config.json` then offers the platform issuer beside the deployment issuer.
 3. Each tenant adds its connections. Requiring federated sign-in is per tenant.
 
-Rollback: turning federation off in the configuration is refused while the requirement is recorded; the operator first
+**Rollback.** Turning federation off in the configuration is refused while the requirement is recorded; the operator first
 releases every tenant's federated-only setting (each audited), then removes the requirement, which the registry allows
 only when no tenant requires federated sign-in. Federated members (subjects `federated:<uuid>`) cannot sign in while
 federation is off, because only the platform issuer issues their subjects and a deployment token naming one is
