@@ -26,8 +26,29 @@ All 10 findings are fixed; a security finding is never accepted (Owner decision 
 | 1 | Major | Fixed: five labelled paragraphs (Outcomes, Counts on the owner, The iteration route, The source, Drawing) | Technical Plan 5 |
 | 2 | Major | Fixed: labelled paragraphs (Eligibility rule, Port and adapter, Ended runs, Paging and access filters, Per-run list, Run ends, Index, Items), and the publication paragraph the same way; the admission operation and target named | Technical Plan 6 |
 | 3 | Nit | Fixed in part: the two long blocks use one device; the other sections keep their run-in labels. Settled: level-4 headings everywhere would renumber nothing but would move every cross-reference's target text; left for the next amendment | Technical Plans 3 to 8 |
-| 4 | Nit | Settled: a rewrap of the whole feature range is a mechanical change kept out of the approval commit so that the reviewed diff stays readable; it is made in a commit of its own after approval, which the body check allows only as whitespace if at all, so it waits for the next amendment of the design | The feature range |
+| 4 | Nit | Settled: a rewrap of the whole feature range is a mechanical change kept out of the approval commit so that the reviewed diff stays readable; it waits for the next amendment of the design | The feature range |
 | 5 | Nit | Fixed: Compensation, Reconciliation, Cross-tenant battery and Runtime role are entries of their own | Terms |
 | 6 | Nit | Fixed: options and choice summarised | Decision 050-004 |
 | 7 | Nit | Fixed: Task 050-1 changes the link to the relative one when #267 merges; until then the link names the branch the coordinator merges first | Task 050-1 |
 | 8 | Nit | Fixed: the directory is linked and both resolutions named; "Architecture decision 0082" is the link text | Overview, Technical Plan 3 |
+
+## egm-review style lens (`style_report.md`, at `4ac4065d`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the canvas shows a problem until the body has one `return`, and the draft still saves; the same words in all four places | Requirement 050-007, CUJ 1 |
+| 2 | Major | Fixed: a MUST NOT list and a MUST list | Requirement 050-022 |
+| 3 | Major | Fixed: "Intent" in Terms; "a changed body uses a new key, so it is never refused as a reused key"; the test renamed `a_resend_replays_and_a_changed_decision_gets_a_new_key`; "only the person resends" | Terms, Requirements 050-009, 050-014, Technical Plan 5 |
+| 4 | Major | Fixed: the registry field is `requires: { capability } \| { driver: 'iceberg' } \| null`; "capability" means only a name of `GET /version` | Terms, Requirement 050-003, Technical Plan 4 |
+| 5 | Major | Fixed: "inbox tab" and "browser tab", with the two tests named | Requirement 050-012, Technical Plan 6 |
+| 6 | Major | Fixed in part: the two longest blocks (Technical Plans 5 and 6) are split into labelled paragraphs by the structural settlement. Settled: the requirements keep one paragraph each, because the repository's requirement form is one bullet with its acceptance, and every rule in them is restated, one per paragraph, in the Technical Plan they cite | Requirements 050-008, 050-010, 050-011 |
+| 7 | Major | Fixed: the closed gate glossed, "Design 050 changes nothing in the registry", "the registry member" named, the repeated sentence deleted | Technical Plan 3 |
+| 8 | Major | Fixed: "Owner node" in Terms; the validation delay is `useValidation`'s quiet delay; the frame budget is the browser's 50-millisecond long-task threshold; "at most five pages per list per refresh"; "Stage N review" defined in Open Questions | Terms, Requirements 050-003, 050-012, Non-functional requirement 050-002, Open Questions, Gap 050-006 |
+| 9 | Nit | Settled: the first bullet already says the three rules in one sentence that the Technical Plan expands; left as is | Overview |
+| 10 | Nit | Fixed: Open Questions rewritten with one form for the owner decisions | Open Questions |
+| 11 | Nit | Fixed in part: the decision's adapter named by file. Settled: the run-end probe sentence names its test already | Technical Plan 6 |
+| 12 | Nit | Fixed: the audit sentence rewritten, the loop events listed, "a fifth of these figures" | Technical Plans 6 and 7, Decision 050-012 |
+| 13 | Nit | Fixed: "small" dropped, "the two products this design is compared with", the closing clause of Decision 050-001 removed. Settled: the assessment of 2026-11-11 is the coordinating session's comparison, kept as a dated reference | Overview, The Problem, Decision 050-001 |
+| 14 | Nit | Fixed: `documentIO.ts` named | Technical Plan 4 |
+
+While fixing finding 1 the author also corrected the acceptance of Requirement 050-006, which still read "validates it against the test server and publishes it" after the Stage 9 settlement moved publication to the journeys.
