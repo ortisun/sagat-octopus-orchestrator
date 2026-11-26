@@ -123,7 +123,7 @@ From the code and documents on `develop` at `546d5aa5`:
   | `definer-public` | a definer function not revoked from `PUBLIC` in its migration; any `GRANT ... TO PUBLIC` on a function; `ALTER DEFAULT PRIVILEGES` | the cut-off |
   | `dynamic-ddl` | `EXECUTE` in a `DO` block or a function body of anything but `format()` with a literal template from the closed list of statement kinds in the toml file (design 049's partition statements at first) whose placeholders are `%I` or `%L`, never `%s` | the cut-off |
   | `expand-only` | a refusal of Requirement 053-001 outside its three exceptions; `-- phase: contract` | the online rules' start |
-  | `hot-lock` | a missing first `lock_timeout`; a second blocking lock on a hot table, or one not last, or without its `statement_timeout`; a non-concurrent index, unique constraint or primary key on a hot table | the online rules' start |
+  | `hot-lock` | a missing first `lock_timeout`; a second blocking lock on a hot table, or one not last, or without its `statement_timeout`, or without the `-- blocks: <table>` header naming its table; a non-concurrent index, unique constraint or primary key on a hot table; each statement's lock level taken from PostgreSQL 16's "Table-Level Locks" and its `ALTER TABLE` subcommand list, kept as a table in the lint | the online rules' start |
   | `no-transaction` | a migration without a transaction holding more or other than one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, or without its `-- index:` header | the online rules' start |
   | `partitioned-index` | an index on a partitioned parent listed in the toml file, outside the procedure of Requirement 053-004 | the online rules' start |
   | `no-rewrite` | a rewrite, a type change in place, a rename, a volatile default, an undefaulted `NOT NULL` column, `CREATE OR REPLACE` or `DROP` of an object an earlier migration created | the online rules' start |
@@ -142,7 +142,8 @@ From the code and documents on `develop` at `546d5aa5`:
   security rules cannot be waived; before the online rules' start any waiver naming another rule, or a rule unknown to
   the table (design 049's `stopped-upgrade`), is accepted and printed. The merge-base check also refuses a pull request
   that moves either boundary, removes a table from the hot list, a rule from the table or a kind from the closed list
-  of dynamic statements, except the 0.3.0 release pull request's setting of the online rules' start; it and the
+  of dynamic statements, except one change: the online rules' start going from absent to the newest migration of the
+  tree, which the 0.3.0 release pull request makes; it and the
   boundary checks run the base branch's copy of the lint, so a pull request is never judged by rules it edits itself.
   `CODEOWNERS` (a new file) names the owner for itself, `crates/infra-postgres/migrations/`,
   `scripts/check-migrations.py`, `scripts/check-migrations.toml`, `scripts/requirements-lint.txt`,
@@ -220,16 +221,17 @@ From the code and documents on `develop` at `546d5aa5`:
   registration is not refused (`23514`); it registers again with its full list once the answer is empty.
   `crates/infra-postgres` keeps, beside `MIGRATOR`, the map from each capability to the migration that first lists it,
   with a test that the mapped migration is the first whose closed list holds the token; the port returns a typed verdict
-  (`SchemaVerdict { too_old: bool, known: Vec<Capability> }`), so that migration versions do not enter the
-  application. Every function a binary calls before its migrations are applied (the registration, the heartbeat,
+  (`SchemaVerdict { too_old: bool, known: Vec<Capability> }`, with `known` empty when the check fails closed), so that
+  migration versions do not enter the application. Every function a binary calls before its migrations are applied (the registration, the heartbeat,
   design 048's confirmation and this check) MUST exist with the same name and signature in the schema of the release
   before it: a release that needs a new one adds it under a new name and the binary calls the old one until the
   check's answer is empty. The serving processes reach the database only through the one production constructor of
   the serving handle (design 048's `DbHandle::connect_lazy`, wrapped as `connect_serving()` in `apps/`), which wires
   this check into the registry member, and each one-run command of `control-plane` except `migrate` only through
-  `connect_command(capabilities)`, which returns its pool only after design 048's
-  `command_await_durability(capabilities)`, with its kind taken as `CONTROL_PLANE`, has run this check and the
-  requirements it must honour; `scripts/check-architecture.py` refuses `sagat_infra_postgres::connect` and `open_pool`
+  `connect_command(capabilities)`, which, on the connection design 048 admits for the wait, calls this check with the
+  binary's migration versions and then design 048's `command_await_durability(capabilities)`, with its kind taken as
+  `CONTROL_PLANE` and `capabilities` the `control-plane` binary's own registered list, and returns the pool only when
+  both pass; `scripts/check-architecture.py` refuses `sagat_infra_postgres::connect` and `open_pool`
   in `apps/` outside these two constructors and `migrate` (the commands' `open_pool` calls of `cleanup.rs`,
   `capability_activation.rs`, `handover.rs`, `inventory.rs` and `lib.rs` move to `connect_command`), with a negative
   fixture of a command calling `open_pool`; a command whose schema is too old exits with code
@@ -270,7 +272,8 @@ From the code and documents on `develop` at `546d5aa5`:
     write must not fail its request while the capability drains: the fence raises with its own constraint name
     (`<capability>_fence`), and the writer retries the transaction once with the capability treated as inactive.
 
-  Inside a process every use asks one gate method, `ServingGate::uses(capability, kinds, now)`, which answers true only
+  Inside a process every use asks one gate method, `ServingGate::uses(capability, kinds, now)`, which replaces
+  `ServingGate::requires` (its callers move to it) and answers true only
   when the requirements kept require it as `active` and were read at the epoch the last heartbeat saw (a failed read
   leaves it false), the process is counted by the registry (not a full-table refusal), and `now` is inside the
   capability window; so a process whose heartbeats fail stops using the capability before the
@@ -324,12 +327,16 @@ From the code and documents on `develop` at `546d5aa5`:
     `55P03` or `57014` is retried like `NOT_APPLIED`. A process reports what it applied through the heartbeat
     `instance_heartbeat_applied(instance, token, applied_epoch)`, which replaces `instance_heartbeat_reporting_change`
     (decision D006-098) for the binaries of 0.3.0 on and does what it does, and records in `serving_instances.applied_epoch`
-    the lesser of the epoch sent and the current epoch, refusing a negative or null one; the process sends the lesser of
-    its gate's epoch and the epoch of the requirements it keeps, so a failed read after a re-registration never reports
+    the lesser of the epoch sent and the current epoch, refusing a negative or null one; a row has applied it when
+    `applied_epoch >= draining_epoch`; the process sends the lesser of its gate's epoch and the epoch of the requirements
+    it keeps, so a failed read after a re-registration never reports
     an epoch it has not applied; a row registered since, or written by an older beat, holds null, which is not applied.
     Learning of phase 1 and reporting it takes two heartbeats, about 24 s, and a crashed process's row stays live up to
     30 s more, so the command retries `NOT_APPLIED` for up to 60 s and then exits with code 1 ("retry later"); it exits
-    with 0 on `REMOVED` and with 2 on a refusal that waiting cannot clear. A row that never advances (a process whose
+    with 0 on `REMOVED` and with 2 on a refusal that waiting cannot clear. `capability-drain`, `capability-undrain` and
+    `instance-evict` exit with 0 on their success or already-done outcome (`DRAINED`, `ALREADY_DRAINING`, `UNDRAINED`, an
+    eviction recorded), with 2 on `REFUSED`, `NOT_RECORDED`, `NOT_DRAINING` or `CAPABILITY_MISSING`, and with 1 on a
+    timeout. A row that never advances (a process whose
     requirements read keeps failing, or a compromised one) is named by the refusal, and the owner-only
     `instance_evict(instance, actor)` (`control-plane instance-evict`) deletes it and records the instance in
     `serving_instance_evictions (instance_id uuid primary key, actor text, evicted_at timestamptz)`, the audit of the
@@ -347,7 +354,8 @@ From the code and documents on `develop` at `546d5aa5`:
 - **Requirement 053-008 Old and new writers run together.** `scripts/test-mixed-writers.py` MUST run two control
   planes and two engines of N-1 and of N on one database of the development reference (`infra/docker/compose.yaml`),
   holding a legacy partition and 13 monthly ones of design 049 (a year of history and the current month), under the
-  chain shape at a fixed open-loop rate: start one N process on N-1's schema before `migrate` and require it to
+  chain shape at a fixed open-loop rate, half of the capacity design 051's driver measures first in the same job on the
+  same runner and used again for the baseline: start one N process on N-1's schema before `migrate` and require it to
   register, confirm, beat, answer `UNAVAILABLE` and open within 20 s after the migrations; apply N's migrations during
   the load, together with a fixture expand migration on `runs` and `steps` from `scripts/tests/mixed-writers/`, built into N's
   migrator by the test build feature `mixed-writers-fixture` (so that the loop runs it and later runs know it), so
@@ -363,9 +371,11 @@ From the code and documents on `develop` at `546d5aa5`:
   trees by the released-tree build of `scripts/test-release-upgrade-profile.py`, factored into a module that takes the
   tag or commit (the script is fixed to v0.2.0 today). Release N MUST NOT be published unless it passes against N-1
   (job `mixed-writers` of `.github/workflows/release.yml`). It first gates a release when 0.3.0 is N-1, since 0.2.x
-  binaries have no schema check; until then the job runs on the release branch of 0.3.0 with both sides built from it at
-  two commits, which proves the harness, the oracle and the capability flow but not the migration rules (the online
-  rules start with 0.3.0) nor a real N-1, and the schema check is proved by tests on a fixed pair of migration sets (Task
+  binaries have no schema check; until then the job runs on the release branch of 0.3.0 with N-1 built at the first commit
+  of that branch on which Tasks 053-3 and 053-5 are both merged and N at its head, N built with the
+  `mixed-writers-fixture` feature, whose test-only capability the run activates, drains, removes and activates again;
+  this proves the harness, the oracle and the capability flow but not the migration rules (the online rules start with
+  0.3.0) nor a real N-1, and the schema check is proved by tests on a fixed pair of migration sets (Task
   053-3). The run names its runner, a free standard runner (Owner decision 2026-11-25-1).
 - **Requirement 053-009 A hotfix upgrades forward.** A hotfix release adds expand migrations only, and each is merged
   forward to `develop` before the next minor release is cut: the release workflow refuses to cut a release whose tree
