@@ -245,7 +245,12 @@ pub async fn capability_activate(
             ));
         }
     };
-    let pool = open_pool(db, db.statement_timeout).await?;
+    let pool = open_pool(
+        db,
+        db.statement_timeout,
+        sagat_infra_postgres::PoolName::Process("capability_activate"),
+    )
+    .await?;
     let result = run(&pool, entry, args, operator.as_ref()).await;
     pool.close().await;
     result
