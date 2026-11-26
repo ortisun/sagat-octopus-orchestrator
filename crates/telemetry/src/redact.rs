@@ -87,10 +87,29 @@ fn hide_userinfo<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
     while let Some(at) = rest.find("://") {
         let (head, tail) = rest.split_at(at + 3);
         out.push_str(head);
-        let authority_end = tail
+        let mut authority_end = tail
             .find(['/', '?', '#', ' ', '"', '\''])
             .unwrap_or(tail.len());
-        if let Some(userinfo_end) = tail[..authority_end].rfind('@') {
+        // A password may hold a character that also ends an authority (`postgres://u:pa#ss@db`): when no `@` comes
+        // before it, the last `@` before the end of the word still ends the user information if a `:` comes before
+        // any `/`, `?` or `#` (a URL with a path and an `@` in it, `https://example.com/a@b`, is left as it is).
+        let userinfo_end = tail[..authority_end].rfind('@').or_else(|| {
+            let word_end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+            let word_end = tail[..word_end].find(['"', '\'']).unwrap_or(word_end);
+            tail[..word_end].rfind('@').filter(|&at| {
+                let before = &tail[..at];
+                before
+                    .find(':')
+                    .is_some_and(|colon| !before[..colon].contains(['/', '?', '#']))
+            })
+        });
+        if let Some(userinfo_end) = userinfo_end {
+            authority_end = authority_end.max(
+                userinfo_end
+                    + tail[userinfo_end..]
+                        .find(['/', '?', '#', ' ', '"', '\''])
+                        .unwrap_or(tail.len() - userinfo_end),
+            );
             out.push_str(placeholder);
             out.push_str(&tail[userinfo_end..authority_end]);
             changed = true;
@@ -141,9 +160,42 @@ fn scrub_words<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
 fn follows_scheme(previous: &str, word: &str) -> bool {
     (previous.eq_ignore_ascii_case("bearer") || previous.eq_ignore_ascii_case("basic"))
         && word.len() >= 12
-        && word
+        && (word
             .chars()
             .any(|c| c.is_ascii_digit() || matches!(c, '_' | '-' | '.' | '~' | '+' | '/' | '='))
+            || (previous.eq_ignore_ascii_case("basic") && is_basic_credential(word)))
+}
+
+/// A `Basic` credential of letters only (design 041, the security review of task T041-6): base64 that decodes to
+/// printable `user:password`. A word of prose almost never decodes to printable text holding a `:`.
+fn is_basic_credential(word: &str) -> bool {
+    fn sextet(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = word.trim_end_matches('=').as_bytes();
+    if !word.len().is_multiple_of(4) || bytes.len() < 4 {
+        return false;
+    }
+    let mut decoded = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut bits = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            let Some(value) = sextet(c) else {
+                return false;
+            };
+            bits |= value << (18 - 6 * i);
+        }
+        let [_, a, b, c] = bits.to_be_bytes();
+        decoded.extend_from_slice(&[a, b, c][..chunk.len() - 1]);
+    }
+    decoded.contains(&b':') && decoded.iter().all(|b| (0x20..0x7f).contains(b))
 }
 
 /// A JSON web token, or a key with a well-known prefix.
@@ -188,6 +240,31 @@ mod scrub_shapes_with_tests {
             "",
         ] {
             assert_eq!(scrub_shapes_with(text, REDACTED), scrub(text), "{text}");
+        }
+    }
+
+    /// Design 041, the security review of task T041-6: a connection string whose password holds a character that also
+    /// ends a URL's authority (`#`, `/`, `?`) still has its user information hidden; a `Basic` credential of letters
+    /// only is hidden when it decodes to `user:password`; prose after the word "basic" survives.
+    #[test]
+    fn userinfo_with_a_delimiter_and_a_letters_only_basic_credential_are_hidden() {
+        for (text, secret) in [
+            ("postgres://admin:pa#ss@db.internal/app", "pa#ss"),
+            ("postgres://admin:pa/ss@db.internal/app", "pa/ss"),
+            ("postgres://admin:pa?ss@db.internal/app", "pa?ss"),
+            ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ] {
+            let scrubbed = scrub_shapes_with(text, "[REDACTED]");
+            assert!(!scrubbed.contains(secret), "{text} -> {scrubbed}");
+            assert!(scrubbed.contains("[REDACTED]"), "{text} -> {scrubbed}");
+        }
+        for kept in [
+            "a basic configuration example",
+            "Basic construction works",
+            "https://example.com/a@b",
+            "see https://example.com/path?q=1#frag for details",
+        ] {
+            assert_eq!(scrub_shapes_with(kept, "[REDACTED]"), kept);
         }
     }
 

@@ -168,8 +168,9 @@ impl BatchAnswer {
 
 // ---------------------------------------------------------------------------------- the port
 
-/// The attempt a batch names, as T2 matches it. `lease_token_hash` is the hash of the presented lease token.
-#[derive(Debug, Clone, Copy)]
+/// The attempt a batch names, as T2 matches it. `lease_token_hash` is the hash of the presented lease token. Its
+/// `Debug` prints no hash.
+#[derive(Clone, Copy)]
 pub struct AttemptRef<'a> {
     pub tenant: TenantId,
     pub run_id: RunId,
@@ -177,6 +178,18 @@ pub struct AttemptRef<'a> {
     pub instance: &'a ExecutionInstanceId,
     pub fence: Fence,
     pub lease_token_hash: &'a [u8],
+}
+
+impl std::fmt::Debug for AttemptRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttemptRef")
+            .field("tenant", &self.tenant)
+            .field("run_id", &self.run_id)
+            .field("step_id", &self.step_id)
+            .field("instance", &self.instance)
+            .field("fence", &self.fence)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What T2 read of the `steps` row and its run, without a lock.
@@ -191,14 +204,25 @@ pub struct LeaseRead {
     pub run_stopping: bool,
 }
 
-/// The session T3 checks: the session id and the hash of the presented session token.
-#[derive(Debug, Clone, Copy)]
+/// The session T3 checks: the session id and the hash of the presented session token. Its `Debug` prints neither
+/// the hash nor the subject.
+#[derive(Clone, Copy)]
 pub struct SessionRef<'a> {
     pub tenant: TenantId,
     pub namespace: NamespaceId,
     pub worker_id: Uuid,
     pub subject: &'a str,
     pub token_hash: &'a [u8],
+}
+
+impl std::fmt::Debug for SessionRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRef")
+            .field("tenant", &self.tenant)
+            .field("namespace", &self.namespace)
+            .field("worker_id", &self.worker_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The three namespace resources of data-model.md §6 in force for a batch, read under their policy fences.
@@ -709,7 +733,18 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
                 stream_ref,
                 prepared,
             )
-            .await?;
+            .await;
+        let staged = match staged {
+            Ok(staged) => staged,
+            Err(failure) => {
+                // A lock timeout or a store error at T3 or T4 still answers a revoked caller `AUTHORITY` (D041-050):
+                // the transaction is dropped, which rolls it back, and T7's two reads run in one of their own.
+                drop(tx);
+                return self
+                    .authority_before(tenant, subject, &lease, failure)
+                    .await;
+            }
+        };
         // T7
         let patterns = tx
             .binding_patterns(tenant, lease.namespace, subject)
@@ -824,6 +859,28 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         })
     }
 
+    /// T7 for a batch whose T3 or T4 failed: `AUTHORITY` when the binding or the membership no longer covers the step,
+    /// else the failure (`RETRY_LATER` for a lock timeout). The reads take no lock; their transaction is rolled back.
+    async fn authority_before(
+        &self,
+        tenant: TenantId,
+        subject: &str,
+        lease: &LeaseRead,
+        failure: TxFailure,
+    ) -> Result<Transacted, TxFailure> {
+        let mut tx = self.store.begin().await?;
+        let patterns = tx
+            .binding_patterns(tenant, lease.namespace, subject)
+            .await?;
+        let role = tx.membership_role(tenant, subject).await?;
+        tx.rollback().await?;
+        if authorized(&AuthorityRead { patterns, role }, lease.activity.as_deref()) {
+            Err(failure)
+        } else {
+            Ok(Transacted::answer(BatchAnswer::stop(StopReason::Authority)))
+        }
+    }
+
     async fn audit_cross_tenant(&self, principal: &Principal, run: RunId) {
         let record = AuditRecord::by(
             principal,
@@ -865,7 +922,9 @@ fn authorize(principal: &Principal) -> Result<(), AppError> {
     Ok(())
 }
 
-/// P4.
+/// P4. The 192 KiB bound is checked against the larger of the size the transport reports and what the records
+/// hold (their text, field keys and string values, 8 bytes for any other value), so a wrong report cannot let a larger
+/// batch reach P5 (the security review of task T041-6).
 fn validate(batch: &StepLogBatch) -> Result<(), BatchInvalid> {
     let shapes: Vec<RecordShape> = batch
         .records
@@ -875,7 +934,26 @@ fn validate(batch: &StepLogBatch) -> Result<(), BatchInvalid> {
             level: record.level,
         })
         .collect();
-    validate_batch(&shapes, batch.encoded_len)
+    let held: usize = batch
+        .records
+        .iter()
+        .map(|record| {
+            record.message.len()
+                + record.exception.len()
+                + record
+                    .fields
+                    .iter()
+                    .map(|(key, value)| {
+                        key.len()
+                            + match value {
+                                FieldValue::String(text) => text.len(),
+                                _ => 8,
+                            }
+                    })
+                    .sum::<usize>()
+        })
+        .sum();
+    validate_batch(&shapes, batch.encoded_len.max(held))
 }
 
 /// The fixed text of a refused batch: it names the bound, never a value.
@@ -1138,6 +1216,64 @@ mod tests {
             &lease(false, true, false),
             &compensation
         ));
+    }
+
+    /// The security review of task T041-6: P4's bound of 192 KiB is checked against what the records hold as well
+    /// as against the size the transport reports, so a wrong `encoded_len` cannot let a larger batch through.
+    #[test]
+    fn a_batch_larger_than_its_bound_is_refused_whatever_size_it_reports() {
+        let records: Vec<StepLogRecordIn> = (1..=25)
+            .map(|sequence| StepLogRecordIn {
+                sequence,
+                ..record(&"x".repeat(8_000))
+            })
+            .collect();
+        let batch = super::StepLogBatch {
+            worker_id: uuid::Uuid::nil(),
+            session_token: String::new(),
+            run_id: sagat_domain::execution::RunId::new(uuid::Uuid::nil()),
+            step_id: uuid::Uuid::nil(),
+            instance: ExecutionInstanceId::root(NodeId::parse("a").expect("a node")),
+            fence: sagat_domain::execution::Fence {
+                attempt: 1,
+                generation: 0,
+            },
+            lease_token: String::new(),
+            records,
+            encoded_len: 1_024,
+        };
+        assert_eq!(
+            super::validate(&batch),
+            Err(sagat_domain::step_logs::BatchInvalid::TooLarge)
+        );
+    }
+
+    /// The references a transaction is given print no token hash and no subject.
+    #[test]
+    fn the_references_of_a_batch_print_no_token_hash_or_subject() {
+        let instance = ExecutionInstanceId::root(NodeId::parse("a").expect("a node"));
+        let attempt = super::AttemptRef {
+            tenant: sagat_domain::identity::TenantId::new(uuid::Uuid::nil()),
+            run_id: sagat_domain::execution::RunId::new(uuid::Uuid::nil()),
+            step_id: uuid::Uuid::nil(),
+            instance: &instance,
+            fence: sagat_domain::execution::Fence {
+                attempt: 1,
+                generation: 0,
+            },
+            lease_token_hash: &[0xAB; 32],
+        };
+        let session = super::SessionRef {
+            tenant: sagat_domain::identity::TenantId::new(uuid::Uuid::nil()),
+            namespace: sagat_domain::identity::NamespaceId::new(uuid::Uuid::nil()),
+            worker_id: uuid::Uuid::nil(),
+            subject: "worker-subject-name",
+            token_hash: &[0xCD; 32],
+        };
+        let printed = format!("{attempt:?} {session:?}");
+        for hidden in ["171", "205", "worker-subject-name"] {
+            assert!(!printed.contains(hidden), "{printed}");
+        }
     }
 
     /// The shared counter rises by the stream's saturated rise, split by reason (D041-140 (7)).

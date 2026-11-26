@@ -15,3 +15,14 @@ fn the_script_logs_credential_shapes_are_public_and_hide_each_shape() {
     assert!(!bearer.contains("abcdef0123456789abcdef"), "{bearer}");
     assert_eq!(redact_credentials("nothing secret"), "nothing secret");
 }
+
+/// Design 041, the security review of task T041-6: an armored PGP private key (`-----BEGIN PGP PRIVATE KEY BLOCK-----`)
+/// is a private key block too.
+#[test]
+fn an_armored_pgp_private_key_is_hidden() {
+    let pgp = redact_credentials(
+        "x -----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGsecretbody\n-----END PGP PRIVATE KEY BLOCK----- y",
+    );
+    assert!(!pgp.contains("lQOYBGsecretbody"), "{pgp}");
+    assert!(pgp.starts_with("x ") && pgp.ends_with(" y"), "{pgp}");
+}

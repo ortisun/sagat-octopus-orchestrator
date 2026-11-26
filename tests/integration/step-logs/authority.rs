@@ -13,6 +13,7 @@ use sagat_domain::identity::Role;
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::step_logs::StopReason;
 use serde_json::json;
+use sqlx::Connection as _;
 
 use crate::support::bounded;
 use crate::support::engine::{World, document, effect_node, saga_node, world};
@@ -348,6 +349,79 @@ async fn a_forward_step_of_a_stopping_run_is_lease_and_its_compensation_is_store
             }
         );
         assert_eq!(lines_of(&w, &compensation).await.len(), 2);
+    })
+    .await;
+}
+
+/// The security review of task T041-6: a caller whose binding is gone learns only `AUTHORITY`, even when T3 or T4
+/// meets a lock it cannot take within its lock timeout (a change of a step-log resource holding the namespace fence
+/// exclusively; another batch of the attempt holding its stream lock), where `RETRY_LATER` was due. A caller still
+/// bound gets `RETRY_LATER` there.
+#[tokio::test]
+async fn authority_is_answered_when_t3_meets_a_held_lock() {
+    bounded::within("authority under a held lock", LIMIT, async {
+        let w = world().await;
+        let ingest = ingest(&w);
+        let unbind = "DELETE FROM worker_bindings WHERE tenant_id = $1 AND subject = $2";
+        for (node, key) in [
+            (
+                "a",
+                format!(
+                    "quota-policy:step_log_attempt_records:{}:{}",
+                    w.admin.tenant_id(),
+                    w.namespace.id()
+                ),
+            ),
+            ("b", String::new()),
+        ] {
+            let session = member_session(
+                &w,
+                &format!("w-held-{node}"),
+                Role::Worker,
+                &format!("act.{node}"),
+            )
+            .await;
+            let workflow = crate::support::step_logs::one_activity(&w, node).await;
+            let run = w.start(workflow, &json!({})).await;
+            let task = w.one_task(&session).await;
+            let a = Attempt { session, task, run };
+            let key = if key.is_empty() {
+                sagat_infra_postgres::stream_lock_key(
+                    w.admin.tenant_id(),
+                    a.task.run_id,
+                    a.task.step_id,
+                    a.task.fence.attempt,
+                    a.task.fence.generation,
+                )
+            } else {
+                key
+            };
+            let mut holder = sqlx::PgConnection::connect(&w.db.url)
+                .await
+                .expect("a holder");
+            let mut tx = holder.begin().await.expect("a transaction");
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(&key)
+                .execute(&mut *tx)
+                .await
+                .expect("the held lock");
+            assert_eq!(
+                send(&ingest, &a, records([1])).await,
+                BatchAnswer {
+                    verdict: StepLogVerdict::RetryLater { after_ms: 200 },
+                    stored_through_sequence: 0
+                },
+                "{node}: still bound"
+            );
+            owner(&w, unbind, &a).await;
+            assert_eq!(
+                send(&ingest, &a, records([1])).await,
+                stopped(StopReason::Authority),
+                "{node}: unbound"
+            );
+            tx.rollback().await.expect("release");
+            nothing_stored(&w, &a).await;
+        }
     })
     .await;
 }

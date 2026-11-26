@@ -786,7 +786,7 @@ pub fn redact_credentials(text: &str) -> String {
         let rest = &text[i..];
         if let Some(header) = rest.strip_prefix("-----BEGIN ")
             && let Some(kind) = header.find("-----").map(|at| &header[..at])
-            && kind.ends_with("PRIVATE KEY")
+            && (kind.ends_with("PRIVATE KEY") || kind.ends_with("PRIVATE KEY BLOCK"))
         {
             // The block ends after the closing dashes of its END line, or with the text.
             let block_end = rest
