@@ -419,12 +419,19 @@ already has.
 
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (`<sid>.<generation>.<key id>.<mac>`, where the MAC is an HMAC-SHA256, under a purpose key
-  `cli-refresh` derived from the deployment's `KeyRing` by `KeyRing::derive_purpose_key` and never the access-token
-  key, of the session id, the generation and a random value kept on the session; one use, rotated on every refresh by
+  `cli-refresh` derived from the ring key named by the token's key id (`KeyRing::derive_purpose_key(key_id, label,
+  info)`, which keeps key bytes by id and answers none for an id it does not know) and never the access-token key, of
+  the session id, the generation and a random value kept on the session; a successor is always minted under the
+  active key with the highest generation issued plus one, a number never reused (after a database restore,
+  the runbook's restore page rotates every CLI session's random value, so no rolled-back generation becomes valid again); a token under an unknown key id, or
+  with a valid MAC and a generation above the current one, is `invalid_grant` with no effect; a ring key is retired
+  only after the CLI's absolute lifetime (7 days) has passed since its successor became active, as the runbook says; one use, rotated on every refresh by
   compare-and-set on its generation; the server can verify any generation by recomputing its MAC, so it stores no
   per-generation secret and its storage per session is bounded; the access token is signed with a handle obtained
-  before the transaction; a session refreshes at most six times a minute, a refusal leaving the token unspent; every
-  path, the grace included, first checks the presented MAC, and a token that fails is `invalid_grant` with no effect on the session and the same answer
+  before the transaction; a session refreshes at most six times a minute, counted by a window start and a count on `signin_sessions` and
+  applied in this order: the MAC first, compared in constant time (`Mac::verify_slice`), then the generation's class (a
+  reuse revokes whatever the limit), then the limit, for current-generation and grace rotations only, a refusal
+  leaving the token unspent; every path, logout included, first checks the presented MAC, and a token that fails is `invalid_grant` with no effect on the session and the same answer
   whether or not the session exists; a token that passes and whose generation is below the current one is a reuse
   however long ago it was rotated; a reuse, within 30 seconds of its rotation, of a generation whose later generations
   have all never been used issues a new successor and retires the unused ones, which covers a lost response, and a
@@ -836,9 +843,12 @@ raise, cleared by the maintenance loop once its sessions are marked), `settings_
 stays one row |
 | `signin_attempts` | link and test attempts only (a sign-in attempt lives in its sealed cookie): tenant, id, connection, purpose (`LINK`, `TEST`), the subject that started it, the start address hash, browser binding hash, state, nonce, the provider-side verifier, SAML request id, the connection revision, the verified identity once the callback completed, created, expires (10 minutes), used at | created only by an authenticated caller; at most 20 live per tenant; purged at expiry |
 | `signin_codes` | tenant, code hash, attempt id (unique per tenant, so a second callback of one attempt is refused), the verified identity, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
-| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or refresh token hash and its generation (CLI), and for the CLI's grace the rows of
-`signin_refresh_generations` (session, generation, rotated at, used at; kept 30 seconds after their rotation, for the grace's bookkeeping only,
-since any generation's MAC can be recomputed; the session keeps its random MAC value and current generation), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
+| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or, for the CLI, the refresh MAC's random value, the current and the highest issued generation,
+and the refresh rate window's start and count, and for the CLI's grace the rows of
+`signin_refresh_generations` (session, generation, rotated at, used at; for the grace's bookkeeping only, since any generation's MAC can be
+recomputed; the grace is decided by `rotated_at` plus 30 seconds, never by whether a row exists; each refresh deletes,
+under the session row, the session's rows older than 30 seconds, and the maintenance loop purges those of ended
+sessions; the session keeps its random MAC value and current generation), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
 | `scim_tokens` | tenant, connection, hash, created, last used, revoked | at most 2 in force |
 | `scim_resources` | tenant, connection, kind, SCIM id, the immutable matching value, the membership subject or external group, version (for `ETag`) | |
@@ -1115,7 +1125,7 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   `an_admin_handover_in_one_scim_change_demotes_the_old_admin`, `a_guarded_demotion_applies_once_another_admin_exists`).
   Nothing is mapped from a sign-in assertion.
 - **Maintenance passes**: one leased loop (`crates/scheduler/src/identity.rs`, engine lease `identity-maintenance`,
-  running only once `identity-federation-v1` is recorded) purges expired attempts, codes (a code row past its 60 seconds has its identity columns cleared and is kept until
+  running only once `identity-federation-v1` is recorded) purges expired attempts, the grace rows of ended CLI sessions, codes (a code row past its 60 seconds has its identity columns cleared and is kept until
   the attempt's own expiry, so its unique attempt id still refuses a second callback), replays and
   ended sessions in
   bounded batches, marks revoked in bounded batches the sessions of a disabled or deleted connection and those
@@ -1649,7 +1659,10 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_stolen_refresh_token_used_first_revokes_the_session_when_the_owner_returns`,
   `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
-  `a_week_of_refreshes_keeps_storage_bounded`,
+  `a_week_of_refreshes_keeps_storage_bounded` (at most seven grace rows for the session after a week at the limit),
+  `a_refresh_token_minted_before_a_rotation_still_refreshes`,
+  `a_token_under_an_unknown_key_id_is_invalid_grant_with_no_effect`, `forged_refreshes_do_not_consume_the_rate_limit`,
+  `a_mac_valid_generation_above_the_current_one_is_invalid_grant`, `a_forged_refresh_token_cannot_sign_out`,
   `a_reuse_after_the_successor_was_used_revokes_the_session`, `an_attempt_sealed_after_a_rotation_opens_on_every_replica`,
   `signing_inside_a_transaction_does_no_io`, `a_redemption_with_a_revoked_key_handle_rolls_back_with_the_code_unspent`,
   `a_test_confirmation_racing_a_redemption_of_the_same_subject_does_not_deadlock` (barrier),

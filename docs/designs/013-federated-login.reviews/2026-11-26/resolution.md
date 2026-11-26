@@ -177,3 +177,14 @@ first, then the connection row, as redemption does, and Architecture decision 00
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Major | Fixed (option b, with a rate limit as well): the token is `<sid>.<generation>.<key id>.<mac>`, an HMAC-SHA256 under the `cli-refresh` purpose key of the session id, the generation and a random value on the session; the server recomputes any generation's MAC, so it keeps no per-generation secret and the grace rows live 30 seconds; at most six refreshes a minute per session, a refusal leaving the token unspent; two tests | Requirement 013-026, Technical Plans 3 and 4, Task 013-9 |
+
+## Security re-read, round 7 (`approval/reread-7-security.md`, at `4dea6eaa`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: each refresh deletes the session's grace rows older than 30 seconds, the loop purges those of ended sessions, the grace is decided by time, and the test asserts at most seven rows | Technical Plans 3 and 6, Task 013-9 |
+| 2 | Major | Fixed: `KeyRing::derive_purpose_key(key_id, label, info)` keeps bytes by id; tokens verify under their own key, successors mint under the active key, an unknown id is `invalid_grant`, a key retires after 7 days; two tests | Requirement 013-026, Task 013-9 |
+| 3 | Nit | Fixed: MAC first in constant time, then the class, then the limit; the window on `signin_sessions`; a test | Requirement 013-026, Technical Plan 3 |
+| 4 | Nit | Fixed: the highest issued generation plus one, never reused; a valid MAC above the current generation is `invalid_grant`; a restore rotates the random values | Requirement 013-026 |
+| 5 | Nit | Fixed: the row holds the random value and the generations | Technical Plan 3 |
+| 6 | Nit | Fixed: `Mac::verify_slice`; `a_forged_refresh_token_cannot_sign_out` | Requirement 013-026, Task 013-9 |

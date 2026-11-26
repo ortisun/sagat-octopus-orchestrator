@@ -151,3 +151,7 @@ All ten findings are fixed.
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Nit | Fixed: the publication twins of both tests in Task 050-5 | Task 050-5 |
+
+The security re-read of round 6 (`approval/reread-6-security.md`, at `4dea6eaa`) found nothing. The shared
+`KeyRing::derive_purpose_key` gained a key id at `013`'s round 7; design 050's text follows (a cursor under a retired
+key gets the same `400` and the Studio starts from the first page).
