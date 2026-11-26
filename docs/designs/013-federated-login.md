@@ -1542,7 +1542,9 @@ written plus one, never reused, the highest also kept in the document), material
   rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 (the base64 of distinctive
   bytes with one invalid character inserted) and a material of 31 bytes, and of a cancelled rotation and a `revoke`
   that loses five check-and-sets, none of these may appear: the distinctive bytes, and the `cli-refresh` purpose keys
-  the test derives from them independently (HKDF-SHA256, `info` `cli-refresh`, no salt), in lowercase or uppercase
+  the test derives from them independently (HKDF-SHA256, `info` `cli-refresh`, no salt; the test first mints a tag
+  with the ring and checks that HMAC-SHA256 under its own derived key, over the same session id, generation and random
+  value, equals that tag, so the searched key is the one the code uses), in lowercase or uppercase
   hex, standard or URL-safe base64 with or without padding, or the decimal byte list; nor the stored text of the
   malformed material, verbatim or any 16-character window of it).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
