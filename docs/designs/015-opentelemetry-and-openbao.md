@@ -74,8 +74,8 @@ it for regulated work.
 
 ### Functional: OpenTelemetry
 
-- **Requirement 015-001** Every platform process (control plane, execution engine, sandbox runner, database runner, lake
-  runner, CLI) MUST be able to send its traces and its logs to a Collector over OTLP, configured by the standard
+- **Requirement 015-001** Every platform process (control plane, execution engine, sandbox runner, database runner, which
+  also serves lake work under ADR-0071, and the CLI) MUST be able to send its traces and its logs to a Collector over OTLP, configured by the standard
   `OTEL_*` variables, and expose its metrics for the Collector to scrape. A process with no endpoint configured MUST
   behave as today.
 - **Requirement 015-002** Logs MUST be exported as OTLP log records through a bounded queue that never blocks the work
@@ -253,8 +253,9 @@ most 512 records or 2 seconds, through `OtlpClient::export_log`. A full queue dr
 (`telemetry_dropped_total{signal="logs"}`); a failed batch is abandoned and counted, as live spans are. `OtlpConfig`
 reads `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (and the common endpoint), `OTEL_LOGS_EXPORTER` (`otlp` or `none`) and a
 minimum severity (`SAGAT_OTEL_LOGS_LEVEL`, `info` by default), and `OTEL_EXPORTER_OTLP_HEADERS_FILE`. The CLI keeps
-its direct export. No crate outside `crates/telemetry` changes for logs: every process already initializes logging
-through `telemetry::init`.
+its direct export (`apps/cli/src/telemetry.rs`). No crate outside `crates/telemetry` changes for logs: the four
+servers (`apps/control-plane`, `apps/execution-engine`, `apps/sandbox-runner`, `apps/database-runner`) already
+initialize logging through `sagat_telemetry::init` in their `main.rs`.
 
 ### 2. Metrics through the Collector
 
