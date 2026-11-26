@@ -279,8 +279,10 @@ From the code on `develop` at `546d5aa5`:
   triggers only through feature 020's authorization row (`retention_purge_authorizations`, keyed by the transaction,
   with no runtime grant), which the triggers of `run_payloads` and of every partition consult as those of `run_events`
   and `payloads` do. A `run_payloads` row may be deleted only under an authorization row of a run of its tree, and only
-  once every run of that tree is purged; the abandon of Requirement 049-009 writes its authorization rows through the
-  same definer function as feature 020's purge, and audits its deletes per tenant. A purged run refuses any later
+  once every run of that tree is purged; the abandon of Requirement 049-009 writes its authorization rows through
+  `authorize_abandon_deletes`, an owner-only function that only `journal_retire_abandon` calls and that checks the
+  retirement's state is `ABANDONING`, and audits its deletes per tenant; the purge function `sagat_app` executes cannot
+  write them. A purged run refuses any later
   append, and every read of its journal or content answers `RUN_PURGED` without reading a partition, so that rows
   awaiting the drop are never served: per-run reads of `run_events` go through one function of
   `crates/infra-postgres/src/journal.rs` that checks `purged_at`, as content reads go through `read_run_content`, and the
