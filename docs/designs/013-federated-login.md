@@ -232,7 +232,8 @@ already has.
 - **Requirement 013-010** A connection MUST be able to require authentication context values (OIDC `acr`, SAML
   `AuthnContextClassRef`); a sign-in without one of them MUST be refused with a reason the person can act on. A
   session whose recorded context does not meet the connection's current requirement MUST be refused on its next request
-  by the per-request check. A raise is any change that removes an accepted value. Raising the requirement writes only
+  by the per-request check. A raise is any change that removes an accepted value; with no requirement every value is accepted, so setting the
+  first requirement is a raise. Raising the requirement writes only
   the connection row: it increments the connection's `session_epoch` and records the raised requirement with that
   epoch as the connection's context floor; the per-request check also refuses every session whose epoch (copied from
   the connection when the session was created) is below the floor's epoch and whose context does not meet the floor,
@@ -241,7 +242,8 @@ already has.
   set, another raise is refused with the retryable reason `CONNECTION_STATE` (a lowering is allowed).
   *Acceptance:* refusal and acceptance tests with the development providers;
   `a_raised_context_refuses_the_sessions_that_do_not_meet_it_on_their_next_request`;
-  `lowering_the_context_revives_no_refused_session`; `a_second_raise_waits_for_the_marking_of_the_first`.
+  `lowering_the_context_revives_no_refused_session` (starting from no requirement);
+  `a_second_raise_waits_for_the_marking_of_the_first`.
 
 #### Identities and provisioning
 
@@ -1570,7 +1572,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_second_callback_of_one_attempt_is_refused`, `two_sign_ins_in_two_tabs_both_complete`,
   `an_upload_outlives_its_access_token_while_the_session_lives`, `two_concurrent_refreshes_keep_the_session`,
   `a_lost_refresh_response_keeps_the_session`, `a_reuse_after_the_successor_was_used_revokes_the_session`,
-  `a_reused_refresh_token_revokes_the_session`, `a_link_poll_by_another_subject_is_not_found`, `a_link_poll_without_the_binding_cookie_is_not_found` (and the poll route in
+  `a_reused_refresh_token_revokes_the_session`, `a_link_poll_by_another_subject_is_not_found`, `a_link_poll_without_the_binding_cookie_is_not_found`,
+  `a_reenabled_connections_old_session_cannot_renew` (renewal and the CLI's refresh) (and the poll route in
   the cross-tenant battery), `each_broken_id_token_claim_is_refused_through_the_callback` (table-driven).
   Verification: `cargo test -p sagat-tests --test integration_federated_login --test contract_federated_login --test fault_federated_login signin`.
   Refs: Requirement 013-002, Requirement 013-005, Requirement 013-006, Requirement 013-009, Requirement 013-012, Requirement 013-018, Requirement 013-026

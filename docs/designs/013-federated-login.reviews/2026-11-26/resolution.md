@@ -105,3 +105,10 @@ All seven findings are fixed.
 | 5 | Nit | Fixed: the override sets only the tested names, `sub` only empty, 2 KiB, behind `SAGAT_DEV_IDP_TEST_OVERRIDES=1`; Architecture decision 0140 decision 8 amended; a test | Technical Plan 9, Task 013-3, Architecture decision 0140 |
 | 6 | Nit | Fixed: the two staged-change rows added; the `acr` row moved to Task 013-20 | Requirement 013-007, Tasks 013-9, 013-20 |
 | 7 | Nit | Fixed: `memberships.status_changed_at`; row VII names the exception | Technical Plans 3 and 6, Constitution Check |
+
+## Security re-read, round 3 (`approval/reread-3-security.md`, at `66189ab7`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: with no requirement every value is accepted, so the first requirement is a raise; the lowering test starts from no requirement | Requirement 013-010 |
+| 2 | Nit | Fixed: the renewal test is in Task 013-9, covering renewal and the CLI's refresh | Task 013-9 |
