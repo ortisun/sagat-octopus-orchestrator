@@ -19,7 +19,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Approved | 0 of 20 |
 | 048 | [A reference high-availability topology for PostgreSQL, and the platform's side of a failover](048-high-availability.md) | Approved | 0 of 19 |
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Approved | 0 of 20 |
-| 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Draft | 0 of 14 |
+| 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Draft | 0 of 16 |
 | 052 | [Hot-path dispatch: a bounded and spread poll, wake on commit, and a throughput gate](052-hot-path-dispatch.md) | Approved | 0 of 13 |
 | 053 | [Rolling upgrades with old and new writers on one database](053-rolling-upgrades.md) | Approved | 0 of 8 |
 | 054 | [Buffered signals](054-buffered-signals.md) | Approved | 0 of 19 |
