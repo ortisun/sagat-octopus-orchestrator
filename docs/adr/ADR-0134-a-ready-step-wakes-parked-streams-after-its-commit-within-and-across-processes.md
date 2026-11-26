@@ -3,7 +3,7 @@
 **Status:** Proposed (2026-11-24; revised 2026-11-26 after design 052's full review round)
 **Decided by:** agent proposal (design 052, first drafted as part B of design 051), to be accepted under Owner decision 2026-11-24-4 once design 052's review is complete
 **Refines / supersedes:** refines [ADR-0029](ADR-0029-worker-task-streams-spend-finite-receive-credit.md) (a stream also claims on a wake permit, not only after its idle interval; a window ended by its deadline asks to reopen within 50 ms; a refusal by discovery admission still ends the stream), ADR-0002 and ADR-0069 (the wake is an internal, unstored signal on the selected transport outside the outbox: it carries no record, is never the only signal of work, and the `task.ready` outbox row stays the durable one); supersedes nothing. The next step in a completion's answer, which this record's first draft also decided, is not decided here (design 052, Open Question 3)
-**Enforced by (pending until built):** `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream`, `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds`, `the_registry_holds_no_entry_without_a_registered_stream`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams` (Task 052-5); `a_wake_from_another_instance_claims_at_once`, `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_process_drops_its_own_wake`, `a_lost_wake_is_bounded_by_idle_retry`, the telemetry vocabulary test, the AsyncAPI baseline check and the CI configuration with the wake off (Task 052-6); ADR-0092's check unchanged; design 038's guards unmodified
+**Enforced by (pending until built):** `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream`, `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds`, `the_registry_holds_no_entry_without_a_registered_stream`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams` (Task 052-5); `a_wake_from_another_instance_claims_at_once`, `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_process_drops_its_own_wake`, `a_lost_wake_is_bounded_by_idle_retry`, the telemetry vocabulary test, `an_open_broker_keeps_the_wake_local`, `a_wake_for_an_absent_key_touches_no_state`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, the chart's contract test, the AsyncAPI baseline check and `the_claim_suite_passes_with_the_wake_off` in `integration_claim_transition_efficiency` (Task 052-6); ADR-0092's check unchanged; design 038's guards unmodified
 
 ## Context
 
@@ -28,7 +28,7 @@ outbox, each an acknowledged JetStream publish at the scheduler's pace, and noth
 
 ## Considered options
 
-1. **A local registry with a best-effort core NATS wake (chosen).** Fast, lossy by design, bounded by `idle_retry`.
+1. **A local registry with a best-effort wake on the selected transport, core NATS or Redis `PUBLISH` (chosen).** Fast, lossy by design, bounded by `idle_retry`.
 2. **The outbox's `task.ready` hint.** Durable and slow; a wake needs to be fast and may be lost.
 3. **`LISTEN` and `NOTIFY`.** Its commit-time lock serializes the commits of every notifying transaction.
 4. **A shorter `idle_retry`.** An empty claim per idle stream per interval.
@@ -42,9 +42,11 @@ outbox, each an acknowledged JetStream publish at the scheduler's pace, and noth
   per second per key and process.
 - Harder: the wake must never be relied on; every test also holds with it lost.
 - Compatibility: an older process ignores the wake subjects; nothing is stored.
+- Operations: the control plane gains a broker connection of its own, publish-only, with its own credentials and an
+  egress rule opened only with the wake; the Redis transport lives beside the platform's Redis publisher.
 - Rollback: the setting `SAGAT_WAKE` turns it off.
 
 ## Evidence
 
 Design 052 and its review reports (`docs/designs/052-hot-path-dispatch.reviews/2026-11-26/`). To be added when built: the
-wake tests and the measurement of Task 052-5.
+wake tests and the measurement of Task 052-9.

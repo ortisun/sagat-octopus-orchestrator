@@ -112,8 +112,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   `worker_poll_spread_total`, no label), and the statements of a poll (`stage="poll"` in design 038's
   `worker_claim_candidates_total`, for the authentication, the session read and each scan), so that statements per lease
   are measured, not only probes; and the wake counts its claims by outcome (`worker_wake_claims_total{outcome}`,
-  `leased` or `empty`), its messages published, dropped, received, rate-limited and refused for an absent key, and its
-  local-only starts, with closed labels.
+  `leased` or `empty`), its messages published, dropped, received, rate-limited, refused for an absent key and coalesced, and
+  its local-only starts and checks, with closed labels; a woken claim carries the span event `woken` (no tenant
+  attribute), and the publish and the receipt each a span of their own.
 
 ### Wake on commit
 
@@ -172,7 +173,8 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   the wake's credentials secret, outside the development profile; and each process checks at start, before it turns the
   cross-process wake on, that the broker refuses an anonymous connection (NATS), or that `ACL WHOAMI` is not `default`
   and an unauthenticated connection's `SUBSCRIBE` and `PUBLISH` on the probe channel `sagat.wake.v1.probe` are both
-  refused (Redis); otherwise it stays local-only, counts it and logs why. Compose's
+  refused (Redis); otherwise it stays local-only, counts it, logs why, and checks again with a backoff capped at 5 minutes, each
+  attempt counted. Compose's
   development broker is the development profile. The control plane's egress to the broker is opened only when the wake
   is on (`infra/helm/templates/networkpolicy-egress.yaml`).
 - **Requirement 052-055 A deadline window reopens at once.** A stream window that ends by its deadline with credit left
@@ -271,6 +273,12 @@ addresses, `ignore_discovered_servers()`, keep the platform's stores out of tena
 does for others, the platform's broker addresses among those the guard must exclude) is feature 004's, handed to its
 research register by Task 052-12.
 
+**Gap 052-G2 (feature 019's order).** Feature 019's FR-019-013 says a lone poller is served strictly in priority and
+`ready_at` order. Under Requirement 052-042 that holds while its namespace is uncontended in the process; a poller alone
+in the fleet whose own completions or timers hold run locks can be spread for up to 1 s, and its order then holds within
+one priority only. FR-019-013's wording is feature 019's to settle (Task 052-12); feature 019's conformance ordering
+scenario has no concurrent holder of a run lock, so it is unaffected.
+
 ## Owner decisions needed
 
 None open. The constitution's amendment is approved (Owner decision 2026-11-25-3, point 3) and only its merge is
@@ -312,7 +320,7 @@ The scan's two branches gain the missing filter.
 **Wake.** `WakeRegistry` and the `WakeSink` port in `crates/application/src/worker/wake.rs`; the stores collect keys
 where they write `task.ready` and call the sink inside `commit()`; the gRPC stream loop keeps its `SessionRecord`,
 registers its activities from before its claim until it leaves its park, takes a permit or parks with its timer; a `NatsWake` (core client, publish
-and subscribe) in `crates/infra-nats` and a `RedisWake` in the Redis adapter implement the transport port; the engine
+and subscribe) in `crates/infra-nats` and a `RedisWake` in `crates/infra-connectors/src/redis.rs`, beside the platform's Redis publisher and on a connection of its own, implement the transport port; the engine
 builds one registry and sink and hands them to every store and to the gRPC service; the control plane builds a
 publish-only sink.
 
@@ -325,7 +333,7 @@ publish-only sink.
 | The bounded and spread poll and its counters | `crates/application/src/worker.rs`, `crates/application/src/worker/poll_order.rs`, `tests/integration/claim-transition-efficiency/` | 052-041, 052-042, 052-043 |
 | The registry, the permits and the parking | `crates/application/src/worker/wake.rs`, `crates/api-grpc/src/service.rs` | 052-050, 052-051, 052-055 |
 | The sink in every writer of `task.ready` | `crates/infra-postgres/src/execution.rs`, `execution/path.rs`, `chain_progress.rs`, `loop_progress.rs`, `primitives.rs` | 052-052 |
-| The transports, the processes and their configuration | `crates/infra-nats/src/lib.rs`, the Redis adapter, `apps/execution-engine/src/{lib,settings,cli}.rs`, `apps/control-plane/src/{config,lib}.rs`, `infra/helm/templates/` (both components, the wake's credentials secrets, the control plane's egress rule), `infra/helm/values.yaml`, `infra/docker/compose.yaml`, the chart's contract test, `docs/runbooks/execution-engine.md`, `docs/runbooks/events.md` | 052-053, 052-054 |
+| The transports, the processes and their configuration | `crates/infra-nats/src/lib.rs`, `crates/infra-connectors/src/redis.rs`, `apps/execution-engine/src/{lib,settings,cli}.rs`, `apps/control-plane/src/{config,lib}.rs`, `infra/helm/templates/` (both components, the wake's credentials secrets, the control plane's egress rule), `infra/helm/values.yaml`, `infra/docker/compose.yaml`, the chart's contract test, `docs/runbooks/execution-engine.md`, `docs/runbooks/events.md` | 052-053, 052-054 |
 | The channel's contract | `specs/001-platform-foundation/contracts/events.asyncapi.yaml` and its baseline | 052-054 |
 | The scenario, the gate and the selector | `tests/performance/scalability-ha/`, `scripts/throughput-gate.py`, `scripts/tests/`, `scripts/select-test-targets.py`, `.github/workflows/ci.yml`, a pilot workflow, `tests/performance/reports/throughput-gate.md` | 052-030 |
 
@@ -334,7 +342,8 @@ parsed in the engine's and the control plane's settings with their help text, ca
 until Task 052-9 keeps it, then on by default. **Compatibility and rollback.** Nothing is added to the schema or the
 protocol; a rollback is a setting, and a mixed fleet of releases needs no capability (design 053, Requirement 053-006):
 an older process walks its window, sleeps its `idle_retry` and does not subscribe to the wake's channel, whose payload
-is empty and whose readers drop what they cannot parse.
+is the publishing instance's 16-byte identifier (a reader ignores any bytes after the 16th and drops a message whose
+subject it cannot parse).
 
 ## Risks and Mitigations
 
@@ -346,7 +355,7 @@ is empty and whose readers drop what they cannot parse.
 | Wakes spin streams | Permits, capped by the registered streams and debited by leases; no permit for a stream whose permitted claim leased nothing; full streams unregistered; own messages dropped |
 | A forged or flooded wake | The platform's own broker user and channel permissions; one permit per message, 20 per second per key |
 | The broker stalls a request | A bounded queue drained by one task; drops counted |
-| A lost wake | `idle_retry` stays the upper bound; a CI configuration runs the suite with the wake off |
+| A lost wake | `idle_retry` stays the upper bound; the claim suite runs a wake-off case and the lost-wake test |
 | The gate flakes or is gamed | A pilot of 30 A/A′ pairs, six of six pairs and the threshold, read from the merge base |
 | The cheap remedies are not enough | Success criterion 052-005's threshold writes the queue's design |
 
@@ -400,7 +409,7 @@ is empty and whose readers drop what they cannot parse.
 
 ## Detailed Implementation Plan
 
-- [ ] T052-1 Revise Architecture decisions 0133 (the bounded and spread poll, refining design 038's FR-038-004, within Owner decision 2026-11-12-3 as Owner decision 2026-11-24-526 records) and 0134 (the wake, refining ADR-0002, ADR-0029 and ADR-0069); update the claim paragraph of `docs/architecture/execution-semantics.md`, the wake line of `docs/architecture/worker-runtime-protocol.md`, the comment of `poll_order.rs`, and add a follow-up task to design 038 noting FR-038-004's refinement; add rows for the new checks to `docs/engineering/architecture-principles.md`.
+- [ ] T052-1 Amend `specs/006-sdk-multilanguage/stream-completion.md`'s rule on `retry_after_ms` for a window ended by its deadline (Requirement 052-055); revise Architecture decisions 0133 (the bounded and spread poll, refining design 038's FR-038-004, within Owner decision 2026-11-12-3 as Owner decision 2026-11-24-526 records) and 0134 (the wake, refining ADR-0002, ADR-0029 and ADR-0069); update the claim paragraph of `docs/architecture/execution-semantics.md`, the wake line of `docs/architecture/worker-runtime-protocol.md`, the comment of `poll_order.rs`, and add a follow-up task to design 038 noting FR-038-004's refinement; add rows for the new checks to `docs/engineering/architecture-principles.md`.
   Refs: Requirement 052-041, Requirement 052-042, Requirement 052-053
 - [ ] T052-2 Add the missing path filter to the two branches of the candidate scan and count `probed` only with a transaction begun, with the test `a_minor_four_session_reaches_its_forward_work_behind_nine_scoped_compensations` and the counters' test in the style of `a_poll_counts_each_stage_once_with_the_stage_as_its_only_label`.
   Refs: Requirement 052-040
@@ -410,7 +419,7 @@ is empty and whose readers drop what they cannot parse.
   Refs: Requirement 052-042, Requirement 052-043
 - [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_registered_stream`.
   Refs: Requirement 052-050, Requirement 052-051, Requirement 052-055
-- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS and Redis transports with their bounded queues and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and a CI configuration of `integration_durable_execution` with `SAGAT_WAKE` off on the pull requests the hot-path selector picks, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; the integration suite of `crates/infra-nats` selected by its rule.
+- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS and Redis transports with their bounded queues and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and, in `integration_claim_transition_efficiency` (which the constitution already runs for a change of lease or completion code), the wake-off case `the_claim_suite_passes_with_the_wake_off`, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; the integration suite of `crates/infra-nats` selected by its rule.
   Refs: Requirement 052-052, Requirement 052-053, Requirement 052-054
 - [ ] T052-7 Give the in-process transitions scenario its gate configuration (workers end on completions and sleep the SDK's `receive_delay`), a JSON output, and an open-loop mode (runs started at a fixed rate, the maximum sustained rate found by stepping it) in `tests/performance/scalability-ha/`.
   Refs: Requirement 052-030, Success criterion 052-005, Success criterion 052-006
@@ -424,7 +433,7 @@ is empty and whose readers drop what they cannot parse.
 - [ ] T052-11 After Tasks 052-8 and 052-10, add the `throughput-gate` job and prove it fails on the hand mutation and passes on its revert.
   Refs: Requirement 052-030, Success criterion 052-007
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 3)
-- [ ] T052-12 Hand gap 052-G1 to feature 004's research register under its next free gap number, checked against the other open branches.
+- [ ] T052-12 Hand gap 052-G1 to feature 004's research register and gap 052-G2 to feature 019's, each under its owner's next free gap number, checked against the other open branches.
   Refs: Requirement 052-054
 
 #### Follow-up tasks
@@ -433,7 +442,7 @@ None yet.
 
 ### Verification Plan
 
-Each pull request runs `integration_durable_execution` (also as the runtime role, and once with `SAGAT_WAKE` off), design
+Each pull request runs `integration_durable_execution` (also as the runtime role), design
 038's budget target `integration_claim_transition_efficiency`, the fault suites of features 002 and 010, `cargo clippy
 --workspace --all-targets --locked -- -D warnings` and the repository's checkers (`scripts/check-*.py`). The seven
 guards that design 038 lists in its Verification Plan pass unmodified. Each new test is seen failing first, with a hand
