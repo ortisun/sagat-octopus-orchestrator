@@ -895,3 +895,6 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   *Evidence 2026-11-26, not ticked:* the whole `integration_flow_control_step_policies` target 260 passed, 0 failed as
   the owner and with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation -- runtime_privileges migrations` 70
   passed; the red runs are listed in `reviews/2026-11-26/activation-review-responses.md`.
+  *Amended 2026-11-26 (the re-reads of `343bbe406..0f04b4429`):* T022-117 also covers decisions D022-156 to D022-159
+  (one sorted lock of every withdrawn lease's keys before the commands, the exact refusal rule for a key of several
+  periods, the outcome `slot_spent`); evidence in `reviews/2026-11-26/activation-review-responses.md`, not ticked.

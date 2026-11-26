@@ -53,8 +53,8 @@ ADR-0096). Off by default; nothing changes for a definition that does not declar
 5. A lease the server withdraws (feature 006) leaves its gated step with its concurrency permit and its rate slot: the
    step is leased again without queueing and takes no second slot; the slot counts from the lease that reached a
    worker (decisions D022-138 and D022-139, migration `20270217000000_flow_control_withdrawn_lease`). A withdrawal
-   whose slot has already stopped counting is refused, counted `capped` (D022-148, gap G022-042), and the purge keeps the
-   grant of a step still leased at it (D022-146).
+   is refused only when another grant of the key used the room its slot left (D022-157), counted `slot_spent`
+   (D022-158; the attempt is spent, gap G022-042), and the purge keeps the grant of a step still leased at it (D022-146).
 
 New reads: `Run.concurrency`, `Run.rateLimit` (with `position` and `estimatedGrantAt` on a single-run read) and a step's
 `waitingOn` for a reader of the run; `GET /namespaces/{namespaceId}/concurrency-keys` and `GET .../rate-limit-keys` with

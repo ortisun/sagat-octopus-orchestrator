@@ -37,7 +37,9 @@ not be weakened.
    withdrawn step of a gated node keeps the concurrency permit and the rate slot of its attempt and is leased again
    without a new decision; the rate slot counts from the lease that reached a handler (ADR-0096, amended the same day).
    A withdrawal whose rate slot has stopped counting is refused like one withdrawn as often as it may be (`capped`;
-   decision D022-148): the retry asks for a new slot.
+   decision D022-148): the retry asks for a new slot. *Corrected the same day (decisions D022-156 to D022-158):* refused
+   only when another grant of the key used the room the slot left, decided before the command under the key's locks
+   (all the run's leases' keys in one sorted pass), and counted `slot_spent`.
 4. The event MUST be written only while the requirement `lease-withdrawal-v1` is recorded for control planes and engines.
    Every control plane and engine of the build lists the capability. The requirement is recorded by the generic operator
    command `control-plane capability-activate lease-withdrawal-v1 --operator NAME [--expect-live N] [--dry-run]` (owner

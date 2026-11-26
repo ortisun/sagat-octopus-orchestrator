@@ -300,11 +300,14 @@ is set.
 never handed to a worker goes back to `READY` at the same attempt: the step keeps its concurrency permit and its rate
 slot, is leased again without queueing, and takes no second slot. The slot counts from the lease that reached a
 worker: the withdrawal clears the lease instant the scheduler may have copied, so the slot counts as unleased until the
-next lease is recorded (D022-139). A withdrawal whose slot has already stopped counting (its lease instant recorded and
-its window passed) is refused (D022-148): a lease that was not sent lapses, and a host's hand-back is an ordinary
-failure, so the retry asks for a new slot; it is counted `capped` in `worker_leases_undelivered_total` (gap G022-042).
-*Corrected 2026-11-26:* the earlier text said such a case was rare (gap G022-041); a host on protocol 1.8 could reach it
-at will, and it is now refused. The scheduler's purge never deletes the grant of a step still leased at it (D022-146).
+next lease is recorded (D022-139). A withdrawal is refused when another grant of the same key was decided after this
+slot had stopped counting for it, under that grant's own window (D022-157; a key whose definitions declare different
+`per` included): a lease that was not sent lapses and spends its attempt at its time to live, and a host's hand-back is
+an ordinary failure, which on a last attempt fails the step though nothing ran (gap G022-042). It is counted
+`slot_spent` in `worker_leases_undelivered_total`. The decision is taken before the withdrawal, under the key's lock, so
+it cannot change before the commit (D022-156). The scheduler's purge never deletes the grant of a step still leased at
+it (D022-146). *Corrected 2026-11-26, twice:* the first text called the case rare (gap G022-041), and the second judged
+by the grant's own window, which a key of several windows defeated; the gap is closed by D022-157.
 
 A process with the ring lists `flow-control-rate-v1` beside the concurrency gate. Turn it on as 1.2, with
 `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED=true` and `control-plane capability-activate flow-control-rate-v1 --operator <you>

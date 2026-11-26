@@ -49,6 +49,10 @@ Facts the design rests on:
    give-back deletes a recorded grant only for an attempt the same commit withdraws, and fails on any other; the clear runs
    under the window's lock and is refused when the slot has stopped counting (the withdrawal is then refused, counted
    `capped`); the purge keeps the grant of a step still leased at it.
+   *Amended again 2026-11-26 (decisions D022-156 to D022-158, after the re-reads):* a withdrawal is refused only when
+   another grant of the key was decided after the slot stopped counting for it under that grant's own window; the
+   decision is taken before the command, under the key's and the grant's locks taken for all the run's leases in one sorted
+   pass; it is counted `slot_spent`.
 
 ## Considered options
 
