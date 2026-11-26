@@ -140,7 +140,7 @@ async fn the_run_a_batch_rerun_makes_begins_a_trace() {
         "traces-rerun",
     )
     .await;
-    select(&exec, &job).await;
+    select(&f, &exec, &job).await;
     settle(&exec, &job).await;
     let _ = due(&job);
 

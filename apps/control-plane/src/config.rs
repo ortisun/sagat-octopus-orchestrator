@@ -112,8 +112,16 @@ where
 /// # Errors
 /// [`ConfigError::Invalid`] for anything else.
 pub fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
+    flag_or(get, name, false)
+}
+
+/// A boolean variable as [`flag`] reads it, with `default` when it is unset or empty.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] for anything else.
+pub fn flag_or(get: Lookup<'_>, name: &'static str, default: bool) -> Result<bool, ConfigError> {
     match get(name).as_deref().map(str::trim) {
-        None | Some("") => Ok(false),
+        None | Some("") => Ok(default),
         Some("1" | "true" | "yes") => Ok(true),
         Some("0" | "false" | "no") => Ok(false),
         Some(other) => Err(ConfigError::Invalid {
@@ -465,8 +473,8 @@ pub fn read_auth(get: Lookup<'_>) -> Result<AuthConfig, ConfigError> {
 pub struct ServeConfig {
     /// Opt in after every outbound process has been upgraded or stopped.
     pub redis_callbacks: bool,
-    /// Whether the schedule routes exist (`SAGAT_SCHEDULES_ENABLED`, off by default until the
-    /// feature is released). The engine fires schedules under the same flag.
+    /// Whether the schedule routes exist (`SAGAT_SCHEDULES_ENABLED`, on by default since 0.3.0,
+    /// OD-2026-11-13-8; an explicit `false` takes them out). The engine fires schedules under the same flag.
     pub schedules_enabled: bool,
     /// Whether the batch operation routes exist (`SAGAT_BATCHES_ENABLED`, off by default until the
     /// feature is released); the engine runs the jobs under the same flag.
@@ -697,7 +705,7 @@ impl ServeConfig {
         let switches = flow_control(get)?;
         Ok(Self {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
-            schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
+            schedules_enabled: flag_or(get, "SAGAT_SCHEDULES_ENABLED", true)?,
             batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
             reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
             reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,

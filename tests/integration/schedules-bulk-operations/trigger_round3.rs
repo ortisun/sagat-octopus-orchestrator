@@ -397,6 +397,10 @@ async fn a_long_publication_makes_the_command_try_again_and_does_not_hold_the_wr
     // ... and the command gives up in words, long before the statement timeout, with nothing recorded
     let message = declined(running.await.expect("the command"));
     assert!(message.contains("run the command again"), "{message}");
+    assert!(
+        message.contains("waited two seconds"),
+        "the refusal of HANDOVER_BUSY, exit 2: {message}"
+    );
     assert_eq!(state(&t).await, "LEGACY");
     let history: i64 = sqlx::query_scalar("SELECT count(*) FROM platform_requirement_history")
         .fetch_one(&t.w.db.pool)
@@ -450,6 +454,13 @@ async fn the_function_moves_only_the_state_legacy() {
             .await;
     let error = refused.expect_err("a state this build does not know is not moved");
     assert!(error.to_string().contains("does not know"), "{error}");
+    assert_eq!(state(&t).await, "ARMED");
+    // and the command refuses it in words, exit 2, before it counts anything (G2307)
+    let message = declined(command(&t, Some(0)).await);
+    assert!(
+        message.contains("`ARMED`, which this build does not know"),
+        "{message}"
+    );
     assert_eq!(state(&t).await, "ARMED");
 }
 
@@ -514,6 +525,7 @@ async fn the_apply_path_of_the_command_hands_over_and_says_what_the_binary_print
         expect_live: Some(1),
         dry_run,
         apply,
+        ..HandoverArgs::default()
     };
     let db = database(&t);
 

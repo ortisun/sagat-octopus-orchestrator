@@ -468,6 +468,16 @@ pub async fn serve(
     // which of the optional passes run is decided once, by a function of the configuration that a test reads (D2009)
     let optional = settings::optional_passes(engine);
     tracing::info!(passes = ?optional, "the optional passes of this replica");
+    // ADR-0091 decision 5 (D2270): whether the deployment runs the job of the automatic handover, exported for the alert on a
+    // job that never writes, by every engine, the ones without the schedule pass included (correctness review of 2026-11-15,
+    // m3); nothing here depends on it
+    metrics::gauge!("trigger_schedule_auto_handover_expected").set(
+        if engine.auto_handover_expected {
+            1.0
+        } else {
+            0.0
+        },
+    );
     if optional.contains(&settings::PASS_SCHEDULES) {
         // A schedule's run is admitted as the schedule's own subject, so the pass needs the same
         // run service the API has; it holds a store of its own over the shared pool.
@@ -548,7 +558,9 @@ pub async fn serve(
             ),
         );
     } else {
-        tracing::info!("SAGAT_SCHEDULES_ENABLED is not set: schedules are stored but none fires");
+        tracing::info!(
+            "SAGAT_SCHEDULES_ENABLED is false: schedules are stored but none fires from this replica"
+        );
     }
     if optional.contains(&settings::PASS_BATCHES) {
         // An item is applied as the job's creator through the same run service the API has. The

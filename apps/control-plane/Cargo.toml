@@ -21,7 +21,8 @@ path = "src/main.rs"
 
 [dependencies]
 metrics.workspace = true
-# the flow-control digest key file is wiped from memory once parsed (D022-057)
+# the flow-control digest key file is wiped from memory once parsed (D022-057), as is the handover password (ADR-0091);
+# the default features of zeroize are `alloc` alone, so this is the one entry both need
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
 serde_json.workspace = true
 axum.workspace = true
@@ -36,6 +37,7 @@ sagat-infra-postgres.workspace = true
 sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-telemetry.workspace = true
+sha2 = "0.11"
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "io-util"] }

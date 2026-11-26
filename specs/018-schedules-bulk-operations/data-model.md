@@ -104,6 +104,7 @@ The source run never changes state because of a reset other than the ordinary ca
 | `counters` | jsonb | Closed object of non-negative integers per outcome; protected (generated schema). |
 | `shard` | smallint | Generated `run_shard(id)` (ADR-0020 function). |
 | `created_at`, `updated_at`, `deleted_at` | timestamptz | |
+| `reconciled_at` | timestamptz null | *As built (T018-082, ADR-0091).* Set by the reconciliation pass when it makes, revives, respecifies, resumes or removes a `TRIGGER` schedule, never by a publication (D2243, D2258); the automatic handover is blocked (`RECONCILIATION_RECENT`) while a row has it within the horizon. Partial index `schedules_reconciled_at_idx (reconciled_at) WHERE reconciled_at IS NOT NULL`. |
 
 Indexes: `(shard, next_wake_at) WHERE state = 'ACTIVE'` (the pass's due scan, bounded by `now()` per
 ADR-0020 decision 4); `(tenant_id, namespace_id, name)`.
@@ -179,6 +180,28 @@ operator's session). It changes only through `schedule_trigger_handover_complete
 `schedules-v1` is recorded for the engines and never moves a handed-over row back (a guard, `ENABLE ALWAYS`); `schedule_trigger_handover_census()` is the owner's read
 of the live engines. There is no tenant audit record (the registry's `platform_requirement_history` row of the same transaction is the evidence, D2042). A
 `TRIGGER` schedule is named `trigger-<hex of the trigger id>`, authorised by `system:engine`, and is not counted by the `schedules` quota (D2034).
+
+*As built (T018-082, migration `20270117000000_trigger_handover_automatic`; ADR-0091, D2286 to D2294).* The handover is made by a one-shot job of the
+deployment (`schedule-trigger-handover --auto`, as the role `sagat_handover`) or by the operator's command. The row gains `changed_mode` (`OPERATOR` or
+`AUTOMATIC`; CHECK `schedule_trigger_handover_mode_valid`; the migration backfills `OPERATOR` on a row already handed over) and `changed_epoch bigint` (the
+requirement epoch of the handover, which keys the census copy and the tenant set). Both are null exactly while the state is `LEGACY`
+(`schedule_trigger_handover_mode_consistent`, `schedule_trigger_handover_epoch_consistent`). The job's actor is `system:handover-job:<run id>`. Both
+paths write the row, the census copy and the tenant set through one internal function, `schedule_trigger_handover_record`, in the activation's
+transaction. Deployment-level, no tenant column (the tenant set names tenants). Unlike the first build (D2042 above), a handover now has one
+tenant audit record (`schedule.trigger_handover`) per tenant of the set, written after the commit by `schedule_trigger_handover_audit`, which sets
+`audited_at` (OD-2026-11-14-7).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `schedule_trigger_handover_census` | `epoch bigint`, `instance_id uuid` (PK `(epoch, instance_id)`), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`), `binary_version text` (1..64), `started_at`, `last_seen` | Every serving instance seen within the horizon when the handover was made, copied whole (more than 1,000 is refused). Append-only: `UPDATE`, `DELETE` and `TRUNCATE` refused by `ENABLE ALWAYS` triggers. Owner-only. |
+| `schedule_trigger_handover_tenants` | `epoch bigint`, `tenant_id uuid` (PK `(epoch, tenant_id)`), `audit_id uuid` unique, `audited_at timestamptz null` | One row per tenant with a cron trigger when the handover was made, with a random audit id drawn there (D2253). A row changes once, when its audit record is written (`audited_at` set); `DELETE` and `TRUNCATE` refused. Owner-only, so the runtime role cannot read an audit id. |
+| `schedule_trigger_handover_attempts` | `run_id uuid` PK (the Job's UID in Helm, drawn at start in compose), `first_round_at`, `deadline`, `horizon interval`, `stable_wanted int`, `min_live int`, `stable_count int` (default 0), `stable_set uuid[] null`, `last_stable_at null`, `last_round_at`, `last_reason text null`, `reason_count int` (default 0), `rounds bigint` (default 0) | One row per run of the job. CHECKs: horizon 10 min to 1 h, `stable_wanted` 3..1000, `min_live` 1..1000, `deadline` at most 24 h after `first_round_at`, `stable_set` at most 1,000 ids, `last_reason` in the closed set `schedule_trigger_handover_reasons()` (twelve codes). Index `(last_round_at DESC)`. Written only by the round and note functions (`SECURITY DEFINER`); rows of runs a week old are deleted by a round, sixteen at a time (D2287); a new run is refused while sixteen others are before their deadline and not stopped (D2292). The engines read it for their gauges. |
+| `schedule_trigger_handover_floor` | singleton (`only_row boolean` PK, `CHECK (only_row)`), `min_live int` (1..1000), `set_by text` (1..128), `set_at` | The owner's floor of the live engines, written by `migrate` from `SAGAT_HANDOVER_MIN_LIVE` through `schedule_trigger_handover_set_floor`; the round and the wrapper count with the greater of the run's `min_live` and this (D2291). Owner-only. |
+| `schedule_trigger_handover_retirement` | singleton (`only_row boolean` PK), `retired_by text` (1..128), `retired_at` | Who retired the role `sagat_handover`, and when; `migrate` logs the role in only while it is empty (D2269). Final: `UPDATE`, `DELETE`, `TRUNCATE` refused. Owner-only. |
+
+The view `schedule_trigger_handover_audit_pending` (one column, `tenants`: null before the handover, otherwise the count of rows of the tenant set of
+`changed_epoch` with no `audited_at`) has its owner's rights: its reader sees a count, never the tenant set or an audit id (D2294). The engines export it as
+`trigger_schedule_handover_audit_pending`.
 
 ### Instance-capability registry (owned by 018; used by 029 and 031)
 
@@ -349,7 +372,13 @@ on the run row only).
 | `business_ids` | `SELECT, INSERT, UPDATE, DELETE` | `DELETE` only rows past their window or of an erased holder (trigger check) |
 | `runs` new columns | existing grants | immutable after insert (trigger) except `business_id → NULL` on erasure; `start_delayed_until` cleared only by release |
 | `schedule_trigger_handover` | `SELECT` | changed only through a `SECURITY DEFINER` function used by the operator command |
+| `schedule_trigger_handover_attempts`, `schedule_trigger_handover_audit_pending` (view) | `SELECT` | the attempt rows are written only by the round and note functions, which only `sagat_handover` may execute; the view gives a count |
+| `schedule_trigger_handover_census`, `schedule_trigger_handover_tenants`, `schedule_trigger_handover_floor`, `schedule_trigger_handover_retirement` | none | owner-only (revoked from PUBLIC and the runtime role) |
 | `serving_instances`, `platform_requirements`, `platform_requirement_epoch` | `SELECT`; own-row upsert/delete through a definer function | requirement and epoch rows only through the operator command's definer function |
+
+**The handover role** `sagat_handover` (ADR-0091, D2252, D2264, D2289): ensured and granted by every `migrate` run, not by the migration. It may
+`EXECUTE` five functions (`schedule_trigger_handover_round`, `_note`, `_auto`, `_audit`, `_retire`), `SELECT` `schedule_trigger_handover` and
+`schedule_trigger_handover_attempts`, and `SELECT (changed_xact)` on `platform_requirement_epoch`; nothing else, and no table write.
 
 `T018-009` adds every new statement to the runtime-privilege test
 (`tests/integration/platform-foundation/runtime_privileges`).
@@ -364,5 +393,7 @@ on the run row only).
 | Business-id bindings | until `finished_at + window` of a terminal holder | maintenance, bounded |
 | Batch jobs and items | a job that has finished (`COMPLETED`, `CANCELLED`, `FAILED`) is kept until `expires_at` (stamped at creation: 30 d default, 14 d at least, 90 d at most) and for at least 14 d after it ended; a job that has not finished is never purged; the items go with their job (D2324 to D2327) | maintenance: `batch_jobs_purge(p_jobs, p_rows)` (migration `20270119000000`), bounded: at most 100 jobs and 5,000 rows a call, the items first in chunks and the job row last, oldest window first, `FOR UPDATE SKIP LOCKED` |
 | Run resets | with the new run (no separate purge in this feature) | — (G42/G69 decide run retention) |
+| Handover attempt rows | 7 days after a run's last round | the round function, sixteen rows at a time |
+| Handover census copy and tenant set | for good (append-only) | — |
 
 Purges release charged content bytes in the same transaction (ADR-0027).

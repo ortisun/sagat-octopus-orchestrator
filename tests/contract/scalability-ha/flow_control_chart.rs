@@ -71,3 +71,42 @@ fn a_switch_without_the_digest_keys_fails_the_render() {
         );
     }
 }
+
+/// Feature 022's switches beside feature 018's automatic handover (ADR-0091), which the base values turn on: both
+/// processes carry the two gates and the engine the handover flag, and the handover's Job, which runs no gate, is given
+/// neither a flow-control switch nor the digest key Secret.
+#[test]
+fn the_flow_control_switches_and_the_automatic_handover_render_together() {
+    let docs = render(&flow_control(&json!({
+        "concurrencyKeys": true, "rateLimits": true, "digestKeys": {"existingSecret": "flow-keys"}
+    })));
+    for name in [CONTROL, ENGINE] {
+        let env = env_of(named(&docs, "Deployment", name));
+        assert_eq!(env.get(RATE).map(String::as_str), Some("true"), "{name}");
+        assert_eq!(
+            env.get(CONCURRENCY).map(String::as_str),
+            Some("true"),
+            "{name}"
+        );
+    }
+    let engine = env_of(named(&docs, "Deployment", ENGINE));
+    assert_eq!(
+        engine
+            .get("SAGAT_SCHEDULES_AUTO_HANDOVER")
+            .map(String::as_str),
+        Some("true")
+    );
+    let jobs = of_kind(&docs, "Job");
+    assert_eq!(
+        jobs.len(),
+        1,
+        "the handover's Job is rendered beside the gates"
+    );
+    let job = serde_json::to_string(jobs[0]).expect("json");
+    assert!(
+        !job.contains("SAGAT_FLOW_CONTROL")
+            && !job.contains("flow-keys")
+            && !job.contains("flow-control"),
+        "the Job runs no gate: {job}"
+    );
+}

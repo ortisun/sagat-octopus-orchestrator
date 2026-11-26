@@ -61,6 +61,7 @@ spec:
             # /v1/ready asks the database (docs/runbooks/control-plane.md). /livez and /readyz are the engine's.
             - {name: SAGAT_ADMIN_ADDR, value: "0.0.0.0:9090"}
             - {name: SAGAT_SHUTDOWN_GRACE_SECS, value: "30"}
+            - {name: SAGAT_SCHEDULES_ENABLED, value: {{ .Values.schedules.enabled | quote }}}
             {{- if $nativeTls }}
             - {name: SAGAT_HTTP_TLS_CERT, value: /etc/sagat/http-tls/tls.crt}
             - {name: SAGAT_HTTP_TLS_KEY, value: /etc/sagat/http-tls/tls.key}

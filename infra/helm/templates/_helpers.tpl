@@ -254,3 +254,35 @@ engine. The keys are a Secret mounted read-only as a file, never an environment 
     items: [{key: flow-control.keys, path: flow-control.keys}]
 {{- end }}
 {{- end -}}
+
+{{/*
+The automatic handover's values (ADR-0091 decision 6, D2280): `schedules.autoHandover` is a map (`enabled`, `databaseSecret`,
+`retireRole`, ...) or, as the opt-out the ADR names, the boolean `false` (or `true`, with every other value at its default).
+*/}}
+{{- define "sagat.autoHandover.values" -}}
+{{- $given := .Values.schedules.autoHandover -}}
+{{- $defaults := dict "enabled" true "databaseSecret" "" "retireRole" false "stable" 3 "horizonSeconds" 600 "waitSeconds" 7200 "minLive" 0 -}}
+{{- if kindIs "bool" $given -}}
+{{- $_ := set $defaults "enabled" $given -}}
+{{- else if kindIs "map" $given -}}
+{{- /* key by key: a merge would take `false`, the zero value, for a value not given */ -}}
+{{- range $key, $value := $given -}}
+{{- $_ := set $defaults $key $value -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $defaults -}}
+{{- end -}}
+
+{{- define "sagat.autoHandover.enabled" -}}
+{{- $ah := include "sagat.autoHandover.values" . | fromJson -}}
+{{- if $ah.enabled -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+`<release>-schedule-trigger-handover-<revision>` cut to 52 characters, then `-` and the first 10 hex digits of the SHA-256 of the whole
+name: at most 63, the limit of the `job-name` label (D2268).
+*/}}
+{{- define "sagat.autoHandover.jobName" -}}
+{{- $full := printf "%s-schedule-trigger-handover-%d" .Release.Name (int .Release.Revision) -}}
+{{- printf "%s-%s" ($full | trunc 52 | trimSuffix "-") (sha256sum $full | trunc 10) -}}
+{{- end -}}

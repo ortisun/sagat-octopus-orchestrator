@@ -183,13 +183,13 @@ jobs:
       # The workspace also verifies worker/event compatibility baselines and that applying
       # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
-      - name: build isolated database executor for process tests
-        run: cargo build -p sagat-database-runner --bin database-runner --locked
-      # The restart test of feature 022 (T022-059) kills the shipped control plane and engine with SIGKILL and starts
-      # them again, so it needs the two executables built beside it (decision D022-112 of its research.md).
-      - name: build the control plane and engine executables for the restart test
-        if: contains(format(' {0} ', matrix.shard.targets), ' e2e_flow_control_step_policies ')
-        run: cargo build -p sagat-control-plane --bin control-plane -p sagat-execution-engine --bin execution-engine --locked
+      # The automatic handover's tests send real signals to the built control plane and scrape a built engine (G2283, G2286).
+      # The restart test of feature 022 (T022-059, e2e_flow_control_step_policies) kills the shipped control plane and
+      # engine with SIGKILL and starts them again, so it needs the same two executables (decision D022-112 of its research.md).
+      - name: build isolated database executor, control plane and engine for process tests
+        run: |
+          cargo build -p sagat-database-runner --bin database-runner --locked
+          cargo build -p sagat-control-plane --bin control-plane -p sagat-execution-engine --bin execution-engine --locked
       # Fail early on the changed transaction family and its migration/index interactions, for the suites
       # that were added or modified. The last step still runs every suite of the shard in full.
       - name: capacity and migration regression preflight
@@ -268,7 +268,7 @@ jobs:
           evidence="$RUNNER_TEMP/sagat-upgrade-evidence"
           mkdir "$evidence"
           prepared=""
-          for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover; do
+          for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover cron-trigger-upgrade; do
             args=(--scenario "$scenario")
             if [[ -n "$prepared" ]]; then args+=(--prepared-run "$prepared"); fi
             python3 scripts/test-release-upgrade-profile.py "${args[@]}"
@@ -687,12 +687,18 @@ jobs:
           docker run --rm --entrypoint promtool \
             -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
             prom/prometheus:v3.15.0 check rules /etc/prometheus/alerts.yaml
+      # Every rule test in the directory, so that a new one cannot be left out (G2022).
       - name: promtool test rules (the alerts fire and stay silent when they should)
         run: |
+          tests=()
+          for file in infra/observability/tests/*_test.yaml; do
+            [ -e "$file" ] && tests+=("/tests/$(basename "$file")")
+          done
+          test "${#tests[@]}" -gt 0
           docker run --rm --entrypoint promtool \
             -v "$PWD/infra/observability:/rules:ro" \
             -v "$PWD/infra/observability/tests:/tests:ro" \
-            prom/prometheus:v3.15.0 test rules /tests/batch_stalled_test.yaml
+            prom/prometheus:v3.15.0 test rules "${tests[@]}"
       - name: OpenTelemetry Collector validate
         run: |
           docker run --rm \
@@ -741,6 +747,28 @@ jobs:
         run: |
           infra/dr/drill.sh
           cat "$SAGAT_DR_REPORT"
+
+  # The Job of the automatic handover in a real Kubernetes (T018-088, OD-2026-11-15-14, G2250, G2289): a kind cluster of its
+  # own, the chart installed with the job on, an `--atomic` upgrade rolled back (Helm deletes the Job of the revision it leaves,
+  # whose pod writes INTERRUPTED at its SIGTERM, and recreates the old revision's Job under a new UID, a new run), then the
+  # handover. A release run only, like the other jobs that need the whole stack (docs/constitution.md, CI gates).
+  kind-handover:
+    name: handover job in a kind cluster (release)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # kind pinned by version through the Go module proxy and its checksum database; the node image is pinned by digest in
+      # the script.
+      - name: kind v0.33.0
+        run: |
+          go install sigs.k8s.io/kind@v0.33.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: kind version && helm version --short && kubectl version --client
+      - name: install the chart in kind and run the handover Job
+        run: tests/e2e/scalability-ha/kind-handover.sh
 
   dependencies:
     name: dependency advisories (cargo audit)
