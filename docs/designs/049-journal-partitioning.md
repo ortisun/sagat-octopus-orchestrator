@@ -1,8 +1,14 @@
 # Partitioning of the journal tables, joined to the retention of feature 020
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-26
+*   **Reviewed-commit:** c621f25b4f50038411fd38bc746a4d92867dc9d5
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/049-journal-partitioning.reviews/2026-11-26/approval-egm-review.md sha256:c7d38f198d545e554204bb5b6cd310c33c9e2684741d75e5d87f6a97f7909ffe; docs/designs/049-journal-partitioning.reviews/2026-11-26/approval-architecture.md sha256:4e85941ade695815df76d32433f29d0392d78eaa1d89f51448dbddca3e824ee7; docs/designs/049-journal-partitioning.reviews/2026-11-26/approval-security.md sha256:2a827ad53f8f8eca58d5a0ce4192f200c78a43e02aa8e879ccf01bc52e573cba; docs/designs/049-journal-partitioning.reviews/2026-11-26/approval-correctness.md sha256:256ef649b7ee361a3fe30b9003b9602e7d518a792e2374de382a87b0fa7d30d1
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 3; OD-2026-11-24-516, OD-2026-11-24-517, OD-2026-11-24-518
 
 --------------------------------------------------------------------------------
 
@@ -764,6 +770,8 @@ Each task's files are named; the test suites are those of the Verification Plan.
 
 - [ ] T049-16 Measure the scheduler's passes with `steps` partitioned by bucket after design 052's queue, and record the decision in `tests/performance/reports/journal-partitioning.md`.
   Refs: Requirement 049-012
+- [ ] T049-19 Fix the minors left open at the approval (Owner decision 2026-11-24-518), each test first: the `RUN_PURGED` mapping tested in Task 049-8 with a retirement row marked dropped, and the `journal.rs` `purged_at` check with its test in the amendment of T020-045; a running clock offset with `DONT_FAKE_MONOTONIC=1`; the generator test scoped per target (`run_payloads` by tenant, root, bucket and digest, `payloads` by tenant and digest, `runs` by tenant and run); the table of function attributes as a template with an entry per name, and entries of functions other features create audited once they exist; `mark_projected` reading its bucket from `runs` in the store; the gauge read on every housekeeping attempt; a contract reason for the two retryable refusals; held runs printed, not exported, in the Risks row and row VI; the runtime-SQL baseline entry of `telemetry.rs` and the readiness-check exception stated in Requirements 049-005 and 049-011; the values of `journal_bucket_retiring` that count as active; `ensure_journal_buckets()` limited to the journal tables; step 2 of the Retirement section naming `purge_run_content_mark_only`; the parenthesis of Requirement 049-006; links to the decision records cited by number; the wrap width.
+  Refs: Requirement 049-006, Requirement 049-008, Requirement 049-009, Requirement 049-011, Requirement 049-013, Requirement 049-014
 
 ### Verification Plan
 
