@@ -185,9 +185,12 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   revoke at the provider (RFC 7009) every refresh revision of the credential that has a vault entry, pending ones
   included, record the outcome (`REVOKED`, `NOT_SUPPORTED`, or `UNKNOWN` after the last attempt), destroy every revision
   and end in `DISCONNECTED`. A `PENDING` revision stored after that (a holder whose lease lapsed during its call) MUST
-  be revoked and destroyed by the sweeper, which takes every `PENDING` row of a `DISCONNECTING` or `DISCONNECTED`
-  credential and every `PENDING` row older than the lease plus the store deadlines; such a late row downgrades
-  `revocation_outcome` until it is revoked, and is audited. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
+  be revoked and destroyed by the sweeper, which takes `PENDING` rows of `DISCONNECTING` or `DISCONNECTED` credentials
+  only, and of those a row without a vault mark only once it is older than the lease plus the store deadlines (so a
+  vault write still running is never left behind); such a late row downgrades `revocation_outcome` until it is revoked,
+  and is audited. A stale `PENDING` row of a live credential is never revoked: the next acquire adopts it (step 2 of
+  Technical Plan 4), and once a newer revision replaces it, it is abandoned and destroyed in the vault only, as
+  Technical Plan 4 says. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
   `revocation_with_the_provider_down_ends_unknown`, `a_holder_crashing_after_a_late_store_leaves_no_live_token`.
 
 #### Delivery to executors
@@ -318,7 +321,7 @@ integration runner waits on the same clause (feature 021, Decision 021-022).
 
 None open. The design follows Owner decision 2026-11-24-1, the 5.0.0 amendment (Owner decision 2026-11-24-2) and the
 third declared set of 5.1.0 (Owner decision 2026-11-25-3); its choices were taken under Owner decisions 2026-11-20-6 and
-2026-11-24-4 and are recorded as Decisions 047-001 to 047-061 in research.md, with the register's literal marker
+2026-11-24-4 and are recorded as Decisions 047-001 to 047-062 in research.md, with the register's literal marker
 "delegate (OD-2026-11-24-4)". Architecture decisions 0122 and 0123 are accepted with the approval of this design, under
 Owner decision 2026-11-24-4 (Owner decision 2026-11-24-320), on the approval rule of Owner decision 2026-11-25-2 (pull
 request 284).
@@ -843,7 +846,9 @@ feature 028's Tasks T028-062 to T028-066.
   disconnects, delivery-row cleanup. Files: `crates/application/src/oauth/passes.rs`, `apps/control-plane`. Tests:
   `keep_alive_refreshes_idle_tokens`, `disconnect_revokes_every_refresh_revision`,
   `revocation_with_the_provider_down_ends_unknown`, `withdrawal_disconnects_after_seven_days`,
-  `a_holder_crashing_after_a_late_store_leaves_no_live_token`, `a_retired_revision_is_never_revoked_at_the_provider`.
+  `a_holder_crashing_after_a_late_store_leaves_no_live_token`, `a_retired_revision_is_never_revoked_at_the_provider`,
+  `a_stale_pending_revision_of_a_live_credential_is_adopted_not_revoked`,
+  `the_sweeper_waits_for_a_vault_write_still_running`.
   Refs: Requirement 047-012, Requirement 047-013
 - [ ] T047-9 Feature 021's `oauth` scheme served by the broker inside `ResolveResource`; the binding rule; resource deletion
   moving a credential to `DISCONNECTING` with the credential row locked first. Files:
