@@ -941,3 +941,113 @@ finding was answered.
   with eager dispatch (Task 044-14). The core keeps the worker's cache, reused when the window follows it; exclusivity is
   an optimisation to be measured, and it brings a routing string with several writers. Raised by the zoom-out review of
   round 3.
+
+## 5. The TypeScript lane (Task 044-10, and the TypeScript parts of Tasks 044-36 and 044-37)
+
+The TypeScript lane (branch `feature/044-typescript`) records its decisions and gaps here, in numbers of its own:
+decisions from D044-300 to D044-349 and gaps from G044-300 to G044-319, so that they never clash with the numbers the
+server lane takes in sections 2 and 3 while both are open. Every decision below is the lane's, delegate
+(OD-2026-11-24-4), with its reasoning.
+
+- **D044-300** (2026-11-26) The numbering block of the TypeScript lane above. delegate (OD-2026-11-24-4): two lanes
+  append to this register at once, and a number taken twice has happened before (`AGENTS.md`, "Start here").
+- **D044-301** (2026-11-26) The runtime that runs inside a run's context is one module that imports nothing
+  (`sdks/typescript/src/workflows/context.ts`), reached from a bundle through the package export condition
+  `sagat-workflow` of `@sagat-octopus-orchestrator/sdk/workflows`, so the bundler puts the runtime itself into the
+  bundle; in the host the same import resolves to the host entry point, whose workflow calls throw `NotInWorkflow`.
+  The host places in the context only a number (the bridge version, which tells the runtime to replace the globals
+  before any workflow module is evaluated) and one primitive string per call, and reads back one primitive string; it
+  refuses a bundle whose bridge version differs. delegate (OD-2026-11-24-4): the code digest then covers the exact
+  runtime code that runs (Technical Plan 3.2 hashes the bundle file), and Technical Plan 1.2's string bridge holds
+  without any host object.
+- **D044-302** (2026-11-26) The contexts of workflow runs live on a thread of their own (`node:worker_threads`, started
+  with no inherited command-line options), not on the worker's main thread. Evidence, Node 26.13.1 on the development
+  machine: an activation deadline that stops a `vm` evaluation inside the context's microtask checkpoint, on a thread
+  where async hooks are enabled (`createHook`, as OpenTelemetry's context manager does; `node:test` does too), ended the
+  whole process with `async hook stack has become corrupted`; the same activation on the workflow thread fails
+  `ACTIVATION_DEADLINE` and the process goes on (`an infinite loop stops at the activation deadline`, run under
+  `node:test`). The thread also ignores unhandled rejections, which workflow code makes as part of its own control
+  flow (a losing race, a cancelled sleep): the default handler would end the thread with every run it holds
+  (`an unhandled rejection in workflow code leaves the workflow thread running`). delegate (OD-2026-11-24-4): a
+  workflow bug must not take down a worker that also runs activities; the thread keeps workflow code off the thread of
+  the activities and of the gRPC client too. Cost: one structured-clone message per call; measured by Task 044-25.
+- **D044-303** (2026-11-26) A workflow module that reads the clock or the generator at its top level is refused when
+  its bundle loads (`NotInWorkflow`): top-level code runs before any activation, where no workflow time and no
+  position in the run's random stream exist. delegate (OD-2026-11-24-4): a silent value there would differ between the
+  worker that started a run and the one that replays it.
+- **D044-304** (2026-11-26) The default locale of workflow code is `en-US`, and the default time zone of `Intl` and of
+  the `toLocale...` methods is UTC. Technical Plan 1.2 asks for the root locale, but V8 has no data for `und` and
+  resolves it to the process's default locale (measured: `new Intl.NumberFormat("und").resolvedOptions().locale` is
+  `en-US` on the development machine, and follows the process's language settings elsewhere), which would make the same
+  code format differently on two workers. A fixed tag is deterministic; its data comes from the ICU version that the
+  digest's runtime string names. delegate (OD-2026-11-24-4).
+- **D044-305** (2026-11-26) The order of an activation's commands: the commands of the function and of its handlers in
+  the order they are made; then, when the function has a terminal outcome, the SDK's aborts of its open saga scopes,
+  innermost first; then one `consume_signals`; then one `set_state` (the last value of the activation); then the
+  terminal command (or the deferred one it re-emits) last. The terminal command does not count against the function's
+  256 commands: a completion carries a first-time terminal command or a re-emitted one, never both, so the SDK's 147
+  (Requirement 044-012, "one re-emitted deferral") covers it and a completion stays within 403. A side-effect marker's
+  identifier is the constant `side-effect` (the API names none, and the kind already says what it is). delegate
+  (OD-2026-11-24-4): six SDKs must make the same commands for one golden, so the order is fixed, and the commands the
+  SDK adds for the activation as a whole come after what the function did.
+- **D044-306** (2026-11-26) `patched(id)` and `deprecatePatch(id)` follow Temporal's semantics within Technical Plan
+  7.2: the answer of `patched(id)` is kept for the rest of the run, so only its first call records a marker; on replay
+  it is true only when the record at the next command number is that patch marker, and false otherwise (the old path);
+  `deprecatePatch(id)` records its marker live, and on replay only where the history has it. delegate
+  (OD-2026-11-24-4).
+- **D044-307** (2026-11-26) A replay of an exported history that differs from its records after the activation was
+  given a withheld value (a placeholder of feature 016, a blob the export does not carry) answers
+  `INCONCLUSIVE_REDACTED` at that command, never a mismatch; a replay that matches all the same is a match on kinds and
+  targets, the only thing an export lets a replayer compare (it carries no body). delegate (OD-2026-11-24-4): Technical
+  Plan 7.4 asks for "never a false mismatch"; declaring every replay that saw a classified field inconclusive would make
+  the replayer useless for the runs that matter most.
+- **D044-308** (2026-11-26) The SDK's inline accounting (Non-functional requirement 044-006, Tasks 044-36 and 044-37):
+  at the activation's start it reserves the version's `state.maxBytes` and the size of the consumption list of every
+  signal that could be consumed in the activation (those buffered and not consumed before it, and those of its window),
+  both known from the history; a value that always stays inline (a gated activity's input, an approval's subject,
+  continue-as-new's input and carried state) must fit 192 KiB less the reserve, or its call throws
+  `InlineValuesExceeded`; after every value that may travel as a blob (a work command's input, a side-effect value, an
+  update result) the SDK checks that the activation's values can still be carried (the largest moved to blobs first,
+  at most 16 blobs and 4 MiB of them), and the call after which they could not throws `InlineValuesExceeded` (an update
+  result fails its update with `RETAINED_BYTES_LIMIT` instead). A returned value that cannot be carried fails the
+  workflow task (`WORKFLOW_TASK_FAILED`, exception type `InlineValuesExceeded`), because nothing can be thrown into a
+  function that has returned; the run goes under review after its fifth failure rather than end with a value nobody can
+  read. The command metadata a call counts is the RFC 8785 size of its kind, target and body without its literal values.
+  delegate (OD-2026-11-24-4): every bound is decided from sizes alone, so the same call throws live and in replay.
+- **D044-309** (2026-11-26) The update rejections the SDK makes carry the reasons `HANDLER_NOT_REGISTERED` (no handler
+  when the admission is applied) and `VALIDATION_REJECTED` (the validator threw); the message of a validator's
+  exception never leaves the function. Both join the closed list of Task 044-2 when its contract merges. delegate
+  (OD-2026-11-24-4).
+- **D044-310** (2026-11-26) The runtime follows the server lane's contract as it stands on its branch: the body table
+  of `specs/044-workflow-as-code/contracts/goldens/README.md` (Decision 044-232 of that branch) and the code profiles of
+  `workflow.schema.json`. A work command's value (`input`, an approval's `subject`) is kept apart from its fragment and
+  enters the hashed body as its descriptor; the saga scope of an activity travels beside the fragment; a wait needs
+  `timeoutMs`; a script takes no `timeoutMs`; the literal keys of feature 022 are refused at the call until Task 044-27
+  admits them. Until the proto of Task 044-2 merges, the runtime exchanges a model of its own with the same names, and
+  one adapter will map the protocol's messages to it. delegate (OD-2026-11-24-4): the server lane owns the contract,
+  and following its draft now keeps the two lanes from drifting.
+- **D044-311** (2026-11-26) `requestCancellation(command)` cancels one of the run's own steps or children (Requirement
+  044-012 lists the command; the API of Technical Plan 1.12 names no call for it); on a durable timer it makes
+  `timer_cancel`, and the sleep rejects with `TimerCancelled`; `clearTimeout` and `clearInterval` cancel the timers of
+  `setTimeout` and `setInterval`. Task 044-1 names them in `sdks/SPEC.md`. delegate (OD-2026-11-24-4).
+- **D044-312** (2026-11-26) The time zone precondition accepts exactly `UTC` and `Etc/UTC`: an offset of zero is not
+  enough (`Europe/London` has summer time, `Africa/Abidjan` could change). delegate (OD-2026-11-24-4).
+- **D044-313** (2026-11-26) The SDK's own tests build their bundles without esbuild: the compiled runtime with its
+  `export` keywords removed, then the workflow functions' source text, in one function scope, which is what the
+  bundler's output amounts to; the bundler package's tests use esbuild itself. delegate (OD-2026-11-24-4): esbuild stays
+  a dependency of the bundler package only (Technical Plan 1.12).
+
+- **G044-300** (2026-11-26) The worker protocol of Task 044-2 is not merged: the worker's side (registering workflow
+  types with their digests, leasing `WORKFLOW` tasks, `ReadHistory` pages, `CompleteWorkflowTask` and
+  `FailWorkflowTask`, the capability declaration, the export lines in the proto3 JSON mapping) waits for it, and the
+  runtime is tested against the histories its test environment journals.
+- **G044-301** (2026-11-26) The bundler package `sdks/typescript-workflows-bundler/` (esbuild, the manifest and the
+  digest) and its supply-chain review (Gap 044-012) are the lane's next slice.
+- **G044-302** (2026-11-26) A `vm` evaluation with a timeout cost about 40 µs on the development machine against 0.5 µs
+  without (20,000 calls each, Node 26.13.1); an activation evaluates once per event the function sees, plus three. The
+  97.65625 µs per visible event of Non-functional requirement 044-001 leaves room, which Task 044-25 measures.
+- **G044-303** (2026-11-26) The server lane's contract keeps an activity's saga scope out of its hashed body
+  (`Command.saga_scope` beside the fragment), and the command record carries no scope: a changed function that schedules
+  the same activity inside another scope (or outside any) replays with the same kinds, targets and chain, while the
+  engine would compensate it differently. Reported to the coordinating session for the server lane: the scope belongs
+  in the hashed body of `activity` and `script`.

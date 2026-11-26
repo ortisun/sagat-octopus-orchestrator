@@ -14,6 +14,7 @@ REST client, workflow/database authoring, shared transport utilities and optiona
 - `ops` is the collection operator factory (`filter`, `map`, `flatMap`, `skip`, `take`, `distinct`, `window`) returning `Operator`; `CollectionOptions.operators` carries the chain, and absent or empty writes no `operators` (design 042). [ops.ts:ops] [workflow.ts:CollectionOptions]
 
 - [worker](./worker/README.md) — component contract.
+- [workflows](./workflows/README.md) — workflow as code (design 044): the determinism runtime, the replayer, the test environment.
 
 ## Invariants
 
