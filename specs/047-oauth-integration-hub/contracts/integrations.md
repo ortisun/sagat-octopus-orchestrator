@@ -1,4 +1,4 @@
-# The curated integrations of release 0.3.0 (design 047, Requirement 047-023)
+# The curated integrations of release 0.3.0 (design 047, Requirement 047-024)
 
 Required for the release (Task 047-12) are the first four; the others are content tasks of the same release (Task
 047-22). Presets listed are the first ones; each integration's `review.md` is the final word. Real-provider runs need

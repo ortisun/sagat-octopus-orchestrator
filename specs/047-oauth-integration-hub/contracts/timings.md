@@ -12,6 +12,7 @@
 | Vault write deadline | 5 s per write |
 | Waiter | backoff from 200 ms to 1 s, at most 10 s |
 | Request windows | per registration: 4 in flight, 10 per second; per tenant on a deployment registration: 1 in flight and 10 divided by the opted-in tenants per second, at least 1; in flight means an unexpired lease or broker-call row, counted under the window row's lock; every broker call to the registration counts |
+| Sweeper's wait for an unmarked `PENDING` row | 60 s after the row was created (the 30 s lease, the 15 s call bound and three 5 s vault writes), then a tombstone claim |
 | `invalid_client` before `BROKEN` | 3 answers within 10 minutes |
 | Keep-alive | at half the provider's idle refresh-token lifetime |
 | Delivery | 2 full calls per attempt; 30 re-asks per hour of the attempt; 1 per 10 s per resource |

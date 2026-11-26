@@ -54,6 +54,14 @@ Terms of this design:
 - **OAuth vault.** An OpenBao KV version 2 mount of its own (`SAGAT_OAUTH_OPENBAO_MOUNT`), reached with a token of its
   own (`SAGAT_OAUTH_OPENBAO_TOKEN_FILE`) whose policy allows create, read and destroy on that mount only, through an
   application port only the broker uses.
+- **Token revision (access revision, refresh revision).** One stored token of a credential, a row of
+  `oauth_token_revisions` with its own vault reference; the credential points at its current access revision and refresh
+  revision. Not a resource revision of feature 021 and not a registration secret's revision.
+- **Broker pass.** A leased loop of `apps/control-plane` that claims its batch with `FOR UPDATE SKIP LOCKED`: the
+  keep-alive pass (refreshes idle tokens at half the provider's idle lifetime), the sweeper (every minute: destroys
+  retired and abandoned revisions in the vault, revokes late `PENDING` rows of disconnected credentials), the revocation
+  pass (every minute: works disconnects), the hourly pass (expired and incomplete authorization requests, expired
+  broker-call rows) and the daily pass (delivery-attempt rows older than 7 days).
 - **Fence; grant epoch.** A counter on the credential row that every writer increases; a refresh activates only if the
   fence it acquired is still current. The grant epoch increases on every completed connection, so a refresh from an
   earlier connection is never adopted into a later one.
@@ -120,7 +128,7 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   after 7 days, then disconnect and revoke the credentials made with it. A deployment registration MUST NOT serve the
   client-credentials grant. A registration not offered to a tenant answers like a missing one. *Acceptance:*
   `offer_opt_in_opt_out_and_withdrawal`, `a_registration_not_offered_is_not_found`,
-  `client_credentials_on_a_deployment_registration_is_refused`.
+  `client_credentials_on_a_deployment_registration_is_refused`, `a_withdrawn_offer_cannot_be_opted_into`.
 - **Requirement 047-003** The client authentication methods MUST be `client_secret_basic`, `client_secret_post` and
   `private_key_jwt` (RFC 7523: ES256 or RS256, one key per registration, `aud` the provider's issuer, a fresh `jti`, at
   most 60 s of validity). *Acceptance:* each method against the local OAuth test server.
@@ -165,8 +173,7 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
 - **Requirement 047-009** At most one refreshed token set MUST be activated per fence value, and a second token request
   for a credential MUST NOT start before the first one's lease has lapsed. Once a provider has answered, the broker MUST
   store what it answered before anything else. *Acceptance:* `two_control_planes_refresh_once`,
-  `a_holder_paused_past_its_lease_activates_nothing`, `a_disconnect_between_answer_and_store_revokes_the_new_token`,
-  `a_withdrawn_offer_cannot_be_opted_into`.
+  `a_holder_paused_past_its_lease_activates_nothing`, `a_disconnect_between_answer_and_store_revokes_the_new_token`.
 - **Requirement 047-010** Two thresholds govern freshness: an access token is delivered only while it is valid for at
   least 60 s more, and a refresh is due when it is valid for less than 120 s. A caller that finds a refresh in flight and
   no deliverable token waits at most 10 s, acquiring itself if the holder's lease lapses, then fails retryable.
@@ -174,7 +181,7 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
 - **Requirement 047-011** A refresh refused with `invalid_grant` MUST move the credential to `NEEDS_REAUTHORIZATION`,
   audit it and report it to the namespace's holders of `oauth:credential:manage`; a step that needs it fails retryable
   with `RESOURCE_REAUTHORIZATION_REQUIRED`, so it waits under its retry policy (and fails when that policy is exhausted)
-  until the same account is connected again. Repeated `invalid_client` answers
+  until the same account is connected again. Repeated `invalid_client` or `unauthorized_client` answers
   (three within 10 minutes) mark the registration `BROKEN`; a step fails the same way until an administrator rotates the
   registration's secret. *Acceptance:* `the_next_attempt_after_reconnecting_succeeds`,
   `a_rotated_secret_restores_a_broken_registration`.
@@ -186,8 +193,9 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   included, record the outcome (`REVOKED`, `NOT_SUPPORTED`, or `UNKNOWN` after the last attempt), destroy every revision
   and end in `DISCONNECTED`. A `PENDING` revision stored after that (a holder whose lease lapsed during its call) MUST
   be revoked and destroyed by the sweeper, which takes `PENDING` rows of `DISCONNECTING` or `DISCONNECTED` credentials
-  only, and of those a row without a vault mark only once it is older than the lease plus the store deadlines (so a
-  vault write still running is never left behind); such a late row downgrades `revocation_outcome` until it is revoked,
+  only, and of those a row without a vault mark only once it is older than 60 s (the 30 s lease, the 15 s call bound
+  and three 5 s vault writes; `timings.md`), and after claiming its reference with a tombstone (so a vault write still
+  running is never left behind); such a late row downgrades `revocation_outcome` until it is revoked,
   and is audited. A stale `PENDING` row of a live credential is never revoked: the next acquire adopts it (step 2 of
   Technical Plan 4), and once a newer revision replaces it, it is abandoned and destroyed in the vault only, as
   Technical Plan 4 says. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
@@ -206,7 +214,7 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   token and its expiry; never a refresh token, client secret or private key. *Acceptance:* `canaries_never_leave_the_broker`,
   `a_stale_lease_receives_nothing`, `a_revoked_initiator_receives_nothing`.
 - **Requirement 047-016** An attempt MAY call delivery at most twice with every declared resource (its start and one
-  retry) and re-ask for one resource at most 30 times per hour of the attempt's life and once per 10 s per resource,
+  retry) and re-ask for one resource at most 30 times in any 60-minute window of the attempt and once per 10 s per resource,
   counted in the database. A re-ask may ask for a refresh after the provider refused the token (`forceRefresh`), which
   the broker honours once per access revision. A
   refused ask fails with `RESOURCE_ASK_LIMIT` (retryable for the step). *Acceptance:*
@@ -321,7 +329,7 @@ integration runner waits on the same clause (feature 021, Decision 021-022).
 
 None open. The design follows Owner decision 2026-11-24-1, the 5.0.0 amendment (Owner decision 2026-11-24-2) and the
 third declared set of 5.1.0 (Owner decision 2026-11-25-3); its choices were taken under Owner decisions 2026-11-20-6 and
-2026-11-24-4 and are recorded as Decisions 047-001 to 047-063 in research.md, with the register's literal marker
+2026-11-24-4 and are recorded as Decisions 047-001 to 047-065 in research.md, with the register's literal marker
 "delegate (OD-2026-11-24-4)". Architecture decisions 0122 and 0123 are accepted with the approval of this design, under
 Owner decision 2026-11-24-4 (Owner decision 2026-11-24-320), on the approval rule of Owner decision 2026-11-25-2 (pull
 request 284).
@@ -404,7 +412,7 @@ The broker is a module of the control plane's application layer (`crates/applica
 `crates/infra-egress` and parses responses in a bounded, closed way. The OAuth vault is the application port `OAuthVault`,
 implemented in `crates/infra-secrets` with the second mount, the second token and a reference type ordinary delivery cannot
 build. Waiting and deadlines go through a `Waiter` port implemented in `apps/control-plane`, so the application stays
-free of a runtime; the passes are loops in `apps/control-plane` that call application functions, each claiming its batch
+free of timers; the passes are loops in `apps/control-plane` that call application functions, each claiming its batch
 with `FOR UPDATE SKIP LOCKED`.
 
 The broker runs inside the control plane, not as a separate service, because it needs what the control plane already
@@ -419,8 +427,8 @@ The tables, their keys and the statements are in
 deployment registrations and offers are separate tables (`oauth_deployment_registrations`, `oauth_deployment_offers`) with
 no tenant column. Vault references are `oauth/<tenant>/credentials/<credential>/<revision>`,
 `oauth/<tenant>/registrations/<registration>/<revision>` and `oauth/deployment/registrations/<registration>/<revision>`,
-each written once and destroyed after it is retired. Migrations take timestamps after `20270119000000`, allocated by the
-coordinating session.
+each written once and destroyed after it is retired. Migrations take timestamps after `20270210000100`, the newest on `develop` on 2026-11-26,
+allocated by the coordinating session.
 
 ### 3. The authorization-code flow
 
@@ -445,8 +453,11 @@ sequenceDiagram
     API-->>U: credential state
 ```
 
-- The redirect URI of a registration is `<Studio origin>/studio/oauth/callback/<registration>`, built like the Studio's
-  OIDC callback from the configured Studio origin; the person registers it at the provider. The callback page removes
+- The redirect URI of a registration is `<Studio origin>/studio/oauth/callback/<registration>`, built from a new
+  control-plane setting `SAGAT_STUDIO_ORIGIN` (an `https` origin with no path, checked at start; the Helm value
+  `studio.origin`), never from a request header; the Studio's OIDC callback today uses the browser's own origin
+  (`frontend/apps/studio/src/auth/oidc.ts`), which the control plane cannot know. The person registers the URI at the
+  provider. The callback page removes
   `code` and `state` from the address bar before any other request, sends `Referrer-Policy: no-referrer`, and is kept out
   of front-end telemetry.
 - The callback's check and mark are one statement with the tenant, the state hash, the registration, the person, unused
@@ -482,7 +493,8 @@ A refresh (the statements are in data-model.md):
    is held, and the registration's and the tenant's request windows have room. A caller that acquires nothing rereads the
    row.
 2. **Adopt.** A `PENDING` refresh revision of the same grant epoch from an earlier fence whose vault write is marked, or
-   whose write-once vault reference is present when probed, is activated instead of calling the provider. A row whose
+   whose write-once vault reference holds a token when probed (not a tombstone, which a probe reads as claimed:
+   data-model.md), is activated instead of calling the provider. A row whose
    reference is absent is abandoned only after the adopter has claimed the reference with a tombstone (a check-and-set
    write that succeeds only where nothing is written, the same kind of write as the holder's own), so a holder's late
    write fails and cannot leave an untracked
@@ -524,7 +536,10 @@ retryable with an alarm. Tests drive the monotonic clock and the waiter through 
 ### 5. Delivery
 
 The declared resources of a task definition are part of the immutable definition. At delivery the broker runs feature
-021's resolution checks, the same function, for each declared resource: tenant and namespace scope; the exact task,
+021's resolution checks, the same function, which reuses the ordinary-delivery checks of
+`crates/application/src/worker/secrets.rs` (pool refusal, publisher check, recheck after the read) and the lease gating by
+protocol minor of `required_worker_protocol_minor` (`crates/infra-postgres/src/execution.rs`, `crates/application/src/worker.rs`),
+for each declared resource: tenant and namespace scope; the exact task,
 instance, attempt and generation, the capability token and an unexpired lease; the caller's membership, binding and
 pool-delivery policy; the publisher's and the initiator's `resource:use` and `resource:effect`; each slot's secret access;
 the resource's state; the credential's state, registration and scopes. It reads the pinned revision's settings, the slots'
@@ -538,13 +553,14 @@ set.
   it calls `ResolveSecrets` today, and adds every token to the run's redaction set. A mid-run ask is the `resource` host
   call of the shim protocol, which the supervisor forwards as `ResolveDeclaredResources` for one resource; the supervisor
   adds the new token to the redaction set before answering. Test runs are refused.
-- **Activities.** The same method, in the limit class `resource_delivery` (stated in `sdks/SPEC.md`), under this design's
+- **Activities.** The same method, in a fourth limit class `resource_delivery` added beside `discovery`, `lease` and
+  `transfer` in `crates/api-grpc/src/limits.rs` (stated in `sdks/SPEC.md`), under this design's
   protocol minor; the six SDKs expose `resource(name)`.
 
 Scripts and activities use ordinary delivery's binding: the capability token as a bearer credential with the caller's own
 authorities. The integration runner uses feature 021's session binding. The method's messages are in
 [resource-delivery.md](../../specs/047-oauth-integration-hub/contracts/resource-delivery.md). Counting is one per-attempt
-row (`oauth_delivery_attempts`: full calls, re-asks) and one per-resource time, each changed by one conditional increment;
+row (`oauth_delivery_attempts`: full calls, re-asks) and one last-ask timestamp per resource, each changed by one conditional increment;
 the broker's daily pass deletes the rows of attempts finished more than 7 days ago.
 
 Step-facing codes are feature 021's vocabulary with three rows this design adds there
@@ -610,21 +626,21 @@ decision 0074 is accepted it is the schema-owner command `control-plane hub unbl
 |---|---|---|
 | Credential state machine, provider and registration rules | `crates/domain/src/oauth.rs` | Create |
 | Broker, flows, delivery; `OAuthVault`, `HubItemCodec` and `Waiter` ports | `crates/application/src/oauth/` | Create |
-| Hub import, publication, revocation | `crates/application/src/templates.rs` (feature 028's) | Modify |
+| Hub import, publication, revocation | feature 028's module: `crates/domain/src/templates.rs` (entry kinds), `crates/application/src/templates.rs`, `crates/infra-postgres/src/templates.rs` (tables), `crates/api-http/src/routes/templates.rs` | Modify |
 | Pass loops and the `Waiter` implementation | `apps/control-plane` | Modify |
 | Token, revocation, userinfo and client-assertion requests | `crates/infra-oauth` (new adapter crate) | Create |
 | The OAuth vault: second mount, second token, reference type | `crates/infra-secrets/src/openbao.rs` | Modify |
 | Hub item codecs | `crates/infra-schema/src/hub/` | Create |
 | Presets | `crates/infra-integrations` (feature 021's) | Modify |
-| IR declarations on `script` and `activity` nodes | `crates/infra-ir/src/convert.rs`, `crates/infra-ir/src/diff.rs`, `crates/domain` (node types) | Modify |
+| Intermediate-representation declarations on `script` and `activity` nodes | `crates/infra-ir/src/convert.rs`, `crates/infra-ir/src/diff.rs`, `crates/domain` (node types), `specs/001-platform-foundation/contracts/workflow.schema.json` (compiled in by `crates/infra-ir/src/schema.rs`) and the fragment contract `specs/047-oauth-integration-hub/contracts/ir-declarations.md` written by Task 047-1 | Modify, Create |
 | Publication and admission checks | `crates/application/src/publishing.rs`, `crates/application/src/runs/` | Modify |
 | Tables | `crates/infra-postgres` (migrations, `storage-classification.json`) | Create, Modify |
 | REST and route registration | `crates/api-http/src/routes/oauth.rs`, feature 028's template routes, `crates/api-http/src/lib.rs` | Create, Modify |
 | `ResolveDeclaredResources` | `crates/api-grpc/src/{service,limits}.rs`, `specs/001-platform-foundation/contracts/worker.proto` and its baseline, the SDKs' proto copies, `sdks/SPEC.md` | Modify |
-| Script host call and redaction | `crates/infra-sandbox/src/protocol.rs`, `apps/sandbox-runner/src/{lib,host}.rs`, the shims in `runners/` | Modify |
+| Script host call and redaction | `crates/infra-sandbox/src/protocol.rs`, `apps/sandbox-runner/src/{lib,host}.rs`, the TypeScript and Python shims `crates/infra-sandbox/shims/runtime.{mjs,py}` and the Go, Java and .NET shims in `runners/` (all five sandbox languages) | Modify |
 | SDKs | `sdks/{typescript,go,python,dotnet,java,rust}` | Modify |
-| Studio and CLI | `frontend/apps/studio/src/features/{oauth,hub}/`, the callback route, `apps/cli` | Create, Modify |
-| OpenBao policy and token provisioning | `infra/helm`, `infra/docker` (with feature 015's OpenBao service), `docs/runbooks/oauth-and-hub.md` | Modify |
+| Studio and CLI | `frontend/apps/studio/src/features/oauth/` (Create) and the callback route; feature 028's `features/templates` and `sagat template list|show|import` extended with the hub kinds (Modify, after Task 028-067); `sagat oauth` in `apps/cli` | Create, Modify |
+| OpenBao policy and token provisioning | the new policy `infra/openbao/policies/oauth.hcl` (Create), applied by `infra/openbao/bootstrap-{development,kubernetes}.py`; the token from `infra/helm/templates/openbao-agent.yaml`; OpenBao in `infra/docker/compose.database.yaml`; `docs/runbooks/openbao.md` (Modify); `docs/runbooks/oauth-and-hub.md` (Create) | Create, Modify |
 | Hub content | `hub/` | Create |
 
 `scripts/check-architecture.py` gains rules with negative tests: the string literal `"grant_type"` (found with the script's
@@ -642,8 +658,8 @@ request. These are listed in Architecture decision 0122's "Enforced by".
   T021-005, T021-012, T021-017, T021-023 and T021-085 (feature 021, Gap 1152), and Task 047-1 edits feature 021's
   `error-reasons.md`, `integration-runner.md` and `resource-types.md` accordingly.
 - **028:** the index machinery and routes are feature 028's; this design waits for Tasks T028-062 to T028-066.
-- **017 and 015:** the OpenBao client is feature 017's; OpenBao in the compose is feature 015's; the tests start their own
-  OpenBao container, as feature 017's do.
+- **017:** the OpenBao client is feature 017's, and OpenBao is in its compose overlay `infra/docker/compose.database.yaml`
+  with the policies of `infra/openbao/policies/`; the tests start their own OpenBao container, as feature 017's do.
 - **046:** script templates carry manifests and resolve under the namespace's supply-chain policy when published.
 - **026:** notification channels keep their own credentials (Gap 047-004).
 - **043:** an imported workflow draft's `inputSchema` is checked at publication like any other.
@@ -740,7 +756,7 @@ design for the hub, and the 5.1.0 amendment the owner approved (Owner decision 2
 | II. Modular domain, ports and adapters | Pass | Rules in the domain; the broker behind `OAuthVault`, `HubItemCodec` and `Waiter`; one adapter crate for token endpoints; checks with negative tests; feature 028's modules reused |
 | III. External effects are at-least-once; sagas compensate | Pass | Token requests and revocations are provider calls retried at least once and recorded; effect presets state their deduplication and never weaken their class |
 | IV. Compatibility is versioned and pinned | Pass | Providers, types and presets are immutable published versions pinned by resources; a hub update never changes a resource; an additive protocol minor |
-| V. Code, tenant boundary and secrets are isolated | Pass with conditions | The broker runs no tenant code; long-lived secrets in a mount only the broker's token reaches; tenant-scoped keys and paths; deployment registrations refuse client credentials; credentials bind only to their provider's hosts. Condition: the third declared set of Technical Plan 12 is in Principle V before approval |
+| V. Code, tenant boundary and secrets are isolated | Pass with conditions | The broker runs no tenant code; long-lived secrets in a mount only the broker's token reaches; tenant-scoped keys and paths; deployment registrations refuse client credentials; credentials bind only to their provider's hosts. Condition: the third declared set of Technical Plan 12 is in Principle V (constitution 5.1.0, Owner decision 2026-11-25-3) before any task that delivers a declared resource is built |
 | VI. Observability and audit are part of the feature | Pass | telemetry.md |
 | VII. Events are redeliverable; inbox and outbox are the contract | Not applicable | No message path is added |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Race, pause, crash, canary, cross-tenant, egress and recorded-response tests; real-provider runs are gaps until credentials exist |
@@ -794,8 +810,11 @@ names its files and tests; tests are written first and seen failing. Builder A o
 `crates/infra-oauth`, `crates/infra-postgres`, `crates/infra-secrets`, `crates/api-http`, `apps/control-plane` and
 `infra/`. Builder B owns `hub/`, `crates/infra-schema`, `crates/infra-integrations`, `crates/infra-ir`, `crates/api-grpc`,
 `crates/infra-sandbox`, `apps/sandbox-runner`, `runners/`, `sdks/`, `frontend/apps/studio`, `apps/cli` and
-`tests/performance/`. Feature 021's Tasks T021-005, T021-012, T021-017, T021-023 and T021-085 come first; the hub needs
-feature 028's Tasks T028-062 to T028-066.
+`tests/performance/`. Feature 021's Tasks 021-005, 021-012, 021-017, 021-021, 021-022, 021-023, 021-024, 021-025,
+021-084 and 021-085 come first (Task 047-9 serves the `oauth` scheme through Task 021-084 and its test needs Tasks
+021-024 and 021-025; Task 047-11 edits those executors; declarations and admission rely on Tasks 021-021 and 021-022);
+the hub needs feature 028's Tasks 028-062 to 028-067. The tasks that deliver a declared resource (Tasks 047-9, 047-15,
+047-16 and 047-17) wait for constitution 5.1.0 (their `Owner-gate:` lines).
 
 | Phase and step | Builder A | Builder B |
 |---|---|---|
@@ -810,22 +829,26 @@ feature 028's Tasks T028-062 to T028-066.
   additions to `specs/001-platform-foundation/contracts/worker.proto` and `sdks/SPEC.md`; the runbook draft
   `docs/runbooks/oauth-and-hub.md`; the cross-references in features 021 and 028, with the three step-facing rows in
   feature 021's `contracts/error-reasons.md`, the broker mapping in its `contracts/integration-runner.md` and the binding
-  rule in its `contracts/resource-types.md`. Test: `contract_oauth_hub` lints the OpenAPI.
+  rule in its `contracts/resource-types.md`; the fragment contract `contracts/ir-declarations.md` for the
+  `resources` field of `script` and `activity` nodes; `sdks/error-catalog.json`; the amendment of Requirement 028-041 for
+  the hub kinds. Test: `contract_oauth_hub` lints the OpenAPI.
   Refs: Requirement 047-026
 - [ ] T047-2 Domain: the credential state machine with every transition's fence rule and terminal refusals, provider,
-  registration and scope rules, subject sources, the host-binding parse rules. File: `crates/domain/src/oauth.rs`. Tests:
+  registration and scope rules, subject sources, the host-binding parse rules; the five new permissions in the closed
+  `Permission::ALL` of `crates/domain/src/identity.rs`. Files: `crates/domain/src/oauth.rs`, `crates/domain/src/identity.rs`. Tests:
   `transitions_*`, `provider_rules_*`, `bound_host_rules_*`.
   Refs: Requirement 047-006, Requirement 047-007, Requirement 047-011
 - [ ] T047-3 `crates/infra-oauth`: token, revocation, userinfo and client-assertion requests over the guarded client;
   bounded, closed parsing; the three methods. Tests against the local OAuth test server (`tests/support/oauth_server.rs`,
-  on the existing test HTTP support): `methods_*`, `oversized_or_malformed_responses_are_refused`,
+  built on `tests/support/oidc.rs`'s token signing and key server and the token routes of `apps/dev-idp`): `methods_*`, `oversized_or_malformed_responses_are_refused`,
   `redirects_are_not_followed`.
   Refs: Requirement 047-003, Requirement 047-026, Non-functional requirement 047-003
-- [ ] T047-4 Migrations, grants and storage classification of data-model.md; the capability `oauth-broker-v1` in the
+- [ ] T047-4 Migrations, grants and storage classification of data-model.md, except the changes to feature 028's tables
+  and the definer function `hub_record_revocation`, which are Task 047-13's; the capability `oauth-broker-v1` in the
   three capability constraints; the OAuth vault's second mount, token and reference type; the OpenBao policy and token in
   Helm and the runbook. Tests: the privilege audit of `integration_platform_foundation`,
-  `ordinary_token_is_refused_on_the_oauth_mount`, `without_the_capability_declarations_are_refused`,
-  `a_credential_names_exactly_one_registration`, `hub_record_revocation_never_lifts_a_block`.
+  `ordinary_token_is_refused_on_the_oauth_mount`,
+  `a_credential_names_exactly_one_registration`.
   Refs: Requirement 047-025, Non-functional requirement 047-001
 - [ ] T047-5 Providers and tenant registrations: REST, write-time checks, vault writes as `oauth-broker`, secret rotation,
   audit. Files: `crates/application/src/oauth/providers.rs`, `crates/api-http/src/routes/oauth.rs`. Tests: the REST contract
@@ -842,8 +865,9 @@ feature 028's Tasks T028-062 to T028-066.
   `apps/control-plane`. Tests: `two_control_planes_refresh_once`, `a_holder_paused_past_its_lease_activates_nothing`,
   `a_pending_revision_is_adopted_after_a_crash`, `a_disconnect_between_answer_and_store_revokes_the_new_token`,
   `the_first_client_credentials_token_is_acquired`, `waiters_acquire_after_a_crashed_holder`,
-  `one_tenant_cannot_starve_a_shared_registration`, `no_transaction_is_open_during_a_token_request`,
-  `a_crashed_holder_frees_its_window_slot`.
+  `no_transaction_is_open_during_a_token_request`, `a_crashed_holder_frees_its_window_slot`,
+  `the_next_attempt_after_reconnecting_succeeds`, `a_claim_interrupted_before_the_abandon_mark_is_finished_by_the_next_probe`,
+  `a_destroyed_reference_cannot_be_written_again`.
   Refs: Requirement 047-008, Requirement 047-009, Requirement 047-010, Requirement 047-011
 - [ ] T047-8 The broker passes: keep-alive, expired and incomplete requests, revocation and destruction, withdrawal
   disconnects, delivery-row cleanup. Files: `crates/application/src/oauth/passes.rs`, `apps/control-plane`. Tests:
@@ -858,6 +882,7 @@ feature 028's Tasks T028-062 to T028-066.
   `crates/application/src/oauth/delivery.rs` and feature 021's resolution module. Tests: feature 021's `http.request` with an
   `oauth` slot, `a_credential_cannot_be_bound_to_a_foreign_host`, `two_deletions_of_resources_naming_one_credential_disconnect_once`.
   Refs: Requirement 047-008, Requirement 047-013, Requirement 047-018
+  Owner-gate: OD-2026-11-25-3
 - [ ] T047-10 Hub item schemas and codecs in `crates/infra-schema/src/hub/`, host patterns, preset path rules, effect
   classes; the suite `contract_integration_hub` over `hub/`; the review record format.
   Refs: Requirement 047-019, Requirement 047-022
@@ -867,32 +892,45 @@ feature 028's Tasks T028-062 to T028-066.
 - [ ] T047-12 The four required integrations with reviews, fixtures and recorded-response tests.
   Refs: Requirement 047-024, Success criterion 047-003
 - [ ] T047-13 Import, publication and revocation in feature 028's module and routes: the kinds, the `revoked` list, the
-  revocations index, tenant-wide imports with `NULLS NOT DISTINCT` keys, the definer function for blocks, the schema-owner
-  unblock command. Tests: `import_creates_drafts_with_provenance`, `import_is_idempotent_by_key`,
+  revocations index, tenant-wide imports with `NULLS NOT DISTINCT` keys, the migration of feature 028's tables
+  (after Task 028-063), the definer function for blocks, the schema-owner unblock command. Tests:
+  `hub_record_revocation_never_lifts_a_block`, `import_creates_drafts_with_provenance`, `import_is_idempotent_by_key`,
   `a_digest_conflict_is_refused`, `publication_runs_the_authored_checks`, `a_security_revocation_blocks_new_admissions`,
   `an_other_revocation_is_a_finding`.
   Refs: Requirement 047-020, Requirement 047-021, Requirement 047-023
-- [ ] T047-14 IR declarations on `script` and `activity` nodes (`crates/infra-ir/src/convert.rs`, `diff.rs`) and the
-  protocol messages in `crates/api-grpc`. Tests: `declarations_round_trip`, the publication refusals.
+- [ ] T047-14 Intermediate-representation declarations on `script` and `activity` nodes (`crates/infra-ir/src/convert.rs`,
+  `diff.rs`, `specs/001-platform-foundation/contracts/workflow.schema.json`), the publication and admission checks
+  (`crates/application/src/publishing.rs`, `crates/application/src/runs/`), and the protocol messages in
+  `crates/api-grpc`. Tests: `declarations_round_trip`, the publication refusals,
+  `without_the_capability_declarations_are_refused`.
   Refs: Requirement 047-014
 - [ ] T047-15 Delivery server side: `ResolveDeclaredResources` with feature 021's checks, its limit class, per-attempt
-  counting, the audit, lease gating by protocol minor. Files: `crates/application/src/oauth/delivery.rs`. Tests:
+  counting, the audit, lease gating by protocol minor. Files: `crates/application/src/oauth/delivery.rs`,
+  `crates/application/src/worker/secrets.rs` and `crates/application/src/worker.rs` (reused checks),
+  `crates/infra-postgres/src/execution.rs` (the protocol-minor gating), `crates/api-grpc/src/{service,limits}.rs`. Tests:
   `canaries_never_leave_the_broker`, `a_stale_lease_receives_nothing`, `a_revoked_initiator_receives_nothing`,
   `re_asks_are_bounded_across_control_planes`, `an_old_session_is_not_offered_a_declaring_activity`.
   Refs: Requirement 047-015, Requirement 047-016, Requirement 047-017
+  Owner-gate: OD-2026-11-25-3
 - [ ] T047-16 Scripts: start-time resolution, the `resource` host call, the growing redaction set, the test-run refusal,
   `UNIMPLEMENTED` mapped to `CAPABILITY_UNAVAILABLE`. Files: `crates/infra-sandbox/src/protocol.rs`,
-  `apps/sandbox-runner/src/{lib,host}.rs`, the shims. Tests: `a_mid_run_token_is_redacted`, `a_test_run_cannot_use_a_resource`.
+  `apps/sandbox-runner/src/{lib,host}.rs`, `crates/infra-sandbox/shims/runtime.{mjs,py}` and the Go, Java and .NET shims in
+  `runners/`, so all five sandbox languages offer `resource`. Tests: `a_mid_run_token_is_redacted` (per language),
+  `a_test_run_cannot_use_a_resource`.
   Refs: Requirement 047-015, Requirement 047-017
+  Owner-gate: OD-2026-11-25-3
 - [ ] T047-17 SDKs: `resource(name)` in the six SDKs, the `UNIMPLEMENTED` mapping, the conformance scenario
   `resource_access` with an old-minor case.
   Refs: Requirement 047-017
-- [ ] T047-18 Studio (`frontend/apps/studio/src/features/{oauth,hub}/`, the callback route) and CLI (`sagat oauth`,
-  `sagat hub`), with Studio journey tests (the existing Playwright setup) and CLI contract tests.
+  Owner-gate: OD-2026-11-25-3
+- [ ] T047-18 Studio (`frontend/apps/studio/src/features/oauth/`, the callback route, and feature 028's
+  `features/templates` extended with the hub kinds) and CLI (`sagat oauth`, and feature 028's `sagat template` extended),
+  after Task 028-067, with Studio journey tests (the existing Playwright setup) and CLI contract tests.
   Refs: Requirement 047-027
 - [ ] T047-19 Deployment registrations and offers on the platform-operator surface, after Architecture decision 0074 is
   accepted. Tests: `offer_opt_in_opt_out_and_withdrawal`, `a_registration_not_offered_is_not_found`,
-  `client_credentials_on_a_deployment_registration_is_refused`.
+  `client_credentials_on_a_deployment_registration_is_refused`, `a_withdrawn_offer_cannot_be_opted_into`,
+  `one_tenant_cannot_starve_a_shared_registration`.
   Refs: Requirement 047-002
 - [ ] T047-20 The control plane's metrics and audit records of telemetry.md. Test: `metric_labels_are_closed`.
   Refs: Requirement 047-026, Non-functional requirement 047-004

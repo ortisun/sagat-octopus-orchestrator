@@ -1,7 +1,8 @@
 # REST routes (design 047)
 
 Tenant routes are under `/v1` of the tenant API; operator routes are on the platform-operator surface of Architecture
-decision 0074 (Proposed), and until it is accepted they are schema-owner commands of `control-plane`. Every tenant route
+decision 0074 (Proposed). Until it is accepted, deployment registrations and offers are refused, as Technical Plan 6 of
+the design says, and only `hub unblock` exists, as a schema-owner command of `control-plane`. Every tenant route
 answers `404` alike for another tenant's object and a missing one, and audits the attempt. Bodies are bounded at 64 KiB.
 Errors are in `errors.md`.
 
@@ -24,7 +25,8 @@ Errors are in `errors.md`.
 | `POST /template-imports` (tenant-wide) | `hub:import`, plus feature 028's permission for every workflow or script part | import providers, resource types and integrations; body `{entry, version, namespace?, requestKey}`; answer the drafts and what to prepare |
 | `POST /hub/resource-types/{key}/versions/{version}:publish` | `hub:publish` | publish an imported resource type |
 
-Operator acts (platform-operator surface, or `control-plane` commands until Architecture decision 0074 is accepted):
+Operator acts (platform-operator surface, once Architecture decision 0074 is accepted; before it, only `hub unblock`, as a
+`control-plane` command):
 `oauth deployment-provider import`, `oauth deployment-registration create|rotate-secret|retire`, `oauth offer
 create|withdraw` (`oauth:offer:manage`), `hub unblock <digest>` (`hub:version:block`).
 
