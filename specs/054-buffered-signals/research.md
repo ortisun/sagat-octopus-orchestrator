@@ -104,7 +104,19 @@ approved.
 - **Decision 054-012 — No refusal by the look-back or by a timeout.** A signal of a declared name that arrives after its wait timed
   out is buffered for a later wait of that name, never refused for that reason; this is what principle IV states for code runs
   ("a signal that arrives after the wait timed out is not dropped but kept"), applied to graph runs that opt in. Delegate (Owner
-  decision 2026-11-24-4).
+  decision 2026-11-24-4). *Revised 2026-11-26 after the stage 7 design critic (its Major 6):* a signal is buffered only when a
+  consumer can still come; for a graph run whose root waits of that name have all been entered and whose version has no
+  `continueAsNew` node, it is refused `409 NO_CONSUMER_AHEAD`, so that "too late" is not answered as a success. A step not yet
+  entered counts as a consumer, so the refusal is never a guess.
+
+- **Decision 054-013 — The continuation's handoffs tolerate a buffering and every terminal path discards** (stage 7 design critic,
+  its Blockers 1 and 2 and Major 3). The scheduler's handoff (`continue_evaluated`) opens a successor's entry `waitEvent` store-side,
+  so publication refuses, for a graph version that can continue as new, an entry wait of a declared name
+  (`SIGNAL_ENTRY_WAIT_CONTINUES`); options were consuming in the handoff (a satisfied step the handoff cannot plan on) and the
+  refusal, chosen because an author loses only the habit of waiting first. Store-side terminal paths (`finalize_chain`, the
+  collection's finish) discard through one helper, and a check on `runs` refuses a terminal status with pending signals. The
+  handoffs accept a run version advanced only by `signal.buffered` events, so a steady flow of signals cannot starve a
+  continuation. Delegate (Owner decision 2026-11-24-4).
 
 ## Gaps
 
@@ -121,7 +133,7 @@ approved.
 
 - **Gap 054-006** Design 044 writes "the inbox rows marked consumed" (its table of command records) and refuses an undeclared name
   on a code run (`SIGNAL_NOT_DECLARED`). Design 054 states the inbox's contract for it (Technical Plan 10: rows are deleted on
-  consumption, `consume_pending_signals` all or nothing) and defers code runs' undeclared names to it (Requirement 054-003); design
+  consumption, `consume_pending_signals` all or nothing, each row's `version_id` for its classification) and defers code runs' undeclared names to it (Requirement 054-003); design
   044's owner is to cite that contract in its next revision.
 - **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
   them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
