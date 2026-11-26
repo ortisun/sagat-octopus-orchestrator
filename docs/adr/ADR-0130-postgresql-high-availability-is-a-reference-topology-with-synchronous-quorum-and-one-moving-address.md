@@ -25,7 +25,7 @@ next one; worker leases last 30 s. Design 048 has the references; rolling upgrad
 2. The platform MUST connect through one address that the HA manager moves at promotion, and MUST NOT elect, choose or
    fence a primary itself.
 3. Every database socket MUST set keepalive (4 s idle, 2 s interval, 3 probes) and, on Linux, `TCP_USER_TIMEOUT` of
-   10 s. Every connection MUST start read-only with `synchronous_commit=on`, and refuse (except a passive observer of feature 032) a server in recovery, one whose
+   10 s. Every connection MUST start read-only (`migrate`'s and `seed-dev`'s read-write) with `synchronous_commit=on`, and refuse (except a passive observer of feature 032) a server in recovery, one whose
    `synchronous_commit` is weaker, or, when required, one without synchronous standby names.
 4. Every write MUST be a `WriteTx`, whose only commit has a deadline. The outcome is applied on success, not applied when the
    server answers with an error and then an idle ReadyForQuery (PostgreSQL raises a commit's errors before its commit

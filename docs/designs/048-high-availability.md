@@ -178,9 +178,11 @@ From the code and documents on `develop` at `546d5aa5`:
   return such as `events.rs`'s `RateLimited`), it queues a rollback to the savepoint, which the `WriteTx` sends before its
   next statement or its commit (the use of `events.rs` moves to it), so no raw `SAVEPOINT` or `ROLLBACK TO` is
   left outside `pool.rs`; a failed `WriteTx` can only roll back, and the caller gets that error,
-  a definite failure. A `WriteTx` dropped before it commits or rolls back (a request timed out, a deadline passed)
-  closes its connection (`close_on_drop`) rather than return an open transaction to the pool, which the next `BEGIN`
-  would join. Its only commit is `commit_safely`, which sends `COMMIT` in a task it spawns (as `begin_safely`
+  a definite failure. A `WriteTx` dropped while a statement or its commit was in flight (a request timed out, a
+  deadline passed) closes its connection (`close_on_drop`); one dropped while idle (the deliberate rollback of today's
+  code, `events.rs`'s refused admissions among them) hands its connection to a spawned `ROLLBACK`, as sqlx does, so
+  that neither returns an open transaction to the pool, which the next `BEGIN` would join, and a refusal costs no new
+  connection. A `ReadTx` follows the same rule. Its only commit is `commit_safely`, which sends `COMMIT` in a task it spawns (as `begin_safely`
   does for `BEGIN`) and waits for it at most the commit deadline (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at
   least twice the statement timeout, the name feature 032 also uses). The outcome is applied when `COMMIT` succeeds. It
   is not applied when the server answers `COMMIT` with an error and then, within the deadline, with ReadyForQuery whose
@@ -197,8 +199,9 @@ From the code and documents on `develop` at `546d5aa5`:
   A read-only snapshot is a `ReadTx` beside it (`BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`, for the three sites
   that open one today in `execution.rs` and `scope_frontier.rs`), in which a `25006` is internal, a defect. Stores take
   a `DbHandle`, built by `DbHandle::new(pool, health)`, instead of a bare `PgPool`; `health` is an
-  `Arc<dyn DatabaseHealth>`, a trait of `crates/application/src/instances.rs` with `report_identity(read, ticket) ->
-  Admission` (`Admission` is `Accept` or `Refuse`) (the `after_connect` report of Requirement 048-013) and `close(reason)` (how a `WriteTx` closes the gate on
+  `Arc<dyn DatabaseHealth>`, a trait of `crates/application/src/instances.rs` with `take_ticket()`,
+  `report_identity(kind, read, ticket) -> Admission` (`kind` is the registry's, a waiting command's, the passive
+  observer's or another connection; `Admission` is `Accept` or `Refuse`) (the `after_connect` report of Requirement 048-013) and `close(reason)` (how a `WriteTx` closes the gate on
   an unknown outcome or a `25006`), implemented by the process's `DatabaseIdentity`. Until Task 048-10 implements it, a
   `DbHandle` carries `Arc::new(InertHealth)` (beside the trait, in the same file), which admits everything and closes
   nothing; the pool builder takes the same `Arc` (`pool::connect_lazy(config, health.clone())`), so that its
@@ -219,8 +222,9 @@ From the code and documents on `develop` at `546d5aa5`:
   and `transaction_timeout` to 0 where the server has it (Requirement 048-011), and `scripts/check-architecture.py`
   refuses, in
   `crates/infra-postgres` and `apps/`, `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()`
-  outside `pool.rs`, a raw `BEGIN`, `START TRANSACTION`, `COMMIT`, `END`, `ABORT`, `ROLLBACK`, `READ WRITE`, `SESSION
-  CHARACTERISTICS` or `transaction_read_only` outside `pool.rs` and `migrate`'s loop (design 053's Task 053-4), and
+  outside `pool.rs`, and a statement that begins with `BEGIN`, `START TRANSACTION`, `COMMIT`, `END`, `ABORT`,
+  `ROLLBACK`, `SAVEPOINT`, `RELEASE` or `SET SESSION CHARACTERISTICS`, or sets `transaction_read_only`, outside
+  `pool.rs` and `migrate`'s loop (design 053's Task 053-4), and
   `fetch()` on a statement that writes (one whose text begins with `INSERT`, `UPDATE`, `DELETE` or `MERGE`, or
   calls a function that the migrations create without `STABLE` or `IMMUTABLE`).
 - **Requirement 048-013 After a change of server, nothing is served until a write reaches a standby.** A server's
@@ -287,8 +291,7 @@ From the code and documents on `develop` at `546d5aa5`:
   one connection admitted for that purpose, through `command_await_durability(capabilities)`, a definer function, until
   a live registry row carries the server's current identity as
   confirmed, and otherwise exits with code 1 ("retry later"); it then adopts that identity as its own confirmed one. It
-  proceeds without waiting only on a database where `registry_first_confirmation` is empty or missing (`42P01`, before
-  its migration): a fresh one, which no process has ever confirmed, not on one whose processes are merely down or deregistered. `migrate` waits in the same
+  proceeds without waiting only on a database where `registry_first_confirmation` is empty: a fresh one, which no process has ever confirmed, not on one whose processes are merely down or deregistered. `migrate` waits in the same
   way before a migration that is not its first (design 053's Task 053-4). `script-key`, `healthcheck`, `help` and
   `version` open no database connection. Feature 032 adds its region check to `instance_confirm_durability()` and
   `command_await_durability()` (a process or a command without `region-v1` is refused once a cell is initialized, its
@@ -383,7 +386,8 @@ From the code and documents on `develop` at `546d5aa5`:
   of claims with an unknown outcome apart. The workload's ledger records each acknowledgment with its run, step sequence,
   attempt, generation, lease token and a digest of its result, and `dr_verify` looks each up on the new primary, by key
   and content. A negative control proves the check, once per run in a repetition of its own after fault (1)'s: the drill blocks
-  replication to both standbys, commits a ledger row through its own connection to the primary (`docker exec` into its
+  replication to both standbys, commits a ledger row through its own connection to the primary, appending its key and digest to
+  the workload's ledger file so that `dr_verify` looks it up, (`docker exec` into its
   container and the local socket, which `pg_hba` admits for the superuser) with `synchronous_commit=local`, stops the primary, and the check must find
   that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
   and checks that every request with that principal that starts after both 22 s from the isolation and the
@@ -417,16 +421,15 @@ From the code and documents on `develop` at `546d5aa5`:
   negative control is found.
 - **Success criterion 048-002** The median time to the first committed transition is reported for each fault; for the
   primary's container stopped and a node lost on Compose, it is within 60 s.
-- **Success criterion 048-003** In the Compose drill, run with the HA examples' lease time to live of 90 s, no delivered
-  lease expires whose own longest gap between successful heartbeats (for an expired lease, the open gap ending at its
-  expiry) is under the time to live less 5 s (85 s: the 1 s the SDK keeps back and 4 s for a request's latency and the
-  clocks), no completed activity is repeated, and no review item is created except for a claim whose commit outcome was
-  unknown or for a lease whose gap reached 85 s, for workers on SDKs that carry Task 048-11; these hold in every
-  repetition. A repetition qualifies when every delivered lease's longest gap is under 85 s; every repetition of faults
-  (1), (2), (4), (5) and (6) is expected to (a lease's gap is the outage, P + R + E + 17 s, plus at most one worker
-  heartbeat interval, 10 s: under the target, 60 + 10 = 70 s, below 85 s); a
-  fault with no qualifying repetition fails the drill. Longer gaps are reported. This gates the release from the first
-  release that ships those SDKs.
+- **Success criterion 048-003** In the Compose drill, run with the HA examples' lease time to live of 90 s, the
+  criterion judges each repetition by its measured outage, not by a lease's own gap: a repetition qualifies when its
+  outage plus E plus one worker heartbeat interval (10 s) is under the time to live less 5 s (85 s: the 1 s the SDK keeps
+  back and 4 s for a request's latency and the clocks). In a qualifying repetition no delivered lease expires, no
+  completed activity is repeated, and no review item is created except for a claim whose commit outcome was unknown,
+  for workers on SDKs that carry Task 048-11; in any repetition, a delivered lease that expires more than 5 s after the
+  outage plus E has ended fails the drill. Every repetition of faults (1), (2), (4), (5) and (6) is expected to qualify
+  (under the target, 60 + 10 = 70 s, below 85 s), and a fault with no qualifying repetition fails the drill. This gates
+  the release from the first release that ships those SDKs.
 
 ### User stories
 
@@ -666,7 +669,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-005, Requirement 048-010
 - [ ] T048-6 The proving test `does_a_server_timeout_cancel_a_commit_waiting_for_a_standby` in `fault_high_availability`, with the standby blocked, on PostgreSQL 16 and 17, exercising `statement_timeout` on both and `transaction_timeout` on 17, asserting that `COMMIT` has not returned at the timeout plus 2 s, and recording whether a cancel answers success with a `WARNING`; record its result in this design, and if a server timeout can cancel the wait, Task 048-7 adds the assertion that `commit_safely`'s one-message form keeps waiting.
   Refs: Requirement 048-012
-- [ ] T048-7 Add `WriteTx` (with its `Executor` implementation and `WriteTx::savepoint`), `ReadTx`, `DbHandle`, `DatabaseHealth` and `InertHealth` (in `crates/application/src/instances.rs`) and `commit_safely` (the transaction types in `pool.rs`) with the outcome rule (the three copies of `confirmed_abort`, in `capacity_finish.rs`, `leaf_certification.rs` and `scoped_leaf_finish.rs`, moved there), `SAGAT_DB_COMMIT_DEADLINE_MS` read in `apps/control-plane/src/config.rs` and `apps/execution-engine/src/settings.rs`, `StoreError::CommitOutcomeUnknown` and the five module variants of `crates/application` produced from it, with the integration tests of today's unknown outcomes kept green (the eleven `*_commit_loss` and `*_observations` tests in seven files, `public_refusal_commit_loss.rs` among them) and the detection point of `capacity_transfer.rs` moved to the store's rule; the store constructors take `DbHandle` (`DbHandle::new(pool, Arc::new(InertHealth))` in every caller of `apps/` and `crates/` in this task; `new(PgPool)` kept for tests only, with its architecture rule); `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY` read beside the deadline, with its start-up log and `database_synchronous_standby_required`, the reason on `AppError::Unavailable` and its HTTP and gRPC mapping and contracts, with `a_commit_past_its_deadline_is_unknown_and_invisible`, `an_unlisted_failure_after_commit_was_sent_is_unknown` and `a_failed_statement_rolls_back_definitely`, `a_dropped_write_tx_does_not_return_an_open_transaction` (on a pool of one connection: a row written, the `WriteTx` dropped, then the next acquire has another `pg_backend_pid()`, no transaction id assigned and no such row), and `database_commit_outcome_unknown_total`.
+- [ ] T048-7 Add `WriteTx` (with its `Executor` implementation and `WriteTx::savepoint`), `ReadTx`, `DbHandle`, `DatabaseHealth` and `InertHealth` (in `crates/application/src/instances.rs`) and `commit_safely` (the transaction types in `pool.rs`) with the outcome rule (the three copies of `confirmed_abort`, in `capacity_finish.rs`, `leaf_certification.rs` and `scoped_leaf_finish.rs`, moved there), `SAGAT_DB_COMMIT_DEADLINE_MS` read in `apps/control-plane/src/config.rs` and `apps/execution-engine/src/settings.rs`, `StoreError::CommitOutcomeUnknown` and the five module variants of `crates/application` produced from it, with the integration tests of today's unknown outcomes kept green (the eleven `*_commit_loss` and `*_observations` tests in seven files, `public_refusal_commit_loss.rs` among them) and the detection point of `capacity_transfer.rs` moved to the store's rule; the store constructors take `DbHandle` (`DbHandle::new(pool, Arc::new(InertHealth))` in every caller of `apps/` and `crates/` in this task; `new(PgPool)` kept for tests only, with its architecture rule); `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY` read beside the deadline, with its start-up log and `database_synchronous_standby_required`, the reason on `AppError::Unavailable` and its HTTP and gRPC mapping and contracts, with `a_commit_past_its_deadline_is_unknown_and_invisible`, `an_unlisted_failure_after_commit_was_sent_is_unknown` and `a_failed_statement_rolls_back_definitely`, `a_dropped_write_tx_does_not_return_an_open_transaction` (on a pool of one connection: a row written and the `WriteTx` dropped while a statement is in flight, then the next acquire has another `pg_backend_pid()`, no transaction id assigned and no such row), `an_idle_dropped_write_tx_rolls_back_and_keeps_its_connection` (a refused admission keeps the same `pg_backend_pid()`), and `database_commit_outcome_unknown_total`.
   Refs: Requirement 048-012
 - [ ] T048-8 Move every write of `crates/infra-postgres` to `WriteTx` and its three snapshots to `ReadTx`, one pull request per module group (after design 053's Task 053-2, whose cut-off the protected-names rule uses); adapt the single-database environments (`infra/docker/compose.yaml` with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY` false, the test support's pools of `tests/support/api.rs` and `tests/support/engine.rs` with the flag false (their registration and confirmation arrive with Task 048-10), the `scale` job's harness (`tests/performance/scalability-ha/run.sh`), `infra/dr/drill.sh`, `tests/e2e/scalability-ha/kubernetes/dependencies.yaml`; the owner's seed pool of `tests/support/mod.rs` keeps the read-write profile); then the startup options (`synchronous_commit=on`, `default_transaction_read_only=on`), the `25006` classification and the architecture rules of Requirements 048-011 and 048-012, with `a_write_outside_write_tx_fails_at_once` and `a_role_setting_of_synchronous_commit_local_is_outranked`.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
