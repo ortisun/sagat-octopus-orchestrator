@@ -240,3 +240,16 @@ session idle for a day expires (the reviewer's note for correctness).
 | 5 | Nit | Fixed: read at start and on refresh, kept on a failed read; after a revoke a stale replica mints at most one interval | Requirement 013-026 |
 | 6 | Nit | Fixed: bounded batches tenant by tenant; a failure after the ring write is safe; a re-run finishes | Requirement 013-026 |
 | 7 | Nit | Fixed: Architecture decision 0050 says `FOR UPDATE` for an administrator target and `FOR SHARE` otherwise; the contract's `lock_timeout` applies to an exclusive taker, as Technical Plan 4 says | Architecture decision 0050, `specs/029-custom-roles-folders/contracts/group-source.md` |
+
+## Correctness re-read, round 2 (`approval/reread-2-correctness.md`, at `051e5f47`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a replica without a successful ring read for two intervals refuses CLI redemption and refresh (unspent); an unknown key id triggers one re-read; promotion after two intervals; a second `rotate` resumes an unfinished one by check-and-set; a test | Requirement 013-026 |
+| 2 | Nit | Fixed: `429 REFRESH_RATE_LIMITED` with `Retry-After` and a retryable `503 IDENTITY_SIGNING_UNAVAILABLE`, both unspent; a CLI test | Requirement 013-026, Technical Plan 11, Task 013-15 |
+| 3 | Nit | Fixed: grace rotations are exempt from the limit | Requirement 013-026 |
+| 4 | Nit | Fixed: a retired generation has no row and its use revokes; a test | Requirement 013-026 |
+| 5 | Nit | Fixed: the MAC is verified and the successor minted from the session row locked `FOR UPDATE`; a barrier test | Requirement 013-026 |
+| 6 | Nit | Fixed: the guarded row is upserted and audited once; retried when the administrator count changed | Technical Plan 6 |
+| 7 | Nit | Fixed: the barrier test of the restart | Task 013-12 |
+| 8 | Nit | Fixed: the attempt is consumed after the membership lock; `a_confirmation_sent_twice_links_once` | Technical Plan 4, Task 013-12 |

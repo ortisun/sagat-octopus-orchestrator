@@ -179,3 +179,12 @@ The security re-read of round 10 (`approval/reread-10-security.md`, at `9a760bd7
 | 3 | Nit | Fixed: Task 050-4 lists the derivation and a closed enumeration of purpose labels, unless Task 013-8 landed them | Task 050-4 |
 | 4 | Nit | Fixed: four tests in "Enforced by" | Architecture decision 0144 |
 | 5 | Nit | Fixed: `inbox_rows_scanned{list}` | Technical Plan 6 |
+
+## Correctness re-read, round 2 (`approval/reread-2-correctness.md`, at `051e5f47`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: the three paging twins in Task 050-5 | Task 050-5 |
+| 2 | Nit | Fixed: `retryable: false`; the inbox reads `details.reason` before `retryable` and stops the refresh and the focus refetch; two tests | Technical Plan 6, Task 050-10 |
+| 3 | Nit | Fixed: only the two inbox labels; `cli-refresh` stays in design 013's `IdentityKeyRing` | Task 050-4 |
+| 4 | Nit | Fixed: 2,000 seeded ended-run rows ahead of a live row | Task 050-4 |

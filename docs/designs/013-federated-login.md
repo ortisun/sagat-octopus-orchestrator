@@ -430,15 +430,19 @@ already has.
   active key with the highest generation issued plus one, a number never reused (after a database restore,
   the runbook's restore page rotates every CLI session's random value, so no rolled-back generation becomes valid again); a token under an unknown key id, or
   with a valid MAC and a generation above the current one, is `invalid_grant` with no effect; the ring rotates in two steps
-  by `identity cli-refresh-key rotate`, the new key added first for verifying only and made the minting key after one
-  refresh interval, and the command itself keeps the old key until 7 days and one refresh interval after its successor
+  by `identity cli-refresh-key rotate`, the new key added first for verifying only and made the minting key after two
+  refresh intervals (a second `rotate` finding a verify-only key that it did not write continues that rotation from
+  its second step, by check-and-set), and the command itself keeps the old key until 7 days and one refresh interval after its successor
   became active, so no live CLI token loses its key (`a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`,
   a test of the command with a session kept alive by refreshes on both sides of the rotation); `rotate` on an empty
   ring creates a key that is active at once (no token exists yet); with an empty ring the control plane starts and refuses only CLI redemption and
   refresh, with `IDENTITY_SIGNING_UNAVAILABLE` and the gauge, as a missing signing key does, and never falls back to
   another ring; the ring is read at start and on the key set's refresh and kept on a failed read, so an OpenBao
-  outage stops no verification, and after a `revoke` a replica with a stale ring can mint under the dropped key for at
-  most one refresh interval, after which those tokens get `invalid_grant`; `identity cli-refresh-key revoke` (audited) is the
+  outage stops no verification; a replica whose last successful ring read is older than two intervals refuses CLI
+  redemption and refresh with `IDENTITY_SIGNING_UNAVAILABLE`, the token unspent, as the signer does for signing keys,
+  so after a `revoke` no replica mints under the dropped key for longer than two intervals; a token under a key id the
+  replica does not know triggers one re-read of the ring (at most once per interval) before `invalid_grant`
+  (`a_replica_with_a_stale_cli_refresh_ring_stops_minting`); `identity cli-refresh-key revoke` (audited) is the
   emergency path for a leaked key: it activates a new key at once, drops every key it did not create (the active one, a
   retained predecessor and a pending one), cancels any unfinished rotation and rotates every CLI session's random value (every write of the
   `cli-refresh` ring is a KV version 2 check-and-set on the version the command read, and `rotate`'s second step
@@ -454,11 +458,18 @@ already has.
   before the transaction; a session refreshes at most six times a minute, counted by a window start and a count on `signin_sessions` (a fixed
   window, so at most 12 grace rows younger than 30 seconds can exist across a window boundary) and
   applied in this order: the MAC first, compared in constant time (`Mac::verify_slice`), then the generation's class (a
-  reuse revokes whatever the limit), then the limit, for current-generation and grace rotations only, a refusal
-  leaving the token unspent; every path, logout included, first checks the presented MAC, and a token that fails is `invalid_grant` with no effect on the session and the same answer
+  reuse revokes whatever the limit), then the limit, for current-generation rotations only (a grace rotation is
+  bounded by the grace itself and is exempt), a refusal answering `429` with `Retry-After` and the reason
+  `REFRESH_RATE_LIMITED`, the token unspent, and an unavailable key answering a retryable `503` with
+  `IDENTITY_SIGNING_UNAVAILABLE`, the token unspent, so no refusal that leaves a token usable is an `invalid_grant`
+  a client would discard; the MAC is verified against the random value of the session row locked `FOR UPDATE` in the
+  refresh's transaction and the successor is minted from that same row, so a refresh racing the random-value rotation
+  of a `revoke` or a restore never promotes a token of the old value
+  (`a_refresh_racing_a_random_value_rotation_mints_nothing_old`, a barrier test); every path, logout included, first checks the presented MAC, and a token that fails is `invalid_grant` with no effect on the session and the same answer
   whether or not the session exists; a token that passes and whose generation is below the current one is a reuse
   however long ago it was rotated; a reuse, within 30 seconds of its rotation, of a generation whose later generations
-  have all never been used issues a new successor and retires the unused ones, which covers a lost response, and a
+  have all never been used issues a new successor and retires the unused ones (a retired generation has no row, so its later use revokes the
+  session), which covers a lost response, and a
   second lost response in a row (`two_lost_refresh_responses_keep_the_session`);
   any other reuse revokes the session and is audited; the CLI holds a file lock around a refresh and re-reads the key
   store under it, so a second CLI process uses the new token instead of reusing the old; CLI sessions absolute 7 days, or 24 hours on a connection without SCIM, idle 24 hours), and store them in the operating system's key store, or a file
@@ -948,8 +959,10 @@ connection to `TESTED`, are one flow, started and finished by the signed-in pers
    the attempt's binding cookie with it. The service checks that the token's tenant and subject are the attempt's, that the
    binding cookie is the attempt's, and that the attempt is verified, unused and unexpired; then it takes the locks in
    redemption's order: the advisory lock on (tenant, connection, provider subject); the connection row (`FOR UPDATE`
-   for a test, `FOR SHARE` for a link), its state and revision re-checked; the membership. It writes the link
-   (refused with `IDENTITY_LINK_CONFLICT` when the provider identity is linked to another member) and its audit, and
+   for a test, `FOR SHARE` for a link), its state and revision re-checked; the membership. It consumes the attempt
+   (`UPDATE signin_attempts SET used_at = now() WHERE ... AND used_at IS NULL`, after the membership lock, recorded in
+   `tests/support/lock_order.rs`; no row back is the same refusal as a used attempt), writes the link (refused with
+   `IDENTITY_LINK_CONFLICT` when the provider identity is linked to another member) and its audit, and
    for a test sets `TESTED` by compare-and-set on the connection revision the attempt ran against, on the row it
    already holds. The path is in `tests/support/lock_order.rs`, with the barrier test
    `a_test_confirmation_racing_a_redemption_of_the_same_subject_does_not_deadlock`.
@@ -1143,10 +1156,12 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   unnecessary, and the loop deletes them. A demotion therefore applies within one maintenance interval per batch of 100, and a crash loses nothing
   (`a_crash_after_a_large_group_change_still_demotes_everyone`, a fault test;
   `a_rule_change_during_the_job_recomputes_everyone_under_the_new_rules`). Within one change, promotions are applied before demotions, so a handover in one change never meets the guard. A
-  recomputed demotion that the last-administrator guard still refuses is skipped and audited, and recorded durably as
-  an `identity_role_recompute` row marked guarded and shown on the connection (the count of guarded members); the
+  recomputed demotion that the last-administrator guard still refuses is skipped, and recorded durably as an
+  `identity_role_recompute` row marked guarded (upserted on tenant, connection and subject, keeping the newest
+  revision, and audited once, when it is created) and shown on the connection (the count of guarded members); the
   group change itself commits, so the provider's request succeeds and SCIM keeps working; every pass of the
-  maintenance loop retries the tenant's guarded rows (at most a few per tenant), so the demotion applies as soon as
+  maintenance loop retries the tenant's guarded rows (at most a few per tenant) when the number of the tenant's active
+  administrators has changed since its last attempt, so the demotion applies as soon as
   another administrator exists (`removing_the_last_admin_from_its_group_keeps_scim_working`,
   `an_admin_handover_in_one_scim_change_demotes_the_old_admin`, `a_guarded_demotion_applies_once_another_admin_exists`).
   Nothing is mapped from a sign-in assertion.
@@ -1304,7 +1319,8 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
   | `AUTH_CONTEXT_REQUIRED`, `IDENTITY_NOT_PROVISIONED`, `FEDERATION_REQUIRED`, `RECENT_SIGN_IN_REQUIRED`, `NOT_OWNING_CONNECTION` | `FORBIDDEN` | 403 |
   | `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `IDENTITY_LINK_CONFLICT`, `LOCKOUT_GUARD`, `FEDERATION_NOT_ACTIVATED`, `CONNECTION_GROUPS_NAMED` | `CONFLICT` | 409 |
   | `PROVIDER_DESTINATION_DENIED`, `ISSUER_IMMUTABLE`, `TENANT_RESTRICTION_REQUIRED`, `SUBJECT_FORMAT_REFUSED` | `VALIDATION_FAILED` | 422 |
-  | `IDENTITY_SIGNING_UNAVAILABLE` | `UNAVAILABLE` | 503 |
+  | `IDENTITY_SIGNING_UNAVAILABLE` | `UNAVAILABLE` (retryable; on the token endpoint too) | 503 |
+  | `REFRESH_RATE_LIMITED` | the token endpoint's `429` with `Retry-After` | 429 |
   | `CODE_CLIENT_MISMATCH`, `REFRESH_TOKEN_REUSED`, `SESSION_CONFLICT` | the token endpoint's `error` (below) | 400 |
 
   `POST /v1/auth/token` is an OAuth token endpoint: it takes `application/x-www-form-urlencoded` and answers errors in
@@ -1696,6 +1712,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_reuse_an_hour_after_rotation_revokes_the_session` (with an intermediate refresh that deletes the row),
   `a_stolen_refresh_token_used_first_revokes_the_session_when_the_owner_returns`,
   `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
+  `a_replica_with_a_stale_cli_refresh_ring_stops_minting`, `a_refresh_racing_a_random_value_rotation_mints_nothing_old`
+  (barrier), `a_retired_generation_revokes_the_session`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
   `a_week_of_refreshes_keeps_storage_bounded` (at most 12 grace rows for the session, with a burst across a window
   boundary),
@@ -1734,6 +1752,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_private_key_jwt_key_is_published_before_use`; `a_default_role_change_applies_without_a_test_sign_in`;
   `a_connection_cannot_assert_a_subject_another_connection_owns`;
   `a_scim_suspension_and_a_member_demotion_cannot_remove_the_last_admin` (barrier);
+  `a_target_promoted_after_the_role_read_restarts_with_the_exclusive_settings_lock` (barrier);
+  `a_confirmation_sent_twice_links_once`;
   `a_deleted_owner_leaves_members_with_their_role`; `a_renewal_is_not_a_recent_sign_in`.
   Verification: `cargo test -p sagat-tests --test integration_federated_login admin`.
   Refs: Requirement 013-001, Requirement 013-003, Requirement 013-020
@@ -1764,7 +1784,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   needing a machine identity. A command finds its organization from `--org`, then `SAGAT_ORG`, then the default that
   `sagat login` stores beside the key-store entry.
   Red tests (`cargo test -p sagat-cli`): `the_token_file_wins_over_the_key_store`,
-  `a_second_process_uses_the_token_the_first_refreshed`, `the_loopback_listener_accepts_one_code_on_its_path`
+  `a_second_process_uses_the_token_the_first_refreshed`, `a_rate_limited_or_unavailable_refresh_keeps_the_token`, `the_loopback_listener_accepts_one_code_on_its_path`
   (against a stub), `logout_deletes_the_entry_after_revoking`, `worker_dev_refuses_a_key_store_token`,
   `doctor_uses_the_key_store_token_for_the_control_plane`, `a_command_finds_its_organization`.
   Refs: Requirement 013-026

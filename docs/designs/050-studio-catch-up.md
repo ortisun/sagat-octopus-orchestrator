@@ -847,7 +847,7 @@ opens only for its caller. The use cases seal and open cursors through a port, `
 key) -> String`, `open(scope, &str) -> Option<key>`) in `crates/application/src/approval_inbox.rs`, shared by both
 inbox use cases, as `SecretCipher` is a trait the `KeyRing` implements today; its adapter in `crates/infra-secrets`
 uses `KeyRing::derive_purpose_key` and the `aes-gcm-siv` crate, and `apps/control-plane` and `tests/support/api.rs`
-wire it, so no dependency edge is added. Without a key ring the two inbox routes answer `503 UNAVAILABLE` with the
+wire it, so no dependency edge is added. Without a key ring the two inbox routes answer `503 UNAVAILABLE` (`retryable: false` in the envelope) with the
 reason `KEY_RING_NOT_CONFIGURED` (a remediation row naming the setting; the Studio shows the inbox as unavailable with
 that reason, never as a retryable fault) and never return an unsealed cursor (`without_a_key_ring_the_inbox_returns_no_unsealed_cursor`); a `cursor`
 parameter over 512 bytes is refused before decoding, and every cursor that does not open (another caller's, a retired
@@ -916,8 +916,9 @@ test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The ite
 or subject label.
 
 **Studio.** `features/inbox/`, its refresh built on the Studio's existing pattern (TanStack Query's
-`refetchInterval` with a function, as `BatchPage.tsx` uses; a `KEY_RING_NOT_CONFIGURED` answer shows the inbox as
-unavailable on this server and stops the refresh, which skips a hidden browser tab, with the back-off as that
+`refetchInterval` with a function, as `BatchPage.tsx` uses; a `KEY_RING_NOT_CONFIGURED` answer, read by `details.reason` before `retryable` (the
+client marks every `UNAVAILABLE` retryable, `src/api/errors.ts`), shows the inbox as unavailable on this server and
+stops the refresh and the refetch on focus; a `400` on a later page sends the next refresh to the first page, which skips a hidden browser tab, with the back-off as that
 function; `RunListStore` of `features/runs/runList.ts` shows the same rules): two tabs, approvals (deadline ascending, "time left" in words and as a number) and
 publication requests (oldest first), each read with `decidable=true` through `collectPagesBounded` (at most five
 pages per list per refresh), saying "more may wait" when it stopped with a cursor left. Every refresh starts from the
@@ -1098,8 +1099,9 @@ primitive goes in a new file of `src/ui/`.
 - [ ] T050-4 Server builder: first the probe `every_run_end_cancels_its_pending_approvals`; then
   `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`); the port
   `InboxCursorSealer` and its adapter in `crates/infra-secrets` with `aes-gcm-siv`; `KeyRing::derive_purpose_key` with
-  key bytes kept by id and a closed enumeration of purpose labels (`ApprovalInboxCursor`, `PublicationInboxCursor`,
-  `CliRefresh`), unless design 013's Task 013-8 landed them; `KEY_RING_NOT_CONFIGURED` with its remediation row; the
+  key bytes kept by id and a closed enumeration of purpose labels (`ApprovalInboxCursor`, `PublicationInboxCursor`;
+  design 013's `cli-refresh` label lives only in `IdentityKeyRing`'s module, added by its Task 013-8), unless Task
+  013-8 landed the derivation; `KEY_RING_NOT_CONFIGURED` with its remediation row; the
   harness and `integration_studio_catch_up` configured with a ring; `ApprovalInboxStore`, its use case and adapter, the migration with the
   partial index and its `down`; the route, its metrics and `x-implemented`; `youMayDecide` on the per-run list through
   `list_for_run`; the adapter's ended-run guard moved after authorization; the route removed from `not_built`; the new
@@ -1110,7 +1112,8 @@ primitive goes in a new file of `src/ui/`.
   `an_ended_run_is_left_out_of_the_inbox` (the inconsistent row seeded directly), `a_full_page_resumes_after_its_last_item`,
   `a_settled_approval_is_not_flagged_decidable`, `a_pending_approval_of_an_ended_run_is_not_flagged_decidable`,
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
-  `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`,
+  `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders` (2,000 pending rows of ended runs, seeded, ahead of
+  one live row: the first page is empty with a cursor, the second returns the live row),
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller`, `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
   `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_does_not_open_under_the_secrets_key`, `without_a_key_ring_the_inbox_answers_key_ring_not_configured`,
   `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
@@ -1127,6 +1130,9 @@ primitive goes in a new file of `src/ui/`.
   `the_requester_and_the_last_editor_may_not_decide`, `a_person_who_decided_may_not_decide_again`,
   `a_policy_raised_after_an_approval_lists_the_request_for_another_approver`, `an_approver_may_decide`,
   `paging_holds_across_a_supersede`, `a_publication_inbox_page_is_one_statement`, the publication twins of
+  `a_full_page_resumes_after_its_last_item` (300 decidable open requests inside the first 2,000, `limit=200`),
+  `a_page_stops_at_the_scan_bound_and_continues` and
+  `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, the publication twins of
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller` and `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
   `an_approval_cursor_does_not_open_on_the_publication_list`, and the publication twins of
   `an_oversized_cursor_is_refused_before_decoding` and `an_unopenable_cursor_is_a_malformed_cursor`;
@@ -1209,6 +1215,7 @@ primitive goes in a new file of `src/ui/`.
   Red tests (`src/features/inbox/InboxPage.test.tsx`): `only_decidable_items_are_under_waiting_for_me`,
   `an_empty_first_page_with_a_cursor_is_followed`, `each_refresh_starts_from_the_first_page`,
   `a_settled_item_shows_its_status_not_an_error`, `the_inbox_refreshes_only_while_visible`,
+  `a_key_ring_not_configured_answer_stops_the_refresh` (with a focus event), `a_bad_cursor_restarts_from_the_first_page`,
   `only_the_tab_in_view_is_refreshed`, `an_unchanged_list_doubles_the_interval_up_to_four_minutes`,
   `a_route_not_found_says_the_page_is_not_available`.
   Verification: `(cd frontend/apps/studio && npm test -- inbox)`.
