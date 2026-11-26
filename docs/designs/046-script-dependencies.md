@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
 2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2 (pull request 284). Every other choice,
 including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
-recorded in research.md as Decisions 046-001 to 046-075 with the register's literal marker "delegate (OD-2026-11-24-4)".
+recorded in research.md as Decisions 046-001 to 046-076 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -387,8 +387,9 @@ version. Every transition is one transaction fenced by the job's lease token; a 
   sibling's row: a sibling already `RUNNING`, or one a claim held at that moment, finds the version no longer `BUILDING`
   at its completion or claim and ends `CANCELLED` itself. The claim's sweep of expired leases does the same: when it
 refuses a version because an install's last attempt was lost, it runs these refusal steps too, and it sets every
-expired `RUNNING` job of a version that is no longer `BUILDING` to `CANCELLED`. The unique key of dependency jobs is
-  `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`.
+expired `RUNNING` `RESOLVE` or `INSTALL` job of a version that is no longer `BUILDING` to `CANCELLED` (an expired
+`BACKFILL` lease is retried as any job's). The unique key of `RESOLVE` and `INSTALL` jobs is
+  `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`; `BACKFILL` jobs have their own key (Technical Plan 9).
 - **The build** waits until every install job of the version succeeded. The build claim, the dependency-job claim and the
   `script_jobs` quota count only `RESOLVE` and `INSTALL` jobs and build jobs of versions that are `BUILDING` (the quota
   query joins the version state for both tables), so the jobs of a refused version stop counting at once. `BACKFILL` jobs are the exception: the dependency-job claim offers them on `READY`
@@ -997,7 +998,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `resolve_again_makes_a_new_version`, `an_author_lock_is_validated_synchronously`,
   `a_refused_install_and_a_sibling_completion_do_not_deadlock` (a barrier),
   `a_refused_install_releases_the_quota_count` (asserting the count), `a_queued_sibling_of_a_refused_version_is_cancelled`,
-  `a_backfill_of_a_shared_artifact_records_once`, `a_failed_backfill_is_retried_by_the_next_pass`,
+  `a_backfill_of_a_shared_artifact_records_once`, `a_failed_backfill_is_retried_by_the_next_pass` (two
+  artifacts lacking the same target),
   `a_lost_last_install_attempt_fails_the_build_job`,
   `a_target_added_later_gets_records_without_republishing`, `a_refused_install_stops_the_build_job_and_the_quota`,
   `a_duplicate_completion_changes_nothing`, `an_undeclared_import_fails_at_import_time_and_changes_nothing`.

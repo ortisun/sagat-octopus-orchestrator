@@ -35,6 +35,11 @@ severity), naming packages and versions, never file content.
 | 13 | `DEPENDENCY_LAYER_TOO_LARGE` | a layer over `maxLayerBytes` or the file bound |
 | 14 | `PACKAGE_FETCH_BUDGET_EXCEEDED` | the tenant's daily fetch budget would be passed |
 
+| Code | Status | Retryable | When |
+|---|---|---|---|
+| `PACKAGE_GATEWAY_UNAVAILABLE` | `503` | yes | an author-lock publication's metadata call failed |
+| `SCRIPT_POLICY_BUSY` | `503` | yes | an author-lock publication met `StaleInputs` five times in a row |
+
 `SCRIPT_DEPENDENCIES_UNAVAILABLE` (`422`) answers a manifest or a package-bearing lock while `script-dependencies-v1` is
 not activated.
 

@@ -7,7 +7,7 @@ Runner routes are in `runner-protocol.md`.
 | Method and path | Permission | Body and answer |
 |---|---|---|
 | `PATCH /namespaces/{ns}/scripts/{script}` (feature 005's) | `script:write` | the draft gains `manifest` (TypeScript) and `lockfile` (an author lock) |
-| `POST /namespaces/{ns}/scripts/{script}/versions` (feature 005's) | `script:publish` | `201` for a framework-only version or a refused author lock's `422`; `202` with the version `BUILDING` for a manifest |
+| `POST /namespaces/{ns}/scripts/{script}/versions` (feature 005's) | `script:publish` | `201` for a framework-only version or a refused author lock's `422`; `202` with the version `BUILDING` for a manifest; for an author lock, `503 PACKAGE_GATEWAY_UNAVAILABLE` or `503 SCRIPT_POLICY_BUSY`, both retryable |
 | `POST /namespaces/{ns}/scripts/{script}:resolve-again` | `script:publish` | `202`, a new version of the latest draft with a fresh resolution |
 | `GET /namespaces/{ns}/scripts/{script}/versions/{n}/packages` | `script:read` | the lock summary (name, version, target set, source), the report (verdict, findings), the blocks |
 | `GET /namespaces/{ns}/scripts/{script}/versions/{n}/sbom` | `script:read` | the CycloneDX document |
