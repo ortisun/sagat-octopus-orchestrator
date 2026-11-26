@@ -145,8 +145,8 @@ stream is a reason for a regulated customer to choose this platform.
   (`docs/reference/ocsf-mapping.md`), and a test MUST fail when the page is behind the table.
 - **Requirement 040-013** Before each batch, the pass MUST check the authorizing subject's current authority: membership
   of the tenant, `audit:sink:manage` and `audit:read`. When it fails, the sink is `PAUSED_AUTHORITY_LOST`, audited.
-  Any change of the URL, the credential, the home namespace or the ceiling, and any resume, makes the person who does it
-  the authorizing subject. On a `pii` sink such a request is refused with `403 PII_CEILING_NOT_PERMITTED` unless the
+  Any change of the URL, the credential, the home namespace or the ceiling, any rotation of the signing key, and any
+  resume makes the person who does it the authorizing subject. On a `pii` sink such a request is refused with `403 PII_CEILING_NOT_PERMITTED` unless the
   person holds the grant of Requirement 040-010 or the same request sets `ceiling: internal`. A change of the URL or the
   credential leaves `PAUSED_DESTINATION_REFUSED`; a change of the ceiling to `internal` leaves `PAUSED_GRANT_REVOKED`;
   a resume by a subject whose checks pass leaves any paused state.
@@ -380,7 +380,8 @@ SELECT ... FROM audit_records
  ORDER BY tx_id, id LIMIT 500
 ```
 
-and the operator sink reads the same without the tenant predicate and with only `audit.sink_delivered` withheld. No
+and each of the operator sink's per-tenant streams reads the same with only `audit.sink_delivered` withheld (section 5);
+its discovery of tenants reads the same query without the tenant predicate. No
 record can later appear below a position this query passed: every transaction below `xmin` has committed or aborted,
 and an aborted one's rows are invisible. A long transaction anywhere in the cluster holds `xmin` back; that delays every
 stream and loses nothing (section 6 shows it). `xid8` is 64 bits and does not wrap around within one cluster.
@@ -400,7 +401,8 @@ the sink also receives some records created slightly before `t` (at least once, 
 **A cluster whose transaction ids went back.** A logical restore (`pg_dump` and `pg_restore`, the procedure of
 `docs/runbooks/control-plane.md`) or a move by logical replication copies `tx_id` and the cursors as data, while the new
 cluster's counter starts lower: new records would sort below every cursor. Every cursor therefore records the cluster it
-was read on (`cursor_cluster`, from `pg_control_system().system_identifier`). When the pass finds a cursor of another
+was read on (`cursor_cluster`, the cluster's `system_identifier`, read through a `SECURITY DEFINER` function of the
+owner role that returns only that number, so that the runtime role needs no grant on `pg_control_system()`). When the pass finds a cursor of another
 cluster, the sink becomes `CURSOR_INVALID` (audited, alerted; for the operator sink, logged), and stays so, whatever the
 counter does, until the operator runs `control-plane audit-export rebase`: it sets each such cursor from the time of its
 last delivered record minus 10 minutes, with `startFrom`'s rule, on the new cluster, so that nothing is skipped and some
@@ -493,13 +495,18 @@ any, has expired. For each due sink:
    - `SendFailure::Invalid` (the request could not be built for the destination) is a failure of the destination; a
      `Retry-After` on `429` or `503` is honoured within the 5-minute cap.
 
-**The operator sink.** It is one destination served as one stream per tenant: `audit_operator_export` holds one row per
-tenant with records (created when a tenant's first record is written after the sink is configured), each with the claim
-token and expiry, state, `next_attempt_at`, revision and cursor of a tenant sink and the same compare-and-set, halving
-and refusal; a message holds one tenant's records, so messages keep tenant scope, and order is promised per tenant. Up
-to 8 tenants' streams are sent at once per replica. A stream leaves a paused state on a change of the configuration or
-a restart of the engine, which the runbook says; a configured `start` (`now`, or a time) applies when the configured
-destination changes, so that a new destination does not receive the whole backlog unless the operator asks.
+**The operator sink.** It is one destination served as one stream per tenant. `audit_operator_config`, one row, holds a
+fingerprint of the configured destination (SHA-256 of the URL, never the URL), a configuration revision and a global
+discovery cursor; `audit_operator_export` holds one row per tenant, each with the claim token and expiry, state,
+`next_attempt_at`, revision and cursor of a tenant sink and the same compare-and-set, halving and refusal. A message
+holds one tenant's records, so messages keep tenant scope, and order is promised per tenant; up to 8 tenants' streams
+are sent at once per replica. Discovery reads the cursor query of section 4 without the tenant predicate from the
+discovery cursor; for a tenant that has no row yet it creates one whose cursor stands just below the first record found,
+so no record of a new tenant (a newly provisioned attacker's probes included) is skipped, and the writers of audit
+records gain nothing. At start, an engine compares its configured destination's fingerprint with the stored one under
+a lock of the configuration row: only a different fingerprint is a change, which raises the revision once and applies
+the configured `start` (`now`, or a time) once; a restart or a rolling deploy with the same destination changes
+nothing, and a stream paused for its destination leaves that state only at such a change.
 
 The pass holds no lock across an HTTP call. A crash between a receiver's `2xx` and the commit sends that request's
 records again on a later pass, under a new delivery id.
@@ -532,6 +539,7 @@ CREATE TABLE audit_sinks (
   authorizing_subject text NOT NULL, claim_token uuid, claim_expires_at timestamptz, last_test_at timestamptz,
   PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, slot),
   FOREIGN KEY (tenant_id, home_namespace_id) REFERENCES namespaces (tenant_id, id));
+-- audit_operator_config: one row with destination_fingerprint, revision, discovery_cursor_tx, discovery_cursor_id.
 -- audit_operator_export: one row per tenant (tenant_id primary key) with state, revision, cursor_cluster, cursor_tx,
 -- cursor_id, failures, next_attempt_at, claim_token, claim_expires_at, last_delivered_id, last_delivered_at; no
 -- destination column. audit_sinks also has cursor_cluster bigint NOT NULL beside its cursor.
@@ -557,7 +565,8 @@ as lost.
   `crates/domain/src/identity.rs`, added to `Role::ADMIN_PERMISSIONS`): `GET/POST /audit/sinks`,
   `GET/PATCH/DELETE /audit/sinks/{sinkId}`, `POST /audit/sinks/{sinkId}/pause`, `/resume`, `/rotate-signing-key`
   (answers the new key once), `/test` (sends one synthetic event marked `metadata.labels: ["test"]` and answers a closed
-  outcome, `ok`, `denied`, `timeout` or `http_<class>`, never the remote body; at most one per sink per minute;
+  outcome, `ok`, `unreachable` (every egress refusal, name-resolution failure, transport error and timeout alike, so
+  that the test cannot map internal names) or `http_<class>`, never the remote body; at most one per sink per minute;
   audited), and `GET /audit/sinks/{sinkId}/refused`. The answers that carry a signing key (`POST /audit/sinks` and
   `/rotate-signing-key`) are `Cache-Control: no-store`, and the key is never logged or put in an audit reason, as the
   one-time `leaseToken` of the worker protocol is. A sink of another tenant answers `404` exactly as a missing one,
@@ -581,8 +590,9 @@ as lost.
   `audit_sinks{state}`, `audit_export_oldest_undelivered_seconds{kind}` (a gauge, the largest over the replica's sinks
   of the age of the oldest record above the cursor), `audit_export_lag_seconds{kind}` (acknowledgement minus
   `created_at`), and `postgres_oldest_xid_holder_seconds` (the age of the oldest backend that holds a transaction id;
-  it needs `pg_read_all_stats` for the runtime role, which the runbook grants, and is not reported without it, as
-  design 041's Gap 041-016 records). Alert rules: a sink not `ACTIVE` for 15 minutes; the oldest undelivered record
+  read through a `SECURITY DEFINER` function owned by a monitoring role, with `search_path` pinned, that returns only
+  that age, so the runtime role gains `EXECUTE` on it and no view of other sessions' text, as design 041's Gap 041-016
+  recommends). Alert rules: a sink not `ACTIVE` for 15 minutes; the oldest undelivered record
   older than 15 minutes; the oldest transaction-id holder older than 5 minutes. Their rule tests join the CI step that
   runs `promtool test rules` (`.github/workflows/ci.yml`), which is changed to run every `infra/observability/tests/*_test.yaml`.
 - Spans: `audit.export.batch` per batch with the sink kind and the count, never the URL or a value.
