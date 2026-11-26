@@ -165,7 +165,8 @@ items, and no item transaction holding two run locks.
 
 1. **Given** a filter, **When** previewed, **Then** the matched count (capped at `maxItems + 1`) and at
    most 20 run ids are returned and nothing changes.
-2. **Given** a job, **When** it runs, **Then** it snapshots runs created at or before its creation, applies
+2. **Given** a job, **When** it runs, **Then** it takes the runs its filter matches that were created at or before its
+   creation, or exactly the runs of its namespace it names by id whatever their recorded creation (D2405), applies
    the action one run per transaction at the job rate and records `SUCCEEDED`, `SKIPPED` (reason) or
    `FAILED` (error code) per item with progress counters.
 3. **Given** a running job, **When** cancelled, **Then** no further item is applied, applied items stay
@@ -392,7 +393,9 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   nothing, finishes within a bounded statement time.
 - **FR-018-029 — Selection.** Selection MUST start only after every transaction in progress at job
   creation has finished (`pg_snapshot_xmin` past the horizon recorded at creation), then page by run id
-  over runs created at or before the creation instant, in bounded transactions, up to `maxItems`. The
+  over the runs of the job's tenant and namespace that the selector matches, in bounded transactions, up to `maxItems`:
+  a filter selector matches the runs created at or before the creation instant (`selection_bound_at`), a selector of
+  run ids matches the runs it names with no time bound, since a list of ids is already a closed set (D2405). The
   result is evaluated per round and fixed once an item is materialized; a materialized item's filter is
   not re-evaluated. With feature 020 the selector is 020's `RunSelector` (`contracts/list-query.md`:
   creator's rights re-resolved each round, keyset `RunId` (`select_cursor`) bounded by `selection_bound_at`, corrected 2026-11-26
