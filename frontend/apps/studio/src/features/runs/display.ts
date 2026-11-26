@@ -100,13 +100,14 @@ const MAX_REF = 200;
  * How a `payloadRef` is shown: the platform keeps the payload and the journal carries only where it is
  * kept (`journal:<runId>:<seq>`), never the payload or a digest of it (T016-066, G665). The Studio says
  * "redacted", shows the place shortly, and has the whole reference to copy. Anything else (an older
- * server's digest) is an opaque label, clipped, and never called a digest. It never shows or fetches the payload.
+ * server's digest) only says that there is a payload: it is neither shown nor copied, and the place is
+ * made from the run and the event's sequence instead. It never shows or fetches the payload.
  */
-export function payloadRefView(ref: string | null | undefined): { short: string; full: string } | undefined {
+export function payloadRefView(ref: string | null | undefined, runId: string, seq: number): { short: string; full: string } | undefined {
   if (ref === null || ref === undefined || ref === '') return undefined;
-  const full = ref.slice(0, MAX_REF);
-  const place = JOURNAL_REF.exec(full);
-  return { short: place ? `journal #${place[1]}` : clip(full, 24), full };
+  const place = JOURNAL_REF.exec(ref.slice(0, MAX_REF));
+  if (place) return { short: `journal #${place[1]}`, full: ref };
+  return { short: `journal #${seq}`, full: `journal:${runId}:${seq}` };
 }
 
 /** Every status a run can have, in the order a person reads them (a status missing here is a compile error). */

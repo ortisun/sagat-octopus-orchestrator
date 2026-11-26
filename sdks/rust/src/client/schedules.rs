@@ -317,7 +317,7 @@ impl Schedule {
             next_action_at: f.opt_instant("nextActionAt")?,
             created_at: f.instant("createdAt")?,
             updated_at: f.opt_instant("updatedAt")?,
-            raw,
+            raw: without_input_digest(raw),
         })
     }
 }
@@ -394,6 +394,16 @@ impl std::ops::Deref for ScheduleDescription {
         &self.schedule
     }
 }
+/// The answer without the digest of the input an older server still sends (`action.inputDigest`):
+/// it only tells that there is an input, and nothing of it is kept, not even in `raw` (T016-066,
+/// G665).
+fn without_input_digest(mut raw: Value) -> Value {
+    if let Some(action) = raw.get_mut("action").and_then(Value::as_object_mut) {
+        action.remove("inputDigest");
+    }
+    raw
+}
+
 impl ScheduleDescription {
     fn parse(raw: Value) -> Result<Self, SagatError> {
         let f = Fields::of(&raw, "a schedule description")?;

@@ -827,7 +827,7 @@ components:
         state: {$ref: '#/components/schemas/BatchJobState'}
         failureReason: {type: [string, 'null']}
         createdBy: {type: string}
-        payloadDigest: {type: [string, 'null'], description: Signal payload or update arguments; never the value.}
+        hasPayload: {type: boolean, description: 'Whether the job carries a signal payload or update arguments; never the value, nor a digest of it (feature 016, FR-016-030).'}
         maxItems: {type: integer}
         itemsPerSecond: {type: number}
         counts:

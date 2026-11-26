@@ -387,8 +387,11 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // Owner decision OD-2026-11-15-3 (design 043, G043-045) adds to the text of six existing operations, startRun,
     // signalWithStart, updateWithStart, operateRun, resetRun and startDatabaseExecution, the paragraph on their 422
     // RUN_INPUT_INVALID; nothing else of them changed. The digest was recomputed from those reviewed text diffs, this once.
+    // Bugfix T016-066 (G665, FR-016-030) marks listRunJournalEvents `x-extended: '016'` (its payloadRef is a place, no
+    // longer a digest), so it leaves this set like the other feature-016 extensions. The new value was checked to be the
+    // digest of the develop document (8bf74e59) with only that operation removed; no other operation changed.
     assert_eq!(
-        digest, "6416c84cc04b82f82103e450ad0bb6837fe6de1d840c843ea2c1a94cf366cffa",
+        digest, "c6902458274203b0cb8cc54480e99ba8a43103b0e207cc4c8a9bab6a552482cc",
         "an existing operation outside feature 016 changed"
     );
 }

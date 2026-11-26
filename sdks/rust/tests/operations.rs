@@ -1998,5 +1998,9 @@ async fn a_schedule_says_whether_it_has_an_input_and_never_carries_a_digest_of_i
             .expect("updated");
         assert_eq!(updated.action.has_input, expected, "{action}");
         assert!(!format!("{:?}", updated.action).contains(&"a".repeat(64)));
+        assert!(
+            !updated.raw.to_string().contains(&"a".repeat(64)),
+            "not even raw keeps the digest"
+        );
     }
 }

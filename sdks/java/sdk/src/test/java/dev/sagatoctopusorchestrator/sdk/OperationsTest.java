@@ -506,6 +506,8 @@ class OperationsTest {
             Schedule created = client().schedules().create(NS, writeOf(ScheduleWrite.Action.of(WF, Map.of())), key("sched-key-9"));
             assertEquals(answer.getValue(), created.action().hasInput(), answer.getKey());
             assertFalse(created.action().toString().contains(digest), "the digest is not kept");
+            assertFalse(created.toString().contains(digest), "not in the debug text of the schedule");
+            assertFalse(created.raw().toString().contains(digest), "not even raw keeps the digest");
         }
     }
 

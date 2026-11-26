@@ -893,8 +893,25 @@ public sealed class SchedulesClient
             NextActionAt = OptDate(raw, "nextActionAt"),
             CreatedAt = Date(raw, "createdAt"),
             UpdatedAt = OptDate(raw, "updatedAt"),
-            Raw = raw,
+            Raw = WithoutInputDigest(raw),
         };
+    }
+
+    /// <summary>
+    /// The answer without the digest of the input an older server still sends (<c>action.inputDigest</c>): it only tells that there is an
+    /// input, and nothing of it is kept, not even in <see cref="Schedule.Raw"/> (T016-066, G665).
+    /// </summary>
+    private static JsonElement WithoutInputDigest(JsonElement raw)
+    {
+        if (!raw.TryGetProperty("action", out var action) || action.ValueKind != JsonValueKind.Object || !action.TryGetProperty("inputDigest", out _))
+        {
+            return raw;
+        }
+
+        var copy = System.Text.Json.Nodes.JsonNode.Parse(raw.GetRawText())!.AsObject();
+        copy["action"]!.AsObject().Remove("inputDigest");
+        using var document = JsonDocument.Parse(copy.ToJsonString());
+        return document.RootElement.Clone();
     }
 
     private static ScheduleActionRecord ToActionRecord(JsonElement? value)

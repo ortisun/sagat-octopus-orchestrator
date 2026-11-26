@@ -474,6 +474,7 @@ public sealed class OperationsTests : IAsyncLifetime
         var described = await NewClient().Schedules.GetAsync(Ns, ScheduleId);
         Assert.Equal(expected, described.Action.HasInput);
         Assert.DoesNotContain(new string('a', 64), described.Action.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('a', 64), described.Raw.GetRawText(), StringComparison.Ordinal);
     }
 
     [Fact]

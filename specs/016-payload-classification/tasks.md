@@ -206,3 +206,11 @@ the phases; existing IDs were kept so that references stay valid.
   and add the event list to the canary of T016-049. Design 054 already withholds it for `signal.buffered` (its Requirement
   054-014); design 044's history export (its Task 044-24) follows the same rule.
   Refs: FR-016-007, FR-016-016, G665
+- [ ] T016-067 Put the caller into the idempotency scope of a start, a signal (and signal-with-start, reset, chain) and a declared
+  Update (G016-002, severity High). Tests first, seen failing: un-ignore
+  `write_oracles::another_caller_reusing_a_start_key_learns_nothing_of_the_input` and add the signal and Update cases; a retry
+  by the same caller still replays, also across the upgrade (a record written before the change). Refs: FR-016-030, G016-002
+- [ ] T016-068 Deduplicate an API event per publisher, or answer a collision from another subject without regard to its content
+  (G016-003, severity High). Tests first, seen failing: un-ignore
+  `write_oracles::another_publisher_reusing_an_event_id_learns_nothing_of_the_data`; a publisher's own retry is still a duplicate.
+  Refs: FR-016-026, FR-016-030, G016-003

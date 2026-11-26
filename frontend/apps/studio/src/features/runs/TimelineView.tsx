@@ -160,7 +160,7 @@ export function TimelineView({ runId, journal, filter, onFilter, onSelect, selec
 
 function EntryRow({ runId, entry, index, measure, selected, onSelect }: { runId: string; entry: Entry; index: number; measure: (element: Element | null) => void; selected: boolean; onSelect: (id: string) => void }) {
   const tone = TONES[eventTone(entry.eventType)];
-  const payload = payloadRefView(entry.payloadRef);
+  const payload = payloadRefView(entry.payloadRef, runId, entry.seq);
   const live = entry.detail === 'live';
   return (
     <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-tone={tone?.tone} data-selected={selected ? 'true' : undefined}>

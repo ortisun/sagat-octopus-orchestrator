@@ -5,8 +5,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Instant;
 
 /**
- * A schedule as the server keeps it. The input of its action is customer content: it is never returned, only its
- * digest. {@code raw} is the answer as sent, so a field of a newer server is reachable. The business-id prefix of the
+ * A schedule as the server keeps it. The input of its action is customer content: neither it nor a digest of it is
+ * returned ({@link ActionInfo#hasInput()} says whether there is one; T016-066, G665). {@code raw} is the answer as sent,
+ * less the digest of the input an older server still sends, so a field of a newer server is reachable. The business-id prefix of the
  * action is customer text: it is there for the caller ({@link ActionInfo#businessIdPrefix()}, {@code raw}) and is left
  * out of the debug text ({@code toString}) of the schedule.
  *
@@ -137,6 +138,19 @@ public record Schedule(
                 Wire.optInstant(raw, "nextActionAt"),
                 Wire.instant(raw, "createdAt"),
                 Wire.optInstant(raw, "updatedAt"),
-                raw);
+                withoutInputDigest(raw));
+    }
+
+    /**
+     * The answer without the digest of the input an older server still sends ({@code action.inputDigest}): it only tells
+     * that there is an input, and nothing of it is kept, not even in {@code raw} (T016-066, G665).
+     */
+    static JsonNode withoutInputDigest(JsonNode raw) {
+        if (raw == null || !raw.path("action").isObject() || !raw.get("action").has("inputDigest")) {
+            return raw;
+        }
+        ObjectNode copy = raw.deepCopy();
+        ((ObjectNode) copy.get("action")).remove("inputDigest");
+        return copy;
     }
 }

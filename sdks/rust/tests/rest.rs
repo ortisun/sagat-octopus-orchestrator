@@ -76,7 +76,7 @@ async fn answer(
         "event-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
         "event-retry" => {let request:serde_json::Value=serde_json::from_slice(&body).expect("event body");(StatusCode::ACCEPTED,axum::Json(json!({"eventId":request["eventId"],"source":"api","status":"DUPLICATE"}))).into_response()},
         "pages" => (StatusCode::OK,axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":if count==1 {Some("opaque +/?&=é")}else{None}}))).into_response(),
-        "journal" => (StatusCode::OK,axum::Json(json!({"items":[{"seq":1,"eventType":"RunStarted","occurredAt":"2026-10-27T17:30:00+05:30","actor":"system:test","futureField":true}],"nextCursor":null,"newField":"retained"}))).into_response(),
+        "journal" => (StatusCode::OK,axum::Json(json!({"items":[{"seq":1,"eventType":"RunStarted","occurredAt":"2026-10-27T17:30:00+05:30","actor":"system:test","futureField":true},{"seq":2,"eventType":"step.completed","occurredAt":"2026-10-27T17:30:01Z","actor":"worker:w","payloadRef":format!("journal:{RUN}:2")}],"nextCursor":null,"newField":"retained"}))).into_response(),
         "completion" => (StatusCode::OK,axum::Json(basic_run(if count==1 {"RUNNING"}else{"SUCCEEDED"}))).into_response(),
         "retry" if count == 1 => (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"code":"UNAVAILABLE", "retryable":true}))).into_response(),
         "child" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"workflowId":WORKFLOW,"versionId":WORKFLOW,"version":1,"createdAt":"2026-10-27T12:00:00Z","status":"RUNNING","depth":1,"parent":{"runId":WORKFLOW,"node":"child","cancelPolicy":"DETACH"}}))).into_response(),
@@ -773,6 +773,12 @@ async fn journal_events_have_typed_fields_and_keep_additive_raw_json() {
     assert_eq!(page.items[0].event_type, "RunStarted");
     assert_eq!(page.items[0].occurred_at.offset(), time::UtcOffset::UTC);
     assert_eq!(page.items[0].raw["futureField"], true);
+    assert_eq!(page.items[0].payload_ref, None);
+    // T016-066 (G665): the place of the payload, never a digest of it.
+    assert_eq!(
+        page.items[1].payload_ref.as_deref(),
+        Some(format!("journal:{RUN}:2").as_str())
+    );
     assert_eq!(page.raw["newField"], "retained");
 }
 #[tokio::test]

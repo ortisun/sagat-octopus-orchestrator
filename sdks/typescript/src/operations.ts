@@ -229,9 +229,21 @@ function toDate(raw: Record<string, unknown>, field: string): Date {
   return value;
 }
 
+/**
+ * The answer without the digest of the input an older server still sends (`action.inputDigest`): it only tells that there
+ * is an input, and nothing of it is kept, not even in `raw` (T016-066, G665).
+ */
+function withoutInputDigest(raw: Record<string, unknown>): Record<string, unknown> {
+  const action = raw['action'];
+  if (!action || typeof action !== 'object' || Array.isArray(action) || !('inputDigest' in action)) return raw;
+  const { inputDigest: _dropped, ...kept } = action as Record<string, unknown>;
+  return { ...raw, action: kept };
+}
+
 function toSchedule(value: unknown): Schedule {
-  const raw = object(value, 'a schedule');
-  const action = raw['action'] && typeof raw['action'] === 'object' ? (raw['action'] as Record<string, unknown>) : {};
+  const answer = object(value, 'a schedule');
+  const action = answer['action'] && typeof answer['action'] === 'object' ? (answer['action'] as Record<string, unknown>) : {};
+  const raw = withoutInputDigest(answer);
   return {
     scheduleId: str(raw, 'scheduleId'),
     name: str(raw, 'name'),

@@ -46,15 +46,15 @@ describe('how the reference of a payload is shown (T016-066, G665)', () => {
   const RUN = '019b5d6e-0000-7000-8000-000000000001';
 
   it('names the place in the journal, shortened, with the whole reference to copy', () => {
-    expect(payloadRefView(`journal:${RUN}:3`)).toEqual({ short: 'journal #3', full: `journal:${RUN}:3` });
+    expect(payloadRefView(`journal:${RUN}:3`, RUN, 3)).toEqual({ short: 'journal #3', full: `journal:${RUN}:3` });
   });
 
-  it('never calls anything a digest, and shows nothing for no reference', () => {
-    // An older server sent the SHA-256 of the payload: it is shown as an opaque, clipped label, never as `sha256:`.
-    const legacy = payloadRefView('f'.repeat(64));
-    expect(legacy?.short).not.toMatch(/sha256/i);
-    expect(legacy?.short.length).toBeLessThanOrEqual(25); // 24 characters and an ellipsis
-    expect(payloadRefView(null)).toBeUndefined();
-    expect(payloadRefView('')).toBeUndefined();
+  it('never shows nor copies a digest, and shows nothing for no reference', () => {
+    // An older server sent the SHA-256 of the payload: it only says there is one, and the place is made instead.
+    const legacy = payloadRefView('f'.repeat(64), RUN, 7);
+    expect(legacy).toEqual({ short: 'journal #7', full: `journal:${RUN}:7` });
+    expect(JSON.stringify(legacy)).not.toContain('ffff');
+    expect(payloadRefView(null, RUN, 7)).toBeUndefined();
+    expect(payloadRefView('', RUN, 7)).toBeUndefined();
   });
 });

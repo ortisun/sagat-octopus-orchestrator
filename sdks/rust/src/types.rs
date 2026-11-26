@@ -343,6 +343,9 @@ pub struct JournalEvent {
     pub step_id: Option<String>,
     pub attempt: Option<u32>,
     pub trace_id: Option<String>,
+    /// Where the payload the event carries is kept, `journal:<runId>:<seq>` (the selector payload
+    /// inspection and disclosure accept); `None` when it carries none. Never a digest of the
+    /// payload (T016-066, G665).
     pub payload_ref: Option<String>,
     pub span_id: Option<String>,
     pub cause: Option<Cause>,

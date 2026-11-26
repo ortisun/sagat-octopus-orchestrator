@@ -283,6 +283,14 @@ the first ones: once full, a message that cannot become an event is acknowledged
 but not retained.
 
 
+### `listRunJournalEvents` (feature 016)
+
+Needs `run:read`. This is a breaking feature-016 response change (bugfix T016-066, G665): `payloadRef` is
+`journal:<runId>:<seq>`, where the payload the event carries is kept, which payload inspection and disclosure
+accept as `{"source": "journal", "sequence": <seq>}`. It used to be the SHA-256 of the payload, which let a
+reader confirm a guessed value. No read returns a digest of a payload (FR-016-030).
+
+
 ### `operateRun` (feature 003)
 
 CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). Feature 037: a step whose last outcome is unknown (a lost lease, a timeout, OUTCOME_UNKNOWN, a lookup that could not say or said `not_applied`) is never retried by anyone, administrators included: RETRY_STEP is refused with 409 and `details.reason` `OUTCOME_UNRESOLVED`; settle it with RESOLVE_STEP after checking with the provider. SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.

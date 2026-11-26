@@ -1218,5 +1218,8 @@ func TestAScheduleSaysWhetherItHasAnInputAndNeverCarriesADigestOfIt(t *testing.T
 		if strings.Contains(fmt.Sprintf("%+v", schedule.Action), strings.Repeat("a", 64)) {
 			t.Errorf("the digest is kept: %+v", schedule.Action)
 		}
+		if raw, _ := json.Marshal(schedule.Raw); strings.Contains(string(raw), strings.Repeat("a", 64)) {
+			t.Errorf("not even Raw keeps the digest: %s", raw)
+		}
 	}
 }

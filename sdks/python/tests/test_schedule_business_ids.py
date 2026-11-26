@@ -385,6 +385,7 @@ def test_the_runner_prints_the_three_keys_of_an_action_only_when_the_schedule_ha
     legacy = to_schedule(schedule_body(action={"workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a" * 64}))
     assert legacy.action.has_input is True, "an older server's digest only tells that there is an input"
     assert "a" * 64 not in repr(schedule_json(legacy))
+    assert "a" * 64 not in repr(dict(legacy.raw)), "not even raw keeps the digest"
     assert to_schedule(schedule_body(action={"workflowId": WF, "hasInput": False})).action.has_input is False
     odd = schedule_json(
         to_schedule(schedule_body(action=served_action(businessIdPrefix="p", businessIdReusePolicy="X")))

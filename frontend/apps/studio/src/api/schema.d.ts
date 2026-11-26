@@ -618,7 +618,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List run journal events in sequence order */
+        /**
+         * List run journal events in sequence order
+         * @description Needs `run:read`. This is a breaking feature-016 response change (bugfix T016-066, G665): `payloadRef` is
+         *     `journal:<runId>:<seq>`, where the payload the event carries is kept, which payload inspection and disclosure
+         *     accept as `{"source": "journal", "sequence": <seq>}`. It used to be the SHA-256 of the payload, which let a
+         *     reader confirm a guessed value. No read returns a digest of a payload (FR-016-030).
+         */
         get: operations["listRunJournalEvents"];
         put?: never;
         post?: never;

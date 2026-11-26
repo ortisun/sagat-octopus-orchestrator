@@ -417,6 +417,7 @@ test('the conformance runner prints the business-id keys of a schedule action on
   const legacy = await client().schedules.create(NS, writeWith());
   assert.equal(legacy.action.hasInput, true);
   assert.equal(JSON.stringify(scheduleJson(legacy)).includes('a'.repeat(64)), false);
+  assert.equal(JSON.stringify(legacy.raw).includes('a'.repeat(64)), false, 'not even raw keeps the digest');
   prepare((_req, res) => reply(res, 200, schedule({ action: { workflowId: WF, versionPolicy: 'ACTIVE', hasInput: false } })));
   assert.equal((await client().schedules.create(NS, writeWith())).action.hasInput, false);
 

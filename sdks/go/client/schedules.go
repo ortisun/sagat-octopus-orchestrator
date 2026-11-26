@@ -689,9 +689,37 @@ func parseSchedule(body []byte) (*Schedule, error) {
 	return scheduleOf(raw)
 }
 
+// withoutInputDigest is the answer without the digest of the input an older server still sends (action.inputDigest):
+// it only tells that there is an input, and nothing of it is kept, not even in Raw (T016-066, G665).
+func withoutInputDigest(raw map[string]json.RawMessage) map[string]json.RawMessage {
+	action, err := jsonx.Object(raw["action"])
+	if err != nil {
+		return raw
+	}
+	if _, held := action["inputDigest"]; !held {
+		return raw
+	}
+	kept := make(map[string]json.RawMessage, len(action))
+	for key, value := range action {
+		if key != "inputDigest" {
+			kept[key] = value
+		}
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		return raw
+	}
+	out := make(map[string]json.RawMessage, len(raw))
+	for key, value := range raw {
+		out[key] = value
+	}
+	out["action"] = encoded
+	return out
+}
+
 func scheduleOf(raw map[string]json.RawMessage) (*Schedule, error) {
 	var err error
-	schedule := &Schedule{Raw: raw}
+	schedule := &Schedule{Raw: withoutInputDigest(raw)}
 	if schedule.ScheduleID, err = requiredString(raw, "scheduleId"); err != nil {
 		return nil, err
 	}

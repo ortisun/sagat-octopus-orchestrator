@@ -266,6 +266,34 @@ async fn no_schedule_answer_returns_the_digest_of_its_classified_input() {
         "the stored digest is the SHA-256 of the input"
     );
 
+    // every other answer that carries the schedule: a replacement (same input), a pause and a resume
+    let schedule = format!("{}/{id}", r.schedules());
+    let (status, replaced) =
+        r.p.rest(
+            Method::PUT,
+            &schedule,
+            Some(&json!({
+                "name": "flagged",
+                "spec": {"intervals": [{"everyMs": 7_200_000}]},
+                "action": {"workflowId": workflow, "input": {"flag": true}},
+                "expectedRevision": 1
+            })),
+        )
+        .await;
+    assert_eq!(status, 200, "{replaced}");
+    answers.push(("replace", replaced));
+    for verb in ["pause", "resume"] {
+        let (status, answer) =
+            r.p.rest(
+                Method::POST,
+                &format!("{schedule}/{verb}"),
+                Some(&json!({"note": "digest check"})),
+            )
+            .await;
+        assert_eq!(status, 200, "{verb}: {answer}");
+        answers.push((verb, answer));
+    }
+
     for subject in ["vera", HUMAN] {
         let (status, read) =
             r.p.rest_as(
