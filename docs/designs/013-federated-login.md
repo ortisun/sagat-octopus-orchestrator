@@ -1536,11 +1536,12 @@ written plus one, never reused, the highest also kept in the document), material
   version }` and `Cancelled { version }`. The audited "rotation cancelled" and the conflict failure of `revoke` record
   only a `RingChange` or a `RingError`. `IdentityKeyRing`, `RingChange` and `RingError` have hand-written `Debug`
   showing only key ids, states, versions and rules, as `KeyRing`'s does, and the adapters' `Debug` show only the ring's
-  (`an_identity_key_ring_never_prints_key_material` formats with `{:?}` the ring, both adapters, a `RingKey`, a
-  `RingDocument`, a `Tag` and a `RefreshMac` (built from distinctive bytes, whose `{:?}` and `{:#?}` output must be
-  exactly `[REDACTED]`, not merely free of one encoding), and the
-  errors, audit rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of
-  31 bytes, and of a cancelled rotation and a `revoke` that loses five check-and-sets).
+  (`an_identity_key_ring_never_prints_key_material`, with every key, document and tag built from distinctive bytes:
+  the `{:?}` and `{:#?}` output of a `RingKey`, a `PurposeKey`, a `RingDocument`, a `Tag` and a `RefreshMac` must be
+  exactly `[REDACTED]`; and in the `{:?}` and `{:#?}` output of the ring and both adapters, and in the errors, audit
+  rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of 31 bytes,
+  and of a cancelled rotation and a `revoke` that loses five check-and-sets, the distinctive bytes must appear in no
+  form: lowercase or uppercase hex, standard or URL-safe base64 with or without padding, or the decimal byte list).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
   in the module as `P::LABEL`, refuses outside it any string literal containing `rings/`, any call of `read_versioned`
   or `write_cas` and any `impl RingPurpose`, refuses any widening of the visibility of `openbao.rs`'s request helper,
