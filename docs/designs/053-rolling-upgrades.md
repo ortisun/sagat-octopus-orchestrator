@@ -111,7 +111,7 @@ From the code and documents on `develop` at `546d5aa5`:
   shards, and answers 503. The registry's functions in their new versions, `instance_register_v2` and
   `instance_heartbeat_v2`, return the requirement set with the epoch when a registration succeeds or the epoch differs
   from the one the process sends with its heartbeat (the gate's own, so a lost answer is asked again), and the gate
-  keeps it (design 049's Task 049-5);, and refuse such a process in the transaction that already reads the requirement
+  keeps it (design 049's Task 049-5), and refuse such a process in the transaction that already reads the requirement
   epoch, so that an activation and a registration cannot race. Every entry point that opens the database calls the
   handshake: the control plane, the engine, each command of `control-plane` (the `secret-cleanup` job included) and
   `migrate`, checked by `scripts/check-architecture.py`. The handshake tests run as the runtime role. `BINARY_TOO_OLD`

@@ -1,11 +1,10 @@
-# Approval confirmation of design 049: correctness (2026-11-26)
+# Targeted re-read 6 of design 049: correctness (2026-11-26)
 
 Doc: docs/designs/049-journal-partitioning.md
 Reviewed-commit: 44d6a0b3cd3afe687d5144167c8d18ef73870e19
 Reviewer: correctness
 Agent-blob: d1de651dc4a3676084974c440b0684eed2cd4888
-Note: condensed by the author from the reviewer's output; every finding and severity is kept. The last of the targeted
-re-reads of the approval run under Owner decision 2026-11-25-2 (one full round, `correctness-full.md` at 66634fb9; the
+Note: condensed by the author from the reviewer's output; every finding and severity is kept. A targeted re-read of the approval run under Owner decision 2026-11-25-2 (one full round, `correctness-full.md` at 66634fb9; the
 fixes re-read in `reread-1-correctness.md` to `reread-5-correctness.md`, each Major fixed before the next), not a full
 review. The reviewer read files only and ran nothing.
 
@@ -31,5 +30,6 @@ No Blocker, no Major.
 
 Counts: Blocker 0, Major 0, Nit 6
 
-Settled (see the egm-review summary of this approval): Nits 1 to 5 are recorded as design 049's follow-up Task 049-19,
-added after the approval as the approval rule allows; Nit 6 is fixed in design 053.
+All six were fixed at `2245250b`: the lock before the check (Nit 1); `is_active` tested on a test-only capability in Task
+049-5 and the named test in Task 049-13 (Nit 2); the merge order (Nit 3); `TimeZone`, `DateStyle` and `to_char` (Nit 4);
+the trigger functions owner-only (Nit 5); the process's epoch in design 053 (Nit 6).

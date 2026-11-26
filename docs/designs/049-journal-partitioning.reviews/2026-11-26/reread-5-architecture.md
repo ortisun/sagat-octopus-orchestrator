@@ -1,11 +1,10 @@
-# Approval confirmation of design 049: architecture (2026-11-26)
+# Targeted re-read 5 of design 049: architecture (2026-11-26)
 
 Doc: docs/designs/049-journal-partitioning.md
 Reviewed-commit: 44d6a0b3cd3afe687d5144167c8d18ef73870e19
 Reviewer: architecture
 Agent-blob: c6fbfd6fa75c2429ef857c4daa78fc1a3f5ea3d9
-Note: condensed by the author from the reviewer's output; every finding and severity is kept. The last of the targeted
-re-reads of the approval run under Owner decision 2026-11-25-2 (one full round, `architecture-full.md` at 66634fb9; the
+Note: condensed by the author from the reviewer's output; every finding and severity is kept. A targeted re-read of the approval run under Owner decision 2026-11-25-2 (one full round, `architecture-full.md` at 66634fb9; the
 fixes re-read in `reread-1-architecture.md` to `reread-4-architecture.md`, each Major fixed before the next), not a full
 review. Design 049's text is the same as at bfa17146; the fixes of re-read 4 went into design 053 and ADR-0132. The
 reviewer read files only and ran nothing.
@@ -24,5 +23,4 @@ No Blocker, no Major.
 
 Counts: Blocker 0, Major 0, Nit 4
 
-Settled (see the egm-review summary of this approval): Nits 1 to 3 are recorded as design 049's follow-up Task 049-19,
-added after the approval as the approval rule allows; Nit 4 is fixed in design 053.
+All four were fixed at `2245250b` (design 049's Tasks 049-5 and 049-13 and its merge order; design 053's wrapping).
