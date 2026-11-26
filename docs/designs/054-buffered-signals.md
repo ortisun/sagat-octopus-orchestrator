@@ -34,8 +34,8 @@ What this gives, and how it differs from Temporal:
   consumer is a `waitEvent` node of the root graph, and a code version's consumer (design 044) is the workflow function, which
   reads from the same inbox when it chooses.
 - **Bounded by what the author declares.** `maxPending` per name, `maxBytes` per payload; publication refuses declarations whose
-  bytes could exceed what a run may retain (4 MiB), so the number an author writes is the number the platform keeps, unless the
-  run's own step outputs have used the room (Requirement 054-007).
+  bytes could exceed half of what a run may retain (2 MiB of its 4 MiB), so the other half is always left to step outputs and
+  senders can never make a step fail for room (Requirement 054-007).
 - **A lifecycle in the transitions that exist.** Continue-as-new moves pending signals to the successor; the end of a run discards
   them and journals how many; a reset rebuilds them and reapplies those that arrived after its point; Signal-with-Start buffers
   instead of refusing. Nothing expires silently and nothing is dropped without a journal record.
@@ -58,6 +58,10 @@ for versions that declare a buffered name and for nothing else. The register of 
   design is 1 when it declares at least one name, 0 otherwise; publication records it (`workflow_versions.signal_inbox_level`).
 - **Inbox; pending signal.** The inbox of a run is its rows in `run_signal_inbox`. A row exists exactly while its signal is
   pending: received, not yet consumed, moved or discarded. Each settlement deletes the row and is journaled.
+- **The invariant.** A root wait of a declared name that is waiting and a pending signal of that name never exist in one run at
+  one commit: a signal that finds the wait is delivered live, and a wait that finds the signal consumes it at its entry. Live
+  delivery, consumption, the handoff's refusal of an entry wait, the reset's rebuild and the races all keep it; the replay corpus
+  checks it at every commit (Requirement 054-020).
 - **Sequence.** A pending signal is identified by the run's journal sequence of its `signal.buffered` event, so the inbox's order
   is the journal's.
 - **Consumer.** For a graph version, a `waitEvent` node of the root graph whose `eventType` is the name (signals reach root waits
@@ -118,7 +122,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   name is buffered; the field is accepted so that design 044's documents, which write it, are valid; Decision 054-009).
   Publication MUST refuse, with the field's JSON pointer and a reason: a duplicated name (`SIGNAL_DUPLICATED`); a sum of
   `maxPending` over the entries above 1,000 (`SIGNAL_BOUNDS_OVER_RUN`); a sum of `maxPending × maxBytes` over the entries above
-  4,194,304 (`SIGNAL_BYTES_OVER_RUN`); in a graph document, a name that is not the `eventType` of at least one `waitEvent` node of
+  2,097,152, half of a run's retained bytes (`SIGNAL_BYTES_OVER_RUN`); in a graph document, a name that is not the `eventType` of at least one `waitEvent` node of
   the root graph (`SIGNAL_WITHOUT_CONSUMER`); in a graph document that has a `continueAsNew` node, an entrypoint that is a
   `waitEvent` of a declared name (`SIGNAL_ENTRY_WAIT_CONTINUES`: a continuation's handoff opens such a wait without the planner,
   Technical Plan 7; an author puts an activity first; Decision 054-013). A code document (design 044) declares its signals in the same shape, with the
@@ -126,7 +130,8 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   Studio's form test.
 - **Requirement 054-002 — The level and the fleet requirement.** Publication MUST record the version's level (Terms). A version of
   level 1 MUST publish only once the operator recorded the requirement `signal-inbox-v1` for control planes and engines
-  (Architecture decision 0082); until then publication answers `422` with the reason `SIGNAL_INBOX_NOT_ACTIVE`. Publication holds
+  (Architecture decision 0082); until then publication answers `422` with the reason `CAPABILITY_NOT_ACTIVE` and the capability in
+  the problem's detail, the one reason the shared hold gives designs 044, 045 and 054 (Task 054-18; Gap 054-007). Publication holds
   the requirement until its transaction commits (`platform_requirement_hold`, Technical Plan 15). The requirement MUST NOT be removed
   while a workflow version of level 1 exists, retired included. *Acceptance:* the registry tests and the released 0.2 scenario.
 - **Requirement 054-003 — Undeclared names are unchanged.** A signal whose name the run's version does not declare, and every signal
@@ -135,11 +140,9 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   has no live delivery, and design 044 refuses a signal its version does not declare (`409 SIGNAL_NOT_DECLARED`). *Acceptance:* the
   existing signal tests of `integration_durable_execution` and `integration_schedules_bulk_operations` pass unchanged.
 - **Requirement 054-004 — One consumer per signal of a declared name.** A signal of a declared name to a graph run MUST satisfy
-  exactly one wait. When one or more root `waitEvent` steps of that name wait, it MUST be delivered live to the one that began
-  waiting first (its entry time, which the domain derives from the wait's deadline less its node's `timeoutMs`, a field every
-  `waitEvent` must declare; a tie, two waits entered by one transaction, goes to the lower node id, which is also the order in which
-  the planner enters them, since it plans root steps in node-id order), and to no other. A root graph is acyclic, so this arises only
-  between parallel branches. When none waits, it MUST be buffered (Requirement 054-005). The name's `maxBytes` applies to every
+  exactly one wait. When one or more root `waitEvent` steps of that name wait, it MUST be delivered live to the one with the lowest
+  node id, and to no other; the planner enters waits in that order too (it plans root steps in node-id order), so one rule decides
+  live delivery and consumption. A root graph is acyclic, so two waits of one name wait at once only in parallel branches. When none waits, it MUST be buffered (Requirement 054-005). The name's `maxBytes` applies to every
   signal of a declared name, delivered live or buffered (`SIGNAL_TOO_LARGE`), so that acceptance never depends on timing. To a code
   run every signal of a declared name is buffered (Technical Plan 10). *Acceptance:* unit tests of the choice; an integration test with two
   waiting steps of one name.
@@ -163,11 +166,13 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   at most one wait, oldest first, in the order in which the commits enter waits. A run with no pending signal MUST read nothing more.
   *Acceptance:* unit tests of the planner; an integration test per entry path (a worker's completion, a timer, a condition, the
   run's creation, a continuation's successor); the budget line of Non-functional requirement 054-001.
-- **Requirement 054-007 — The bound an author can rely on.** The guide and the Studio MUST state the bound this way: a run keeps
-  up to `maxPending` pending signals of a name, each of at most `maxBytes`; publication guarantees that the declared bounds fit in
-  what a run may retain; at run time a signal within them is refused only when the run's step outputs and pending payloads together
-  would pass 4 MiB (`429`). With `maxBytes` of 262,144 a version can declare at most 16 pending signals in all (4,194,304 / 262,144);
-  with the default of 65,536, at most 64. *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
+- **Requirement 054-007 — The bound an author can rely on.** The guide and the Studio MUST state the bound this way: a run of a
+  graph version keeps up to `maxPending` pending signals of a name, each of at most `maxBytes`; publication keeps the declared bytes
+  within half of what a run may retain (2 MiB), so pending signals never take room from step outputs below 2 MiB, and at run time a
+  signal within the bounds is refused only when the run's outputs already hold more than the other half (`429`). With `maxBytes` of
+  262,144 a version can declare at most 8 pending signals in all (2,097,152 / 262,144); with the default of 65,536, at most 32. A
+  step's output that would pass the 4 MiB still fails `RUN_DATA_LIMIT`, as today; pending signals can no longer cause it. For a code
+  run, design 044's headroom rules (`HISTORY_HEADROOM` from 3 MiB) also apply, and its guide says so (Gap 054-008). *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
 - **Requirement 054-008 — Pending payloads count in the retained bytes.** Every check of the 4 MiB bound MUST count the run's
   pending payloads with its step outputs, so that consuming a pending signal never takes a run over the bound. They are charged to
   the run's existing byte ledger (`run_instance_usage`, Technical Plan 6), whose check enforces the sum in the database.
@@ -223,7 +228,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   labels only: no tenant, namespace, run, signal name or payload as a label or in a log line. *Acceptance:* the metrics text test of
   `integration_buffered_signals`.
 - **Requirement 054-020 — Journal and replay.** The events of Technical Plan 11 are written only for runs of a version of level 1;
-  a run's replay MUST equal its projection, the inbox rows, `runs.pending_signals` and the ledger's
+  the invariant of Terms MUST hold after every commit; a run's replay MUST equal its projection, the inbox rows, `runs.pending_signals` and the ledger's
   `pending_signal_bytes` included. *Acceptance:* the
   replay-equals-projection corpus of `integration_buffered_signals`.
 
@@ -284,7 +289,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
 
 ## Open Questions
 
-None. The questions raised while designing are decided in `specs/054-buffered-signals/research.md` (Decisions 054-001 to 054-013).
+None. The questions raised while designing are decided in `specs/054-buffered-signals/research.md` (Decisions 054-001 to 054-014; Gaps 054-001 to 054-010).
 
 ## Owner decisions needed
 
@@ -668,7 +673,7 @@ completion, an end, a handoff after the chain lock, a path transaction). The los
 | a signal and the run's end | signal first: buffered, then discarded and counted by the end; end first: refused `RUN_ENDED` | the ending transaction held, both orders |
 | a signal and a continuation | signal first: buffered, then moved; handoff first: the old run refuses `RUN_ENDED`, a chain-addressed signal reaches the successor | the handoff held after its chain lock, both orders |
 | a signal buffered between the scheduler's evaluation of a continuation and its handoff | the handoff accepts a run version advanced only by `signal.buffered` and moves the new signal with the others | a barrier between the evaluation and the handoff |
-| two waits of one name and one pending signal | the first entry consumes it; the second waits. In one transaction, the wait the planner enters first, the lower node id (it plans root steps in node-id order), consumes it | two parallel branches entered in one transaction; two transactions serialized at a barrier |
+| two waits of one name and one pending signal | the first entry consumes it; the second waits. In one transaction, the lower node id, which the planner enters first, consumes it | two parallel branches entered in one transaction; two transactions serialized at a barrier |
 | two signals of one name at `maxPending − 1` | the first is buffered, the second refused `SIGNAL_INBOX_FULL` | both blocked on the run lock, released in turn |
 | a signal and a reset of the run | the reset's source is ended or cancelled first (feature 018); then as the end | the existing reset barrier with a pending signal |
 | a crash after the commit of a buffering, before the answer | the retry with the same key answers the first answer | the answer dropped by the harness |
@@ -689,8 +694,7 @@ it answers (principle VII).
   the name", and `crates/api-http/src/error.rs`'s sentences follow.
 
 The Studio (`frontend/apps/studio`): the version's inspector edits `signals` with the server's validation and shows, per name, the
-bound of Requirement 054-007 and a warning when the declarations take more than half of the 4 MiB ("Pending signals may leave less
-room for step outputs"); a run's page shows the pending signals from the list (no payload) and the discarded counts from the
+bound of Requirement 054-007 and the share of the 2 MiB the declarations use; a run's page shows the pending signals from the list (no payload) and the discarded counts from the
 journal, with the projection's lag (principle VI).
 
 The six SDKs (TypeScript, Go, Python, C#, Java, Rust), one meaning each (principle IV): the client's `signal` returns `buffered` and
@@ -715,7 +719,7 @@ refusals in six languages. The worker protocol does not change.
 - A version of level 0 runs exactly as today at every step of a rolling upgrade; a run in flight never changes level, since its
   version is immutable (principle IV).
 - The operator records `signal-inbox-v1` once every control plane and engine offers it (`platform_requirement_activate`,
-  Architecture decision 0082); until then publication of a version of level 1 answers `422 SIGNAL_INBOX_NOT_ACTIVE`. Once recorded,
+  Architecture decision 0082); until then publication of a version of level 1 answers `422 CAPABILITY_NOT_ACTIVE` with `capability: signal-inbox-v1`. Once recorded,
   a binary without the capability serves nothing (the closed gate). Both kinds need it: a control plane admits and buffers signals
   and publishes versions; an engine enters waits, ends runs and hands off continuations.
 - **The publication hold** is the function shared with designs 044 and 045, `platform_requirement_hold(capability text) RETURNS
@@ -727,7 +731,7 @@ refusals in six languages. The worker protocol does not change.
   adds only its capability to the closed lists and its predicate to the floor. A later migration that finds the function still
   compares its security, configuration, owner and whitespace-normalized body with that text and fails on any difference, as a guard
   against drift, not as the way it is shared (Gap 054-007). The store calls it inside the
-  publication's transaction under a `lock_timeout`; `false` is `SIGNAL_INBOX_NOT_ACTIVE`, a lock timeout `UNAVAILABLE` with the
+  publication's transaction under a `lock_timeout`; `false` is `CAPABILITY_NOT_ACTIVE` with the capability named, a lock timeout `UNAVAILABLE` with the
   reason `REQUIREMENT_BUSY`.
 - **The floor for a rollback.** A rule in the replay-floor trigger on `platform_requirements` (Architecture decision 0098's build,
   its scaffold in the prerequisite of Task 054-18, shared with designs 044 and 045) refuses removing `signal-inbox-v1` while a workflow version of level
@@ -757,7 +761,7 @@ refusals in six languages. The worker protocol does not change.
 | Risk | Mitigation |
 |---|---|
 | A graph queue handled one signal per segment (CUJ 2) moves every pending signal at every handoff, up to 1,000 rows and events each, and a chain has at most `max_segments` segments | Stated in Technical Plan 7 and the guide; the guide points a high-volume queue to a code version (design 044), which consumes from its channel in one run; the budget suite measures a handoff with 1,000 pending (Task 054-16) |
-| A sender fills a run's inbox and the run's step outputs then lack room | The author's declarations bound the pending bytes (Requirement 054-001), and the Studio warns above half of 4 MiB; a full inbox refuses the sender, never the run |
+| A sender fills a run's inbox and the run's step outputs then lack room | The declarations' bytes are capped at 2 MiB at publication (Requirement 054-001), so outputs always keep the other 2 MiB: a full inbox refuses the sender; a step fails `RUN_DATA_LIMIT` only when its own outputs pass what they always had |
 | A Temporal user expects every signal to be kept | The `409` names the reason; the guide's comparison table says how to declare a name; Signal-with-Start's refusal names the missing declaration |
 | A buffered signal is discarded when its run ends | Journaled with its count and shown on the run's page; the `202` says "kept for a later wait while the run lives", and the guide says so |
 | A store-side path enters a wait without the planner and misses a pending signal | The test of Task 054-3 over the three store-side release paths, and the statement in Technical Plan 4 |
@@ -858,20 +862,21 @@ caller of a signature it changes, so the workspace builds after each.
 - [ ] T054-2 Domain declarations: `SignalDeclarations` with `max_pending` and `max_bytes`, the validation of Requirement 054-001
   (duplicates, the two sums, a consumer among the root `waitEvent` nodes of a graph definition), the level. Unit tests first, one
   per refusal and per boundary value (32 and 33 entries; 128 and 129 bytes, with a multibyte name; `maxPending` 1,000 and 1,001;
-  `maxBytes` 262,144 and 262,145; sums of 1,000 and 1,001; byte sums of 4,194,304 and 4,194,305; a name used only by a body wait; an entry wait of a declared name
+  `maxBytes` 262,144 and 262,145; sums of 1,000 and 1,001; byte sums of 2,097,152 and 2,097,153; a name used only by a body wait; an entry wait of a declared name
   with and without a `continueAsNew` node).
   Refs: Requirement 054-001, Requirement 054-002
 - [ ] T054-3 Domain events and planning: `SignalBuffered`, `SignalsMoved`, `SignalsDiscarded`, `WaitVia::Buffered` and the
   `signal` field of `WaitSatisfied`; `RunState.pending_signals` and `restore`; `buffer_signal`; the choice of the first waiter
   (Requirement 054-004); `take_buffered` on `Evaluation::Correlation` and `taken` on `Resolution::Correlation`; the discard before `run.finished` for every
-  way the planner ends a run; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the test that the store-side
+  way the planner ends a run; the check of the invariant of Terms in the replay corpus; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the test that the store-side
   release paths never enter a `waitEvent` of a declared name without the planner. Unit tests first; replay equals projection over a corpus that buffers,
   consumes, moves and discards; journals written before this design decode as before.
   Refs: Requirement 054-004, Requirement 054-006, Requirement 054-011, Requirement 054-020
   Owner-gate: OD-2026-11-26-540
 - [ ] T054-18 The shared prerequisite (Gap 054-007; listed here, in the order of its slice 2a, though numbered last), its own
   migration and pull request, built only if neither design 044 nor design 045 has
-  landed it: `platform_requirement_hold` with the exact body of Decision 044-206, its `REVOKE` and grant, and the scaffold of the
+  landed it: `platform_requirement_hold` with the exact body of Decision 044-206, its `REVOKE` and grant, the one refusal reason
+  `CAPABILITY_NOT_ACTIVE` naming the capability, and the scaffold of the
   replay-floor trigger on `platform_requirements` (with its `READ COMMITTED` check) that each design extends with one predicate.
   `integration_platform_foundation` tests first: the function's privileges and configuration, a hold against a concurrent removal,
   the trigger's refusal through a test capability.
@@ -939,7 +944,8 @@ caller of a signature it changes, so the workspace builds after each.
   counts; component tests first, then the journeys.
   Refs: Requirement 054-001, Requirement 054-007, Requirement 054-016
 - [ ] T054-15 Documents for people: a guide page on signals (declared and undeclared names, one consumer, the bound, the look-back
-  precedence, the comparison with Temporal, at least once); the runbook `docs/runbooks/buffered-signals.md` (the requirement and its
+  precedence, the comparison with Temporal, at least once, why a queue segment that continues as new starts with an activity, and a
+  high-volume queue in a code version); the runbook `docs/runbooks/buffered-signals.md` (the requirement and its
   floor, the metrics, a full inbox); `docs/sdk-compatibility.md`; the release notes; `contract_developer_experience` regenerated only
   after reading its diff.
   Refs: Requirement 054-007, Requirement 054-019

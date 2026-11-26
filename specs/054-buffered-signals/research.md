@@ -52,7 +52,9 @@ approved.
   every later wait. Chosen (b), delegate (Owner decision 2026-11-24-4): under (a) the number of waits a signal satisfies depends on
   whether it arrived before or after them, which no author can reason about; (c) makes a queue impossible and a pending signal
   unbounded in effect. (b) is a queue, as a Temporal channel is; an author who wants a copy each leaves the name undeclared. The
-  first waiter is the one with the earliest entry time, a tie going to the lower node id. *Revised 2026-11-26 after the stage 5
+  first waiter is the one with the earliest entry time, a tie going to the lower node id. *Revised again 2026-11-26 after the stage 8
+  zoom-out (its Nit 4):* the waiting step with the lowest node id, the order in which the planner enters waits, so one rule decides
+  live delivery and consumption and no entry time is derived. *Revised 2026-11-26 after the stage 5
   zoom-out (its Nit 6):* the entry time is derived by the domain from the wait's deadline less its node's `timeoutMs` (both already
   in its state and definition), not from feature 004's `event_since`. A root graph is acyclic, so two waits of one name wait at
   once only in parallel branches.
@@ -68,6 +70,10 @@ approved.
   Chosen (b), delegate (Owner decision 2026-11-24-4): an author can state the bound (with `maxBytes` of 256 KiB, at most 16 pending
   signals in all, 4,096 KiB divided by 256 KiB), the declarations bound what a sender can pin in a run, and only step outputs that
   already used the room make a signal within the bounds refused. `maxBytes` defaults to 64 KiB, as design 044's signals do.
+  *Revised 2026-11-26 after the stage 8 zoom-out (its Majors 1 and 2):* the byte sum is capped at 2 MiB, half of a run's retained
+  bytes, not 4 MiB: with 4 MiB, senders acting within the declared bounds could take the room of the run's step outputs and make a
+  later step fail `RUN_DATA_LIMIT`; with 2 MiB the outputs always keep the other half, and the declarations also fit under design
+  044's headroom of 3 MiB. With `maxBytes` of 256 KiB a version declares at most 8 pending signals in all.
 - **Decision 054-006 — Continue-as-new moves what the successor declares** (Owner question 054-006; carries Decision 045-007).
   Options: (a) discard; (b) refuse the continuation while any is pending; (c) move the names the successor's version declares,
   discard the rest, journaled. Chosen (c), delegate (Owner decision 2026-11-24-4): (a) loses business messages, (b) lets a sender
@@ -118,6 +124,11 @@ approved.
   handoffs accept a run version advanced only by `signal.buffered` events, so a steady flow of signals cannot starve a
   continuation. Delegate (Owner decision 2026-11-24-4).
 
+- **Decision 054-014 — One refusal reason for a fleet requirement not recorded** (stage 8 zoom-out, its Nit 5). Designs 044, 045
+  and 054 named three reasons for one refusal (`CAPABILITY_NOT_ACTIVE`, `ACTIVITY_TIMEOUTS_NOT_ACTIVE`, `SIGNAL_INBOX_NOT_ACTIVE`).
+  This design uses design 044's `CAPABILITY_NOT_ACTIVE` with the capability in the problem's detail, given by the shared hold of
+  Task 054-18, so six SDKs map one code. Delegate (Owner decision 2026-11-24-4).
+
 ## Gaps
 
 - **Gap 054-001** Payloads are never deleted today (`payloads` has no collector); a discarded or consumed signal's payload stays as
@@ -138,6 +149,16 @@ approved.
 - **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
   them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
   dependency in their next revisions (stage 5 zoom-out, its Major 4).
+
+- **Gap 054-008** Design 044 refuses a code run's signals from 3 MiB of retained bytes, at a visible count of 50,176 and while a
+  closing window is open (`HISTORY_HEADROOM`, `RUN_CLOSING`); Requirement 054-007's bound is stated for graph runs, and the 2 MiB
+  cap fits under 044's headroom. Design 044 is to apply the 2 MiB publication cap to its signals' declarations and state its
+  headroom in its guide.
+- **Gap 054-009** `SIGNAL_ENTRY_WAIT_CONTINUES` exists because the scheduler's handoff (`continue_evaluated`) opens a successor's
+  entry `waitEvent` without the planner. The fix belongs in the handoff: leave a declared name's entry wait to the planner. Until a
+  later design does it, a segment that continues as new starts with an activity, and the guide says why.
+- **Gap 054-010** Design 045 names its refusal `ACTIVITY_TIMEOUTS_NOT_ACTIVE`; Decision 054-014 asks it to use
+  `CAPABILITY_NOT_ACTIVE` with the capability named, given by the shared hold of Task 054-18.
 
 ## Owner questions
 
