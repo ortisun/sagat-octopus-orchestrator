@@ -1537,7 +1537,8 @@ written plus one, never reused, the highest also kept in the document), material
   only a `RingChange` or a `RingError`. `IdentityKeyRing`, `RingChange` and `RingError` have hand-written `Debug`
   showing only key ids, states, versions and rules, as `KeyRing`'s does, and the adapters' `Debug` show only the ring's
   (`an_identity_key_ring_never_prints_key_material` formats with `{:?}` the ring, both adapters, a `RingKey`, a
-  `RingDocument`, a `Tag`, a `RefreshMac`, and the
+  `RingDocument`, a `Tag` and a `RefreshMac` (built from distinctive bytes, whose `{:?}` and `{:#?}` output must be
+  exactly `[REDACTED]`, not merely free of one encoding), and the
   errors, audit rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of
   31 bytes, and of a cancelled rotation and a `revoke` that loses five check-and-sets).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
