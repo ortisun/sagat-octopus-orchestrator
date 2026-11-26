@@ -1,7 +1,7 @@
 # ADR-0141: SAML responses are verified by the platform's own strict-profile verifier, in memory-safe code, with xmlsec as the test oracle
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 013, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 013 is complete
+**Status:** Accepted (2026-11-26, OD-2026-11-26-908)
+**Decided by:** agent proposal (design 013, 2026-11-24), accepted with design 013's approval under Owner decision 2026-11-24-4 (OD-2026-11-26-908)
 **Refines / supersedes:** none. Follows the pattern of Architecture decision 0090 and design 043 (the platform's own bounded validator for a documented subset, with an established library as the oracle in tests)
 **Enforced by:** planned in design 013 and not existing yet: the corpus `tests/security/federated-login/saml/ (target `security_federated_login`)` (signature wrapping in each known placement, a second assertion, a comment inside the name identifier, a DTD and an entity, an unsigned assertion in a signed response, SHA-1, a reference to another element, an expired or not-yet-valid assertion, a wrong audience, recipient or destination, a replayed assertion identifier, an unsolicited response) with each case refused by its named reason; the oracle test that, for every accepted fixture and for generated documents in the profile, `xmlsec1 --verify` agrees with the platform's verifier on the signature verdict; the architecture rule that no crate of the server depends on a C XML library
 

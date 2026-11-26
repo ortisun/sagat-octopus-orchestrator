@@ -1,8 +1,14 @@
 # Federated login: each organization signs in through its own OIDC or SAML provider
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
-*   **Date:** 2026-11-24
+*   **Status:** Approved
+*   **Date:** 2026-11-26
+*   **Reviewed-commit:** e0da753e272e0174382c72882cfdfeb9d97e9ccf
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/013-federated-login.reviews/2026-11-26/approval/reread-5-egm-review.md sha256:57668ce2140f67b9b2f7e630fa2fbdf54ff2811b2eed5de475067fccc7c43c3f; docs/designs/013-federated-login.reviews/2026-11-26/approval/reread-10-architecture.md sha256:d7543a796b704684cc745825549a03f84fd450851d137b99033e9109f2eba6ec; docs/designs/013-federated-login.reviews/2026-11-26/approval/reread-47-security.md sha256:6a062741a7c632c43a92d39f3433c03622fc84f0b0e7ec5c6f3aec2db3d5a5e3; docs/designs/013-federated-login.reviews/2026-11-26/approval/reread-5-correctness.md sha256:2c93da10d2ddc93ce6497cf31413732681a79f28439fa89847fa044239deeffe
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 3; OD-2026-11-26-904, OD-2026-11-26-905, OD-2026-11-26-906
 
 --------------------------------------------------------------------------------
 
@@ -2164,7 +2170,44 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T013-21 Server builder, with Task 013-8 (OD-2026-11-26-904, OD-2026-11-26-905): the revocation's commit point is
+  a field of the stored ring document, carried forward unchanged by every command operation; a read-only command
+  operation `revocation_point(&IdentityOpenBao) -> Result<Option<KeyId>, RingError>`, through `read_versioned` and
+  allowlisted, gives `revoke --resume` the point; Task 013-8's commands include `--resume`.
+  Red test: `a_revoke_resumes_after_an_intervening_rotation`.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login keys`; `python3 scripts/check-architecture.py`.
+  Refs: Requirement 013-025, Requirement 013-026
+- [ ] T013-22 Server builder, with Task 013-8 (OD-2026-11-26-904, OD-2026-11-26-906): `RingPath` and `RingDocument`
+  are defined privately in `identity_ring`; its child `transport` holds `read_versioned` and `write_cas` over them, so
+  no accessor beyond the allowlist is needed; Task 013-8 also adds the `revoke` batch's path to
+  `tests/support/lock_order.rs`.
+  Verification: `python3 scripts/check-architecture.py`; `cargo test -p sagat-tests --test integration_federated_login keys`.
+  Refs: Requirement 013-025
+- [ ] T013-23 Server builder, Tasks 013-8 and 013-9 (OD-2026-11-26-904, OD-2026-11-26-906): Task 013-8 runs
+  `an_empty_cli_refresh_ring_refuses_only_cli_refresh`, `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`
+  and `a_session_signed_in_after_a_revoke_keeps_refreshing` at the ring level, with sessions the tests insert and the
+  ring's `mint` and `verify` across `rotate` and `revoke`; Task 013-9 adds their route-level versions over redemption
+  and the refresh grant.
+  Verification: the verifications of Tasks 013-8 and 013-9.
+  Refs: Requirement 013-026
+- [ ] T013-24 Server builder, Tasks 013-8 to 013-20 (OD-2026-11-26-904, OD-2026-11-26-905): every filter a
+  Verification line uses is the name of a module in every target it is applied to (`keys.rs`, `signin.rs`,
+  `verify.rs`, `scim.rs`, `admin.rs`, `maintenance.rs`, `groups.rs`, `saml.rs`, `context.rs`, `migration.rs`, with
+  `signin` also in the contract and fault targets), and each verification reports a non-zero count of tests run.
+  Verification: each task's verification shows its count.
+  Refs: Requirement 013-029
+- [ ] T013-25 Server builder, with Tasks 013-11 and 013-13 (OD-2026-11-26-905, OD-2026-11-26-906): a suspension and a
+  member removal revoke a subject's sessions through a subquery `ORDER BY tenant_id, id FOR UPDATE`, the order of
+  `revoke`'s and the maintenance batches; a context floor is cleared in its own transaction after the last marking
+  batch commits, taking the settings row and then the connection row `FOR UPDATE`, as a raise does; both paths in
+  `tests/support/lock_order.rs`.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login maintenance`; the lock-order test.
+  Refs: Requirement 013-016, Requirement 013-019
+- [ ] T013-26 Server builder, with Task 013-10 (OD-2026-11-26-906): the architecture rule that `VerifiedClaims` is
+  consumed only by `authenticate_bearer` and that `IdentityService::authenticate` is the only caller of
+  `Membership::principal` outside the domain, with its negative fixture in `scripts/tests/`.
+  Verification: `python3 -m unittest scripts.tests.test_check_architecture`; `python3 scripts/check-architecture.py`.
+  Refs: Requirement 013-002, Requirement 013-019
 
 ### Verification Plan
 

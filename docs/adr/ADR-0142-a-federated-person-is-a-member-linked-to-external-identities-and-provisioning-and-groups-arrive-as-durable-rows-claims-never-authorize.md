@@ -1,7 +1,7 @@
 # ADR-0142: A federated person is a member linked to external identities; provisioning and groups arrive as durable rows, and a claim never authorizes by itself
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 013, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 013 is complete
+**Status:** Accepted (2026-11-26, OD-2026-11-26-909)
+**Decided by:** agent proposal (design 013, 2026-11-24), accepted with design 013's approval under Owner decision 2026-11-24-4 (OD-2026-11-26-909)
 **Refines / supersedes:** refines Architecture decision 0064 (feature 029: identity-provider groups join the evaluator through the group-source contract, amended by design 013; SCIM is the source in 0.3.0) and the feature 009 membership model (one built-in role per membership); supersedes none
 **Enforced by:** planned in design 013 and not existing yet: `tests/integration/federated-login/identities.rs` (two connections asserting the same e-mail address create two members unless the person links them in their own sign-in; a connection cannot assert a subject that another connection or the deployment issuer owns); `tests/integration/federated-login/groups.rs` (a group claim confers nothing; a SCIM group confers nothing until an assignment names it; a SCIM group change applies on the next request); the property test of the role mapping (order of groups and rules does not change the result; the highest role wins; a pinned role is never changed)
 
