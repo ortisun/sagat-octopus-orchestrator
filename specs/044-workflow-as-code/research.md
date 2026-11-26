@@ -852,6 +852,13 @@ finding was answered.
   validation in a later migration, `platform_requirement_activate_v2`) binds Task 044-6 and `code-workflows-v1` as well;
   its owner is told.
 
+- **G044-021, G044-024, G044-025** (2026-11-26, later state) Answered by constitution 5.1.0, which the owner approved
+  (OD-2026-11-25-3) to word the pin, the deferred terminal command and the move clause as this design needs; they close
+  when 5.1.0 merges, and nothing waits on them.
+- **G044-017** (2026-11-26, later state) The buffered-signals design 054 takes Architecture decision 0111's inbox and its
+  refinement for code versions; Task 044-21 waits for it.
+- **G044-020, G044-026** (2026-11-26, later state) Handed to design 045's owner by the coordinating session.
+
 ## 4. Owner questions (all delegated)
 
 - **O044-001** (2026-11-24) Should code under a running run ever change? delegate (OD-2026-11-20-6): yes, only by an

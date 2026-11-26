@@ -1753,8 +1753,8 @@ on a running run only through a verified move (section 7.3), which proves per ru
 
 Constitution 5.0.0 (principle IV) states this rule: a procedural run pins one version at any moment, and its pin changes
 only by a verified move, an explicit request per run by a person allowed to operate it, journaled and audited, and no
-policy moves runs by itself. The start version is the run's identity origin, not a second pin (Gap 044-021 tracks that
-the 5.0.0 text says so).
+policy moves runs by itself. The start version is the run's identity origin, not a second pin; constitution 5.1.0
+(owner decision 2026-11-25-3) states it, answering Gap 044-021.
 
 #### 7.4 Replay in continuous integration
 
@@ -2328,8 +2328,9 @@ behaviours, `patched()` and `GetVersion`, and the SDK replayers for continuous i
 
 ## Constitution Check
 
-The rows below are checked against version 5.0.0 as owner decision 2026-11-24-2 states it and as its draft (branch
-`docs/constitution-5.0.0`) writes principle IV: a workflow is written in a graph model or a procedural model that share
+The rows below are checked against version 5.0.0, merged on `develop` (owner decision 2026-11-24-2), and against
+5.1.0, which the owner approved (owner decision 2026-11-25-3) to word the three clauses of Gaps 044-021, 044-024 and
+044-025 as this design needs; 5.0.0 writes principle IV: a workflow is written in a graph model or a procedural model that share
 one engine, one journal and one semantic contract; the procedural version names a function by the digest of its code and
 declares its envelope, an entry that releases a secret naming its activities exactly; commands are checked against the
 envelope and committed under principle I; a divergent replay stops with a typed, audited non-determinism error; a run's
@@ -2341,12 +2342,13 @@ decision 2026-11-24-2, so no code starts before 5.0.0 merges.
 | Principle | Result | Evidence |
 |---|---|---|
 | I. State and retry semantics are explicit and durable | Pass with conditions | A completion commits the journal, the steps, timers, waits, overlay, projections, the outbox and the state of the workflow-task step in one transaction with the run row locked and the lease fenced (Technical Plan 5.2); every waking event wakes the function in its own transaction through one typed append (4.3, 5.3); a stale workflow task or one of another digest is refused; when a timer and a signal race, both are journaled, the function sees the first committed first, and a later command on the loser is an audited no-op with its own record; a terminal run never reopens (a run under review is not terminal); condition: a deferred terminal command is not
-applied while the rest of its completion commits, which the 5.0.0 draft's "a completion that ends the run is refused"
-and "commits all or nothing" must be worded to admit (Gap 044-024) |
+applied while the rest of its completion commits, which 5.0.0's "a completion that ends the run is refused" and
+"commits all or nothing" do not yet admit; constitution 5.1.0 (owner decision 2026-11-25-3) words them so (Gap
+044-024) |
 | II. Modular domain, ports and adapters | Pass | The workflow task lifecycle, the code definition, the visible and waking predicates, the chain rule over opaque digests, the code profiles and the envelope checks are domain rules; the fragment parse and the canonical form are behind the application's codec port, implemented in `infra-ir`; the hashing behind `CommandDigester`, a trait of the domain implemented in `infra-ir`; the history projection in the
 application, encoded by `api-grpc` and `api-http`; the storage and the batched path in `infra-postgres`; no new dependency of the domain |
 | III. External effects are at-least-once; sagas compensate | Pass | Every effect from code is a leased activity with the platform's step key and the uncertain-effect rules of feature 037; risk metadata and approval rules belong to the published envelope; no local activities; a workflow task has no effect; an output that cannot be retained is an unknown outcome, never a failure; a terminal command goes through the stop drain; code sagas keep dependency order and independent compensations eligible |
-| IV. Compatibility is versioned and pinned | Pass with conditions | A code version is immutable; a code run is pinned to one version at any moment and its start version is its identity origin (Complexity Tracking; Gap 044-021); a pin changes only by a verified move requested by a person, journaled and audited, and no policy moves runs; the IR change is additive behind the operator's registry requirement; the protocol change is an additive minor; the history export format is versioned with a baseline; an SDK declares whether it offers the model; conditions: Gaps 044-021, 044-024 and 044-025 |
+| IV. Compatibility is versioned and pinned | Pass with conditions | A code version is immutable; a code run is pinned to one version at any moment and its start version is its identity origin (Complexity Tracking; Gap 044-021); a pin changes only by a verified move requested by a person, journaled and audited, and no policy moves runs; the IR change is additive behind the operator's registry requirement; the protocol change is an additive minor; the history export format is versioned with a baseline; an SDK declares whether it offers the model; conditions: Gaps 044-021, 044-024 and 044-025, answered by constitution 5.1.0 (owner decision 2026-11-25-3) |
 | V. Code, tenant boundary and secrets are isolated | Pass | No workflow code runs in a platform process; a workflow task carries no secret; secrets, schemas, risk metadata and approval rules are declared per exact activity entry of the immutable version and read from the overlay; publisher-only fields are refused in fragments; business literals are classified payloads; the disclosure of a workflow lease is stated and audited; tenant scope and audit of refused attempts on every new table, route, task and RPC; bounds on every new load path |
 | VI. Observability and audit are part of the feature | Pass | Closed-label metrics, spans, audit of publication, review, retry, move, history export, worker query, no-op commands, lease history reads, pause; the run graph is drawn from the journal, the steps and the overlay |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | Signals keep their idempotency key and use the inbox of Architecture decision 0111; outbox hints for workflow tasks, queries and checks through the existing hint path; the reconciler finds lost hints and pending runs from the journal |
@@ -2484,9 +2486,8 @@ a replaying worker derives from `ReadHistory`.
   `docs/runbooks/instance-registry.md` (recording `code-workflows-v1`), and the quickstarts `docs/quickstarts/` (a
   workflow-as-code section in each of the five existing language pages and a new `rust.md`), with the recommended
   topology for compiled languages.
-  The task also waits for the 5.0.0 text to answer Gaps 044-024 and 044-025, not only for its merge; if the owner keeps
-  the wording of Gap 044-025, a move applies only while no waking event follows the verified `S(k)`, and the item is
-  otherwise deferred `RUN_BUSY`.
+  The task cites constitution 5.1.0 (owner decision 2026-11-25-3), which answers Gaps 044-021, 044-024 and 044-025;
+  it does not wait for it beyond its merge.
   Files: modify the pages named; create `docs/quickstarts/rust.md`.
   Verification: `python3 scripts/check-docs-index.py`, `python3 scripts/check-plain-words.py --base origin/develop`; a
   reviewer reads each page against this design.
@@ -2939,8 +2940,8 @@ a replaying worker derives from `ReadHistory`.
   types".
   Refs: Requirement 044-011, Requirement 044-024
   Owner-gate: OD-2026-11-24-1
-- [ ] T044-21 Signals, updates and declared queries for code runs on the server, after the buffered-signals design of
-  Architecture decision 0111 is approved, that decision accepted with its refinement for code versions (Gap 044-017), and
+- [ ] T044-21 Signals, updates and declared queries for code runs on the server, after the buffered-signals design 054
+  (which takes Architecture decision 0111's inbox and its refinement for code versions, Gap 044-017) is approved and
   its inbox task built: signals through the inbox and their consumption, the hold of `signal-inbox-v1` at publication
   in place of Task 044-3's refusal, the with-start calls, the update transitions, the engine's finishing of open updates
   in the stop drain and the handoff, the wait and the read rule, argument and result validation, the declared state
@@ -3172,10 +3173,10 @@ None yet.
 **Build order.** Task 044-1 first, after the merge of constitution 5.0.0, then Task 044-2 and Task 044-30. Then two lanes
 that share no file: the server lane (Tasks 044-4 and 044-5 together, Task 044-6 after Gap 044-026 is answered, Task 044-3, Task 044-31, Task 044-7,
 Task 044-8 with the scripted decider and after design 045's `steps.min_protocol_minor`, Task 044-33's enumerations as
-each task first emits them, Task 044-9, Task 044-22, Task 044-21 (after the buffered-signals design of Architecture
-decision 0111 is approved and its inbox built), then Tasks 044-11, 044-12, 044-13, 044-24, 044-23) and the TypeScript
+each task first emits them, Task 044-9, Task 044-22, Task 044-21 (after the buffered-signals design 054 is approved
+and its inbox built), then Tasks 044-11, 044-12, 044-13, 044-24, 044-23) and the TypeScript
 lane (Task 044-10 against the fake server of Task 044-30). Tasks 044-11, 044-12, 044-13, 044-24 and 044-23 may start
-before Task 044-21, which waits for an external approval (Gap 044-017). A red test whose prerequisite is a later task (a
+before Task 044-21, which waits for design 054 (Gap 044-017). A red test whose prerequisite is a later task (a
 signal in Task 044-9's waking test, an update in Task 044-12's closing-window test when Task 044-21 has not landed) is
 written red in its task and turns green when the
 prerequisite lands, and the task is ticked only then.
