@@ -122,7 +122,8 @@ it for regulated work.
   configured in `migrating` mode (seal with Transit, open with either), run the re-seal pass until it reports zero rows
   under a local key, then remove the local keys. The pass MUST be resumable, bounded per batch and audited.
 - **Requirement 015-016** Each custody MUST have its own mount, its own token and its own policy: `sagat-transit` (the
-  three Transit keys; the control plane may `datakey`, `decrypt` within its tenant contexts, `sign`, `hmac`; the
+  three Transit keys; the control plane may `datakey`, `decrypt` and `rewrap` on `sagat-secrets`, `sign` and `hmac` (an OpenBao policy
+  cannot narrow a derivation context, so the tenant context is the code's, and a wrong one only fails to open); the
   engine may `decrypt` only; the sandbox runner may read public keys only), `secret/sagat/credentials` (feature 017,
   unchanged), and the OAuth mount of design 047. No platform policy MAY grant any path of a mount that holds feature
   031's client keys, and the bootstrap scripts MUST refuse to install a policy that does.
