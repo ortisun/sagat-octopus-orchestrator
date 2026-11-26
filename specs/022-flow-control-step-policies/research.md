@@ -2365,6 +2365,23 @@ taken after `git grep D022-04` on every `origin/*` branch.
   names in the witness; every reader hashes the row projected onto them and fails, naming the column, when a released
   column is gone or an added column holds a value. The in-flight scenarios use the same prefix and follow the same
   rule. Contract: `specs/014-workflow-primitives/release-upgrade-profile.md`. No product behaviour changes.
+- **D022-141 — The released upgrade profiles retire the stopped owner by sessions and `epoch`, not by the clock
+  (2026-11-26).** The fixture is feature 014's (the released-source profiles); the defect is on `develop` too and is
+  recorded here because branch 022 found it. Scenario `applied-lookup` failed once in four runs at
+  `release_upgrade_inflight.rs:256`: after one Keeper round by the new owner the run's shard still named the stopped
+  owner. The profiles retired that owner by writing `clock_timestamp() - 1 µs` as its lease expiry. PostgreSQL leaves
+  two ways for a single round to miss an expired shard: the row is locked at the round's `FOR UPDATE SKIP LOCKED` (by a
+  session still using the old owner's fence, since the expiry `UPDATE` waits out earlier fences), or the database clock
+  steps back by more than the time from the expiry write to the round, so the lease reads live and is not planned. Both
+  were reproduced on purpose and fail exactly as the original (an old-owner `FOR SHARE` held after the expiry, 2 of 2;
+  a one-second backward step, written as the expiry moved one second later, 2 of 2). The natural failure was not caught
+  again in 19 instrumented runs; no session of the released process was ever seen after its exit, and the Docker VM's
+  journal shows repeated `Time jumped backwards`. Options: another round or a wait (forbidden, and not deterministic);
+  a larger margin (still a bet on the size of a step); retire by events. Chosen: the last. A shared helper terminates
+  every session of the released process (named by `PGAPPNAME`, and by the release's fixed service-pool name) with
+  `pg_terminate_backend(pid, timeout)`, which returns when the backend is gone, asserts none is left, then moves the
+  member and shard leases to `epoch`, the schema's value for a shard never held. Used by `active-data`, the three
+  in-flight scenarios and `scoped-event-cutover`. Contract: `specs/014-workflow-primitives/release-upgrade-profile.md`.
 
 ## Gaps
 

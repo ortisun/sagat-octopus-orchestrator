@@ -19,9 +19,17 @@ column names of the completed `reserve` row; no payload bytes, tokens, session c
 credentials.
 
 After successful old-process exit, attach the same exact database, assert the old migration
-boundary and apply the normal current MIGRATOR. Model expiration of the stopped scheduler's
-member/shard leases explicitly on the database clock, then acquire a new owner through Keeper.
-This expiry injection is not elapsed-wall-time or a live mixed-owner race proof. Start current
+boundary and apply the normal current MIGRATOR. Retire the stopped scheduler's authority
+explicitly, then acquire a new owner through Keeper. Retiring is two steps. First terminate every
+database session the released process left and wait until each backend is gone: its sessions are
+named (`PGAPPNAME=sagat-released-phase` for its plain pools, the release's own
+`sagat-octopus-orchestrator` for its service pools), and a session that outlived the process
+could hold or take the old owner's `FOR SHARE` fence on a shard row, which the Keeper's
+`FOR UPDATE SKIP LOCKED` skips. Then move the member and shard leases to `epoch`, the value of a
+shard never held: an expiry just before the database clock's present is live again after any
+backward step of that clock larger than the time to the Keeper's read, and the Keeper then
+neither plans nor takes the shard (decision D022-141 of feature 022). This retirement is not
+elapsed-wall-time or a live mixed-owner race proof. Start current
 runtime-role API/worker services against that database, complete the old READY activity through
 gRPC, publish the matching legacy root event through REST and dispatch it. Both old runs must
 finish and replay, with old captured/definition/journal/completed-prefix evidence unchanged.

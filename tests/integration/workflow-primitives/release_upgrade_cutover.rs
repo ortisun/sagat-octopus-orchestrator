@@ -69,6 +69,7 @@ async fn released_dispatcher_credentials_and_process_are_fenced_before_public_sc
         command.arg("release_upgrade_phase::cutover::dispatch_root_event_then_wait_for_cold_cutover")
             .args(["--exact","--nocapture"]).env("SAGAT_TEST_DATABASE_URL",&owner.admin_url)
             .env("RUST_TEST_THREADS","1").stdin(Stdio::from(OwnedFd::from(old))).kill_on_drop(true);
+        super::release_upgrade::label_released(&mut command);
         let mut old_process=command.spawn().expect("actual released dispatcher process");
         progress.enter("actual released root delivery and old login barrier");
         let witness=bounded::within("released dispatcher ready",Duration::from_secs(90),control::receive(&mut stream)).await;
@@ -114,14 +115,9 @@ async fn released_dispatcher_credentials_and_process_are_fenced_before_public_sc
             .send().await.expect("new public run");
         assert_eq!(response.status(),reqwest::StatusCode::ACCEPTED);
         let run:RunId=json_of(response).await["runId"].as_str().expect("new run").parse().expect("run UUID");
-        // The old owner is stopped; explicit expiry permits the current Keeper takeover.
-        for table in ["scheduler_members","scheduler_shards"] {
-            let statement=match table {
-                "scheduler_members"=>"UPDATE scheduler_members SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE owner=$1",
-                _=>"UPDATE scheduler_shards SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE owner=$1",
-            };
-            assert!(sqlx::query(statement).bind(witness["owner"].as_str().expect("stopped owner")).execute(&api.db.pool).await.expect("expire stopped old authority").rows_affected()>0);
-        }
+        // The old owner is stopped; its explicit retirement permits the current Keeper takeover.
+        let (members,shards)=super::release_upgrade::retire_released_owner(&api.db.pool,witness["owner"].as_str().expect("stopped owner")).await;
+        assert!(members>0 && shards>0);
         let placement=Placement::new("released-event-cutover-current");
         Keeper::new(api.executions.clone(),placement.clone(),KeeperSettings {ttl:Duration::from_secs(120)})
             .round().await.expect("current scheduler takeover");
