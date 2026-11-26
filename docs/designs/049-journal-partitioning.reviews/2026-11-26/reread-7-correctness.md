@@ -1,11 +1,10 @@
-# Approval confirmation of design 049: correctness (2026-11-26)
+# Targeted re-read 7 of design 049: correctness (2026-11-26)
 
 Doc: docs/designs/049-journal-partitioning.md
 Reviewed-commit: 3c82957ecde6e5dd24a4138fca874b3cf9e29df8
 Reviewer: correctness
 Agent-blob: d1de651dc4a3676084974c440b0684eed2cd4888
-Note: condensed by the author from the reviewer's output; every finding and severity is kept. The last of the targeted
-re-reads of the approval run under Owner decision 2026-11-25-2: one full round (`correctness-full.md`, at 66634fb9, 2
+Note: condensed by the author from the reviewer's output; every finding and severity is kept. A targeted re-read of the approval run under Owner decision 2026-11-25-2: one full round (`correctness-full.md`, at 66634fb9, 2
 Blockers and 9 Majors), then the fixes re-read in `reread-1-correctness.md` to `reread-6-correctness.md`, each Major
 fixed before the next. Not a full review. The reviewer read files only and ran nothing.
 
@@ -29,6 +28,5 @@ No Blocker, no Major.
 
 Counts: Blocker 0, Major 0, Nit 3
 
-Settled: the three are recorded as design 049's follow-up Task 049-19, added after the approval as the approval rule
-allows (a ticked or follow-up task may change an approved design's body), so that they are fixed in the build, test
-first; the egm-review summary of this approval lists them.
+All three were fixed at `75f01e1f`: row II's wording; `proconfig` in Requirement 049-013 and Task 049-7; the separate
+statement and `VOLATILE` in Requirement 049-001.

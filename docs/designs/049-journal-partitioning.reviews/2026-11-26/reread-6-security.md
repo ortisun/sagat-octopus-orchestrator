@@ -1,11 +1,10 @@
-# Approval confirmation of design 049: security (2026-11-26)
+# Targeted re-read 6 of design 049: security (2026-11-26)
 
 Doc: docs/designs/049-journal-partitioning.md
 Reviewed-commit: 3c82957ecde6e5dd24a4138fca874b3cf9e29df8
 Reviewer: security
 Agent-blob: c02123dd239a7128f22e02c9dc39de8f110cc811
-Note: condensed by the author from the reviewer's output; every finding and severity is kept. The last of the targeted
-re-reads of the approval run under Owner decision 2026-11-25-2: one full round (`security-full.md`, at 66634fb9, 6
+Note: condensed by the author from the reviewer's output; every finding and severity is kept. A targeted re-read of the approval run under Owner decision 2026-11-25-2: one full round (`security-full.md`, at 66634fb9, 6
 Majors and 11 Nits), then the fixes re-read in `reread-1-security.md` to `reread-5-security.md`, every finding of each
 fixed before the next. Not a full review. The reviewer read files only and ran nothing.
 

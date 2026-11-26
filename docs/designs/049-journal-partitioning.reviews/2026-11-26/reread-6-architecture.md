@@ -1,11 +1,10 @@
-# Approval confirmation of design 049: architecture (2026-11-26)
+# Targeted re-read 6 of design 049: architecture (2026-11-26)
 
 Doc: docs/designs/049-journal-partitioning.md
 Reviewed-commit: 3c82957ecde6e5dd24a4138fca874b3cf9e29df8
 Reviewer: architecture
 Agent-blob: c6fbfd6fa75c2429ef857c4daa78fc1a3f5ea3d9
-Note: condensed by the author from the reviewer's output; every finding and severity is kept. The last of the targeted
-re-reads of the approval run under Owner decision 2026-11-25-2: one full round (`architecture-full.md`, at 66634fb9, 2
+Note: condensed by the author from the reviewer's output; every finding and severity is kept. A targeted re-read of the approval run under Owner decision 2026-11-25-2: one full round (`architecture-full.md`, at 66634fb9, 2
 Blockers and 9 Majors), then the fixes re-read in `reread-1-architecture.md` to `reread-5-architecture.md`, each Major
 fixed before the next. Not a full review. The reviewer read files only and ran nothing.
 
@@ -27,5 +26,5 @@ No Blocker, no Major.
 
 Counts: Blocker 0, Major 0, Nit 4
 
-Settled: Nits 1 to 3 are recorded as design 049's follow-up Task 049-19, added after the approval as the approval rule
-allows, so that they are fixed in the build, test first; Nit 4 (layout only) is left to the next edit of the design.
+Nits 1 to 3 were fixed at `75f01e1f` (row II; `proconfig`; the handshake grant in Task 049-14 with its test); Nit 4
+(layout only) is left to the next edit of the design.
