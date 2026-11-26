@@ -145,3 +145,9 @@ All ten findings are fixed.
 | 1 | Nit | Fixed: AES-256-GCM-SIV (no random-nonce bound) and the tenant in the HKDF `info`, so each tenant's cursors have their own key | Technical Plan 6, Architecture decision 0144 |
 | 2 | Nit | Fixed: `KeyRing::derive_purpose_key(label, info)` named, zeroized and redacted; `a_cursor_does_not_open_under_the_secrets_key` | Technical Plan 6, Task 050-4 |
 | 3 | Nit | Fixed: the publication twins, `an_approval_cursor_does_not_open_on_the_publication_list` and `an_oversized_cursor_is_refused_before_decoding` | Tasks 050-4, 050-5 |
+
+## Security re-read, round 5 (`approval/reread-5-security.md`, at `10338cd5`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: the publication twins of both tests in Task 050-5 | Task 050-5 |

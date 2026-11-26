@@ -1111,7 +1111,8 @@ primitive goes in a new file of `src/ui/`.
   `a_policy_raised_after_an_approval_lists_the_request_for_another_approver`, `an_approver_may_decide`,
   `paging_holds_across_a_supersede`, `a_publication_inbox_page_is_one_statement`, the publication twins of
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller` and `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
-  `an_approval_cursor_does_not_open_on_the_publication_list`;
+  `an_approval_cursor_does_not_open_on_the_publication_list`, and the publication twins of
+  `an_oversized_cursor_is_refused_before_decoding` and `an_unopenable_cursor_is_a_malformed_cursor`;
   `the_publication_inbox_item_has_exactly_its_fields` (`rest/approvals_inbox.rs`); the battery entry, with the route
   removed from `not_built`.
   Verification: `cargo test -p sagat-domain versioning`;

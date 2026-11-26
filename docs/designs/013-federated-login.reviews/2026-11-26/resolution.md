@@ -171,3 +171,9 @@ first, then the connection row, as redemption does, and Architecture decision 00
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Major | Fixed: every generation's hash is kept until the session ends; every path, the grace included, checks the presented secret first, and a failure is `invalid_grant` with no effect and the same answer whether the session exists; `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor` | Requirement 013-026, Technical Plan 3, Task 013-9 |
+
+## Security re-read, round 6 (`approval/reread-6-security.md`, at `10338cd5`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed (option b, with a rate limit as well): the token is `<sid>.<generation>.<key id>.<mac>`, an HMAC-SHA256 under the `cli-refresh` purpose key of the session id, the generation and a random value on the session; the server recomputes any generation's MAC, so it keeps no per-generation secret and the grace rows live 30 seconds; at most six refreshes a minute per session, a refusal leaving the token unspent; two tests | Requirement 013-026, Technical Plans 3 and 4, Task 013-9 |
