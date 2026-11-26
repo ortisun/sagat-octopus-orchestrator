@@ -129,6 +129,14 @@ approved.
   This design uses design 044's `CAPABILITY_NOT_ACTIVE` with the capability in the problem's detail, given by the shared hold of
   Task 054-18, so six SDKs map one code. Delegate (Owner decision 2026-11-24-4).
 
+- **Decision 054-015 — What the stage 9 codebase review settled** (its Majors 1 to 9). The consumption moves its bytes by a
+  statement of its own and is left out of the output charge, so they are never counted twice; the handoff's sequences and its
+  replay lookup are stated; each new refusal of a reapplied signal is a `REJECTED` candidate with its own `ReapplyReason`, never an
+  aborted reset; the chain path's receipt reader reads a buffered answer; a name is an `EventType`; the payload's digest is the
+  journal's existing `payload_digest` column and `sagat_domain::workflow::Digest`; the `Capability` enumeration and its equality
+  test are in scope; the checks are added `NOT VALID` and validated by a companion migration; a Signal-with-Start signal keeps
+  its origin (`via`) when buffered and is not reapplied. Delegate (Owner decision 2026-11-24-4).
+
 ## Gaps
 
 - **Gap 054-001** Payloads are never deleted today (`payloads` has no collector); a discarded or consumed signal's payload stays as
