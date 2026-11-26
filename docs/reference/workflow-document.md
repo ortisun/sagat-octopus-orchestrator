@@ -490,7 +490,7 @@ string
 |---|---|---|---|
 | `outputSchema` | object |  |  |
 | `version` | any | yes |  |
-| `workflowId` | string (min length 1, max length 128) | yes |  |
+| `workflowId` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
 
 ### codeEnvelope
 
@@ -507,7 +507,7 @@ string
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `eventType` | string (min length 1, max length 128) | yes |  |
+| `eventType` | [`name`](#name) | yes |  |
 | `maxLookbackMs` | integer (min 0, max 604800000) |  |  |
 | `schema` | object |  |  |
 
@@ -518,14 +518,14 @@ string
 | `activity` | [`codeActivityName`](#codeActivityName) | yes |  |
 | `compensateWith` | [`codeActivityName`](#codeActivityName) |  |  |
 | `compensationRetry` | [`retry`](#retry) |  |  |
-| `compensationTimeoutMs` | integer (min 1) |  |  |
+| `compensationTimeoutMs` | [`duration`](#duration) |  |  |
 | `highRisk` | boolean |  |  |
 | `irreversible` | boolean |  |  |
 | `reconcileWith` | [`codeActivityName`](#codeActivityName) |  |  |
 | `requiresApproval` | [`name`](#name) |  |  |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of [`name`](#name) (max items 16) |  |  |
-| `timeoutMs` | integer (min 1) |  |  |
+| `timeoutMs` | [`duration`](#duration) |  |  |
 | `type` | `"activity"` | yes |  |
 
 ### codeProfileApproval
@@ -542,7 +542,7 @@ string
 | `businessId` | string (min length 1, max length 256) |  |  |
 | `cancelPolicy` | one of `"propagate"`, `"detach"`, `"request_cancel"` |  |  |
 | `type` | `"child"` | yes |  |
-| `workflowId` | string (min length 1, max length 128) | yes |  |
+| `workflowId` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
 
 ### codeProfileScript
 
@@ -558,7 +558,7 @@ string
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `durationMs` | integer (min 1) | yes |  |
+| `durationMs` | [`duration`](#duration) | yes |  |
 | `type` | `"timer"` | yes |  |
 
 ### codeProfileWaitEvent
@@ -566,9 +566,9 @@ string
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `correlationKey` | string (min length 1, max length 1024) | yes | A literal business value (stored as a classified payload), never an expression. |
-| `eventType` | string (min length 1, max length 128) | yes |  |
+| `eventType` | [`name`](#name) | yes |  |
 | `lookbackMs` | integer (min 0, max 604800000) |  |  |
-| `timeoutMs` | integer (min 1) | yes |  |
+| `timeoutMs` | [`duration`](#duration) | yes |  |
 | `type` | `"waitEvent"` | yes |  |
 
 ### codeScriptEntry

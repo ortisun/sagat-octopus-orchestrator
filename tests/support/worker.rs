@@ -496,6 +496,7 @@ impl Worker<'_> {
             lease_token: lease.lease_token.clone(),
             blob_id: blob_id.to_owned(),
             instance: lease.instance.clone(),
+            read_token: String::new(),
         }
     }
 

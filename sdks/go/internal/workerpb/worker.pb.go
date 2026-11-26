@@ -653,8 +653,8 @@ func (StepOutcome) EnumDescriptor() ([]byte, []int) {
 }
 
 // Why a run's cancellation was journaled (design 044, Technical Plan 8.4). `run.cancel_requested` carries
-// REQUEST or WITHOUT_GRACE; `run.stop_requested` (Cancelled), which is not visible to the function, carries
-// one of the other three.
+// REQUEST or WITHOUT_GRACE; `run.stop_requested` (Cancelled) carries one of the other three, and is visible to
+// the function only as the record of its own acknowledgement (FUNCTION_ACKNOWLEDGED).
 type CancelOrigin int32
 
 const (
@@ -1073,6 +1073,7 @@ func (x *WorkerCapabilities) GetOffersWorkflowAsCode() bool {
 }
 
 // Added in 1.10. `code_digest` is `sha256:` and 64 lowercase hexadecimal characters.
+// `workflow_type` matches ^[A-Za-z][A-Za-z0-9_-]{0,47}$.
 type WorkflowTypeOffer struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkflowType  string                 `protobuf:"bytes,1,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
@@ -1459,7 +1460,10 @@ type TaskLease struct {
 	// Fields 19 to 27 are named by other designs (19 to 22 draft 019, 23 and 24 feature 006, 25 draft 031,
 	// 26 and 27 design 045).
 	// Added in 1.10 (design 044): the task of a code workflow, selected by `task_kind` = WORKFLOW, QUERY or
-	// REPLAY_CHECK; the activity fields above are then empty except task_id, run_id and the fences.
+	// REPLAY_CHECK. The outer fields then set are: for WORKFLOW, task_id, run_id, step_id (`~workflow`), attempt,
+	// generation, lease_token (equal to the inner lease's), expires_at_epoch_ms and traceparent; for QUERY, task_id,
+	// run_id and lease_token (the query lease's); for REPLAY_CHECK, task_id and lease_token (the task's lease; the runs
+	// are its items). `TaskLease.lease_token` is never a read token; every other activity field is empty.
 	//
 	// Types that are valid to be assigned to WorkflowWork:
 	//
@@ -1683,6 +1687,8 @@ func (*TaskLease_QueryTask) isTaskLease_WorkflowWork() {}
 
 func (*TaskLease_ReplayCheckTask) isTaskLease_WorkflowWork() {}
 
+// From 1.10 an answer carries at most 3.5 MiB in all (fewer tasks when they do not fit), below the 4 MiB that gRPC
+// clients receive by default (design 044, Non-functional requirement 044-006).
 type PollTasksResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tasks         []*TaskLease           `protobuf:"bytes,1,rep,name=tasks,proto3" json:"tasks,omitempty"`
@@ -1907,7 +1913,10 @@ type CompleteStepRequest struct {
 	Instance       *ExecutionInstanceIdentity `protobuf:"bytes,12,opt,name=instance,proto3" json:"instance,omitempty"`
 	// Field 13 is design 041's StepLogCarry.
 	// Added in 1.10, served by Task 044-14 (eager workflow task): a sticky session asks for the run's next
-	// workflow task in the answer. Ignored until then.
+	// workflow task in the answer. Ignored until then. Granted only through the claim's workflow-task arm when the
+	// completion makes the run's workflow-task step READY, the session is that step's sticky session, its digest is
+	// the run's current one, its binding still lists the workflow type, the namespace is not paused and the
+	// `sagat.workflow` quota bucket has room (design 044, Technical Plan 11.2).
 	AcceptWorkflowTask bool `protobuf:"varint,14,opt,name=accept_workflow_task,json=acceptWorkflowTask,proto3" json:"accept_workflow_task,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
@@ -2641,15 +2650,17 @@ func (x *WriteBlobResponse) GetContentType() string {
 }
 
 type ReadBlobRequest struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	TaskId        string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	RunId         string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId        string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt       int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Generation    int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
-	LeaseToken    string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	BlobId        string                     `protobuf:"bytes,7,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
-	Instance      *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
+	state      protoimpl.MessageState     `protogen:"open.v1"`
+	TaskId     string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId      string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId     string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt    int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	BlobId     string                     `protobuf:"bytes,7,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
+	Instance   *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
+	// Added in 1.10 (design 044): the read token of a query or replay-check item, instead of the lease fields.
+	ReadToken     string `protobuf:"bytes,9,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2738,6 +2749,13 @@ func (x *ReadBlobRequest) GetInstance() *ExecutionInstanceIdentity {
 		return x.Instance
 	}
 	return nil
+}
+
+func (x *ReadBlobRequest) GetReadToken() string {
+	if x != nil {
+		return x.ReadToken
+	}
+	return ""
 }
 
 // ReadBlob: `header` first, then `chunk`s.
@@ -5183,9 +5201,12 @@ func (x *WorkflowTaskLease) GetCodeDigest() string {
 	return ""
 }
 
-// A value of the history: inline JSON (at most 256 KiB) or a blob reference. When `placeholder` is set the
-// value is withheld (`EXTERNAL_CONTENT_NOT_INSPECTED` for a blob whose carrier classifies a field
-// `secret`, or a typed placeholder of feature 016 in an export) and the other fields say only its size.
+// A value of the history: inline JSON (at most 256 KiB) or a blob reference. For a workflow lease and for the
+// read token of a query or replay-check item, every field of an inline value that its carrier schema classifies
+// `secret` is replaced by feature 016's typed placeholder, and every other field is delivered as stored; the export
+// applies feature 016's redaction and reveal rules to every field. When `placeholder` is set the value is withheld
+// (`EXTERNAL_CONTENT_NOT_INSPECTED` for a blob whose carrier classifies a field `secret`, and every blob of an
+// export): only `blob.size` is set, and `json`, `blob_id`, `sha256` and `content_type` are empty.
 type HistoryPayload struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Value:
@@ -6218,7 +6239,7 @@ func (x *HistoryApprovalDecided) GetDecision() string {
 type HistorySagaOutcome struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Scope         string                 `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`     // `s-<n>`
-	Outcome       string                 `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"` // completed, compensated, partial or compensation_failed
+	Outcome       string                 `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"` // after an abort: compensated, partial or compensation_failed
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7003,7 +7024,7 @@ func (x *SagaOpenCommand) GetCancelPolicy() string {
 
 type MarkerCommand struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	MarkerId        string                 `protobuf:"bytes,1,opt,name=marker_id,json=markerId,proto3" json:"marker_id,omitempty"`
+	MarkerId        string                 `protobuf:"bytes,1,opt,name=marker_id,json=markerId,proto3" json:"marker_id,omitempty"`                        // ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$
 	SideEffectValue *CommandValue          `protobuf:"bytes,2,opt,name=side_effect_value,json=sideEffectValue,proto3" json:"side_effect_value,omitempty"` // a side effect only, at most 64 KiB
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -7220,7 +7241,7 @@ func (x *ConsumeSignalsCommand) GetSignals() []*ConsumedSignals {
 type ConsumedSignals struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SignalName    string                 `protobuf:"bytes,1,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
-	Seqs          []int64                `protobuf:"varint,2,rep,packed,name=seqs,proto3" json:"seqs,omitempty"` // ascending journal sequences of signal.buffered
+	Seqs          []int64                `protobuf:"varint,2,rep,packed,name=seqs,proto3" json:"seqs,omitempty"` // ascending journal sequences of signal.buffered; at most 1,000 in all
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7272,7 +7293,7 @@ func (x *ConsumedSignals) GetSeqs() []int64 {
 type FailCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`                                  // ^[A-Z][A-Z0-9_]{0,63}$, else WORKFLOW_FAILED
-	SafeMessage   []byte                 `protobuf:"bytes,2,opt,name=safe_message,json=safeMessage,proto3" json:"safe_message,omitempty"` // stored only as a `pii` payload, never in the run resource or the journal's detail
+	SafeMessage   string                 `protobuf:"bytes,2,opt,name=safe_message,json=safeMessage,proto3" json:"safe_message,omitempty"` // at most 4 KiB, counted in the 192 KiB of inline values; stored only as a `pii`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7314,11 +7335,11 @@ func (x *FailCommand) GetCode() string {
 	return ""
 }
 
-func (x *FailCommand) GetSafeMessage() []byte {
+func (x *FailCommand) GetSafeMessage() string {
 	if x != nil {
 		return x.SafeMessage
 	}
-	return nil
+	return ""
 }
 
 type ContinueAsNewCommand struct {
@@ -7975,10 +7996,12 @@ type QueryTask struct {
 	DeadlineEpochMs int64                  `protobuf:"varint,5,opt,name=deadline_epoch_ms,json=deadlineEpochMs,proto3" json:"deadline_epoch_ms,omitempty"`
 	GatedEntries    []string               `protobuf:"bytes,6,rep,name=gated_entries,json=gatedEntries,proto3" json:"gated_entries,omitempty"`
 	StateMaxBytes   int64                  `protobuf:"varint,7,opt,name=state_max_bytes,json=stateMaxBytes,proto3" json:"state_max_bytes,omitempty"`
-	ReadToken       string                 `protobuf:"bytes,8,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"` // for ReadHistory and ReadBlob of this run; never WriteBlob
-	LeaseToken      string                 `protobuf:"bytes,9,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	WorkflowType    string                 `protobuf:"bytes,10,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
-	CodeDigest      string                 `protobuf:"bytes,11,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`
+	// For ReadHistory and ReadBlob of this run; never WriteBlob. Bound to the claiming session, it expires with the
+	// query's lease and is invalid once the answer is recorded; binding and membership are checked at every use.
+	ReadToken    string `protobuf:"bytes,8,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
+	LeaseToken   string `protobuf:"bytes,9,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	WorkflowType string `protobuf:"bytes,10,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
+	CodeDigest   string `protobuf:"bytes,11,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`
 	// The run's 32-byte seed, so a worker without the run in its cache can replay it to answer.
 	Seed          []byte `protobuf:"bytes,12,opt,name=seed,proto3" json:"seed,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -8105,7 +8128,7 @@ type RespondWorkerQueryRequest struct {
 	LeaseToken          string                 `protobuf:"bytes,2,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
 	Answer              []byte                 `protobuf:"bytes,3,opt,name=answer,proto3" json:"answer,omitempty"`                                                         // at most 256 KiB, validated against the query's resultSchema
 	CommittedThroughSeq int64                  `protobuf:"varint,4,opt,name=committed_through_seq,json=committedThroughSeq,proto3" json:"committed_through_seq,omitempty"` // the journal sequence of the completion the answer reflects
-	FailureCode         string                 `protobuf:"bytes,5,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`                            // QUERY_COMMAND when the handler issued a command
+	FailureCode         string                 `protobuf:"bytes,5,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`                            // empty, or QUERY_COMMAND when the handler issued a command; any other is refused
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -8313,11 +8336,13 @@ func (x *ReplayCheckTask) GetCodeDigest() string {
 }
 
 type ReplayCheckItem struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	JobId     string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Ordinal   int32                  `protobuf:"varint,2,opt,name=ordinal,proto3" json:"ordinal,omitempty"`
-	RunId     string                 `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	ReadToken string                 `protobuf:"bytes,4,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"` // for ReadHistory and ReadBlob of this run only
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	JobId   string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Ordinal int32                  `protobuf:"varint,2,opt,name=ordinal,proto3" json:"ordinal,omitempty"`
+	RunId   string                 `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// For ReadHistory and ReadBlob of this run only. Bound to the claiming session, it expires with the item's lease
+	// and is invalid once the item's verdict is recorded; binding and membership are checked at every use.
+	ReadToken string `protobuf:"bytes,4,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
 	// The run's 32-byte seed: the history never carries it, and a replay of a run that drew random numbers or
 	// identifiers needs it to make the same commands.
 	Seed          []byte `protobuf:"bytes,5,opt,name=seed,proto3" json:"seed,omitempty"`
@@ -8396,10 +8421,10 @@ type RespondReplayCheckRequest struct {
 	JobId              string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	Ordinal            int32                  `protobuf:"varint,3,opt,name=ordinal,proto3" json:"ordinal,omitempty"`
 	FromCommand        int64                  `protobuf:"varint,4,opt,name=from_command,json=fromCommand,proto3" json:"from_command,omitempty"` // the command number of the first digest of this range
-	BodyDigests        [][]byte               `protobuf:"bytes,5,rep,name=body_digests,json=bodyDigests,proto3" json:"body_digests,omitempty"`  // at most 8,192 SHA-256 digests of the commands' canonical bodies
+	BodyDigests        [][]byte               `protobuf:"bytes,5,rep,name=body_digests,json=bodyDigests,proto3" json:"body_digests,omitempty"`  // at most 8,192 SHA-256 digests (32 bytes each) of the commands' canonical bodies
 	LastRange          bool                   `protobuf:"varint,6,opt,name=last_range,json=lastRange,proto3" json:"last_range,omitempty"`
 	SK                 int64                  `protobuf:"varint,7,opt,name=s_k,json=sK,proto3" json:"s_k,omitempty"`                                                  // with the last range: S(k) of the run's last completed activation
-	Chain              []byte                 `protobuf:"bytes,8,opt,name=chain,proto3" json:"chain,omitempty"`                                                       // with the last range: the chain the replay computed
+	Chain              []byte                 `protobuf:"bytes,8,opt,name=chain,proto3" json:"chain,omitempty"`                                                       // with the last range: the chain the replay computed (32 bytes)
 	DeferredBodyDigest []byte                 `protobuf:"bytes,9,opt,name=deferred_body_digest,json=deferredBodyDigest,proto3" json:"deferred_body_digest,omitempty"` // with the last range, when the last completion recorded a deferral
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
@@ -8820,7 +8845,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\ablob_id\x18\x01 \x01(\tR\x06blobId\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12!\n" +
-	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xa4\x02\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xc3\x02\n" +
 	"\x0fReadBlobRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -8832,7 +8857,9 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\vlease_token\x18\x06 \x01(\tR\n" +
 	"leaseToken\x12\x17\n" +
 	"\ablob_id\x18\a \x01(\tR\x06blobId\x12T\n" +
-	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"{\n" +
+	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\x12\x1d\n" +
+	"\n" +
+	"read_token\x18\t \x01(\tR\treadToken\"{\n" +
 	"\x10ReadBlobResponse\x12G\n" +
 	"\x06header\x18\x01 \x01(\v2-.sagat_octopus_orchestrator.v1.ReadBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
@@ -9219,7 +9246,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x04seqs\x18\x02 \x03(\x03R\x04seqs\"D\n" +
 	"\vFailCommand\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12!\n" +
-	"\fsafe_message\x18\x02 \x01(\fR\vsafeMessage\"\xc3\x01\n" +
+	"\fsafe_message\x18\x02 \x01(\tR\vsafeMessage\"\xc3\x01\n" +
 	"\x14ContinueAsNewCommand\x12A\n" +
 	"\x05input\x18\x01 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x05input\x12A\n" +
 	"\x05state\x18\x02 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x05state\x12%\n" +

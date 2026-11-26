@@ -3397,8 +3397,7 @@
       "properties": {
         "workflowId": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+          "pattern": "^[a-z][a-z0-9-]{2,63}$"
         },
         "version": {
           "oneOf": [
@@ -3425,9 +3424,7 @@
       ],
       "properties": {
         "eventType": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+          "$ref": "#/$defs/name"
         },
         "maxLookbackMs": {
           "type": "integer",
@@ -3502,7 +3499,7 @@
         "type",
         "activity"
       ],
-      "description": "The code profile of an activity command (Technical Plan 5.1). Publisher fields may repeat the envelope's entry, never change it.",
+      "description": "The code profile of an activity command (Technical Plan 5.1). The publisher's fields (secrets, irreversible, highRisk, compensateWith, reconcileWith, requiresApproval) may be repeated from the covering envelope entry, never changed: each one present must equal the effective entry's value (secrets compared as sets), and one the entry does not set is refused, so a command that adds or changes one is COMMAND_OUTSIDE_ENVELOPE (Decision 044-241).",
       "properties": {
         "type": {
           "const": "activity"
@@ -3517,12 +3514,10 @@
           "$ref": "#/$defs/retry"
         },
         "compensationTimeoutMs": {
-          "type": "integer",
-          "minimum": 1
+          "$ref": "#/$defs/duration"
         },
         "timeoutMs": {
-          "type": "integer",
-          "minimum": 1
+          "$ref": "#/$defs/duration"
         },
         "secrets": {
           "type": "array",
@@ -3592,8 +3587,7 @@
           "const": "timer"
         },
         "durationMs": {
-          "type": "integer",
-          "minimum": 1
+          "$ref": "#/$defs/duration"
         }
       }
     },
@@ -3611,9 +3605,7 @@
           "const": "waitEvent"
         },
         "eventType": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+          "$ref": "#/$defs/name"
         },
         "correlationKey": {
           "type": "string",
@@ -3622,8 +3614,7 @@
           "description": "A literal business value (stored as a classified payload), never an expression."
         },
         "timeoutMs": {
-          "type": "integer",
-          "minimum": 1
+          "$ref": "#/$defs/duration"
         },
         "lookbackMs": {
           "type": "integer",
@@ -3645,8 +3636,7 @@
         },
         "workflowId": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+          "pattern": "^[a-z][a-z0-9-]{2,63}$"
         },
         "cancelPolicy": {
           "enum": [

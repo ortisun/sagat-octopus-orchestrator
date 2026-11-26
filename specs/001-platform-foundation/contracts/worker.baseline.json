@@ -543,7 +543,7 @@
       "2": {
         "name": "safe_message",
         "repeated": false,
-        "type": "Bytes"
+        "type": "String"
       }
     },
     "sagat_octopus_orchestrator.v1.FailStepRequest": {
@@ -1589,6 +1589,11 @@
         "name": "instance",
         "repeated": false,
         "type": "Message:.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+      },
+      "9": {
+        "name": "read_token",
+        "repeated": false,
+        "type": "String"
       }
     },
     "sagat_octopus_orchestrator.v1.ReadBlobResponse": {

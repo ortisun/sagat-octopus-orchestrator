@@ -841,6 +841,23 @@ finding was answered.
   (architecture review of Task 044-1, finding Major 2); the holders of the seed are unchanged (workers bound to the
   type).
 
+- **D044-241** (2026-11-26) A fragment may repeat a publisher field of its covering envelope entry (`secrets`,
+  `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `requiresApproval`) only with the effective entry's
+  value (`secrets` compared as sets); a field the entry does not set is refused, so a command that adds or changes one is
+  `COMMAND_OUTSIDE_ENVELOPE`. Task 044-5 holds it with `a_fragment_that_adds_a_secret_is_outside_the_envelope`.
+  Raised by the security review of Task 044-2 (finding Minor 5), fixed in the schema's description of the profile.
+- **D044-242** (2026-11-26) The security review of the contract of Task 044-2 (commit 6e641a94; no Blocker, two Major,
+  eleven Minor) is answered by fixes in the contract, none settled otherwise: `ReadBlobRequest.read_token` (field 9)
+  and the narrowed `ReadBlob` and `WriteBlob` rules with the order NOT_FOUND before PERMISSION_DENIED (Major 1); the
+  `secret` fields of an inline value replaced by the typed placeholder for workflow leases and read tokens (Major 2);
+  a withheld blob carrying its size only; code-profile durations, event types and child workflow identifiers under the
+  graph's bounds and patterns; Decision 044-241; an error block on each new RPC; the lifetime and re-checks of read
+  tokens; the outer fields of `TaskLease` per task kind; the bounds of answers, consumption lists, failure messages,
+  markers, workflow types, digests and query failure codes; the export paged at 1,024 events or 3 MiB; the conditions of
+  the eager workflow task; replay-check ranges bound to their lease. Its finding Minor 13 (the seed now reaches query and
+  replay-check workers, Decision 044-240): Technical Plan 4.5, 13.1 and 14 read with Decision 044-240, and the
+  source-text test of Task 044-24 on `server_detail` allows the seed on the claim paths of the three task kinds.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -958,6 +975,15 @@ finding was answered.
 - **G044-029** (2026-11-26) Design 044, Technical Plan 8.2, says a chain-addressed update of a code run behaves as for
   a run, but table 13.2 does not list the chain's update route (`updateExecutionChain`), whose contract therefore has no
   `waitMs`, `acceptPending` or `202`; Task 044-21 adds them with the update transitions.
+
+- **G044-030** (2026-11-26) Feature 020's draft plan grants a permission `run:history:export` to the admin, developer and
+  operator roles for its own export route; if it lands without excluding code runs, it would bypass Owner question
+  044-015 (`history:export`, admin only). Reported to the coordinating session for feature 020's owner. Raised by the
+  security review of Task 044-2.
+- **G044-031** (2026-11-26) A code run's command records must not carry a payload digest in `run_events.payload_digest`
+  that `JournalEvent.payloadRef` would return (an input, a state or a side-effect digest would be a server-side field
+  under Technical Plan 4.5); Task 044-9 writes them and Task 044-24's `no_read_returns_a_body_digest_risk_metadata_or_the_seed`
+  checks the column. Raised by the security review of Task 044-2.
 
 ## 4. Owner questions (all delegated)
 

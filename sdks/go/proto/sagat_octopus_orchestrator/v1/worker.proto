@@ -62,6 +62,18 @@ service WorkerService {
   //   (RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
   //   maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
   //   this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+  //
+  // Design 044 (1.10) narrows both calls for its leases (Technical Plan 4.1, "Lease kinds per RPC"):
+  //   ReadBlob under a workflow lease, or with the `read_token` of a query or replay-check item, reaches only a blob
+  //   that the run's history references, and never one whose carrier schema classifies a field `secret`. The checks
+  //   run in this order: a blob the run's history does not reference is NOT_FOUND, exactly as a missing one; then a
+  //   blob with a `secret` field is PERMISSION_DENIED (x-sagat-error EXTERNAL_CONTENT_NOT_INSPECTED). A read token is
+  //   sent in `read_token`, never in `lease_token`.
+  //   WriteBlob under a workflow lease (step_id `~workflow`) writes a blob of the purpose COMMAND_VALUE, only for a
+  //   value that does not fit the completion (a work command's input, an update result, a side-effect value, a
+  //   terminal output); at most 16 uncommitted blobs per lease (beyond them the workflow task fails, counted, with
+  //   COMMAND_VALUE_LIMIT) and 32 per run (UNAVAILABLE with retry-after-ms, reason `run_command_value_ceiling`).
+  //   WriteBlob refuses every read token.
   rpc WriteBlob(stream WriteBlobRequest) returns (WriteBlobResponse);
   rpc ReadBlob(ReadBlobRequest) returns (stream ReadBlobResponse);
   // Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
@@ -96,16 +108,26 @@ service WorkerService {
   rpc FailWorkflowTask(FailWorkflowTaskRequest) returns (FailWorkflowTaskResponse);
   // ReadHistory: the run's visible history from `from_seq`, in pages of at most 1,024 events or 3 MiB,
   // under a workflow lease or the read token of a query or replay-check item. Each page extends a
-  // workflow lease, up to 120,000 ms in all.
+  // workflow lease, up to 120,000 ms in all. Binding and membership are checked again for every page.
+  //   Errors: NOT_FOUND an unknown run, a run of another tenant or namespace, an unknown, expired or invalidated
+  //   lease or token, all answered alike; RESOURCE_EXHAUSTED (retry-after-ms) beyond 512 streams per process, 128
+  //   per tenant or 32 per subject, or a second full pass of a lease's history; INVALID_ARGUMENT a `from_seq` below 1.
   rpc ReadHistory(ReadHistoryRequest) returns (stream ReadHistoryResponse);
   // RespondWorkerQuery (Task 044-29): the answer of a worker query from the function's state at its last
   // committed completion.
+  //   Errors: NOT_FOUND an unknown, foreign, expired or already answered query, all alike; INVALID_ARGUMENT an
+  //   answer over 256 KiB or outside the query's resultSchema.
   rpc RespondWorkerQuery(RespondWorkerQueryRequest) returns (RespondWorkerQueryResponse);
   // RespondReplayCheck: one range of one item of a replay-check task (a move's verification, design 044,
-  // Technical Plan 7.3). The verdict is the server's own.
+  // Technical Plan 7.3). The verdict is the server's own; no answer before the last range discloses a match or
+  // a difference.
+  //   Errors: NOT_FOUND an item that does not belong to the task this lease token leases, an unknown, foreign or
+  //   expired lease, or an item whose verdict is recorded, all alike; INVALID_ARGUMENT a range that is not the next
+  //   expected one, more than 8,192 digests, or a digest or chain that is not 32 bytes.
   rpc RespondReplayCheck(RespondReplayCheckRequest) returns (RespondReplayCheckResponse);
   // ReleaseSticky (Task 044-14): the runs the worker evicted from its cache; applied only to steps whose
-  // sticky session is the caller's.
+  // sticky session is the caller's, in the caller's tenant; another run is ignored, never reported.
+  //   Errors: INVALID_ARGUMENT more than 256 run identifiers.
   rpc ReleaseSticky(ReleaseStickyRequest) returns (ReleaseStickyResponse);
 }
 
@@ -126,6 +148,7 @@ message WorkerCapabilities {
   bool offers_workflow_as_code = 12;
 }
 // Added in 1.10. `code_digest` is `sha256:` and 64 lowercase hexadecimal characters.
+// `workflow_type` matches ^[A-Za-z][A-Za-z0-9_-]{0,47}$.
 message WorkflowTypeOffer { string workflow_type = 1; string code_digest = 2; }
 message RegisterWorkerRequest { string worker_name = 1; string namespace = 2; WorkerCapabilities capabilities = 3; }
 message RegisterWorkerResponse {
@@ -184,13 +207,18 @@ message TaskLease {
   // Fields 19 to 27 are named by other designs (19 to 22 draft 019, 23 and 24 feature 006, 25 draft 031,
   // 26 and 27 design 045).
   // Added in 1.10 (design 044): the task of a code workflow, selected by `task_kind` = WORKFLOW, QUERY or
-  // REPLAY_CHECK; the activity fields above are then empty except task_id, run_id and the fences.
+  // REPLAY_CHECK. The outer fields then set are: for WORKFLOW, task_id, run_id, step_id (`~workflow`), attempt,
+  // generation, lease_token (equal to the inner lease's), expires_at_epoch_ms and traceparent; for QUERY, task_id,
+  // run_id and lease_token (the query lease's); for REPLAY_CHECK, task_id and lease_token (the task's lease; the runs
+  // are its items). `TaskLease.lease_token` is never a read token; every other activity field is empty.
   oneof workflow_work {
     WorkflowTaskLease workflow_task = 28;
     QueryTask query_task = 29;
     ReplayCheckTask replay_check_task = 30;
   }
 }
+// From 1.10 an answer carries at most 3.5 MiB in all (fewer tasks when they do not fit), below the 4 MiB that gRPC
+// clients receive by default (design 044, Non-functional requirement 044-006).
 message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
 message HeartbeatRequest {
   string task_id = 1; string worker_id = 2; int64 generation = 3; string lease_token = 4;
@@ -210,7 +238,10 @@ message CompleteStepRequest {
   ExecutionInstanceIdentity instance = 12;
   // Field 13 is design 041's StepLogCarry.
   // Added in 1.10, served by Task 044-14 (eager workflow task): a sticky session asks for the run's next
-  // workflow task in the answer. Ignored until then.
+  // workflow task in the answer. Ignored until then. Granted only through the claim's workflow-task arm when the
+  // completion makes the run's workflow-task step READY, the session is that step's sticky session, its digest is
+  // the run's current one, its binding still lists the workflow type, the namespace is not paused and the
+  // `sagat.workflow` quota bucket has room (design 044, Technical Plan 11.2).
   bool accept_workflow_task = 14;
 }
 message FailStepRequest {
@@ -252,6 +283,8 @@ message ReadBlobRequest {
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
   string blob_id = 7;
   ExecutionInstanceIdentity instance = 8;
+  // Added in 1.10 (design 044): the read token of a query or replay-check item, instead of the lease fields.
+  string read_token = 9;
 }
 // ReadBlob: `header` first, then `chunk`s.
 message ReadBlobResponse {
@@ -548,9 +581,12 @@ enum HistoryEventOrigin {
   HISTORY_ORIGIN_EXTERNAL = 4;
 }
 
-// A value of the history: inline JSON (at most 256 KiB) or a blob reference. When `placeholder` is set the
-// value is withheld (`EXTERNAL_CONTENT_NOT_INSPECTED` for a blob whose carrier classifies a field
-// `secret`, or a typed placeholder of feature 016 in an export) and the other fields say only its size.
+// A value of the history: inline JSON (at most 256 KiB) or a blob reference. For a workflow lease and for the
+// read token of a query or replay-check item, every field of an inline value that its carrier schema classifies
+// `secret` is replaced by feature 016's typed placeholder, and every other field is delivered as stored; the export
+// applies feature 016's redaction and reveal rules to every field. When `placeholder` is set the value is withheld
+// (`EXTERNAL_CONTENT_NOT_INSPECTED` for a blob whose carrier classifies a field `secret`, and every blob of an
+// export): only `blob.size` is set, and `json`, `blob_id`, `sha256` and `content_type` are empty.
 message HistoryPayload {
   oneof value {
     bytes json = 1;
@@ -638,7 +674,7 @@ message HistoryApprovalDecided {
 }
 message HistorySagaOutcome {
   string scope = 1;                      // `s-<n>`
-  string outcome = 2;                    // completed, compensated, partial or compensation_failed
+  string outcome = 2;                    // after an abort: compensated, partial or compensation_failed
 }
 message HistorySignalBuffered {
   string signal_name = 1;
@@ -653,8 +689,8 @@ message HistoryCancellationRequested {
   CancelOrigin cancel_origin = 2;
 }
 // Why a run's cancellation was journaled (design 044, Technical Plan 8.4). `run.cancel_requested` carries
-// REQUEST or WITHOUT_GRACE; `run.stop_requested` (Cancelled), which is not visible to the function, carries
-// one of the other three.
+// REQUEST or WITHOUT_GRACE; `run.stop_requested` (Cancelled) carries one of the other three, and is visible to
+// the function only as the record of its own acknowledgement (FUNCTION_ACKNOWLEDGED).
 enum CancelOrigin {
   CANCEL_ORIGIN_UNSPECIFIED = 0;
   CANCEL_ORIGIN_REQUEST = 1;                 // a cooperative request with the version's grace
@@ -746,7 +782,7 @@ message SagaOpenCommand {
   string cancel_policy = 4;              // compensate_completed, wait_in_flight_then_compensate or abort_no_compensation
 }
 message MarkerCommand {
-  string marker_id = 1;
+  string marker_id = 1;                  // ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$
   CommandValue side_effect_value = 2;    // a side effect only, at most 64 KiB
 }
 message UpdateDecisionCommand {
@@ -764,11 +800,12 @@ message ConsumeSignalsCommand {
 }
 message ConsumedSignals {
   string signal_name = 1;
-  repeated int64 seqs = 2;               // ascending journal sequences of signal.buffered
+  repeated int64 seqs = 2;               // ascending journal sequences of signal.buffered; at most 1,000 in all
 }
 message FailCommand {
   string code = 1;                       // ^[A-Z][A-Z0-9_]{0,63}$, else WORKFLOW_FAILED
-  bytes safe_message = 2;                // stored only as a `pii` payload, never in the run resource or the journal's detail
+  string safe_message = 2;               // at most 4 KiB, counted in the 192 KiB of inline values; stored only as a `pii`
+                                         // payload, never in the run resource or the journal's detail
 }
 message ContinueAsNewCommand {
   CommandValue input = 1;                // an inline JSON object
@@ -864,7 +901,9 @@ message QueryTask {
   int64 deadline_epoch_ms = 5;
   repeated string gated_entries = 6;
   int64 state_max_bytes = 7;
-  string read_token = 8;                 // for ReadHistory and ReadBlob of this run; never WriteBlob
+  // For ReadHistory and ReadBlob of this run; never WriteBlob. Bound to the claiming session, it expires with the
+  // query's lease and is invalid once the answer is recorded; binding and membership are checked at every use.
+  string read_token = 8;
   string lease_token = 9;
   string workflow_type = 10;
   string code_digest = 11;
@@ -876,7 +915,7 @@ message RespondWorkerQueryRequest {
   string lease_token = 2;
   bytes answer = 3;                      // at most 256 KiB, validated against the query's resultSchema
   int64 committed_through_seq = 4;       // the journal sequence of the completion the answer reflects
-  string failure_code = 5;               // QUERY_COMMAND when the handler issued a command
+  string failure_code = 5;               // empty, or QUERY_COMMAND when the handler issued a command; any other is refused
 }
 message RespondWorkerQueryResponse { bool accepted = 1; }
 
@@ -894,7 +933,9 @@ message ReplayCheckItem {
   string job_id = 1;
   int32 ordinal = 2;
   string run_id = 3;
-  string read_token = 4;                 // for ReadHistory and ReadBlob of this run only
+  // For ReadHistory and ReadBlob of this run only. Bound to the claiming session, it expires with the item's lease
+  // and is invalid once the item's verdict is recorded; binding and membership are checked at every use.
+  string read_token = 4;
   // The run's 32-byte seed: the history never carries it, and a replay of a run that drew random numbers or
   // identifiers needs it to make the same commands.
   bytes seed = 5;
@@ -904,10 +945,10 @@ message RespondReplayCheckRequest {
   string job_id = 2;
   int32 ordinal = 3;
   int64 from_command = 4;                // the command number of the first digest of this range
-  repeated bytes body_digests = 5;       // at most 8,192 SHA-256 digests of the commands' canonical bodies
+  repeated bytes body_digests = 5;       // at most 8,192 SHA-256 digests (32 bytes each) of the commands' canonical bodies
   bool last_range = 6;
   int64 s_k = 7;                         // with the last range: S(k) of the run's last completed activation
-  bytes chain = 8;                       // with the last range: the chain the replay computed
+  bytes chain = 8;                       // with the last range: the chain the replay computed (32 bytes)
   bytes deferred_body_digest = 9;        // with the last range, when the last completion recorded a deferral
 }
 message RespondReplayCheckResponse {

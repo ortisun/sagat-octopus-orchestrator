@@ -185,6 +185,7 @@ impl Blobs for LeaseBlobs {
                 lease_token: lease.lease_token.clone(),
                 blob_id: blob.to_string(),
                 instance: lease.instance.clone(),
+                read_token: String::new(),
             })
             .await
             .map_err(|_| BlobError)?;

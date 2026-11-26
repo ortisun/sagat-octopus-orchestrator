@@ -103,6 +103,19 @@ type WorkerServiceClient interface {
 	//	(RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
 	//	maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
 	//	this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+	//
+	// Design 044 (1.10) narrows both calls for its leases (Technical Plan 4.1, "Lease kinds per RPC"):
+	//
+	//	ReadBlob under a workflow lease, or with the `read_token` of a query or replay-check item, reaches only a blob
+	//	that the run's history references, and never one whose carrier schema classifies a field `secret`. The checks
+	//	run in this order: a blob the run's history does not reference is NOT_FOUND, exactly as a missing one; then a
+	//	blob with a `secret` field is PERMISSION_DENIED (x-sagat-error EXTERNAL_CONTENT_NOT_INSPECTED). A read token is
+	//	sent in `read_token`, never in `lease_token`.
+	//	WriteBlob under a workflow lease (step_id `~workflow`) writes a blob of the purpose COMMAND_VALUE, only for a
+	//	value that does not fit the completion (a work command's input, an update result, a side-effect value, a
+	//	terminal output); at most 16 uncommitted blobs per lease (beyond them the workflow task fails, counted, with
+	//	COMMAND_VALUE_LIMIT) and 32 per run (UNAVAILABLE with retry-after-ms, reason `run_command_value_ceiling`).
+	//	WriteBlob refuses every read token.
 	WriteBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBlobRequest, WriteBlobResponse], error)
 	ReadBlob(ctx context.Context, in *ReadBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadBlobResponse], error)
 	// Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
@@ -139,16 +152,30 @@ type WorkerServiceClient interface {
 	FailWorkflowTask(ctx context.Context, in *FailWorkflowTaskRequest, opts ...grpc.CallOption) (*FailWorkflowTaskResponse, error)
 	// ReadHistory: the run's visible history from `from_seq`, in pages of at most 1,024 events or 3 MiB,
 	// under a workflow lease or the read token of a query or replay-check item. Each page extends a
-	// workflow lease, up to 120,000 ms in all.
+	// workflow lease, up to 120,000 ms in all. Binding and membership are checked again for every page.
+	//
+	//	Errors: NOT_FOUND an unknown run, a run of another tenant or namespace, an unknown, expired or invalidated
+	//	lease or token, all answered alike; RESOURCE_EXHAUSTED (retry-after-ms) beyond 512 streams per process, 128
+	//	per tenant or 32 per subject, or a second full pass of a lease's history; INVALID_ARGUMENT a `from_seq` below 1.
 	ReadHistory(ctx context.Context, in *ReadHistoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadHistoryResponse], error)
 	// RespondWorkerQuery (Task 044-29): the answer of a worker query from the function's state at its last
 	// committed completion.
+	//
+	//	Errors: NOT_FOUND an unknown, foreign, expired or already answered query, all alike; INVALID_ARGUMENT an
+	//	answer over 256 KiB or outside the query's resultSchema.
 	RespondWorkerQuery(ctx context.Context, in *RespondWorkerQueryRequest, opts ...grpc.CallOption) (*RespondWorkerQueryResponse, error)
 	// RespondReplayCheck: one range of one item of a replay-check task (a move's verification, design 044,
-	// Technical Plan 7.3). The verdict is the server's own.
+	// Technical Plan 7.3). The verdict is the server's own; no answer before the last range discloses a match or
+	// a difference.
+	//
+	//	Errors: NOT_FOUND an item that does not belong to the task this lease token leases, an unknown, foreign or
+	//	expired lease, or an item whose verdict is recorded, all alike; INVALID_ARGUMENT a range that is not the next
+	//	expected one, more than 8,192 digests, or a digest or chain that is not 32 bytes.
 	RespondReplayCheck(ctx context.Context, in *RespondReplayCheckRequest, opts ...grpc.CallOption) (*RespondReplayCheckResponse, error)
 	// ReleaseSticky (Task 044-14): the runs the worker evicted from its cache; applied only to steps whose
-	// sticky session is the caller's.
+	// sticky session is the caller's, in the caller's tenant; another run is ignored, never reported.
+	//
+	//	Errors: INVALID_ARGUMENT more than 256 run identifiers.
 	ReleaseSticky(ctx context.Context, in *ReleaseStickyRequest, opts ...grpc.CallOption) (*ReleaseStickyResponse, error)
 }
 
@@ -425,6 +452,19 @@ type WorkerServiceServer interface {
 	//	(RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
 	//	maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
 	//	this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+	//
+	// Design 044 (1.10) narrows both calls for its leases (Technical Plan 4.1, "Lease kinds per RPC"):
+	//
+	//	ReadBlob under a workflow lease, or with the `read_token` of a query or replay-check item, reaches only a blob
+	//	that the run's history references, and never one whose carrier schema classifies a field `secret`. The checks
+	//	run in this order: a blob the run's history does not reference is NOT_FOUND, exactly as a missing one; then a
+	//	blob with a `secret` field is PERMISSION_DENIED (x-sagat-error EXTERNAL_CONTENT_NOT_INSPECTED). A read token is
+	//	sent in `read_token`, never in `lease_token`.
+	//	WriteBlob under a workflow lease (step_id `~workflow`) writes a blob of the purpose COMMAND_VALUE, only for a
+	//	value that does not fit the completion (a work command's input, an update result, a side-effect value, a
+	//	terminal output); at most 16 uncommitted blobs per lease (beyond them the workflow task fails, counted, with
+	//	COMMAND_VALUE_LIMIT) and 32 per run (UNAVAILABLE with retry-after-ms, reason `run_command_value_ceiling`).
+	//	WriteBlob refuses every read token.
 	WriteBlob(grpc.ClientStreamingServer[WriteBlobRequest, WriteBlobResponse]) error
 	ReadBlob(*ReadBlobRequest, grpc.ServerStreamingServer[ReadBlobResponse]) error
 	// Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
@@ -461,16 +501,30 @@ type WorkerServiceServer interface {
 	FailWorkflowTask(context.Context, *FailWorkflowTaskRequest) (*FailWorkflowTaskResponse, error)
 	// ReadHistory: the run's visible history from `from_seq`, in pages of at most 1,024 events or 3 MiB,
 	// under a workflow lease or the read token of a query or replay-check item. Each page extends a
-	// workflow lease, up to 120,000 ms in all.
+	// workflow lease, up to 120,000 ms in all. Binding and membership are checked again for every page.
+	//
+	//	Errors: NOT_FOUND an unknown run, a run of another tenant or namespace, an unknown, expired or invalidated
+	//	lease or token, all answered alike; RESOURCE_EXHAUSTED (retry-after-ms) beyond 512 streams per process, 128
+	//	per tenant or 32 per subject, or a second full pass of a lease's history; INVALID_ARGUMENT a `from_seq` below 1.
 	ReadHistory(*ReadHistoryRequest, grpc.ServerStreamingServer[ReadHistoryResponse]) error
 	// RespondWorkerQuery (Task 044-29): the answer of a worker query from the function's state at its last
 	// committed completion.
+	//
+	//	Errors: NOT_FOUND an unknown, foreign, expired or already answered query, all alike; INVALID_ARGUMENT an
+	//	answer over 256 KiB or outside the query's resultSchema.
 	RespondWorkerQuery(context.Context, *RespondWorkerQueryRequest) (*RespondWorkerQueryResponse, error)
 	// RespondReplayCheck: one range of one item of a replay-check task (a move's verification, design 044,
-	// Technical Plan 7.3). The verdict is the server's own.
+	// Technical Plan 7.3). The verdict is the server's own; no answer before the last range discloses a match or
+	// a difference.
+	//
+	//	Errors: NOT_FOUND an item that does not belong to the task this lease token leases, an unknown, foreign or
+	//	expired lease, or an item whose verdict is recorded, all alike; INVALID_ARGUMENT a range that is not the next
+	//	expected one, more than 8,192 digests, or a digest or chain that is not 32 bytes.
 	RespondReplayCheck(context.Context, *RespondReplayCheckRequest) (*RespondReplayCheckResponse, error)
 	// ReleaseSticky (Task 044-14): the runs the worker evicted from its cache; applied only to steps whose
-	// sticky session is the caller's.
+	// sticky session is the caller's, in the caller's tenant; another run is ignored, never reported.
+	//
+	//	Errors: INVALID_ARGUMENT more than 256 run identifiers.
 	ReleaseSticky(context.Context, *ReleaseStickyRequest) (*ReleaseStickyResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }

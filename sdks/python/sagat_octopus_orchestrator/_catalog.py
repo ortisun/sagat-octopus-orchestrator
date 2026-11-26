@@ -663,7 +663,7 @@ CATALOG: Final[tuple[CatalogEntry, ...]] = (
         http=(),
         grpc='PERMISSION_DENIED',
         retryable=False,
-        remediation='The value is withheld because it may hold a secret field or travels as a blob: read it through the activity that owns it, or with the reveal rights.',
+        remediation='The value is withheld because its carrier classifies a field secret, or because the export never carries a blob: a secret field is never revealed; read a blob through the activity that owns it.',
     ),
     CatalogEntry(
         code='TRANSPORT',

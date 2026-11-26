@@ -573,7 +573,7 @@ class WriteBlobResponse(_message.Message):
     def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
 
 class ReadBlobRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id", "instance")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id", "instance", "read_token")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -582,6 +582,7 @@ class ReadBlobRequest(_message.Message):
     LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     BLOB_ID_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    READ_TOKEN_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -590,7 +591,8 @@ class ReadBlobRequest(_message.Message):
     lease_token: str
     blob_id: str
     instance: ExecutionInstanceIdentity
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+    read_token: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., read_token: _Optional[str] = ...) -> None: ...
 
 class ReadBlobResponse(_message.Message):
     __slots__ = ("header", "chunk")
@@ -1344,8 +1346,8 @@ class FailCommand(_message.Message):
     CODE_FIELD_NUMBER: _ClassVar[int]
     SAFE_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     code: str
-    safe_message: bytes
-    def __init__(self, code: _Optional[str] = ..., safe_message: _Optional[bytes] = ...) -> None: ...
+    safe_message: str
+    def __init__(self, code: _Optional[str] = ..., safe_message: _Optional[str] = ...) -> None: ...
 
 class ContinueAsNewCommand(_message.Message):
     __slots__ = ("input", "state", "active_version")
