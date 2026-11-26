@@ -599,7 +599,8 @@ All evidence below is required future evidence; none exists.
 Namespace-defined resource types (O1122); resources consumed by ordinary activities and scripts;
 OAuth2 authorization-code/refresh flows; SES/SNS, SendGrid, Postmark; an SMTP server; MIME parsing;
 provider-specific route signatures (GitHub, Stripe, Shopify); synchronous routes (026); standalone
-operations (022); database engines (024); operations inside bodies (G1120); a connector marketplace;
+operations (022); database engines (024); operations inside bodies (G1120); a connector marketplace
+(since constitution 5.0.0: an open marketplace stays out, and the curated hub is 028's and design 047's);
 cross-resource distributed transactions.
 
 ## Owner questions

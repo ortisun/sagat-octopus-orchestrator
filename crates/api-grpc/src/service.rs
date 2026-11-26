@@ -614,6 +614,8 @@ where
                 worker_id: registered.worker_id.to_string(),
                 session_token: registered.session_token.expose().to_owned(),
                 accepted_protocol_version: registered.accepted_protocol_version,
+                // Feature 041: sent only at an accepted minor of 7, which T041-7 offers.
+                step_logs: None,
             })
         })
         .await
@@ -1061,6 +1063,14 @@ where
         .await
     }
 
+    // Feature 041 builds this in T041-7 (`crates/api-grpc/src/step_logs.rs`); until then a
+    // worker that sends a batch stops capture for the attempt, as against an older replica.
+    async fn append_step_logs(
+        &self,
+        _: Request<pb::AppendStepLogsRequest>,
+    ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
+        Err(Status::unimplemented("AppendStepLogs"))
+    }
     async fn resolve_database(
         &self,
         request: Request<pb::ResolveSecretsRequest>,

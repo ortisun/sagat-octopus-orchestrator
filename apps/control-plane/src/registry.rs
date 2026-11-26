@@ -19,7 +19,7 @@ use sagat_application::instances::{
     CAPABILITY_WINDOW, Capability, Counting, InstanceKind, InstanceStore, LIVENESS, Member,
     REGISTRY_STATEMENT_TIMEOUT, RegistrySettings,
 };
-use sagat_infra_postgres::{PgInstanceStore, PgPool, PoolConfig};
+use sagat_infra_postgres::{PgInstanceStore, PgPool, PoolConfig, PoolName};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -57,9 +57,10 @@ pub fn new_instance_id() -> Uuid {
 /// The pool of the registry: one connection, of its own, with the statement timeout of the process, at most
 /// [`REGISTRY_STATEMENT_TIMEOUT`] (5 s: a slow beat cannot use up the window of capability calls, decision D006-098). It
 /// costs the database one connection per process and spares the heartbeat the contention of the pool that serves requests.
+/// It serves the same instance as the process's pool, so it takes the same name (design 041, task T041-5).
 #[must_use]
-pub fn registry_pool_config(db: &DatabaseConfig) -> PoolConfig {
-    let mut config = PoolConfig::new(db.url.clone());
+pub fn registry_pool_config(db: &DatabaseConfig, instance: Uuid) -> PoolConfig {
+    let mut config = PoolConfig::new(db.url.clone()).named(PoolName::Instance(instance));
     config.max_connections = 1;
     // 0 is "no timeout" to PostgreSQL: the registry's connection never runs unbounded (decision D006-100)
     config.statement_timeout = if db.statement_timeout.is_zero() {
@@ -70,11 +71,13 @@ pub fn registry_pool_config(db: &DatabaseConfig) -> PoolConfig {
     config
 }
 
-/// A member of the registry over `pool` (the registry's own, see [`registry_pool_config`]), with a closed gate.
-/// `capabilities` is what the process can do.
+/// A member of the registry over `pool` (the registry's own, see [`registry_pool_config`]), with a closed gate, as the
+/// instance `instance` (made by [`new_instance_id`] before the process opened its pools, which carry it in their
+/// names). `capabilities` is what the process can do.
 #[must_use]
 pub fn member(
     pool: &PgPool,
+    instance: Uuid,
     kind: InstanceKind,
     capabilities: &[Capability],
     scheduler_owner: Option<String>,
@@ -84,7 +87,7 @@ pub fn member(
     Arc::new(
         Member::new(
             PgInstanceStore::new(pool.clone()),
-            new_instance_id(),
+            instance,
             kind,
             BINARY_VERSION,
             capabilities,
@@ -478,10 +481,16 @@ mod tests {
             max_connections: 40,
             statement_timeout: Duration::from_secs(7),
         };
-        let config = registry_pool_config(&db);
+        let instance = new_instance_id();
+        let config = registry_pool_config(&db, instance);
         assert_eq!(
             config.max_connections, 1,
             "not a share of the pool of the process"
+        );
+        assert_eq!(
+            config.application_name,
+            format!("sagat-octopus-orchestrator/{instance}"),
+            "named for the instance it serves, as the process's pool is"
         );
         assert_eq!(
             config.statement_timeout,
@@ -489,16 +498,22 @@ mod tests {
             "lowered to at most 5 s, never refused (decision D006-098)"
         );
         assert_eq!(config.url, db.url);
-        let shorter = registry_pool_config(&DatabaseConfig {
-            statement_timeout: Duration::from_secs(2),
-            ..db
-        });
+        let shorter = registry_pool_config(
+            &DatabaseConfig {
+                statement_timeout: Duration::from_secs(2),
+                ..db
+            },
+            instance,
+        );
         assert_eq!(shorter.statement_timeout, Duration::from_secs(2));
-        let unbounded = registry_pool_config(&DatabaseConfig {
-            url: "postgres://u:p@127.0.0.1:1/x".to_owned(),
-            max_connections: 40,
-            statement_timeout: Duration::ZERO,
-        });
+        let unbounded = registry_pool_config(
+            &DatabaseConfig {
+                url: "postgres://u:p@127.0.0.1:1/x".to_owned(),
+                max_connections: 40,
+                statement_timeout: Duration::ZERO,
+            },
+            instance,
+        );
         assert_eq!(
             unbounded.statement_timeout,
             Duration::from_secs(5),

@@ -107,7 +107,8 @@ and eventually answers. Four forces make the execution model hard to reverse:
    would need a second waiting mechanism inside a lease.
 3. **Code-orchestrated loop in an SDK worker with replay (Temporal style)** — needs deterministic loop
    code per language, the procedural mode that `docs/architecture/workflow-ir-and-sdk-modes.md` defers,
-   and five SDK implementations of the same planner.
+   and five SDK implementations of the same planner. *Note (2026-11-24):* constitution 5.0.0 no longer
+   defers the procedural mode (design 044); the reasons above for an engine-driven agent loop still hold.
 4. **Provider-hosted agents and provider-side tools** — the provider runs the loop and the tools: no
    platform durability, egress control, audit or tenant boundary over the tool effects.
 

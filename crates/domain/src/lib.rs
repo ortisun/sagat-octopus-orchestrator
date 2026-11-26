@@ -28,6 +28,7 @@ pub mod schedules;
 pub mod scripts;
 pub mod secrets;
 pub mod sharding;
+pub mod step_logs;
 pub mod triggers;
 pub mod versioning;
 pub mod workflow;
