@@ -767,6 +767,10 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25 (decision D022-084; batch 3 reviews, correctness minor 7):* only `queued_runs` is kept in the
   counter rows; the live keys are counted from the semaphore and window rows of the digest versions in force, since a
   live-key counter would be locked between the key locks of one decision (D022-084 item 2).
+  *Amended 2026-11-26 (decision D022-133; security check of the group-view fix, finding 1):* the quota view MUST show
+  the usage of `concurrency_live_keys`, `rate_limit_live_keys` and `flow_control_key_waiters` only to a caller who may
+  reveal personal data in the namespace, the reveal right and the usage read in one snapshot; any other caller reads
+  `used` absent and `usageWithheld: true`, since the live-key count changes exactly when a key's last run ends.
 - **FR-022-059 — The one admission port is enforced**: The gate MUST run inside `PgRunStore::create`
   (`crates/infra-postgres/src/execution.rs`), the one function that inserts a new run; the only other
   inserts into `runs`, the continue-as-new successors of `crates/infra-postgres/src/chain_progress.rs`,

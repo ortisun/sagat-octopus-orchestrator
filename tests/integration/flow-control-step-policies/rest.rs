@@ -1285,18 +1285,99 @@ async fn a_group_is_summed_by_one_statement_over_its_own_rows() {
     }
 }
 
-/// Decision D022-131, measured at the ceiling: one group of 100,000 keys (the hard ceiling of `concurrency_live_keys` and
-/// `rate_limit_live_keys`) and a group `zz` after it. A viewer reads both listings one group a page: the first page
-/// answers `200` within the listing's 2 s statement timeout with the big group whole, its sums those of every key and
-/// `spansPages` false; the next page holds `zz`; nothing is read across pages.
+/// Seeds `count` step-scope keys of `group` in both gates' key tables of `namespace`, each with one real holder row
+/// (`acquired_at` half an hour ago) and one counted grant (leased ten minutes ago, within the window's hour), held by the
+/// runs `runs` in turn under node names `<group>-<i>`, and one waiter counted, its oldest wait an hour ago; digests
+/// `sha256(group/i)`. The counters of holders and grants are kept by their triggers (decision D022-134).
+async fn seed_held_group_keys(
+    api: &TestApi,
+    tenant: sagat_domain::identity::TenantId,
+    namespace: &str,
+    group: &str,
+    count: i32,
+    runs: &[Uuid],
+) {
+    for (index, statement) in [
+        "INSERT INTO concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, \
+                holders, waiters, oldest_wait_at, key_version, key_shard, updated_at) \
+         SELECT $1, $2::uuid, 'ORDINARY', 'STEP', $3, sha256(convert_to($3 || '/' || i, 'UTF8')), 0, 1, \
+                clock_timestamp() - interval '1 hour', \
+                (SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'), i % 64, clock_timestamp() \
+           FROM generate_series(1, $4) i",
+        "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, \
+                live_grants, waiters, oldest_wait_at, max_period_ms, key_version, key_shard, updated_at) \
+         SELECT $1, $2::uuid, 'ORDINARY', 'STEP', $3, sha256(convert_to($3 || '/' || i, 'UTF8')), 0, 1, \
+                clock_timestamp() - interval '1 hour', 3600000, \
+                (SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'), i % 64, clock_timestamp() \
+           FROM generate_series(1, $4) i",
+        "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, \
+                group_name, key_digest, declared_limit, acquired_at) \
+         SELECT $1, $2::uuid, ($5::uuid[])[1 + i % cardinality($5::uuid[])], 'STEP', $3 || '-' || i, 1, 'ORDINARY', $3, \
+                sha256(convert_to($3 || '/' || i, 'UTF8')), 1, clock_timestamp() - interval '30 minutes' \
+           FROM generate_series(1, $4) i",
+        "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, \
+                key_digest, declared_limit, period_ms, granted_at, leased_at, shard) \
+         SELECT $1, $2::uuid, r.run, $3 || '-' || r.i, 1, 'ORDINARY', 'STEP', $3, \
+                sha256(convert_to($3 || '/' || r.i, 'UTF8')), 1, 3600000, \
+                clock_timestamp() - interval '10 minutes', clock_timestamp() - interval '10 minutes', run_shard(r.run) \
+           FROM (SELECT i, ($5::uuid[])[1 + i % cardinality($5::uuid[])] AS run FROM generate_series(1, $4) i) r",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // the holder and grant rows' triggers find their key row by its primary key: the planner must know the key tables
+        // are large, or each of the 100,000 trigger updates scans them
+        if index == 2 {
+            for table in ["concurrency_semaphores", "rate_limit_windows"] {
+                sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
+                    .execute(&api.db.pool)
+                    .await
+                    .expect("analyze");
+            }
+        }
+        sqlx::query(statement)
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .bind(group)
+            .bind(count)
+            .bind(runs)
+            .execute(&api.db.pool)
+            .await
+            .unwrap_or_else(|error| panic!("seeded: {error}"));
+    }
+}
+
+/// Decision D022-131, measured at the ceiling, and D022-134: one step-scope group of 100,000 keys (the hard ceiling of
+/// `concurrency_live_keys` and `rate_limit_live_keys`), every key with a real holder and a counted grant, and a group
+/// `zz` after it. A viewer reads both listings one group a page: the big group's page answers `200` within the listing's
+/// 2 s statement timeout with the group whole, its sums those of every key and every holder and grant, `spansPages`
+/// false; nothing is read across pages.
 #[tokio::test]
 async fn a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page() {
     use sagat_domain::identity::Role;
     let (api, namespace, tenant) = api().await;
     member(&api, tenant, "vera-viewer", Role::Viewer).await;
-    seed_group_keys(&api, tenant, &namespace, "big", 100_000).await;
-    seed_group_keys(&api, tenant, &namespace, "zz", 1).await;
-    for table in ["concurrency_semaphores", "rate_limit_windows"] {
+    // a hundred runs that hold the seeded permits and grants, a node each (a run holds one permit a node)
+    let workflow = publish(
+        &api,
+        "rest-ceiling-runs",
+        serial_start("rest-ceiling-runs", 1),
+    )
+    .await
+    .expect("published");
+    let mut runs = Vec::new();
+    for index in 0..100 {
+        let run = start(&api, &workflow, &format!("acct-ceiling-{index}")).await;
+        runs.push(Uuid::parse_str(&run).expect("a run id"));
+    }
+    seed_held_group_keys(&api, tenant, &namespace, "big", 100_000, &runs).await;
+    seed_held_group_keys(&api, tenant, &namespace, "zz", 1, &runs).await;
+    for table in [
+        "concurrency_semaphores",
+        "concurrency_holders",
+        "rate_limit_windows",
+        "rate_limit_grants",
+    ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
             .execute(&api.db.pool)
             .await
@@ -1310,13 +1391,42 @@ async fn a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page() {
         ),
         (
             "rate-limit-keys",
-            ["waiters", "unleasedGrants"],
+            ["grantsInWindow", "unleasedGrants"],
             [100_000, 0],
         ),
     ] {
+        let walk = group_walk(&api, &namespace, listing, "limit=1").await;
+        assert_eq!(
+            walk,
+            [
+                (0, "accounts".to_owned(), false),
+                (1, "big".to_owned(), false),
+                (2, "zz".to_owned(), false)
+            ]
+            .into_iter()
+            .filter(|(_, group, _)| listing == "concurrency-keys" || group != "accounts")
+            .enumerate()
+            .map(|(page, (_, group, spans))| (u32::try_from(page).expect("a page"), group, spans))
+            .collect::<Vec<_>>(),
+            "{listing}"
+        );
+        let after = if listing == "concurrency-keys" {
+            let (_, first) = read_as(
+                &api,
+                &format!("/namespaces/{namespace}/{listing}?limit=1"),
+                "vera-viewer",
+            )
+            .await;
+            format!(
+                "&cursor={}",
+                first["nextCursor"].as_str().expect("a next page")
+            )
+        } else {
+            String::new()
+        };
         let (status, page) = read_as(
             &api,
-            &format!("/namespaces/{namespace}/{listing}?limit=1"),
+            &format!("/namespaces/{namespace}/{listing}?limit=1{after}"),
             "vera-viewer",
         )
         .await;
@@ -1327,14 +1437,9 @@ async fn a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page() {
         for (field, value) in sums.iter().zip(expected) {
             assert_eq!(groups[0][*field], json!(value), "{listing} {field}: {page}");
         }
+        assert_eq!(groups[0]["waiters"], json!(100_000), "{listing}: {page}");
         assert!(groups[0]["oldestWaitSince"].is_string(), "{page}");
         assert_eq!(groups[0]["spansPages"], json!(false), "{page}");
-        let walk = group_walk(&api, &namespace, listing, "limit=1").await;
-        assert_eq!(
-            walk,
-            [(0, "big".to_owned(), false), (1, "zz".to_owned(), false)],
-            "{listing}"
-        );
     }
 }
 

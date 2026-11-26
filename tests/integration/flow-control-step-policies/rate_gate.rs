@@ -875,6 +875,8 @@ async fn window_rows(w: &World) -> i64 {
 #[tokio::test]
 async fn an_aged_window_counts_against_the_live_keys_ceiling_until_it_goes() {
     let w = gated_world().await;
+    // it reads the live-key usage, shown only with the reveal grant (decision D022-133)
+    crate::support::flow_control::reveal_to_admin(&w).await;
     let workflow = publish(&w, rated_start("rate-aged", 1, "second")).await;
     set(&w, QuotaResource::RateLimitLiveKeys, 1).await;
     let first = w.start(workflow, &json!({"accountId": "acct-1"})).await;

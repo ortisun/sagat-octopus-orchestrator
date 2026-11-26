@@ -217,3 +217,84 @@ async fn the_concurrency_live_keys_count_misses_only_the_keys_other_transactions
         w.assert_consistent(run).await;
     }
 }
+
+/// The quota lines of `resources` in the namespace view `who` reads: (resource, used, withheld).
+async fn usage_lines(
+    w: &World,
+    who: &sagat_domain::identity::Principal,
+    resources: &[QuotaResource],
+) -> Vec<(QuotaResource, Option<u64>, bool)> {
+    w.quotas
+        .list(who, Some(w.namespace.id()), &ctx())
+        .await
+        .expect("the quota view")
+        .into_iter()
+        .filter(|view| resources.contains(&view.resource))
+        .map(|view| (view.resource, view.used, view.usage_withheld))
+        .collect()
+}
+
+/// Security check of the group-view fix, finding 1 (decision D022-133): the usage of `concurrency_live_keys`,
+/// `rate_limit_live_keys` and `flow_control_key_waiters` changes exactly when a key's last run ends, so it tells which
+/// runs share a key. A Developer without the namespace's reveal grant reads the three lines with `used` withheld; given
+/// the grant, the same Developer reads the counts (two live keys, one window, the busiest key's one waiter). Other lines
+/// keep their usage.
+#[tokio::test]
+async fn a_caller_without_the_reveal_right_reads_no_live_key_or_waiter_usage() {
+    use sagat_domain::identity::Role;
+    let w = gated_world().await;
+    let mut serial = document("quota-serial", "g", vec![activity("g")]);
+    serial["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let serial = publish(&w, serial).await;
+    let mut rated = document("quota-rated", "g", vec![activity("g")]);
+    rated["rateLimit"] =
+        json!({"group": "providers", "key": "input.accountId", "limit": 5, "per": "hour"});
+    let rated = publish(&w, rated).await;
+    for account in ["acct-1", "acct-1", "acct-2"] {
+        w.start(serial, &json!({"accountId": account})).await;
+    }
+    w.start(rated, &json!({"accountId": "acct-1"})).await;
+    let dave = w.member("dave", Role::Developer).await;
+    let flow = [
+        QuotaResource::ConcurrencyLiveKeys,
+        QuotaResource::RateLimitLiveKeys,
+        QuotaResource::FlowControlKeyWaiters,
+    ];
+    let mut withheld = usage_lines(&w, &dave, &flow).await;
+    withheld.sort_by_key(|line| line.0.as_str());
+    assert_eq!(
+        withheld,
+        [
+            (QuotaResource::ConcurrencyLiveKeys, None, true),
+            (QuotaResource::FlowControlKeyWaiters, None, true),
+            (QuotaResource::RateLimitLiveKeys, None, true),
+        ],
+        "withheld without the reveal grant"
+    );
+    let other = usage_lines(&w, &dave, &[QuotaResource::QueuedRuns]).await;
+    assert_eq!(
+        other,
+        [(QuotaResource::QueuedRuns, Some(1), false)],
+        "other usage stays"
+    );
+    sqlx::query(
+        "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+         VALUES ($1, $2, 'dave', 'admin', clock_timestamp())",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("the reveal grant");
+    let mut revealed = usage_lines(&w, &dave, &flow).await;
+    revealed.sort_by_key(|line| line.0.as_str());
+    assert_eq!(
+        revealed,
+        [
+            (QuotaResource::ConcurrencyLiveKeys, Some(2), false),
+            (QuotaResource::FlowControlKeyWaiters, Some(1), false),
+            (QuotaResource::RateLimitLiveKeys, Some(1), false),
+        ],
+        "with the grant, the counts"
+    );
+}

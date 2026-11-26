@@ -353,6 +353,8 @@ async fn the_namespace_ceiling_of_node_declarations_is_checked_at_publication() 
 #[tokio::test]
 async fn each_quota_resource_of_the_gate_is_set_at_its_bound_refused_over_it_and_counted() {
     let w = world().await;
+    // it reads the live-key and waiter usages, shown only with the reveal grant (decision D022-133)
+    crate::support::flow_control::reveal_to_admin(&w).await;
     let resources = [
         QuotaResource::QueuedRuns,
         QuotaResource::ConcurrencyLiveKeys,

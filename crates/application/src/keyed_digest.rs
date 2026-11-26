@@ -361,10 +361,10 @@ impl KeyRing {
 
 /// The longest position a cursor seals. The longest a key listing writes is 364 bytes: `k1.` (3), an instant of at most
 /// 19 digits, `.` (1), `DRAFT_TEST` (10), `.` (1), `STEP` (4), `.` (1), a digest in hexadecimal (64), `.` (1) and a group
-/// of at most 130 bytes in hexadecimal (260). A group view's place of a group read in part (decision D022-086 item 5) is
-/// at most 450: `kg1.n.` (6), the same pool, scope, digest and group (342), and its partial sums, three counts of at most
-/// 20 digits and two instants of at most 19, each after a `.` (103). Every position is sealed after the instant of its
-/// page, at most 19 digits and a `.` (decision D022-100), so at most 470; 512 leaves room without ever cutting one off.
+/// of at most 130 bytes in hexadecimal (260). A group view's position is a group's place only (decision D022-131: no
+/// group is read across pages, so a cursor carries no partial sums), `kg1.n.` (6) and the same pool, scope, digest and
+/// group (342), at most 348. Every position is sealed after the instant of its page, at most 19 digits and a `.`
+/// (decision D022-100), so at most 384; 512 leaves room without ever cutting one off.
 pub const MAX_CURSOR_PLAIN_BYTES: usize = 512;
 
 /// The longest sealed cursor accepted, in bytes: a version, a nonce, a tag and a position.

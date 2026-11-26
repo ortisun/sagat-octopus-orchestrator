@@ -172,6 +172,13 @@ namespace lock (OD-2026-11-19-4; for the rate-limit keys OD-2026-11-20-11). So, 
 
 While the count is above the ceiling, a step whose key is new is refused; keys that exist are decided as before.
 
+How close a namespace is to these ceilings is in its quota view (`GET /namespaces/{namespaceId}/quotas`): the `used` of
+`concurrency_live_keys`, `rate_limit_live_keys` and `flow_control_key_waiters` is shown only to a caller who may reveal
+personal data in the namespace (the reveal grant of the key listings); everyone else reads `usageWithheld: true` and no
+`used`, since the live-key count changes exactly when a key's last run ends (D022-133). Give the operators who watch
+these ceilings the reveal grant. That a refusal at the ceiling depends on whether a key exists is itself an oracle, an
+open owner question (G022-040).
+
 A run's start counts under the namespace's admission lock, so two starts never pass a ceiling together; a step's
 readiness round takes no such lock. A rate-limit window row stays while a waiter or a grant the purge must keep uses it
 (its window row's longest period and one more minute after the grant's lease), so a key used once counts for that long.

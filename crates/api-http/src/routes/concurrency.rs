@@ -113,8 +113,9 @@ pub(crate) async fn open_key_listing<B: Governance>(
 pub(crate) const OTHER_VIEW: &str =
     "the cursor was written for the other view of this listing: read it again without a cursor";
 
-/// The refusal of a cursor whose page sealed it more than fifteen minutes ago (decision D022-100; batch 5 security
-/// suspicion 3): a group's partial sums it carries must not be added to rows read so much later.
+/// The refusal of a cursor whose page sealed it more than fifteen minutes ago, or that is stamped more than a minute
+/// ahead of the reader's clock (decisions D022-100 and D022-129): a position kept that long names a place in a listing
+/// that has moved on, and the listing is read again from its start.
 pub(crate) const EXPIRED: &str = "the cursor has expired: read the listing again without a cursor";
 
 /// `GET /namespaces/{namespaceId}/concurrency-keys`

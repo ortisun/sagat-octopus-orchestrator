@@ -861,6 +861,23 @@ impl NamespaceDirectory for PgRunStore {
     }
 }
 
+/// The usage of `concurrency_live_keys` in namespace `$2` of tenant `$1`: its semaphore rows.
+const CONCURRENCY_LIVE_KEYS_USAGE_SQL: &str =
+    "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2";
+/// The usage of `rate_limit_live_keys`: the window rows of both scopes.
+const RATE_LIMIT_LIVE_KEYS_USAGE_SQL: &str =
+    "SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2";
+/// The usage of `flow_control_key_waiters`: the busiest key's run waiters.
+const FLOW_CONTROL_KEY_WAITERS_USAGE_SQL: &str = "SELECT coalesce(max(waiting), 0)::bigint FROM ( \
+         SELECT count(*) AS waiting FROM concurrency_waiters \
+          WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+          GROUP BY pool, group_name, key_digest \
+         UNION ALL \
+         SELECT count(*) AS waiting FROM rate_limit_waiters \
+          WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN' \
+          GROUP BY pool, group_name, key_digest \
+     ) per_key";
+
 impl QuotaStore for PgRunStore {
     async fn activity_settings(
         &self,
@@ -1200,6 +1217,29 @@ impl QuotaStore for PgRunStore {
         crate::reveal_grants::step_log_usage_if_revealed(&self.pool, tenant, subject).await
     }
 
+    async fn flow_control_usage_if_revealed(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &Subject,
+        resource: QuotaResource,
+    ) -> Result<Option<u64>, StoreError> {
+        let usage = match resource {
+            QuotaResource::ConcurrencyLiveKeys => CONCURRENCY_LIVE_KEYS_USAGE_SQL,
+            QuotaResource::RateLimitLiveKeys => RATE_LIMIT_LIVE_KEYS_USAGE_SQL,
+            QuotaResource::FlowControlKeyWaiters => FLOW_CONTROL_KEY_WAITERS_USAGE_SQL,
+            _ => {
+                return Err(StoreError::Internal {
+                    detail: "a usage that does not tell which runs share a key".into(),
+                });
+            }
+        };
+        crate::reveal_grants::usage_if_revealed_in_namespace(
+            &self.pool, tenant, namespace, subject, usage,
+        )
+        .await
+    }
+
     async fn usage(
         &self,
         tenant: TenantId,
@@ -1417,35 +1457,21 @@ impl QuotaStore for PgRunStore {
             .fetch_one(&self.pool)
             .await,
                         // the semaphores; the windows have a ceiling of their own (T022-077, plan "Finite ceilings (rate limits)")
-            QuotaResource::ConcurrencyLiveKeys => sqlx::query_scalar(
-                "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2",
-            )
+            QuotaResource::ConcurrencyLiveKeys => sqlx::query_scalar(CONCURRENCY_LIVE_KEYS_USAGE_SQL)
             .bind(tenant.as_uuid())
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
             // the window rows of both scopes (T022-077, decision D022-066 item 1), as the gate counts them before it creates
             // one; like the semaphores' usage, every digest version (the gate leaves out a forcibly retired one's rows)
-            QuotaResource::RateLimitLiveKeys => sqlx::query_scalar(
-                "SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2",
-            )
+            QuotaResource::RateLimitLiveKeys => sqlx::query_scalar(RATE_LIMIT_LIVE_KEYS_USAGE_SQL)
             .bind(tenant.as_uuid())
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
             // the limit applies to every key; its scalar usage is the busiest key's run waiters, as for
             // `activity_concurrency`
-            QuotaResource::FlowControlKeyWaiters => sqlx::query_scalar(
-                "SELECT coalesce(max(waiting), 0)::bigint FROM ( \
-                     SELECT count(*) AS waiting FROM concurrency_waiters \
-                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
-                      GROUP BY pool, group_name, key_digest \
-                     UNION ALL \
-                     SELECT count(*) AS waiting FROM rate_limit_waiters \
-                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN' \
-                      GROUP BY pool, group_name, key_digest \
-                 ) per_key",
-            )
+            QuotaResource::FlowControlKeyWaiters => sqlx::query_scalar(FLOW_CONTROL_KEY_WAITERS_USAGE_SQL)
             .bind(tenant.as_uuid())
             .bind(namespace)
             .fetch_one(&self.pool)

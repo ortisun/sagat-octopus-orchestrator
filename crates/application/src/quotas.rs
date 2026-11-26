@@ -194,6 +194,18 @@ pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
         tenant: TenantId,
         subject: &Subject,
     ) -> impl Future<Output = Result<Option<u64>, StoreError>> + Send;
+
+    /// The usage of `resource` (one of [`QuotaResource::reveals_key_sharing`]) in `namespace`, or `None` unless
+    /// `subject`'s current role may use a reveal grant and it holds one for the namespace (feature 022, decision D022-133;
+    /// the rule of the key listings, D022-060). The right and the usage are read in one snapshot, so a read that runs
+    /// after a revoke commits never answers `Some`.
+    fn flow_control_usage_if_revealed(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &Subject,
+        resource: QuotaResource,
+    ) -> impl Future<Output = Result<Option<u64>, StoreError>> + Send;
 }
 
 /// One line of the quota view.
@@ -207,8 +219,10 @@ pub struct QuotaView {
     /// `None` when the view is the tenant-wide default of a resource that is counted per namespace, or when the usage is
     /// withheld.
     pub used: Option<u64>,
-    /// True only for `tenant_step_log_bytes` when its usage is withheld: the caller lacks `run:logs:read` or the PII
-    /// reveal grant in some namespace of the tenant (decision D041-133, OD-2026-11-20-19).
+    /// True when the usage is withheld: for `tenant_step_log_bytes`, the caller lacks `run:logs:read` or the PII reveal
+    /// grant in some namespace of the tenant (decision D041-133, OD-2026-11-20-19); for `concurrency_live_keys`,
+    /// `rate_limit_live_keys` and `flow_control_key_waiters`, the caller may not reveal personal data in the namespace
+    /// (decision D022-133).
     pub usage_withheld: bool,
 }
 
@@ -647,6 +661,18 @@ where
             } else {
                 None
             };
+            return Ok((used, used.is_none()));
+        }
+        // the live-key counts and the busiest key's waiters change exactly when a key's last run ends, so they tell which
+        // runs share a key: shown only to a caller who may reveal personal data in the namespace, the right and the usage
+        // read in one snapshot (feature 022, decision D022-133)
+        if resource.reveals_key_sharing()
+            && let Some(namespace) = namespace
+        {
+            let used = self
+                .store
+                .flow_control_usage_if_revealed(tenant, namespace, principal.subject(), resource)
+                .await?;
             return Ok((used, used.is_none()));
         }
         let used = match (resource.has_usage(), resource.scope(), namespace) {

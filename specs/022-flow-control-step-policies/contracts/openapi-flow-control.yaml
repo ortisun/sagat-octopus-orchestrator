@@ -586,6 +586,18 @@ components:
             queueDeadline: {type: [string, 'null'], format: date-time}
             position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
             estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), or when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2).'}
+    QuotaUsageFlowControlFields:
+      description: |
+        Amends the descriptions of the canonical `Quota.used` and `Quota.usageWithheld` (merge into them; no new
+        property, decision D022-133). The usage of `concurrency_live_keys`, `rate_limit_live_keys` and
+        `flow_control_key_waiters` is shown only to a caller who may reveal personal data in the namespace (the reveal
+        right of the key listings, D022-060), read in one snapshot with that right; for any other caller `used` is
+        absent and `usageWithheld` is true, since the live-key count changes exactly when the last run of a key ends and
+        so tells which runs share a key.
+      type: object
+      properties:
+        used: {type: integer, format: int64, minimum: 0, description: 'Absent also for concurrency_live_keys, rate_limit_live_keys and flow_control_key_waiters unless the caller may reveal personal data in the namespace (D022-133).'}
+        usageWithheld: {type: boolean, description: 'Present and true also for concurrency_live_keys, rate_limit_live_keys and flow_control_key_waiters when used is withheld because the caller may not reveal personal data in the namespace (D022-133).'}
     RunOriginAdditions:
       description: Values added to the canonical `DatabaseExecutionOrigin` enumeration (name kept for compatibility) used by `Run.origin` and `listRuns?origin=`.
       type: string

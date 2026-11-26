@@ -2385,6 +2385,40 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
   `waitEvent` of the signal's name only inside a `while` body is not on the entry path (bodies are separate graphs that
   the walk never enters).
 
+- **D022-133 — The quota view withholds the live-key counts and the busiest key's waiters from a caller without the
+  reveal right (2026-11-26; security check of `e3d5717b`, finding 1, medium; decisions D022-061, D022-086 item 5(b),
+  D022-131; design 041's D041-133 and D041-141).** Delegate (OD-2026-11-24-4). `used` of `concurrency_live_keys` and
+  `rate_limit_live_keys` is the namespace's exact count of key rows, and an idle key's row is deleted
+  (`20270130000000_flow_control_concurrency.up.sql`, the prune trigger); `quota:read` is held by Developer, Operator and
+  Viewer. A Viewer reading U while a victim run ends learned whether U dropped by one (no other run used its key), the
+  key-sharing link D022-061 and D022-086 item 5(b) forbid, and a Developer starting a run on a value X learned whether X
+  is live (U unchanged). `flow_control_key_waiters`'s usage, the busiest key's run waiters, links runs the same way.
+  Options: (a) withhold the three usages unless the caller holds the reveal right in the namespace (the rule of the key
+  listings, D022-060), the grant and the usage read in one snapshot, as `tenant_step_log_bytes` is withheld (D041-133,
+  D041-141); (b) show a coarse usage (rounded, or a band): still a counting oracle near a band's edge, and a usage the
+  operator cannot act on; (c) withhold the usage from everyone: an operator with the reveal right loses the one place
+  that says how close a namespace is to its ceiling. Chosen (a): `QuotaService::used` asks the store for those three
+  usages only through `flow_control_usage_if_revealed`, which reads the caller's membership role and its reveal grant in
+  the namespace and the usage in one `REPEATABLE READ` snapshot (a revoke committed before the read withholds it); without
+  them the line answers `used: null, usageWithheld: true`. The tenant-wide view of these per-namespace resources shows no
+  usage already. No other surface shows these counts: the Studio has no quota page, the command line prints no quota
+  usage, and no metric carries a tenant, a namespace or a key (`concurrency_waiters` and `rate_limit_waiters` are
+  deployment-wide gauges by scope). The refusal at the live-key ceiling is an oracle of its own, gap G022-040, an owner
+  question. Tests:
+  `ceilings::a_caller_without_the_reveal_right_reads_no_live_key_or_waiter_usage` (a Developer without the grant reads
+  `used` withheld for the three, with the grant the counts; red before).
+
+- **D022-134 — The ceiling measurement of the group view seeds every key's holder and in-window grant (2026-11-26;
+  security check of `e3d5717b`, finding 2, low; decision D022-131 item 4).** Delegate (OD-2026-11-24-4). The
+  100,000-key test of D022-131 seeded the key rows' counters only, so the statements' probes of `concurrency_holders`
+  and `rate_limit_grants` found nothing. Options: (a) seed one real holder row per key and one counted grant per window
+  (leased within the window), at step scope so that a hundred runs hold them (a run holds one permit a node), and the
+  counters kept by their triggers; (b) the fixed digest-range slices of D022-131 option (b) if (a) misses the timeout.
+  Chosen (a), measured: the page still answers within the 2 s statement timeout, so (b) is not needed
+  (`rest::a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page`, now 100,000 holders and 100,000 counted grants
+  beside the key rows). Also the two comments that still described a group's partial sums (`routes/concurrency.rs`,
+  `keyed_digest.rs`) now say a cursor names a group's place.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -2441,6 +2475,7 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
 | G022-019 | A reset with the strategy `CANCEL_SOURCE` of a rate-limited source whose key's window is full cancels its source and then fails `RATE_LIMIT_SLOT_UNAVAILABLE`, with no run replacing it (D022-069 items 3 and 8; reviews of 2026-11-21, architecture Major 1, security minor; re-review architecture minor C). The runbooks warn and advise `REQUIRE_TERMINAL`; the two contracts say so. Task T022-114 builds the advisory refusal at the request, or a warning in the reset preview. *Built 2026-11-25 (decision D022-079):* the request is refused `RATE_LIMIT_SLOT_UNAVAILABLE` before the source is cancelled when the key's window is full as it arrives (advisory: the window can still fill before the source ends). | Open until T022-114 is ticked; not a production gate (D022-069 item 8) |
 | G022-020 | A namespace's `concurrency_limit` lowered while runs are queued for a permit: the grant routine compares a queued waiter with the limit filed at its admission, as the rate gate did before D022-071; the specification's edge case speaks of a new version's lower limit only (`spec.md`, US02 edge cases). Whether a lowered concurrency ceiling applies to queued waiters at once is a product question for the coordinator (OD-2026-11-20-6) before it is built. *Closed 2026-11-21 (decision D022-074):* the grant from the queue evaluates a permit waiter, and a waiter ahead, against the lower of its filed limit and the current `concurrency_limit`; held permits are never revoked; `lifecycle::a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit`. | Closed; D022-074 |
 | G022-039 | A waiter whose grant keeps failing (D022-124) is visible to the operator in the error log, the `failed` count of `scheduler_actions_total{kind="gate_grant"}` and its `flow_control_grant_failures` row (the runbook's query), not in the API: neither the run read (`Run.concurrency`, `Run.rateLimit`) nor an alert kind says it. Either changes the canonical OpenAPI (`specs/001-platform-foundation/contracts/openapi.yaml`, merged by another session), the alert kinds' check and the Studio types. | Open; follow-up of D022-124 |
+| G022-040 | *Owner question pending (security check of `e3d5717b`, finding 3, low; existed before).* The live-key ceiling refusal is a counting oracle: at the namespace's `concurrency_live_keys` (or `rate_limit_live_keys`), the gate refuses an admission that would create a new key (`FLOW_CONTROL_LIMIT`) and admits one on an existing key (`readiness_gate.rs`, the live-keys check of a round; the start's admission alike). A caller who holds about ceiling − n keys of its own finds the count n of others' live keys by a binary search, then tests whether a value X is live (admitted: live; refused: not), and, as runs end, which runs share a key. A delegate cannot accept a security finding (OD-2026-11-24-4), so this is the owner's. Options: (a) accept it as a documented residual: it costs the caller thousands of runs held open at once, each visible in the audit, and an operator who sets the ceiling far above the namespace's real need moves the oracle out of reach; (b) refuse every gated admission while the namespace is at its ceiling, on an existing key too: the presence test goes (the answer no longer depends on whether X exists), but the counting does not, since whether the namespace is at its ceiling still depends on the others' keys, so a caller filling it with its own keys still learns n and, watching n as runs end, which runs share a key; its cost is availability at the ceiling; (c1) a per-principal sub-ceiling alone: bounds how close one caller brings the namespace to its ceiling, but colluding principals keep both oracles; (c2) a refusal at ceiling − h for every admission: (b) shifted, no gain; (c3) queue a new key at the ceiling instead of refusing it: an existing key with room is still admitted at once, so still an oracle; (c4) partition the ceiling: each principal (a user or a service account; a trigger's runs under the trigger's own principal) may keep at most its share of live keys, the shares summing to no more than the namespace's ceiling, and a principal at its share is refused every gated admission, new key or not: whether a caller is refused then depends only on its own keys, so neither the count of others' keys nor a value's presence can be read, and the namespace's ceiling is never reached by others' keys alone; its cost is a share to configure and a principal refused while the namespace has room. Recommendation: (c4), the only option that closes both the counting and the presence test, with (b) as an interim step that closes the presence test at once if the owner wants that before the shares are built; (a) leaves both open. | Open; owner question |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
