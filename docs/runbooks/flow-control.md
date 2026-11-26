@@ -2,10 +2,12 @@
 
 For operators of a deployment that turns on concurrency keys or rate limits. Sections 1 to 4 cover the two things the
 owner decided on 2026-11-19: how the digest key of the flow-control keys is rotated, including in an emergency
-(OD-2026-11-19-2), and how far the namespace's live-keys ceiling can be passed (OD-2026-11-19-4). Sections 5 and 6 cover
-queued runs and rate limits; section 7 the activation of the two capabilities; sections 8 to 10 and 14 the four alerts; section
-11 how to read the key listings during an incident; section 12 the clocks; section 13 what happens when a limit or a
-namespace ceiling is lowered (T022-061, T022-082, T022-088). How the gates work inside the engine is in
+(OD-2026-11-19-2), and how far the namespace's live-keys ceiling can be passed (OD-2026-11-19-4); section 1.3 says what
+the digest-key commands do not have yet. Sections 5 and 6 cover queued runs and rate limits, with the life of a waiter in
+section 5.1; section 7 the activation of the two capabilities; sections 8 to 10 and 14 the four alerts; section 11 how
+to read the key listings during an incident; section 12 the clocks; section 13 what happens when a limit or a namespace
+ceiling is lowered or raised; section 15 the scheduler's flow-control actions and their counters (tasks T022-061,
+T022-082 and T022-088). How the gates work inside the engine is in
 [execution semantics](../architecture/execution-semantics.md#flow-control-gates-feature-022-release-030).
 
 Design: [ADR-0093](../adr/ADR-0093-the-flow-control-digest-key-is-rotated-per-key-with-live-rows.md) (decisions 1 to 5),
@@ -77,6 +79,30 @@ versions in force at start, switched on or off. A child run that a draining run 
 3. `control-plane flow-control-activate --capability concurrency-keys --operator <you>`: refused, naming the instances,
    while a live process does not list the capability (section 7).
 
+### 1.3 What the digest-key commands do not have yet (gaps G022-006, G1196 and G1193)
+
+The digest-key commands of sections 1.2, 2 and 3 are SQL functions of the schema owner, and only that. Plainly:
+
+- **No API, no CLI command, no span, no metric** runs or watches them (gap G022-006). `control-plane
+  flow-control-activate` activates a capability for the fleet (section 7); it does not activate a key version. Run the
+  functions with `psql` from your own login, as a script.
+- **No record in the platform's audit trail.** An activation keeps only what its version row says:
+  `SELECT version, state, activated_at, activated_by, activated_role, retired_at FROM flow_control_key_versions ORDER BY
+  version;` (`activated_by` is the name you typed, `activated_role` the database role of the session; a version is
+  activated once, so there is no history of earlier activations, gap G1190). A force has its own append-only record
+  (section 3). Write the incident or change number of each command in your own change log.
+- **No progress gauge and no alert for an open rotation** (gap G1196). To follow one, run the counts again:
+  `SELECT flow_control_key_version_rows(<old>::smallint);` (the key rows the version still has) and
+  `SELECT * FROM flow_control_key_version_runs(<old>::smallint);` (the runs that keep them).
+- **No check that every process holds a version before it is activated** (gap G1193). A process checks its ring against
+  the versions in force only when it starts. One that is already running without a version that is then activated
+  refuses every gated decision as unavailable: an API caller is answered `503 UNAVAILABLE` (retryable), and its grant
+  pass logs `a flow-control grant failed` and counts `scheduler_actions_total{kind="gate_grant",outcome="failed"}`. That is why step 1 of section 2 restarts every process
+  with the new key **before** the activation.
+
+What to do instead, until these exist: run the commands from your own login (never a shared owner login), as scripts with
+`SET lock_timeout`, read each outcome before you commit, and keep the commands and their outcomes with your change record.
+
 ## 2. An ordinary rotation
 
 The commands take a `smallint` version: write it `2::smallint` (a bare `2` is an `integer`, and PostgreSQL then finds no
@@ -92,7 +118,9 @@ expires.
    - `ALREADY_ACTIVE`, `RETIRED` (a retired or replaced version is never active again).
 3. The rotation ends when the retiring version's last row goes. Its rows belong to runs that hold, wait for or were
    granted a key; a run-level permit lives as long as its run, so one long run keeps a rotation open. To see them:
-   `SELECT * FROM flow_control_key_version_runs(<old>::smallint);` (tenant, namespace, run, holders, waiters, grants).
+   `SELECT * FROM flow_control_key_version_runs(<old>::smallint);` (tenant, namespace, run, holders, waiters, grants);
+   to count the key rows left, `SELECT flow_control_key_version_rows(<old>::smallint);` (nothing reports it for you,
+   section 1.3).
    Wait for them, or cancel them through the API if the owner of each run agrees. Rate-limit rows drain by time: a
    run's grant and a leased step's grant are deleted by the housekeeping once their window row's longest period and one
    more minute have passed since the lease (section 6), and the window row goes with its last grant and waiter. Runs
@@ -109,7 +137,7 @@ an error, so **read every outcome before `COMMIT`**, and `ROLLBACK` if one is no
 
 | The leaked version is | Run, in one transaction |
 |---|---|
-| `ACTIVE`, nothing `RETIRING` | `flow_control_key_activate(<new>)` (expect `ACTIVATED`), then `flow_control_key_force_retire(<leaked>, …)` (expect `FORCED`) |
+| `ACTIVE`, nothing `RETIRING` | `flow_control_key_activate(<new>)` (expect `ACTIVATED`), then `flow_control_key_force_retire(<leaked>, …)` (expect `FORCED`, or `ALREADY_RETIRED` with 0 rows when the leaked version had no row) |
 | `ACTIVE`, another one `RETIRING` | `flow_control_key_force_retire(<retiring>, …)`, then `flow_control_key_activate(<new>)`, then `flow_control_key_force_retire(<leaked>, …)` — refused `FORCED_VERSION_DRAINING` while the first force's rows remain (see below) |
 | `RETIRING` | `flow_control_key_force_retire(<leaked>, …)` |
 
@@ -118,9 +146,15 @@ SET lock_timeout = '5s';
 BEGIN;
 SELECT * FROM flow_control_key_activate(<new>::smallint, '<your name>');
 SELECT * FROM flow_control_key_force_retire(<leaked>::smallint, '<your name>', '<reason, e.g. incident number>');
--- read both outcomes; COMMIT only if they are ACTIVATED and FORCED, else ROLLBACK
+-- read both outcomes; COMMIT only if they are ACTIVATED and FORCED, or ACTIVATED with out_rows 0 and
+-- ALREADY_RETIRED with out_rows 0 (see below); else ROLLBACK
 COMMIT;
 ```
+
+When the leaked version had no key row at all, the activation retires it at once (`ACTIVATED`, `out_rows` 0), so the
+force that follows answers `ALREADY_RETIRED` with 0 rows: the key is already out of use, nothing is left to drain, and
+you may commit. That path writes **no** row in `flow_control_key_forced_retirements`; the retirement is recorded only by
+the version row's `retired_at` (section 1.3), so write the incident in your change record.
 
 `flow_control_key_force_retire` answers:
 
@@ -208,6 +242,45 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
   '<namespace>' ORDER BY held_at`. Rolling back migration `20270214000000` is refused while one is held: let the runs
   be granted or end first.
 
+### 5.1 The life of a waiter
+
+A run's start or a step that a gate cannot admit at once becomes a **waiter**: one row per gate it waits for
+(`concurrency_waiters`, `rate_limit_waiters`), one deadline (the earlier of its gates'), and the run or step `WAITING`.
+The same life holds for both gates and both levels (ADR-0089 decisions 1 and 5; the events of
+[`contracts/journal-events.md`](../../specs/022-flow-control-step-policies/contracts/journal-events.md)).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Granted: room and no eligible waiter ahead
+    [*] --> Queued: no room, or an eligible waiter ahead
+    [*] --> Refused: a start whose buffer or ceiling is full
+    Queued --> Granted: the grant pass, oldest first
+    Queued --> Paused: its run is paused
+    Paused --> Queued: its run is resumed
+    Queued --> TimedOut: its deadline passes
+    Queued --> Dequeued: cancelled, or its run ends
+    Paused --> TimedOut: its deadline passes
+    Granted --> [*]: permit released or slot aged out
+    TimedOut --> [*]
+    Dequeued --> [*]
+    Refused --> [*]
+```
+
+| State | What the journal and the rows say | What an operator sees |
+|---|---|---|
+| Granted | `concurrency.acquired` or `rate_limit.granted` (`from_queue` true when the pass granted it); holder or grant row; waiter rows gone, all gates in one commit | a run gets its first tasks, a step becomes `READY` |
+| Queued | `concurrency.queued` or `rate_limit.queued` with its `queue_deadline_us`; waiter row; a run's start counts once in `queued_runs` | `Run.concurrency.state` or `Run.rateLimit.state` `WAITING`; a step's `waitingOn`; the key listings' `waiters` |
+| Paused | the waiter row stays; grants skip it until the resume (ADR-0096); its deadline keeps running (gaps G022-008 and G022-012) | the run's pause; a long pause can end in a timeout |
+| Timed out | `*.wait_timed_out` of the gate that refuses it at the deadline (rate first when both do) and `*.dequeued` of the other, in one commit | a run `FAILED` with `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT`, without its failure handler; a step fails through its failure route, no attempt spent |
+| Dequeued | `concurrency.dequeued` or `rate_limit.dequeued` in the commit that cancels or ends its run; no permit, no slot used | the run's cancellation or end |
+| Refused | nothing is written: a synchronous start is answered `429 QUOTA_EXCEEDED` (`CONCURRENCY_QUEUE_FULL`, `RATE_LIMIT_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`); an event or cron start stays pending under its retry | the caller's answer; `refused_full` in the decision counters. A step is never refused for a full buffer: it fails `FLOW_CONTROL_LIMIT` (a new key beyond the live-keys ceiling) or `FLOW_CONTROL_KEY_INVALID` through its failure route |
+
+After a grant: a permit is released by its holder's end (`concurrency.released`); a slot has no release event and simply
+stops counting once its window has passed (section 6). A granted step that leaves `READY` without being leased (a pause,
+a hold for review, a cancellation) gives back what it holds in that commit (`concurrency.released`,
+`rate_limit.returned`) and, on a pause, asks again at the back of its key's queue when its run is resumed (ADR-0096).
+A grant and a timeout or a cancellation that race are decided by the first commit; the other finds nothing to do.
+
 ## 6. Rate limits (T022-072, T022-074, T022-077)
 
 **Not in production before T022-080, T022-104 and T022-113, and gap G022-018** (ADR-0088's fault suite; G022-015;
@@ -225,6 +298,17 @@ is set.
 A process with the ring lists `flow-control-rate-v1` beside the concurrency gate. Turn it on as 1.2, with
 `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED=true` and `control-plane flow-control-activate --capability rate-limits --operator <you>`
 (section 7).
+
+**The deployment files cannot turn the rate switch on yet (gap G022-036).** The Helm chart has one switch,
+`flowControl.concurrencyKeys`, and no value that sets `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its `values.yaml` still
+says "The rate gate is not served by this release", which this build no longer bears out. The local overlay
+`infra/docker/compose.flow-control.yaml` sets the concurrency switch only. What to do instead:
+
+- with the local stack, add the variable to both services in an override file of your own, next to the overlay, for
+  example `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED: "true"` under `control-plane` and `execution-engine`;
+- with the chart, do not plan on rate limits yet: an environment variable set by hand on the Deployments is undone by
+  the next `helm upgrade`. The digest key Secret is still needed for the rate gate's listing: today the chart mounts
+  the ring whenever `flowControl.digestKeys.existingSecret` is set, whatever the switch.
 
 - A run's start that declares `rateLimit` takes a slot of its key when it is admitted, or is buffered `WAITING`
   (`rate_limit.queued`); a run's slot counts from its grant and is never given back: it stops counting after its window.
@@ -306,6 +390,11 @@ deadline, of a live run. The limit is the lower of the waiter's declaration and 
 of keys of the group in the condition; `oldestSeconds` how long the longest of their waiters has waited. The **subject** is the key's group (`=<workflow>` or `=<workflow>/<node>` when derived); an
 alert never carries a key's value or its label. One alert per group, with the number of keys in that condition.
 
+This is the plan's condition, as the monitor reads it (`crates/infra-postgres/src/operations.rs`, `STUCK_ALERT_SQL`).
+Decision D022-077 item 7 had worded it "a waiter older than the threshold and no grant in that time"; the two differ
+when a holder was granted recently, long after the waiter queued: the alert fires then too, because that grant also
+went past the waiter (decision D022-117).
+
 **Threshold.** `SAGAT_ALERT_UNCLAIMED_SECS` (300 by default), the time the monitor already gives a step that no worker
 takes: both say "work waits while other work is served". The monitor looks every `SAGAT_MONITOR_INTERVAL_SECS` (30).
 
@@ -321,8 +410,9 @@ SELECT s.permit_scope, s.group_name, s.holders, s.waiters, s.oldest_wait_at, h.o
                          AND h.key_digest = s.key_digest) h
  WHERE s.namespace_id = '<namespace>' AND s.waiters > 0
  ORDER BY s.oldest_wait_at;
--- the waiters of one group, oldest first: their own limit, their deadline and their run's status
-SELECT w.run_id, w.node, w.declared_limit, w.enqueued_at, w.deadline_at, r.status
+-- the waiters of one group, oldest first: their own limit (the declaration their version pins, else the limit they
+-- were filed with), their deadline and their run's status
+SELECT w.run_id, w.node, coalesce(w.pinned_limit, w.declared_limit) AS own_limit, w.enqueued_at, w.deadline_at, r.status
   FROM concurrency_waiters w JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id
  WHERE w.namespace_id = '<namespace>' AND w.group_name = '<group>'
  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT 20;
@@ -413,7 +503,9 @@ The same question for a concurrency key (the plan defines no alert for it) is th
   bounded number a tick (gap G1174, benchmark T022-089).
 
 **Not this alert: a database clock that went back.** Grants counted "in the future" keep the key full and its hint in
-the future, so the key under-delivers without this alert (gap G1183). Section 12 says how to see it.
+the future, so the key under-delivers without this alert (gap G1183). The plan says this alert also covers "the clock
+went back"; as built it cannot, because the hint it reads moves into the future with the grants (decision D022-117).
+Section 12 says how to see it.
 
 **Safe actions.** Make an engine that holds the ring run and reach the database; it takes the shards and grants by
 itself. Nothing is lost while the pass is late: every waiter stays buffered with its deadline; the first pass grants at
@@ -556,7 +648,7 @@ early, which is the one thing the gate must never do.
 less real time than the window. The guarantee is stated on the database clock (FR-022-040), so a forward jump is an
 incident of the database server, not of the gate.
 
-## 13. Lowering a limit or a namespace ceiling
+## 13. Lowering or raising a limit or a namespace ceiling
 
 Nothing granted is ever revoked: a held permit stays until its holder ends, a grant counts until it ages out (FR-022-021,
 FR-022-046; ADR-0056 decision 7). What a lowered value changes is the next decision.
@@ -567,15 +659,21 @@ FR-022-046; ADR-0056 decision 7). What a lowered value changes is the next decis
   and US07; `lifecycle::a_lowered_limit_revokes_nothing_and_applies_to_the_next_start`).
 - **A lower namespace ceiling** (`concurrency_limit`; `rate_limit_per_second`, `rate_limit_per_minute`,
   `rate_limit_per_hour` for the declarations of that window length) applies at once to the waiters already queued:
-  admission and the grant routine decide every waiter, and count every waiter ahead, against the lower of its filed
-  limit and the namespace's current ceiling (decisions D022-071 for a slot and D022-074 for a permit). A key above the
+  admission and the grant routine decide every waiter, and count every waiter ahead, against the lower of its own
+  limit (the declaration its version pins, else its filed limit) and the namespace's current ceiling (decisions
+  D022-071 for a slot and D022-074 for a permit). A key above the
   new ceiling grants nothing until its holders end or its grants age out. `Run.rateLimit.limit` and the estimate of a
   waiting run follow the current ceiling (D022-075 item 3). Evidence:
   `lifecycle::a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit`,
   `rate_limits::a_lowered_policy_ceiling_slows_later_grants_and_revokes_none`,
   `rate_rest::a_lowered_ceiling_moves_the_estimate_and_the_limit_a_waiting_run_shows`.
-- **A raised ceiling** applies to new starts only: a waiter already filed keeps its filed limit as its bound (its
-  declaration clamped at its admission), an under-delivery and never an over-grant (D022-071 item 3, D022-075 item 7).
+- **A raised ceiling** applies to the waiters already queued too, up to their own declaration: each waiter row keeps the
+  limit its run's version declares (`pinned_limit`), and every decision bounds it by the lower of that and the current
+  ceiling (decision D022-076 item 7, which reversed D022-071 item 3 and D022-075 item 7; decision D022-078 item 1,
+  migration `20270213000000`). A row written before that migration has no `pinned_limit` and keeps its filed limit (its
+  declaration clamped at its admission) as its bound: an under-delivery, never an over-grant. Evidence:
+  `lifecycle::a_raised_concurrency_ceiling_applies_to_the_queued_starts_up_to_their_declaration`,
+  `rate_gate::a_raised_ceiling_applies_to_the_buffered_starts_up_to_their_declaration`.
 - **A lower queue ceiling** (`flow_control_key_waiters`, `queued_runs`, `concurrency_live_keys`, `rate_limit_live_keys`)
   is judged when a start or a step would queue or create a key; the waiters and keys already there stay, with their
   deadlines, and new ones are refused until the count is below the ceiling (section 4 for the live keys).
@@ -623,6 +721,36 @@ begins with it, and an identifier alone could name another tenant's row): `DELET
 `rate_limit_waiters`) `WHERE tenant_id = '<tenant>' AND run_id = '<run>' AND node = '<node>'`. The triggers keep the
 key's counters and the namespace's queued runs in step, and a key left empty is deleted at the commit.
 
+There is no API or command for this removal, and the delete writes no audit record (gap G022-037; the specification's
+NFR-022-005 asks an audited API for every operator action). Keep the row you deleted (its tenant, namespace, run, node,
+group and `enqueued_at`, never its `key_digest`), your name and the incident number in your change record, and delete
+one row per statement, naming the tenant.
+
 **Never.** Delete a waiter row of a run that has not ended: that run would wait for ever with nothing to grant it.
 
 **Over when** no waiter of an ended run is left in the namespace.
+
+## 15. The scheduler's flow-control actions
+
+Each scheduler tick runs, on the shards its replica holds, the timeout routine, the lease recording and then the grant
+pass; the housekeeping purges old grants (sections 5.1 and 6; transactions T23, T25, T26 and T27 of the plan). Each is
+counted in the existing family `scheduler_actions_total{kind, outcome}` (gap G022-005 asked for this list):
+
+| `kind` | What one count is | `outcome` values |
+|---|---|---|
+| `gate_grant` | one waiter the grant pass tried | `done` granted; `skipped` refused by a gate now, past its deadline, held back behind an older refusal of its key, or its run locked, paused or stopping (the key keeps its hint, the next pass comes back); `orphan` a waiter of a run that ended (section 14); `fenced` the replica lost the key's home shard; `failed` the grant's transaction failed (a failure that clears on its own, such as the database unavailable, a timeout or a deadlock, ends the key's pass; any other skips the waiter and the pass goes on, decision D022-090); `unsupported` this process has no key ring and grants nothing (section 9) |
+| `gate_timeout` | one waiter past its deadline | `done` timed out (section 5.1); `skipped` a grant or a cancellation committed first, or the run no longer waits; `fenced` the replica lost the run's shard; `failed` the transaction failed (the engine logs `a flow-control timeout failed`) |
+| `rate_lease` | lease instants copied from the journal onto step grants | `done` counts the grants recorded; `failed` counts one failed statement (the engine logs `the lease instants of granted slots could not be recorded`). A late copy keeps a slot longer and never frees one early |
+| `rate_purge` | grants deleted past their window row's longest period and one minute | `done` only: a failed purge is logged `could not purge aged rate-limit grants` and not counted (gap G022-018) |
+
+What to read in them:
+
+- `gate_grant` with `failed` rising: the engine's log line `a flow-control grant failed` names the run; a database that
+  is down or slow shows in the other scheduler counters too. With `unsupported`: give that engine the key ring.
+- `gate_grant` with `orphan`: alert `FLOW_CONTROL_WAITER_ORPHANED` (section 14).
+- `gate_timeout` with `done` rising for one workflow: its waiters reach their deadline; see sections 8 and 10 for why
+  the key does not serve them, or give `queueTimeoutMs` a value that matches how long a start may wait.
+- `rate_lease` with `failed`: step slots count longer than their window until the copy succeeds; keys under-deliver
+  and never over-grant.
+- `rate_purge` flat at zero while traffic runs: nothing was old enough, or the purge fails; read the engine's log, and
+  the backlog query of section 6.

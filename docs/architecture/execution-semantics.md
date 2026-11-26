@@ -225,10 +225,11 @@ is no order between keys (FR-022-042).
   `SAGAT_SCHEDULER_INTERVAL_MS`, 500 ms by default, and `D` one tick), twice that plus one tick when more keys are due
   than one pass visits, and never a window ([plan](../../specs/022-flow-control-step-policies/plan.md), "The grant pass,
   by key").
-- Every limit is the lower of the one the waiter row was filed with and the namespace's current ceiling
-  (`concurrency_limit`; `rate_limit_per_second`, `_per_minute`, `_per_hour` for its window): a lowered ceiling applies
-  to waiters at their next evaluation, a lowered declaration to new runs, and nothing granted is revoked (decisions
-  D022-071, D022-074).
+- Every limit is the lower of the waiter's own limit and the namespace's current ceiling (`concurrency_limit`;
+  `rate_limit_per_second`, `_per_minute`, `_per_hour` for its window). The own limit is the declaration the run's
+  version pins (`pinned_limit` of the waiter row; for a row written before migration `20270213000000`, the limit it
+  was filed with). A lowered or a raised ceiling applies to waiters at their next evaluation, a lowered declaration to
+  new runs, and nothing granted is revoked (decisions D022-071, D022-074, D022-076 item 7 and D022-078 item 1).
 
 ### Give-back on pause and on leaving `READY`
 
@@ -253,6 +254,21 @@ grants until resumed.
 
 No transaction locks a run after a semaphore or a window, and none locks a window before a semaphore (ADR-0088
 decision 4). A lease recorded late only keeps a slot longer: the pass may be late, never early.
+
+### What an operator sees
+
+The gates are watched from the journal and the key rows, never from a key's value (FR-022-033, FR-022-049):
+
+- four alerts of the engine's monitor, per namespace and group: `CONCURRENCY_QUEUE_STUCK` (an oldest waiter passed
+  over by every holder), `RATE_LIMIT_GRANT_LAGGING` (a due key that no pass served), `RATE_LIMIT_QUEUE_SATURATED` (a
+  run-start buffer above 80% of its ceiling) and `FLOW_CONTROL_WAITER_ORPHANED` (a waiter of a run that ended);
+- the series of [observability and service levels](observability-slo.md#flow-control-concurrency-keys-and-rate-limits-feature-022)
+  and the scheduler's `gate_grant`, `gate_timeout`, `rate_lease` and `rate_purge` actions;
+- the two key listings and the fields of a run (`Run.concurrency`, `Run.rateLimit`).
+
+What each means and what to do: the [flow-control runbook](../runbooks/flow-control.md), sections 8 to 15. The
+digest-key commands are SQL functions of the schema owner only, with no API, command or metric yet (gap G022-006); the
+runbook's section 1.3 says what to do instead.
 
 ## Worker-session claim admission
 
