@@ -1653,3 +1653,8 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   capability record commit with `synchronous_commit` at least `local`). Provoking that crash means killing a backend of the
   test server, which every test of the process shares. Closed by the failover drill of Task 006-054 (`infra/dr/drill.sh`),
   which reads the start time before and after each disaster.
+- **D006-103 — The cause `NOT_ACKNOWLEDGED` needed only its fixture and its reset case** (Task 006-045). The follow-up of
+  pull request #260 had put it in the closed set, the codec and its round trip, the transition and the counter's label
+  (D006-094), and the Studio names the event, not its causes. What the task adds: `a_journal_holding_a_not_acknowledged_withdrawal_replays`
+  in `crates/domain/tests/legacy_replay.rs` (the journal ADR-0099 describes, event by event: the attempt given back, the next
+  lease of the same attempt at the next generation), and `a_reset_copies_a_withdrawal_like_a_lease` over every cause.

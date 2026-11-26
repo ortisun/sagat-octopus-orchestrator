@@ -203,13 +203,16 @@ fn a_withdrawal_during_cancellation_cancels_the_step_without_a_review() {
 
 #[test]
 fn a_reset_copies_a_withdrawal_like_a_lease() {
-    let event = RunEvent::StepLeaseWithdrawn {
-        node: id("a"),
-        attempt: 1,
-        generation: 1,
-        cause: WithdrawalCause::NotSent,
-    };
-    assert_eq!(reset_rule(&event), ResetRule::Copy);
+    // every cause, `NOT_ACKNOWLEDGED` of protocol 1.8 included (Task 006-045)
+    for cause in WithdrawalCause::ALL {
+        let event = RunEvent::StepLeaseWithdrawn {
+            node: id("a"),
+            attempt: 1,
+            generation: 1,
+            cause,
+        };
+        assert_eq!(reset_rule(&event), ResetRule::Copy, "{cause:?}");
+    }
     assert!(
         sagat_domain::execution::RESET_RULES
             .iter()
