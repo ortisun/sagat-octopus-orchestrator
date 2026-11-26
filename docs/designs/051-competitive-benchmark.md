@@ -126,12 +126,18 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `pg_db_role_setting` holds no setting for the product's roles and database and `pg_proc.proconfig` none on any
   function, both read at the start and at the end of each turn; each product's connection options are published, and
   `check_competitive_benchmark` refuses `options`, `-c` and `PGOPTIONS` in the compose files, the products'
-  configurations and their connection options; the start probe refuses any connection startup parameter outside an allowlist (`application_name`, `search_path`,
+  configurations and their connection options, and at each turn's start `run.sh` refuses a `PGOPTIONS` entry in the
+  `Config.Env` that `docker inspect` shows for every product container (a vendor image's own environment included);
+  the start probe refuses any connection startup parameter outside an allowlist (`application_name`, `search_path`,
   `client_encoding`, `TimeZone`, `DateStyle`, from `pg_stat_activity` and each product's published options); the
   products' roles are not superusers and hold no `SET` grant on `commit_delay`, checked through SQL (`synchronous_commit`
   has user context, so any role may set it, which only the scan below catches); and, with `pg_stat_statements.track =
-  all` so that statements inside functions are seen, after every rung a scan of `pg_stat_statements` for `SET` or `set_config` of `synchronous_commit` or
-  `commit_delay` fails the rung (`pg_stat_statements_reset()` runs after each restore and at each rung's start, so
+  all` so that statements inside functions are seen, after every rung a scan of `pg_stat_statements` fails the rung on a `SET` of
+  `synchronous_commit` or `commit_delay` and on any `set_config` statement outside a per-product list that the pilot
+  fixes and publishes, since `pg_stat_statements` stores the setting's name of a `set_config` call as a placeholder;
+  each entry is a normalized statement text tied to the line of the pinned vendor source (or of this platform's commit)
+  that issues it with a constant setting name that is not about durability, so that the list trusts only source no
+  pilot can change (`pg_stat_statements_reset()` runs after each restore and at each rung's start, so
   the scan and the statement latency of Requirement 051-007 cover that rung alone). This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's
   task that adds the setting is in the commit, as a single node requires, stated.
 
@@ -345,15 +351,17 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   inspect` at each turn's start, so that this platform's turn's default parent does not capture them), while its fault injector runs
   on the host in `run.sh`'s process (it needs the engine to kill and start containers), writing each fault's time as
   `CLOCK_REALTIME` into a host-only directory that no container can write (mounted read-only into the driver), where
-  `run.sh` also gathers every file it uploads; the injector opens each execution record with `O_NOFOLLOW|O_NONBLOCK`,
-  confirms with `fstat` that it is a regular file and reads at most 1 MB of it; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
+  `run.sh` also gathers every file it uploads; the injector opens each execution record from a handle on the record root with
+  `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS` (so that no part of the path is a link) and `O_NONBLOCK`,
+  confirms with `fstat` on that open file that it is a regular file and reads at most 1 MB of it; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
   address, the pilots included (a Windmill step language that needs packages at run time is pre-resolved into an image
   built from pinned inputs, or excluded). Every image is named in one manifest (`images.lock`: name, digest taken from the vendor's
   registry, and the vendor's signature checked where the vendor signs), read by the compose files and by `run.sh`, every
   `SAGAT_RUNNER_IMAGE_*` of this platform set from it (this platform's own images exempt as "built at the commit under
   test"); after each turn `docker image ls --digests` is compared with it and an image not in it fails the job. `omes`
-  is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of regular files copied into the host-only directory
-  (a link or any other kind of file refused; no
+  is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of regular files copied into the host-only directory,
+  each opened the same way, checked by `fstat` on the open file and copied from that same open file (a link anywhere in
+  the path or any other kind of file refused; no
   environment dumps, `docker inspect`, `docker compose config` or logs with statements; `log_statement` stays `none`).
   The release workflow (`.github/workflows/release.yml`) downloads its artifacts by name and refuses a duplicate file
   name, and no job of it restores a cache (`recovery`'s `rust-cache` removed; `cache: false` on `setup-go` and `setup-dotnet`, no
@@ -468,7 +476,8 @@ lists what a later release would ask the owner for.
 `check_competitive_benchmark` in `scripts/check-architecture.py`, with a flag `--competitive-root DIR` for its fixtures
 in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key by key with a line match (no YAML
 library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
-(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (with `options`, `-c` and `PGOPTIONS`), `run.sh`'s `docker run` and `docker create`
+(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules, the refusal of `options`, `-c` and `PGOPTIONS` in the compose files, each product's
+configuration and its published connection options, `run.sh`'s `docker run` and `docker create`
 lines, the image manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
 `run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
 does; the workflow is required once `campaign.json` exists. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
@@ -651,9 +660,9 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the durability checks (`pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end), the daemon's and shims' processor time from `/proc`, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+- [ ] T051-6 Write `run.sh` and `campaign.json`: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the durability checks (`pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end, `PGOPTIONS` in every product container's environment, the per-product `set_config` list), the daemon's and shims' processor time from `/proc`, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
-- [ ] T051-7 Add the fault injector on the host (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, each execution record opened with `O_NOFOLLOW|O_NONBLOCK`, checked by `fstat` and read bounded), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded fault time against a child process's death seen through `pidfd` on the driver's monotonic clock, within 100 ms.
+- [ ] T051-7 Add the fault injector on the host (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, each execution record and each uploaded file opened beneath the record root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded fault time against a child process's death seen through `pidfd` on the driver's monotonic clock, within 100 ms.
   Refs: Requirement 051-009
 - [ ] T051-8 Add the `competitive-benchmark` workflow (Requirement 051-020's rules, the stages and matrices of `campaign.json`, the `concurrency` group, the refusal of a private repository and of other refs), publish the method and configurations, run the pilots once for the method version and publish them.
   Refs: Requirement 051-004, Requirement 051-012, Requirement 051-014, Requirement 051-019, Requirement 051-020
