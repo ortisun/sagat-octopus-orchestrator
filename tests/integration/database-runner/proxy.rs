@@ -136,6 +136,12 @@ impl WorkerService for Proxy {
             "runner must use managed capabilities",
         ))
     }
+    async fn append_step_logs(
+        &self,
+        _: Request<pb::AppendStepLogsRequest>,
+    ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
+        Err(Status::unimplemented("AppendStepLogs"))
+    }
     async fn resolve_database(
         &self,
         r: Request<pb::ResolveSecretsRequest>,

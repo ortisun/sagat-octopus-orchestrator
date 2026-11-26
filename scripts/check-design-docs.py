@@ -29,6 +29,13 @@ MARKER_RE = re.compile(r"^\s+Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 INLINE_MARKER_RE = re.compile(r"Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 PROTECTED_RE = re.compile(r"^\s*(Refs|Owner-gate):")
 OD_ID_RE = re.compile(r"OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+")
+# Delegations whose rows count as the owner's, each with the release tag that ends it (docs/engineering/sdd-workflow.md,
+# "Who decides"). A row decided as "delegate (<id>)" is citable only for an id listed here, only if that id's own row is
+# the owner's, and, once the tag exists, only if the identical row is in docs/owner-decisions.md as the tag holds it.
+# A plain "delegate" row (Owner decision 2026-11-03-22) is never citable.
+DELEGATIONS = {"OD-2026-11-24-4": "v0.3.0"}
+# A tag every clone with the release tags has; in a pull request its absence means the tags were not fetched.
+TAGS_PRESENT = "v0.2.0"
 COUNTS_RE = re.compile(r"Counts: Blocker ([0-9]{1,4}), Major ([0-9]{1,4}), Nit ([0-9]{1,4})")
 SEMVER_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}")
 LOOSE_CHECKBOX_RE = re.compile(r"^\s*[-*+] \[[ xX]\]")
@@ -229,7 +236,10 @@ class Checker:
         self._base_ok = None
         self._hashes = None
         self._od = None
+        self._warned_tags = False
+        self.report_counts = {}
         self.agent_blobs = {}
+        self.report_reviewers = {}
 
     # -- helpers ---------------------------------------------------------------------------
     def fail(self, rule, rel, line, message):
@@ -334,13 +344,46 @@ class Checker:
             rows.append(dict(zip(header, cells)))
         return rows
 
-    def citable(self, row_id):
-        """The citable row with this id, or None."""
+    def owner_row(self, row_id):
+        """The row with this id if the owner decided it, or None."""
         matches = [r for r in self.owner_rows() if r["ID"] == row_id]
         if len(matches) != 1 or not OD_ID_RE.fullmatch(row_id):
             return None
         row = matches[0]
         return row if row["Decided by"] == "owner" and row["Status"] == "Decided" else None
+
+    def citable(self, row_id):
+        """The citable row with this id, or None: an owner row, or a row decided under a delegation named in
+        DELEGATIONS whose own row is the owner's and which was recorded before the delegation ended."""
+        row = self.owner_row(row_id)
+        if row is not None:
+            return row
+        matches = [r for r in self.owner_rows() if r["ID"] == row_id]
+        if len(matches) != 1 or not OD_ID_RE.fullmatch(row_id) or matches[0]["Status"] != "Decided":
+            return None
+        delegated = re.fullmatch(r"delegate \((OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+)\)", matches[0]["Decided by"])
+        if not delegated or delegated.group(1) not in DELEGATIONS or self.owner_row(delegated.group(1)) is None:
+            return None
+        return matches[0] if self.recorded_before_end(matches[0], delegated.group(1)) else None
+
+    def recorded_before_end(self, row, delegation):
+        """True while the delegation's release tag does not exist, or if the identical row is in docs/owner-decisions.md
+        as the tag holds it: acts recorded during the delegation stay valid after it, and any later edit of a row is
+        a new act. In a pull request the clone must have the release tags, so that a missing tag cannot keep the
+        delegation open."""
+        tag = DELEGATIONS[delegation]
+        code, commit = self.git("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+        if code != 0:
+            if self.strict and self.git("rev-parse", "--verify", "--quiet", f"refs/tags/{TAGS_PRESENT}^{{commit}}")[0] != 0:
+                if not self._warned_tags:
+                    self._warned_tags = True
+                    self.fail("Rule 9", ".", None, f"the release tags are not in this clone ({TAGS_PRESENT} does not "
+                              "resolve): fetch them (fetch-depth 0) so that a delegation's end can be read")
+                return False
+            return True
+        cells = list(row.values())
+        code, text = self.git("show", f"{commit.strip()}:docs/owner-decisions.md")
+        return code == 0 and any(line.startswith("|") and split_row(line) == cells for line in text.split("\n"))
 
     # -- the run ---------------------------------------------------------------------------
     def run(self):
@@ -585,6 +628,8 @@ class Checker:
             found = self.parse_report(doc, path, text)
             if found is None:
                 continue
+            self.report_reviewers[(doc.rel, path)] = found[0]
+            self.report_counts[(doc.rel, path)] = found[1]
             reviewers.append(found[0])
             findings += found[1]
         if sorted(reviewers) != sorted(REVIEWERS):
@@ -630,12 +675,33 @@ class Checker:
         return reviewer, int(parsed.group(1)) + int(parsed.group(2))
 
     def check_acceptances(self, doc, ids, paths):
+        anchors = {path: set() for path in paths}
+        for accepted in ids:
+            row = self.citable(accepted)
+            for path in paths:
+                if row is not None:
+                    anchors[path].update(re.findall(re.escape(path) + r"#([0-9]+)", row["Covers"]))
+        # Counted per report: spare acceptances of one report cannot cover the findings of another.
+        for path in paths:
+            needed = self.report_counts.get((doc.rel, path), 0)
+            if len(anchors[path]) < needed:
+                reviewer = self.report_reviewers.get((doc.rel, path), "?")
+                self.fail("Rule 2", doc.rel, None, f"the {reviewer} report {shown(path)} holds {needed} Blocker and Major "
+                          f"findings and {len(anchors[path])} distinct ones are accepted")
         for accepted in ids:
             row = self.citable(accepted)
             anchored = row is not None and any(
                 re.search(re.escape(path) + r"#[0-9]+", row["Covers"]) for path in paths)
             if not anchored:
                 self.fail("Rule 2", doc.rel, None, f"{accepted} is not an owner row that covers '<report path>#<n>'")
+                continue
+            # Accepting a security finding instead of fixing it is a security exception: the owner's own, never a
+            # delegate's (docs/engineering/sdd-workflow.md, "Who decides").
+            security = [path for path in paths if self.report_reviewers.get((doc.rel, path)) == "security"
+                        and re.search(re.escape(path) + r"#[0-9]+", row["Covers"])]
+            if row["Decided by"] != "owner" and security:
+                self.fail("Rule 2", doc.rel, None,
+                          f"{accepted} is a delegate row that accepts a finding of the security report; only the owner may")
 
     def check_commit_dependent(self, doc, commit):
         old = self.base_text(doc.rel)

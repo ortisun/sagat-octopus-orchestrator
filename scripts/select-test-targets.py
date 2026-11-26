@@ -74,6 +74,8 @@ BROWSER_SUITES = ("e2e_workflow_studio", "e2e_developer_experience", "e2e_databa
 SDK_SUITES = ("sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage")
 BUDGET_SUITES = ("integration_claim_transition_efficiency",)
 LAKE_SUITES = ("integration_iceberg_writes", "fault_iceberg_writes", "e2e_iceberg_writes", "perf_iceberg_writes")
+STEP_LOG_SUITES = ("integration_step_logs",)
+STEP_LOG_SERVER_SUITES = STEP_LOG_SUITES + BUDGET_SUITES + ("contract_platform_foundation",)
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
@@ -89,6 +91,33 @@ HARNESSES = (
                 r"|crates/scheduler/|crates/domain/src/execution/|crates/domain/src/workflow(\.rs$|/)"
                 r"|crates/application/src/(concurrency|rate_limits|flow_control|keyed_digest)(\.rs$|/)"),
      BUDGET_SUITES),
+    # The step logs of design 041 (constitution 4.5.0, OD-2026-11-15-10; task T041-32). The server's step-log code and
+    # the files that call it select the step-log suite, the isolation and budget suite that holds the quota-lease tests,
+    # and the fitness tests of the domain's closed sets.
+    (re.compile(r"crates/[a-z-]+/src/(.*/)?step_logs(\.rs$|/)"
+                r"|crates/infra-postgres/migrations/[0-9]+_step_log[a-z_]*\.(up|down)\.sql$"
+                r"|crates/api-grpc/src/(limits|service)\.rs$|crates/api-http/src/routes/(execution|scripts)\.rs$"
+                r"|crates/application/src/scripts\.rs$|crates/infra-postgres/src/maintenance\.rs$"
+                r"|crates/scheduler/src/passes\.rs$"),
+     STEP_LOG_SERVER_SUITES),
+    # The report path that stores a carry (design 041 section 2a): the report's transaction writes the attempt's last
+    # records, so a change of it runs the step-log suite as well as the budget it already runs.
+    (re.compile(r"crates/application/src/worker(\.rs$|/)|crates/infra-postgres/src/execution(\.rs$|/)"),
+     STEP_LOG_SUITES),
+    # The worker protocol and each SDK's capture code: what a worker sends is checked by the server's suite and by the
+    # six-language conformance.
+    (re.compile(r"specs/001-platform-foundation/contracts/worker\.proto$"
+                r"|sdks/typescript/src/worker/(step-logs|activity|host|grpc)\.ts$"
+                r"|sdks/go/worker/(steplogs|activity|task|host|rpc)\.go$|sdks/go/internal/safelog/safelog\.go$"
+                r"|sdks/python/sagat_octopus_orchestrator/worker/(_step_logs|host|activity|_grpc)\.py$"
+                r"|sdks/dotnet/src/SagatOctopusOrchestrator\.Sdk/Workers/"
+                r"(StepLogCapture|WorkerHost|WorkerRpc|ActivityExecutionContext)\.cs$"
+                r"|sdks/dotnet/src/SagatOctopusOrchestrator\.Sdk/Internal/Safe\.cs$"
+                r"|sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/"
+                r"(StepLogCapture|ActivityLogger|WorkerHost|WorkerRpc)\.java$"
+                r"|sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/Hooks\.java$"
+                r"|sdks/rust/src/(step_logs|activity|worker|worker_rpc|capabilities)\.rs$"),
+     STEP_LOG_SUITES + ("sdk_conformance",)),
 )
 # Inputs of every Rust package: a change selects the unit tests of every package, and no suite.
 RUST_ROOT_INPUTS = re.compile(r"Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|\.cargo/.*|vendor/.*")
@@ -387,6 +416,15 @@ def scope(root, base, head, targets, workspace):
     directories = target_directories(targets)
     changed_packages = set()
     readers = None
+
+    def harnesses(rel):
+        for pattern, names in HARNESSES:
+            if pattern.match(rel):
+                for name in names:
+                    if name in targets:
+                        decision.chosen.add(name)
+                        decision.reasons.append((name, rel))
+
     for rel in files:
         if CONTRACT.fullmatch(rel):
             # A contract is read, not owned: it selects what reads it, Markdown included (an error table, a README the
@@ -406,6 +444,8 @@ def scope(root, base, head, targets, workspace):
             # is a change of the Studio's inputs too (feature 022's review of 2026-11-20, architecture B3)
             if rel == "specs/001-platform-foundation/contracts/openapi.yaml":
                 decision.frontend = True
+            # A harness may also be tied to a contract (the worker protocol of design 041, task T041-32).
+            harnesses(rel)
             continue
         if MARKDOWN.fullmatch(rel):
             continue
@@ -426,12 +466,7 @@ def scope(root, base, head, targets, workspace):
             decision.scripts = True
         if LAKE_RUNTIME.fullmatch(rel):
             decision.lake = True
-        for pattern, names in HARNESSES:
-            if pattern.match(rel):
-                for name in names:
-                    if name in targets:
-                        decision.chosen.add(name)
-                        decision.reasons.append((name, rel))
+        harnesses(rel)
         if rel == MANIFEST:
             found = manifest_selection(root, base, targets, decision.reasons)
             if found is None:

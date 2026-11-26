@@ -398,7 +398,7 @@ export interface paths {
         put?: never;
         /**
          * Signal the open run of a business identifier, or start one and deliver the signal at creation
-         * @description Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
+         * @description Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered, with one exception (feature 022, D022-087): when the new run's start waits for its concurrency permit or rate-limit slot, the run is created and queued and the signal is held with it (`202`, `started: true`, `deliveredTo: []`, `held: true`); the grant of the run's start delivers it exactly as `signalRun` would, and drops it with an audit record (`run.signal_dropped`) when no step waits for it then; a queued run that ends instead (its queue timeout, a cancellation) drops it with the same audit. Such a request still needs a `waitEvent` of that name somewhere in the definition, or it is refused `SIGNAL_NOT_ACCEPTED_AT_START` with nothing created. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
          *
          *     Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
          *     anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
@@ -729,6 +729,94 @@ export interface paths {
          *     (`429` beyond). Needs `run:read`.
          */
         get: operations["streamRunChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read the lines a run's steps logged
+         * @description Feature 041. Needs `run:read`, `run:logs:read` and the namespace's PII reveal grant, in every namespace (a missing
+         *     grant is `403` with `details.reason` `PII_REVEAL_NOT_GRANTED`). Lines come in stored order and only below the read
+         *     horizon (the oldest transaction still open when the reading statement runs); `heldBack` says lines are held back by
+         *     it. A request scans at most 5,000 rows and `nextCursor` moves past every row it scanned, matched or not; a read with
+         *     `stream` scans that stream only. The cursor names the run it was minted for and is refused (`400`) for another.
+         *     `complete` is true only when the run is finished, every line that can still be stored has been, and the scan ended
+         *     because no row below the horizon was left (neither the page limit nor the 5,000-row bound stopped it). Another
+         *     tenant's run is `404`. A read is audited as `run.logs_read` at most once per subject and run in 300 seconds.
+         */
+        get: operations["listRunLogs"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a run's step logs
+         * @description Feature 041, for the incident in which a secret or personal data was logged. Needs `run:logs:delete` (admin). Makes
+         *     the lines committed when it runs unreadable at once; a later batch for a deleted stream stores nothing, while a
+         *     stream created after it (a later attempt) is stored and a second delete removes it. Optional `stream` limits it to
+         *     one stream of this run. Every delete is audited as `run.logs_deleted` with the number of streams it changed, 0
+         *     included, and answers `204` with no body. The purge removes the rows. No route removes a script execution's log
+         *     before its retention.
+         */
+        delete: operations["deleteRunLogs"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/logs/streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the attempt logs and script executions of a run
+         * @description Feature 041. The permissions of `listRunLogs`. `source = worker` (the default) lists the attempt logs of the run with
+         *     their counters, which are read at the statement's snapshot and can be ahead of what a read below the horizon returns;
+         *     `source = script` lists the run's script executions, whose state comes from the execution itself. Each source is
+         *     paged on its own.
+         */
+        get: operations["listRunLogStreams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/logs/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Follow the lines a run's steps log, as a stream
+         * @description Feature 041. `text/event-stream`, the permissions and filters of `listRunLogs` except `cursor` and `limit`, plus
+         *     `after` (a cursor; `Last-Event-ID` wins). Events: `log` (`id` the cursor after its last line, `data`
+         *     `{"items": StepLogLine[]}`, at most 200), `progress` (`id` the cursor after the scanned position, `data`
+         *     `{"heldBack": bool}`, sent instead of a ping when the position moved without a matching line), `end` (the run is
+         *     finished and `complete` holds) and `reconnect` (token expiry or the 15-minute lifetime). A `: ping` comment every 15
+         *     seconds otherwise. It never skips or repeats a line across a reconnect. The reader's right is checked when it opens
+         *     and every 30 seconds, the PII reveal grant at every poll. The caps of `streamRunChanges` apply and are shared with
+         *     it (`429 RATE_LIMITED`, `STREAMS_GLOBAL`, `STREAMS_PER_SUBJECT`, `STREAMS_PER_TENANT`). Read it with `fetch`.
+         */
+        get: operations["streamRunLogs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1656,7 +1744,7 @@ export interface paths {
         };
         /**
          * List the live concurrency keys of a namespace, oldest wait first
-         * @description Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value. A caller who may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant) reads `view: KEYS`, one row per key in `items` with `keyLabel`, the 12-hex label of its keyed digest, and whole instants. Every other caller reads `view: GROUPS`, one row per pool, scope and group in `groups` (its keys, holders, waiters, oldest wait and oldest holder, summed over its keys, whole instants) and an empty `items`: a group is the definition's name or a declared slug, already on each run, so no row links one run to another (D022-061, D022-086). Keys are ordered oldest wait first; groups by pool, scope and name, and a page reads only its own groups' keys. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace under the digest key version in force: an altered cursor, one of another namespace, one of another group's listing, one of the other view (the caller's reveal right changed between two pages), or one sealed under a version no longer in force (a forced retirement included) is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         * @description Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value. A caller who may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant) reads `view: KEYS`, one row per key in `items` with `keyLabel`, the 12-hex label of its keyed digest, and whole instants. Every other caller reads `view: GROUPS`, one row per pool, scope and group in `groups` (its holders, waiters, oldest wait and oldest holder, summed over its keys, whole instants; never how many keys it has, which would tell which runs share a key) and an empty `items`: a group is the definition's name or a declared slug, already on each run, so no row links one run to another (D022-061, D022-086). Keys are ordered oldest wait first; groups by pool, scope and name. A page of groups reads at most 200 key rows: a group with more keys is summed across the pages that read it, each page one snapshot, its partial sums carried in the sealed cursor, and its row is on the page that reads its last key; such a page can hold no group and still have a `nextCursor`. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace under the digest key version in force: an altered cursor, one of another namespace, one of another group's listing, one of the other view (the caller's reveal right changed between two pages), or one sealed under a version no longer in force (a forced retirement included) is a 400; so is a cursor more than fifteen minutes old, with a message of its own (D022-100). A namespace of another tenant is a 404, like one that does not exist.
          */
         get: operations["listConcurrencyKeys"];
         put?: never;
@@ -1676,7 +1764,7 @@ export interface paths {
         };
         /**
          * List the rate-limit keys of a namespace, oldest wait first
-         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: as the concurrency-key listing, `view: KEYS` (one row per window by `keyLabel`, whole instants) for a caller who may reveal personal data in the namespace, `view: GROUPS` (one row per pool, scope and group in `groups`, summed over its windows) for every other caller (D022-086). A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, one of the other view, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: as the concurrency-key listing, `view: KEYS` (one row per window by `keyLabel`, whole instants) for a caller who may reveal personal data in the namespace, `view: GROUPS` (one row per pool, scope and group in `groups`, summed over its windows; never how many windows it has or when its next slot frees, which would link runs) for every other caller (D022-086). A page of groups reads at most 200 windows: a group with more is summed across the pages that read it, each page one snapshot at its own instant, its partial sums carried in the sealed cursor, and its row is on the page that reads its last window; such a page can hold no group and still have a `nextCursor`. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, one of the other view, or one sealed under a version no longer in force is a 400; so is a cursor more than fifteen minutes old, with a message of its own (D022-100). A namespace of another tenant is a 404, like one that does not exist.
          */
         get: operations["listRateLimitKeys"];
         put?: never;
@@ -3639,6 +3727,8 @@ export interface components {
             started: boolean;
             /** @description The nodes the signal woke. */
             deliveredTo: string[];
+            /** @description Feature 022 (D022-087): true when the new run's start queued and the signal is held with it, to be delivered when the run is granted its start; `deliveredTo` is then empty. A retry of the request answers the same. */
+            held?: boolean;
         };
         UpdateWithStartRequest: {
             /** Format: uuid */
@@ -5001,11 +5091,16 @@ export interface components {
          *     rate_limit_per_hour 10000/10000: the most grants one key counts in a window of that length,
          *     whatever a definition declares.
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
+         *     Step logs (feature 041): tenant_step_log_bytes is the tenant's retained step-log bytes, each line
+         *     charged its text plus 128 bytes (default and default ceiling 1 GiB, maximum 2^50); per namespace,
+         *     step_log_attempt_records 0..100,000 (default 10,000; 0 turns capture off in the namespace),
+         *     step_log_attempt_bytes 1,024..16,777,216 (default 1 MiB) and step_log_retention_days 1..365
+         *     (default 14). A step-log stream keeps the retention it was created with.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "concurrency_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations" | "rate_limit_live_keys" | "rate_limit_per_second" | "rate_limit_per_minute" | "rate_limit_per_hour";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "concurrency_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations" | "rate_limit_live_keys" | "rate_limit_per_second" | "rate_limit_per_minute" | "rate_limit_per_hour" | "tenant_step_log_bytes" | "step_log_attempt_records" | "step_log_attempt_bytes" | "step_log_retention_days";
             /** Format: int64 */
             limit: number;
             /**
@@ -5020,9 +5115,11 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view, and for tenant_step_log_bytes unless the caller holds `run:logs:read` and the PII reveal grant in every namespace of the tenant (then usageWithheld is true).
              */
             used?: number;
+            /** @description Present and true only for tenant_step_log_bytes when used is withheld: the caller lacks `run:logs:read` or the PII reveal grant in at least one namespace of the tenant, so the live step-log usage, which moves with what other runs log, is not shown (fail-closed; design 041, decision D041-133). */
+            usageWithheld?: boolean;
         };
         QuotaList: {
             items: components["schemas"]["Quota"][];
@@ -5680,7 +5777,7 @@ export interface components {
         };
         ConcurrencyKeyPage: {
             /**
-             * @description KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).
+             * @description KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (summed over its keys, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).
              * @enum {string}
              */
             view: "KEYS" | "GROUPS";
@@ -5690,15 +5787,13 @@ export interface components {
             /** @description Opaque, sealed for this namespace; null after the last page. */
             nextCursor?: string | null;
         };
-        /** @description Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys in the page's snapshot; no key's label, value or own count. */
+        /** @description Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys across the pages that read it, each page one snapshot; no key's label, value or own count, and not how many keys it has. */
         ConcurrencyKeyGroup: {
             /** @enum {string} */
             pool: "ORDINARY" | "DRAFT_TEST";
             /** @enum {string} */
             scope: "RUN" | "STEP";
             group: string;
-            /** @description Its live keys. */
-            keys: number;
             holders: number;
             waiters: number;
             /**
@@ -5711,16 +5806,16 @@ export interface components {
              * @description The acquisition instant of the group's oldest holder, whole; null when nobody holds.
              */
             oldestHolderSince: string | null;
+            /** @description Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more holders than its keys allow (D022-101). */
+            spansPages: boolean;
         };
-        /** @description Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows at the page's instant, each read as RateLimitKey reads it; no key's label, value or own count. */
+        /** @description Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows across the pages that read it, each page one snapshot at its own instant, each window read as RateLimitKey reads it; no key's label, value or own count, not how many windows it has, and not when its next slot frees (an instant that links a waiting run to a granted one; a caller with the reveal right reads it per key). */
         RateLimitKeyGroup: {
             /** @enum {string} */
             pool: "ORDINARY" | "DRAFT_TEST";
             /** @enum {string} */
             scope: "RUN" | "STEP";
             group: string;
-            /** @description Its windows (keys). */
-            keys: number;
             grantsInWindow: number;
             unleasedGrants: number;
             waiters: number;
@@ -5729,11 +5824,8 @@ export interface components {
              * @description The queueing instant of the group's oldest waiter, whole; null when nobody waits.
              */
             oldestWaitSince: string | null;
-            /**
-             * Format: date-time
-             * @description The earliest nextSlotAt of its windows.
-             */
-            nextSlotAt: string | null;
+            /** @description Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more grants than its windows allow (D022-101). */
+            spansPages: boolean;
         };
         /** @description Feature 022 (FR-022-048). One rate-limit window row of the namespace; counts are a snapshot read without the key's lock, at the page's instant. */
         RateLimitKey: {
@@ -5765,7 +5857,7 @@ export interface components {
         };
         RateLimitKeyPage: {
             /**
-             * @description KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).
+             * @description KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (summed over its keys, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).
              * @enum {string}
              */
             view: "KEYS" | "GROUPS";
@@ -6129,6 +6221,107 @@ export interface components {
         ScriptTestRunList: {
             items: components["schemas"]["ScriptTestRunSummary"][];
         };
+        StepLogPage: {
+            items: components["schemas"]["StepLogLine"][];
+            /** @description Always present: the position after the last row scanned (at most 5,000 a request), whether or not it matched the filters, to poll from. */
+            nextCursor: string;
+            /** @description Lines of this run are stored but not yet returned, because an older transaction of the database is still open. */
+            heldBack: boolean;
+            /** @description The run is finished, every line that can still be stored for it has been, and the request's scan ended because no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row bound stopped it), whether or not the filters matched. After an empty page with complete false, read again at once while nextCursor moves; once it stops moving, poll at the tail's interval. */
+            complete: boolean;
+        };
+        StepLogLine: {
+            /** Format: uuid */
+            stream: string;
+            node: string;
+            attempt: number;
+            /** @description The existing {scopeNodeId, iterationIndex} schema; empty for a root step; null for a script marker, which has no iteration. */
+            instancePath: components["schemas"]["ApprovalScope"][] | null;
+            /** @description Decimal; above 2^53 for a marker. */
+            sequence: string;
+            /** Format: date-time */
+            workerTime?: string | null;
+            /** Format: date-time */
+            storedAt: string;
+            /** @enum {string} */
+            kind: "line" | "ceiling_marker" | "script_marker";
+            /**
+             * @description info for a marker; minLevel never hides a marker.
+             * @enum {string}
+             */
+            level: "trace" | "debug" | "info" | "warn" | "error";
+            message?: string | null;
+            exception?: string | null;
+            /** @description An integer outside -(2^53-1) to 2^53-1 is a decimal string, so that a JavaScript reader keeps it exact. */
+            fields?: {
+                [key: string]: string | number | boolean;
+            } | null;
+            truncated: boolean;
+            marker?: {
+                /**
+                 * @description ceiling_marker
+                 * @enum {string}
+                 */
+                reason?: "attempt_records" | "attempt_bytes";
+                /**
+                 * Format: uuid
+                 * @description script_marker: open it with getScriptExecution
+                 */
+                scriptExecutionId?: string;
+            } | null;
+        };
+        StepLogStreamPage: {
+            items: components["schemas"]["StepLogStream"][];
+            nextCursor: string | null;
+        };
+        StepLogStream: {
+            /**
+             * Format: uuid
+             * @description The stream public id; for source script, the script execution id, which is also the id of its marker stream.
+             */
+            id: string;
+            /** @enum {string} */
+            source: "worker" | "script";
+            node: string;
+            attempt: number;
+            /** @description Null for source script. */
+            instancePath: components["schemas"]["ApprovalScope"][] | null;
+            /**
+             * @description deleted: the delete route; expired: removal by retention has begun, and no line is returned
+             * @enum {string}
+             */
+            state: "open" | "ended" | "ended_without_final" | "deleted" | "expired";
+            /** @description worker only: lines stored */
+            records?: number;
+            /** @description worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line) */
+            bytes?: number;
+            /** @description worker only: sequences the worker numbered and never stored */
+            droppedByWorker?: number;
+            droppedByServer?: number;
+            /**
+             * @description Why the server dropped records at a ceiling: an attempt ceiling, or the tenant quota (full, or its last room held by other writers in flight). A busy loss is notStoredReason, never a ceiling.
+             * @enum {string|null}
+             */
+            ceiling?: "attempt_records" | "attempt_bytes" | "tenant_quota" | null;
+            /**
+             * @description Why the server did not store some of a carry's records for a reason that is not a ceiling: service_busy means the tenant's step-log quota could not be checked within its 200 ms budget or with no wait slot free (the log service was busy, not the tenant's quota); design 041 decision D041-129, gap G041-026. Null otherwise.
+             * @enum {string|null}
+             */
+            notStoredReason?: "service_busy" | null;
+            /** Format: date-time */
+            firstAt?: string | null;
+            /** Format: date-time */
+            lastAt?: string | null;
+            /**
+             * Format: date-time
+             * @description worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.
+             */
+            expiresAt?: string | null;
+            /** Format: date-time */
+            removedAt?: string | null;
+            /** @description script only */
+            logTruncated?: boolean;
+        };
         ScriptExecution: {
             /** Format: uuid */
             id: string;
@@ -6141,8 +6334,11 @@ export interface components {
             status: "SUCCEEDED" | "FAILED";
             failure?: string;
             exitCode?: number;
+            /** @description Planned by feature 041 (FR-041-022, T041-29; not served yet): for an execution of a run, returned only to a caller who may read that run's step logs (`run:logs:read` and the namespace's PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged. */
             log: string;
             logTruncated: boolean;
+            /** @description Planned by feature 041 (T041-29; not served yet): true when the log of a run's execution is withheld from this caller (see `log`). */
+            logWithheld?: boolean;
             denied: string[];
             wallMs: number;
             startMs: number;
@@ -6153,7 +6349,7 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
-        /** @description An execution as a listing shows it: without its log, which `getScriptExecution` has. */
+        /** @description An execution as a listing shows it: without its log, which `getScriptExecution` has. Planned by feature 041 (T041-29; not served yet): `logTruncated` is false for a caller who may not read the run's step logs. */
         ScriptExecutionSummary: {
             /** Format: uuid */
             id: string;
@@ -7005,7 +7201,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "concurrency_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations" | "rate_limit_live_keys" | "rate_limit_per_second" | "rate_limit_per_minute" | "rate_limit_per_hour";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "concurrency_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations" | "rate_limit_live_keys" | "rate_limit_per_second" | "rate_limit_per_minute" | "rate_limit_per_hour" | "tenant_step_log_bytes" | "step_log_attempt_records" | "step_log_attempt_bytes" | "step_log_retention_days";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -8358,6 +8554,170 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunLogs: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                /** @description One stream of this run (`StepLogStream.id`): an attempt log, or a script execution's id for its marker. Another stream is `404`. */
+                stream?: string;
+                node?: string;
+                attempt?: number;
+                /** @description Ordered as listed; never hides a marker. */
+                minLevel?: "trace" | "debug" | "info" | "warn" | "error";
+                /** @description Storage time, inclusive. */
+                from?: string;
+                /** @description Storage time, exclusive. */
+                to?: string;
+                /** @description A literal, case-insensitive substring of the message. */
+                q?: string;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of lines */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepLogPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteRunLogs: {
+        parameters: {
+            query?: {
+                /** @description One stream of this run (`StepLogStream.id`). Another stream, of this tenant or not, is `404`, as for `listRunLogs`. */
+                stream?: string;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunLogStreams: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                source?: "worker" | "script";
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of streams */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepLogStreamPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    streamRunLogs: {
+        parameters: {
+            query?: {
+                /** @description A cursor of this run; `Last-Event-ID` wins when both are sent. */
+                after?: string;
+                stream?: string;
+                node?: string;
+                attempt?: number;
+                minLevel?: "trace" | "debug" | "info" | "warn" | "error";
+                from?: string;
+                to?: string;
+                q?: string;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stream */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

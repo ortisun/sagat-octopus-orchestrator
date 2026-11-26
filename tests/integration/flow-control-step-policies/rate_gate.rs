@@ -42,6 +42,20 @@ fn rated_step(name: &str, group: &str, limit: u32, per: &str) -> Value {
     )
 }
 
+/// A scheduler of `w`'s store that runs one key's pass at a time: a test whose waiter waits on two keys, and that asserts
+/// what one pass decides about it, uses it, since two keys' passes at once may find that waiter's run held by each other
+/// (a busy waiter keeps its key's hint by design, decision D022-088; decision D022-099).
+fn one_key_at_a_time(w: &World) -> crate::support::engine::Sched {
+    crate::support::scale::scheduler(
+        w,
+        sagat_scheduler::SchedulerSettings {
+            concurrency: 1,
+            ..sagat_scheduler::SchedulerSettings::default()
+        },
+        None,
+    )
+}
+
 fn us(at: OffsetDateTime) -> i64 {
     i64::try_from(at.unix_timestamp_nanos() / 1_000).expect("an instant")
 }
@@ -517,17 +531,7 @@ async fn a_grant_through_another_keys_pass_wakes_the_waiters_of_its_window() {
     // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation).
     // One key at a time: with both keys' passes at once, the window's pass may find the head's run held by the permit's
     // pass and skip it, which keeps the window's hint by design (`Busy`; a loaded runner did so on 2026-11-25)
-    let one_at_a_time = sagat_scheduler::SchedulerSettings {
-        concurrency: 1,
-        ..sagat_scheduler::SchedulerSettings::default()
-    };
-    assert_eq!(
-        crate::support::scale::scheduler(&w, one_at_a_time, None)
-            .tick()
-            .await
-            .gates_granted,
-        0
-    );
+    assert_eq!(one_key_at_a_time(&w).tick().await.gates_granted, 0);
     assert_eq!(
         hint_us(&w, behind).await,
         None,
@@ -1150,7 +1154,11 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_a
         w.journal(w2).await,
         ["run.started", "rate_limit.queued", "concurrency.queued"]
     );
-    let report = w.scheduler.grant_gates().await;
+    // one key at a time: w2 waits on both keys, so with both keys' passes at once the window's pass may find w2's run
+    // held by the permit's pass, and a busy waiter keeps its key's hint by design (decision D022-088; the case is
+    // `a_dual_gated_waiter_found_busy_keeps_its_window_due_and_the_next_pass_rests_it`; CI runs 45637128106 and
+    // 45649612535 failed so on 2026-11-25, decision D022-099)
+    let report = one_key_at_a_time(&w).grant_gates().await;
     assert_eq!(report.gates_granted, 0, "no permit for w2: {report:?}");
     let rested = hint_us(&w, w2).await.expect("a rested window");
     assert!(
@@ -1176,6 +1184,58 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_a
     assert_eq!(start_slot(&w, a).await.0, 1, "the start is granted");
     assert_eq!(start_slot(&w, w2).await.1, 1, "w2 waits for its permit");
     for run in [holder, w2, a] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// Decision D022-099 (CI runs 45637128106 and 45649612535, 2026-11-25), with decisions D022-088 and D022-073 item 4: the
+/// interleaving that failed the test above on CI, made deterministic. A dual-gated waiter `w2` (`limit: 3, per: hour` and
+/// a permit of `limit: 1`) behind a holder of both; its run held by another transaction, as the permit's pass of the same
+/// tick holds it while it tries `w2`. The window's pass finds `w2` busy: it decides nothing, so the window keeps its
+/// hint and stays due (a busy waiter is decided by a later pass, D022-088), and nothing is granted. Released, the next
+/// pass refuses `w2` (its permit) and rests the window until the holder's slot ages out, an hour ahead.
+#[tokio::test]
+async fn a_dual_gated_waiter_found_busy_keeps_its_window_due_and_the_next_pass_rests_it() {
+    let w = gated_world().await;
+    let mut dual = rated_start("rate-busy-dual", 3, "hour");
+    dual["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let dual = publish(&w, dual).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(dual, &input).await;
+    let w2 = w.start(dual, &input).await;
+    assert_eq!(
+        w.journal(w2).await,
+        ["run.started", "rate_limit.queued", "concurrency.queued"]
+    );
+    let queued = hint_us(&w, w2).await.expect("a due window");
+    let mut busy = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(w2.as_uuid())
+        .execute(&mut *busy)
+        .await
+        .expect("w2's run held");
+    let report = w.scheduler.grant_gates().await;
+    busy.rollback().await.expect("released");
+    assert_eq!(
+        (report.gates_granted, report.skipped > 0),
+        (0, true),
+        "w2 is busy, nothing is granted: {report:?}"
+    );
+    assert_eq!(
+        hint_us(&w, w2).await,
+        Some(queued),
+        "a busy waiter keeps its window's hint: the window stays due"
+    );
+    let report = one_key_at_a_time(&w).grant_gates().await;
+    assert_eq!(report.gates_granted, 0, "no permit for w2: {report:?}");
+    let granted = start_slot(&w, holder).await.2.expect("the holder's slot");
+    assert_eq!(
+        hint_us(&w, w2).await,
+        Some(granted + HOUR_US),
+        "refused by its permit, w2 keeps its room and the window rests until the holder's slot ages out"
+    );
+    for run in [holder, w2] {
         w.assert_consistent(run).await;
     }
     w.assert_keys_consistent().await;

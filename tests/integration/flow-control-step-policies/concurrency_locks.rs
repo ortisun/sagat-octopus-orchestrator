@@ -6,9 +6,10 @@
 //! order is a deadlock, so the harness is not vacuous. Waits are observed with `pg_blocking_pids`, never with sleeps.
 //!
 //! An admission takes its new run's counter row (through the `runs` insert) before it files its key. The grant routine
-//! takes a waiter's run with `SKIP LOCKED` (it never waits for a run while it holds a key), and the readiness round and
-//! the returns of a pause have their own held-lock tests (`readiness`, `returns`). `flow_control_counts` (slot 8b) does
-//! not exist yet (T022-105).
+//! takes a waiter's run with `SKIP LOCKED` (it never waits for a run while it holds a key), then, for a run's start, the
+//! run's active-run counter row, its keys and the run's queued-run counter row (`flow_control_counts`, a usage row of
+//! slot 8b, through its waiter row's trigger). The readiness round and the returns of a pause have their own held-lock
+//! tests (`readiness`, `returns`).
 
 use sagat_application::runs::RunOperation;
 use sagat_domain::execution::RunId;
@@ -205,6 +206,74 @@ async fn an_admission_takes_its_counter_row_before_its_key() {
     );
     for run in [holder, waiter, started] {
         w.assert_consistent(run).await;
+    }
+}
+
+/// The run's own slot row of the namespace's queued-run counters (`flow_control_counts`, a usage row of slot 8b), which
+/// the trigger of its run-scope waiter row locks when the row is written or deleted.
+pub(crate) fn queued_count_row(run: RunId) -> Lock {
+    Lock::statement(
+        "the run's queued-run counter row",
+        format!(
+            "SELECT 1 FROM flow_control_counts c JOIN runs r ON r.tenant_id = c.tenant_id AND r.namespace_id = c.namespace_id \
+              WHERE r.id = '{0}' AND c.slot = (get_byte(uuid_send('{0}'::uuid), 15) & 15)::smallint FOR UPDATE OF c",
+            run.as_uuid()
+        ),
+    )
+}
+
+/// Batch 3 reviews of 2026-11-25, correctness Major 1: the grant of a queued start whose entry is an `end` node ends the
+/// run in the grant's own transaction. It deletes the run's waiter row (whose trigger locks the queued-run counter row,
+/// slot 8b) and its settle ends the run (whose commit locks the active-run counter row, slot 6). The grant takes the
+/// run, then its active-run counter row, then the key, then the queued-run counter row, from every start the grant waits
+/// at (the run itself is taken with `SKIP LOCKED`: the grant never waits for it).
+#[tokio::test]
+async fn the_grant_of_a_queued_start_that_ends_takes_its_counter_row_before_the_key_and_the_queued_count()
+ {
+    for start in 1..3 {
+        let w = gated_world().await;
+        let workflow = publish(&w, serial_start("permit-locks", 1)).await;
+        let session = w.session(&["act.g"]).await;
+        let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+        let mut ends = crate::support::engine::document(
+            "permit-locks-end",
+            "done",
+            vec![crate::support::engine::end_node("done")],
+        );
+        ends["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+        let ends = publish(&w, ends).await;
+        let waiter = w.start(ends, &json!({"accountId": "acct-1"})).await;
+        assert_eq!(
+            start_rows(&w, waiter).await,
+            (0, 1),
+            "queued behind the holder"
+        );
+        let task = w.one_task(&session).await;
+        assert_eq!(task.run_id, holder);
+        w.complete(&session, &task, &json!({}))
+            .await
+            .expect("the holder ends and frees its permit");
+        let reference = [
+            (Slot::ExistingRuns, run_row(waiter)),
+            (Slot::NewRuns, counter_row(waiter)),
+            (Slot::Semaphores, key_rows(&w)),
+            (Slot::Usage, queued_count_row(waiter)),
+        ];
+        let seen = against_at(&w.db.pool, &reference, start, w.scheduler.grant_gates()).await;
+        assert_eq!(
+            seen.reference,
+            Outcome::Committed,
+            "start {start}: {:?}",
+            seen.reference
+        );
+        assert_eq!(seen.path.gates_granted, 1, "start {start}: {:?}", seen.path);
+        assert!(w.run_status(waiter).await.is_terminal(), "start {start}");
+        assert_eq!(
+            start_rows(&w, waiter).await,
+            (0, 0),
+            "start {start}: released"
+        );
+        w.assert_consistent(waiter).await;
     }
 }
 

@@ -1552,14 +1552,32 @@ async fn the_waiters_declaration_rolls_back_only_once_no_waiter_would_lose_it() 
     waiter(2, Some(5))
         .await
         .expect("a waiter filed under a lowered ceiling");
+    // the later migrations first, so that the refused rollback below is the pinned-limit one alone and "changes
+    // nothing" is measured against the schema it starts from (batch 4 correctness minor 4)
+    const PINNED_LIMIT_VALIDATED: i64 = 20_270_213_000_100;
+    undo(pool, PINNED_LIMIT_VALIDATED)
+        .await
+        .expect("the later migrations rolled back");
+    let head = |pool: &PgPool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations WHERE success")
+                .fetch_one(&pool)
+                .await
+                .expect("the applied head")
+        }
+    };
+    assert_eq!(head(pool).await, PINNED_LIMIT_VALIDATED);
     let refused = undo(pool, BEFORE_PINNED_LIMIT).await;
     assert!(
         format!("{refused:?}").contains("bounded by a declaration above their filed limit"),
         "{refused:?}"
     );
+    // its validation (a `SELECT 1` down) goes, the refused migration itself stays applied with its column
     assert!(
-        exists_column(pool, "rate_limit_waiters").await,
-        "a refused rollback changes nothing"
+        exists_column(pool, "rate_limit_waiters").await
+            && head(pool).await == PINNED_LIMIT_VALIDATED - 100,
+        "a refused rollback changes nothing of its own migration"
     );
     sqlx::query("DELETE FROM rate_limit_waiters WHERE run_id = $1")
         .bind(run)
@@ -1642,6 +1660,37 @@ async fn the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_with
         }
     };
     assert_eq!(queued(pool).await, 2);
+    // the migration locks the waiter tables in the order a dual-gated admission writes them, rate first (batch 3
+    // correctness minor 6)
+    let counts = MIGRATOR
+        .iter()
+        .find(|m| m.version == 20_270_213_000_200 && m.migration_type.is_up_migration())
+        .expect("the counts migration");
+    assert!(
+        counts
+            .sql
+            .as_str()
+            .contains("LOCK TABLE rate_limit_waiters, concurrency_waiters"),
+        "rate first"
+    );
+    // a run's waiter only: each counting trigger is guarded by `node = ''`, so a step's waiter fires none (batch 3
+    // correctness nit)
+    let guarded: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT tgname::text, tgqual IS NOT NULL FROM pg_trigger \
+          WHERE tgname LIKE '%waiters_queued_runs%' ORDER BY tgname",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("the counting triggers");
+    assert_eq!(
+        guarded,
+        [
+            ("concurrency_waiters_queued_runs".to_owned(), true),
+            ("concurrency_waiters_queued_runs_out".to_owned(), true),
+            ("rate_limit_waiters_queued_runs".to_owned(), true),
+            ("rate_limit_waiters_queued_runs_out".to_owned(), true),
+        ]
+    );
     undo(pool, BEFORE_COUNTS).await.expect("rolled back");
     assert!(!exists(pool, "flow_control_counts").await);
     let waiters: i64 = sqlx::query_scalar(
@@ -1675,4 +1724,45 @@ async fn the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_with
         "{refused:?}"
     );
     MIGRATOR.run(pool).await.expect("forward");
+}
+
+/// Task T022-109 (migration `20270214000000`; decision D022-087): the held signals of Signal-with-Start roll back while
+/// none is kept, and refuse while one is (a request answered `202` is never dropped by a rollback); migrating forward
+/// again restores the table.
+#[tokio::test]
+async fn the_held_signals_roll_back_only_when_none_is_kept() {
+    const BEFORE_HELD_SIGNALS: i64 = 20_270_213_000_400;
+    let w = crate::support::flow_control::gated_world().await;
+    let pool = &w.db.pool;
+    let workflow = crate::support::flow_control::publish(
+        &w,
+        crate::run_creators::gated_waiter("migrations-held-signal"),
+    )
+    .await;
+    crate::run_creators::signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the holder");
+    let held = crate::run_creators::signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    assert!(held.held);
+    let refused = undo(pool, BEFORE_HELD_SIGNALS).await;
+    assert!(
+        format!("{refused:?}").contains("held Signal-with-Start signals remain"),
+        "{refused:?}"
+    );
+    assert!(
+        exists(pool, "flow_control_held_signals").await,
+        "nothing was dropped"
+    );
+    // the queued run ends: its end drops the signal, audited, and the rollback goes through
+    w.operate_run(
+        held.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    undo(pool, BEFORE_HELD_SIGNALS).await.expect("rolled back");
+    assert!(!exists(pool, "flow_control_held_signals").await);
+    MIGRATOR.run(pool).await.expect("forward again");
+    assert!(exists(pool, "flow_control_held_signals").await);
 }

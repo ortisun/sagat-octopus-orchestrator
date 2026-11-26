@@ -511,8 +511,11 @@ async fn the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protect
         group["oldestWaitSince"], waited["oldestWaitSince"],
         "{hidden}"
     );
-    assert_eq!(group["nextSlotAt"], waited["nextSlotAt"], "{hidden}");
-    assert_eq!(group["keys"], 2, "{hidden}");
+    // neither when its next slot frees nor how many windows it has (batch 4 reviews, security Major 1 and minor 1)
+    assert!(
+        group.get("nextSlotAt").is_none() && group.get("keys").is_none(),
+        "{hidden}"
+    );
     conforms("/namespaces/{namespaceId}/rate-limit-keys", &hidden);
 }
 

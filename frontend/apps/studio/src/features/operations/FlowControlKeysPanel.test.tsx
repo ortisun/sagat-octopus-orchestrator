@@ -93,18 +93,16 @@ describe('the flow-control keys of a namespace', () => {
     expect(screen.queryByRole('button', { name: 'Load more concurrency keys' })).not.toBeInTheDocument();
   });
 
-  it('says that a hidden key is shown to the minute, as the platform cuts it', async () => {
+  it('shows the rate-limit keys with their next slot, whole instants', async () => {
     await mount();
     const table = await screen.findByRole('table', { name: /Rate-limit keys of payments/ });
     expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Key label', 'Grants in window', 'Unleased grants', 'Waiters', 'Oldest wait since', 'Next slot frees']);
-    const hidden = within(table).getAllByRole('row')[2] as HTMLElement;
-    expect(cells(hidden).slice(1, 4)).toEqual(['Run starts', 'Draft test', 'Hidden']);
-    expect(cells(hidden)[7]).toMatch(/to the minute/);
-    expect(cells(hidden)[8]).toMatch(/to the minute/);
+    const second = within(table).getAllByRole('row')[2] as HTMLElement;
+    expect(cells(second).slice(1, 4)).toEqual(['Run starts', 'Draft test', 'Hidden']);
+    expect(cells(second)[8]).not.toMatch(/to the minute/);
     const shown = within(table).getAllByRole('row')[1] as HTMLElement;
-    expect(cells(shown)[7]).not.toMatch(/to the minute/);
     expect(cells(shown)[8]).toBe('Not by time: a granted step frees it when a worker leases it or it is given back');
-    expect(screen.getByRole('region', { name: 'Rate-limit keys' })).toHaveTextContent(/A hidden key label/);
+    expect(screen.getByRole('region', { name: 'Rate-limit keys' })).not.toHaveTextContent(/to the minute/);
   });
 
   it('shows one row per group, and no key, to a caller the platform lists groups to (T022-111, D022-086)', async () => {
@@ -112,26 +110,26 @@ describe('the flow-control keys of a namespace', () => {
       'GET /namespaces/ns-1/concurrency-keys': (_init, url) => {
         const query = new URL(url, 'http://studio.test').searchParams;
         if (query.get('cursor') === 'sealed-groups') {
-          return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'STEP', group: 'regions', keys: 1, holders: 1, waiters: 0, oldestWaitSince: null, oldestHolderSince: '2026-11-24T09:58:00Z' }], nextCursor: null };
+          return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'STEP', group: 'regions', holders: 1, waiters: 0, oldestWaitSince: null, oldestHolderSince: '2026-11-24T09:58:00Z' }], nextCursor: null };
         }
-        return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'RUN', group: 'accounts', keys: 2, holders: 2, waiters: 3, oldestWaitSince: '2026-11-24T10:00:05.123Z', oldestHolderSince: '2026-11-24T09:59:00Z' }], nextCursor: 'sealed-groups' };
+        return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'RUN', group: 'accounts', holders: 2, waiters: 3, oldestWaitSince: '2026-11-24T10:00:05.123Z', oldestHolderSince: '2026-11-24T09:59:00Z' }], nextCursor: 'sealed-groups' };
       },
-      'GET /namespaces/ns-1/rate-limit-keys': () => ({ view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'DRAFT_TEST', scope: 'STEP', group: '=provider-sync/fetch', keys: 4, grantsInWindow: 10, unleasedGrants: 2, waiters: 7, oldestWaitSince: '2026-11-24T10:01:00Z', nextSlotAt: null }], nextCursor: null }),
+      'GET /namespaces/ns-1/rate-limit-keys': () => ({ view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'DRAFT_TEST', scope: 'STEP', group: '=provider-sync/fetch', grantsInWindow: 10, unleasedGrants: 2, waiters: 7, oldestWaitSince: '2026-11-24T10:01:00Z' }], nextCursor: null }),
     });
     const table = await screen.findByRole('table', { name: /Concurrency keys of payments, one row per group/ });
-    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Keys', 'Holders', 'Waiters', 'Oldest wait since', 'Oldest holder since']);
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Holders', 'Waiters', 'Oldest wait since', 'Oldest holder since']);
     const row = within(table).getAllByRole('row')[1] as HTMLElement;
-    expect(cells(row).slice(0, 6)).toEqual(['accounts', 'Run starts', 'Ordinary', '2', '2', '3']);
-    expect(cells(row)[6]).not.toMatch(/to the minute/);
+    expect(cells(row).slice(0, 5)).toEqual(['accounts', 'Run starts', 'Ordinary', '2', '3']);
+    expect(cells(row)[5]).not.toMatch(/to the minute/);
     const region = screen.getByRole('region', { name: 'Concurrency keys' });
-    expect(region).toHaveTextContent(/one row per group, its keys summed, and no key/);
+    expect(region).toHaveTextContent(/one row per group, summed over its keys, and no key/);
     expect(region).not.toHaveTextContent(/Key label|Hidden/);
     await user.click(within(region).getByRole('button', { name: 'Load more concurrency keys' }));
     await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
     expect(platform.calls.some((call) => call.url.includes('cursor=sealed-groups'))).toBe(true);
     const rate = await screen.findByRole('table', { name: /Rate-limit keys of payments, one row per group/ });
-    expect(within(rate).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Keys', 'Grants in window', 'Unleased grants', 'Waiters', 'Oldest wait since', 'Next slot frees']);
-    expect(cells(within(rate).getAllByRole('row')[1] as HTMLElement)[8]).toBe('Not by time: a granted step frees it when a worker leases it or it is given back');
+    expect(within(rate).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Grants in window', 'Unleased grants', 'Waiters', 'Oldest wait since']);
+    expect(cells(within(rate).getAllByRole('row')[1] as HTMLElement).slice(3, 6)).toEqual(['10', '2', '7']);
   });
 
   it('filters by group with the keyboard and shows the platform refusal of a group that is no group', async () => {

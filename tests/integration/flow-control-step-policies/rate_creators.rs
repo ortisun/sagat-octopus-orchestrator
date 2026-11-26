@@ -492,38 +492,61 @@ async fn a_rerun_as_new_of_a_rate_limited_run_admits_through_the_key() {
 }
 
 /// Row 3 (Signal-with-Start): a run whose key's window has room takes its slot and receives the signal in its creation
-/// transaction; a second one on the full window would be buffered, so it keeps 018's typed refusal
-/// (`SIGNAL_NOT_ACCEPTED_AT_START`, G022-010) and nothing of it exists: no run, no waiter row.
+/// transaction; a second one on the full window is buffered and its signal held with it (task T022-109, decision
+/// D022-087), and the grant of its slot, once the first slot leaves the window, delivers it.
 #[tokio::test]
-async fn a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_creates_nothing() {
+async fn a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_holds_its_signal() {
     use crate::run_creators::{gated_waiter, signal_with_start};
-    use sagat_application::error::AppError;
 
     let w = gated_world().await;
     let workflow = publish(&w, hourly_instead(gated_waiter("rate-twin-signal"), 1)).await;
     let done = signal_with_start(&w, workflow, "cart-1")
         .await
         .expect("started and signalled");
-    assert!(done.started);
+    assert!(done.started && !done.held);
     assert_eq!(admitted(&w, done.run.info.run_id).await, Admitted::Granted);
     let delivered: Vec<&str> = done.delivered_to.iter().map(|n| n.as_str()).collect();
     assert_eq!(delivered, ["w"]);
-    let refused = signal_with_start(&w, workflow, "cart-2")
+    let held = signal_with_start(&w, workflow, "cart-2")
         .await
-        .expect_err("refused");
-    assert_eq!(
-        refused,
-        AppError::SignalRefused {
-            reason: "SIGNAL_NOT_ACCEPTED_AT_START"
-        }
+        .expect("buffered and held");
+    assert!(
+        held.started && held.held && held.delivered_to.is_empty(),
+        "{held:?}"
     );
-    assert_eq!(runs_of(&w, workflow).await.len(), 1, "nothing was created");
-    let waiters: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rate_limit_waiters WHERE limit_scope = 'RUN'")
-            .fetch_one(&w.db.pool)
+    let run = held.run.info.run_id;
+    assert_eq!(admitted(&w, run).await, Admitted::Buffered);
+    // the first slot two hours old, out of its window (the guard of a grant row off in this one transaction)
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    for statement in [
+        "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
+        "UPDATE rate_limit_grants SET granted_at = granted_at - interval '2 hours', \
+                leased_at = leased_at - interval '2 hours' WHERE limit_scope = 'RUN'",
+        "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
             .await
-            .expect("waiters");
-    assert_eq!(waiters, 0, "no waiter row was left");
+            .expect(statement);
+    }
+    tx.commit().await.expect("aged");
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded),
+        "{:?}",
+        w.journal(run).await
+    );
+    let (rows, signalled): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM flow_control_held_signals WHERE run_id = $1), \
+                (SELECT count(*) FROM audit_records WHERE resource_id = $1::text AND action = 'run.signalled')",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!((rows, signalled), (0, 1), "delivered once by the grant");
+    // not `assert_consistent`: the first grant was aged in its rows only, so its journal still places it in the window
 }
 
 /// Row 3 (Update-with-Start): the run takes its slot or is buffered, and the Update is applied to its declared state in

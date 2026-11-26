@@ -179,7 +179,13 @@ async fn a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit() {
     w.operate_run(holder, RunOperation::Cancel).await;
     assert_eq!(count(&w, holder, "concurrency.released").await, 1);
     assert_eq!(start_rows(&w, holder).await, (0, 0));
-    assert_eq!(w.scheduler.tick().await.gates_granted, 1);
+    // the report names why a tick granted nothing (a busy run, a failed grant, a fenced or empty selection), so an
+    // intermittent failure on a loaded runner says its cause (batch 3 work item 2)
+    let report = w.scheduler.tick().await;
+    assert_eq!(
+        report.gates_granted, 1,
+        "the tick did not grant exactly one: {report:?}"
+    );
     assert_eq!(start_rows(&w, second).await, (1, 0));
     for run in [holder, first, second] {
         w.assert_consistent(run).await;
@@ -774,6 +780,274 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_
         "two grants, one after the other: {acquired:?}"
     );
     for run in holders.iter().copied().chain([waiter, late]) {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Item 2 of the batch 3 work (the intermittent `rate_limits::a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window`,
+/// "grants follow admission order"): the grant routine takes a waiter's run with `SKIP LOCKED`, and a run another
+/// transaction held (a pass that had not yet released it, a statement in flight) was skipped while the pass went on: on
+/// a window with room for both, the younger waiter behind it was granted first, out of admission order (decision
+/// D022-073). Two buffered starts of `limit: 2, per: hour` behind two holders whose slots have aged out; the older
+/// waiter's run held by a transaction of this test: the pass grants nobody and leaves the key due; released, the next
+/// pass grants both, the older first.
+#[tokio::test]
+async fn a_waiter_whose_run_is_busy_holds_back_the_younger_waiters_of_its_key() {
+    let w = gated_world().await;
+    let mut doc = document("start-busy-order", "g", vec![activity("g")]);
+    doc["rateLimit"] =
+        json!({"group": "accounts", "key": "input.accountId", "limit": 2, "per": "hour"});
+    let workflow = publish(&w, doc).await;
+    let input = json!({"accountId": "acct-1"});
+    let _holders = [
+        w.start(workflow, &input).await,
+        w.start(workflow, &input).await,
+    ];
+    let older = w.start(workflow, &input).await;
+    let younger = w.start(workflow, &input).await;
+    // the holders' slots two hours old, out of the window (the guard of a grant row off in this one transaction)
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    for statement in [
+        "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
+        "UPDATE rate_limit_grants SET granted_at = granted_at - interval '2 hours', \
+                leased_at = leased_at - interval '2 hours'",
+        "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .expect(statement);
+    }
+    tx.commit().await.expect("aged");
+    let granted = |run: RunId| {
+        let w = &w;
+        async move {
+            sqlx::query_scalar::<_, time::OffsetDateTime>(
+                "SELECT granted_at FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'RUN'",
+            )
+            .bind(run.as_uuid())
+            .fetch_optional(&w.db.pool)
+            .await
+            .expect("a grant")
+        }
+    };
+    let mut busy = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(older.as_uuid())
+        .execute(&mut *busy)
+        .await
+        .expect("the older waiter's run held");
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        (report.gates_granted, granted(younger).await),
+        (0, None),
+        "the younger waiter is not granted past the busy older one: {report:?}"
+    );
+    busy.rollback().await.expect("released");
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 2, "{report:?}");
+    let (first, second) = (granted(older).await, granted(younger).await);
+    assert!(
+        first.is_some() && second.is_some() && first < second,
+        "the older waiter first: {first:?} {second:?}"
+    );
+}
+/// Batch 5 correctness Major 1 (decision D022-121): a waiter whose grant always fails (here a trigger refuses its holder
+/// row, as a constraint would) no longer ends its key's pass: it is skipped, counted `failed`, and stays queued, and the
+/// younger waiter behind it is granted in the same pass. `limit: 2`, so that the older waiter's reservation leaves the
+/// younger room once both holders end.
+#[tokio::test]
+async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("start-poisoned", 2)).await;
+    let session = w.session(&["act.g"]).await;
+    let account = json!({"accountId": "acct-1"});
+    let holders = [
+        w.start(workflow, &account).await,
+        w.start(workflow, &account).await,
+    ];
+    let older = w.start(workflow, &account).await;
+    let younger = w.start(workflow, &account).await;
+    assert_eq!(start_rows(&w, older).await, (0, 1));
+    assert_eq!(start_rows(&w, younger).await, (0, 1));
+    for statement in [
+        format!(
+            "CREATE FUNCTION test_refuse_holder() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+               IF NEW.run_id = '{}' THEN RAISE EXCEPTION 'the test refuses this holder'; END IF; RETURN NEW; END $$",
+            older.as_uuid()
+        ),
+        "CREATE TRIGGER test_refuse_holder BEFORE INSERT ON concurrency_holders FOR EACH ROW \
+           EXECUTE FUNCTION test_refuse_holder()"
+            .to_owned(),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&w.db.pool)
+            .await
+            .expect("the refusing trigger");
+    }
+    for task in w.poll(&session, 8).await {
+        assert!(holders.contains(&task.run_id), "only the holders run");
+        w.complete(&session, &task, &json!({})).await.expect("done");
+    }
+    for holder in holders {
+        assert_eq!(start_rows(&w, holder).await, (0, 0), "the holder ended");
+    }
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        (report.gates_granted, report.failed),
+        (1, 1),
+        "the failing waiter is skipped, the younger granted: {report:?}"
+    );
+    assert_eq!(
+        start_rows(&w, younger).await,
+        (1, 0),
+        "the younger is granted"
+    );
+    assert_eq!(
+        start_rows(&w, older).await,
+        (0, 1),
+        "the failing waiter stays queued"
+    );
+    sqlx::query("DROP TRIGGER test_refuse_holder ON concurrency_holders")
+        .execute(&w.db.pool)
+        .await
+        .expect("the trigger dropped");
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 1,
+        "the older is granted once it can be: {report:?}"
+    );
+    assert_eq!(start_rows(&w, older).await, (1, 0));
+    for run in holders.iter().copied().chain([older, younger]) {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Batch 5 correctness Major 2 (decision D022-122): two waiters of one run on one key, adjacent, the first refused by its
+/// other gate (a rate-limit window with no slot left). The refusal's transaction is rolled back, and the rollback awaited,
+/// before the second waiter is tried, so the second finds its run free and is granted, and the younger waiter of another
+/// run behind them is granted in the same pass. Before, the dropped transaction kept the run locked until the pool rolled
+/// it back in a task of its own: the second waiter found its run busy, which ends the key's pass (D022-088).
+#[tokio::test]
+async fn a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_is_tried() {
+    let w = gated_world().await;
+    let shared = json!({"group": "shared", "key": "input.accountId", "limit": 3});
+    let window = json!({"group": "window", "key": "input.accountId", "limit": 1, "per": "hour"});
+    let slot_taker = publish(
+        &w,
+        crate::support::engine::document(
+            "same-run-slot-taker",
+            "t",
+            vec![crate::support::engine::with(
+                activity("t"),
+                "rateLimit",
+                window.clone(),
+            )],
+        ),
+    )
+    .await;
+    let twice = publish(
+        &w,
+        crate::support::engine::document(
+            "same-run-twice",
+            "p",
+            vec![
+                crate::support::engine::parallel_node("p", &["a", "b"], "all"),
+                crate::support::engine::with(
+                    crate::support::engine::with(activity("a"), "concurrency", shared.clone()),
+                    "rateLimit",
+                    window,
+                ),
+                crate::support::engine::with(activity("b"), "concurrency", shared.clone()),
+            ],
+        ),
+    )
+    .await;
+    let behind = publish(
+        &w,
+        crate::support::engine::document(
+            "same-run-behind",
+            "c",
+            vec![crate::support::engine::with(
+                activity("c"),
+                "concurrency",
+                shared,
+            )],
+        ),
+    )
+    .await;
+    let account = json!({"accountId": "acct-1"});
+    let _slot = w.start(slot_taker, &account).await;
+    let run = w.start(twice, &account).await;
+    let other = w.start(behind, &account).await;
+    let waiting = |run: RunId| {
+        let w = &w;
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT node FROM concurrency_waiters WHERE run_id = $1 AND permit_scope = 'STEP' ORDER BY node",
+            )
+            .bind(run.as_uuid())
+            .fetch_all(&w.db.pool)
+            .await
+            .expect("waiters")
+        }
+    };
+    assert_eq!(
+        waiting(run).await,
+        ["a", "b"],
+        "both steps of the run wait on the shared key"
+    );
+    assert_eq!(
+        waiting(other).await,
+        ["c"],
+        "the other run waits behind them"
+    );
+    // the scheduler's store over a pool that returns a released connection late, as a loaded pool does: sqlx sends the
+    // rollback of a dropped transaction only when the connection is returned (after `after_release`), so a refusal
+    // that merely drops its transaction keeps the run locked for that long
+    let url = if crate::support::as_runtime_role() {
+        w.db.url_for(
+            crate::support::RUNTIME_ROLE,
+            crate::support::RUNTIME_ROLE_PASSWORD,
+        )
+    } else {
+        w.db.url.clone()
+    };
+    let late = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(8)
+        .after_release(|_, _| {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                Ok(true)
+            })
+        })
+        .connect(&url)
+        .await
+        .expect("a pool that returns its connections late");
+    let store = crate::support::flow_control::gate(sagat_infra_postgres::PgRunStore::new(
+        late,
+        w.cache.clone(),
+    ));
+    // one key at a time, so that only the shared key's pass takes the run
+    let one_at_a_time = sagat_scheduler::SchedulerSettings {
+        concurrency: 1,
+        ..sagat_scheduler::SchedulerSettings::default()
+    };
+    let report = sagat_scheduler::Scheduler::new(
+        store,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        one_at_a_time,
+    )
+    .with_children(w.cache.clone())
+    .grant_gates()
+    .await;
+    assert_eq!(
+        (waiting(run).await, waiting(other).await),
+        (vec!["a".to_owned()], vec![]),
+        "the run's second waiter and the other run are granted in the first pass: {report:?}"
+    );
+    for run in [run, other] {
         w.assert_consistent(run).await;
     }
 }

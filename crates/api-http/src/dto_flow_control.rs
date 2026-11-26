@@ -85,13 +85,14 @@ pub struct ConcurrencyGroupBody {
     pub pool: &'static str,
     pub scope: &'static str,
     pub group: String,
-    pub keys: u64,
     pub holders: u64,
     pub waiters: u64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub oldest_wait_since: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub oldest_holder_since: Option<OffsetDateTime>,
+    /// Whether an earlier page began its sums (decision D022-101).
+    pub spans_pages: bool,
 }
 
 impl From<&ConcurrencyGroupView> for ConcurrencyGroupBody {
@@ -100,11 +101,11 @@ impl From<&ConcurrencyGroupView> for ConcurrencyGroupBody {
             pool: group.pool.as_str(),
             scope: group.scope.as_str(),
             group: group.group.as_str().to_owned(),
-            keys: group.keys,
             holders: group.holders,
             waiters: group.waiters,
             oldest_wait_since: group.oldest_wait_since,
             oldest_holder_since: group.oldest_holder_since,
+            spans_pages: group.spans_pages,
         }
     }
 }
@@ -143,19 +144,7 @@ impl Placed for ConcurrencyKeyView {
     }
 }
 
-impl Placed for ConcurrencyGroupView {
-    fn place(&self) -> &KeyPosition {
-        &self.position
-    }
-}
-
 impl Placed for RateLimitKeyView {
-    fn place(&self) -> &KeyPosition {
-        &self.position
-    }
-}
-
-impl Placed for RateLimitGroupView {
     fn place(&self) -> &KeyPosition {
         &self.position
     }
@@ -188,9 +177,13 @@ impl ConcurrencyKeyPageBody {
                 let (items, next) = page_of(&page.items, limit, cursor)?;
                 ((items, Vec::new()), next)
             }
+            // the store read the group view without one more: it carries its own next place (decision D022-086 item 5)
             KeyView::Groups => {
-                let (groups, next) = page_of(&page.groups, limit, cursor)?;
-                ((Vec::new(), groups), next)
+                let next = page.next.as_ref().map(cursor).transpose()?;
+                (
+                    (Vec::new(), page.groups.iter().map(Into::into).collect()),
+                    next,
+                )
             }
         };
         Ok(Self {
@@ -286,14 +279,13 @@ pub struct RateLimitGroupBody {
     pub pool: &'static str,
     pub scope: &'static str,
     pub group: String,
-    pub keys: u64,
     pub grants_in_window: u64,
     pub unleased_grants: u64,
     pub waiters: u64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub oldest_wait_since: Option<OffsetDateTime>,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub next_slot_at: Option<OffsetDateTime>,
+    /// Whether an earlier page began its sums (decision D022-101).
+    pub spans_pages: bool,
 }
 
 impl From<&RateLimitGroupView> for RateLimitGroupBody {
@@ -302,12 +294,11 @@ impl From<&RateLimitGroupView> for RateLimitGroupBody {
             pool: group.pool.as_str(),
             scope: group.scope.as_str(),
             group: group.group.as_str().to_owned(),
-            keys: group.keys,
             grants_in_window: group.grants_in_window,
             unleased_grants: group.unleased_grants,
             waiters: group.waiters,
             oldest_wait_since: group.oldest_wait_since,
-            next_slot_at: group.next_slot_at,
+            spans_pages: group.spans_pages,
         }
     }
 }
@@ -338,9 +329,13 @@ impl RateLimitKeyPageBody {
                 let (items, next) = page_of(&page.items, limit, cursor)?;
                 ((items, Vec::new()), next)
             }
+            // the store read the group view without one more: it carries its own next place (decision D022-086 item 5)
             KeyView::Groups => {
-                let (groups, next) = page_of(&page.groups, limit, cursor)?;
-                ((Vec::new(), groups), next)
+                let next = page.next.as_ref().map(cursor).transpose()?;
+                (
+                    (Vec::new(), page.groups.iter().map(Into::into).collect()),
+                    next,
+                )
             }
         };
         Ok(Self {

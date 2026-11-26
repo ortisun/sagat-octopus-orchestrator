@@ -38,8 +38,8 @@ pub(crate) struct KeyListingQuery {
 
 /// Opens a request of the key listing of `listing`'s gate, the same way for both gates (decision D022-068 item 6): the
 /// namespace and the group are read; a cursor is the place sealed for this namespace of this tenant, of this gate's
-/// listing in either view (D022-059, D022-086), anything else, altered, or sealed for another namespace or the other
-/// gate is a `400` decided before admission, the same whether the namespace exists or not; a group's listing resumes
+/// listing in either view (D022-059, D022-086), sealed at most fifteen minutes ago (D022-100); anything else, altered,
+/// expired, or sealed for another namespace or the other gate is a `400` decided before admission, the same whether the namespace exists or not; a group's listing resumes
 /// only after a place of that group; the caller is admitted for `ops:read`; and a cursor sealed under a digest key
 /// version out of force is a `400` too, asked after admission (it reads the database, D022-063). Whether the cursor's
 /// view is the caller's is the listing's own question (it reads the reveal right).
@@ -72,6 +72,13 @@ pub(crate) async fn open_key_listing<B: Governance>(
                 .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))
         })
         .transpose()?;
+    // a cursor older than its lifetime (decision D022-100): the listing is read again from its start
+    if after
+        .as_ref()
+        .is_some_and(|after| service.key_cursor_expired(after))
+    {
+        return Err(ApiError::bad_request(EXPIRED));
+    }
     if let (Some(group), Some(after)) = (&group, &after)
         && after.position.group != *group
     {
@@ -101,6 +108,15 @@ pub(crate) async fn open_key_listing<B: Governance>(
     })
 }
 
+/// The refusal of a cursor written for the other view of a key listing: the caller's reveal right changed between two
+/// pages, so the listing must be read again from its start (batch 4 correctness nit 1).
+pub(crate) const OTHER_VIEW: &str =
+    "the cursor was written for the other view of this listing: read it again without a cursor";
+
+/// The refusal of a cursor whose page sealed it more than fifteen minutes ago (decision D022-100; batch 5 security
+/// suspicion 3): a group's partial sums it carries must not be added to rows read so much later.
+pub(crate) const EXPIRED: &str = "the cursor has expired: read the listing again without a cursor";
+
 /// `GET /namespaces/{namespaceId}/concurrency-keys`
 pub async fn list_concurrency_keys<B: Governance>(
     caller: Caller,
@@ -121,8 +137,8 @@ pub async fn list_concurrency_keys<B: Governance>(
             &caller.ctx,
         )
         .await?
-        // a cursor of the other view: the caller's view changed between two pages
-        .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))?;
+        // a cursor of the other view: what the caller may see changed between two pages (batch 4 nit 1)
+        .ok_or_else(|| ApiError::bad_request(OTHER_VIEW))?;
     let body = ConcurrencyKeyPageBody::of(&page, opened.limit as usize, |last| {
         service.concurrency_key_cursor(&caller.session.principal, opened.namespace, &page, last)
     })?;

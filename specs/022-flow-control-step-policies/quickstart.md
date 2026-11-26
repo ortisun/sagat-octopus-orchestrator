@@ -32,6 +32,10 @@ sagat worker dev --mocks order-intake.mocks.yaml --workflow order-intake.workflo
 fails `crm.notify` permanently when `input.failNotify` is true. (These are worker canned answers, the
 existing `sagat worker dev --mocks` feature, not test-mode pins.)
 
+- A development database that applied this branch's migrations under their first numbers (`20270210000000` and
+  `20270210000100` for the waiters' declarations) does not start against this build: recreate it (the branch is
+  unreleased; decision D022-078 item 1).
+
 ## 1. Step cache (US01)
 
 Happy path:

@@ -677,6 +677,24 @@ The bounds are the measured sizes and about a fifth to a half more, and each lie
 so a change that inlines the future again fails the test, not a CI process. The test that overflowed needs 1,418 KiB of
 stack after the boxes, against 2,080 KiB before (bisected with `RUST_MIN_STACK`, 32 KiB steps, on the arm64 debug build).
 
+The run state's values a debug frame copies grow every frame that holds one (D022-102). The gates of a run's start and of
+a step's attempts are boxed (`Gates` holds one pointer, an ungated run or step none), so is a node's declaration of its
+gates (absent for an ungated node), and `crates/domain/tests/state_sizes.rs` holds the sizes below their bounds; a bound
+changes here first, with its reason.
+
+| Type | Measured (bytes) | Bound (bytes) | Reason of the last change |
+|---|---|---|---|
+| `StepState` | 136 | 160 | 2026-11-25: was 288 with its gates inline (128 on `develop`) |
+| `RunState` | 368 | 384 | 2026-11-25: was 520 with its start's gates inline (336 on `develop`) |
+| `Node` | 568 | 576 | 2026-11-25: was 704 with its gates' declaration inline (560 on `develop`) |
+
+`scoped_event_storage::receiver::a_dispatcher_quota_refusal_with_held_inbox_keeps_lookback_pending` and its sibling
+(integration_workflow_primitives) overflowed the 2 MiB test thread on CI (runs 45637128106 and 45649612535): they needed
+2,048 KiB on this branch against 1,920 KiB on `develop` (same bisection), 1,984 KiB with the gates boxed (the node's box
+moved nothing on this path), and 1,376 KiB once the test's own scenario future (about 80 KB, which a debug build kept in
+several frames of the test thread) is boxed where it is created; that future is held below 4,096 bytes by
+`scoped_event_storage::receiver::the_quota_refusal_future_kept_on_the_test_thread_stays_small` (D022-102).
+
 ### Hot-path budget of a gated definition
 
 The lines of `tests/integration/claim-transition-efficiency/work_budget.rs` that a gate adds to (statements, transactions,

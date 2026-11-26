@@ -91,6 +91,9 @@ mod pool;
 mod primitives;
 mod privilege;
 mod quotas;
+/// Design 041's spike T041-35 only (`perf-spike`): runs the step-log carry inside a report transaction.
+#[cfg(feature = "perf-spike")]
+pub mod report_hook;
 mod reveal_grants;
 mod schedules;
 mod scope_compensation;
@@ -99,6 +102,7 @@ mod scoped_leaf_finish;
 mod scripts;
 mod secrets;
 mod signals;
+mod step_logs;
 mod telemetry;
 mod trigger_schedules;
 mod versioning;
@@ -126,9 +130,9 @@ pub use execution::{PgRunStore, PgRunTx};
 /// (D022-058).
 #[doc(hidden)]
 pub use flow_control::{
-    CONCURRENCY_GROUP_OF_NAME_SQL, CONCURRENCY_GROUP_SQL, KEY_LISTING_OF_GROUP_SQL,
-    KEY_LISTING_SQL, RATE_GROUP_OF_NAME_SQL, RATE_GROUP_SQL, RATE_KEY_LISTING_OF_GROUP_SQL,
-    RATE_KEY_LISTING_SQL,
+    CONCURRENCY_GROUP_AFTER_SQL, CONCURRENCY_GROUP_KEYS_SQL, CONCURRENCY_GROUP_NAMED_AFTER_SQL,
+    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_GROUP_AFTER_SQL, RATE_GROUP_KEYS_SQL,
+    RATE_GROUP_NAMED_AFTER_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
 };
 /// The deciding transactions of feature 022's gates file their keys through these, inside the store; exposed for the
 /// integration suite that proves the rotation (T022-095).
@@ -143,7 +147,10 @@ pub use instances::{
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
-pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
+pub use pool::{
+    APPLICATION_NAME_PREFIX, BeginSafely, PoolConfig, PoolName, connect, spawn_pool_metrics,
+    step_log_wait_slots, step_log_wait_slots_for,
+};
 pub use primitives::PgCollectionStore;
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use reveal_grants::has_effective_payload_reveal_grant;

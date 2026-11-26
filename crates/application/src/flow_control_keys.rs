@@ -125,6 +125,9 @@ pub struct ConcurrencyKeyPage {
     /// The digest key version the database had active in the page's snapshot, which seals its cursor (D022-059); `None`
     /// before any version was activated (then no key exists either).
     pub cursor_version: Option<u16>,
+    /// The group view's own place to resume at, `None` after its last group: the place after its last group, or a group
+    /// it read in part (decision D022-086 item 5). The key view resumes after its last item.
+    pub next: Option<KeyPosition>,
 }
 
 /// The run-level rate-limit slot of a run as its rows say now (`Run.rateLimit`, FR-022-048, decision D022-067 item 1):
@@ -322,6 +325,8 @@ pub struct RateLimitKeyPage {
     pub queued_runs: u64,
     /// The digest key version the database had active in the page's snapshot, which seals its cursor.
     pub cursor_version: Option<u16>,
+    /// As [`ConcurrencyKeyPage::next`].
+    pub next: Option<KeyPosition>,
 }
 
 /// What a page of a key listing lists (FR-022-022, FR-022-057, decisions D022-061 and D022-086).
@@ -336,37 +341,80 @@ pub enum KeyView {
     Groups,
 }
 
-/// One group of a namespace's concurrency keys, summed over its keys in one snapshot (decision D022-086).
+/// The most key rows a page of a group view reads (decision D022-086 item 5): the per-key page's bound. A group with more
+/// keys is summed across the pages that read it.
+pub const GROUP_PAGE_KEY_ROWS: u32 = 200;
+
+/// One group of a namespace's concurrency keys, summed over its keys across the pages that read it, each page one
+/// snapshot (decision D022-086 item 5). It never says how many keys the group has: that count tells which runs share a
+/// key (batch 4 reviews, security Major 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConcurrencyGroupView {
     pub pool: GatePool,
     pub scope: GateLevel,
     pub group: ResolvedGroup,
-    /// Its live keys (rows).
-    pub keys: u64,
     pub holders: u64,
     pub waiters: u64,
     pub oldest_wait_since: Option<OffsetDateTime>,
     pub oldest_holder_since: Option<OffsetDateTime>,
+    /// Whether an earlier page began its sums: they then mix the snapshots of the pages that read it (decision D022-101).
+    pub spans_pages: bool,
     /// Where a page that ends with this group resumes (its digest is all zero: groups are ordered by pool, scope and
     /// name).
     pub position: KeyPosition,
 }
 
-/// One group of a namespace's rate-limit windows, summed over its windows at the page's instant (decision D022-086).
+/// One group of a namespace's rate-limit windows, summed over its windows across the pages that read it, each at its
+/// page's instant (decision D022-086 item 5). Neither how many windows it has nor when its next slot frees: the first
+/// tells which runs share a key, the second links a waiting run to a granted one (batch 4 reviews, security Major 1 and
+/// minor 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitGroupView {
     pub pool: GatePool,
     pub scope: GateLevel,
     pub group: ResolvedGroup,
-    pub keys: u64,
     pub grants_in_window: u64,
     pub unleased_grants: u64,
     pub waiters: u64,
     pub oldest_wait_since: Option<OffsetDateTime>,
-    /// The earliest of its windows' next slots.
-    pub next_slot_at: Option<OffsetDateTime>,
+    /// Whether an earlier page began its sums: they then mix the snapshots of the pages that read it (decision D022-101).
+    pub spans_pages: bool,
     pub position: KeyPosition,
+}
+
+/// What a page of a group view has read of a group it did not finish (decision D022-086 item 5): its sums (holders and
+/// waiters of a concurrency group; counted grants, unleased grants and waiters of a rate group) and its oldest instants
+/// in microseconds since the epoch (the oldest wait; the oldest holder of a concurrency group). Carried in the sealed
+/// cursor, never shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GroupPartial {
+    pub sums: [u64; 3],
+    pub oldest_us: [Option<i64>; 2],
+}
+
+impl GroupPartial {
+    /// Adds what one key row adds.
+    pub fn add(&mut self, sums: [u64; 3], oldest_us: [Option<i64>; 2]) {
+        for (total, value) in self.sums.iter_mut().zip(sums) {
+            *total = total.saturating_add(value);
+        }
+        for (oldest, value) in self.oldest_us.iter_mut().zip(oldest_us) {
+            *oldest = match (*oldest, value) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+    }
+
+    /// An instant of [`Self::oldest_us`].
+    #[must_use]
+    pub fn instant(&self, index: usize) -> Option<OffsetDateTime> {
+        self.oldest_us
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|us| OffsetDateTime::from_unix_timestamp_nanos(i128::from(us) * 1_000).ok())
+    }
 }
 
 /// Which listing a place belongs to: the cursor of one is refused by every other (decision D022-067 item 5), the key
@@ -403,11 +451,27 @@ impl KeyListing {
     }
 }
 
-/// The position a cursor names, and the view of the listing that wrote it (decision D022-086).
+/// How long a key listing's cursor is read after its page sealed it (decision D022-100): a cursor of a group view carries
+/// the sums of a group read in part, which a later page must not add to rows read much later, and a page boundary kept
+/// for long would tell whether a group still crosses the bound of a page.
+pub const KEY_CURSOR_LIFETIME: time::Duration = time::Duration::minutes(15);
+
+/// The position a cursor names, the view of the listing that wrote it (decision D022-086), and the instant its page
+/// sealed it, in whole seconds (decision D022-100).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListingPosition {
     pub view: KeyView,
     pub position: KeyPosition,
+    pub sealed_at: OffsetDateTime,
+}
+
+impl ListingPosition {
+    /// Whether the cursor has outlived [`KEY_CURSOR_LIFETIME`] at `now` (decision D022-100). A cursor sealed ahead of
+    /// `now` (another process whose clock is ahead) is read: processes' clocks differ by far less than the lifetime.
+    #[must_use]
+    pub fn expired(&self, now: OffsetDateTime) -> bool {
+        now - self.sealed_at > KEY_CURSOR_LIFETIME
+    }
 }
 
 /// The place of a key in the listing's order: oldest wait first (a key nobody waits for last), then pool, scope, group
@@ -425,6 +489,9 @@ pub struct KeyPosition {
     pub scope: GateLevel,
     pub group: ResolvedGroup,
     pub digest: [u8; 32],
+    /// In a group view, a group read in part: `digest` is then the last key read and these its sums so far (decision
+    /// D022-086 item 5). `None` in a key view and for a group read whole.
+    pub partial: Option<GroupPartial>,
 }
 
 /// Prints the key as its label, never the digest (NFR-022-002: logs).
@@ -436,14 +503,16 @@ impl std::fmt::Debug for KeyPosition {
             .field("scope", &self.scope)
             .field("group", &self.group)
             .field("key", &KeyLabel::of_digest(&self.digest))
+            .field("partial", &self.partial)
             .finish()
     }
 }
 
 impl KeyPosition {
     /// The cursor a caller is given: the position sealed for this namespace of this tenant under `version`, the digest
-    /// key version the database has active. `None` when this process does not hold it (it cannot then hand out a
-    /// cursor; the service refuses the page, D022-059).
+    /// key version the database has active, with `sealed_at`, the instant of its page, in whole seconds (decision
+    /// D022-100). `None` when this process does not hold that version (it cannot then hand out a cursor; the service
+    /// refuses the page, D022-059).
     #[must_use]
     pub fn seal(
         &self,
@@ -452,11 +521,14 @@ impl KeyPosition {
         version: u16,
         tenant: TenantId,
         namespace: NamespaceId,
+        sealed_at: OffsetDateTime,
     ) -> Option<String> {
-        ring.seal_cursor(version, tenant, namespace, self.encode(listing).as_bytes())
+        let plain = format!("{}.{}", sealed_at.unix_timestamp(), self.encode(listing));
+        ring.seal_cursor(version, tenant, namespace, plain.as_bytes())
     }
 
-    /// The position a cursor [`Self::seal`] wrote for this namespace of this tenant; `None` for anything else.
+    /// The position a cursor [`Self::seal`] wrote for this namespace of this tenant, whatever its age; `None` for
+    /// anything else.
     #[must_use]
     pub fn open(
         text: &str,
@@ -465,12 +537,13 @@ impl KeyPosition {
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Option<Self> {
-        let plain = ring.open_cursor(tenant, namespace, text)?;
-        Self::decode(std::str::from_utf8(&plain).ok()?, listing)
+        let (_, plain) = Self::unseal(text, ring, tenant, namespace)?;
+        Self::decode(&plain, listing)
     }
 
     /// The position a cursor of either view of the listing of `gate` names (its key view's or its group view's), with
-    /// that view; `None` for anything else.
+    /// that view and the instant its page sealed it; `None` for anything else. Whether it has expired is
+    /// [`ListingPosition::expired`].
     #[must_use]
     pub fn open_either(
         text: &str,
@@ -479,14 +552,33 @@ impl KeyPosition {
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Option<ListingPosition> {
-        let plain = ring.open_cursor(tenant, namespace, text)?;
-        let plain = std::str::from_utf8(&plain).ok()?;
+        let (sealed_at, plain) = Self::unseal(text, ring, tenant, namespace)?;
         [KeyView::Keys, KeyView::Groups]
             .into_iter()
             .find_map(|view| {
-                Self::decode(plain, gate.of(view))
-                    .map(|position| ListingPosition { view, position })
+                Self::decode(&plain, gate.of(view)).map(|position| ListingPosition {
+                    view,
+                    position,
+                    sealed_at,
+                })
             })
+    }
+
+    /// The instant and the position's text a cursor sealed for this namespace of this tenant holds.
+    fn unseal(
+        text: &str,
+        ring: &KeyRing,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Option<(OffsetDateTime, String)> {
+        let plain = String::from_utf8(ring.open_cursor(tenant, namespace, text)?).ok()?;
+        let (sealed_at, position) = plain.split_once('.')?;
+        // whole seconds since the epoch, digits only (no sign)
+        if !sealed_at.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let sealed_at = OffsetDateTime::from_unix_timestamp(sealed_at.parse().ok()?).ok()?;
+        Some((sealed_at, position.to_owned()))
     }
 
     /// The place of a group in the group view's order (pool, scope and name; the digest all zero).
@@ -498,6 +590,26 @@ impl KeyPosition {
             scope,
             group,
             digest: [0; 32],
+            partial: None,
+        }
+    }
+
+    /// The place of a group read in part, up to and including the key `digest` (decision D022-086 item 5).
+    #[must_use]
+    pub const fn in_group(
+        pool: GatePool,
+        scope: GateLevel,
+        group: ResolvedGroup,
+        digest: [u8; 32],
+        partial: GroupPartial,
+    ) -> Self {
+        Self {
+            oldest_wait_us: None,
+            pool,
+            scope,
+            group,
+            digest,
+            partial: Some(partial),
         }
     }
 
@@ -520,6 +632,19 @@ impl KeyPosition {
             hex(&self.digest),
             hex(self.group.as_str().as_bytes())
         );
+        if let Some(partial) = &self.partial {
+            for sum in partial.sums {
+                let _ = write!(text, ".{sum}");
+            }
+            for oldest in partial.oldest_us {
+                match oldest {
+                    Some(us) => {
+                        let _ = write!(text, ".{us}");
+                    }
+                    None => text.push_str(".n"),
+                }
+            }
+        }
         text
     }
 
@@ -550,15 +675,38 @@ impl KeyPosition {
         let digest: [u8; 32] = unhex(parts.next()?)?.try_into().ok()?;
         let group = String::from_utf8(unhex(parts.next()?)?).ok()?;
         let group = ResolvedGroup::parse(&group).ok()?;
-        if parts.next().is_some() {
-            return None;
-        }
+        let rest: Vec<&str> = parts.collect();
+        let partial = match rest.as_slice() {
+            [] => None,
+            // only a group view carries a group read in part
+            [a, b, c, d, e]
+                if matches!(
+                    listing,
+                    KeyListing::ConcurrencyGroups | KeyListing::RateLimitGroups
+                ) =>
+            {
+                let instant = |text: &str| -> Option<Option<i64>> {
+                    if text == "n" {
+                        return Some(None);
+                    }
+                    let us = text.parse::<i64>().ok()?;
+                    OffsetDateTime::from_unix_timestamp_nanos(i128::from(us) * 1_000).ok()?;
+                    Some(Some(us))
+                };
+                Some(GroupPartial {
+                    sums: [a.parse().ok()?, b.parse().ok()?, c.parse().ok()?],
+                    oldest_us: [instant(d)?, instant(e)?],
+                })
+            }
+            _ => return None,
+        };
         Some(Self {
             oldest_wait_us,
             pool,
             scope,
             group,
             digest,
+            partial,
         })
     }
 }
@@ -680,6 +828,75 @@ mod tests {
             scope: GateLevel::Step,
             group: ResolvedGroup::parse(group).expect("a group"),
             digest: [0xab; 32],
+            partial: None,
+        }
+    }
+
+    /// The instant the tests' cursors are sealed at, 2026-11-25 12:00 UTC.
+    fn page_instant() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_795_608_000).expect("an instant")
+    }
+
+    /// Decision D022-100 (batch 5 security suspicion 3): a cursor carries the instant of its page, sealed, and expires
+    /// fifteen minutes after it; one sealed ahead of the reader's clock is read; an instant that is not whole seconds
+    /// written by [`KeyPosition::seal`] is no cursor.
+    #[test]
+    fn a_cursor_expires_fifteen_minutes_after_its_page() {
+        let ring = KeyRing::parse(RING).expect("ring");
+        let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
+        let p = position(Some(1_763_640_000_123_456), "payments.eu");
+        let sealed_at = page_instant() + time::Duration::milliseconds(700);
+        let cursor = p
+            .seal(
+                KeyListing::Concurrency,
+                &ring,
+                1,
+                tenant,
+                namespace,
+                sealed_at,
+            )
+            .expect("sealed");
+        let opened =
+            KeyPosition::open_either(&cursor, KeyListing::Concurrency, &ring, tenant, namespace)
+                .expect("opened");
+        assert_eq!(
+            (opened.view, &opened.position, opened.sealed_at),
+            (KeyView::Keys, &p, page_instant()),
+            "the page's instant, in whole seconds"
+        );
+        for (now, expired) in [
+            (page_instant() - time::Duration::minutes(1), false),
+            (page_instant(), false),
+            (page_instant() + KEY_CURSOR_LIFETIME, false),
+            (
+                page_instant() + KEY_CURSOR_LIFETIME + time::Duration::seconds(1),
+                true,
+            ),
+            (page_instant() + time::Duration::hours(1), true),
+        ] {
+            assert_eq!(opened.expired(now), expired, "{now}");
+        }
+        // the instant is inside the sealed text: a forged one is no cursor
+        for instant in ["-1", "+1", "", "1.5"] {
+            let forged = ring
+                .seal_cursor(
+                    1,
+                    tenant,
+                    namespace,
+                    format!("{instant}.{}", p.encode(KeyListing::Concurrency)).as_bytes(),
+                )
+                .expect("sealed");
+            assert_eq!(
+                KeyPosition::open_either(
+                    &forged,
+                    KeyListing::Concurrency,
+                    &ring,
+                    tenant,
+                    namespace
+                ),
+                None,
+                "{instant:?}"
+            );
         }
     }
 
@@ -882,7 +1099,14 @@ mod tests {
         let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
         let p = position(Some(1_763_640_000_123_456), "payments.eu");
         let cursor = p
-            .seal(KeyListing::Concurrency, &ring, 1, tenant, namespace)
+            .seal(
+                KeyListing::Concurrency,
+                &ring,
+                1,
+                tenant,
+                namespace,
+                page_instant(),
+            )
             .expect("sealed");
         assert!(!cursor.contains(&hex(&p.digest)), "{cursor}");
         assert!(!cursor.contains(&hex(&p.digest[..6])), "{cursor}");
@@ -923,7 +1147,8 @@ mod tests {
                 &KeyRing::default(),
                 1,
                 tenant,
-                namespace
+                namespace,
+                page_instant()
             ),
             None
         );
@@ -951,16 +1176,57 @@ mod tests {
             scope: GateLevel::Step,
             group,
             digest: [0xff; 32],
+            partial: None,
         };
         assert!(
             p.encode(KeyListing::Concurrency).len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES
         );
         let cursor = p
-            .seal(KeyListing::Concurrency, &ring, 1, tenant, namespace)
+            .seal(
+                KeyListing::Concurrency,
+                &ring,
+                1,
+                tenant,
+                namespace,
+                page_instant(),
+            )
             .expect("sealed");
         assert_eq!(
             KeyPosition::open(&cursor, KeyListing::Concurrency, &ring, tenant, namespace),
-            Some(p)
+            Some(p.clone())
+        );
+        // a group view's place of a group read in part, its sums and instants at their longest (decision D022-086 item 5)
+        let longest = KeyPosition::in_group(
+            p.pool,
+            p.scope,
+            p.group.clone(),
+            p.digest,
+            GroupPartial {
+                sums: [u64::MAX; 3],
+                oldest_us: [Some(i64::MAX / 1_000_000 * 1_000); 2],
+            },
+        );
+        for listing in [KeyListing::ConcurrencyGroups, KeyListing::RateLimitGroups] {
+            assert!(
+                longest.encode(listing).len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES,
+                "{}",
+                longest.encode(listing).len()
+            );
+            let cursor = longest
+                .seal(listing, &ring, 1, tenant, namespace, page_instant())
+                .expect("sealed");
+            assert_eq!(
+                KeyPosition::open(&cursor, listing, &ring, tenant, namespace),
+                Some(longest.clone())
+            );
+        }
+        // a key view never carries a group read in part
+        assert_eq!(
+            KeyPosition::decode(
+                &longest.encode(KeyListing::Concurrency),
+                KeyListing::Concurrency
+            ),
+            None
         );
     }
 

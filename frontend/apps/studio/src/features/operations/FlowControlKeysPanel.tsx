@@ -10,18 +10,12 @@ import type { ConcurrencyKey, ConcurrencyKeyGroup, FlowControlKeysApi, KeyQuery,
 import './flowControlKeys.css';
 
 const PAGE_SIZE = 50;
-const HIDDEN_NOTE = 'A hidden key label: you may not reveal personal data in this namespace, so the platform does not show it, and gives the instants of that key to the minute.';
-const GROUPS_NOTE = 'You may not reveal personal data in this namespace, so the platform lists one row per group, its keys summed, and no key.';
+const GROUPS_NOTE = 'You may not reveal personal data in this namespace, so the platform lists one row per group, summed over its keys, and no key. A large group can take more than one page: its row comes with the page that reads its last key.';
 
-/** An instant of a key; the platform cuts the instants of a hidden key to the minute, and the cell says so. */
-function Instant({ at, hidden, empty }: { at: string | null | undefined; hidden: boolean; empty: string }) {
+/** An instant of a key or a group, whole (decision D022-086). */
+function Instant({ at, empty }: { at: string | null | undefined; empty: string }) {
   if (at === null || at === undefined) return <>{empty}</>;
-  return (
-    <>
-      <Moment at={at} />
-      {hidden ? ' (to the minute)' : null}
-    </>
-  );
+  return <Moment at={at} />;
 }
 
 interface Column<T> {
@@ -41,7 +35,6 @@ interface Listing<T, G> {
     query: KeyQuery,
     signal: AbortSignal,
   ) => Promise<{ view?: 'KEYS' | 'GROUPS'; queuedRuns: number; items: T[]; groups?: G[]; nextCursor?: string | null }>;
-  hidden: (item: T) => boolean;
 }
 
 /**
@@ -103,7 +96,6 @@ function KeyListing<T extends { group: string }, G extends { group: string }>({ 
       {rows.length > 0 ? (
         <>
           {groupView ? <p className="hint">{GROUPS_NOTE}</p> : null}
-          {items.some(listing.hidden) ? <p className="hint">{HIDDEN_NOTE}</p> : null}
           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must take focus (WCAG 2.1.1) */}
           <div className="operations-key-scroll" role="region" aria-label={`${listing.title}, scrollable`} tabIndex={0}>
             <table className="data">
@@ -155,10 +147,9 @@ function KeyListing<T extends { group: string }, G extends { group: string }>({ 
   );
 }
 
-const groupCommon = <G extends { scope: string; pool: string; keys: number }>(): Column<G>[] => [
+const groupCommon = <G extends { scope: string; pool: string }>(): Column<G>[] => [
   { header: 'Applies to', cell: (row) => scopeWords(row.scope) },
   { header: 'Pool', cell: (row) => poolWords(row.pool) },
-  { header: 'Keys', cell: (row) => row.keys },
 ];
 
 const common = <T extends { scope: string; pool: string; keyLabel: string | null }>(): Column<T>[] => [
@@ -177,20 +168,19 @@ export function FlowControlKeysPanel({ api, namespace, namespaceId, sessionKey }
     noun: 'concurrency keys',
     empty: 'No concurrency key has a holder or a waiter in this namespace.',
     read: (query, signal) => api.concurrencyKeys(query, signal),
-    hidden: (key) => key.keyLabel === null,
     columns: [
       ...common<ConcurrencyKey>(),
       { header: 'Holders', cell: (key) => key.holders },
       { header: 'Waiters', cell: (key) => key.waiters },
-      { header: 'Oldest wait since', cell: (key) => <Instant at={key.oldestWaitSince} hidden={key.keyLabel === null} empty="Nobody waits" /> },
-      { header: 'Oldest holder since', cell: (key) => <Instant at={key.oldestHolderSince} hidden={key.keyLabel === null} empty="Nobody holds" /> },
+      { header: 'Oldest wait since', cell: (key) => <Instant at={key.oldestWaitSince} empty="Nobody waits" /> },
+      { header: 'Oldest holder since', cell: (key) => <Instant at={key.oldestHolderSince} empty="Nobody holds" /> },
     ],
     groupColumns: [
       ...groupCommon<ConcurrencyKeyGroup>(),
       { header: 'Holders', cell: (row) => row.holders },
       { header: 'Waiters', cell: (row) => row.waiters },
-      { header: 'Oldest wait since', cell: (row) => <Instant at={row.oldestWaitSince} hidden={false} empty="Nobody waits" /> },
-      { header: 'Oldest holder since', cell: (row) => <Instant at={row.oldestHolderSince} hidden={false} empty="Nobody holds" /> },
+      { header: 'Oldest wait since', cell: (row) => <Instant at={row.oldestWaitSince} empty="Nobody waits" /> },
+      { header: 'Oldest holder since', cell: (row) => <Instant at={row.oldestHolderSince} empty="Nobody holds" /> },
     ],
   };
   const rate: Listing<RateLimitKey, RateLimitKeyGroup> = {
@@ -198,22 +188,20 @@ export function FlowControlKeysPanel({ api, namespace, namespaceId, sessionKey }
     noun: 'rate-limit keys',
     empty: 'No rate-limit key has a counted grant or a waiter in this namespace.',
     read: (query, signal) => api.rateLimitKeys(query, signal),
-    hidden: (key) => key.keyLabel === null,
     columns: [
       ...common<RateLimitKey>(),
       { header: 'Grants in window', cell: (key) => key.grantsInWindow },
       { header: 'Unleased grants', cell: (key) => key.unleasedGrants },
       { header: 'Waiters', cell: (key) => key.waiters },
-      { header: 'Oldest wait since', cell: (key) => <Instant at={key.oldestWaitSince} hidden={key.keyLabel === null} empty="Nobody waits" /> },
-      { header: 'Next slot frees', cell: (key) => <Instant at={key.nextSlotAt} hidden={key.keyLabel === null} empty={noNextSlotWords(key)} /> },
+      { header: 'Oldest wait since', cell: (key) => <Instant at={key.oldestWaitSince} empty="Nobody waits" /> },
+      { header: 'Next slot frees', cell: (key) => <Instant at={key.nextSlotAt} empty={noNextSlotWords(key)} /> },
     ],
     groupColumns: [
       ...groupCommon<RateLimitKeyGroup>(),
       { header: 'Grants in window', cell: (row) => row.grantsInWindow },
       { header: 'Unleased grants', cell: (row) => row.unleasedGrants },
       { header: 'Waiters', cell: (row) => row.waiters },
-      { header: 'Oldest wait since', cell: (row) => <Instant at={row.oldestWaitSince} hidden={false} empty="Nobody waits" /> },
-      { header: 'Next slot frees', cell: (row) => <Instant at={row.nextSlotAt} hidden={false} empty={noNextSlotWords(row)} /> },
+      { header: 'Oldest wait since', cell: (row) => <Instant at={row.oldestWaitSince} empty="Nobody waits" /> },
     ],
   };
   const base = ['operations', sessionKey, namespaceId, 'flow-control-keys'] as const;

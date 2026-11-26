@@ -398,27 +398,54 @@ impl DeclaredGates {
 }
 
 /// The gates of a run (its start) or of a step: at most one of each kind.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Boxed (decision D022-102): every step's state and every run's state holds one, and a debug build copies those values
+/// through many frames, so the gates are one pointer, and an ungated run or step allocates nothing.
+#[derive(Clone, Default)]
 pub struct Gates {
+    slots: Option<Box<GateSlots>>,
+}
+
+/// The slots of [`Gates`], one of each kind.
+#[derive(Clone, Default)]
+struct GateSlots {
     concurrency: Option<GateSlot>,
     rate: Option<GateSlot>,
 }
 
+/// Prints the two slots, as before they were boxed.
+impl std::fmt::Debug for Gates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gates")
+            .field("concurrency", &self.concurrency())
+            .field("rate", &self.rate())
+            .finish()
+    }
+}
+
+/// Equal when their slots are, whether or not a box was allocated.
+impl PartialEq for Gates {
+    fn eq(&self, other: &Self) -> bool {
+        self.concurrency() == other.concurrency() && self.rate() == other.rate()
+    }
+}
+
+impl Eq for Gates {}
+
 impl Gates {
     /// No gate decided.
-    pub const NONE: Self = Self {
-        concurrency: None,
-        rate: None,
-    };
+    pub const NONE: Self = Self { slots: None };
 
     #[must_use]
-    pub const fn concurrency(&self) -> Option<&GateSlot> {
-        self.concurrency.as_ref()
+    pub fn concurrency(&self) -> Option<&GateSlot> {
+        self.slots
+            .as_ref()
+            .and_then(|slots| slots.concurrency.as_ref())
     }
 
     #[must_use]
-    pub const fn rate(&self) -> Option<&GateSlot> {
-        self.rate.as_ref()
+    pub fn rate(&self) -> Option<&GateSlot> {
+        self.slots.as_ref().and_then(|slots| slots.rate.as_ref())
     }
 
     /// Whether any gate still waits.
@@ -459,19 +486,15 @@ impl Gates {
     /// The permit this level holds, if it holds one.
     #[must_use]
     pub fn held_permit(&self) -> Option<&GateSlot> {
-        self.concurrency
-            .as_ref()
+        self.concurrency()
             .filter(|slot| slot.phase == GatePhase::Held)
     }
 
     /// The gates still waiting, rate first (the precedence of FR-022-052).
     pub fn waiting(&self) -> impl Iterator<Item = (crate::workflow::GateKind, &GateSlot)> {
         [
-            (crate::workflow::GateKind::RateLimit, self.rate.as_ref()),
-            (
-                crate::workflow::GateKind::Concurrency,
-                self.concurrency.as_ref(),
-            ),
+            (crate::workflow::GateKind::RateLimit, self.rate()),
+            (crate::workflow::GateKind::Concurrency, self.concurrency()),
         ]
         .into_iter()
         .filter_map(|(kind, slot)| {
@@ -481,14 +504,17 @@ impl Gates {
     }
 
     fn slots(&self) -> impl Iterator<Item = &GateSlot> {
-        self.concurrency.iter().chain(self.rate.iter())
+        self.concurrency().into_iter().chain(self.rate())
     }
 
     /// The decisions a reset restored with its prefix are history (FR-022-038; 018's plan, row 17): a permit or a slot
     /// the source held at the point belongs to an attempt that ended there (no step is open at a point), so the reset run
     /// has nothing to give back for it and holds no row of it.
     pub(super) fn retire_restored(&mut self) {
-        for slot in [&mut self.concurrency, &mut self.rate]
+        let Some(slots) = self.slots.as_mut() else {
+            return;
+        };
+        for slot in [&mut slots.concurrency, &mut slots.rate]
             .into_iter()
             .flatten()
         {
@@ -500,16 +526,21 @@ impl Gates {
 
     /// Rebuilds the gates of a step from trusted storage.
     #[must_use]
-    pub const fn restore(concurrency: Option<GateSlot>, rate: Option<GateSlot>) -> Self {
-        Self { concurrency, rate }
+    pub fn restore(concurrency: Option<GateSlot>, rate: Option<GateSlot>) -> Self {
+        if concurrency.is_none() && rate.is_none() {
+            return Self::NONE;
+        }
+        Self {
+            slots: Some(Box::new(GateSlots { concurrency, rate })),
+        }
     }
 
     /// The slot of `kind`, whatever its attempt.
     #[must_use]
-    pub const fn of_kind(&self, kind: crate::workflow::GateKind) -> Option<&GateSlot> {
+    pub fn of_kind(&self, kind: crate::workflow::GateKind) -> Option<&GateSlot> {
         match kind {
-            crate::workflow::GateKind::Concurrency => self.concurrency.as_ref(),
-            crate::workflow::GateKind::RateLimit => self.rate.as_ref(),
+            crate::workflow::GateKind::Concurrency => self.concurrency(),
+            crate::workflow::GateKind::RateLimit => self.rate(),
         }
     }
 
@@ -543,9 +574,10 @@ impl Gates {
     }
 
     fn slot_mut(&mut self, kind: crate::workflow::GateKind) -> &mut Option<GateSlot> {
+        let slots = self.slots.get_or_insert_with(Box::default);
         match kind {
-            crate::workflow::GateKind::Concurrency => &mut self.concurrency,
-            crate::workflow::GateKind::RateLimit => &mut self.rate,
+            crate::workflow::GateKind::Concurrency => &mut slots.concurrency,
+            crate::workflow::GateKind::RateLimit => &mut slots.rate,
         }
     }
 
@@ -571,8 +603,8 @@ impl Gates {
         // a wait that one gate gave up on is over: the other gate cannot then grant or queue it (both or neither,
         // FR-022-044)
         let other = match kind {
-            crate::workflow::GateKind::Concurrency => self.rate.as_ref(),
-            crate::workflow::GateKind::RateLimit => self.concurrency.as_ref(),
+            crate::workflow::GateKind::Concurrency => self.rate(),
+            crate::workflow::GateKind::RateLimit => self.concurrency(),
         };
         if deciding
             && other.is_some_and(|other| {

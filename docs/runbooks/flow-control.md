@@ -199,6 +199,14 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
   declares `rateLimit` takes a fresh slot or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first (T022-086, D022-069).
 - Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:
   archive those runs first.
+- A Signal-with-Start whose new run queues is answered `202` with `held: true`: the signal is kept in
+  `flow_control_held_signals` (its payload in `payloads`, by digest) and delivered by the grant of the run's start,
+  audited `run.signalled` as the caller's (T022-109, D022-087). When no step waits for it at the grant, or the run
+  ends while queued (its queue timeout, a cancellation), it is dropped with an audit record `run.signal_dropped` whose
+  reason says why (`NOT_WAITING_AT_GRANT`, `OUTPUT_BOUND`, `RUN_ENDED`). The held signals of a namespace:
+  `SELECT run_id, name, held_at FROM flow_control_held_signals WHERE tenant_id = '<tenant>' AND namespace_id =
+  '<namespace>' ORDER BY held_at`. Rolling back migration `20270214000000` is refused while one is held: let the runs
+  be granted or end first.
 
 ## 6. Rate limits (T022-072, T022-074, T022-077)
 
@@ -488,10 +496,17 @@ namespace's (plan, "Visibility of the rate gate").
 | `oldestWaitSince` | when its oldest waiter queued | the same |
 | `oldestHolderSince` / `nextSlotAt` | when its oldest holder took its permit | when the next counted grant stops counting for one of its first 256 waiters; `null` when nobody waits, when a grant is unleased, or when there is room already (the next pass grants) |
 
-For a caller without the reveal grant, `oldestWaitSince`, `oldestHolderSince` and `nextSlotAt` are cut to the minute
-toward the past (they derive from a run's own instants, D022-060, D022-061). A cursor is sealed for its namespace, its
+The table above is the page of a caller with the namespace's reveal grant (`view: KEYS`, one row per key in `items`).
+Every other caller reads `view: GROUPS`: `items` is empty and `groups` holds one row per pool, scope and group, with
+`holders`, `waiters`, `oldestWaitSince` and `oldestHolderSince` (concurrency) or `grantsInWindow`, `unleasedGrants`,
+`waiters` and `oldestWaitSince` (rate limits) summed over the group's keys, whole instants (D022-061, D022-086). A group
+row never says how many keys the group has, nor when its next slot frees: both would tell which runs share a key. A
+page of groups reads at most 200 key rows; a group with more keys is summed across the pages that read it, each page
+one snapshot (its counts may move between pages), and its row is on the page that reads its last key, with
+`spansPages: true` (its sums mix the pages' snapshots, so it may show more holders than its keys allow, D022-101); a
+page can hold no group and still have a `nextCursor`: follow the cursor. A cursor is sealed for its namespace, its
 kind of listing and the digest key version in force: an altered, foreign, other group's or forcibly retired one is a
-`400`; an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
+`400`, and so is one more than fifteen minutes old (read the listing again without a cursor, D022-100); an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
 is a `404`.
 
 One run: `GET /runs/{runId}` shows `concurrency` (`state` `HOLDING` or `WAITING`, `pool`, `group`, `keyLabel`, `since`,
@@ -601,10 +616,12 @@ SELECT 'rate', w.group_name, w.run_id, w.node, w.enqueued_at, r.status, r.finish
 (`GET /runs/{runId}/events`) and the rows above for the report.
 
 **Safe actions.** The waiter holds nothing and is never granted, so nothing is over-admitted while it stays; its key's
-counter of waiters counts it, so it takes one place of the key's buffer (section 10). Report it first. Then, as the
-schema-owning role, delete the waiter row (`DELETE FROM concurrency_waiters` or `rate_limit_waiters` `WHERE run_id = ...
-AND node = ...`): the triggers keep the key's counters and the namespace's queued runs in step, and a key left empty is
-deleted at the commit.
+counter of waiters counts it, so it takes one place of the key's buffer (section 10), and an orphan of a run's start
+(`node = ''`) also holds one unit of the namespace's `queued_runs` (`flow_control_counts`), so it takes one place of that
+ceiling too. Report it first. Then, as the schema-owning role, delete the waiter row, naming its tenant (the primary key
+begins with it, and an identifier alone could name another tenant's row): `DELETE FROM concurrency_waiters` (or
+`rate_limit_waiters`) `WHERE tenant_id = '<tenant>' AND run_id = '<run>' AND node = '<node>'`. The triggers keep the
+key's counters and the namespace's queued runs in step, and a key left empty is deleted at the commit.
 
 **Never.** Delete a waiter row of a run that has not ended: that run would wait for ever with nothing to grant it.
 

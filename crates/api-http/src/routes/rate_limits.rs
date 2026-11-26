@@ -36,7 +36,8 @@ pub async fn list_rate_limit_keys<B: Governance>(
             &caller.ctx,
         )
         .await?
-        .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))?;
+        // a cursor of the other view: what the caller may see changed between two pages (batch 4 nit 1)
+        .ok_or_else(|| ApiError::bad_request(super::concurrency::OTHER_VIEW))?;
     let body = RateLimitKeyPageBody::of(&page, opened.limit as usize, |last| {
         service.rate_limit_key_cursor(&caller.session.principal, opened.namespace, &page, last)
     })?;

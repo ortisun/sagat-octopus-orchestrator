@@ -54,6 +54,11 @@ pub enum AuditAction {
     RunResumed,
     /// An authorized caller evaluated a declared Query. Arguments and results are never recorded.
     RunQueried,
+    /// A reader read a run's step logs (feature 041, FR-041-013): at most once per subject and run
+    /// in 300 seconds, whatever the filters.
+    RunLogsRead,
+    /// An administrator deleted a run's step logs (feature 041, FR-041-023), every time.
+    RunLogsDeleted,
     /// A declared Update committed an applied or rejected receipt.
     RunUpdated,
     /// A workflow entered a durable human-approval wait.
@@ -81,6 +86,9 @@ pub enum AuditAction {
     PayloadRevealRevoked,
     /// A signal was delivered to a waiting run.
     RunSignalled,
+    /// The signal a Signal-with-Start held with its queued run was dropped: no step waited for it at the grant, or the
+    /// run ended before its start was granted (feature 022, decision D022-087). The reason says which.
+    RunSignalDropped,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
@@ -276,6 +284,7 @@ impl AuditAction {
                 | Self::PayloadDisclosed
                 | Self::PayloadRevealDenied
                 | Self::RunQueried
+                | Self::RunLogsRead
                 | Self::ApprovalDenied
                 | Self::ScheduleInputDisclosed
                 | Self::BusinessIdConflict
@@ -297,6 +306,7 @@ impl AuditAction {
             | Self::PayloadDisclosed
             | Self::PayloadRevealDenied
             | Self::RunQueried
+            | Self::RunLogsRead
             | Self::ScheduleInputDisclosed
             | Self::BusinessIdConflict => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
@@ -340,6 +350,8 @@ impl AuditAction {
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
             Self::RunQueried => "run.queried",
+            Self::RunLogsRead => "run.logs_read",
+            Self::RunLogsDeleted => "run.logs_deleted",
             Self::RunUpdated => "run.updated",
             Self::ApprovalOpened => "approval.opened",
             Self::ApprovalDecided => "approval.decided",
@@ -354,6 +366,7 @@ impl AuditAction {
             Self::PayloadRevealGranted => "payload.reveal_granted",
             Self::PayloadRevealRevoked => "payload.reveal_revoked",
             Self::RunSignalled => "run.signalled",
+            Self::RunSignalDropped => "run.signal_dropped",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",

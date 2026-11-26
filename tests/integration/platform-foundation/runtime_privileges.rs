@@ -144,6 +144,21 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {concurrency_limit}",
+        reason: "a namespace's effective ceiling, built by quotas::effective_sql from a resource's own constants as scalar sub-selects of quota_limits and quota_ceilings, which the runtime role reads (quotas::step_gate_ceilings reads them as written); never input (batch 3 reviews, correctness Major 2)",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {key_waiters}",
+        reason: "as {concurrency_limit}: the effective flow_control_key_waiters, by quotas::effective_sql",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {queued_runs}",
+        reason: "as {concurrency_limit}: the effective queued_runs, by quotas::effective_sql",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
         need: "UNRESOLVED placeholder {groups}",
         reason: "the sub-select text comes from the AlertKind match arms right above, each a literal statement that is audited on its own; the wrapper only reads",
     },

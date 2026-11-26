@@ -19,6 +19,13 @@ An SDK is **not** a workflow runtime. It does not execute workflow code, replay 
 journal, or decide a transition: the server owns every state and every retry decision (ADR-0001,
 ADR-0002). The builders only write a document the server validates and versions.
 
+*Note (2026-11-24, constitution 5.0.0, principle IV):* release 0.3.0 adds a procedural code-first
+model (workflow as code, design 044, not built): an SDK will also host workflow functions that are
+replayed against the server's journal. Design 044 amends this section with the code. Even then
+the server keeps the journal and commits every transition; the SDK proposes commands under a lease
+and a fencing token, and its memory is a cache that replay rebuilds. Until then this section
+describes the SDKs as built.
+
 ## 1. Configuration and credentials
 
 | Setting | Meaning | Default |
@@ -697,7 +704,7 @@ the three (C#, Java). The shared scenario is `flow-control-builders` (build only
   | 1.4 | Bounded task streams (`StreamTasks`) | ADR-0029 |
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
-  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
+  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety

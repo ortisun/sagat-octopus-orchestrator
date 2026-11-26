@@ -735,8 +735,16 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                 page
             }
             KeyView::Groups => {
+                // the group view knows whether another page follows by its own probe of the next group, never by a
+                // group more (decision D022-086 item 5): it shows the page without the one more
                 self.store
-                    .concurrency_key_groups(tenant, namespace, group, after, limit)
+                    .concurrency_key_groups(
+                        tenant,
+                        namespace,
+                        group,
+                        after,
+                        limit.saturating_sub(1).max(1),
+                    )
                     .await?
             }
         }))
@@ -802,8 +810,16 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                 page
             }
             KeyView::Groups => {
+                // the group view knows whether another page follows by its own probe of the next group, never by a
+                // group more (decision D022-086 item 5): it shows the page without the one more
                 self.store
-                    .rate_limit_key_groups(tenant, namespace, group, after, limit)
+                    .rate_limit_key_groups(
+                        tenant,
+                        namespace,
+                        group,
+                        after,
+                        limit.saturating_sub(1).max(1),
+                    )
                     .await?
             }
         }))
@@ -842,7 +858,14 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             .flow_control_key_ring()
             .zip(version)
             .and_then(|(ring, version)| {
-                last.seal(listing, ring, version, principal.tenant_id(), namespace)
+                last.seal(
+                    listing,
+                    ring,
+                    version,
+                    principal.tenant_id(),
+                    namespace,
+                    self.clock.now(),
+                )
             })
             .ok_or(AppError::Unavailable)
     }
@@ -866,6 +889,13 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             principal.tenant_id(),
             namespace,
         )
+    }
+
+    /// Whether a cursor's page sealed it more than [`KEY_CURSOR_LIFETIME`](crate::flow_control_keys::KEY_CURSOR_LIFETIME)
+    /// ago by this process's clock (a `400` with a message of its own, decision D022-100).
+    #[must_use]
+    pub fn key_cursor_expired(&self, position: &ListingPosition) -> bool {
+        position.expired(self.clock.now())
     }
 
     /// Whether the digest key version an opened cursor was sealed under is still in force (active, or retiring with
