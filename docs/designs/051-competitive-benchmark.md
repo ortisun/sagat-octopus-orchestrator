@@ -174,7 +174,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   its final state; a workflow's transitions are its shape's constant count (`shapes.md`), counted for each workflow that
   ended with the expected outcome, once. Every activity MUST append a record to an append-only file in its worker's set
   (one line per `O_APPEND` write: the product-neutral workflow identifier the driver assigned and passed in the input,
-  the step, the iteration, the attempt, `begin` or `end`, and `CLOCK_REALTIME` in nanoseconds) before its body runs and
+  the step, the iteration, the attempt, `begin`, `end` or `reconcile` (a reconciliation's record, which is
+  neither a repeat nor a completion), and `CLOCK_REALTIME` in nanoseconds) before its body runs and
   after it ends, so that a `kill -9` of the worker leaves its records; reconciliations (Requirement 051-009) write
   records and are not transitions. A *repeat* is an execution of a (workflow, step, iteration) beyond the shape's
   expected count. The driver counts completions during a rung from each workflow's completion record (`shapes.md`: the
@@ -193,7 +194,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   process, its frontend behind the load balancer staying up; Windmill's server process, "API only"); (b) `kill -9` of
   one of two worker processes, fired when the target worker's execution file shows at least four activities in flight,
   or after 30 s without, marked; (c) `docker kill -s KILL` of the database server's container and `docker start` of it
-  on the same volume, a `CHECKPOINT` having run 60 s before the fault, the WAL replayed reported. The killed process of
+  on the same volume, a `CHECKPOINT` having run 60 s before the fault, the WAL replayed reported (the insert LSN read just before the kill
+  minus the redo LSN of the last checkpoint, both through SQL). The killed process of
   faults (a) and (b) is restarted after a fixed 5 s. This platform's activities declare `reconcileWith` a reconciler
   registered by its worker whose verdict is "not applied", so an activity whose outcome is unknown is run again (a
   repeat) instead of going to a person. During its own pre-fault period the crash deployment MUST sustain the common
@@ -317,9 +319,12 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   these, stated), with one named exception: this platform's sandbox-runner service may mount the socket, its image
   built at the commit, `read_only`, `cap_drop: [ALL]` and `no-new-privileges`, and its per-run containers run with
   `--network none`, as a non-root user, from images of `images.lock`, which a check after each turn confirms from
-  `docker inspect` of every run container; every third-party program, the Temporal sidecar, `omes` and the driver
-  included, runs as a compose service under these rules (the driver on each product's internal network), and the rule
-  refuses a third-party binary started from `run.sh` on the host; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
+  `docker inspect` of every run container; every third-party program, the Temporal sidecar and `omes`
+  included, runs as a compose service under these rules, and the rule refuses a third-party binary started from
+  `run.sh` on the host; the driver, built at the commit under test, runs its load as a container on each product's
+  internal network, started by `run.sh` once per turn in the order `driver plan` prints, while its fault injector runs
+  on the host in `run.sh`'s process (it needs the engine to kill and start containers), writing each fault's time as
+  `CLOCK_REALTIME` into the shared record directory; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
   address, the pilots included (a Windmill step language that needs packages at run time is pre-resolved into an image
   built from pinned inputs, or excluded). Every image is named in one manifest (`images.lock`: name, digest taken from the vendor's
   registry, and the vendor's signature checked where the vendor signs), read by the compose files and by `run.sh`, every
@@ -429,7 +434,7 @@ lists what a later release would ask the owner for.
 |---|---|
 | `shapes.md` | The method version; each variant and the procedure (steps, payloads, the activity body, outcomes, transitions, completion records, ceilings with their reasoning, timeouts and retry budgets per product, idempotency per product, early arrivals); the execution records' grammar |
 | `images.lock` | Every image's name, digest and signature check |
-| `driver/` | The driver's own workspace (`sagat-competitive-driver`): the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan`, `turn`, `crash`, `burst`, `capacity`, `load`, `report` |
+| `driver/` | The driver's own workspace (`sagat-competitive-driver`): the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan --job-kind --variant --repetition --seed` (prints the turns and their order, the worst-case minutes and disk), `turn --product --variant --seed`, `crash --product --fault`, `burst --product`, `capacity`, `load`, `report <artifacts> [--common-rate <variant>]` |
 | `sagat/`, `temporal/`, `windmill/` | For each product: the compose files (single-node, and two of each for crashes), its load balancer, the configuration with placeholders, the code of each variant, the history loader |
 | `postgres/` | The PostgreSQL configuration of the fixed constraints, `pg_hba.conf`, and the server's compose service |
 | `run.sh` | Prepares the machine (tool caches freed, the daemon's control-group parent, the sets), runs `check-architecture.py --only competitive` first, starts and stops containers, and calls the driver's subcommands; its arguments (job kind, variant, repetition, seed) are the matrix fields |
@@ -441,8 +446,8 @@ in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key b
 library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
 (every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules, the image
 manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
-`run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; while the workflow does not exist (until Task 051-8) it passes, and afterwards its absence
-fails. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
+`run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
+does; the workflow is required once `campaign.json` exists. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
 tests/performance/competitive/driver/Cargo.toml`, the default features and all of them) and builds the Go modules, on a
 `competitive_driver` output of `scripts/select-test-targets.py` set for changes of `tests/performance/competitive/`,
 `sdks/rust/` or `sdks/go/`, and on every full run, with a selector test.
@@ -490,12 +495,13 @@ times the highest rate the job's plan can reach (its starting rate × 2⁶), or 
 **A campaign.** The pilots run once per method version (6 jobs of at most 350 minutes, 2,100: on a small history, each
 product's configuration, database split, worker concurrency, starting rates, tuning budget, bytes per workflow and the
 steal counter's check), then, per campaign: the history job (images built, histories loaded and checked, a short
-confirmation of each product's configuration: 3 × 60 + 20 = 200 minutes); 8 variants × 5 repetitions = 40 throughput
+confirmation of each product's configuration, this platform's images built (at most 30 minutes, measured in the pilot,
+the archive within the disk budget): 3 × 60 + 30 + 20 = 230 minutes; each pilot job builds the images itself); 8 variants × 5 repetitions = 40 throughput
 jobs (40 × 337 = 13,480); 8 × 5 = 40 common-rate jobs (40 × 77 = 3,080) and 5 timer-burst jobs (5 × 110 = 550), one
 matrix of 45 jobs; the crash confirmation job (173); 3 faults × 6 repetitions = 18 crash jobs (18 × 173 = 3,114). A
-campaign is at most 200 + 13,480 + 3,080 + 550 + 173 + 3,114 = 20,597 runner minutes, at no cost; in order, at 12 jobs
-at once, its wall time is at most 200 + ⌈40 / 12⌉ × 337 + ⌈45 / 12⌉ × 110 + 173 + ⌈18 / 12⌉ × 173 = 200 + 1,348 + 440 +
-173 + 346 = 2,507 minutes, about 41.8 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
+campaign is at most 230 + 13,480 + 3,080 + 550 + 173 + 3,114 = 20,627 runner minutes, at no cost; in order, at 12 jobs
+at once, its wall time is at most 230 + ⌈40 / 12⌉ × 337 + ⌈45 / 12⌉ × 110 + 173 + ⌈18 / 12⌉ × 173 = 230 + 1,348 + 440 +
+173 + 346 = 2,537 minutes, about 42.3 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
 and a campaign is not dispatched while the release-candidate CI run is pending, a manual step of the release
 procedure (`docs/runbooks/release.md`); one campaign is dispatched at a time, since a third dispatch would cancel a
 pending one under the `concurrency` group.
@@ -596,7 +602,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 - **Non-functional requirement 051-001 Reproducibility.** A new campaign at the same commit on the same runner class
   agrees with the published one as Requirement 051-012 defines it, or the report explains the difference.
 - **Non-functional requirement 051-002 Cost.** The campaign costs no money; each job stays within the plan check's 350
-  minutes and its disk budget, and a campaign within 20,597 runner minutes.
+  minutes and its disk budget, and a campaign within 20,627 runner minutes.
 - **Non-functional requirement 051-003 Security.** Requirement 051-020.
 
 --------------------------------------------------------------------------------
@@ -617,7 +623,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
 - [ ] T051-6 Write `run.sh` and `campaign.json`: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the durability checks, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
-- [ ] T051-7 Add the fault injector (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c)), the crash deployments' pre-fault check, and the crash jobs after the throughput jobs; test the injector's recorded fault time against a child process's death seen through `pidfd` on the driver's monotonic clock, within 100 ms.
+- [ ] T051-7 Add the fault injector on the host (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the record directory), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded fault time against a child process's death seen through `pidfd` on the driver's monotonic clock, within 100 ms.
   Refs: Requirement 051-009
 - [ ] T051-8 Add the `competitive-benchmark` workflow (Requirement 051-020's rules, the stages and matrices of `campaign.json`, the `concurrency` group, the refusal of a private repository and of other refs), publish the method and configurations, run the pilots once for the method version and publish them.
   Refs: Requirement 051-004, Requirement 051-012, Requirement 051-014, Requirement 051-019, Requirement 051-020
