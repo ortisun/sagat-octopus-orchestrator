@@ -1314,8 +1314,9 @@ container (`openbao-identity-agent`), its own config volume projecting the Confi
 (role `openbao.roles.identity`), its own in-memory sink volume `openbao-identity-mount` at
 `/run/openbao-identity-mount` (named apart from `openbao-identity`, which holds the projected service-account token),
 and a startup probe on that sink. The control-plane container mounts `openbao-identity-mount` read-only at
-`/run/openbao-identity-mount` and `openbao-ca` at `/etc/openbao/ca` exactly once whenever either value is true (the CA
-line of `sagat.openbao.mounts` moves under the same condition, so no second mount of that path is added). Its
+`/run/openbao-identity-mount` and `openbao-ca` at `/etc/openbao/ca` exactly once whenever either value is true (for the control-plane component only, the CA
+line of `sagat.openbao.mounts` moves under the same condition, so no second mount of that path is added; the engine
+and the secret cleanup keep it on `openbao.enabled`, with their volumes). Its
 environment gains `SAGAT_IDENTITY_FEDERATION=on`,
 `SAGAT_PUBLIC_ORIGIN` from the new required value `identity.publicOrigin` (checked as an HTTPS origin, as
 `openbao.address` is), `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE=/run/openbao-identity-mount/token`, `SAGAT_IDENTITY_OPENBAO_ADDRESS` and
