@@ -5,6 +5,9 @@ every carrier that may declare `x-sagat-encoding` and every write path that stor
 existing IR and the parity drafts 018–030 (027 included). A draft that adds such a position registers it here (a change to this file in
 the same delivery) and uses only the codes of [errors.md](errors.md); no draft defines its own encrypted-field code.
 Each entry was checked against the draft text on 2026-10-27; a draft that changes the construct must update its row.
+Re-checked on 2026-11-24 against `develop`: the rows of 018 and 022 hold for what landed; rows were added for 022's
+rate limits, design 042's operators, design 043's run input validation, design 041's step logs and the worker-protocol
+fields of 019, 045 and delivery acknowledgement; design 044 registers its own rows when its contract is written.
 
 Kinds: **I** inspection position (refused when it reads an encoded location, FR-031-004); **C** carriage position
 (allowed only as an exact path, under the location rule of FR-031-005); **K** carrier (may declare encoding);
@@ -48,6 +51,7 @@ Kinds: **I** inspection position (refused when it reads an encoded location, FR-
 | 021 | trigger filters, `vars` comparisons over event data | — | event data has no carrier (G1524); an envelope met at run time fails as an expression error, with no new code |
 | 022 | node `cache.key` (and a key derived from the whole input) | I | `ENCODING_READ_BY_CACHE_KEY` |
 | 022 | root and node `concurrency.key` | I | `ENCODING_READ_BY_CONCURRENCY_KEY` |
+| 022 | root and node `rateLimit.key` (US07 of 022, added 2026-11-24) | I | `ENCODING_READ_BY_RATE_LIMIT_KEY` (D031-009) |
 | 022 | `earlyReturn.result` | C (same document, into `outputSchema`) | as `end.outputExpr` |
 | 022 | failure-handler child `input` | C (other document) | as `child.input` |
 | 022 | cache hit copy | W (copy) | allowed only when the entry's fingerprint includes the same `encoding_rules` and output-plan digest; envelopes are copied unchanged within one namespace |
@@ -67,6 +71,22 @@ Kinds: **I** inspection position (refused when it reads an encoded location, FR-
 | 030 | `serviceCall.input`, `compensate.input` | C (other namespace) | refused when the source holds an encoded location (`ENCODING_CARRIAGE_MISMATCH`): encoded values do not cross namespaces in v1 (D1667, G1536) |
 | 030 | operation `inputSchema`, `outputSchema` (`contracts/service.schema.json`) | N | `ENCODING_NOT_APPLICABLE`; a handler version whose input or output declares encoding cannot be bound |
 | 030 | handler admission; result return to the caller | W | runtime check: any envelope → `ENCODING_CARRIAGE_MISMATCH` or `ENVELOPE_CONTEXT_MISMATCH` |
+
+## Designs and protocol fields added since the draft (2026-11-24)
+
+| Source | Construct (where checked) | Kind | Rule and code |
+|---|---|---|---|
+| 042 | `forEach.operators[]` stage expressions over `element` (`filter`, `map`, `flatMap`, `sort` keys, `distinct.by`) | I | `ENCODING_READ_BY_EXPRESSION` when the path descends into an encoded location; `distinct` without `by` over elements holding one is refused the same way (it would compare ciphertext) (D031-008) |
+| 042 | `map` / `flatMap` projection that yields an encoded location | C (same document) | allowed only as `element` itself; a projection that puts the location at another pointer is `ENCODING_CARRIAGE_MISMATCH` |
+| 042 | `skip`, `take` and stages that do not read the location; the scope-entry snapshot (ADR-0087) | carriage | envelopes pass and are recorded unchanged |
+| 042 | trigger `key` and trigger operator chains (ADR-0086) | — | event data has no carrier (G1524): an envelope met there fails as an expression error at run time, no new code; a run a window or `flatMap` starts is a planless write (W) into the target's carrier |
+| 043 | run input validation at every creator of 043's table, rows 1 to 14 | W (check order) | 031's envelope checks first, then 043 over the encoded view (subschema at each encoded location replaced by `true`); the pre-check is given the schema without `x-sagat-encoding` (D031-006, FR-031-037) |
+| 043 | an `inputSchema` written as `anyOf` of a manual shape and the trigger shape | K (restricted) | no encoded location inside the `anyOf` (`ENCODING_UNSUPPORTED_LOCATION`) |
+| 041 | step-log lines and fields (`AppendStepLogs`, protocol 1.7) | not a carrier | free text, never an envelope; the worker host redacts decoded values by value before sending (FR-031-038); the server cannot |
+| 019 | `FailStepRequest.details_json` (field 13) | S | checkpoint content: encoded under the lease's `checkpoint` plan, decoded under `/checkpoint/...` by the next lease |
+| 045 | `FailStepRequest.error_code`, `next_retry_delay_ms` (field 14); `TaskLease` fields 26 and 27 | not payload | never encoded (D031-003); `error_code` is a machine code the retry policy matches |
+| 006 (1.8) | `TaskLease` fields 23 and 24, `WorkerCapabilities` field 10, `AcknowledgeTasks` | not payload | never encoded; a codec host carries the 1.8 host procedure (D031-002, D031-004) |
+| 044 | workflow function payloads | to be registered by 044 | same converter, envelope v1 and `ctx` binding; server-read fields stay under this registry (D031-012) |
 
 ## Rules every row obeys
 

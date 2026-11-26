@@ -2,6 +2,8 @@
 
 Status: **Accepted** | Date: 2026-10-09 | Feature: 005 | Supersedes nothing; refines ADR-0006
 
+Superseded in part by [ADR-0052](ADR-0052-warm-script-containers-are-an-opt-in-exception-to-one-container-per-run.md) (its acknowledged `reused` warm mode only), 2026-11-24.
+
 The C# language/dependency restrictions below are superseded by
 [ADR-0021](ADR-0021-csharp-builds-use-a-curated-offline-toolchain.md), which introduces a curated
 offline Roslyn toolchain and versioned binary bundles. All isolation boundaries still apply.

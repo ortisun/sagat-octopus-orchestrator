@@ -1,6 +1,8 @@
 # Draft fragment for specs/001-platform-foundation/contracts/openapi.yaml (feature 019). Not served.
 # Paths are relative to the /v1 server. Shared components ($ref '#/components/...') are those of the
 # canonical document (Error, NamespaceId, IdempotencyKey, Limit, Cursor, standard responses).
+# Corrected 2026-11-24: every operation of a capability whose fleet requirement (ADR-0082) is not recorded answers
+# 422 VALIDATION_FAILED with details.reason DISPATCH_ACTIVATION_PENDING and details.requirement (D019-001).
 openapi: 3.1.0
 info: {title: Sagat Octopus Orchestrator — feature 019 fragment, version: 0.0.0-draft}
 paths:
@@ -183,7 +185,9 @@ paths:
         mismatch); receipts are keyed by principal, task and key and read only after that check. The same
         Idempotency-Key and body replays the original answer (`alreadyApplied`); another body is CONFLICT
         `IDEMPOTENCY_KEY_REUSED`. Output ≤ 256 KiB,
-        scanned for secret values handed to the attempt (`SECRET_IN_OUTPUT`). Audited with the principal.
+        scanned for secret values handed to the attempt (`SECRET_IN_OUTPUT`). A failure code that only the platform
+        decides (DETACHED_TIMEOUT, LEASE_EXPIRED, ATTEMPT_TIMEOUT, TASK_NOT_STARTED) is VALIDATION_FAILED
+        `RESERVED_FAILURE_CODE`; OUTCOME_UNKNOWN is allowed. Audited with the principal.
       parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
@@ -279,9 +283,10 @@ paths:
       operationId: putScriptWarmPolicy
       x-proposed: '019'
       description: >-
-        Needs `script:warm:manage`. Refused with VALIDATION_FAILED `WARM_RESIDUE_NOT_ACKNOWLEDGED` unless
-        `acknowledgeResidue` equals the current statement version; QUOTA_EXCEEDED when warm container quotas are
-        zero or exhausted. Audited with the acknowledgement.
+        Needs `script:warm:manage`. Mode `prepared` (the default) keeps one container per run and needs no
+        acknowledgement; mode `reused` is refused with VALIDATION_FAILED `WARM_RESIDUE_NOT_ACKNOWLEDGED` unless
+        `acknowledgeResidue` equals the current statement version (ADR-0052, revised 2026-11-24); QUOTA_EXCEEDED when
+        warm container quotas are zero or exhausted. Audited with the mode and any acknowledgement.
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/WarmPolicyInput'}}}
@@ -416,6 +421,7 @@ components:
               lastPollSeconds: {type: [number, 'null']}
               lastHeartbeatSeconds: {type: [number, 'null']}
               pinnedOpenRuns: {type: integer}
+              gated: {type: integer, description: 'Steps waiting at a concurrency or rate-limit gate of feature 022; never counted in ready (added 2026-11-24).'}
               flags: {type: array, items: {type: string, enum: [UNVERSIONED_IDLE, NO_POLLERS, PUSH_INELIGIBLE_BACKLOG]}}
     TaskCompletion:
       type: object
@@ -473,16 +479,25 @@ components:
     WarmPolicyInput:
       type: object
       additionalProperties: false
-      required: [declaredSecrets, enabled, acknowledgeResidue]
+      required: [declaredSecrets, enabled]
       properties:
+        mode: {type: string, enum: [prepared, reused], default: prepared, description: 'prepared: each container is created ahead and serves one run; reused: one container serves runs one at a time, each in a fresh process (added 2026-11-24).'}
         declaredSecrets: {type: array, maxItems: 16, uniqueItems: true, items: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}}
         enabled: {type: boolean}
         minWarm: {type: integer, minimum: 0, maximum: 8}
         maxWarm: {type: integer, minimum: 1, maximum: 8}
-        maxUses: {type: integer, minimum: 1, maximum: 1000}
+        maxUses: {type: integer, minimum: 1, maximum: 1000, description: 'reused mode only; refused for prepared.'}
         maxIdleMs: {type: integer, minimum: 1000, maximum: 600000}
         maxLifetimeMs: {type: integer, minimum: 1000, maximum: 3600000}
-        acknowledgeResidue: {type: string, description: 'The version of the residue statement the administrator accepts (e.g. `warm-residue-v1`).'}
+        acknowledgeResidue: {type: string, description: 'Required for mode reused: the version of the residue statement the administrator accepts (for example `warm-residue-v1`).'}
+    BatchRepinParams:
+      description: 'Added 2026-11-24 (D019-014): the `repin` parameter of a REPIN batch job (018), which today is an untyped object. Each item runs the single-run repin; the job''s reason is the repin''s reason. Needs `run:batch`, `run:operate` and `deployment:manage`.'
+      type: object
+      additionalProperties: false
+      required: [deployment, target]
+      properties:
+        deployment: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}
+        target: {$ref: '#/components/schemas/VersionRef'}
     # Additive properties of existing schemas:
     WorkerAdditions:
       description: Added optional properties of `Worker` (listWorkers).
@@ -497,7 +512,7 @@ components:
       description: Added optional property of `PlatformVersion`.
       type: object
       properties:
-        features: {type: array, items: {type: string, enum: [dispatch-options, worker-deployments, async-completion, push-dispatch, warm-scripts]}}
+        features: {type: array, description: 'A feature is listed only while its fleet requirement is recorded (D019-001).', items: {type: string, enum: [dispatch-options, worker-deployments, heartbeat-checkpoints, async-completion, push-dispatch, warm-scripts]}}
     AttemptAdditions:
       description: Added optional properties of the run attempts listing entries.
       type: object

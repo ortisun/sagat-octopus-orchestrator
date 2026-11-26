@@ -3,16 +3,19 @@
 **Branch**: `feature/031-client-side-encryption` | **Date**: 2026-10-26 | **Spec**: [spec.md](spec.md)
 
 **Input**: [spec.md](spec.md), [research.md](research.md), decision
-[ADR-0066](../../docs/adr/ADR-0066-client-side-payload-encryption.md) (Proposed).
+[ADR-0066](../../docs/adr/ADR-0066-client-side-payload-encryption.md) (Accepted 2026-11-24, delegate, Owner decision
+2026-11-24-4).
 
-Status: Proposed — not started.
+Status: approved for implementation (Owner decision 2026-11-11-1); not started. Checked against `develop` on
+2026-11-24 (research.md, "Baseline re-checked on 2026-11-24" and the readiness round); the build order is the section
+"Build slices (2026-11-24)" of [tasks.md](tasks.md).
 
 ## Summary
 
 Make encoding a declared, pinned property of the workflow's carrier schemas; check it at publication against every
 server-evaluated expression and every consumer feature; validate envelopes structurally on every write path and refuse
 plaintext without storing it; give clients and workers a plan of what to encode and decode; implement envelope v1,
-codecs and key providers in the five SDKs under one conformance suite; bind every envelope to its tenant, namespace
+codecs and key providers in the six SDKs under one conformance suite; bind every envelope to its tenant, namespace
 and location and keep envelopes exactly where declared, across documents too; keep the cross-draft registry of
 encoded-field positions; let the Studio and the CLI decode through a customer codec server that authenticates the
 person with the customer's own identity provider, the platform assertion only narrowing; disclose envelopes under the
@@ -21,35 +24,40 @@ never holds a codec key, never decodes and never calls a codec server.
 
 ## Technical Context
 
-**Language/Version**: Rust 1.98.0 (`rust-toolchain.toml`); the locked TypeScript, Go, Python, .NET and Java toolchains;
+**Language/Version**: Rust 1.100.0 (`rust-toolchain.toml`; corrected 2026-11-24 from 1.98.0); the locked TypeScript,
+Go, Python, .NET and Java toolchains and the Rust SDK's own toolchain;
 React/TypeScript for the Studio; Go for the reference codec server example. No toolchain change.
 
 **Primary Dependencies**: server — existing `serde_json` (adapters only), `jsonschema` 0.58 (`crates/infra-schema`),
 `p256` (already a dependency of `crates/api-http`; added to `crates/infra-secrets` for the ES256 signer adapter), SQLx, Axum, tonic. No cipher or
 decompression API in the feature's server modules (ADR-0066). SDKs — each language's standard AES-GCM implementation
 (Node `crypto`, Go `crypto/cipher`, Python `cryptography`, .NET `System.Security.Cryptography.AesGcm`, Java
-`javax.crypto` AES/GCM), a zstd and a gzip codec per language, pinned in the existing lockfiles; versions are selected and
-pinned in T031-040 after a licence and advisory check, not here.
+`javax.crypto` AES/GCM, a RustCrypto AES-GCM crate for the Rust SDK), a zstd and a gzip codec per language, pinned in the
+existing lockfiles (the Rust SDK's four lock files together); versions are selected and pinned in T031-040 after a
+licence and advisory check, not here.
 
-**Storage**: PostgreSQL. One column on `workflow_versions`, two on `worker_sessions`, one on `event_deliveries`, four new
-tables ([data-model.md](data-model.md)). No change to `payloads`, `run_events`, `runs`, `blobs`.
+**Storage**: PostgreSQL. One column on `workflow_versions`, two on `worker_sessions`, one on `event_deliveries`, five new
+tables and one function, `payload_encoding_publication_fence()` ([data-model.md](data-model.md)). No change to
+`payloads`, `run_events`, `runs`, `blobs`, or to 018's registry tables. (Corrected 2026-11-24: the draft counted four
+tables here and seven below; the activation table is dropped, D031-005.)
 
 **Testing**: domain unit/property tests; adapter tests over a defect corpus and envelope vectors; real PostgreSQL
-integration, fault and runtime-role suites; REST/proto/IR contract tests; five-SDK conformance (vectors, 5×5 interop,
-runtime, faults, gating); codec-server black-box suite; Studio component tests and a real Chromium journey; canary suite;
+integration, fault and runtime-role suites; REST/proto/IR contract tests; six-SDK conformance (vectors, 6 × 6 interop,
+runtime, faults, gating, step-log redaction); codec-server black-box suite (its own target, `contract_codec_server`); Studio component tests and a real Chromium journey; canary suite;
 a benchmark.
 
 **Target Platform**: existing single-region Linux containers and Compose; customer-run KMS and codec servers.
 
-**Project Type**: modular monolith, five SDKs, CLI, web Studio.
+**Project Type**: modular monolith, six SDKs, CLI, web Studio.
 
 **Performance Goals**: bound, then measure (NFR-031-PERF). No latency or throughput promise.
 
 **Constraints**: domain free of serde_json/crypto; `begin_safely` for every new transaction (ADR-0014); audit in the
 decision's transaction; namespace admission charged once (ADR-0027); payload-free telemetry (ADR-0017, D1549).
 
-**Scale/Scope**: 8 user stories, 36 FR, 7 NFR, 14 SC; 10 REST operations and one operator command, 1 proto minor,
-1 permission, 9 audit actions, 7 tables, 5 columns, 1 cross-draft registry.
+**Scale/Scope**: 8 user stories, 38 requirements, 7 non-functional requirements, 15 success criteria; 10 REST
+operations and two operator commands, 1 proto minor, 1 permission, 7 audit actions, 5 tables, 4 columns, 1 function, 1
+cross-draft registry. (Corrected 2026-11-24.)
 
 ## Architecture and crate placement
 
@@ -60,10 +68,11 @@ decision's transaction; namespace admission charged once (ADR-0027); payload-fre
 | Ports and use cases: plan service, envelope check port, endpoint service, assertion service, scan service | `crates/application/src/payload_encoding.rs`, `crates/application/src/codec_assertions.rs` (new) |
 | Write-path hooks (location rule, `ctx`, undeclared-envelope walk) | `crates/application/src/runs.rs` (start, child admission with source-plan mapping), `crates/application/src/worker/output.rs` (completion), `crates/application/src/execution.rs` (end, continueAsNew), `crates/application/src/events.rs` (signals, inbox match), `crates/application/src/worker.rs` (heartbeat side channel when 019 lands); the other drafts' write paths call the same `EnvelopeCheck` port |
 | Registry | `specs/031-client-side-encryption/contracts/encoded-field-registry.md`, moved into `docs/reference/workflow-document.md` at merge; one fixture per row |
-| Fleet activation | `apps/control-plane/src/cli.rs` (`payload-encoding activate|deactivate`) over 018's instance-capability registry (registration, heartbeat and activation transaction are 018's); the capability value `payload-encoding-v1` in both binaries; gauge in `crates/telemetry/src/metrics.rs` |
-| Lease plan, claim gating | `crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs`, `crates/infra-postgres/src/execution.rs` |
+| Fleet activation | `apps/control-plane/src/cli.rs` (`payload-encoding-activate`, `payload-encoding-deactivate`, beside `schedule-trigger-handover`, run with the schema-owning role) over 018's built registry (`platform_requirement_activate`, `platform_requirement_remove` in `crates/infra-postgres/src/instances.rs`; `Capability::PayloadEncodingV1` of `crates/application/src/instances.rs`, listed by `apps/control-plane` and by `apps/execution-engine/src/capabilities.rs`); the publication fence in the migration and `crates/infra-postgres/src/payload_encoding.rs`; gauge in `crates/telemetry/src/metrics.rs` (corrected 2026-11-24, D031-005) |
+| Lease plan, claim gating | locked recheck beside `required_worker_protocol_minor` in `crates/application/src/worker.rs` and `crates/application/src/worker/scoped_claims.rs`, reading `PayloadPlan::codec_need` from the loaded definition (no statement); candidate anti-join in `claimable_runs` and `claimable_paths` of `crates/infra-postgres/src/workers.rs` only once activated and only for a session that lacks the codec; lease field in `crates/api-grpc/src/service.rs` (corrected 2026-11-24, D031-010) |
+| Run input validation (043) | the encoded view and the stripped pre-check schema built in `crates/infra-ir/src/encoding_check.rs`, handed to `crates/application/src/run_input.rs` and `crates/infra-schema/src/run_input/` unchanged (D031-006) |
 | Expression access paths | `crates/infra-expr/src/paths.rs` (new), exported beside `Compiled::variables` |
-| Publication check, plan derivation, envelope parser | `crates/infra-ir/src/encoding_check.rs`, `crates/infra-ir/src/envelope.rs` (new); wired into `validated_document` of `crates/infra-ir/src/lib.rs` and exposed through the `IrCodec` port as `encoding_analysis`, beside `classification_analysis` |
+| Publication check, plan derivation, envelope parser | `crates/infra-ir/src/encoding_check.rs`, `crates/infra-ir/src/envelope.rs` (new); wired into `validated_document_in` of `crates/infra-ir/src/lib.rs` (the entry that takes design 043's mode) and exposed through the `IrCodec` port (`crates/application/src/definitions.rs`) as `encoding_analysis`, beside `classification_analysis` |
 | Encoded view for disclosure | `crates/infra-schema/src/classification/walk.rs`, `crates/application/src/payload_disclosure.rs` |
 | Stores | `crates/infra-postgres/src/payload_encoding.rs` (new), migration, `storage-classification.json` |
 | REST | `crates/api-http/src/routes/payload_encoding.rs` (new), `crates/api-http/src/studio.rs` (CSP), `crates/application/src/api_admission.rs` (new operations) |
@@ -72,8 +81,8 @@ decision's transaction; namespace admission charged once (ADR-0027); payload-fre
 | Scan loop | `crates/scheduler/src/passes.rs` (a leased pass, `engine_leases` pattern) |
 | CLI | `apps/cli/src/workflow.rs` (`inspect --decode`), `apps/cli/src/codec.rs` (new, HTTP to the codec server) |
 | Studio | `frontend/apps/studio/src/features/codec/` (new), `frontend/apps/studio/src/features/runs/PayloadDisclosure.tsx`, `StartRun.tsx`, `SendSignal.tsx` |
-| SDKs | `sdks/typescript/src/codec/`, `sdks/go/codec/`, `sdks/python/sagat_octopus_orchestrator/codec/`, `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Codecs/`, `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/codec/` |
-| Reference codec server | `examples/codec-server-go/` (example, O1522) |
+| SDKs | `sdks/typescript/src/codec/`, `sdks/go/codec/`, `sdks/python/sagat_octopus_orchestrator/codec/`, `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Codecs/`, `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/codec/`, `sdks/rust/src/codec/` (added 2026-11-24, D031-001); the worker host's step-log redaction of decoded values sits in each SDK's per-attempt logger of design 041 (D031-007) |
+| Reference codec server | `examples/codec-server-go/` (example, O1522 decided (a)); black-box suite `tests/contract/codec-server/` as target `contract_codec_server` (D031-011) |
 
 `scripts/check-architecture.py` gains a source rule: the feature's server modules listed above import no cipher or
 decompression API. No empty mapper: the wire types of the new routes are the one necessary boundary.
@@ -88,7 +97,9 @@ decompression API. No empty mapper: the wire types of the new routes are the one
 | Child admission, `end`, `continueAsNew` | existing transitions with the checks inside (the source-plan mapping of D1557 is pure and runs on the pinned plans before any child row is written); a refusal commits the parent failure in the same transition | none |
 | Signal (`signalRun`, `signalExecutionChain`) | check against each woken wait's plan before admission; refusal = no write; receipt fingerprint per FR-031-013 | none |
 | Side channel (019 checkpoint, 026 stream append) | lease renewal commits regardless; the checkpoint or stream row is stored only when its checks pass (same transaction as today's side-channel write) | none |
-| Activation | 018's activation transaction (epoch lock, live-instance check, requirement row, epoch bump) plus this feature's activation row and `payload.encoding_activated` audit | none |
+| Activation | 018's activation transaction (`platform_requirement_activate`: epoch `FOR UPDATE`, live-instance check, requirement row, epoch bump, `platform_requirement_history` row); this feature's step adds nothing (corrected 2026-11-24, D031-005) | none |
+| Deactivation | `platform_requirement_remove` after this feature's step, under the epoch `FOR UPDATE`, reads without a lock that no version has `encoding_rules = 1`; otherwise refused and nothing changes | none |
+| Publish with encoding (fence) | `payload_encoding_publication_fence()` takes the epoch `FOR SHARE` in the publish transaction and refuses `ENCODING_NOT_ACTIVATED` when the requirement is absent, so a publish and a deactivation serialize | none |
 | Inbox match | delivery row (with `refusal_code` when refused) in the dispatcher's existing transaction (ADR-0012) | none |
 | Endpoint PUT/DELETE | row (revision CAS, ceiling and setter), grant check for a `pii` ceiling, and `codec.endpoint_*` audit | none |
 | Assertion | authorization reads (membership, grant, endpoint, the `pii` ceiling setter's current grant) and `codec.assertion_issued` audit commit | signing after commit; a crash after commit leaves an audit record and no token (acceptable: audit precedes disclosure) |
@@ -110,7 +121,7 @@ The run lock order of features 002/014/017 is unchanged: envelope checks take no
 | disclosure with `includeEnvelopes` | 016 matrix | 016 matrix | 016 matrix | 016 matrix | — |
 | key-usage scans (`codec:manage`) | — | — | — | yes | — |
 | lease with `payload_plan` | — | — | — | — | yes worker with codec capability; never `database-runner` or `runner` for planned output |
-| `payload-encoding activate/deactivate` | operator command only (deployment credentials), audited | | | | |
+| `payload-encoding-activate` / `payload-encoding-deactivate` | operator command only, with the schema-owning role (ADR-0082 decision 1), recorded in `platform_requirement_history` | | | | |
 
 An assertion never authorizes a decode by itself: the customer's codec server authenticates the person and intersects
 its own policy with the assertion (D1558), so platform roles bound what the platform helps a person request, not what
@@ -125,7 +136,8 @@ single use bound that window (stated in the runbook).
 | Encoded locations per carrier | 32 | 64 |
 | `*` segments / segments per location | 2 / 16 | 4 / 16 |
 | Envelopes validated per payload | 1,024 | 1,024 |
-| Envelope header bytes | 2 KiB | 2 KiB |
+| Envelope header bytes (RFC 8785 canonical; the largest legal header is 2,317) | 3 KiB | 3 KiB (corrected 2026-11-24 from 2 KiB, D031-013) |
+| `ctx.p` in its JSON-escaped form | 512 B | 512 B |
 | `kid` / `kv` / `wk` | 128 B / 64 B / 1 KiB | same |
 | Inline encoded payload | 256 KiB (existing) | 256 KiB |
 | Blob header prefix parsed | 4 KiB | 4 KiB |
@@ -163,7 +175,10 @@ Encoded bytes count against `tenant_content_bytes` and the run's 4 MiB. Defaults
 | Duplicate start with changed plaintext under same key | Same header → original run (G1526); different `kid` or level → `409` | T031-029 |
 | Lost broker hint | Reconciler re-emits; gated task still only to codec sessions | T031-030 |
 | Timeout vs signal with encoded payload | First commit wins; envelope never inspected; loser audited | T031-030 |
-| KMS unavailable | Worker `PAYLOAD_CODEC_UNAVAILABLE` retryable; client raises before sending | T031-042 |
+| KMS unavailable | Before the handler at protocol 1.8 or later: hand-back `TASK_NOT_STARTED`, attempt not spent, once per attempt (D031-004); otherwise worker `PAYLOAD_CODEC_UNAVAILABLE` retryable; client raises before sending | T031-042 |
+| Decoded value written to a step log or an exception message | Replaced by `[REDACTED]` in the worker before the line or `FailStep` is sent (D031-007) | T031-072 |
+| Plaintext at an encoded location and a design 043 violation elsewhere | `ENCODING_REQUIRED` first; with an envelope, the 043 refusal (D031-006) | T031-071 |
+| Deactivation while a rules-1 version exists, or concurrent with a publish | Refused; the fence and the removal serialize on the epoch row | T031-068 |
 | Key version disabled / unknown `kid` | `PAYLOAD_KEY_UNAVAILABLE`, step fails non-retryably | T031-042 |
 | Compensation cannot decode | Compensation fails → existing retry, then manual review | T031-043 |
 | Codec server down / 401 / CORS / timeout | Studio and CLI show the state; platform unaffected | T031-052, T031-054, T031-057 |
@@ -204,8 +219,9 @@ Metrics (labels from closed sets only):
 | `worker_leases_withheld_for_codec_total` | `reason` (minor, capability) |
 
 Audit: `codec.endpoint_set`, `codec.endpoint_removed`, `codec.assertion_issued`, `codec.assertion_denied`,
-`payload.key_usage_scan_started`, `payload.key_usage_scan_finished`, `run.encoding_refused`, `payload.encoding_activated`,
-`payload.encoding_deactivated`; reasons are server-built closed strings. Alerts: a platform rule fires while
+`payload.key_usage_scan_started`, `payload.key_usage_scan_finished`, `run.encoding_refused`; reasons are server-built
+closed strings. Activation and deactivation are recorded by 018's `platform_requirement_history` (corrected
+2026-11-24, D031-005). Each action gets an OCSF mapping row when design 040 is built (D031-014). Alerts: a platform rule fires while
 `payload_encoding_incapable_members > 0` after activation; a rule on a sustained rise of `envelope_invalid` or
 `context_mismatch` is documented in the runbook as optional. Logs: refusals log code, carrier and run id only.
 
@@ -216,10 +232,12 @@ Audit: `codec.endpoint_set`, `codec.endpoint_removed`, `codec.assertion_issued`,
   `payload_plan` (it is never leased planned output) and `encodingRules`. Older server: ignores the annotation (rules 0
   semantics) — a deployment rolled back below this feature MUST NOT run versions published with rules 1; the rollback
   procedure disables publication with rules 1 first and drains such runs (ADR-0032 point 8 pattern).
-- Rolling upgrade (architecture review S3): every engine and control-plane process registers its capabilities in
-  018's instance-capability registry (FR-018-052); publication with encoding is refused (`ENCODING_NOT_ACTIVATED`) until
-  the audited operator command `payload-encoding activate` succeeds, which requires every live instance of both kinds
-  to list `payload-encoding-v1` and records the requirement; afterwards a registered instance without it does not serve.
+- Rolling upgrade (architecture review, its third serious finding): every engine and control-plane process registers
+  its capabilities in 018's instance-capability registry (FR-018-052, built, ADR-0082); publication with encoding is
+  refused (`ENCODING_NOT_ACTIVATED`) until the operator command `payload-encoding-activate` succeeds with the
+  schema-owning role, which requires every live instance of both kinds to list `payload-encoding-v1` and records the
+  requirement and its history; afterwards a registered instance without it does not serve (its gate is closed).
+  Deactivation is refused once any version with `encoding_rules = 1` exists (D031-005).
   Validation of already published rules-1 versions never depends on activation. A binary older than 018's registry does
   not register, so it is neither blocked nor seen (G1537); the runbook forbids starting one. No per-process environment
   flag decides enablement.
@@ -236,13 +254,16 @@ Design checks, not implementation approvals or test results.
 | I — durable atomic transitions | Pass | Pass | Checks run inside existing transitions; refusals reuse failure paths; scan batches commit progress with aggregates. T031-024..030, T031-058. |
 | II — pure domain, inward dependencies | Pass | Pass | Domain types pure; parsers, walks and signer are adapters behind ports; architecture source rule. T031-011, T031-059. |
 | III — at-least-once effects | Pass | Pass | No new external effect from the server; SDK KMS calls are customer effects; reports reuse idempotency with identical bytes. T031-029. |
-| IV — pinned, compatible | Pass | Pass | `encoding_rules` pinned; envelope v1 permanent; additive IR/OpenAPI/proto; five-SDK conformance. T031-005..009, T031-033..039. |
+| IV — pinned, compatible | Pass | Pass | `encoding_rules` pinned; envelope v1 permanent; additive IR/OpenAPI/proto (fields 25 and 7 of the register); six-SDK conformance. T031-005..009, T031-033..039, T031-070. |
 | V — isolation of code, tenant and secrets | Pass | Pass | No codec key on the platform; no decode proxy; the customer's identity provider authenticates every decode (the assertion only narrows); envelopes bound to tenant, namespace and location; tenant-scoped tables; canary and carriage suites release-blocking. T031-023, T031-048, T031-066. |
 | VI — observability and audit | Pass | Pass | Spans, closed metrics, seven audit actions, typed errors without values. T031-032. |
 | VII — inbox/outbox | Pass | Pass | Inbox match records refusals as deliveries; no outbox payload change. T031-027. |
 | VIII — failure tested, honest | Pass | Pass | Rule-9 matrix above, key rotation, codec-server outage, carriage across documents and rolling upgrade included; vectors reviewed before goldens. T031-004, T031-029..031, T031-042..043, T031-054, T031-066..068. |
 
 **Governance gate**: ADR-0066 (Proposed) must be accepted by the owner before implementation; O1520–O1522 answered.
+Met on 2026-11-24 under the delegation of Owner decision 2026-11-24-4: ADR-0066 revised and Accepted, O1520 to O1522
+decided, the four unchecked checklist items accepted (Owner decision 2026-11-03-33). What is still not this
+delegation's to decide is listed in tasks.md, "Build slices (2026-11-24)".
 
 ## Complexity Tracking
 
@@ -264,13 +285,17 @@ Design checks, not implementation approvals or test results.
 5. US06 compression and blob path (T031-055..056); US07 CLI (T031-057); US08 scan (T031-058).
 6. Gates: architecture rule, compose overlay, docs, benchmark, demo, verification, traceability (T031-059..065, T031-069).
 
+Superseded on 2026-11-24 by the two-lane order of tasks.md, "Build slices (2026-11-24)", which adds T031-070 to
+T031-073.
+
 ## Verification plan
 
 Each checkpoint records its commands and results in a `verification.md` of this feature; nothing is ticked without them.
 Required evidence: SC-031-001..014. Commands follow AGENTS.md: the new targets
 (`cargo test -p sagat-tests --test integration_client_side_encryption`, `fault_…`, `contract_…`, `e2e_…`,
 `perf_…`), `SAGAT_TEST_AS_RUNTIME_ROLE=1` reruns, `SAGAT_SDK_SCENARIO=payload-encryption… cargo test -p sagat-tests --test
-sdk_conformance --locked -- --ignored`, the codec-server black-box suite against `examples/codec-server-go/`, Studio
+sdk_conformance --locked -- --ignored` in six SDKs, the codec-server black-box suite
+(`cargo test -p sagat-tests --test contract_codec_server`) against `examples/codec-server-go/`, Studio
 `npm run check:api` and the Chromium journey, `python3 scripts/check-architecture.py`. Real OpenBao Transit runs in a
 disposable container started by the test fixture (AGENTS.md rule 16), pinned like the 017 fixture.
 

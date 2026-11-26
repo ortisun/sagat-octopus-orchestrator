@@ -30,12 +30,12 @@ No new dependency.
 
 **Testing**: Rust unit and property tests; integration and fault tests on real PostgreSQL under the
 runtime role; contract tests (OpenAPI, AsyncAPI baseline, IR and contract schemas); security battery;
-five-SDK conformance; Studio Vitest and real-browser e2e; a performance harness on the feature 010
+six-SDK conformance; Studio Vitest and real-browser e2e; a performance harness on the feature 010
 reference environment.
 
 **Target Platform**: the existing single-region Linux deployment (Compose for development, Helm).
 
-**Project Type**: Rust modular monolith, five SDKs, Studio SPA.
+**Project Type**: Rust modular monolith, six SDKs (TypeScript, Go, Python, C#, Java, Rust), Studio SPA.
 
 **Performance Goals**: none promised. Measure NFR-030-005 (SC-030-014).
 
@@ -44,7 +44,7 @@ labels; begin every transaction with `BeginSafely::begin_safely` (ADR-0014); dat
 deadline; root-path calls only in the first increment.
 
 **Scale/Scope**: four permissions, two document kinds (one new), one node kind, nine tables, five
-message kinds, about 20 REST operations, five SDK builders, one Studio area.
+message kinds, about 20 REST operations, six SDK builders, one Studio area.
 
 ## Constitution Check
 
@@ -55,7 +55,7 @@ These are design checks, not approval of an implementation.
 | I — durable, atomic transitions; terminal never reopens | Pass | Pass | Transaction table below; a terminal caller step is never reopened by a late message (discarded, audited); T030-022..025, T030-029..031 |
 | II — pure domain, ports and adapters, no empty mappers | Pass | Pass | Domain types in `crates/domain/src/services.rs`; schema checks behind an application port implemented in `crates/infra-schema`; no DTO mapper without semantics; `scripts/check-architecture.py`, T030-004, T030-009, T030-014 |
 | III — at-least-once effects, compensation as steps | Pass | Pass | One handler run per operation is a platform guarantee only; every settlement carries an effect class; an effect-possible failure is compensated or reviewed, never "not done"; a deadline looks the outcome up first; compensation is a derived call (US09); T030-055..057, T030-065 |
-| IV — pinned versions, additive contracts, five SDKs | Pass | Pass | Contract pinned at publication; additive IR/OpenAPI/AsyncAPI; shared conformance; T030-005..008, T030-051..054 |
+| IV — pinned versions, additive contracts, six SDKs | Pass | Pass | Contract pinned at publication; additive IR/OpenAPI/AsyncAPI; shared conformance; T030-005..008, T030-051..054 |
 | V — isolation, tenant boundary, secrets | Pass | Pass | Composite FKs, allow-list, fail-closed revocation, no secret in results, cross-tenant opacity; T030-032..037 |
 | VI — observability and audit | Pass | Pass | Journal-derived spans with links, closed labels, audit in decision transactions; reviews counted by reason; T030-046..050 |
 | VII — inbox/outbox, redeliverable messages, backpressure, dead letters | Pass | Pass | Messages are outbox and inbox with unique keys; polling recovery; deferral; `DEAD` with redrive; T030-026..030 |
@@ -64,6 +64,13 @@ These are design checks, not approval of an implementation.
 **Governance gate**: ADR-0065 must be accepted by the owner, and the owner questions O1480–O1482
 answered or their defaults confirmed, before T030-004. Feature 016's owner must accept the carrier
 extension (G1493) before T030-037 enables classified disclosure of results.
+
+Corrected 2026-11-24: the gate is passed. Under the owner's delegation (Owner decision 2026-11-24-4),
+ADR-0065 is accepted, O1480 (a), O1481 (a) and O1482 (b) are decided, and the carrier extension is
+accepted for the consolidated FR-016-002 amendment (research.md, Readiness review). Two facts changed
+since this plan was written: the handler run's start is a creating path checked by design 043's
+run-input gate (T030-073), and the call's deadlines are named `scheduleToCloseMs` and
+`scheduleToStartMs` (design 045). The two-builder order is in `tasks.md`, Build slices (2026-11-24).
 
 ## Project Structure
 
@@ -391,7 +398,7 @@ matrix, including `COMPLETED` before `STARTED` and a dead `STARTED`; duplicate a
 two 100-round races; every effect-possible outcome routed to compensation or review; reset rules;
 refusal of encoded values at publication, admission and result return; restart and shard takeover with 1,000
 calls in flight; the isolation battery and disclosure canaries; quota and depth exhaustion on both
-sides; the five-SDK conformance scenarios of [contracts/conformance.md](contracts/conformance.md);
+sides; the six-SDK conformance scenarios of [contracts/conformance.md](contracts/conformance.md);
 contract checks (OpenAPI lint, AsyncAPI baseline, IR and contract schema compilation); Studio
 accessibility checks and a real-browser journey; `scripts/check-architecture.py`; and the benchmark
 report. The quickstart's happy and failure demos must run from a clean stack.

@@ -57,7 +57,7 @@ redriven `STARTED` cannot alter a call that a `COMPLETED` already settled (D1511
 `START` is still `PENDING` they withdraw it, so no handler run can exist; when it is already `APPLIED`
 the handler run exists, the start deadline is void, the record moves to `STARTED` (the handler run id
 is derived), a cancellation then applies its policy as from `STARTED`, and the later `STARTED` message
-is applied as a no-op. Without `startTimeoutMs` the start deadline equals the deadline. The caller step
+is applied as a no-op. Without `scheduleToStartMs` the start deadline equals the deadline. The caller step
 follows the record: `WAITING` (kind `SERVICE_CALL`) while `SCHEDULED`, `STARTED`, `CANCELLING` or
 `LOOKING_UP`, then `SUCCEEDED` with output or `FAILED`/`CANCELLED` with the code of
 [contracts/errors.md](contracts/errors.md). Every terminal state records an `effect` (`none`, `failed`,

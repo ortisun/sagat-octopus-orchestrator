@@ -101,6 +101,8 @@ separate (the handler run's own timeout); circuit breaker → deferral without a
 - **D1492 — Deadlines.** Optional `timeoutMs` (the operation's `defaultMs`, itself 10 s for sync and
   24 h for async when the contract omits it); optional `startTimeoutMs`; ceilings 60 s (sync) and
   60 days (async); the handler run's deadline equals the operation deadline; database clock.
+  Revised 2026-11-24: the node fields are named `scheduleToCloseMs` and `scheduleToStartMs`, the names
+  design 045 gives the same deadlines of a leased step (Decision 030-002).
 - **D1493 — Deferral, no circuit breaker.** Refusals for room (paused endpoint, quotas, rate,
   concurrency) defer without consuming attempts, as ADR-0012 does for events waiting for room, with a
   1 s doubling backoff capped at 60 s; non-retryable refusals end the call. A breaker protects remote
@@ -210,41 +212,82 @@ C7, C8, C10 and C13:
   "Amendment to feature 016" subsection and joins the single consolidated amendment; the four
   permissions are additive grants that 029 lists, and 029's evaluator decides visibility when enabled.
 
+## Readiness review (2026-11-24)
+
+Checked against `origin/develop` at `546d5aa5` (features 018, 038, 040, 041, 042, 043 merged; 022's throughput
+slice specified and being built; delivery acknowledgement at protocol 1.8 and lease withdrawal in flight).
+
+- **Decision 030-001 — The handler run's start goes through design 043's gate.** Design 043 (Technical Plan 1)
+  names feature 030 as a creating path to be checked when it is built; the type `CheckedRunInput` makes it so.
+  The caller validates with the same validator at scheduling, so a refusal at admission is a schema drift
+  between the pinned operation and the handler version, which FR-030-005's canonical equality already
+  refuses at save; the gate is the backstop. Its transient refusals defer like a refusal for room.
+- **Decision 030-002 — Deadline names and clock follow design 045.** `timeoutMs` meant schedule-to-close here
+  and start-to-close on an activity; one name with two meanings is a trap. The node takes
+  `scheduleToCloseMs` and `scheduleToStartMs` and has no `timeoutMs` or `retry` (`additionalProperties: false`
+  already refuses them). An operation's failure code is matched by `onError`, never by a retry policy,
+  because a new attempt is a new operation id and a new handler run (FR-030-010).
+- **Decision 030-003 — No cross-namespace signal.** A signal to a handler run is a signal of the handler's
+  namespace and follows design 045's buffered signals there when its version declares them.
+- **Decision 030-004 — The `serviceCall` carrier is accepted for feature 016**, delegate (Owner decision
+  2026-11-24-4): its carrier schema is the pinned operation's `outputSchema`, which is closed, bounded and
+  classified; without it results stay `structure-only`, which makes the feature useless for classified data.
+- **Decision 030-005 — G1496 accepted for 0.3.0**, delegate (Owner decision 2026-11-24-4): taint tracking of
+  computed expressions is a classification-rules-version-2 design of feature 016; the declared
+  `inputDisclosure` makes the publisher accountable, and the direct-path check covers the common case.
+- **Decision 030-006 — Six SDKs.** The draft named five; the Rust SDK (feature 034, ADR-0070) shares the
+  canonical contract, so the builders, clients and conformance cover six (T030-071).
+- **Decision 030-007 — ADR-0065 accepted**, delegate (Owner decision 2026-11-24-4): its rules held against
+  today's code (no transaction holds two run locks; the inbox and outbox pattern of ADR-0012 and ADR-0025;
+  ADR-0050's lock order, now accepted); its two refinements of this review (043's gate, 045's names) are
+  recorded in it.
+- Stale items corrected in place: the SDK count (five to six) in the spec, plan and tasks; ADR-0050 is
+  accepted, not proposed; the deadline fields; the dependency list (018 and 043 built).
+
 ## Gaps
 
 | Id | Gap | Status |
 |---|---|---|
 | G1480 | Handler workflows that use `continueAsNew` are refused; following a handler chain to its FINAL segment (the ADR-0030 §19 parent-link analogue) needs its own design and tests | Open |
 | G1481 | `serviceCall` inside `forEach`, `while`, `repeatUntil` bodies needs scoped operation ids and per-instance pins | Open |
-| G1482 | Attaching several callers to one handler run (Nexus Use-Existing) depends on 018 business workflow id policies | Open, depends on 018 |
-| G1483 | Sync handler kinds other than workflows (activity, Query/Update, signal) depend on 022 and 018 | Open, O1480 |
+| G1482 | Attaching several callers to one handler run (Nexus Use-Existing) depends on 018 business workflow id policies | Open; 018's business ids are built (2026-11-14); a later increment of this feature |
+| G1483 | Sync handler kinds other than workflows (activity, Query/Update, signal) depend on 022 and 018 | Open; O1480 decided (a) for this increment; an Update-backed sync operation (option c) is the next increment, now that 018's Update-with-Start is built |
 | G1484 | Calls between namespaces placed in different regions (032) are out of scope; registration must refuse them once placement exists | Open, depends on 032 |
 | G1485 | No compatible evolution of schemas (subtyping); a new schema means a new revision and republished callers | Accepted for the first increment |
-| G1486 | Contract and endpoint changes are not routed through publication approval in protected namespaces | Open, O1482 |
+| G1486 | Contract and endpoint changes are not routed through publication approval in protected namespaces | Closed 2026-11-24: O1482 decided (b), FR-030-040, task T030-072 |
 | G1487 | Handler expressions cannot read operation metadata (`operation.*`); the deterministic handler run id gives stable activity keys | Accepted |
 | G1488 | Per-service or per-endpoint ACLs and folders belong to 029 | Open, depends on 029 |
 | G1489 | Services and endpoints are not part of 011 GitOps manifests | Open |
 | G1490 | The 028 time-skipping test environment must cover service calls when it exists | Open, depends on 028 |
 | G1491 | No public-API (non-workflow) callers and no HTTP callback transport between cells | Accepted (out of scope) |
 | G1492 | All latency and throughput figures are unmeasured; only ceilings are specified | Open (SC-030-014) |
-| G1493 | The `serviceCall` node is not yet in 016's closed carrier set; until 016 accepts it, results are `structure-only` for disclosure | Open, needs 016 owner |
+| G1493 | The `serviceCall` node is not yet in 016's closed carrier set; until 016 accepts it, results are `structure-only` for disclosure | Decided 2026-11-24 (Decision 030-004): the carrier is accepted for the consolidated FR-016-002 amendment, built by T030-069 |
 | G1494 | The `WAIT_REQUESTED` cancellation type is not offered | Accepted |
 | G1495 | Blob descriptors cannot cross namespaces; inputs and results are inline ≤ 256 KiB | Accepted for the first increment |
-| G1496 | A computed `serviceCall.input` expression is not compared field by field with its sources (no taint tracking, D283 of 016); the publisher's `inputDisclosure` is the only control. Owner gap: revisit with 016 rules v2 | Open, owner gap |
+| G1496 | A computed `serviceCall.input` expression is not compared field by field with its sources (no taint tracking, D283 of 016); the publisher's `inputDisclosure` is the only control. Owner gap: revisit with 016 rules v2 | Accepted for 0.3.0 (Decision 030-005); revisit with 016 rules version 2 |
 | G1497 | Encoded values cannot cross namespaces in v1 (D1661, 031 D1667): a team that encrypts a field cannot pass it to a service operation. Needs 031's delegation design (customer key policy for a pair of namespaces plus re-encoding outside the platform), 031 G1536 | Open, depends on 031 |
 
 ## Owner questions
 
-- **O1480 — Handler kinds for sync operations.** Options: (a) short flat handler workflows only, now
+- **O1480 — Handler kinds for sync operations.** Decided 2026-11-24: (a), delegate (Owner decision
+  2026-11-24-4). One durable path that is already testable ships in 0.3.0; an Update-backed sync operation
+  (c) needs its own disclosure design for an Update result read from another namespace (ADR-0031), and is
+  the next increment (G1483). The question as it was asked: Options: (a) short flat handler workflows only, now
   (recommended default: one durable path, already testable, no dependency); (b) wait for 022
   standalone steps and offer activity-backed sync handlers; (c) also offer declared Query/Update of a
   run addressed by business id after 018. The specification applies (a).
-- **O1481 — In-flight results after revocation.** When a caller namespace is removed from the
+- **O1481 — In-flight results after revocation.** Decided 2026-11-24: (a), delegate (Owner decision
+  2026-11-24-4). Revocation that still delivers values contradicts constitution principle V (fail closed);
+  the effect class is still delivered, so a caller's saga can compensate. The question as it was asked: When a caller namespace is removed from the
   allow-list or the endpoint is deleted while operations run: (a) fail closed — deliver
   `OPERATION_ACCESS_REVOKED` and no value (recommended default, constitution V); (b) deliver results of
   operations admitted before the change. Pause never affects operations in flight. The specification
   applies (a).
-- **O1482 — Approval for contract and endpoint changes.** In namespaces whose publication policy asks
+- **O1482 — Approval for contract and endpoint changes.** Decided 2026-11-24: (b), delegate (Owner decision
+  2026-11-24-4), FR-030-040. A binding change decides which code serves another team's calls; in a namespace
+  that asks for approvals, letting it bypass approval is a governance hole that an enterprise customer will
+  find before we do. The flow exists (feature 011), so the cost is one request kind per document. The
+  question as it was asked: In namespaces whose publication policy asks
   for approvals (FR-011-003): (a) not in the first increment; changes are admin-only and audited
   (recommended default, G1486); (b) route contract revisions and endpoint revisions through the
   publication-request flow. The specification applies (a).

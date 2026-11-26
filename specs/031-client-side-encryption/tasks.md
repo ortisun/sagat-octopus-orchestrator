@@ -4,36 +4,39 @@
 **Status**: proposed; nothing is implemented and no task is ticked. A task is ticked only with the evidence it names (a
 test that ran and passed, or a command and its output). Tests precede implementation within a phase and are seen
 failing first. `[P]` = disjoint files, parallelizable; `[USnn]` = user story. Every new store path uses `begin_safely`.
-**Gate**: T031-001 (ADR-0066 accepted, O1520–O1522 answered) blocks every other task.
+**Gate**: T031-001 (ADR-0066 accepted, O1520–O1522 answered) blocks every other task. Corrected 2026-11-24: the gate's
+decisions are taken under the delegation of Owner decision 2026-11-24-4 (ADR-0066 revised and Accepted, O1520 to O1522
+decided, checklist accepted); T031-001 stays unticked until the coordinator records them in `docs/owner-decisions.md`.
+The build order for two builders is the last section, "Build slices (2026-11-24)".
 
 ## Phase 1 — Setup, decisions and contracts
 
-- [ ] T031-001 Obtain the owner's acceptance of `docs/adr/ADR-0066-client-side-payload-encryption.md` and answers to O1520–O1522; record them in `specs/031-client-side-encryption/research.md` and `docs/owner-decisions.md`. Refs: D1552, O1520–O1522. Evidence: the recorded decisions.
-- [ ] T031-002 Register `contract_client_side_encryption`, `integration_client_side_encryption`, `fault_client_side_encryption`, `e2e_client_side_encryption`, `perf_client_side_encryption` in `tests/Cargo.toml` with `main.rs` under `tests/{contract,integration,fault,e2e,performance}/client-side-encryption/`; a skipped infrastructure test fails. Refs: D1553. Evidence: the five targets compile and a deliberately missing Docker fails.
+- [ ] T031-001 Obtain the owner's acceptance of `docs/adr/ADR-0066-client-side-payload-encryption.md` and answers to O1520–O1522; record them in `specs/031-client-side-encryption/research.md` and `docs/owner-decisions.md`. Refs: D1552, O1520–O1522. Evidence: the recorded decisions. (2026-11-24: decided under Owner decision 2026-11-24-4 and recorded in research.md, "Owner questions decided on 2026-11-24", and in ADR-0066 "Acceptance"; the `docs/owner-decisions.md` row is the coordinator's.)
+- [ ] T031-002 Register `contract_client_side_encryption`, `integration_client_side_encryption`, `fault_client_side_encryption`, `e2e_client_side_encryption`, `perf_client_side_encryption` and `contract_codec_server` (added 2026-11-24, D031-011) in `tests/Cargo.toml` with `main.rs` under `tests/{contract,integration,fault,e2e,performance}/client-side-encryption/` and `tests/contract/codec-server/`; a skipped infrastructure test fails. Refs: D1553, D031-011. Evidence: the six targets compile and a deliberately missing Docker fails.
 - [ ] T031-003 [P] Write the corpus `tests/contract/client-side-encryption/fixtures/{sound,defects,legacy,payloads,registry}/` (one defect per code of `contracts/workflow-encoding.md` §6; plaintext, malformed, duplicate-member, wrong-level, wrong-`ctx`, undeclared and valid envelopes; one fixture per row of `contracts/encoded-field-registry.md`; `canary.json` with a unique string per location and path). Refs: FR-031-001..006, FR-031-010, SC-031-001, SC-031-002.
-- [ ] T031-004 [P] Generate and review the envelope vectors `tests/contract/sdk-conformance/vectors/payload-encryption/` (static provider, fixed DEK/iv through a test-only hook; positive and negative cases of `contracts/envelope.md` §6, including `ctx`, `pad` and duplicate-member cases); a person reviews them before any SDK golden. Refs: FR-031-009, FR-031-021, SC-031-003.
+- [ ] T031-004 [P] Generate and review the envelope vectors `tests/contract/sdk-conformance/vectors/payload-encryption/` (static provider, fixed DEK/iv through a test-only hook; positive and negative cases of `contracts/envelope.md` §6, including `ctx`, `pad`, duplicate-member cases, the largest legal header of 2,317 bytes and a header of 3,073 bytes); a reviewer other than their author (a person, or an independent reviewer agent under Owner decision 2026-11-24-4) reads every vector before any SDK golden. Refs: FR-031-009, FR-031-021, SC-031-003, D031-013.
 - [ ] T031-005 Add `specs/001-platform-foundation/contracts/payload-envelope.schema.json` from `contracts/envelope.schema.json`; contract test `tests/contract/client-side-encryption/envelope.rs` validates every vector's shape. Refs: FR-031-009, FR-031-033.
 - [ ] T031-006 Document `x-sagat-encoding` on the carriers in `specs/001-platform-foundation/contracts/workflow.schema.json` (descriptions only; no structural change) and regenerate `docs/reference/workflow-document.md` (`SAGAT_DOCS_BLESS=1 cargo test -p sagat-tests --test contract_developer_experience`, diff read first); the existing corpus still validates. Refs: FR-031-001, FR-031-033.
-- [ ] T031-007 Add the fields of `contracts/worker-protocol.md` to `specs/001-platform-foundation/contracts/worker.proto` at the field numbers free at merge, under the codec minor agreed with feature 019; regenerate `worker.baseline.json` deliberately; `crates/api-grpc/tests/compatibility.rs` passes. Refs: FR-031-015, D1554.
+- [ ] T031-007 Add the fields of `contracts/worker-protocol.md` to `specs/001-platform-foundation/contracts/worker.proto` (corrected 2026-11-24: `TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7, under the codec minor, the next free minor of the register in `sdks/SPEC.md` section 9 when this contract merges, 1.10 or later); regenerate `worker.baseline.json` deliberately; `crates/api-grpc/tests/compatibility.rs` passes. The SDKs' generated protocol code is regenerated by T031-073. Refs: FR-031-015, D031-002.
 - [ ] T031-008 Merge `contracts/openapi-fragment.yaml` into `specs/001-platform-foundation/contracts/openapi.yaml` (`x-implemented: '031'`, additive changes listed at its end) and regenerate `frontend/apps/studio/src/api/schema.d.ts`; `tests/contract/client-side-encryption/openapi.rs` checks the operations, closed reasons, `no-store` headers and byte-identical unrelated operations; `npm run check:api` passes. Refs: FR-031-008, FR-031-024, FR-031-025, FR-031-028, FR-031-029.
-- [ ] T031-009 Add the SDK codes of `contracts/errors.md` to `sdks/error-catalog.json` and the five embedded copies; the per-SDK copy tests pass. Refs: FR-031-020, D1551.
+- [ ] T031-009 Add the SDK codes of `contracts/errors.md` to `sdks/error-catalog.json` and its embedded copies (Go, .NET, Java, Rust; corrected 2026-11-24 from "five"); the per-SDK copy tests pass. Refs: FR-031-020, D1551.
 
 ## Phase 2 — Foundational
 
-- [ ] T031-010 [P] Failing domain tests `crates/domain/tests/payload_encoding.rs`: pointer bounds ("0–16 segments, at most 4 `*`, total ≤ 512 bytes"), no nesting, verdict per encoding, level and `ctx`, `CarriageCheck` (subset across documents, equality within one), `CodecAudience::max_level` for every role × grant × reveal × ceiling, scan and activation transitions. Refs: FR-031-002, FR-031-003, FR-031-005, FR-031-028, FR-031-036.
-- [ ] T031-011 Implement `crates/domain/src/payload_encoding.rs`; add `ENCODING_REQUIRED`, `ENVELOPE_INVALID`, `ENVELOPE_LEVEL_MISMATCH` to `crates/domain/src/execution/event.rs`, `CodecManage` to `crates/domain/src/identity.rs` (admin only; catalog test updated) and the seven audit actions to `crates/domain/src/audit.rs` (`codec.assertion_issued` never collapses at `pii`). Refs: FR-031-024, FR-031-031, D1550.
-- [ ] T031-012 [P] Access paths in `crates/infra-expr/src/paths.rs` (variable + constant segments, non-literal index → `*`, `has()` marked) with `crates/infra-expr/tests/paths.rs` over every expression form of the evaluator. Refs: FR-031-004.
-- [ ] T031-013 Migration `crates/infra-postgres/migrations/<timestamp>_payload_encoding.{up,down}.sql` per `data-model.md` §3–4, grants for `sagat_app`, immutable trigger `ENABLE ALWAYS`, entries in `crates/infra-postgres/storage-classification.json`; migration up/down/up with data and `runtime_privileges` pass. Refs: FR-031-007, FR-031-032.
-- [ ] T031-014 Store `crates/infra-postgres/src/payload_encoding.rs` (plans, endpoints with revision CAS, scans, results), tenant-first keys and joins. Evidence: store tests in `tests/integration/client-side-encryption/store.rs`.
-- [ ] T031-015 [P] Strict envelope parser `crates/infra-ir/src/envelope.rs` (duplicate members refused, closed shape, header ≤ 2 KiB, `ctx` parsed, base64 length checks only, ≤ 1,024 envelopes per payload) and the undeclared-envelope walk, with tests over the vectors proving `data` is never decoded. Refs: FR-031-009, FR-031-010, FR-031-014.
+- [ ] T031-010 [P] Failing domain tests `crates/domain/tests/payload_encoding.rs`: pointer bounds ("0–16 segments, at most 4 `*`, total ≤ 512 bytes" as UTF-8 and JSON-escaped), no nesting, verdict per encoding, level and `ctx`, `CarriageCheck` (subset across documents, equality within one), `CodecAudience::max_level` for every role × grant × reveal × ceiling, `PayloadPlan::codec_need`, scan transitions. Refs: FR-031-002, FR-031-003, FR-031-005, FR-031-028, FR-031-036.
+- [ ] T031-011 Implement `crates/domain/src/payload_encoding.rs`; add `ENCODING_REQUIRED`, `ENVELOPE_INVALID`, `ENVELOPE_LEVEL_MISMATCH`, `ENVELOPE_CONTEXT_MISMATCH`, `ENCODING_CARRIAGE_MISMATCH` to `crates/domain/src/execution/event.rs`, `CodecManage` to `crates/domain/src/identity.rs` (admin only; catalog test updated) and the seven audit actions to `crates/domain/src/audit.rs` (`codec.assertion_issued` never collapses at `pii`; corrected 2026-11-24: the two activation actions are dropped, D031-005). Refs: FR-031-024, FR-031-031, D1550.
+- [ ] T031-012 [P] Access paths in `crates/infra-expr/src/paths.rs` (variable + constant segments, non-literal index → `*`, `has()` marked) with `crates/infra-expr/tests/paths.rs` over every expression form of the evaluator, design 042's stage variables (`element`, `position`) included. Refs: FR-031-004, D031-008.
+- [ ] T031-013 Migration `crates/infra-postgres/migrations/<timestamp>_payload_encoding.{up,down}.sql` per `data-model.md` §3–4 (five tables, four columns, the function `payload_encoding_publication_fence()` with `EXECUTE` for `sagat_app`), grants for `sagat_app`, immutable trigger `ENABLE ALWAYS`, entries in `crates/infra-postgres/storage-classification.json`; migration up/down/up with data and `runtime_privileges` pass, and the privilege audit lists the fence with its reason. Refs: FR-031-007, FR-031-032, FR-031-036.
+- [ ] T031-014 Store `crates/infra-postgres/src/payload_encoding.rs` (plans, endpoints with revision CAS, scans, results, the fence call), tenant-first keys and joins. Evidence: store tests in `tests/integration/client-side-encryption/store.rs`.
+- [ ] T031-015 [P] Strict envelope parser `crates/infra-ir/src/envelope.rs` (duplicate members refused, closed shape, header ≤ 3,072 bytes in canonical form and `ctx.p` ≤ 512 bytes JSON-escaped (corrected 2026-11-24 from 2 KiB, D031-013), `ctx` parsed, base64 length checks only, ≤ 1,024 envelopes per payload) and the undeclared-envelope walk, with tests over the vectors proving `data` is never decoded. Refs: FR-031-009, FR-031-010, FR-031-014.
 
 ## Phase 3 — US01 Declare encoded fields (P1) — MVP part 1
 
-- [ ] T031-016 [US01] Failing tests `crates/infra-ir/tests/encoding_check.rs`: each defect fixture refused with its code and pointer; sound corpus accepted with its plan and levels; carriage cases of `contracts/workflow-encoding.md` §4 (re-rooting refused); every IR v1 row of the registry. Refs: FR-031-001..005, SC-031-002.
-- [ ] T031-017 [US01] Implement `crates/infra-ir/src/encoding_check.rs` (registry positions with their codes, subtree levels via the 016 walk, same-document carriage with pattern equality, fail-closed for unregistered positions, `ENCODING_NOT_ACTIVATED`) and wire it into `validated_document` of `crates/infra-ir/src/lib.rs` and the `IrCodec` port (`encoding_analysis`). Refs: FR-031-001..005, FR-031-036.
-- [ ] T031-018 [US01] Store `encoding_rules` and plan rows in the publish transaction; identical republish returns the old version and `ENCODING_INERT_VERSION`; `ENCODING_ADDED`/`ENCODING_REMOVED` in `crates/infra-ir/src/diff.rs`. Evidence: `tests/integration/client-side-encryption/pinning.rs`. Refs: FR-031-007.
+- [ ] T031-016 [US01] Failing tests `crates/infra-ir/tests/encoding_check.rs`: each defect fixture refused with its code and pointer; sound corpus accepted with its plan and levels; carriage cases of `contracts/workflow-encoding.md` §4 (re-rooting refused); every IR v1 row of the registry and the rows of design 042's collection operators and 022's rate-limit key. Refs: FR-031-001..005, SC-031-002, D031-008, D031-009.
+- [ ] T031-017 [US01] Implement `crates/infra-ir/src/encoding_check.rs` (registry positions with their codes, subtree levels via the 016 walk, same-document carriage with pattern equality, fail-closed for unregistered positions, `ENCODING_NOT_ACTIVATED`) and wire it into `validated_document_in` of `crates/infra-ir/src/lib.rs` (corrected 2026-11-24: the entry that takes design 043's mode) and the `IrCodec` port (`encoding_analysis`); it hands design 043's pre-check the `inputSchema` without its `x-sagat-encoding` members, so a publication with encoding passes the pre-check in `enforce` (D031-006). Refs: FR-031-001..005, FR-031-036, FR-031-037.
+- [ ] T031-018 [US01] Store `encoding_rules` and plan rows in the publish transaction, after `payload_encoding_publication_fence()`; identical republish returns the old version and `ENCODING_INERT_VERSION`; `ENCODING_ADDED`/`ENCODING_REMOVED` in `crates/infra-ir/src/diff.rs`. Evidence: `tests/integration/client-side-encryption/pinning.rs`. Refs: FR-031-007, FR-031-036.
 - [ ] T031-019 [US01] `getPayloadPlan` in `crates/api-http/src/routes/payload_encoding.rs` with `ApiOperation::PayloadPlanRead` in `crates/application/src/api_admission.rs`; contract and cross-tenant tests in `tests/contract/client-side-encryption/rest.rs`. Refs: FR-031-008, FR-031-030.
-- [ ] T031-020 [US01] Publish the consumer check API and the registry (`contracts/encoded-field-registry.md`), wire feature 014 Query/Update (`ENCODING_READ_BY_DECLARED_OPERATION`) now, and add the registry-row fixtures of 018, 019, 020, 021, 022, 024, 025, 026, 027 and 030 that run when each draft merges (fail-closed refusal until then); report draft text that contradicts the registry (018 Update arguments, 019 `REFUSED_ENCODING`, 021 `ENCRYPTED_VALUE`, 022 `KEY_READS_ENCRYPTED_FIELD`, 026 `ENCRYPTED_FIELD`, 027 `ENCRYPTED_FIELD_UNSUPPORTED`) to those features. Refs: FR-031-006, D1527, coordinator C7.
+- [ ] T031-020 [US01] Publish the consumer check API and the registry (`contracts/encoded-field-registry.md`), wire feature 014 Query/Update (`ENCODING_READ_BY_DECLARED_OPERATION`), feature 022's concurrency and rate-limit keys (`ENCODING_READ_BY_CONCURRENCY_KEY`, `ENCODING_READ_BY_RATE_LIMIT_KEY`) and design 042's collection operators now, and add the registry-row fixtures of 018, 019, 020, 021, 022 (the rest), 024, 025, 026, 027, 030 and 042's trigger operators that run when each merges (fail-closed refusal until then); report draft text that contradicts the registry (019 `REFUSED_ENCODING`, 021 `ENCRYPTED_VALUE`, 022 `KEY_READS_ENCRYPTED_FIELD` and the rate-limit key missing from FR-022-036, 026 `ENCRYPTED_FIELD`, 027 `ENCRYPTED_FIELD_UNSUPPORTED`) to those features. Refs: FR-031-006, D1527, D031-008, D031-009, coordinator C7. (2026-11-24: 018's "encrypted Update arguments" note is already corrected in its specification.)
 - [ ] T031-021 [P] [US01] Show encoding findings and the per-location report in `frontend/apps/studio/src/features/workflows/ValidationPanel.tsx` and `sagat workflow validate` (`apps/cli/src/validate.rs`); component and CLI tests. Refs: FR-031-003, FR-031-007.
 
 ## Phase 4 — US02 Encrypt in clients and workers (P1) — MVP part 2
@@ -42,32 +45,32 @@ failing first. `[P]` = disjoint files, parallelizable; `[USnn]` = user story. Ev
 - [ ] T031-023 [US02] Failing canary suite `tests/integration/client-side-encryption/canary.rs` scanning PostgreSQL rows, blobs, logs, spans, metrics, audit, error bodies and dead letters after accepted and refused writes. Refs: NFR-031-SEC, SC-031-001.
 - [ ] T031-024 [US02] Start-path checks and the fingerprint of FR-031-013 (header digest with `ctx`, optional `X-Sagat-Content-Fingerprint`) for every keyed write in `crates/application/src/runs.rs` and the signal paths. Refs: FR-031-010, FR-031-013.
 - [ ] T031-025 [US02] Completion checks in `crates/application/src/worker/output.rs` (and `crates/application/src/worker/scoped_reports.rs`): refusal fails the step, drops the bytes, replays under the original key. Refs: FR-031-010, FR-031-011.
-- [ ] T031-026 [US02] Child admission, `end` and `continueAsNew` checks in `crates/application/src/runs.rs` and `crates/application/src/execution.rs`. Refs: FR-031-010, FR-031-011.
+- [ ] T031-026 [US02] Child admission, `end` and `continueAsNew` checks in `crates/application/src/runs.rs`, `crates/application/src/execution.rs` and `start_child` / `advance_continuation_in_view` of `crates/scheduler/src/passes.rs`. Refs: FR-031-010, FR-031-011.
 - [ ] T031-027 [US02] Signal checks (`signalRun`, `signalExecutionChain`) and inbox matching with `event_deliveries.refusal_code` and `run.encoding_refused` in `crates/application/src/events.rs` and `crates/scheduler/src/events.rs`. Refs: FR-031-010, FR-031-011, D1542.
-- [ ] T031-028 [US02] Lease plan (tenant/namespace ids, decode pointers with bound patterns, output pointers) and claim gating on a non-empty decode **or** output plan in `crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs` and the claim SQL of `crates/infra-postgres/src/execution.rs` (joining `workflow_version_codec_nodes`); registration capability and `TaskLease.payload_plan` in `crates/api-grpc/src/service.rs`. Refs: FR-031-015, D1534.
+- [ ] T031-028 [US02] Lease plan (tenant/namespace ids, decode pointers with bound patterns, output pointers) and claim gating on a non-empty decode **or** output plan: the locked recheck beside `required_worker_protocol_minor` in `crates/application/src/worker.rs` and `crates/application/src/worker/scoped_claims.rs`, reading `PayloadPlan::codec_need` from the loaded definition; the candidate anti-join on `workflow_version_codec_nodes` in `claimable_runs` and `claimable_paths` of `crates/infra-postgres/src/workers.rs`, only once `payload-encoding-v1` is recorded and only for a session that lacks the codec (corrected 2026-11-24, D031-010); registration capability (`WorkerCapabilities` field 7), the codec minor and `TaskLease.payload_plan` (field 25) in `crates/api-grpc/src/service.rs`. Refs: FR-031-015, D1534, D031-002, D031-010.
 - [ ] T031-029 [US02] Fault tests `tests/fault/client-side-encryption/crashes.rs`: crash before/after each commit of the plan's transaction table, duplicate start and signal (identical bytes, re-encoded bytes, re-encoded with a changed content fingerprint), lost `CompleteStep` response, worker crash between encode and report; journal replay equals projection. Refs: SC-031-006.
-- [ ] T031-030 [US02] Fault tests `tests/fault/client-side-encryption/races.rs`: timeout vs signal with an encoded payload (barrier, no sleep), lost broker hint, engine restart, mixed fleet gating on decode and output plans (attempts unchanged). Refs: SC-031-006, SC-031-013.
+- [ ] T031-030 [US02] Fault tests `tests/fault/client-side-encryption/races.rs`: timeout vs signal with an encoded payload (barrier, no sleep), lost broker hint, engine restart, mixed fleet gating on decode and output plans (attempts unchanged), and a claim racing the activation (the candidate query has not yet learned it; the locked recheck still refuses). Refs: SC-031-006, SC-031-013.
 - [ ] T031-031 [US02] Tenant, namespace and quota tests `tests/integration/client-side-encryption/tenancy.rs` and `quotas.rs` (envelope growth hits `tenant_content_bytes` and the 4 MiB run limit on the existing paths). Refs: FR-031-030, FR-031-032, SC-031-009, SC-031-010.
 - [ ] T031-032 [US02] Telemetry tests `tests/integration/client-side-encryption/telemetry.rs`: spans and metrics of the plan with closed labels; no `kid`, pointer value or envelope member in any signal. Refs: FR-031-031, NFR-031-OBS.
-- [ ] T031-033 [US02] Merge `contracts/sdk-codec.md` into `sdks/SPEC.md` (the converter is the only payload-transforming stage, coordinator C5); add scenarios `payload-encryption-builders`, `-vectors`, `-interop`, `payload-encryption`, `-gating` under `tests/contract/sdk-conformance/scenarios/`. Refs: FR-031-016..022.
-- [ ] T031-034 [P] [US02] TypeScript: `sdks/typescript/src/codec/` (converter, codecs including `pad`, strict parsing, `ctx` from plans, Transit and static providers with optional keyed fingerprint, caches, health pause, local secret scan, plan use in client and worker host) with unit tests. Refs: FR-031-016..021, D1665, D1669.
-- [ ] T031-035 [P] [US02] Go: `sdks/go/codec/` and `sdks/go/worker/` integration (the scope of T031-034), with tests (`go test -race`). Refs: FR-031-016..021.
+- [ ] T031-033 [US02] Merge `contracts/sdk-codec.md` into `sdks/SPEC.md` (the converter is the only payload-transforming stage, coordinator C5); add scenarios `payload-encryption-builders`, `-vectors`, `-interop`, `payload-encryption`, `-gating`, `-faults` and `-step-logs` under `tests/contract/sdk-conformance/scenarios/`, and the harness part of `tests/contract/sdk-conformance/encoding.rs` that runs the three build-only scenarios (builders, vectors, 6 × 6 interop) in six SDKs (corrected 2026-11-24: six SDKs; the build-only harness moves here from T031-039). Refs: FR-031-016..022, D031-001.
+- [ ] T031-034 [P] [US02] TypeScript: `sdks/typescript/src/codec/` (converter, codecs including `pad`, strict parsing, `ctx` from plans, Transit and static providers with optional keyed fingerprint, caches, client start encoding with the pinned plan) with unit tests over the vectors. Corrected 2026-11-24: the worker-host parts (lease plan, health pause, hand-back, local secret scan, side channels, step-log redaction) are T031-073 in all six SDKs. Refs: FR-031-016..021, D1669.
+- [ ] T031-035 [P] [US02] Go: `sdks/go/codec/` (the scope of T031-034), with tests (`go test -race`). Refs: FR-031-016..021.
 - [ ] T031-036 [P] [US02] Python: `sdks/python/sagat_octopus_orchestrator/codec/` (the scope of T031-034) with pytest, mypy, ruff. Refs: FR-031-016..021.
 - [ ] T031-037 [P] [US02] C#: `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Codecs/` (the scope of T031-034) with tests and DI registration. Refs: FR-031-016..021.
 - [ ] T031-038 [P] [US02] Java: `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/codec/` (the scope of T031-034) with tests. Refs: FR-031-016..021.
-- [ ] T031-039 [US02] Conformance harness `tests/contract/sdk-conformance/encoding.rs` (vectors, 5×5 interop, runtime with wire capture at the transport hook, gating) and the five runners in `sdks/<language>/conformance`; goldens reviewed before `SAGAT_SDK_BLESS=1`. Refs: FR-031-022, SC-031-003, SC-031-004.
+- [ ] T031-039 [US02] Conformance harness `tests/contract/sdk-conformance/encoding.rs` for the runtime scenarios (runtime with wire capture at the transport hook, gating, faults, step logs) and the six runners in `sdks/<language>/conformance`; goldens reviewed before `SAGAT_SDK_BLESS=1`. Refs: FR-031-022, SC-031-003, SC-031-004.
 
-- [ ] T031-066 [US02] Carriage across documents: source-plan mapping at child admission, 022 failure-handler child and `fromRun` pins, reset or rerun into another version and 030 handler admission, plus the `ctx` and undeclared-envelope checks on every write; fault suite `tests/fault/client-side-encryption/carriage.rs` (rules-0 child, rules-1 child without the location, re-rooted carriage, pasted envelope from another namespace or location, crash between check and admission commit). Refs: FR-031-005, FR-031-010, FR-031-011, SC-031-014, D1556, D1557.
-- [ ] T031-067 [US02] Side channels: checks for 019 checkpoint details and 026 stream appends of attempts with a payload plan (refused `ENCODING_REQUIRED` unless the schema is a carrier; lease renewal unaffected), `checkpoint`/`streams` lease plans; tests in `tests/integration/client-side-encryption/side_channels.rs` that run when 019 and 026 merge. Refs: FR-031-035, D1666.
-- [ ] T031-068 [US02] Fleet activation over 018's instance-capability registry (FR-018-052): the capability `payload-encoding-v1` in both binaries, `payload_encoding_activation`, the operator command in `apps/control-plane/src/cli.rs` running 018's activation transaction, the `payload_encoding_incapable_members` gauge and alert rule in `infra/observability/alerts.yaml`; `tests/integration/client-side-encryption/activation.rs` (rolling upgrade with an incapable member, activation refused, publication refused, deactivation). Refs: FR-031-036, SC-031-013, D1559.
+- [ ] T031-066 [US02] Carriage across documents: source-plan mapping at child admission, 022 failure-handler child and `fromRun` pins, reset or rerun into another version and 030 handler admission, plus the `ctx` and undeclared-envelope checks on every write; fault suite `tests/fault/client-side-encryption/carriage.rs` (rules-0 child, rules-1 child without the location, re-rooted carriage, pasted envelope from another namespace or location, crash between check and admission commit). The 022 and 030 cases run when those merge. Refs: FR-031-005, FR-031-010, FR-031-011, SC-031-014, D1556, D1557.
+- [ ] T031-067 [US02] Side channels: checks for 019 checkpoint details (heartbeat and `FailStepRequest.details_json`, field 13) and 026 stream appends of attempts with a payload plan (refused `ENCODING_REQUIRED` unless the schema is a carrier; lease renewal unaffected), `checkpoint`/`streams` lease plans; tests in `tests/integration/client-side-encryption/side_channels.rs` that run when 019 and 026 merge. Refs: FR-031-035, D1666, D031-003.
+- [ ] T031-068 [US02] Fleet activation over 018's built registry (corrected 2026-11-24, D031-005): `Capability::PayloadEncodingV1` listed by both binaries (`apps/control-plane` and `apps/execution-engine/src/capabilities.rs`); the operator commands `payload-encoding-activate` and `payload-encoding-deactivate` in `apps/control-plane/src/cli.rs` (schema-owning role, `platform_requirement_activate` and `platform_requirement_remove` through `crates/infra-postgres/src/instances.rs`, deactivation refused while any version has `encoding_rules = 1`); the `payload_encoding_incapable_members` gauge and alert rule in `infra/observability/alerts.yaml` with a `promtool` rule test; `tests/integration/client-side-encryption/activation.rs` (rolling upgrade with an incapable member, activation refused, publication refused, a publish and a deactivation held at the epoch row by a barrier serialize, deactivation refused after a rules-1 publish, history rows written). Refs: FR-031-036, SC-031-013, D1559, D031-005.
 
 ## Phase 5 — US03 Rotate keys and survive failures (P1)
 
-- [ ] T031-040 [US03] Pin each SDK's AES-GCM, zstd and gzip dependency after licence/advisory review, and pin the Transit data-key and decrypt paths against the OpenBao version of the 017 fixture; record both in `research.md`. Refs: D1537, FR-031-018.
+- [ ] T031-040 [US03] Pin each SDK's AES-GCM, zstd and gzip dependency after licence/advisory review (the Rust SDK's four lock files together), and pin the Transit data-key and decrypt paths against the OpenBao version of the 017 fixture; record both in `research.md`. Refs: D1537, FR-031-018, D031-001.
 - [ ] T031-041 [US03] Extend `tests/support/bounded.rs` (`start_openbao`) with the Transit engine, a rotatable test key and stop/start control for the conformance and fault suites. Refs: SC-031-005.
-- [ ] T031-042 [US03] Scenario `payload-encryption-faults`: rotation between encode and decode, `min_decryption_version` raised, Transit stopped (claiming paused, then retryable failure of a claimed task), unknown `kid`, cache expiry, secret in output, retried report with identical bytes; expected codes and retry counts in all five SDKs. Refs: FR-031-018..020, SC-031-005, D1665.
+- [ ] T031-042 [US03] Scenario `payload-encryption-faults`: rotation between encode and decode, `min_decryption_version` raised, Transit stopped (claiming paused; a lease claimed before the stop handed back with `TASK_NOT_STARTED` and its attempt unchanged; a second failure of the same attempt retryable), unknown `kid`, cache expiry, secret in output, retried report with identical bytes; expected codes and retry counts in all six SDKs. Refs: FR-031-018..020, SC-031-005, D1665, D031-004.
 - [ ] T031-043 [US03] `tests/fault/client-side-encryption/compensation.rs`: a compensation and a reconciliation that cannot decode reach retry then manual review; nothing assumed undone. Refs: SC-031-006.
-- [ ] T031-044 [US03] Runbook sections in `docs/runbooks/payload-encryption.md`: rotation (forward-only), disabling versus destroying a key, KMS outage, lost key, assertion-key rotation. Refs: FR-031-034, D1536.
+- [ ] T031-044 [US03] Runbook sections in `docs/runbooks/payload-encryption.md`: rotation (forward-only), disabling versus destroying a key, KMS outage (health pause, the hand-back, pausing runs), lost key, assertion-key rotation, activation and why deactivation is refused once a rules-1 version exists. Refs: FR-031-034, D1536, D031-004, D031-005.
 
 ## Phase 6 — US05 Classification decides who receives ciphertext (P2)
 
@@ -78,8 +81,8 @@ failing first. `[P]` = disjoint files, parallelizable; `[USnn]` = user story. Ev
 
 ## Phase 7 — US04 Studio decoding through a codec server (P2)
 
-- [ ] T031-049 [US04] Codec endpoint routes (`codec:manage`, revision CAS, audit, `levelCeiling` with the setter's reveal grant and its recheck, `CODEC_DESTINATION_DENIED`) and CSP `connect-src` from `SAGAT_STUDIO_CODEC_ORIGINS` in `crates/api-http/src/studio.rs`, recorded in ADR-0062's Studio-origin refinement; tests for allowed/refused origins, the CSP header and ceiling revocation. Refs: FR-031-024, D1668, coordinator C9, C15, C16.
-- [ ] T031-050 [US04] Reference codec server `examples/codec-server-go/` (customer authentication by an OIDC session cookie or bearer token, assertion as narrowing with `jti` replay cache, tenant and namespace id checks, `ctx` checks, namespace key scoping, level refusal, encode level ≤ `sagat_max_level`, CORS with credentials, limits, no-store) and the black-box suite `tests/contract/client-side-encryption/codec_server/`; merge `contracts/codec-server.openapi.yaml` into `specs/001-platform-foundation/contracts/`. Refs: FR-031-023, SC-031-011, D1558.
+- [ ] T031-049 [US04] Codec endpoint routes (`codec:manage`, revision CAS, audit, `levelCeiling` with the setter's reveal grant and its recheck, `CODEC_DESTINATION_DENIED`) and CSP `connect-src` from `SAGAT_STUDIO_CODEC_ORIGINS` in `crates/api-http/src/studio.rs` (`policy`), recorded in ADR-0062's Studio-origin refinement; tests for allowed/refused origins, the CSP header and ceiling revocation. Refs: FR-031-024, D1668, coordinator C9, C15, C16.
+- [ ] T031-050 [US04] Reference codec server `examples/codec-server-go/` (customer authentication by an OIDC session cookie or bearer token, assertion as narrowing with `jti` replay cache, tenant and namespace id checks, `ctx` checks, namespace key scoping, level refusal, encode level ≤ `sagat_max_level`, CORS with credentials, limits, no-store) and the black-box suite `tests/contract/codec-server/` (target `contract_codec_server`, runnable against any codec server with a URL, a test identity and a test signing key; corrected 2026-11-24, D031-011); merge `contracts/codec-server.openapi.yaml` into `specs/001-platform-foundation/contracts/`. Refs: FR-031-023, SC-031-011, D1558, D031-011.
 - [ ] T031-051 [P] [US04] Studio settings `frontend/apps/studio/src/features/codec/CodecSettingsPage.tsx` with its route in `frontend/apps/studio/src/app/routes.tsx` and a "test endpoint" call to `/capabilities`; component tests. Refs: FR-031-024.
 - [ ] T031-052 [US04] Studio decoding `frontend/apps/studio/src/features/codec/{codecClient.ts,EncodedValue.tsx}` integrated in `frontend/apps/studio/src/features/runs/PayloadDisclosure.tsx`: explicit action, `credentials: include`, one fresh assertion per batch in `X-Sagat-Codec-Assertion`, batching, ceilings, ephemeral state, clearing and abort, the failure states of FR-031-026 (customer session required included); component tests. Refs: FR-031-026.
 - [ ] T031-053 [P] [US04] Notices in `frontend/apps/studio/src/features/runs/StartRun.tsx` and `SendSignal.tsx` for encoded locations; no plaintext submitted. Refs: FR-031-026, D1544.
@@ -87,8 +90,8 @@ failing first. `[P]` = disjoint files, parallelizable; `[USnn]` = user story. Ev
 
 ## Phase 8 — US06 Compression and large values (P2)
 
-- [ ] T031-055 [US06] Envelope-typed blob header check while streaming in `crates/api-grpc/src/blobs.rs` and `crates/api-http/src/blobs.rs` (run-input blobs); tests for valid header, header after `data`, missing header. Refs: FR-031-012.
-- [ ] T031-056 [US06] Compression vectors and tests: `compressed` locations, compression-only refused at `encrypted`, decompression bomb stopped at the ceiling in all five SDKs, blob path above 256 KiB. Refs: FR-031-012, FR-031-021, US06.
+- [ ] T031-055 [US06] Envelope-typed blob header check while streaming in `crates/api-grpc/src/blobs.rs` and `crates/api-http/src/blobs.rs` (run-input blobs); tests for valid header, the largest legal header within the 4 KiB prefix, header after `data`, missing header. Refs: FR-031-012, D031-013.
+- [ ] T031-056 [US06] Compression vectors and tests: `compressed` locations, compression-only refused at `encrypted`, decompression bomb stopped at the ceiling in all six SDKs, blob path above 256 KiB. Refs: FR-031-012, FR-031-021, US06.
 
 ## Phase 9 — US07 CLI (P3)
 
@@ -102,13 +105,20 @@ failing first. `[P]` = disjoint files, parallelizable; `[USnn]` = user story. Ev
 
 - [ ] T031-059 Source rule in `scripts/check-architecture.py` (no cipher or decompression API in the feature's server modules) with `scripts/tests/test_check_architecture.py`. Refs: FR-031-014, ADR-0066.
 - [ ] T031-060 [P] Development overlay `infra/docker/compose.encryption.yaml`: OpenBao Transit (dev, pinned image, loopback ports, healthcheck) and the reference codec server with a development login against `apps/dev-idp`; never a production default. Refs: NFR-031-OPS.
-- [ ] T031-061 [P] `docs/guides/client-side-encryption.md` (five languages), `docs/runbooks/payload-encryption.md` completed (codec-server outage, origin change, scan), `sdks/README.md`, the runbook report of active rules-0 versions with event, webhook or message triggers (G1665), and updates to `docs/architecture/sdk-contract.md`, `security-and-sandbox.md`, `worker-runtime-protocol.md`. Refs: FR-031-034.
-- [ ] T031-062 Benchmark `tests/performance/client-side-encryption/` and report `tests/performance/reports/client-side-encryption.md` with environment, p50/p95/p99, retained-bytes growth and failures; lower a ceiling the data does not support. Refs: NFR-031-PERF, SC-031-012, G1527.
+- [ ] T031-061 [P] `docs/guides/client-side-encryption.md` (six languages), `docs/runbooks/payload-encryption.md` completed (codec-server outage, origin change, scan), `sdks/README.md`, the runbook report of active rules-0 versions with event, webhook or message triggers (G1665), and updates to `docs/architecture/sdk-contract.md`, `security-and-sandbox.md`, `worker-runtime-protocol.md`; the guide states G031-001 and G031-002. Refs: FR-031-034.
+- [ ] T031-062 Benchmark `tests/performance/client-side-encryption/` and report `tests/performance/reports/client-side-encryption.md` with environment, p50/p95/p99, retained-bytes growth, the claim cost with and without the candidate anti-join (design 038's measure), and failures; lower a ceiling the data does not support. Refs: NFR-031-PERF, SC-031-012, G1527, D031-010.
 - [ ] T031-063 Create `examples/payment-encrypted/` (workflow document and a TypeScript client and worker), run the happy and failure demos of `quickstart.md`, and record the commands and outputs. Refs: FR-031-034.
-- [ ] T031-064 Rerun every target with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, the five-SDK suite, the Studio checks and the architecture/agent-config scripts on the merged tree; record results in `specs/031-client-side-encryption/verification.md`. Refs: all SC.
-- [ ] T031-065 Update `docs/traceability.md`, `docs/roadmap.md` and dependent specs (016 carrier amendment per C6, 018, 019, 020, 021, 022, 024, 025, 026, 028, 030, 032 key inventory per C11) with the delivered scope, the registry rows and the remaining gaps (G1520–G1541). Refs: FR-031-006, FR-031-033.
+- [ ] T031-064 Rerun every target with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, the six-SDK suite, the Studio checks and the architecture/agent-config scripts on the merged tree; record results in `specs/031-client-side-encryption/verification.md`. Refs: all SC.
+- [ ] T031-065 Update `docs/traceability.md`, `docs/roadmap.md` and dependent specs (016 carrier amendment per C6, 018, 019, 020, 021, 022, 024, 025, 026, 028, 030, 032 key inventory per C11, 042, 043, 044) with the delivered scope, the registry rows and the remaining gaps (G1520–G1541, G031-001 to G031-003). Refs: FR-031-006, FR-031-033.
 
-- [ ] T031-069 [P] Optional content fingerprint (D1669): keyed digest in the Transit and static providers of the five SDKs, `X-Sagat-Content-Fingerprint` folded into the receipt fingerprint server-side and never stored alone or logged; tests that a re-encoded retry with changed plaintext is `409` and with equal plaintext replays. Refs: FR-031-013.
+- [ ] T031-069 [P] Optional content fingerprint (D1669): keyed digest in the Transit and static providers of the six SDKs, `X-Sagat-Content-Fingerprint` folded into the receipt fingerprint server-side and never stored alone or logged; tests that a re-encoded retry with changed plaintext is `409` and with equal plaintext replays. Refs: FR-031-013.
+
+## Phase 12 — Added on 2026-11-24 (readiness round)
+
+- [ ] T031-070 [P] [US02] Rust: `sdks/rust/src/codec/` (the scope of T031-034) with `cargo test` in `sdks/rust`, the conformance runner `sdks/rust/conformance`, and the four lock files of the Rust SDK updated together. Refs: FR-031-016..021, D031-001.
+- [ ] T031-071 [US02] Run input validation and encoding (design 043): failing tests `tests/integration/client-side-encryption/run_input.rs` for each creator of 043's table (rows 1 to 14) — plaintext at an encoded location refused `ENCODING_REQUIRED`, an envelope there with a 043 violation elsewhere refused `RUN_INPUT_INVALID`, both satisfied creates the run, child and continuation checked after the carriage mapping, `anyOf` with an encoded location refused at publication, a rules-0 version with the key unusable in `enforce`; then the encoded view (subschema → `true`, cache keyed by its digest) handed to `crates/application/src/run_input.rs` and the check order at each creator. Refs: FR-031-037, SC-031-015, D031-006.
+- [ ] T031-072 [US02] Step-log and failure-message redaction of decoded values in the six SDKs' per-attempt loggers of design 041 (`sdks/<language>`), with the conformance scenario `payload-encryption-step-logs` (two concurrent attempts, canaries in a line, a field and an exception message, `mustNotLeak` over the stored step-log rows, failures and spans). Refs: FR-031-038, SC-031-004, D031-007.
+- [ ] T031-073 [US02] Worker host codec in the six SDKs: offer the codec minor and `payload_codec` (field 7) on a host with a data converter, regenerate each SDK's protocol code from `worker.proto`, decode `payload_plan.decode` before `ResolveSecrets` and the handler, encode `output` (and `checkpoint`, `streams` when 019 and 026 land) after the local secret scan, the health pause of D1665, the 1.8 hand-back of D031-004, report encoding once per attempt; unit tests per SDK. Refs: FR-031-015..021, D1665, D031-002, D031-004.
 
 ## Dependencies
 
@@ -116,3 +126,224 @@ T031-001 → Phase 1 → Phase 2 → US01 (T031-016..021) → US02 (T031-022..03
 US04 needs US05 (T031-046, T031-047); US06 needs US02; US07 needs T031-047 and T031-050; US08 needs T031-014.
 T031-020 registry fixtures wait on each draft's merge; T031-067 waits on 019 and 026; T031-068 needs 018's
 instance-capability registry; T031-007 waits on the protocol minor agreed with 019 and 026.
+
+Corrected 2026-11-24: 018's registry is built, so T031-068 waits on nothing outside this feature. T031-007 takes the
+next free minor of the register when it merges, whatever 019 and 026 do. T031-028 (the server offering the codec minor)
+waits on the server serving 1.7 (Task T041-7), 1.8 (feature 006's delivery acknowledgement, ADR-0099) and 1.9 (design
+045). T031-073 waits on the SDKs speaking 1.7 (Tasks T041-15 to T041-20), the 1.8 host procedure and 1.9. T031-072
+waits on design 041's per-attempt logger in each SDK (Tasks T041-14 to T041-21). T031-071 needs design 043's gate
+(built). The order for two builders is below.
+
+## Build slices (2026-11-24)
+
+Two builders work in parallel, one per lane. **Lane A** owns the server: `crates/*`, `apps/control-plane`,
+`apps/execution-engine` and the server suites (`contract_client_side_encryption`, `integration_client_side_encryption`,
+`fault_client_side_encryption`, `perf_client_side_encryption`), plus `tests/support/` and `tests/Cargo.toml`.
+**Lane B** owns the clients: each `sdks/<language>`, `sdks/SPEC.md` and `sdks/error-catalog.json`,
+`frontend/apps/studio`, `frontend/e2e`, `apps/cli`, `apps/dev-idp` if its development login needs a client entry,
+`examples/`, `infra/docker/compose.encryption.yaml` and the suites `sdk_conformance` and `contract_codec_server`. The
+two lanes never touch the same crate or suite file in the same step; the two exceptions are named in slice A1 and are
+sequenced so that it cannot overlap. Documents come first (constitution 4.7.0): each slice begins by updating the
+documents its tasks name, before code. Each slice merges on its own, with its gate run on the merged tree and reported
+by command and output; no task is ticked without that evidence.
+
+| Step | Lane A | Lane B |
+|---|---|---|
+| 1 | Slice A1 | Slice B1 |
+| 2 | Slice A2 | Slice B2 |
+| 3 | Slice A3 | Slice B3 |
+| 4 | Slice A4 | Slice B4 (documents) |
+| 5 | Slice A5 | Slice B5 |
+| 6 | Slice A6 | Slice B6 |
+| 7 | Slice A7 | Slice B7 |
+| 8 | Slice 8, both builders, after both lanes merged | |
+
+Before step 1: T031-001 is decided (Owner decision 2026-11-24-4); its tick waits only on the coordinator's row in
+`docs/owner-decisions.md`. Every other task is in exactly one slice; T031-061 is begun in slice B4 and completed in
+slice 8. A lane that waits on another feature (slices A5, A6 with T031-067, B6, B7) takes its next slice that does
+not, and returns.
+
+### Slice A1 — Contracts, domain and storage (step 1)
+
+- Tasks: T031-002, T031-003, T031-005, T031-006, T031-007, T031-008, T031-010, T031-011, T031-013, T031-014, T031-041.
+- Crates and files: `tests/Cargo.toml` and the six `main.rs`, the suites `contract_client_side_encryption` (fixtures,
+  `envelope.rs`, `openapi.rs`) and `integration_client_side_encryption` (`store.rs`), `tests/support/bounded.rs`,
+  `specs/001-platform-foundation/contracts/` (`payload-envelope.schema.json`, `workflow.schema.json`, `worker.proto`,
+  `worker.baseline.json`, `openapi.yaml`), `docs/reference/workflow-document.md`, `crates/domain`,
+  `crates/infra-postgres` (migration, `payload_encoding.rs`, `storage-classification.json`), `crates/api-grpc` (its
+  compatibility test only). The two crossings, both in this step only: T031-008 regenerates
+  `frontend/apps/studio/src/api/schema.d.ts` once, while lane B does not touch the Studio until step 3; and T031-002
+  creates the empty `main.rs` of `contract_codec_server`, which lane B fills from step 2.
+- Depends on: no earlier slice; feature 016 (merged) and 018's registry (merged).
+- Gate: `cargo test -p sagat-domain --test payload_encoding`; `cargo test -p sagat-api-grpc --test compatibility`;
+  `cargo test -p sagat-tests --test contract_client_side_encryption` and `--test integration_client_side_encryption`
+  (store, migration up/down/up); `cargo test -p sagat-tests --test integration_platform_foundation` (privilege audit
+  with the fence); `(cd frontend/apps/studio && npm run check:api)`.
+
+### Slice B1 — Envelope core in six SDKs (step 1)
+
+- Tasks: T031-004 (first: the vectors, read by a reviewer other than their author), T031-040, T031-009, T031-033,
+  T031-034, T031-035, T031-036, T031-037, T031-038, T031-070.
+- Crates and files: `sdks/typescript`, `sdks/go`, `sdks/python`, `sdks/dotnet`, `sdks/java`, `sdks/rust` (codec core
+  and client start encoding; no worker host), `sdks/error-catalog.json`, `sdks/SPEC.md`, the suite `sdk_conformance`
+  (`vectors/payload-encryption/`, scenarios, the build-only harness of `encoding.rs`).
+- Depends on: no earlier slice; feature 034 (merged). The client's `payloadPlan` call is tested against the contract,
+  not the server, until slice A2 merges.
+- Gate: the per-SDK checks of `sdks/AGENTS.md` in six SDKs; `SAGAT_SDK_SCENARIO=payload-encryption-builders`,
+  `payload-encryption-vectors` and `payload-encryption-interop` with
+  `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture`, the interop scenario reporting
+  36 of 36 ordered pairs decoded to identical bytes and every negative vector failed with its recorded code in six SDKs.
+
+### Slice A2 — Publication, plan and activation (step 2)
+
+- Tasks: T031-012, T031-015, T031-016, T031-017, T031-018, T031-019, T031-020, T031-068.
+- Crates and files: `crates/infra-expr`, `crates/infra-ir`, `crates/application` (definitions, `api_admission.rs`,
+  `instances.rs` if needed), `crates/infra-postgres` (publish transaction, `instances.rs`), `crates/api-http` (the plan
+  route), `crates/telemetry` (gauge), `apps/control-plane` (the two commands), `apps/execution-engine`
+  (`capabilities.rs`), `infra/observability/alerts.yaml` and its rule test, the suites
+  `contract_client_side_encryption` (`rest.rs`, registry fixtures) and `integration_client_side_encryption`
+  (`pinning.rs`, `activation.rs`).
+- Depends on: slice A1; slice B1's reviewed vectors (T031-004) for T031-015's tests; design 043 (built) for the
+  pre-check entry. Registry fixtures of 019, 020, 021, 024, 025, 026, 027, 030 and of 042's trigger operators wait on
+  those merges and refuse fail-closed until then.
+- Gate: `cargo test -p sagat-infra-expr --test paths`; `cargo test -p sagat-infra-ir --test encoding_check`;
+  `cargo test -p sagat-tests --test integration_client_side_encryption` (pinning, activation) and
+  `--test contract_client_side_encryption` (rest, registry rows); `promtool test rules` on the new alert test.
+
+### Slice B2 — Reference codec server and development overlay (step 2)
+
+- Tasks: T031-050, T031-060.
+- Crates and files: `examples/codec-server-go/`, the suite `contract_codec_server` (`tests/contract/codec-server/`),
+  `specs/001-platform-foundation/contracts/codec-server.openapi.yaml`, `infra/docker/compose.encryption.yaml`, and
+  `apps/dev-idp` only if its development login needs a client entry.
+- Depends on: slice A1 (the target is registered there); the contracts `codec-server.openapi.yaml` and
+  `codec-assertion.md` (the suite mints assertions with a test key, so it does not wait on slice A4).
+- Gate: `cargo test -p sagat-tests --test contract_codec_server` against the example; `go test ./...` in
+  `examples/codec-server-go`; `docker compose -f infra/docker/compose.yaml -f infra/docker/compose.encryption.yaml config`
+  and both healthchecks healthy.
+
+### Slice A3 — Write paths, carriage and run input validation (step 3)
+
+- Tasks: T031-022, T031-023, T031-024, T031-025, T031-026, T031-027, T031-029, T031-031, T031-032, T031-066, T031-069,
+  T031-071.
+- Crates and files: `crates/application` (`runs.rs`, `worker/output.rs`, `worker/scoped_reports.rs`, `execution.rs`,
+  `events.rs`, `run_input.rs`), `crates/scheduler` (`events.rs`, `passes.rs`), `crates/infra-postgres` (events and
+  receipts), `crates/api-http` (start and signal routes, the fingerprint header), `crates/infra-ir` (the walk and the
+  encoded view), `crates/telemetry`, the suites `integration_client_side_encryption` (`write_paths.rs`, `canary.rs`,
+  `tenancy.rs`, `quotas.rs`, `telemetry.rs`, `run_input.rs`) and `fault_client_side_encryption` (`crashes.rs`,
+  `carriage.rs`).
+- Depends on: slice A2; design 043's gate (built). The worker-side cases of T031-029 (crash between encode and
+  report) use a raw protocol client, not an SDK. The carriage cases of 022 (handler child, `fromRun` pins) and 030 run
+  when those merge.
+- Gate: `cargo test -p sagat-tests --test integration_client_side_encryption` and
+  `--test fault_client_side_encryption`, then both again with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; zero canaries found.
+
+### Slice B3 — Studio and CLI views (step 3)
+
+- Tasks: T031-021, T031-051, T031-052, T031-053.
+- Crates and files: `frontend/apps/studio` (`features/workflows/ValidationPanel.tsx`, `features/codec/`,
+  `features/runs/PayloadDisclosure.tsx`, `StartRun.tsx`, `SendSignal.tsx`, `app/routes.tsx`), `apps/cli`
+  (`validate.rs`).
+- Depends on: slice A1 (`schema.d.ts`), slice A2 (the findings the CLI prints come from `crates/infra-ir`, which the
+  CLI reads and does not change). The codec routes of slice A4 are mocked in component tests; the real journey is
+  slice B5.
+- Gate: `(cd frontend/apps/studio && npm test && npm run check:api)`; `cargo test -p sagat-cli`.
+
+### Slice A4 — Disclosure, assertions, endpoint and blobs (step 4)
+
+- Tasks: T031-045, T031-046, T031-047, T031-049, T031-055.
+- Crates and files: `crates/infra-schema` (`classification/walk.rs`), `crates/application` (`payload_disclosure.rs`,
+  `codec_assertions.rs`), `crates/infra-secrets` (`codec_signer.rs`), `crates/api-http` (disclosure, assertion,
+  endpoint and JWKS routes, `studio.rs` CSP, `blobs.rs`), `crates/api-grpc` (`blobs.rs`), `crates/infra-postgres`
+  (endpoint store), the suite `contract_client_side_encryption` (`audience.rs`) and
+  `integration_client_side_encryption` (endpoint, CSP, blob header tests).
+- Depends on: slice A3; feature 016 (merged).
+- Gate: `cargo test -p sagat-tests --test contract_client_side_encryption` (audience matrix, every cell) and
+  `--test integration_client_side_encryption` (assertion issuance, endpoint, CSP, blob header).
+
+### Slice B4 — Documents for the slices ahead (step 4)
+
+- Tasks: T031-044, and the first text of T031-061 (guide in six languages, architecture pages), written before the
+  code of slices B5 to B7 as the constitution's documentation-first rule asks.
+- Crates and files: none; `docs/guides/client-side-encryption.md`, `docs/runbooks/payload-encryption.md`,
+  `docs/architecture/sdk-contract.md`, `security-and-sandbox.md`, `worker-runtime-protocol.md`, `sdks/README.md`.
+- Depends on: slices B1 and B2 (the surface the guide shows).
+- Gate: `python3 scripts/check-plain-words.py --base origin/develop` passes; every command the runbook and the guide
+  name exists in what slices A2 and B2 merged, or is marked as coming with a named later slice.
+
+### Slice A5 — Lease plan and claim gating (step 5)
+
+- Tasks: T031-028, T031-030.
+- Crates and files: `crates/application` (`worker.rs`, `worker/scoped_claims.rs`, the `RunTransaction` trait in
+  `execution.rs`), `crates/infra-postgres` (`workers.rs` candidate queries, `execution.rs`, `execution/path.rs`),
+  `crates/api-grpc` (`service.rs`), the suite `fault_client_side_encryption` (`races.rs`).
+- Depends on: slice A4; the server serving 1.7 (Task T041-7), 1.8 (feature 006, ADR-0099, pull request 264) and 1.9
+  (design 045), so that the codec minor is the next one; design 038's claim path. If a lower minor is late, this slice
+  waits and lane A takes slice A6 first.
+- Gate: `cargo test -p sagat-tests --test fault_client_side_encryption` (mixed fleet, attempts unchanged, the claim
+  racing the activation, all held by barriers); `cargo test -p sagat-api-grpc --test compatibility`.
+
+### Slice B5 — CLI decoding and the Studio journey (step 5)
+
+- Tasks: T031-057, T031-054.
+- Crates and files: `apps/cli` (`codec.rs`, `workflow.rs`, `tests/codec.rs`), `frontend/e2e`
+  (`tests/payload-encryption.spec.ts`).
+- Depends on: slice A4 (assertions, endpoint, disclosure), slice B2 (reference codec server and overlay), slice B3.
+- Gate: `cargo test -p sagat-cli --test codec`; the Chromium journey and its accessibility checks in `frontend/e2e`
+  against the overlay, with the codec up and in each failure state.
+
+### Slice A6 — Inventory, security, compensation and side channels (step 6)
+
+- Tasks: T031-048, T031-058, T031-043, T031-059, T031-067.
+- Crates and files: `crates/scheduler` (`passes.rs`, the scan pass), `crates/application` (scan service, side-channel
+  checks), `crates/api-http` (scan routes), `crates/infra-postgres` (scan store), `crates/api-grpc` (side channels when
+  019 and 026 land), `scripts/check-architecture.py` and its test, the suites `integration_client_side_encryption`
+  (`assertions.rs`, `key_usage.rs`, `side_channels.rs`) and `fault_client_side_encryption` (`compensation.rs`,
+  `scan.rs`).
+- Depends on: slice A5 (or slice A4 when slice A5 waits on the minors); slice B2 (the reference codec server that
+  T031-048 calls); features 019 and 026 merged for T031-067 (until then that task stays open and the slice merges
+  without it).
+- Gate: `cargo test -p sagat-tests --test integration_client_side_encryption` and `--test fault_client_side_encryption`,
+  again with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `python3 scripts/check-architecture.py` and
+  `python3 -m unittest discover scripts/tests`.
+
+### Slice B6 — Worker host codec in six SDKs (step 6)
+
+- Tasks: T031-073, T031-039, T031-042, T031-056.
+- Crates and files: the six `sdks/<language>` (worker host, generated protocol code, conformance runners), the suite
+  `sdk_conformance` (`encoding.rs` runtime harness, goldens).
+- Depends on: slice A5 (the server leases `payload_plan` at the codec minor); slice B1; Task T031-041 of slice A1 (the
+  Transit fixture); the SDKs speaking 1.7 (Tasks T041-15 to T041-20), the 1.8 host procedure (feature 006) and 1.9
+  (design 045).
+- Gate: `SAGAT_SDK_SCENARIO=payload-encryption`, `payload-encryption-gating` and `payload-encryption-faults` in six SDKs
+  with equal goldens (reviewed before `SAGAT_SDK_BLESS=1`, then rerun without it); the per-SDK checks of
+  `sdks/AGENTS.md`.
+
+### Slice A7 — Benchmark (step 7)
+
+- Tasks: T031-062.
+- Crates and files: the suite `perf_client_side_encryption` (`tests/performance/client-side-encryption/`) and its
+  report. It runs the SDKs and edits none of them.
+- Depends on: slices A6 and B6.
+- Gate: `cargo test -p sagat-tests --test perf_client_side_encryption --release` with the report naming its
+  environment and every measurement of NFR-031-PERF, failures included.
+
+### Slice B7 — Step-log redaction and the demo (step 7)
+
+- Tasks: T031-072, T031-063.
+- Crates and files: the six `sdks/<language>` (per-attempt logger), the suite `sdk_conformance`
+  (`payload-encryption-step-logs`), `examples/payment-encrypted/`.
+- Depends on: slice B6; design 041's per-attempt logger in each SDK (Tasks T041-14 to T041-21).
+- Gate: `SAGAT_SDK_SCENARIO=payload-encryption-step-logs` in six SDKs with no canary found; the happy and failure
+  demos of `quickstart.md` run with their commands and outputs recorded.
+
+### Slice 8 — Verification and traceability (both builders, after both lanes merged)
+
+- Tasks: T031-061 (completed), T031-064, T031-065.
+- Crates and files: `specs/031-client-side-encryption/verification.md`, `docs/traceability.md`, `docs/roadmap.md`, the
+  dependent specifications.
+- Depends on: every earlier slice.
+- Gate: the commands of AGENTS.md on the merged tree (`cargo fmt --check`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, `python3 scripts/check-architecture.py && python3 scripts/check-agent-config.py`, every
+  target of this feature, again with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, the six-SDK suite, the Studio checks), each
+  recorded with its output.

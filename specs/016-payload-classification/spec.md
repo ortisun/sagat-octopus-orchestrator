@@ -429,7 +429,8 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   Update result is never filtered by this feature, and a classification annotation inside its result
   schema is a publication error (`CLASSIFICATION_NOT_APPLICABLE`) so that nobody believes it protects
   anything there. The event inbox and the connector dead letters are the one exception and change as FR-016-026 and
-  FR-016-027 say.
+  FR-016-027 say. `listRunJournalEvents` is not payload-free as built: its `payloadRef` is the payload's unsalted SHA-256
+  (G665); bugfix T016-066 replaces it with a reference that cannot be derived from the payload, a second exception.
 - **FR-016-017**: Telemetry, structured logs, metrics, spans, audit records, error bodies and the
   `Debug` output of every type that carries a payload MUST NOT contain a value, a key of a payload or a
   schema fragment, at any level. Metric labels MUST come from closed sets and never include a tenant,
