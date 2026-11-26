@@ -1296,8 +1296,11 @@ Kubernetes role `sagat-identity` bound to the control plane's service account, i
 and the chart, when its new value `identity.federation.enabled` is true, renders an OpenBao Agent for the control
 plane's identity token, separate from the management agent because one agent logs in with one role. It does so
 whether or not `openbao.enabled` is set: the agent image, the CA secret and volume, the auth mount and audience, the
-control plane's service account and its egress rule to OpenBao are rendered when `openbao.enabled` or
-`identity.federation.enabled` is true, and so are the chart's checks that go with them: when `networkPolicy.enabled`,
+agent ConfigMap `<fullname>-openbao-agent` (holding, in a federation-only deployment, only `control-plane-identity.hcl`)
+and the pod's `checksum/openbao-agent` annotation, the `<fullname>-control-plane` ServiceAccount object, the projected
+token volume `openbao-identity` that the agent's `token_path` reads, and the control plane's egress rule to OpenBao are
+rendered when `openbao.enabled` or `identity.federation.enabled` is true, and so are the chart's checks that go with
+them: the Kubernetes 1.29 native-sidecar check, when `networkPolicy.enabled`,
 `openbao.network.port` and `openbao.network.to` (`validatePort`, `validatePeers`, so an empty peer list, which would
 allow every destination, refuses the render), and the control-plane clause of the secret-transport check of `_helpers.tpl` (native TLS or an explicit
 `allowPlaintextSecrets`), whose condition gains `identity.federation.enabled`, since the API then carries connection
@@ -1307,15 +1310,21 @@ clause stays on `secrets.existingSecret` or `openbao.enabled`, since federation 
 container (`openbao-identity-agent`), its own config volume projecting the ConfigMap entry `control-plane-identity.hcl`
 (role `openbao.roles.identity`), its own in-memory sink volume `openbao-identity-mount` at
 `/run/openbao-identity-mount` (named apart from `openbao-identity`, which holds the projected service-account token),
-and a startup probe on that sink; the control plane's environment gains `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`,
-`SAGAT_IDENTITY_OPENBAO_ADDRESS` and `SAGAT_IDENTITY_OPENBAO_CA_FILE=/etc/openbao/ca/ca.crt`. `_openbao.tpl` validates
+and a startup probe on that sink; the control plane's environment gains `SAGAT_IDENTITY_FEDERATION=on`,
+`SAGAT_PUBLIC_ORIGIN` from the new required value `identity.publicOrigin` (checked as an HTTPS origin, as
+`openbao.address` is), `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`, `SAGAT_IDENTITY_OPENBAO_ADDRESS` and
+`SAGAT_IDENTITY_OPENBAO_CA_FILE=/etc/openbao/ca/ca.crt`, so the chart's federation value and the binary's switch are
+one. `_openbao.tpl` validates
 the address, CA secret, auth mount, audience, image and `openbao.roles.identity` whenever federation is enabled
 (`the_control_plane_renders_two_openbao_agents_when_federation_is_on`, a chart-render test in
 `tests/contract/scalability-ha/identity_chart.rs`: with `openbao.enabled` both agents, distinct container names, roles
 and sinks; with federation on and `openbao.enabled=false` the identity agent alone, no `SAGAT_OPENBAO_*` variable, the
-CA variable and the egress rule present with its configured peers; the same with `openbao.network.to: []`, or with
-neither native TLS nor `allowPlaintextSecrets` for the control plane, fails the render, and the federation-only case
-that renders sets nothing on `engine.grpc`). The policy name
+CA variable and the egress rule present with its configured peers, every `configMap` and `secret` volume and the
+`serviceAccountName` resolving to a rendered object or a set value, and the ConfigMap holding exactly
+`control-plane-identity.hcl` with the identity role; in both modes `SAGAT_IDENTITY_FEDERATION=on` and
+`SAGAT_PUBLIC_ORIGIN`; the same with `openbao.network.to: []`, with neither native TLS nor `allowPlaintextSecrets` for
+the control plane, without `identity.publicOrigin`, or with `--kube-version 1.28`, fails the render; and the
+federation-only case that renders sets nothing on `engine.grpc`). The policy name
 `sagat-identity` is fixed, not a setting, since both clients check it; `docs/runbooks/federated-login.md` and
 `infra/openbao/policies/README.md` say so; `infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
 `SAGAT_ENV=dev`, and the new production image check (Task 013-3) keeps it out.
@@ -1918,7 +1927,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_client_secret_write_follows_intent_write_verify_activate`; the alert rule's test in
   `contract_observability_operations`.
   Verification: `cargo test -p sagat-tests --test integration_federated_login keys`; `python3 scripts/check-architecture.py`;
-  `cargo test -p sagat-tests --test contract_observability_operations`.
+  `cargo test -p sagat-tests --test contract_observability_operations`; `cargo test -p sagat-tests --test
+  contract_scalability_ha identity_chart` (`mod identity_chart;` added to `tests/contract/scalability-ha/main.rs`).
   Refs: Requirement 013-007, Requirement 013-025, Requirement 013-026
   Owner-gate: OD-2026-11-24-717
 - [ ] T013-10 Server builder, milestone A, before Task 013-9. Verification and revocation: `IssuerVerifiers` and the
