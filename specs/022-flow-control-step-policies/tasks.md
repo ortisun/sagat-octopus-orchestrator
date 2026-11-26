@@ -881,3 +881,14 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   `queue::a_dual_gated_head_is_not_starved_by_a_younger_waiter`,
   `run_admission::a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_one_pass_grants_both_in_order`)
   passed when rerun alone. `integration_platform_foundation -- runtime_privileges migrations` 70 passed.
+- [ ] T022-117 A withdrawn lease of a gated step keeps its permit and its slot (decisions D022-138, D022-139, and after
+  the reviews of 2026-11-26 D022-146 to D022-149): the slot counts as unleased until the lease that runs is recorded; a
+  give-back deletes a recorded grant only for an attempt the same commit withdraws; a withdrawal whose slot has stopped
+  counting is refused (`capped`); the purge keeps the grant of a step still leased at it; the key version is read under
+  a share lock. Evidence: `integration_flow_control_step_policies::withdrawn_leases` (both roles), seen failing first
+  before D022-138 (`a_withdrawn_lease_keeps_its_slot_and_the_slot_counts_from_the_lease_that_ran`,
+  `a_pause_after_a_withdrawal_gives_back_the_permit_and_the_slot`,
+  `a_withdrawal_that_cancels_the_step_gives_back_its_slot_in_the_same_commit`,
+  `a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass_read_it`, and the clear in
+  `migrations::the_counters_follow_the_rows_and_the_runtime_role_cannot_write_them`) and before D022-146 to D022-149 (the
+  tests named in `reviews/2026-11-26/activation-review-responses.md`).

@@ -45,6 +45,10 @@ Facts the design rests on:
    Its rate grant MUST count as unleased again: the withdrawal's commit clears the lease instant the scheduler may have
    recorded, the scheduler records the attempt's last lease, and a give-back deletes the grant whatever lease instant a
    withdrawn lease had left on it.
+   *Amended 2026-11-26, delegate (OD-2026-11-20-6; decisions D022-146 to D022-148, after the reviews of that day):* a
+   give-back deletes a recorded grant only for an attempt the same commit withdraws, and fails on any other; the clear runs
+   under the window's lock and is refused when the slot has stopped counting (the withdrawal is then refused, counted
+   `capped`); the purge keeps the grant of a step still leased at it.
 
 ## Considered options
 
