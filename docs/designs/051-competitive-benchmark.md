@@ -108,9 +108,9 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   repository (`ubuntu-24.04`, Linux x64, 4 vCPU, 16 GB of memory, 14 GB of disk as GitHub documents it; Task 051-1
   records the page and its date); the benchmark workflow refuses to start when the repository is private
   (`github.event.repository.private`). The report records the runner image's version, and for every rung the CPU model
-  and the processor steal time (`/proc/stat`). If the pilot shows that steal moves under contention, steal is recorded;
-  otherwise a fixed calibration loop on a thread of the product's set between rungs (the product idle), measured
-  against the job's first calibration, replaces it. A throughput rung whose steal (or calibration deviation) exceeds 5%
+  and the processor steal time (`/proc/stat`), and a fixed calibration loop runs on a thread of the product's set between
+  rungs (the product idle), measured against the job's first calibration. A throughput rung whose steal or calibration
+  deviation exceeds 5%
   is run once more, at most once per job, and is marked if it exceeds it again; other job kinds mark such a rung and do
   not re-run it. The four vCPUs are two cores
   with two hardware threads each, so the sets are not by physical core: the driver and metrics collection get one
@@ -161,7 +161,9 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   latency. The *common rate* of a variant is half the lowest median maximum among the products that sustained a rung in
   the campaign's throughput jobs (whatever the CPU models, their mix stated), half the median maximum of the one product
   that sustained a rung when only one did, or, when none did, the lowest starting rate among the three products'
-  ladders divided by 8, stated; a "worker-bound at" result counts as its last sustained rate; it is measured in later jobs of its own (Technical Plan, "A campaign").
+  ladders divided by 8, stated; a "worker-bound at" result counts as its last sustained rate; it is measured, for the chain of three (whose common
+  rate also sets the crash rate) and the fan-out, in later jobs of its own, the other variants reporting their latency
+  at half each product's maximum (Technical Plan, "A campaign").
 - **Requirement 051-007 What is measured.** For each product, variant and rung: arrivals, failed arrivals, orphans,
   completions by outcome, transitions per second (transitions of workflows that ended within the window, over 300 s),
   the median and 99th percentile of workflow latency from the scheduled start (nearest rank; failed and open workflows
@@ -512,15 +514,15 @@ times the highest rate the job's plan can reach (its starting rate × 2⁵), or 
 **A campaign.** The pilots are a job kind of their own, dispatched by hand once per method version (6 jobs of at most
 340 minutes, at most 2,040 runner minutes and about 340 of wall time, before the first campaign: on a small history,
 each product's configuration, database split, worker concurrency, starting rates, tuning budget, bytes per workflow and
-the steal counter's check; each pilot job builds this platform's images itself). Then, per campaign: the history job
+each pilot job builds this platform's images itself). Then, per campaign: the history job
 (this platform's images built once, at most 30 minutes, measured in the pilot, the archive within the disk budget; per
 product at most 5 of start, 45 of loading and checking, and 10 of `VACUUM (ANALYZE)`, `CHECKPOINT`, archiving and a
 short confirmation of its configuration: 30 + 3 × 60 + 20 = 230 minutes); 8 variants × 5 repetitions = 40 throughput
-jobs (40 × 336 = 13,440); 8 × 5 = 40 common-rate jobs (40 × 92 = 3,680) and 5 timer-burst jobs (5 × 128 = 640), one
-matrix of 45 jobs; the crash confirmation job (185); 3 faults × 6 repetitions = 18 crash jobs (18 × 185 = 3,330). A
-campaign is at most 230 + 13,440 + 3,680 + 640 + 185 + 3,330 = 21,505 runner minutes, at no cost; in order, at 12 jobs
-at once, its wall time is at most 230 + ⌈40 / 12⌉ × 336 + ⌈45 / 12⌉ × 128 + 185 + ⌈18 / 12⌉ × 185 = 230 + 1,344 + 512 +
-185 + 370 = 2,641 minutes, about 44 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
+jobs (40 × 336 = 13,440); 2 variants × 5 = 10 common-rate jobs (10 × 92 = 920) and 5 timer-burst jobs (5 × 128 =
+640), one matrix of 15 jobs; the crash confirmation job (185); 3 faults × 6 repetitions = 18 crash jobs (18 × 185 =
+3,330). A campaign is at most 230 + 13,440 + 920 + 640 + 185 + 3,330 = 18,745 runner minutes, at no cost; in order, at
+12 jobs at once, its wall time is at most 230 + ⌈40 / 12⌉ × 336 + ⌈15 / 12⌉ × 128 + 185 + ⌈18 / 12⌉ × 185 = 230 +
+1,344 + 256 + 185 + 370 = 2,385 minutes, about 39.8 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
 and a campaign is not dispatched while the release-candidate CI run is pending, a manual step of the release
 procedure (`docs/runbooks/release.md`); one campaign is dispatched at a time, since a third dispatch would cancel a
 pending one under the `concurrency` group.
@@ -621,7 +623,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 - **Non-functional requirement 051-001 Reproducibility.** A new campaign at the same commit on the same runner class
   agrees with the published one as Requirement 051-012 defines it, or the report explains the difference.
 - **Non-functional requirement 051-002 Cost.** The campaign costs no money; each job stays within the plan check's 340
-  minutes and its disk budget, and a campaign within 21,505 runner minutes.
+  minutes and its disk budget, and a campaign within 18,745 runner minutes.
 - **Non-functional requirement 051-003 Security.** Requirement 051-020.
 
 --------------------------------------------------------------------------------
