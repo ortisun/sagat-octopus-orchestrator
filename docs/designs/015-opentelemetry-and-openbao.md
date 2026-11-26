@@ -276,17 +276,25 @@ commented examples (`otlphttp` to a vendor, `prometheusremotewrite`, `loki`). A 
 
 ### 4. The key authority port
 
-The domain port `SecretCipher` (`crates/domain/src/secrets.rs`) is synchronous and holds its keys. It stays, and seals
-with a data key handed to it; a new asynchronous port in `crates/application`, `KeyAuthority`, provides the keys:
+The domain port `SecretCipher` (`crates/domain/src/secrets.rs`) is synchronous and holds its keys (`seal(value, aad)`,
+`open(sealed, aad)`). It cannot call a network service, so it gains two methods that take the key instead of holding it,
+`seal_with(value, aad, &DataKey)` and `open_with(sealed, aad, &DataKey)`, implemented once over AES-256-GCM in
+`crates/infra-secrets` (`DataKey` is a domain type holding 32 bytes in `Zeroizing`, which the domain may use); the keys
+come from a new asynchronous port in `crates/application`, `KeyAuthority`:
 
 ```rust
-#[async_trait]
+// The application's ports return `impl Future` (as `SecretStore` does), not `async_trait`.
 pub trait KeyAuthority: Send + Sync {
-    async fn new_data_key(&self, tenant: TenantId) -> Result<DataKey, KeyAuthorityError>;          // plaintext + wrapped
-    async fn unwrap(&self, tenant: TenantId, wrapped: &WrappedKey) -> Result<DataKey, KeyAuthorityError>;
-    async fn rewrap(&self, tenant: TenantId, batch: &[WrappedKey]) -> Result<Vec<WrappedKey>, KeyAuthorityError>;
-    async fn sign_script(&self, digest: &[u8; 32]) -> Result<ScriptSignature, KeyAuthorityError>;
-    async fn hmac_intent(&self, message: &[u8]) -> Result<IntentMac, KeyAuthorityError>;
+    fn new_data_key(&self, tenant: TenantId)                       // plaintext and wrapped
+        -> impl Future<Output = Result<(DataKey, WrappedKey), KeyAuthorityError>> + Send;
+    fn unwrap(&self, tenant: TenantId, wrapped: &WrappedKey)
+        -> impl Future<Output = Result<DataKey, KeyAuthorityError>> + Send;
+    fn rewrap(&self, tenant: TenantId, batch: &[WrappedKey])
+        -> impl Future<Output = Result<Vec<WrappedKey>, KeyAuthorityError>> + Send;
+    fn sign_script(&self, digest: &[u8; 32])
+        -> impl Future<Output = Result<ScriptSignature, KeyAuthorityError>> + Send;
+    fn hmac_intent(&self, message: &[u8])
+        -> impl Future<Output = Result<IntentMac, KeyAuthorityError>> + Send;
 }
 ```
 
