@@ -109,6 +109,34 @@ withdrawal: only a build of protocol 1.8 does.
 A rollback walks the same steps back; once a journal holds a `NOT_ACKNOWLEDGED` withdrawal, the binaries roll back no
 further than step 1's build (ADR-0099, decision 10; decision D006-059 request (9)).
 
+## `delivery-acknowledgement-v1` (protocol 1.8)
+
+The requirement of delivery acknowledgement (ADR-0099 decision 10; decision D006-104) is known to the registry from this build
+on, but no engine lists it and `capability-activate` has no entry for it yet: the build of protocol 1.8 adds both. What
+already holds, so that the order of the three requirements cannot be broken by hand:
+
+| Requirement | Recorded for | Recorded after | Removed before |
+| --- | --- | --- | --- |
+| `lease-withdrawal-v1` | control planes and engines | (nothing) | `lease-withdrawal-v2`'s removal is not required first |
+| `lease-withdrawal-v2` | control planes and engines | `lease-withdrawal-v1`, for both kinds | (refused while `delivery-acknowledgement-v1` is recorded) |
+| `delivery-acknowledgement-v1` | engines | `lease-withdrawal-v2`, for both kinds, with no registered process lacking it | `lease-withdrawal-v2` |
+
+- A trigger on `platform_requirements`, enabled `ALWAYS`, refuses recording `delivery-acknowledgement-v1` while
+  `lease-withdrawal-v2` is not recorded for both kinds or while any registered process, live or not, lacks
+  `lease-withdrawal-v2` (a row silent for up to a day counts: remove a silent row only once its process is confirmed
+  stopped), and refuses removing `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded. It runs only under READ
+  COMMITTED and takes the epoch itself.
+- Remove in the reverse order: `delivery-acknowledgement-v1` first, then `lease-withdrawal-v2`. Every withdrawal of a marked
+  lease reads both under the locks their removals wait for, so a wrong order by hand costs only marks that are never honoured
+  (counted `requirement_missing` by the 1.8 build), never an event without its replay floor.
+- By hand, take the epoch first and never leave the transaction open (every registration waits for it):
+  `BEGIN; SELECT platform_requirement_lock(); ...; COMMIT;`, under `SET statement_timeout = '1500ms'` for a removal.
+- Once the build of protocol 1.8 runs, its hosts hand back the leases they will not run. Until `delivery-acknowledgement-v1`
+  is recorded, such a hand-back is answered `STALE_ATTEMPT`, counted `lapsed`, and the lease lapses: an `Activity`'s lapsed lease
+  goes to a review. The same holds for a lease claimed before the current recording, a lease claimed on another server
+  incarnation, and a lease without the reservation of a 1.8 session. So activate `delivery-acknowledgement-v1` soon after the
+  whole fleet runs the build of 1.8: every stopping 1.8 host sends its `Activity` leases to a review until then.
+
 ## Watching it
 
 | Signal | Meaning |

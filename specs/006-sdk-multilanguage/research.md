@@ -1658,3 +1658,31 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   (D006-094), and the Studio names the event, not its causes. What the task adds: `a_journal_holding_a_not_acknowledged_withdrawal_replays`
   in `crates/domain/tests/legacy_replay.rs` (the journal ADR-0099 describes, event by event: the attempt given back, the next
   lease of the same attempt at the next generation), and `a_reset_copies_a_withdrawal_like_a_lease` over every cause.
+- **D006-104 — The registry knows `delivery-acknowledgement-v1` and keeps the order of the requirements; no process lists
+  it** (Task 006-046; migrations `20270216000100_delivery_acknowledgement_registry` and its validation). The capability joins
+  `Capability::ALL` and the three closed checks (added `NOT VALID`, validated apart; the lists are this branch's, with the
+  follow-up's `lease-withdrawal-v2`, and the down restores the follow-up's). `delivery_acknowledgement_required()` reads the two
+  requirement rows `FOR SHARE` in the order their removals take them (`delivery-acknowledgement-v1`, then
+  `lease-withdrawal-v2`), so a removal waits for a withdrawal in flight and the two cannot deadlock, and returns
+  `lease-withdrawal-v2` as recorded only for both kinds, `delivery-acknowledgement-v1` for engines and its `required_since`. The
+  trigger `platform_requirements_delivery_acknowledgement_guard`, enabled `ALWAYS`, refuses recording
+  `delivery-acknowledgement-v1` before `lease-withdrawal-v2` for both kinds or while any registered process, live or not, lacks
+  `lease-withdrawal-v2`, and removing `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded; it takes the epoch
+  row `FOR UPDATE` itself (hand SQL that did not is serialised there) and refuses outside READ COMMITTED. Both functions run as
+  their owner with the fixed search path; the read is granted to the runtime role. No engine lists the capability and
+  `capability-activate` has no entry for it (Task 006-057). What request (7) and request (9) of D006-059 ask, this build keeps as
+  the follow-up built them (D006-096, D006-098, D006-100); the runbooks name the kinds of each requirement, the removal order,
+  that a wrong order costs only marks, never leaving the owner transaction open, the reasons of the fleet of 1.8 that count a
+  hand-back `lapsed`, and the cost of the window before the activation (round 16). Tested:
+  `the_requirements_read_answers_each_recording`, `the_trigger_keeps_the_order_of_the_two_requirements` and
+  `delivery_acknowledgement_is_known_and_not_activatable` (`integration_schedules_bulk_operations`),
+  `the_registry_of_1_8_rolls_back_only_while_nothing_names_it` (`integration_platform_foundation`), the privilege test of the
+  definer functions and the capability parity tests. Weighed: refusing a recording of `delivery-acknowledgement-v1` for other
+  kinds than engines in the trigger (ADR-0099 says engines only; the entry of Task 006-057 records it so, and a recording by
+  hand for more kinds only refuses more processes, which is safe).
+- **G006-041 — Of the evidence of Task 006-046, what the follow-up of pull request #260 proved is not repeated here.** The
+  silent engine's refusals, the beat against an owner transaction, the activation against a beat that holds the epoch, the
+  floor of `lease-withdrawal-v2`, and the statement timeout of the registry's connection are the tests of D006-098 and D006-100.
+  Not built: the 60 s owner hold across a running engine process and the registry connection failing while the pool works
+  (both need an engine process with two pools; they belong to the fault suite of Task 006-051), and the boundary test with the
+  beat's answer held. Closed by Task 006-051.

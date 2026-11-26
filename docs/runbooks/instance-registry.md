@@ -194,6 +194,14 @@ SELECT * FROM platform_requirement_remove('schedules-v1', 'your-subject');
 COMMIT;
 ```
 
+The requirements of feature 006 are recorded in order and removed in reverse (`docs/runbooks/lease-withdrawal.md`):
+`lease-withdrawal-v1` and `lease-withdrawal-v2` for control planes and engines, then `delivery-acknowledgement-v1` for engines; a
+trigger refuses `delivery-acknowledgement-v1` before `lease-withdrawal-v2`, or while a registered process, live or not, lacks
+`lease-withdrawal-v2`, and refuses removing `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded. Hand SQL takes
+`platform_requirement_lock()` first and commits at once: an owner transaction left open holds every registration. A silent row
+of `serving_instances` is removed by hand only once its process is confirmed stopped (a process that comes back without the
+capability would otherwise be admitted after an activation that never saw it).
+
 The processes that were refused start serving at their next try (within a second). The history keeps both acts. A hand edit of
 `platform_requirements` or of the epoch is refused by triggers that hold even for the owner; do not disable them.
 

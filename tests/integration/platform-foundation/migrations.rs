@@ -1224,6 +1224,118 @@ async fn the_runtime_role_reads_the_start_time_of_the_server() {
     assert_eq!(as_runtime, as_owner, "one server, one start time");
 }
 
+/// The stamp of the migration before the registry's part of protocol 1.8 (`20270216000100_delivery_acknowledgement_registry`).
+const BEFORE_THE_REGISTRY_OF_1_8: i64 = 20_270_216_000_000;
+
+/// Task 006-046 (decision D006-104): the rollback of the registry's part of 1.8 refuses while a registered process, live or
+/// not, lists `delivery-acknowledgement-v1`, while it is recorded, and while its history names it; with nothing naming it, the
+/// trigger, its function and the requirements read go, and the old checks refuse the capability; forward restores them.
+#[tokio::test]
+async fn the_registry_of_1_8_rolls_back_only_while_nothing_names_it() {
+    let refused_rollback = |pool: sqlx::PgPool| async move {
+        let mut connection = pool.acquire().await.expect("a connection");
+        let refused = MIGRATOR
+            .undo(&mut *connection, BEFORE_THE_REGISTRY_OF_1_8)
+            .await
+            .expect_err("a row blocks the rollback");
+        sqlx::query("SELECT pg_advisory_unlock_all()")
+            .execute(&mut *connection)
+            .await
+            .expect("release the migration lock");
+        refused.to_string()
+    };
+    let db = migrated_db().await;
+    sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', \
+                 ARRAY['lease-withdrawal-v1', 'lease-withdrawal-v2', 'delivery-acknowledgement-v1'], \
+                 now() - interval '1 hour', now() - interval '1 hour', sha256('t'::bytea))",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("a process of 1.8, silent for an hour");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("a registered process lists delivery-acknowledgement-v1"),
+        "{message}"
+    );
+    for (capability, kinds) in [
+        (
+            "lease-withdrawal-v1",
+            "ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']",
+        ),
+        (
+            "lease-withdrawal-v2",
+            "ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']",
+        ),
+        ("delivery-acknowledgement-v1", "ARRAY['EXECUTION_ENGINE']"),
+    ] {
+        let recorded: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT out_outcome FROM platform_requirement_activate('{capability}', {kinds}, 'operator')"
+        )))
+        .fetch_one(&db.pool)
+        .await
+        .expect("activate");
+        assert_eq!(recorded, "RECORDED", "{capability}");
+    }
+    sqlx::query("DELETE FROM serving_instances")
+        .execute(&db.pool)
+        .await
+        .expect("the process confirmed stopped");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("delivery-acknowledgement-v1 is a recorded requirement"),
+        "{message}"
+    );
+    let removed: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_remove('delivery-acknowledgement-v1', 'operator')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("remove");
+    assert_eq!(removed, "REMOVED");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("the requirement history names delivery-acknowledgement-v1"),
+        "{message}"
+    );
+
+    let clean = migrated_db().await;
+    MIGRATOR
+        .undo(&clean.pool, BEFORE_THE_REGISTRY_OF_1_8)
+        .await
+        .expect("nothing names it: the rollback goes through");
+    let present = || {
+        let pool = clean.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM pg_proc WHERE proname IN ('delivery_acknowledgement_required', \
+                        'platform_requirements_delivery_acknowledgement_guard')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("functions")
+        }
+    };
+    assert_eq!(present().await, 0);
+    let refused = sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', ARRAY['delivery-acknowledgement-v1'], now(), now(), \
+                 sha256('t'::bytea))",
+    )
+    .execute(&clean.pool)
+    .await
+    .expect_err("the old check does not know the capability");
+    assert!(
+        refused
+            .to_string()
+            .contains("serving_instances_capabilities_known"),
+        "{refused}"
+    );
+    migrate(&clean.pool).await.expect("forward again");
+    assert_eq!(present().await, 2);
+}
+
 /// Records `lease-withdrawal-v1` of both kinds, as the operator's activation does.
 async fn record_lease_withdrawal(pool: &sqlx::PgPool) {
     let recorded: String = sqlx::query_scalar(

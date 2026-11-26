@@ -483,3 +483,170 @@ async fn lease_withdrawal_v2_cannot_be_removed_while_a_journal_holds_a_not_ackno
     );
     assert!(recorded_v2(&r).await.is_some(), "the requirement stays");
 }
+
+// --- delivery acknowledgement, the registry's part (Task 006-046, decision D006-104) --------------------------------------
+
+/// Records `capability` for `kinds` by hand SQL, as the owner; the outcome or the error's text.
+async fn record_by_hand(r: &Registry, capability: &str, kinds: &[&str]) -> Result<String, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT out_outcome FROM platform_requirement_activate($1, $2::text[], 'ops')",
+    )
+    .bind(capability)
+    .bind(kinds)
+    .fetch_one(&r.db.pool)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn remove_by_hand(r: &Registry, capability: &str) -> Result<String, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT out_outcome FROM platform_requirement_remove($1, 'ops')",
+    )
+    .bind(capability)
+    .fetch_one(&r.db.pool)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// What every withdrawal of a marked lease reads, as the runtime role would read it.
+async fn requirements_read(r: &Registry) -> (bool, bool, Option<time::OffsetDateTime>) {
+    sqlx::query_as(
+        "SELECT out_lease_withdrawal_v2, out_delivery_acknowledgement, out_required_since \
+           FROM delivery_acknowledgement_required()",
+    )
+    .fetch_one(&r.process_pool)
+    .await
+    .expect("the requirements read")
+}
+
+const BOTH: [&str; 2] = ["CONTROL_PLANE", "EXECUTION_ENGINE"];
+
+/// Task 006-046: `delivery_acknowledgement_required()` answers `lease-withdrawal-v2` only when it is recorded for both kinds,
+/// `delivery-acknowledgement-v1` when it is recorded for engines, and the latter's `required_since`.
+#[tokio::test]
+async fn the_requirements_read_answers_each_recording() {
+    let r = registry().await;
+    assert_eq!(requirements_read(&r).await, (false, false, None), "none");
+    record_by_hand(&r, "lease-withdrawal-v1", &BOTH)
+        .await
+        .expect("v1");
+    record_by_hand(&r, "lease-withdrawal-v2", &["EXECUTION_ENGINE"])
+        .await
+        .expect("v2 for the engines only");
+    assert_eq!(
+        requirements_read(&r).await,
+        (false, false, None),
+        "engines only"
+    );
+    remove_by_hand(&r, "lease-withdrawal-v2")
+        .await
+        .expect("removed");
+    record_by_hand(&r, "lease-withdrawal-v2", &BOTH)
+        .await
+        .expect("v2");
+    assert_eq!(
+        requirements_read(&r).await,
+        (true, false, None),
+        "both kinds"
+    );
+    record_by_hand(&r, "delivery-acknowledgement-v1", &["EXECUTION_ENGINE"])
+        .await
+        .expect("recorded for the engines");
+    let (floor, acknowledged, since) = requirements_read(&r).await;
+    assert!(floor && acknowledged);
+    let recorded: time::OffsetDateTime = sqlx::query_scalar(
+        "SELECT required_since FROM platform_requirements WHERE capability = 'delivery-acknowledgement-v1'",
+    )
+    .fetch_one(&r.db.pool)
+    .await
+    .expect("required_since");
+    assert_eq!(since, Some(recorded));
+}
+
+/// Task 006-046: the trigger keeps the order of the two requirements, by hand SQL as by any command: no
+/// `delivery-acknowledgement-v1` before `lease-withdrawal-v2` for both kinds, nor while a registered process, live or lapsed,
+/// lacks `lease-withdrawal-v2`; no removal of `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded; only
+/// under READ COMMITTED. Each accepted once its condition holds.
+#[tokio::test]
+async fn the_trigger_keeps_the_order_of_the_two_requirements() {
+    let r = registry().await;
+    let refused = record_by_hand(&r, "delivery-acknowledgement-v1", &["EXECUTION_ENGINE"])
+        .await
+        .expect_err("before lease-withdrawal-v2");
+    assert!(
+        refused.contains("only after lease-withdrawal-v2"),
+        "{refused}"
+    );
+    record_by_hand(&r, "lease-withdrawal-v1", &BOTH)
+        .await
+        .expect("v1");
+    // a process of the build of pull request #260 alone, registered before `lease-withdrawal-v2` and silent for a minute
+    // since: not live, so the activation's census does not see it, but still registered
+    let older = r
+        .serving(
+            InstanceKind::ExecutionEngine,
+            &[Capability::LeaseWithdrawalV1],
+        )
+        .await;
+    r.age(older, 60).await;
+    record_by_hand(&r, "lease-withdrawal-v2", &BOTH)
+        .await
+        .expect("v2");
+    let refused = record_by_hand(&r, "delivery-acknowledgement-v1", &["EXECUTION_ENGINE"])
+        .await
+        .expect_err("a registered process lacks lease-withdrawal-v2");
+    assert!(refused.contains(&older.to_string()), "{refused}");
+    sqlx::query("DELETE FROM serving_instances WHERE instance_id = $1")
+        .bind(older)
+        .execute(&r.db.pool)
+        .await
+        .expect("its process confirmed stopped, its row removed");
+    // outside READ COMMITTED
+    let mut strict = r.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *strict)
+        .await
+        .expect("isolation");
+    let refused = sqlx::query_scalar::<_, String>(
+        "SELECT out_outcome FROM platform_requirement_activate('delivery-acknowledgement-v1', ARRAY['EXECUTION_ENGINE'], 'ops')",
+    )
+    .fetch_one(&mut *strict)
+    .await
+    .expect_err("only under READ COMMITTED")
+    .to_string();
+    assert!(refused.contains("only under READ COMMITTED"), "{refused}");
+    drop(strict);
+    assert_eq!(
+        record_by_hand(&r, "delivery-acknowledgement-v1", &["EXECUTION_ENGINE"]).await,
+        Ok("RECORDED".to_owned())
+    );
+    let refused = remove_by_hand(&r, "lease-withdrawal-v2")
+        .await
+        .expect_err("while delivery-acknowledgement-v1 is recorded");
+    assert!(
+        refused.contains("remove delivery-acknowledgement-v1 first"),
+        "{refused}"
+    );
+    assert_eq!(
+        remove_by_hand(&r, "delivery-acknowledgement-v1").await,
+        Ok("REMOVED".to_owned())
+    );
+    assert_eq!(
+        remove_by_hand(&r, "lease-withdrawal-v2").await,
+        Ok("REMOVED".to_owned())
+    );
+}
+
+/// Task 006-046: the capability is known to the registry and to the code, but no process of this build lists it and the
+/// activation command has no entry for it yet (Task 006-057 adds it).
+#[test]
+fn delivery_acknowledgement_is_known_and_not_activatable() {
+    assert_eq!(
+        Capability::parse("delivery-acknowledgement-v1"),
+        Some(Capability::DeliveryAcknowledgementV1)
+    );
+    assert!(
+        sagat_control_plane::capability_activation::activatable("delivery-acknowledgement-v1")
+            .is_none()
+    );
+}

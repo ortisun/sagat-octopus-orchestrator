@@ -142,16 +142,22 @@ pub enum Capability {
     /// capability call while its registry has been silent (request (7)). The floor that a build of protocol 1.8 rolls back
     /// to; activated only after `lease-withdrawal-v1` is recorded for both kinds.
     LeaseWithdrawalV2,
+    /// Feature 006, delivery acknowledgement (protocol 1.8, ADR-0099 decision 10; Task 006-046): an engine serves
+    /// `AcknowledgeTasks`, replays the cause of 1.8, refuses capabilities to provisional leases and withdraws a marked
+    /// provisional lease. Recorded for engines only, after `lease-withdrawal-v2` (a trigger keeps the order). Known to the
+    /// registry from this build on and listed by no process yet: the build of protocol 1.8 lists it (Task 006-057).
+    DeliveryAcknowledgementV1,
 }
 
 impl Capability {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::SchedulesV1,
         Self::AccessNarrowingV1,
         Self::PayloadEncodingV1,
         Self::RunInputValidationV1,
         Self::LeaseWithdrawalV1,
         Self::LeaseWithdrawalV2,
+        Self::DeliveryAcknowledgementV1,
     ];
 
     #[must_use]
@@ -163,6 +169,7 @@ impl Capability {
             Self::RunInputValidationV1 => crate::run_input::CAPABILITY,
             Self::LeaseWithdrawalV1 => "lease-withdrawal-v1",
             Self::LeaseWithdrawalV2 => "lease-withdrawal-v2",
+            Self::DeliveryAcknowledgementV1 => "delivery-acknowledgement-v1",
         }
     }
 
