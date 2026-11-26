@@ -67,7 +67,7 @@ const WAKING: ReadonlySet<HistoryEvent['kind']> = new Set<HistoryEvent['kind']>(
 ]);
 
 interface OpenStep { kind: CommandKind; scope?: string; settled: boolean }
-interface ScopeState { members: number[]; aborting: boolean; settled: boolean }
+interface ScopeState { members: number[]; parent: string | undefined; aborting: boolean; settled: boolean }
 
 /** One run on an in-memory platform. */
 export class WorkflowTestEnvironment {
@@ -92,11 +92,52 @@ export class WorkflowTestEnvironment {
   #state: unknown;
   #outcome: TestOutcome = { status: 'RUNNING' };
   #cancelRequested = false;
+  #tasks = 0;
+  #lastDeferral: { kind: CommandKind; target: string; digest: string } | undefined;
 
   constructor(options: TestEnvironmentOptions) {
     this.#options = options;
     this.#nowUs = options.startUs ?? 1_767_225_600_000_000;
   }
+
+  /** Called after each workflow task's start is journaled, before its activation runs (task 1, 2, 3...). */
+  onTaskStarted: ((task: number) => void) | undefined;
+
+  /**
+   * The server's check of one command against the run as it stands (Technical Plan 5.1 and 5.2): the review cause, or
+   * undefined. A consumption names only pending signals delivered at or before the activation's start; a scope command
+   * names an open scope (a close, one whose members settled); an activity of a scope names an open scope; an update
+   * decision names an admitted update, a completion an accepted one.
+   */
+  check(command: { kind: CommandKind; target: string; body: Record<string, unknown>; sagaScope?: string }, startedSeq = this.#seq): string | undefined {
+    switch (command.kind) {
+      case 'consume_signals':
+        for (const entry of command.body['signals'] as { seqs: number[] }[]) {
+          for (const seq of entry.seqs) if (!this.#pendingSignals.has(seq) || seq > startedSeq) return 'COMMAND_INVALID';
+        }
+        return undefined;
+      case 'saga_close': case 'saga_abort': {
+        const scope = this.#scopes.get(command.target);
+        if (!scope || scope.aborting || scope.settled) return 'COMMAND_INVALID';
+        if (command.kind === 'saga_close' && !scope.members.every((member) => this.#steps.get(member)?.settled)) return 'COMMAND_INVALID';
+        return undefined;
+      }
+      case 'activity': case 'script': {
+        if (command.sagaScope === undefined) return undefined;
+        const scope = this.#scopes.get(command.sagaScope);
+        return !scope || scope.aborting || scope.settled ? 'COMMAND_INVALID' : undefined;
+      }
+      case 'update_accept': case 'update_reject':
+        return this.updates.get(Number(command.target))?.status === 'ADMITTED' ? undefined : 'COMMAND_INVALID';
+      case 'update_complete':
+        return this.updates.get(Number(command.target))?.status === 'ACCEPTED' ? undefined : 'COMMAND_INVALID';
+      default:
+        return undefined;
+    }
+  }
+
+  /** The command chain the platform holds, in hexadecimal. */
+  get chain(): string { return hex(this.#chain); }
 
   get outcome(): TestOutcome { return { ...this.#outcome, ...(this.#state === undefined ? {} : { state: this.#state }) }; }
 
@@ -125,9 +166,10 @@ export class WorkflowTestEnvironment {
 
   #thread(): WorkflowThread { return this.#options.thread ?? WorkflowThread.shared(); }
 
-  start(input: unknown): this {
+  /** Starts the run; a successor of continue-as-new is started with the state its predecessor carried. */
+  start(input: unknown, options: { carriedState?: unknown } = {}): this {
     if (this.#seq !== 0) throw new Error('the run has started');
-    this.#append({ kind: 'run.started', input }, 'engine');
+    this.#append(options.carriedState === undefined ? { kind: 'run.started', input } : { kind: 'run.started', input, carriedState: options.carriedState }, 'engine');
     return this;
   }
 
@@ -191,6 +233,8 @@ export class WorkflowTestEnvironment {
   async #workflowTask(): Promise<void> {
     const startedSeq = this.#append({ kind: 'workflow_task.started', continueAsNewSuggested: false, historyLimitReached: false }, 'engine');
     const started = this.history[this.history.length - 1] as Extract<HistoryEvent, { kind: 'workflow_task.started' }>;
+    // A test may journal events while the task runs: they belong to the next activation.
+    this.onTaskStarted?.(++this.#tasks);
     const run = await this.#prepareRun(startedSeq);
     const window = this.history.filter((event) => event.seq > run.windowStart && event.seq <= startedSeq);
     const answer = await run.activate(window, started);
@@ -202,11 +246,25 @@ export class WorkflowTestEnvironment {
     // The checks of the server's completion transaction that this environment keeps (Technical Plan 5.2).
     if (hex(answer.replayedChain) !== hex(this.#chain)) return this.#review('CHAIN_MISMATCH');
     if (answer.appliedThroughSeq < startedSeq) return this.#review('NONDETERMINISM_RISK');
+    if (answer.commands.some((command, index) => command.commandNumber !== this.#accepted + index + 1)) return this.#review('COMMAND_INVALID');
+    if (answer.deferredCommand) {
+      // A re-emitted command must be the one the last deferral recorded (Technical Plan 4.4).
+      const held = this.#lastDeferral;
+      if (!held || held.kind !== answer.deferredCommand.kind || held.target !== answer.deferredCommand.target || held.digest !== hex(bodyDigest(answer.deferredCommand))) {
+        return this.#review('CHAIN_MISMATCH');
+      }
+    }
+    for (const command of [...answer.commands, ...(answer.deferredCommand ? [answer.deferredCommand] : [])]) {
+      const cause = this.check(command, startedSeq);
+      if (cause) return this.#review(cause);
+      this.#stage(command);
+    }
     const terminal = answer.deferredCommand ?? answer.commands.find((command) => TERMINAL_KINDS.includes(command.kind));
     const deferral = terminal ? this.#deferralCause(terminal, answer.commands, startedSeq) : undefined;
     const accepted = answer.commands.filter((command) => !(deferral && command === terminal));
     if (!deferral && answer.deferredCommand) accepted.push({ ...answer.deferredCommand, commandNumber: this.#accepted + accepted.length + 1 });
     this.#append(deferral && terminal ? { kind: 'workflow_task.completed', deferral: { kind: terminal.kind, target: terminal.target } } : { kind: 'workflow_task.completed' }, 'completion');
+    this.#lastDeferral = deferral && terminal ? { kind: terminal.kind, target: terminal.target, digest: hex(bodyDigest(terminal)) } : undefined;
     for (const command of accepted) {
       this.#chain = extendChain(this.#chain, command.commandNumber!, command.kind, command.target, bodyDigest(command));
       this.#accepted = command.commandNumber!;
@@ -275,14 +333,36 @@ export class WorkflowTestEnvironment {
     this.#outcome = { status: 'UNDER_REVIEW', review: { cause } };
   }
 
+  // The structural part of a command, applied in order while the completion is checked: a later command of the same
+  // completion sees the scope it opened, the update it accepted, the signals it consumed.
+  #stage(command: { kind: CommandKind; target: string; body: Record<string, unknown>; sagaScope?: string; commandNumber?: number }): void {
+    switch (command.kind) {
+      case 'saga_open': {
+        const parent = command.body['parentScope'];
+        this.#scopes.set(command.target, { members: [], parent: typeof parent === 'string' ? parent : undefined, aborting: false, settled: false });
+        return;
+      }
+      case 'activity': case 'script':
+        if (command.sagaScope && command.commandNumber !== undefined) {
+          this.#steps.set(command.commandNumber, { kind: command.kind, scope: command.sagaScope, settled: false });
+          this.#scopes.get(command.sagaScope)?.members.push(command.commandNumber);
+        }
+        return;
+      case 'update_accept': { const update = this.updates.get(Number(command.target)); if (update) update.status = 'ACCEPTED'; return; }
+      case 'consume_signals':
+        for (const entry of command.body['signals'] as { seqs: number[] }[]) for (const seq of entry.seqs) this.#pendingSignals.delete(seq);
+        return;
+      default:
+        return;
+    }
+  }
+
   async #effect(command: PreparedCommand): Promise<void> {
     const number = command.commandNumber!;
     const body = command.body;
     switch (command.kind) {
       case 'activity': case 'script': {
-        const scope = command.sagaScope;
-        this.#steps.set(number, { kind: command.kind, ...(scope ? { scope } : {}), settled: false });
-        if (scope) this.#scopes.get(scope)?.members.push(number);
+        if (!this.#steps.has(number)) this.#steps.set(number, { kind: command.kind, settled: false });
         const stub = command.kind === 'activity' ? this.#options.activities?.[command.target] : this.#options.scripts?.[command.target];
         if (!stub) return;
         try {
@@ -304,7 +384,11 @@ export class WorkflowTestEnvironment {
         if (!step || step.settled) return;
         step.settled = true;
         this.#timers = this.#timers.filter((timer) => timer.commandNumber !== target);
-        if (command.kind === 'step_cancel') this.#append({ kind: 'step.outcome', commandNumber: target, status: 'cancelled' }, 'effect');
+        if (command.kind === 'step_cancel') {
+          if (step.kind === 'child') this.#append({ kind: 'child.finished', commandNumber: target, status: 'cancelled' }, 'effect');
+          else this.#append({ kind: 'step.outcome', commandNumber: target, status: 'cancelled' }, 'effect');
+          if (step.scope) this.#settleScopeIfDone(step.scope);
+        }
         return;
       }
       case 'wait_event': {
@@ -333,15 +417,16 @@ export class WorkflowTestEnvironment {
         return;
       }
       case 'saga_open':
-        this.#scopes.set(command.target, { members: [], aborting: false, settled: false });
         return;
       case 'saga_close':
         this.#scopes.delete(command.target);
         return;
       case 'saga_abort': {
-        const scope = this.#scopes.get(command.target);
-        if (!scope) return;
-        scope.aborting = true;
+        // Aborting a scope aborts its open nested scopes: the region settles once every member of it settled.
+        for (const id of this.#region(command.target)) {
+          const scope = this.#scopes.get(id);
+          if (scope && !scope.settled) scope.aborting = true;
+        }
         this.#settleScopeIfDone(command.target);
         return;
       }
@@ -355,7 +440,6 @@ export class WorkflowTestEnvironment {
         return;
       }
       case 'consume_signals':
-        for (const entry of (body['signals'] as { seqs: number[] }[])) for (const seq of entry.seqs) this.#pendingSignals.delete(seq);
         return;
       case 'set_state':
         this.#state = body['state'];
@@ -385,12 +469,29 @@ export class WorkflowTestEnvironment {
     if (step.scope) this.#settleScopeIfDone(step.scope);
   }
 
+  /** A scope and the scopes nested in it, deepest first. */
+  #region(id: string): string[] {
+    const depth = (scope: string): number => { let d = 0; for (let p = this.#scopes.get(scope)?.parent; p; p = this.#scopes.get(p)?.parent) d++; return d; };
+    const within = (scope: string): boolean => { for (let p: string | undefined = scope; p; p = this.#scopes.get(p)?.parent) if (p === id) return true; return false; };
+    return [...this.#scopes.keys()].filter(within).sort((a, b) => depth(b) - depth(a));
+  }
+
+  // An aborted region settles once every member of every scope in it settled; each scope's outcome is journaled, the
+  // deepest first.
   #settleScopeIfDone(id: string): void {
-    const scope = this.#scopes.get(id);
-    if (!scope || !scope.aborting || scope.settled) return;
-    if (!scope.members.every((member) => this.#steps.get(member)?.settled)) return;
-    scope.settled = true;
-    this.#append({ kind: 'saga.outcome', scope: id, outcome: this.#options.sagaOutcome?.(id) ?? 'compensated' }, 'engine');
+    let root = id;
+    for (let p = this.#scopes.get(id)?.parent; p; p = this.#scopes.get(p)?.parent) if (this.#scopes.get(p)?.aborting) root = p;
+    const top = this.#scopes.get(root);
+    if (!top || !top.aborting || top.settled) return;
+    const region = this.#region(root);
+    if (!region.every((scope) => (this.#scopes.get(scope)?.members ?? []).every((member) => this.#steps.get(member)?.settled))) return;
+    for (const scope of region) {
+      const state = this.#scopes.get(scope)!;
+      if (state.settled) continue;
+      state.settled = true;
+      state.aborting = true;
+      this.#append({ kind: 'saga.outcome', scope, outcome: this.#options.sagaOutcome?.(scope) ?? 'compensated' }, 'engine');
+    }
   }
 }
 

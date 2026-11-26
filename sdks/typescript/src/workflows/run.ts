@@ -130,7 +130,9 @@ export class CodeRun {
   activate(window: HistoryEvent[], started: ReplayActivation['started']): Completion | Failure {
     this.#ensureUsable();
     if (this.#inFlight) throw new Error('the previous completion of this run has no answer yet');
-    const result = this.#activate(window, beginOf(window, started, false));
+    // The window is (S(k − 1), S(k)]: an event committed after this lease's start belongs to the next activation.
+    const own = window.filter((event) => event.seq > this.#windowStart && event.seq <= started.seq);
+    const result = this.#activate(own, beginOf(own, started, false));
     if (result.failure) {
       this.#broken = true;
       return { kind: 'failure', failure: result.failure, logs: result.logs };
@@ -327,7 +329,7 @@ function prepareChecked(commands: WorkflowCommand[], init: RunInit): PreparedCom
     const alwaysInline = command.kind === 'approval' || (command.kind === 'activity' && gated.has(command.target));
     return { ...command, alwaysInline };
   });
-  if (functionCommands > MAX_FUNCTION_COMMANDS || functionMetadata > MAX_FUNCTION_METADATA_BYTES || sdkCommands > MAX_SDK_COMMANDS + 1) {
+  if (functionCommands > MAX_FUNCTION_COMMANDS || functionMetadata > MAX_FUNCTION_METADATA_BYTES || sdkCommands > MAX_SDK_COMMANDS) {
     throw new AnswerRefused('more commands than an activation may make');
   }
   const prepared = prepare(checked);

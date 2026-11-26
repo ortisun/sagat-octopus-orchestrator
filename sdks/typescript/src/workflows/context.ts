@@ -20,14 +20,24 @@ export const BRIDGE_VERSION = 1;
 
 /** Commands the function's own calls may make in one activation. */
 export const MAX_FUNCTION_COMMANDS = 256;
-/** Bytes of command metadata (fragments without their literal values) the function's calls may make in one activation. */
-export const MAX_FUNCTION_METADATA_BYTES = 64 * 1024;
+/**
+ * Bytes of command metadata (fragments without their literal values) the function's calls may make in one activation;
+ * the SDK's own commands have 16 KiB more, so a completion holds at most 64 KiB (Requirement 044-012).
+ */
+export const MAX_FUNCTION_METADATA_BYTES = 48 * 1024;
 /** Bytes of values a completion carries inline: the declared state, gated inputs, subjects, continue-as-new values. */
 export const MAX_INLINE_BYTES = 192 * 1024;
 /** Values written as blobs in one completion. */
 export const MAX_BLOBS = 16;
 /** Bytes of blob-carried values the server validates for one completion. */
 export const MAX_BLOB_CARRIED_BYTES = 4 * 1024 * 1024;
+/** The SDK's own commands in one activation, and of them the saga scope closes and aborts (Requirement 044-012). */
+export const MAX_SDK_COMMANDS = 147;
+export const MAX_SCOPE_COMMANDS = 16;
+/** Open saga scopes of a run (Requirement 044-032). */
+export const MAX_OPEN_SCOPES = 16;
+/** Characters of a workflow failure's message: it is stored as a payload, and the completion must fit its message. */
+export const MAX_FAILURE_MESSAGE = 4096;
 /** Bytes of one side-effect value. */
 export const MAX_SIDE_EFFECT_BYTES = 64 * 1024;
 
@@ -131,7 +141,7 @@ export interface ActivationResult {
 }
 
 /** A command record the replay compares against, with a side effect's recorded value. */
-export interface ExpectedRecord { commandNumber: number; kind: CommandKind; target: string; value?: unknown }
+export interface ExpectedRecord { commandNumber: number; kind: CommandKind; target: string; value?: unknown; redacted?: boolean }
 
 export interface BeginActivation {
   replaying: boolean;
@@ -173,7 +183,7 @@ export class WorkflowFailure extends Error {
     super(`${code}: ${safeMessage}`);
     this.name = 'WorkflowFailure';
     this.code = FAILURE_CODE.test(code) ? code : 'WORKFLOW_FAILED';
-    this.safeMessage = String(safeMessage);
+    this.safeMessage = String(safeMessage).slice(0, MAX_FAILURE_MESSAGE);
   }
 }
 
@@ -214,6 +224,11 @@ export class ChildWorkflowError extends Error {
 /** A durable timer whose cancellation the function requested. */
 export class TimerCancelled extends Error {
   constructor() { super('the timer was cancelled'); this.name = 'TimerCancelled'; }
+}
+
+/** A wait or an approval whose cancellation the function requested. */
+export class CommandCancelled extends Error {
+  constructor() { super('the command was cancelled'); this.name = 'CommandCancelled'; }
 }
 
 /** The saga scope was aborted and every compensation succeeded. */
@@ -367,6 +382,10 @@ export class Xoshiro256 {
     this.#s = [all[0]!, all[1]!, all[2]!, all[3]!];
   }
 
+  /** The generator's state, to put back after a side effect computed with it (a replay does not compute it). */
+  save(): [bigint, bigint, bigint, bigint] { return [...this.#s]; }
+  restore(state: [bigint, bigint, bigint, bigint]): void { this.#s = [...state]; }
+
   /** The next 64-bit output. */
   next(): bigint {
     const s = this.#s;
@@ -479,6 +498,8 @@ export interface WorkflowContext {
   acknowledgeCancellation(): never;
   continueAsNewSuggested(): boolean;
   historyLimitReached(): boolean;
+  /** The state a predecessor carried by continue-as-new into this run, or undefined. */
+  carriedState(): unknown;
 }
 
 export type WorkflowFunction = (ctx: WorkflowContext, input: unknown) => Promise<unknown>;
@@ -516,7 +537,13 @@ class Run {
   functionMetadata = 0;
   failure: WorkflowTaskFailure | undefined;
   inconclusiveAt: number | undefined;
+  /** A withheld value reached the function in some activation of this replay: it may shape every later command. */
   sawRedacted = false;
+  inSideEffect = false;
+  scopeCommands = 0;
+  sdkCommands = 0;
+  timerNumbers = new Set<number>();
+  carried: unknown;
   logs: LogLine[] = [];
   logBytes = 0;
   inValidator = false;
@@ -576,7 +603,8 @@ class Run {
     this.functionMetadata = 0;
     this.failure = undefined;
     this.inconclusiveAt = undefined;
-    this.sawRedacted = false;
+    this.scopeCommands = 0;
+    this.sdkCommands = 0;
     this.logs = [];
     this.logBytes = 0;
     this.next = this.accepted + 1;
@@ -595,7 +623,9 @@ class Run {
   apply(event: HistoryEvent): void {
     if (event.redacted) this.sawRedacted = true;
     switch (event.kind) {
-      case 'run.started': return this.startFunction(event.input);
+      case 'run.started':
+        if ('carriedState' in event && event.carriedState !== undefined) this.carried = event.carriedState;
+        return this.startFunction(event.input);
       case 'step.outcome': case 'wait.outcome': case 'child.finished': case 'approval.decided':
         return this.settle(event.commandNumber, event);
       case 'timer.fired': return this.fire(event.commandNumber);
@@ -733,8 +763,20 @@ class Run {
     const open = [...this.scopes.values()].filter((scope) => scope.state === 'open');
     open.sort((a, b) => b.commandNumber - a.commandNumber);
     for (const scope of open) {
-      scope.state = 'aborting';
+      if (scope.state !== 'open') continue;
+      this.abortRegion(scope);
       this.issue('saga_abort', scope.id, { scope: scope.id }, { sdk: true });
+    }
+  }
+
+  /** Aborting a scope aborts its open nested scopes too: the engine aborts the whole region (Technical Plan 5.1). */
+  abortRegion(scope: Scope): void {
+    scope.state = 'aborting';
+    for (const other of this.scopes.values()) {
+      if (other.state !== 'open') continue;
+      for (let parent = other.parent; parent; parent = parent.parent) {
+        if (parent === scope) { other.state = 'aborting'; break; }
+      }
     }
   }
 
@@ -742,17 +784,16 @@ class Run {
 
   issue(kind: CommandKind, target: string | ((n: number) => string),
     bodyOf: Record<string, unknown> | ((n: number) => Record<string, unknown>),
-    options: { sdk?: boolean; alwaysInline?: boolean; scope?: string } = {}): number {
+    options: { sdk?: boolean; alwaysInline?: boolean; scope?: string; values?: { size: number; inline: boolean; what: string }[] } = {}): number {
     // The body is taken as the host will hash it: a value nested too deep, or with no canonical form, throws here, at the
     // call, inside the context.
     const body = JSON.parse(rfc8785(typeof bodyOf === 'function' ? bodyOf(this.next) : bodyOf)) as Record<string, unknown>;
     if (!this.activating) throw new NotInWorkflow('a workflow command');
     if (this.failure) throw new ActivationStopped();
-    if (this.inValidator) {
-      this.failure = { cause: 'VALIDATOR_COMMAND' };
-      throw new ActivationStopped();
-    }
+    this.guardEffects();
     const sdk = options.sdk === true;
+    // The SDK's share holds one re-emitted terminal command besides these (Requirement 044-012).
+    if (sdk && this.sdkCommands + 1 > MAX_SDK_COMMANDS - 1) throw new CommandBatchLimitExceeded(`the SDK may make at most ${MAX_SDK_COMMANDS} commands in an activation`);
     if (!sdk) {
       const metadata = metadataSize(kind, typeof target === 'string' ? target : target(this.next), body);
       if (this.functionCommands + 1 > MAX_FUNCTION_COMMANDS) {
@@ -761,8 +802,20 @@ class Run {
       if (this.functionMetadata + metadata > MAX_FUNCTION_METADATA_BYTES) {
         throw new CommandBatchLimitExceeded(`an activation may make at most ${MAX_FUNCTION_METADATA_BYTES} bytes of command metadata`);
       }
-      this.functionCommands++;
-      this.functionMetadata += metadata;
+    }
+    // The values are judged after the command bounds, and recorded only once the call cannot throw any more.
+    let alwaysInline = this.alwaysInlineBytes;
+    const blobSizes = [...this.blobValueSizes];
+    for (const value of options.values ?? []) {
+      if (value.inline) {
+        if (alwaysInline + value.size > MAX_INLINE_BYTES - this.reserve || !this.blobsFit(blobSizes, alwaysInline + value.size)) {
+          throw new InlineValuesExceeded(`${value.what} of ${value.size} bytes cannot be carried inline by this activation's completion`);
+        }
+        alwaysInline += value.size;
+      } else {
+        if (!this.blobsFit([...blobSizes, value.size], alwaysInline)) throw new InlineValuesExceeded(`${value.what} cannot be carried by this activation's completion`);
+        blobSizes.push(value.size);
+      }
     }
     const number = this.next++;
     const resolved = typeof target === 'string' ? target : target(number);
@@ -776,6 +829,13 @@ class Run {
     const made = command(kind, resolved, body, sdk, options.alwaysInline === true, number);
     if (options.scope !== undefined) made.sagaScope = options.scope;
     this.commands.push(made);
+    if (sdk) this.sdkCommands++;
+    else {
+      this.functionCommands++;
+      this.functionMetadata += metadataSize(kind, resolved, body);
+    }
+    this.alwaysInlineBytes = alwaysInline;
+    this.blobValueSizes = blobSizes;
     return number;
   }
 
@@ -801,6 +861,24 @@ class Run {
     this.failure = failure;
   }
 
+  /**
+   * What a validator or a side effect's computation may not do: a validator that makes a command, consumes a signal or
+   * sets the state fails the workflow task `VALIDATOR_COMMAND`; a side effect's computation makes no command at all
+   * (a replay does not run it).
+   */
+  guardEffects(): void {
+    if (this.inValidator) {
+      this.failure = { cause: 'VALIDATOR_COMMAND' };
+      throw new ActivationStopped();
+    }
+    if (this.inSideEffect) throw new TypeError('a side effect\'s computation makes no workflow command: a replay does not run it');
+  }
+
+  /** Whether one more value that may travel as a blob still lets the activation's values be carried (nothing recorded). */
+  fitsBlob(size: number): boolean {
+    return this.blobsFit([...this.blobValueSizes, size], this.alwaysInlineBytes);
+  }
+
   /** The inline check of a value that must stay inline: throws at the call that would cross 192 KiB less the reserve. */
   admitInlineValue(size: number, what: string): void {
     if (this.alwaysInlineBytes + size > MAX_INLINE_BYTES - this.reserve || !this.blobsFit(this.blobValueSizes, this.alwaysInlineBytes + size)) {
@@ -817,7 +895,7 @@ class Run {
     return true;
   }
 
-  private blobsFit(sizes: number[], alwaysInline: number): boolean {
+  blobsFit(sizes: number[], alwaysInline: number): boolean {
     const room = MAX_INLINE_BYTES - this.reserve - alwaysInline;
     if (room < 0) return false;
     const sorted = [...sizes].sort((a, b) => b - a);
@@ -876,6 +954,7 @@ class Run {
   startTimer(durationMs: number, callback: () => void, handle: number, intervalMs?: number): number {
     const duration = Math.max(1, Math.ceil(Number.isFinite(durationMs) ? durationMs : 1));
     const number = this.issue('timer_start', (n) => `c-${n}`, { type: 'timer', durationMs: duration });
+    this.timerNumbers.add(number);
     const timer: Timer = { callback, handle };
     if (intervalMs !== undefined) timer.intervalMs = intervalMs;
     this.timers.set(number, timer);
@@ -904,6 +983,7 @@ class Run {
     const handler = this.signalHandlers.get(signal.name);
     const waiters = this.signalWaiters.get(signal.name);
     if (!handler && (!waiters || waiters.length === 0)) return false;
+    this.guardEffects();
     if (signal.redacted) this.sawRedacted = true;
     this.consumed.set(signal.name, [...(this.consumed.get(signal.name) ?? []), signal.seq]);
     if (handler) {
@@ -914,12 +994,17 @@ class Run {
     return true;
   }
 
+  // A handler may itself wait for or register a signal, which drains the buffer again: each signal is taken out of the
+  // buffer before it is given, so no signal is given twice.
   drainBuffered(name: string): void {
-    const remaining: BufferedSignal[] = [];
-    for (const signal of this.buffered) {
-      if (signal.name !== name || !this.takeSignal(signal)) remaining.push(signal);
+    for (;;) {
+      const index = this.buffered.findIndex((signal) => signal.name === name);
+      if (index < 0) return;
+      const signal = this.buffered[index]!;
+      if (!this.signalHandlers.has(name) && (this.signalWaiters.get(name)?.length ?? 0) === 0) return;
+      this.buffered.splice(index, 1);
+      this.takeSignal(signal);
     }
-    this.buffered = remaining;
   }
 
   runHandler(handler: () => unknown): void {
@@ -949,7 +1034,12 @@ class Run {
     this.inValidator = true;
     let rejected = false;
     try {
-      entry.validator(args);
+      const verdict = entry.validator(args) as unknown;
+      // A validator runs at once, before the next event: one that answers a promise cannot be waited for, so it rejects.
+      if (verdict !== null && typeof verdict === 'object' && typeof (verdict as { then?: unknown }).then === 'function') {
+        (verdict as Promise<unknown>).then(undefined, () => undefined);
+        rejected = true;
+      }
     } catch (error) {
       if (error instanceof ActivationStopped || this.failure) { this.inValidator = false; throw new ActivationStopped(); }
       rejected = true;
@@ -967,14 +1057,19 @@ class Run {
     promise.then(
       (result) => {
         const { value, size } = snapshot(result);
-        if (!this.admitBlobValue(size)) {
+        if (!this.fitsBlob(size)) {
           this.issue('update_complete', target, { admittedSeq: seq, failureCode: 'RETAINED_BYTES_LIMIT' }, { sdk: true });
           return;
         }
-        this.issue('update_complete', target, { admittedSeq: seq, result: value }, { sdk: true });
+        this.issue('update_complete', target, { admittedSeq: seq, result: value }, { sdk: true, values: [{ size, inline: false, what: 'the update result' }] });
       },
       (error: unknown) => {
         if (error instanceof ActivationStopped) return;
+        // A terminal command made in a handler ends the run, as in a signal handler.
+        if (error instanceof ContinueAsNewRequest || error instanceof CancellationAcknowledged) {
+          if (!this.mainOutcome && !this.terminal) this.mainOutcome = { kind: 'error', error };
+          return;
+        }
         if (error instanceof WorkflowFailure) {
           this.issue('update_complete', target, { admittedSeq: seq, failureCode: error.code }, { sdk: true });
           return;
@@ -1091,9 +1186,8 @@ function scheduleActivity<T>(name: string, input: unknown, options: ActivityOpti
   if (options?.timeoutMs !== undefined) fragment['timeoutMs'] = options.timeoutMs;
   const gated = r.gated.has(name);
   // A gated activity's input is always inline; any other may travel as a blob.
-  if (gated) r.admitInlineValue(size, `the input of the gated activity ${name}`);
-  else if (!r.admitBlobValue(size)) throw new InlineValuesExceeded(`the input of ${name} cannot be carried by this activation's completion`);
-  const number = r.issue('activity', name, fragment, scope ? { alwaysInline: gated, scope: scope.id } : { alwaysInline: gated });
+  const values = [{ size, inline: gated, what: gated ? `the input of the gated activity ${name}` : `the input of ${name}` }];
+  const number = r.issue('activity', name, fragment, scope ? { alwaysInline: gated, scope: scope.id, values } : { alwaysInline: gated, values });
   return commandPromise<T>(number, stepOutcome, scope);
 }
 
@@ -1104,14 +1198,25 @@ function scheduleScript<T>(digest: string, input: unknown, options: ScriptOption
   const { value, size } = snapshot(input);
   const fragment: Record<string, unknown> = { type: 'script', artifactDigest: digest, input: value };
   if (options?.retry) fragment['retry'] = { ...options.retry };
-  if (!r.admitBlobValue(size)) throw new InlineValuesExceeded(`the input of the script ${digest} cannot be carried by this activation's completion`);
-  const number = r.issue('script', digest, fragment, scope ? { scope: scope.id } : {});
+  const values = [{ size, inline: false, what: `the input of the script ${digest}` }];
+  const number = r.issue('script', digest, fragment, scope ? { scope: scope.id, values } : { values });
   return commandPromise<T>(number, stepOutcome, scope);
+}
+
+// The SDK's closes and aborts of scopes in one activation are bounded; the one beyond the bound throws into the saga.
+function countScopeCommand(r: Run): void {
+  if (r.scopeCommands + 1 > MAX_SCOPE_COMMANDS) {
+    throw new CommandBatchLimitExceeded(`an activation may close or abort at most ${MAX_SCOPE_COMMANDS} saga scopes`);
+  }
+  r.scopeCommands++;
 }
 
 function openSaga<T>(options: SagaOptions, body: (scope: SagaScope) => Promise<T>, parent: Scope | undefined): Promise<T> {
   const r = run('saga');
   if (parent && parent.state !== 'open') throw new TypeError(`the saga scope ${parent.id} is not open`);
+  if ([...r.scopes.values()].filter((scope) => scope.state !== 'closed').length >= MAX_OPEN_SCOPES) {
+    throw new CommandBatchLimitExceeded(`a run has at most ${MAX_OPEN_SCOPES} open saga scopes`);
+  }
   const number = r.issue('saga_open', (n) => `s-${n}`, (n) => ({
     scope: `s-${n}`,
     parentScope: parent ? parent.id : null,
@@ -1129,7 +1234,8 @@ function openSaga<T>(options: SagaOptions, body: (scope: SagaScope) => Promise<T
     } catch (error) {
       if (error instanceof ActivationStopped) throw error;
       if (scope.state === 'open') {
-        scope.state = 'aborting';
+        countScopeCommand(r);
+        r.abortRegion(scope);
         r.issue('saga_abort', scope.id, { scope: scope.id }, { sdk: true });
       }
       // A terminal command thrown in the body is issued in the same completion; the server defers it until the scope
@@ -1143,8 +1249,10 @@ function openSaga<T>(options: SagaOptions, body: (scope: SagaScope) => Promise<T
     // The scope's outstanding members are awaited before it is closed (Technical Plan 10.1).
     while (scope.members.size > 0) await Promise.allSettled([...scope.members]);
     if (scope.state === 'open') {
+      const current = run('saga');
+      countScopeCommand(current);
       scope.state = 'closed';
-      run('saga').issue('saga_close', scope.id, { scope: scope.id }, { sdk: true });
+      current.issue('saga_close', scope.id, { scope: scope.id }, { sdk: true });
     }
     return value;
   })();
@@ -1201,10 +1309,12 @@ export function waitForEvent<T = unknown>(eventType: string, correlationKey: str
   if (options?.timeoutMs === undefined) throw new TypeError('a wait for an event needs timeoutMs: the code profile requires it');
   const fragment: Record<string, unknown> = { type: 'waitEvent', eventType, correlationKey, timeoutMs: options.timeoutMs };
   if (options?.lookbackMs !== undefined) fragment['lookbackMs'] = options.lookbackMs;
-  const number = r.issue('wait_event', eventType, fragment);
-  return commandPromise<T | undefined>(number, (resolve) => ({
+  // The correlation key is a literal of the fragment, which travels inline.
+  const number = r.issue('wait_event', eventType, fragment, { values: [{ size: snapshot(correlationKey).size, inline: true, what: 'the correlation key' }] });
+  return commandPromise<T | undefined>(number, (resolve, reject) => ({
     settle(event: HistoryEvent): void {
       if (event.kind === 'wait.outcome') resolve(event.status === 'satisfied' ? event.payload as T : undefined);
+      else if (event.kind === 'step.outcome' && event.status === 'cancelled') reject(new CommandCancelled());
     },
   }));
 }
@@ -1217,8 +1327,10 @@ export function child<T = unknown>(workflowId: string, input?: unknown, options?
   // cancelPolicy and businessId are fragment keys; the input is the command's value.
   if (options?.cancelPolicy !== undefined) fragment['cancelPolicy'] = options.cancelPolicy;
   if (options?.businessId !== undefined) fragment['businessId'] = options.businessId;
-  if (!r.admitBlobValue(size)) throw new InlineValuesExceeded(`the input of the child ${workflowId} cannot be carried by this activation's completion`);
-  const number = r.issue('child', workflowId, fragment);
+  const values = [{ size, inline: false, what: `the input of the child ${workflowId}` }];
+  // A business identifier is a literal of the fragment, which travels inline.
+  if (options?.businessId !== undefined) values.push({ size: snapshot(options.businessId).size, inline: true, what: 'the business identifier' });
+  const number = r.issue('child', workflowId, fragment, { values });
   return commandPromise<T>(number, (resolve, reject) => ({
     settle(event: HistoryEvent): void {
       if (event.kind !== 'child.finished') return;
@@ -1232,10 +1344,13 @@ export function child<T = unknown>(workflowId: string, input?: unknown, options?
 export function approval(policyName: string, subject: unknown): CommandPromise<'approved' | 'rejected' | 'expired'> {
   const r = run('approval');
   const { value, size } = snapshot(subject);
-  r.admitInlineValue(size, `the subject of the approval ${policyName}`);
-  const number = r.issue('approval', policyName, { type: 'approval', policyName, subject: value }, { alwaysInline: true });
-  return commandPromise(number, (resolve) => ({
-    settle(event: HistoryEvent): void { if (event.kind === 'approval.decided') resolve(event.decision); },
+  const number = r.issue('approval', policyName, { type: 'approval', policyName, subject: value },
+    { alwaysInline: true, values: [{ size, inline: true, what: `the subject of the approval ${policyName}` }] });
+  return commandPromise(number, (resolve, reject) => ({
+    settle(event: HistoryEvent): void {
+      if (event.kind === 'approval.decided') resolve(event.decision);
+      else if (event.kind === 'step.outcome' && event.status === 'cancelled') reject(new CommandCancelled());
+    },
   }));
 }
 
@@ -1249,12 +1364,15 @@ export function requestCancellation(command: CommandPromise<unknown>): void {
   const r = run('requestCancellation');
   const number = command?.commandNumber;
   if (typeof number !== 'number') throw new TypeError('requestCancellation takes the promise of a workflow command');
-  const timer = r.timers.get(number);
-  if (timer) {
-    r.timers.delete(number);
-    r.timerOfHandle.delete(timer.handle);
+  if (r.timerNumbers.has(number)) {
+    // A timer, fired or not: the command is timer_cancel, a no-op on the server when it fired.
+    const timer = r.timers.get(number);
     r.issue('timer_cancel', `c-${number}`, { target: `c-${number}` });
-    timer.onCancel?.();
+    if (timer) {
+      r.timers.delete(number);
+      r.timerOfHandle.delete(timer.handle);
+      timer.onCancel?.();
+    }
     return;
   }
   r.issue('step_cancel', `c-${number}`, { target: `c-${number}` });
@@ -1285,6 +1403,7 @@ export function onUpdate(name: string, validator: (args: unknown) => void, handl
 /** Sets the declared state; the last value of an activation is committed with its completion. */
 export function setState(state: unknown): void {
   const r = run('setState');
+  r.guardEffects();
   const { value, size } = snapshot(state);
   // The body the host hashes holds the state one level deeper: checked now, at the call.
   rfc8785({ state: value });
@@ -1329,12 +1448,27 @@ export function sideEffect<T>(compute: () => T): T {
   const r = run('sideEffect');
   const record = r.replaying ? r.expected.get(r.next) : undefined;
   // A replay returns the recorded value instead of computing it again; the checks are the same live and replayed.
-  const computed = record && record.kind === 'marker_side_effect' ? record.value as T : compute();
+  let computed: T;
+  if (record && record.kind === 'marker_side_effect') {
+    if (record.redacted) r.sawRedacted = true;
+    computed = record.value as T;
+  } else {
+    // The computation runs live only: it may draw from the generator, whose state is put back so that the run's stream
+    // is where a replay, which returns the recorded value, finds it; and it may make no command.
+    const saved = r.rng.save();
+    r.inSideEffect = true;
+    try {
+      computed = compute();
+    } finally {
+      r.inSideEffect = false;
+      r.rng.restore(saved);
+    }
+  }
   const { value: stored, size } = snapshot(computed);
   const value = stored as T;
   if (size > MAX_SIDE_EFFECT_BYTES) throw new InlineValuesExceeded(`a side-effect value is at most ${MAX_SIDE_EFFECT_BYTES} bytes, not ${size}`);
-  if (!r.admitBlobValue(size)) throw new InlineValuesExceeded('the side-effect value cannot be carried by this activation\'s completion');
-  r.issue('marker_side_effect', SIDE_EFFECT_MARKER_ID, { markerId: SIDE_EFFECT_MARKER_ID, value: stored });
+  r.issue('marker_side_effect', SIDE_EFFECT_MARKER_ID, { markerId: SIDE_EFFECT_MARKER_ID, value: stored },
+    { values: [{ size, inline: false, what: 'the side-effect value' }] });
   return value;
 }
 
@@ -1395,6 +1529,11 @@ export function continueAsNewSuggested(): boolean {
   return run('continueAsNewSuggested').casSuggested;
 }
 
+/** The state a predecessor carried into this run. */
+export function carriedState(): unknown {
+  return run('carriedState').carried;
+}
+
 /** Whether the run is in its closing window after the history limit. */
 export function historyLimitReached(): boolean {
   return run('historyLimitReached').historyLimit;
@@ -1403,7 +1542,7 @@ export function historyLimitReached(): boolean {
 const api: WorkflowContext = Object.freeze({
   activity, script, sleep, waitForEvent, child, approval, saga, requestCancellation, onSignal, signal, onUpdate, setState,
   patched, deprecatePatch, sideEffect, now, random, randomInt, uuid, continueAsNew, cancellation, acknowledgeCancellation,
-  continueAsNewSuggested, historyLimitReached,
+  continueAsNewSuggested, historyLimitReached, carriedState,
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

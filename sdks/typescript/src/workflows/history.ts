@@ -67,6 +67,7 @@ export class ActivationCutter {
           ? { commandNumber: event.commandNumber, kind: event.commandKind, target: event.target }
           : { commandNumber: event.commandNumber, kind: event.markerKind === 'patch' ? 'marker_patch' : 'marker_side_effect', target: event.markerId };
         if (event.kind === 'marker.recorded' && 'value' in event) record.value = event.value;
+        if (event.redacted) record.redacted = true;
         this.#pending.records.push(record);
         this.#buffer.push(event);
         continue;
@@ -95,14 +96,18 @@ export class ActivationCutter {
     return done;
   }
 
-  /** Ends the input: answers the last completed activation (if any) and the open window after it. */
+  /**
+   * Ends the input: answers the last completed activation (if any) and the open window after it, cut at its last
+   * `workflow_task.started` (the events after it belong to the next activation).
+   */
   flush(): { activations: ReplayActivation[]; open: OpenWindow } {
     const activations = this.#pending ? [this.#release()] : [];
     let started: OpenWindow['started'];
+    let end = this.#buffer.length;
     for (let i = this.#buffer.length - 1; i >= 0; i--) {
-      if (this.#buffer[i]!.kind === 'workflow_task.started') { started = this.#buffer[i] as OpenWindow['started']; break; }
+      if (this.#buffer[i]!.kind === 'workflow_task.started') { started = this.#buffer[i] as OpenWindow['started']; end = i + 1; break; }
     }
-    return { activations, open: { window: [...this.#buffer], started, windowStart: this.#windowStart } };
+    return { activations, open: { window: this.#buffer.slice(0, end), started, windowStart: this.#windowStart } };
   }
 
   #release(): ReplayActivation {

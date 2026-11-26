@@ -13,8 +13,8 @@ checkNodeVersion();
 export {
   activity, approval, cancellation, child, continueAsNew, continueAsNewSuggested, deprecatePatch, historyLimitReached, now,
   onSignal, onUpdate, patched, random, randomInt, requestCancellation, saga, script, setState, sideEffect, signal, sleep, uuid,
-  waitForEvent, acknowledgeCancellation,
-  ActivityError, ChildWorkflowError, CommandBatchLimitExceeded, InlineValuesExceeded, NotInWorkflow, SagaCompensated,
+  waitForEvent, acknowledgeCancellation, carriedState,
+  ActivityError, ChildWorkflowError, CommandCancelled, CommandBatchLimitExceeded, InlineValuesExceeded, NotInWorkflow, SagaCompensated,
   SagaCompensationFailed, SagaPartial, TimerCancelled, WorkflowFailure,
   BRIDGE_VERSION, MAX_BLOBS, MAX_BLOB_CARRIED_BYTES, MAX_FUNCTION_COMMANDS, MAX_FUNCTION_METADATA_BYTES, MAX_INLINE_BYTES,
   MAX_SIDE_EFFECT_BYTES, Xoshiro256, rfc8785,

@@ -68,11 +68,30 @@ test('the chain folds the uint32 big-endian length of d(k) before d(k)', () => {
 });
 
 test('the corpus vectors of Task 044-30 hold', { skip: PENDING }, () => {
+  // The files the corpus README names; each must yield at least one compared vector, so this test cannot pass empty.
   assert.ok(existsSync(CORPUS), 'the corpus of Task 044-30 is not on this branch');
-  const primitives = JSON.parse(readFileSync(new URL('primitives.json', CORPUS), 'utf8')) as unknown;
-  const canonical = JSON.parse(readFileSync(new URL('rfc8785.json', CORPUS), 'utf8')) as unknown;
-  const chain = JSON.parse(readFileSync(new URL('chain.json', CORPUS), 'utf8')) as unknown;
-  assert.ok(primitives && canonical && chain);
+  const read = (name: string): Record<string, unknown>[] => {
+    const value = JSON.parse(readFileSync(new URL(name, CORPUS), 'utf8')) as unknown;
+    const list = Array.isArray(value) ? value : ((value as Record<string, unknown>)['vectors'] as unknown[]);
+    assert.ok(Array.isArray(list) && list.length > 0, `${name} holds no vector`);
+    return list as Record<string, unknown>[];
+  };
+  for (const vector of read('rfc8785.json')) {
+    assert.equal(Buffer.from(rfc8785(JSON.parse(vector['input'] as string)), 'utf8').toString('hex'), vector['utf8'] ?? vector['canonicalHex']);
+  }
+  for (const vector of read('primitives.json')) {
+    const generator = new Xoshiro256(vector['seed'] as string);
+    const next = vector['next'] as string[];
+    assert.deepEqual(next.map(() => generator.next().toString(16).padStart(16, '0')), next);
+  }
+  for (const list of read('chain.json')) {
+    let chain = EMPTY_CHAIN;
+    for (const vector of list['commands'] as Record<string, unknown>[]) {
+      const command = { kind: vector['kind'] as CommandKind, body: vector['body'] as Record<string, unknown> };
+      chain = extendChain(chain, vector['seq'] as number, command.kind, vector['target'] as string, bodyDigest(command));
+      assert.equal(hex(chain), vector['chain'], `chain after command ${String(vector['seq'])}`);
+    }
+  }
 });
 
 test('a lone surrogate, a bigint and a non-finite number have no canonical form', () => {
@@ -99,4 +118,9 @@ test('every value field of the corpus table enters the hashed body as its descri
   for (const [kind, field] of [['set_state', 'state'], ['continue_as_new', 'input'], ['consume_signals', 'signals']] as [CommandKind, string][]) {
     assert.deepEqual(hashedBody({ kind, body: { [field]: { x: 1 } } }), { [field]: { x: 1 } }, kind);
   }
+});
+
+test('every identifier is a version 4 UUID with the variant bits 10', () => {
+  const generator = new Xoshiro256('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f');
+  for (let i = 0; i < 256; i++) assert.match(generator.uuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
