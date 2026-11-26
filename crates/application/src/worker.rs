@@ -289,6 +289,12 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         false
     }
 
+    /// Whether this adapter stores step logs (design 041, protocol 1.7): the store of `AppendStepLogs` and of a
+    /// report's carry. False by default, so that an adapter that has not proven the storage keeps workers at 1.6.
+    fn supports_step_log_protocol(&self) -> bool {
+        false
+    }
+
     /// The activity patterns `subject` is bound to in `namespace` (canonical text, see
     /// `sagat_domain::binding`). Empty when the identity has no binding there.
     fn bound_patterns(

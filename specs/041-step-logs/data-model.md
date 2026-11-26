@@ -550,9 +550,11 @@ SDK (local to the worker process, each SDK's own metrics facility or log): dropp
 
 Every statement that binds line text or `q` maps its database error with `store_error_without_text`
 (`crates/infra-postgres/src/identity.rs:734`), because the database's error text can quote bound values. The lock
-timeout is `SET LOCAL lock_timeout = '200ms'`.
+timeout of 200 ms is set by T1 (correction of T041-6, decision D041-146 (12)).
 
-- **T1.** `SELECT pg_current_xact_id()`.
+- **T1.** `SELECT set_config('lock_timeout', '200ms', true), pg_current_xact_id(), set_config('sagat.step_log_wait_slots',
+  $q, true)`: the lock timeout local to the transaction (as `SET LOCAL`), the transaction's id and *Q*, in one select
+  list evaluated left to right.
 - **T2.** One `SELECT` of the `steps` row by tenant and `step_id`, joined with its `runs` row, matching the request's
   `run_id`, the instance path of `instance` and its node as `lease_unexpired_instance` matches them
   (`crates/infra-postgres/src/execution.rs:4783-4817`), with status `LEASED` or `RUNNING`, the same attempt and

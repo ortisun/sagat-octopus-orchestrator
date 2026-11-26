@@ -34,6 +34,7 @@ pub mod schedules;
 pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
+pub mod step_logs;
 pub mod trigger_schedules;
 pub mod worker;
 
@@ -423,6 +424,26 @@ where
         assert!(
             std::time::Instant::now() < deadline,
             "timed out waiting for: {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Polls `check` until it yields a value, failing the test after `bound` (design 041: 30 s for an assertion on stored
+/// rows or on a read, where a held transaction may still be ending).
+pub async fn eventually_within<T, F, Fut>(what: &str, bound: std::time::Duration, mut check: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if let Some(value) = check().await {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out after {bound:?} waiting for: {what}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
