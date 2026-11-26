@@ -1,11 +1,13 @@
-# Approval confirmation of design 051: security (2026-11-26)
+# Targeted re-read 8 of design 051: security (2026-11-26)
 
 Doc: docs/designs/051-competitive-benchmark.md
 Reviewed-commit: 11b5f3093c972e1da022d17655640bff7bcfc6ba
 Reviewer: security
 Agent-blob: c02123dd239a7128f22e02c9dc39de8f110cc811
-Note: condensed by the author from the reviewer's output; every finding and severity is kept. The last of the targeted
-re-reads of the approval run under Owner decision 2026-11-25-2: one full round (`security-full.md`), then the fixes
+Note: condensed by the author from the reviewer's output; every finding and severity is kept. Filed first as the
+approval confirmation, then refiled as a re-read when the correctness confirmation at the same commit
+(`reread-2-correctness.md`) found Blockers whose fixes changed the text. A re-read in the approval run under Owner
+decision 2026-11-25-2: one full round (`security-full.md`), then the fixes
 re-read in `reread-1-security.md` to `reread-7-security.md`, every finding of each fixed before the next. Not a full
 review. The reviewer read files only and ran nothing.
 
