@@ -833,7 +833,7 @@ no row remains (Architecture decision 0144, decision 5). Because a cursor can th
 not see, the cursor is sealed with AES-256-GCM-SIV (no random-nonce bound; the RustCrypto `aes-gcm-siv` crate, beside the `aes-gcm`
 the workspace already uses) under a purpose key derived by HKDF-SHA256 from
 the active key of the deployment's `KeyRing` (`SAGAT_SECRETS_KEYS`) by a new `KeyRing::derive_purpose_key(key_id,
-label, info)` in `crates/infra-secrets` (added by whichever of this design's Task 050-4 and design 013's Task 013-9
+label, info)` in `crates/infra-secrets` (added by whichever of this design's Task 050-4 and design 013's Task 013-8
 runs first) (the ring keeps key bytes by id, answers none for an unknown id, zeroized on
 drop, redacted in `Debug`; a cursor sealed under a key since retired does not open and gets the same `400`, and the
 Studio starts again from the first page), with the label `approval-inbox-cursor` (and

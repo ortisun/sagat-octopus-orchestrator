@@ -216,3 +216,9 @@ session idle for a day expires (the reviewer's note for correctness).
 | 1 | Nit | Fixed: `IdentityKeyRing` lives in `crates/infra-secrets`; the identity-mount loader in the same module is its only constructor; no public constructor, no `From<KeyRing>` | Requirement 013-026 |
 | 2 | Nit | Fixed: revoke drops every key it did not create and cancels an unfinished rotation; the test starts mid-rotation | Requirement 013-026, Task 013-8 |
 | 3 | Nit | Fixed: Task 013-8 owns the derivation; the commands paragraph names `rotate|revoke`; Task 013-8's Refs include Requirement 013-026 | Requirement 013-026, Technical Plan 12, Task 013-8 |
+
+## Security re-read, round 11 (`approval/reread-11-security.md`, at `0aa18b84`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: every write of the ring is a KV version 2 check-and-set; `rotate`'s second step promotes only from its own version, otherwise stops with an audited "rotation cancelled"; `a_rotation_resumed_after_a_revoke_writes_nothing` | Requirement 013-026, Task 013-8 |

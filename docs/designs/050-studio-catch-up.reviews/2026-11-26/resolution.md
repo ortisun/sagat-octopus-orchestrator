@@ -161,3 +161,9 @@ The security re-read of round 7 (`approval/reread-7-security.md`, at `9a19411f`)
 The security re-read of round 8 (`approval/reread-8-security.md`, at `dcfd91b1`) found nothing.
 
 The security re-read at `db9e8a50` found nothing in design 050.
+
+## Security re-read, round 9 (`approval/reread-9-security.md`, at `0aa18b84`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: Task 013-8 named as the other owner | Technical Plan 6 |

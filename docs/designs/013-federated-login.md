@@ -437,7 +437,10 @@ already has.
   ring creates a key that is active at once (no token exists yet); start-up with federation on refuses an empty ring
   with a named error and never falls back to another ring; `identity cli-refresh-key revoke` (audited) is the
   emergency path for a leaked key: it activates a new key at once, drops every key it did not create (the active one, a
-  retained predecessor and a pending one), cancels any unfinished rotation and rotates every CLI session's random value,
+  retained predecessor and a pending one), cancels any unfinished rotation and rotates every CLI session's random value (every write of the
+  `cli-refresh` ring is a KV version 2 check-and-set on the version the command read, and `rotate`'s second step
+  promotes only if the ring is still at the version its first step wrote, otherwise it stops with an audited
+  "rotation cancelled" and writes nothing),
   so no forged refresh token survives; one use, rotated on every refresh by
   compare-and-set on its generation; the server can verify any generation by recomputing its MAC, so it stores no
   per-generation secret and its storage per session is bounded; the access token is signed with a handle obtained
@@ -1630,6 +1633,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
   `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_cli_refresh_key_revoke_rotates_every_random_value` (starting from a ring in the middle of a rotation),
+  `a_rotation_resumed_after_a_revoke_writes_nothing` (a barrier holds `rotate` between its steps while `revoke`
+  commits),
   `start_up_refuses_an_empty_cli_refresh_ring`, the negative fixture of the `cli-refresh` rule,
   `a_client_secret_write_follows_intent_write_verify_activate`; the alert rule's test in
   `contract_observability_operations`.
