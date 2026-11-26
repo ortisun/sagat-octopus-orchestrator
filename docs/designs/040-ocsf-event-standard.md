@@ -77,8 +77,8 @@ stream is a reason for a regulated customer to choose this platform.
 - **Requirement 040-003** Each event MUST carry the attributes OCSF 1.10.0 requires of its class with the profiles this
   design declares (the base event's `class_uid`, `category_uid`, `activity_id`, `type_uid`, `severity_id`, `time`,
   `metadata`, and each class's required objects), and the platform's facts in OCSF objects: the actor as `actor.user.uid`
-  (the subject), the resource as `resources[0]` (`type`, `uid`), the outcome as `status_id`, the closed reason as
-  `status_detail`, the trace id as `trace.uid` (profile `trace`), the record id as `metadata.uid`, the tenant id as
+  (the subject), the resource as `resources[0]` (`type`, `uid`), the outcome as `status_id`, the reason (scrubbed, and
+  left out below a `pii` ceiling, Requirement 040-005) as `status_detail`, the trace id as `trace.uid` (profile `trace`), the record id as `metadata.uid`, the tenant id as
   `metadata.tenant_uid`, the product as `metadata.product` (`name` "Sagat Octopus Orchestrator", `vendor_name` "Sagat",
   `version` the binary's version) and the schema version as `metadata.version`.
 - **Requirement 040-004** The OCSF version MUST be pinned (1.10.0) and stated in every event. The schema files of that
@@ -88,8 +88,8 @@ stream is a reason for a regulated customer to choose this platform.
   payload, no business identifier, no secret value, no field of another tenant. The free-text `reason` MUST be scrubbed
   as `GET /audit` scrubs it, and MUST be left out of an event sent to a sink whose ceiling is below `pii` (Requirement
   040-010).
-- **Requirement 040-006** A platform fact that OCSF has no attribute for (the dotted action name, a workflow, run or
-  schedule id that is not the resource, the namespace) MUST go in `unmapped`, as OCSF prescribes for a producer without
+- **Requirement 040-006** A platform fact that OCSF has no attribute for (the dotted action name, and the resource type
+  when it has no OCSF equivalent) MUST go in `unmapped`, as OCSF prescribes for a producer without
   a registered extension, with keys that are closed per action and documented in the generated reference.
 - **Requirement 040-007** Sandbox violations (`script.violation`), egress denials (`egress.denied`) and denied attempts
   to reach another tenant's resource (`access.denied.cross_tenant`) MUST map to Detection Finding (2004) with the
@@ -99,8 +99,9 @@ stream is a reason for a regulated customer to choose this platform.
   resume and delete a tenant sink of kind `https`. Secrets and egress rules are namespace-scoped in this platform, so a
   sink names a home namespace: its HTTPS endpoint MUST be allowed by that namespace's egress policy (feature 009), its
   authentication header value is a secret reference of that namespace, and each body is signed with HMAC-SHA-256 under
-  a second secret reference of it; the creator MUST hold the right to use both secrets there, a body format (`ndjson`, optionally gzip), and a ceiling
-  (`internal` by default, `pii` allowed under Requirement 040-010). At most 4 sinks per tenant. Every change is audited.
+  a second secret reference of it; the creator MUST hold the right to use both secrets there. A sink also has a body
+  format (`ndjson`, optionally gzip) and a ceiling (`internal` by default, `pii` allowed under Requirement 040-010). At
+  most 4 sinks per tenant. Every change is audited.
 - **Requirement 040-009** A sink MUST receive every audit record of its scope that commits after the sink was created,
   at least once, in the order of the export cursor, with `metadata.uid` stable across redeliveries so that a receiver
   can drop a duplicate. A sink that keeps failing MUST NOT skip records: it backs off, is reported as `STALLED`, and
