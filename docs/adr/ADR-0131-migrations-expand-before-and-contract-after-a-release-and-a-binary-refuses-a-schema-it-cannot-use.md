@@ -24,10 +24,10 @@ writers together.
    edited.
 2. A transactional migration MUST begin with a 2 s lock timeout and take at most one lock that blocks inserts on a hot
    table, last, under a 2 s statement timeout (one migration may widen the three closed capability lists, which changes
-   only the catalog); on a hot table an index, unique constraint or primary key is built only
+   only the catalog, after one lock of the three under that timeout); on a hot table an index, unique constraint or primary key is built only
    concurrently; a migration without a transaction holds one concurrent statement and is idempotent; constraints are
    added `NOT VALID` and validated later; no table rewrite, type change in place, rename, volatile default, undefaulted
-   `NOT NULL` column, or replaced function, trigger, policy or view that a released binary relies on; a definer function
+   `NOT NULL` column, or replaced or dropped function, trigger, policy or view that an earlier migration created; a definer function
    pins its search path and is revoked from public. The lint parses each statement with PostgreSQL's own parser. A
    waiver is a header naming the rule and the reason.
 3. `migrate` MUST confirm the database as ADR-0130's one-run commands do, hold sqlx's migration lock, apply migrations
