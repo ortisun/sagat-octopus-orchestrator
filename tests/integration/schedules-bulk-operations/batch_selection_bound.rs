@@ -1,6 +1,7 @@
-//! The time bound of a batch job's selection (`FR-018-028`, `FR-018-029`, G2403, D2405): a selector of run ids takes
-//! exactly the runs it names, whatever their recorded creation, and a filter selector takes the runs created at or before
-//! the instant the job was created (`selection_bound_at`).
+//! The time bound of a batch job's selection (`FR-018-028`, `FR-018-029`, G2403, D2405, D2406): a selector of run ids
+//! takes the runs of the namespace it names, up to `maxItems`, whatever their recorded creation, through a statement of its
+//! own on the primary key, and a filter selector takes the runs created at or before the instant the job was created
+//! (`selection_bound_at`).
 //!
 //! A backward step of the database clock between a run's commit and the creation of a job makes the run's `created_at`
 //! later than the job's bound. These tests make that state by moving `created_at` an hour away from the database's clock,
@@ -13,6 +14,7 @@ use serde_json::json;
 use time::Duration;
 use uuid::Uuid;
 
+use crate::batch_business_id_selector::{by_prefix, under};
 use crate::batch_executor::{
     create, everything, executor, items, job, live, select, service, settle, status_of, write,
 };
@@ -198,5 +200,128 @@ async fn an_id_selector_still_refuses_the_runs_of_another_namespace_or_tenant_wh
             "CANCELLED",
             "a run of another namespace or tenant is not cancelled by this job"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_prefix_selector_still_leaves_out_a_run_recorded_after_its_bound() {
+    let f = fixture().await;
+    let inside = under(&f, "bounded-1").await;
+    let late = under(&f, "bounded-2").await;
+    recorded_an_hour_back(&f, &[inside]).await;
+    recorded_an_hour_ahead(&f, &[late]).await;
+
+    let preview = service(&f)
+        .preview(&f.w.admin, f.w.namespace.id(), &by_prefix("bounded-"), None)
+        .await
+        .expect("preview");
+    assert_eq!(
+        (preview.matched, preview.sample.clone()),
+        (1, vec![inside]),
+        "the preview by prefix is bounded by the instant it reads"
+    );
+
+    live(&f);
+    let exec = executor(&f);
+    let job_ = create(
+        &f,
+        write(Action::Cancel, by_prefix("bounded-")),
+        "prefix-bound",
+    )
+    .await;
+    select(&f, &exec, &job_).await;
+    run_to_the_end(&f, &exec, &job_).await;
+
+    let done = job(&f, job_.id).await;
+    assert_eq!(
+        (done.state, done.counts.selected, done.counts.succeeded),
+        (JobState::Completed, 1, 1)
+    );
+    assert_eq!(
+        item_runs(&f, job_.id).await,
+        vec![inside],
+        "a prefix takes only the runs created at or before the job's bound"
+    );
+    assert_ne!(
+        status_of(&f, late).await,
+        "CANCELLED",
+        "the run after the bound is not touched"
+    );
+}
+
+/// The statements of a selector of run ids read the list from the primary key in every plan, also the generic plan
+/// PostgreSQL may use after five executions (D2406). The text the ids shared with the filter until then,
+/// `($10::uuid[] IS NULL OR r.id = ANY($10))`, read every run and sorted them under a generic plan, so the last, short page
+/// of a job read the rest of the namespace under the round's statement timeout.
+#[tokio::test]
+async fn a_list_of_run_ids_is_read_from_the_primary_key_even_by_a_generic_plan() {
+    use sagat_infra_postgres::{PREVIEW_BY_IDS_SQL, SELECTION_BY_IDS_SQL};
+    let f = fixture().await;
+    let model = f.w.start(f.workflow, &json!({})).await.as_uuid();
+    // a namespace with enough runs to have statistics: copies of one run under ids of their own
+    sqlx::query(
+        "WITH made AS (SELECT gen_random_uuid() AS id FROM generate_series(1, 6000)) \
+         INSERT INTO runs SELECT (jsonb_populate_record(r, \
+             jsonb_build_object('id', made.id, 'root_run_id', made.id))).* \
+         FROM runs r, made WHERE r.id = $1",
+    )
+    .bind(model)
+    .execute(&f.w.db.pool)
+    .await
+    .expect("copy the run");
+    sqlx::query("ANALYZE runs")
+        .execute(&f.w.db.pool)
+        .await
+        .expect("statistics");
+    let tenant: Uuid = sqlx::query_scalar("SELECT tenant_id FROM runs WHERE id = $1")
+        .bind(model)
+        .fetch_one(&f.w.db.pool)
+        .await
+        .expect("tenant");
+    let namespace = f.w.namespace.id().as_uuid();
+    // a prepared statement and the setting live in their session: one connection for all of it
+    let mut session = f.w.db.pool.acquire().await.expect("a connection");
+    sqlx::query("SET plan_cache_mode = force_generic_plan")
+        .execute(&mut *session)
+        .await
+        .expect("plan with no values bound");
+    for (name, statement, types, last) in [
+        (
+            "selection",
+            SELECTION_BY_IDS_SQL,
+            "uuid, uuid, uuid[], uuid, bigint",
+            "NULL, 500",
+        ),
+        (
+            "preview",
+            PREVIEW_BY_IDS_SQL,
+            "uuid, uuid, uuid[], bigint",
+            "501",
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "PREPARE by_ids({types}) AS {statement}"
+        )))
+        .execute(&mut *session)
+        .await
+        .expect("prepare the statement");
+        let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN (COSTS OFF) EXECUTE by_ids('{tenant}', '{namespace}', ARRAY['{model}']::uuid[], {last})"
+        )))
+        .fetch_all(&mut *session)
+        .await
+        .expect("explain");
+        let plan = plan.join("\n");
+        assert!(
+            plan.contains("runs_pkey")
+                && plan
+                    .lines()
+                    .any(|line| line.contains("Index Cond") && line.contains("ANY")),
+            "the {name} of a list of ids reads the list from the primary key, not every run of the namespace:\n{plan}"
+        );
+        sqlx::query("DEALLOCATE by_ids")
+            .execute(&mut *session)
+            .await
+            .expect("deallocate");
     }
 }

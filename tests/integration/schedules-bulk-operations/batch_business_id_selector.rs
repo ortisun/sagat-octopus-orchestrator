@@ -24,7 +24,7 @@ use crate::firing::{Fixture, fixture};
 use crate::support::engine::{chain, ctx};
 
 /// Starts a run under `id` in the namespace `payments` and returns it.
-async fn under(f: &Fixture, id: &str) -> Uuid {
+pub(crate) async fn under(f: &Fixture, id: &str) -> Uuid {
     start(
         f,
         business(id, ConflictPolicy::Fail, ReusePolicy::AllowDuplicate),
@@ -38,7 +38,7 @@ async fn under(f: &Fixture, id: &str) -> Uuid {
     .as_uuid()
 }
 
-fn by_prefix(prefix: &str) -> Selector {
+pub(crate) fn by_prefix(prefix: &str) -> Selector {
     Selector::filter(Filter {
         business_id_prefix: Some(prefix.to_owned()),
         ..Filter::default()
@@ -496,7 +496,7 @@ async fn a_selective_prefix_is_answered_from_the_index_on_the_business_id_of_the
         ("preview", PREVIEW_BY_PREFIX_SQL, "501"),
     ] {
         // the types of the parameters, in order, then what a job by the prefix `bulk-5999` binds
-        let types = "uuid, uuid, uuid, uuid, text[], text, uuid, timestamptz, timestamptz, uuid[], timestamptz, text, text";
+        let types = "uuid, uuid, uuid, uuid, text[], text, uuid, timestamptz, timestamptz, timestamptz, text, text";
         let cursor_type = if name == "selection" {
             ", uuid, bigint"
         } else {
@@ -509,7 +509,7 @@ async fn a_selective_prefix_is_answered_from_the_index_on_the_business_id_of_the
         .await
         .expect("prepare the statement");
         let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "EXPLAIN (COSTS OFF) EXECUTE by_prefix('{tenant}', '{namespace}', NULL, NULL, '{{}}', NULL, NULL, NULL, NULL, NULL, \
+            "EXPLAIN (COSTS OFF) EXECUTE by_prefix('{tenant}', '{namespace}', NULL, NULL, '{{}}', NULL, NULL, NULL, NULL, \
              now() + interval '1 hour', 'bulk-5999', 'bulk-599:', {last})"
         )))
         .fetch_all(&mut *session)
@@ -539,13 +539,13 @@ async fn a_selective_prefix_is_answered_from_the_index_on_the_business_id_of_the
     // pages by run id (G2089).
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "PREPARE wide_preview({}) AS {PREVIEW_BY_PREFIX_SQL}",
-        "uuid, uuid, uuid, uuid, text[], text, uuid, timestamptz, timestamptz, uuid[], timestamptz, text, text, bigint"
+        "uuid, uuid, uuid, uuid, text[], text, uuid, timestamptz, timestamptz, timestamptz, text, text, bigint"
     )))
     .execute(&mut *session)
     .await
     .expect("prepare the preview");
     let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "EXPLAIN (COSTS OFF) EXECUTE wide_preview('{tenant}', '{namespace}', NULL, NULL, '{{}}', NULL, NULL, NULL, NULL, NULL, \
+        "EXPLAIN (COSTS OFF) EXECUTE wide_preview('{tenant}', '{namespace}', NULL, NULL, '{{}}', NULL, NULL, NULL, NULL, \
          now() + interval '1 hour', 'bulk-', 'bulk.', 501)"
     )))
     .fetch_all(&mut *session)
