@@ -53,12 +53,21 @@ row it would drop exists.
 - **Install completion:** the job row, then the version row.
 - **Finish:** the version row, then the snapshot lock shared and the same two rows `FOR SHARE`, then the artifact, the
   records and the blocks.
+- **Lock waits of the barrier and the switch:** both queue new takers behind them while they wait, so both wait with a
+  `lock_timeout` of 2 s, below the runtime pool's 5 s `statement_timeout` (`crates/infra-postgres/src/pool.rs`), and retry
+  with backoff, with the alert after 10 minutes without the lock; this replaces the design's 30 s and "the same timeout"
+  (follow-up Task 046-28). A decision cancelled while queued behind them (`57014` or `55P03`) takes the retryable path: a
+  job fails retryable, and a publication answers `503 SCRIPT_POLICY_BUSY`.
 - **Advisory switch:** the snapshot lock exclusively, then `package_advisory_snapshots` `FOR UPDATE`, then block inserts
-  (no version row is locked, so it cannot deadlock with a decision, which takes the snapshot lock after its own rows).
+  for every artifact whose `script_locked_packages` rows match a precomputed pair or a pair the range evaluation matched,
+  joined to `artifact_digest` under the lock (never artifact digests from the application's earlier read, which may
+  predate a finish); no version row is locked, so it cannot deadlock with a decision, which takes the snapshot lock
+  after its own rows.
 - **Author-lock publication and any other writer of `script_locked_packages`:** the snapshot lock shared (ordering the
   decision against a switch), then its inserts, whose table lock the advisory barrier waits for.
 - **Policy, rule and waiver writes:** the policy row `FOR UPDATE`. **Reservations:** the revision row `FOR UPDATE`.
-- **Re-evaluation page:** its job row, then the snapshot lock shared, then the policy and reservation-revision rows
+- **Re-evaluation page:** its job row, then the snapshot lock shared of each ecosystem it covers in ecosystem-name order
+  (`npm` before `pypi`), then the policy and reservation-revision rows
   `FOR SHARE`, then the
   page's blocks in artifact digest order.
 - **Block pass (`fail_ready_step`):** one step per transaction, in the engine's order: the run's chain, the run row, then

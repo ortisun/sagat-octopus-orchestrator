@@ -38,7 +38,7 @@ severity), naming packages and versions, never file content.
 | Code | Status | Retryable | When |
 |---|---|---|---|
 | `PACKAGE_GATEWAY_UNAVAILABLE` | `503` | yes | an author-lock publication's metadata call failed |
-| `SCRIPT_POLICY_BUSY` | `503` | yes | an author-lock publication met `StaleInputs` five times in a row |
+| `SCRIPT_POLICY_BUSY` | `503` | yes | an author-lock publication met `StaleInputs` five times in a row, or was cancelled while queued behind an advisory barrier or switch |
 
 `SCRIPT_DEPENDENCIES_UNAVAILABLE` (`422`) answers a manifest or a package-bearing lock while `script-dependencies-v1` is
 not activated.
