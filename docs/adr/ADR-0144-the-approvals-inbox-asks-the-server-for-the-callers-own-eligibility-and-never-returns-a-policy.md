@@ -2,8 +2,8 @@
 
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
-**Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor"; supersedes none
-**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles, initiators and run states, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
+**Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor", and Architecture decision 0018 decision 4 (who may approve a publication request), on which `PublicationRequest::may_decide` is built; supersedes none
+**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles and initiators, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
 
 ## Context
 
@@ -51,7 +51,8 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
    decided) and `publication:approve`. Its items carry the request's identifier, workflow, kind, state, draft revision,
    requester, request time, the approvals recorded and the approvals the current policy requires, and `youMayDecide`;
    they MUST NOT carry the decisions or the last editor, which stay on the per-workflow list under the same
-   `definition:read`. Decision 3 concerns approval policies and does not forbid naming the requester, whom the
+   `definition:read`. The use case resolves `approvalsRequiredNow` once per page by the same pure policy function that
+   publication's recount uses; the store returns raw rows. Decision 3 concerns approval policies and does not forbid naming the requester, whom the
    per-workflow list already names. The items of `GET /workflows/{id}/publication-requests` gain the same
    `youMayDecide`.
 
@@ -68,7 +69,8 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 ## Consequences
 
-- One migration adds a partial index on pending approvals by namespace and deadline. The decision path keeps its rule and its
+- Two migrations add partial indexes, on pending approvals by namespace and deadline and on open publication requests by
+  namespace and request time. The decision path keeps its rule and its
   answers; its ended-run refusal moves after authorization.
 - A person sees their own eligibility for every pending approval of a namespace they can read, which they could learn
   anyway by attempting a decision; nobody learns anything about another person.

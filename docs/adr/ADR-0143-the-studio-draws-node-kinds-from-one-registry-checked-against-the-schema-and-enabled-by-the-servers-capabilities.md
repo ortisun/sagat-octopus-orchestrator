@@ -47,9 +47,10 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
    absent. A document that already holds such a node, or a node of a kind the server refuses at publication for good
    (`foreach`, `humanApproval`), MUST open with that node shown and read-only, with the reason in words and the server
    problem from `validate`; the Studio MUST NOT drop, rewrite or convert the node without the author's explicit action.
-4. A refused legacy kind MAY be replaced through a dialog that fills the fields that map exactly to the executable
-   kind (`foreach` to `forEach`, `humanApproval` to `approval`) and asks the author for every field that does not; the
-   replacement is an ordinary edit of the draft, undoable, and published only by the author.
+4. A refused legacy kind is replaced by the author: its inspector shows its values read-only beside an action that adds
+   the executable kind in its place (`foreach` by `forEach`, `humanApproval` by `approval`) and moves every incoming link
+   to it; nothing is converted for the author, the change is an ordinary, undoable edit of the draft, and a guided
+   conversion is built only if a count shows legacy drafts are common (design 050, Gap 050-005).
 5. The server stays the authority. Publication and `validate` decide. The shapes publication accepts (the publishable
    subset, narrower than the schema) are the codec's alone: the Studio MUST NOT write them again as rules; it shows a
    note per kind and marks a refused combination at its node from the editor's live validation. A capability shown by

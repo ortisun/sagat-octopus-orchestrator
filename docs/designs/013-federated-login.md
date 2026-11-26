@@ -419,7 +419,7 @@ already has.
 
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (one use, rotated on every refresh by compare-and-set on its generation, the new
-  token signed before the commit; a reuse of the immediately previous generation within 30 seconds of its rotation, while
+  token signed before the commit with a handle obtained before the transaction; a reuse of the immediately previous generation within 30 seconds of its rotation, while
   its successor has never been used, issues a new successor and retires the unused one, which covers a lost response;
   any other reuse revokes the session and is audited; the CLI holds a file lock around a refresh and re-reads the key
   store under it, so a second CLI process uses the new token instead of reusing the old; CLI sessions absolute 7 days, or 24 hours on a connection without SCIM, idle 24 hours), and store them in the operating system's key store, or a file
@@ -455,9 +455,9 @@ already has.
   request, tenant setting and deployment ceiling; a ceiling of zero refuses every request.
 - **Requirement 013-032** Compatibility and activation: federation is off until the deployment enables it. A control
   plane lists the instance-registry capability `identity-federation-v1` only when its configuration enables federation
-  (the public origin and the identity mount); a 0.3.0 execution engine lists it unconditionally, because federation
-  turns on nothing in it (it verifies the deployment issuer only, Decision 013-016, and suspension and federated-only
-  are enforced in the schema's membership reads); an operator activates the requirement by the audited command of
+  (the public origin and the identity mount); a 0.3.0 execution engine lists it unconditionally, because it needs no
+  configuration for federation (it verifies the deployment issuer only, Decision 013-016, suspension and federated-only
+  are enforced in the schema's membership reads, and its maintenance loop starts on the recorded requirement); an operator activates the requirement by the audited command of
   Architecture decision 0082 decision 1, refused while a live process lacks it; until it is recorded, connection
   creation, SCIM, member suspension and the federated-only setting are refused (`FEDERATION_NOT_ACTIVATED`), and the
   advertised capability name `identity.federation` of `GET /version` (design 050, Technical Plan 3) and the
@@ -639,7 +639,7 @@ whose report and resolution are in `013-federated-login.reviews/`.
   five-minute token into long-lived task streams would buy nothing the binding model does not already give.
 - **Decision 013-017 — External groups are rows of feature 029's `access_groups`.** Options: tables owned by this design
   (the first draft, which an assignment could not name); 029 amending its keys; this design adding columns to 029's
-  tables. Chosen: the columns (`source_kind`, `connection_id`, `external_value`, `generation`, freshness) on
+  tables. Chosen: the columns (`source_kind`, `connection_id`, `external_value`, `generation`) on
   `access_groups` and `access_group_members`, so 029's assignments, folder entries and evaluator name them unchanged;
   029's migration lands first. Deleting a connection is refused while any of its external groups is named by an
   assignment, an entry or an operation list; disabling it is always allowed (Major 8 of the architecture review of 2026-11-25).
@@ -787,11 +787,12 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 |---|---|
 | Connection, mapping rules, owning connection, provisioning policy, session policy, SCIM patch semantics; the OIDC claim rules (`iss`, `aud`, `azp`, `nonce`, the tenant restriction, the subject claim) and the SAML profile's rules over parsed values (pure) | `crates/domain/src/federation.rs`, `crates/domain/src/federation/{oidc,saml}.rs` |
 | The identity egress policy (any name, global addresses only, allowlisted hosts never to loopback, link-local or metadata, port 443 unless listed) | `crates/domain/src/egress.rs`, beside `EgressPolicy`, with unit tests |
-| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore`, `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets` | `crates/application/src/federation/` |
+| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets` | `crates/application/src/federation/` |
+| The platform key set's fetcher: maps `FederationStore::signing_keys()` to a `JwkSet` for the verifier's `JwksCache` | `crates/api-http/src/auth/issuers.rs` |
 | `EgressClient` with no redirects under the identity policy; `JwksCache` and its `JwksFetcher` trait, moved here from `crates/api-http/src/auth/jwks.rs` so that `api-http` and `infra-federation` share them without `api-http` depending on the federation crate | `crates/infra-egress` |
-| `TokenSigner` (the key read from the identity mount) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client | `crates/infra-secrets` |
+| `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client | `crates/infra-secrets` |
 | The OIDC client (its connection key sets are `JwksCache` instances over a fetcher through the identity egress guard); the SAML parser, canonicalization and signature check | `crates/infra-federation` (new adapter crate) |
-| Tables, stores, the redefined `sagat_lock_memberships`, the session join of the membership read | `crates/infra-postgres` (migration `<ts>_federated_login`, `src/federation.rs`, `src/identity.rs`) |
+| Tables, stores (the `FederationStore` adapter, `signing_keys()` included), the redefined `sagat_lock_memberships`, the session join of the membership read | `crates/infra-postgres` (migration `<ts>_federated_login`, `src/federation.rs`, `src/identity.rs`) |
 | Routes `/v1/auth/*`, `/scim/v2/*`, `/identity/*`, `/members*`; the multi-issuer verifier; `Core::authenticate` widened to take the issuer kind, `sid` and `jti` | `crates/api-http/src/routes/{signin,scim,identity_admin,members}.rs`, `crates/api-http/src/auth/issuers.rs`, `crates/api-http/src/core.rs` |
 | Configuration, the `identity-federation-v1` capability, the operator commands of Technical Plan 12, the start-up refusals (a deployment issuer equal to the platform issuer; origins that break Architecture decision 0062 decision 8) | `apps/control-plane` |
 | The leased maintenance passes (Technical Plan 6) | `crates/scheduler/src/identity.rs`, run by the execution engine under the engine lease `identity-maintenance`, only once `identity-federation-v1` is recorded |
@@ -922,9 +923,14 @@ nothing (step 1 needs the bearer token) and confirm nothing (step 4 needs it aga
 5. For `studio`, check the browser's session cookie (Requirement 013-018: `SESSION_CONFLICT` unless
    `replace_session=true`, then revoke the old session); insert the session row with its authentication context;
    write the audit.
-6. Sign the access token (and for `cli` the refresh token) for the new `sid`, then commit. A token for an
-   uncommitted `sid` is refused by the session join, so signing before the commit is safe, and an OpenBao failure
-   rolls the whole transaction back with the code unspent.
+6. Sign the access token (and for `cli` the refresh token) for the new `sid` with the signing handle obtained before
+   `BEGIN`, then commit. Before the transaction starts, the use case asks the `TokenSigner` for a handle (a fresh view
+   of the active key, the key in memory); if it cannot get one, the request is refused with
+   `IDENTITY_SIGNING_UNAVAILABLE` before any lock is taken and the code stays unspent. Inside the transaction signing
+   is CPU work only, never a network call, so no OpenBao or pool latency is held under the advisory lock, the
+   settings and connection rows or the fence. A token for an uncommitted `sid` is refused by the session join, so
+   signing before the commit is safe. The refresh grant does the same
+   (`signing_inside_a_transaction_does_no_io`).
 
 It returns the access token (and for `cli` a refresh token) and, for `studio`, sets `__Host-sagat_signin`.
 `grant_type=refresh_token` (`cli` only) rotates the refresh token by compare-and-set on its generation; the grace for a
@@ -1350,8 +1356,10 @@ the requirement is unsupported. Federation rows stay.
   only by the inserting transaction, in that transaction.
 - **Activation window.** A writer that needs the `identity-federation-v1` requirement checks it in its own transaction
   through a definer function that reads the epoch under a shared lock, as feature 029's guard does (its note on Gap
-  2001), so a removal and an enable cannot pass each other; replicas learn an activation at their next beat (about 12
-  seconds: Architecture decision 0082 decision 4, a heartbeat of 10 seconds jittered to 12, plus the call), during which some answer `FEDERATION_NOT_ACTIVATED`; the runbook says to wait for the beat.
+  2001), so a removal and an enable cannot pass each other; that in-transaction check has no lag. The Studio's offer of the
+  platform issuer in `config.json` and the name `identity.federation` follow the in-memory view of the registry, which
+  a replica learns at its next beat (about 12 seconds: Architecture decision 0082 decision 4, a heartbeat of 10
+  seconds jittered to 12, plus the call); the runbook says to wait for the beat before expecting the Studio's offer.
 
 ## Risks and Mitigations
 
@@ -1538,8 +1546,10 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   platform verifier (`at+jwt`, audience, `client_id`, 300 seconds, `federated:` refused from the deployment issuer,
   equal issuers refused at start-up); `VerifiedCaller` and the five `Core` implementations; the engine deployment-only
   and listing `identity-federation-v1` always; the per-request check of Requirement 013-019 over sessions the tests
-  insert; `Who` and `StreamLimits`; the `config.json` change in `crates/api-http/src/studio.rs` and the name
-  `identity.federation` from one mapping; the command `identity federation activate|remove`; the `capabilities` field
+  insert; `Who` and `StreamLimits`; the registry member reading the requirement set after registration and on every
+  epoch change and keeping it beside its gate (unless feature 022 or 029 has merged that change first, design 050,
+  Technical Plan 3); the `config.json` change in `crates/api-http/src/studio.rs` and the name `identity.federation`
+  from one mapping over that kept set; the command `identity federation activate|remove`; the `capabilities` field
   when design 050 has not merged.
   Red tests (`integration_federated_login`): `a_suspended_member_is_refused_on_the_next_request`,
   `a_revoked_session_is_refused_on_its_next_request` (a barrier holds a request while the revocation commits),
@@ -1547,7 +1557,9 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_token_minted_for_another_subject_with_a_live_sid_is_refused`, `a_reenabled_connection_revives_no_session`, `a_revoked_key_is_refused_on_every_replica_at_once`,
   `a_stream_ends_within_ten_seconds_of_its_session` (measured), `a_deployment_stream_keeps_its_thirty_second_recheck`,
   `a_stream_resumes_with_last_event_id`, the older-replica activation test, `the_engine_refuses_a_platform_token`;
-  `the_studio_configuration_offers_both_issuers` (`contract_federated_login`).
+  `the_studio_configuration_offers_both_issuers` (`contract_federated_login`);
+  `a_replica_started_after_an_activation_advertises_it`,
+  `a_replica_started_after_an_activation_offers_the_platform_issuer`.
   The two fakes of `IdentityStore` follow: `CountingStore` (`tests/support/api.rs`) counts `resolve_caller` as its
   authentication lookup, so the throttling tests that read that count (`tests/fault/platform-foundation/limits.rs`,
   `tests/integration/workflow-primitives/api_reopen.rs`) keep meaning what they test, and `FakeStore`

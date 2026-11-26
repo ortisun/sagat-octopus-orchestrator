@@ -560,8 +560,10 @@ enables an Update's `reapplyOnReset`), and these advertised names (what a client
 may offer). The advertised names are the variants of `AdvertisedCapability` in `crates/application/src/capabilities.rs`,
 computed by one pure function, `advertised_capabilities(&CapabilitySwitches) -> Vec<AdvertisedCapability>` in that
 file, which `apps/control-plane` calls at start-up and the test harness (`tests/support/api.rs`, from its `Options`)
-calls too, so a test exercises the same mapping; the list is kept in `AppState` (a field `capabilities` set by
-`AppState::with_capabilities`) and served by `platform_version` in `crates/api-http/src/routes/identity.rs`, which
+calls too, so a test exercises the same mapping; `AppState` keeps a capability source (a field `capabilities` set by
+`AppState::with_capabilities`), the start-up switches and, from the first feature that derives a name from the
+instance registry, the registry member's kept requirement set, read on each request; it is served by
+`platform_version` in `crates/api-http/src/routes/identity.rs`, which
 gains the state, on both routers that mount `/version` (`crates/api-http/src/lib.rs`).
 
 Design 050 ships two names, one per switch that changes what a field may hold:
@@ -589,7 +591,7 @@ A field whose capability is absent (the collection-operator stage list of `forEa
 read-only with the reason and kept on save, as a node of a disabled kind is.
 
 Each other 0.3.0 feature adds its names, with a variant and a row here, when it ships: feature 022
-(`workflow.flow-control.concurrency`, `workflow.flow-control.rate`), 027 (`apps.*`), 028 (`testing.*`), 029
+(`workflow.flow-control.concurrency`, `workflow.flow-control.rate`), 027 (`apps.*`), 028 (`testing.virtual-clock`, `testing.history-replay`, `tooling.git-sync`, `tooling.template-catalog`), 029
 (`access.*`), 013 (`identity.*`). The instance registry
 ([Architecture decision 0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md))
 is unrelated to the Studio's node registry: every server process registers in it as a member and sends a beat every
@@ -792,13 +794,11 @@ name and the run's business identifier) and the key of the last row scanned; its
 business identifier with `tenant_id` in every join predicate and reading the policy columns in the same row, and takes
 no row lock (the runtime role holds only column-level `UPDATE` on `approval_requests`). It never loads row by row as
 `list_for_run` does today (one statement per request through `load_request`), which would make a 2,000-row page
-2,000 statements; the test `an_inbox_page_is_one_statement` counts them. The use case builds the caller's principal
-from the current membership read by `IdentityStore::find_membership` (`crates/application/src/identity.rs`; a
-point-in-time hint, where the decision reads it again in its own transaction) and computes `youMayDecide` with
-`may_decide(principal)`, then drops the undecidable rows when `decidable=true`. The per-run
-list computes the flag from the same row type, read for one run by one statement as well; the session principal the
-request already carries is built from the current membership on every request, so the use case may take it instead of
-a second read.
+2,000 statements; the test `an_inbox_page_is_one_statement` counts them. The use case takes the caller's principal from the request,
+which the request path builds from the current membership on every request (a point-in-time hint; the decision reads
+the role again in its own transaction), and computes `youMayDecide` with `may_decide(principal)`, then drops the
+undecidable rows when `decidable=true`. The per-run list computes the flag from the same row type, read for one run by
+one statement as well.
 
 *Ended runs.* A run's end cancels its pending approvals in the run's own transaction
 (`crates/infra-postgres/src/execution.rs`), so a pending approval of an ended run should not exist; the probe
@@ -810,8 +810,10 @@ principal, with a retryable `503`; that guard moves after authorization, so an i
 eligibility and never learns that the run ended; its answer to an eligible caller stays the `503` it is today. No SQL
 predicate repeats the eligibility rule; the snapshots never leave the use case.
 
-*Paging and access filters.* A page reads
-at most 2,000 rows; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
+*Paging and access filters.* A page returns at most 2,000 rows that pass the scan's access and data predicates
+(namespace, `PENDING`, the run not ended, and 029's `visibleFolders` when it exists); the work of a page is bounded by
+the namespace's pending rows in the partial index, and `approval_inbox_rows_scanned` counts the rows that passed the
+predicates and were read; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
 returned, so a page that drops every row it scanned still returns a cursor, and it is null only when no row remains
 (Architecture decision 0144, decision 5). Because the cursor names a scanned row, every access filter is a predicate
 of the scan, never a filter after it: feature 029's `visibleFolders` is added to the statement's `WHERE` (an access
@@ -847,10 +849,12 @@ open-state clause and the three clauses of Architecture decision 0018 decision 4
 editor, not a person who already decided it), which `decide` calls; the use case adds `publication:approve`.
 
 *Paging, port and index.* Order:
-`requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; a port `PublicationInboxStore::open_page` returns each request with its decisions, requester and last editor (for
-`may_decide`, never in the item) and `approvalsRequiredNow`, read by the same policy resolution that publication's
-recount uses (`PublishingService::effective_policy` in `crates/application/src/publishing.rs`, made `pub(crate)` for
-the new use case), in one query per page; a migration adds `publication_requests_open_requested_idx ON publication_requests
+`requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; a port `PublicationInboxStore::open_page` returns raw rows in one query per page: each request with its decisions,
+requester and last editor (for `may_decide`, never in the item) and the namespace's stored policy. The use case
+resolves the policy once per page (it is namespace-wide) by a pure function over the stored policy and the
+environment, extracted from `PublishingService::effective_policy` (`crates/application/src/publishing.rs`) and called
+by publication's recount and by the inbox alike, so no copy of the resolution exists in SQL; it then computes
+`approvalsRequiredNow` and keeps the `APPROVED` requests with fewer approvals than that; a migration adds `publication_requests_open_requested_idx ON publication_requests
 (tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`.
 
 *Items.* `requestId`, `workflowId`, `workflowName`, `kind`, `state`, `draftRevision`, `requestedBy`, `requestedAt`,
@@ -996,7 +1000,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 Non-functional requirements 050-001 to 050-004 above. Their tests: the cross-tenant battery and the canary checks of
 the journeys (050-001); the performance journey with 10,000 pending approvals and a run of 10,000 iterations, recorded
 with its environment (050-002); the existing contract baselines (with the two digests renewed after reading their diff) and the Studio suites
-unchanged, and the ended-run classification test in each SDK that calls the decision route (050-003); the metric label test of the new routes (050-004).
+unchanged (050-003); the metric label test of the new routes (050-004).
 
 --------------------------------------------------------------------------------
 

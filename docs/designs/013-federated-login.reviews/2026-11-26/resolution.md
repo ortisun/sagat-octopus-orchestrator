@@ -112,3 +112,18 @@ All seven findings are fixed.
 |---|---|---|---|
 | 1 | Nit | Fixed: with no requirement every value is accepted, so the first requirement is a raise; the lowering test starts from no requirement | Requirement 013-010 |
 | 2 | Nit | Fixed: the renewal test is in Task 013-9, covering renewal and the CLI's refresh | Task 013-9 |
+
+## Architecture re-read, round 1 (`approval/reread-1-architecture.md`, at `dabbc4bc`)
+
+All eight findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a signing handle is obtained before `BEGIN`, or the request is refused before any lock; signing inside is CPU work only; the refresh grant does the same; `signing_inside_a_transaction_does_no_io` | Technical Plan 4, Requirement 013-026 |
+| 2 | Major | Fixed: `FederationStore::signing_keys()` (adapter in `infra-postgres`), a fetcher in `api-http/src/auth/issuers.rs` mapping to a `JwkSet`, the signer given the active version by the use case; placement rows added | Technical Plan 2 |
+| 3 | Major | Fixed: Task 013-10 makes the registry member keep the requirement set (unless 022 or 029 did first), with `a_replica_started_after_an_activation_advertises_it` and `a_replica_started_after_an_activation_offers_the_platform_issuer` | Task 013-10 |
+| 4 | Nit | Fixed: "needs no configuration for federation" | Requirement 013-032, Architecture decision 0140 |
+| 5 | Nit | Fixed: "reset" removed; the two tests in "Enforced by" | Architecture decision 0140 |
+| 6 | Nit | Fixed | Decision 013-017 |
+| 7 | Nit | Fixed: the in-transaction check has no lag; the in-memory view drives the Studio's offer and the name; the runbook's wait scoped to it | Technical Plan 13 |
+| 8 | Nit | Fixed: the addition covers SCIM `POST` and pre-provisioning, the registry epoch first, and the demotion restart rule | Architecture decision 0050 |

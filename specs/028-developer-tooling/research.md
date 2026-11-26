@@ -444,7 +444,9 @@ feature 034, ADR-0070); the register is append-only, so the older text is left a
   design 050's editor slice, which rewrites the registry it starts from.
 - **Decision 028-008 — The capabilities are `testing.virtual-clock` and `testing.history-replay` in design 050's one
   list** (ADR-0143); FR-028-045's "additive `capabilities` list" is that list, and the unprefixed names of Decision 1409
-  (`virtual-clock`, `history-replay`) are written with the `testing.` prefix.
+  (`virtual-clock`, `history-replay`) are written with the `testing.` prefix; the Git sync and template catalog names
+  are `tooling.git-sync` and `tooling.template-catalog` (corrected 2026-11-26 in `contracts/errors.md`, which had kept
+  the closed, unprefixed list).
 - **Decision 028-009 — The extension follows step logs.** Feature 041 stores step logs read under their own permission
   (ADR-0085). The extension's "follow" may show them through the CLI when the caller holds that permission; it adds no
   route.

@@ -254,7 +254,7 @@ refused before anything is created.
   deployment, and MUST hold exactly one tenant.
 - **FR-028-002 — Never in production:** Production composition roots MUST refuse to serve a database that carries
   the test-deployment marker or a non-canonical workflow-time function, MUST NOT expose testing routes (they answer
-  `404 ROUTE_NOT_FOUND`) and MUST NOT advertise the `virtual-clock` capability. The production image MUST NOT contain
+  `404 ROUTE_NOT_FOUND`) and MUST NOT advertise the `testing.virtual-clock` capability. The production image MUST NOT contain
   the test server binary and no production binary MAY depend on the test-only crates. Each rule MUST have an
   automated check that fails the build or the start (start-up refusal, route test, a CI check of the image's build
   and copy lines, and a dependency-tree check of the production binaries).
@@ -291,7 +291,7 @@ refused before anything is created.
   races MUST keep "first commit wins". The existing engine suites MUST pass unchanged with a zero offset and the
   shifted-clock regression suite MUST pass with a non-zero offset.
 - **FR-028-009 — SDK test environment:** Each of the six SDKs MUST offer a test environment that connects to a test
-  server, checks its `virtual-clock` capability, creates clients and worker hosts configured for it (binding the
+  server, checks its `testing.virtual-clock` capability, creates clients and worker hosts configured for it (binding the
   worker's activity names through the public binding API), and exposes `now`, `advance`, `skip`,
   `waitForCompletion` with time skipping and namespace creation. Behaviour MUST be held to shared conformance
   scenarios.

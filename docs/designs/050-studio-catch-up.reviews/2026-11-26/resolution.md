@@ -90,3 +90,18 @@ All 20 findings are accepted and fixed; every Blocker is fixed.
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Nit | Fixed: the sentence says reads collapse per caller and filter per five minutes | Technical Plan 7 |
+
+## Architecture re-read, round 1 (`approval/reread-1-architecture.md`, at `dabbc4bc`)
+
+All eight findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: 028's contract refers to design 050's field; the four names are `testing.virtual-clock`, `testing.history-replay`, `tooling.git-sync`, `tooling.template-catalog`; Decision 028-008 records the correction; Technical Plan 3 lists all four | `specs/028-developer-tooling/`, Technical Plan 3 |
+| 2 | Major | Fixed: the port returns raw rows and the stored policy; the use case resolves the policy once per page by a pure function extracted from `effective_policy` and shared with the recount; Architecture decision 0144 decision 6 says so | Technical Plan 6, Architecture decision 0144 |
+| 3 | Nit | Fixed: the clause deleted | Non-Functional Requirements |
+| 4 | Nit | Fixed: no run states, two migrations, Architecture decision 0018 decision 4 in "Refines" | Architecture decision 0144 |
+| 5 | Nit | Fixed: decision 4 describes the add-here action and cites Gap 050-005 | Architecture decision 0143 |
+| 6 | Nit | Fixed: `AppState` keeps a capability source read on each request | Technical Plan 3 |
+| 7 | Nit | Fixed: the request's principal; no second read | Technical Plan 6 |
+| 8 | Nit | Fixed: the bound counts rows that pass the predicates; the work is bounded by the namespace's pending rows; the histogram's meaning stated | Technical Plan 6 |
