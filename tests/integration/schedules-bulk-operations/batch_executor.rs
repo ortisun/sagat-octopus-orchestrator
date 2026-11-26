@@ -65,6 +65,20 @@ pub(crate) fn live(f: &Fixture) {
         .set(OffsetDateTime::now_utc() + Duration::seconds(2));
 }
 
+/// Moves the clock of the test to the first slot of `created` when it is behind it, so that the job's items are due.
+///
+/// The database stamps that slot when the job is created (`clock_timestamp()`), and the executor compares it with this
+/// clock (`now < next_slot_at` is `Idle`). [`live`] sets the clock once, two seconds after the wall clock, and a job created
+/// later than that has its slot ahead of it: its steps are `Idle` and [`settle`] returns at once with the job `RUNNING`.
+/// That is common, not rare, because [`select`] waits for every transaction open on the server when the job was created,
+/// another test's too, and the next job of the test is created only after it.
+pub(crate) async fn reach_slot(f: &Fixture, created: &JobRecord) {
+    let slot = job(f, created.id).await.next_slot_at;
+    if f.clock.now() < slot {
+        f.clock.set(slot);
+    }
+}
+
 pub(crate) fn due(job: &JobRecord) -> DueJob {
     DueJob {
         tenant_id: job.tenant_id,
