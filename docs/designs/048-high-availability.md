@@ -110,7 +110,8 @@ From the code and documents on `develop` at `546d5aa5`:
   Patroni's REST interface with its `allowlist`, the nodes' replication), carrying etcd's traffic in plaintext inside
   that network only; `db-access` (HAProxy and the nodes' client port); and the platform's, from which only HAProxy's
   port is reachable. `pg_hba` allows replication only from the node addresses, the superuser only on the local socket,
-  and through HAProxy only `sagat_app` and the owner with `scram-sha-256`; it ends with `include_if_exists` of a node-local file that only the drill writes (Requirement 048-042). Every password (Patroni's roles, etcd's
+  and through HAProxy only `sagat_app` and the owner with `scram-sha-256`; before any line that rejects, it has an `include_if_exists` of a node-local file that only the drill writes
+  (Requirement 048-042). Every password (Patroni's roles, etcd's
   users, the REST authentication) comes from `.env` (`${VAR:?}`), listed in `.env.example`; no host port is published
   for the nodes, etcd or Patroni's REST interface; the platform's ports are on the loopback; images are pinned by digest;
   every service has a healthcheck (`AGENTS.md`, rule 16).
