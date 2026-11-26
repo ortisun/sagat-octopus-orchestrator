@@ -21,7 +21,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Approved | 0 of 20 |
 | 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Draft | 0 of 14 |
 | 052 | [Hot-path dispatch: a lean ready queue, wake on commit, the next step in a completion, and a throughput gate](052-hot-path-dispatch.md) | Draft | 0 of 15 |
-| 053 | [Rolling upgrades with old and new writers on one database](053-rolling-upgrades.md) | Draft | 0 of 6 |
+| 053 | [Rolling upgrades with old and new writers on one database](053-rolling-upgrades.md) | Approved | 0 of 7 |
 | 054 | [Buffered signals](054-buffered-signals.md) | Approved | 0 of 19 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |
 

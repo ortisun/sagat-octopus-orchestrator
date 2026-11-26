@@ -63,3 +63,9 @@ Bad: the operator needs the owner credentials to activate (a runbook step, as fo
   closes it. Enforced by the gate tests of `crates/application/src/instances.rs`, the beat and activation tests of
   `tests/integration/schedules-bulk-operations/instances.rs` and `a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports`
   of `tests/contract/durable-execution/grpc/lease_withdrawal.rs`.
+- **2026-11-26 (ADR-0131, design 053).** The gate gains the reason `SCHEMA_TOO_OLD`; decision 1's "a requirement is
+  removed and recorded again, never changed" admits one change, `active` to `draining` and back, through owner-only
+  functions; a removal takes two phases, the second only after every live process of the requirement's kinds has
+  applied the drain's epoch, recorded by its heartbeat (`instance_heartbeat_applied`), and after the capability's
+  fenced writes in flight have landed; `ServingGate::uses` replaces `requires`, answering only inside the capability
+  window and while counted.

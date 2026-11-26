@@ -1,8 +1,14 @@
 # Rolling upgrades with old and new writers on one database
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-26
+*   **Reviewed-commit:** 3cf5ee9737c4611e9126403c7f5dbfecc0b4f861
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/053-rolling-upgrades.reviews/2026-11-26/approval-egm-review.md sha256:da14e4d6d82a4d49ced6955ceb40bbbe4d132471625466dabd2e3665d510625d; docs/designs/053-rolling-upgrades.reviews/2026-11-26/approval-architecture.md sha256:2fc4d76b02ea957f783cec94932291335ec1d299e5bd2a5d556ff38305023ea9; docs/designs/053-rolling-upgrades.reviews/2026-11-26/approval-security.md sha256:46cb683f96d109082eaa95dd17aee828975e311b5e7d7f1be0c76cd74589439e; docs/designs/053-rolling-upgrades.reviews/2026-11-26/approval-correctness.md sha256:8d1fa5e05c307a311aee4e38cc4049b2255bdfcc66d9c299c811657a7096c51d
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 3; OD-2026-11-24-522, OD-2026-11-24-523, OD-2026-11-24-524
 
 --------------------------------------------------------------------------------
 
@@ -635,7 +641,8 @@ Each task names its files and tests.
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T053-7 Settle the findings left open at the approval (Owner decisions 2026-11-24-522 and 2026-11-24-524), each test first, with Tasks 053-2 to 053-6: (a) the loop takes sqlx's migration lock by polling `pg_try_advisory_lock` on sqlx's key, each attempt a statement of its own so that no snapshot is held while waiting, about every 1 s for up to 60 s, then exits with code 1 ("another `migrate` runs"), so that a waiting runner never deadlocks a concurrent build, with the test `a_concurrent_runner_waiting_for_the_lock_does_not_deadlock_a_concurrent_build` beside the kept `concurrent_runners_do_not_corrupt_or_fail`; (b) a drain check that times out (`57014`) is reported as `DRAIN_CHECK_REFUSED` (timed out), exit 2, naming the check, and the descriptor test requires each drain check's plan to use an index or a bounded scan; (c) exception (b) of Requirement 053-001 admits only plain columns with the existing constraint's collations and operator classes, and `NULLS DISTINCT` unless the existing constraint is `NULLS NOT DISTINCT`, with negative fixtures; (d) Task 053-3's one-run commands reach the database through `connect_command`, the schema check first; (e) the fixture capability of `mixed-writers-fixture` is the token `mixed-writers-fixture-v1`, added by a `capability-list-widening` fixture migration in `scripts/tests/mixed-writers/`, its descriptor the mark "writes nothing N-1 cannot process" with a drain check that always passes; (f) a non-removable capability's scenario has its state processed by N's processes after its phase 1; (g) the 0.3.0 release pull request targets `release/0.3.0`, and the merge back to `develop` carries the key, which the merge-base check admits as absent going to the last migration of the release branch's tree; (h) a transactional migration without a blocking lock that exhausts its retries exits naming the migration and the relation of its refused lock wait, read from `pg_locks` by the loop's second connection while the attempt waits; (i) the drain checks live in the descriptors of `crates/infra-postgres/src/instances.rs`, to which `ACTIVATABLE` refers, and the descriptor test is `every_capability_has_a_descriptor_naming_its_fence_or_its_reason`.
+  Refs: Requirement 053-001, Requirement 053-003, Requirement 053-004, Requirement 053-005, Requirement 053-007, Requirement 053-008
 
 ### Verification Plan
 

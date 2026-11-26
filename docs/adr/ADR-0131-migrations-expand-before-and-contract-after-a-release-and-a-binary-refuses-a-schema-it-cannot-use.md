@@ -1,9 +1,9 @@
 # ADR-0131: Migrations expand before a release and contract after it, and a binary refuses a schema it cannot use
 
-**Status:** Proposed (2026-11-24; revised 2026-11-26 as design 053's record, and again after its full review round)
-**Decided by:** agent proposal (design 053, split from design 048), to be accepted under Owner decision 2026-11-24-4 once design 053's review is complete
+**Status:** Accepted (2026-11-26, with design 053's approval)
+**Decided by:** agent proposal (design 053, split from design 048); accepted by delegate (OD-2026-11-24-4) once design 053's review was complete (its approval reports and Owner decisions 2026-11-24-521 to 2026-11-24-524)
 **Refines / supersedes:** refines [ADR-0082](ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md) (the registry's gate also closes on a schema the binary cannot use; its census gates new behaviour, which each capability fences; a removal drains in two phases, the second only after every live process has applied the first; the heartbeat records the epoch a process has applied; a capability's writes are fenced in the database); amends the "Enforced by" line of [ADR-0132](ADR-0132-the-journal-is-partitioned-by-the-month-a-run-was-created-and-a-run-owns-its-payloads.md): `journal-buckets-v1` cannot be removed once a dated run exists, by its drain check, and needs no fence, since every release a rollback can reach processes dated runs; there is no permanent flag (design 049's Task 049-20); replaces the stopped upgrade of `docs/runbooks/scaling.md` section 3 for upgrades from 0.3.0 on (0.3.0 as N-1); supersedes nothing
-**Enforced by (pending until built):** `scripts/check-migrations.py` and its negative fixtures, the merge-base checks and the catalog test of every definer function (Task 053-2); the schema-check tests as the runtime role and the architecture check of entry points (Task 053-3); `migrate`'s bounded-retry, recorded-index and no-process tests, with `concurrent_runners_do_not_corrupt_or_fail` kept (Task 053-4); the two-phase tests, the barrier tests of a paused beat and of a use in flight among them, and the registry tests that change with the runtime role's new functions (`the_runtime_role_reads_the_registry_and_calls_its_four_functions_only`, which then lists six: registration, the two heartbeats, deregistration, `instance_heartbeat_applied` and `sagat_schema_missing`, beside design 048's own additions; the runtime-privilege audit) (Task 053-5); `scripts/test-mixed-writers.py` and the forward-merge check of hotfixes in the release workflow (Task 053-6)
+**Enforced by (pending until built):** `scripts/check-migrations.py` and its negative fixtures, the merge-base checks and the catalog test of every definer function (Task 053-2); the schema-check tests as the runtime role and the architecture check of entry points (Task 053-3); `migrate`'s bounded-retry, recorded-index and no-process tests, with `concurrent_runners_do_not_corrupt_or_fail` kept (Task 053-4); the descriptor test `every_capability_has_a_descriptor_naming_its_fence_or_its_reason`, the two-phase tests, the barrier tests of a paused beat and of a use in flight among them, and the registry tests that change with the runtime role's new functions (`the_runtime_role_reads_the_registry_and_calls_its_four_functions_only`, which then lists six: registration, the two heartbeats, deregistration, `instance_heartbeat_applied` and `sagat_schema_missing`, beside design 048's own additions; the runtime-privilege audit) (Task 053-5); `scripts/test-mixed-writers.py` and the forward-merge check of hotfixes in the release workflow (Task 053-6)
 
 ## Context
 
@@ -84,8 +84,8 @@ writers together.
 ## Consequences
 
 - Good: an upgrade is a rolling deployment; a binary on the wrong schema cannot corrupt state; a migration blocks inserts
-  on a hot table for at most 2 s plus one commit; a deactivation cannot pass while a live process has not applied it or a write of the capability's state is in flight,
-  and no write lands after it.
+  on a hot table for at most 2 s plus one commit per attempt; a deactivation cannot pass while a live process has not applied it or a write of the capability's state is in flight,
+  and no fenced write lands after it.
 - Bad: removing anything from the schema waits for the contract rules and then takes two releases; migrations are
   written in more, smaller files; a removal of a capability takes at least two
   heartbeats (about 24 s); each capability's write carries its fence.
