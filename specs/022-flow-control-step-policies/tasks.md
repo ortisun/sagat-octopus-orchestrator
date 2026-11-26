@@ -500,6 +500,18 @@ T022-063 (020 erasure).
     instants (now the commit order of the grants). Evidence: `queue::a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters`
     red before the fix, green after; the flood alone 6 of 6 and the fault suite 3 of 3 in the runtime role after it (3 of 6 and
     2 of 3 before).
+  - *Amended 2026-11-26 (decisions D022-163 to D022-165, `reviews/2026-11-26/clock-fix-review-correctness-reviewer.md`):*
+    a queued target's deadline is at least one microsecond after its place, read under the key lock before the deadline,
+    so a step back larger than the wait bound, or a same-key fan-out, no longer refuses the insert (SQLSTATE 23514); the
+    clock-step tests step 60 seconds; the run view's waiting `since` is stated as the place. Evidence:
+    `queue::a_start_admitted_after_a_step_back_larger_than_its_queue_timeout_is_queued_with_a_later_deadline` and
+    `queue::a_fan_out_admitted_after_a_step_back_queues_every_branch_behind_the_older_waiter` red before the fix
+    (`start run: Internal`, each gate shown on its own) and with the deadline computed without the place, green after;
+    `queue::a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters` (60 s) red with the place
+    removed, green with it. `integration_flow_control_step_policies` 282 tests: 278 passed and 4 failed as the owner
+    and 278 and 4 with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, every failure `No space left on device` in the Docker virtual
+    machine's PostgreSQL at the end of the suite; the 4 of each run passed when rerun alone in a fresh process.
+    `fault_flow_control_step_policies` 36 passed in both roles.
   - *Amended 2026-11-24 (decisions D022-076 and D022-078):* the answers to the re-review of this task (`reviews/2026-11-24/rate-faults-rereview-correctness-reviewer.md`) are built with it: the hint a waiter queued with room writes, the hint of a full window of mixed lengths, a reset decided by the reservation rule, the order bound within a pass, the place and the run view on the effective limit, the weak tests made to fail, and the waiter's declaration (`pinned_limit`) bounding it under the current ceiling. Each is evidence of this task; the timing-dependent cases of this suite are driven by the database clock or by moved counted instants.
   *Built 2026-11-21, not ticked:* `tests/fault/flow-control-step-policies/rate_limits.rs`, 15 cases (crashes in T19,
   T20, T21, T22, T23 at both commits and T24; grant against timeout and grant against cancel, 20 rounds each; takeover;

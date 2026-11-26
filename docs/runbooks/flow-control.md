@@ -692,7 +692,10 @@ SELECT clock_timestamp() AS now,
 A grant in the future means the clock went back. Fix the time source of the database server; the keys go on by
 themselves once its clock passes the recorded instants. A step back never reorders a key's queue: a waiter admitted
 after the step is queued one microsecond after the key's youngest waiter (D022-160), so its `enqueued_at`, and the
-waits and `oldestWaitSince` measured from it, can read up to the step later than the clock did. A key a release made
+waits and `oldestWaitSince` measured from it, can read up to the step later than the clock did; so can a waiting
+run's `since` in the run view (`concurrency.since`, `rateLimit.since`), which is its place, against the instant of
+its journal's `queued` event (D022-165). Its deadline is at least one microsecond after that place, so a step back
+larger than the wait bound delays the timeout by at most the step and never refuses the admission (D022-163). A key a release made
 due just before the step is selected by the first pass after the clock passes its hint (D022-161). A development
 host's Docker virtual machine steps its clock every 10 seconds (the guest log's "SyncTime ... drift was"), by about
 130 ms under load: a test that compares database instants across such a step is not measuring the gate. The same clock decides the queue deadlines (`deadline_at`), so

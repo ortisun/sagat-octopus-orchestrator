@@ -140,7 +140,10 @@ async fn start_grants(w: &World, runs: &[RunId]) -> Vec<(Uuid, i64)> {
 
 /// The age of the transaction that wrote each of `runs`' start grants (`age(xmin)` of its `rate_limit.granted` row, the
 /// copies a restore wrote left out), read in one statement so that every age counts from the same transaction: a grant
-/// committed earlier is older (decision D022-162).
+/// committed earlier is older (decision D022-162). `age(xmin)` orders by the assignment of transaction ids, not by
+/// commit: it is the commit order here only because the flood's starts are issued one after another and `grant_key`
+/// decides a key's waiters in turn, each in a transaction of its own, so no two grants' transactions overlap
+/// (decision D022-164).
 async fn grant_transaction_ages(w: &World, runs: &[RunId]) -> Vec<(Uuid, i64)> {
     let ids: Vec<Uuid> = runs.iter().map(|run| run.as_uuid()).collect();
     sqlx::query_as(

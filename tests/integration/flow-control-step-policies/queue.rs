@@ -181,11 +181,12 @@ async fn a_released_permit_is_granted_to_the_oldest_waiter_by_the_next_pass() {
 }
 
 /// Decision D022-161: a release whose key's hint is ahead of the database clock (the clock set back between the release
-/// and the pass, emulated by moving the hint 300 ms ahead) is not selected by a pass before the clock passes the hint,
-/// and the first pass after it grants the oldest waiter: the delay NFR-022-008 allows, nothing lost.
+/// and the pass, emulated by moving the hint 60 seconds ahead, further than any runner is slow) is not selected by a
+/// pass before the clock passes the hint, and the first pass after it grants the oldest waiter: the delay NFR-022-008
+/// allows, nothing lost. The clock passing the hint is emulated by moving the hint back to the clock (decision D022-164).
 #[tokio::test]
 async fn a_release_due_ahead_of_the_clock_is_granted_by_the_first_pass_once_the_clock_passes_it() {
-    const AHEAD_US: i64 = 300_000;
+    const AHEAD_US: i64 = 60_000_000;
     let w = gated_world().await;
     let workflow = publish(
         &w,
@@ -208,13 +209,15 @@ async fn a_release_due_ahead_of_the_clock_is_granted_by_the_first_pass_once_the_
     .execute(&w.db.pool)
     .await
     .expect("the hint ahead of the clock");
-    let hint = semaphore_hint_us(&w).await;
-    let now = crate::support::flow_control::database_now_us(&w.db.pool).await;
-    if now < hint {
-        // a pass this side of the hint does not select the key (on a slow runner the clock may already be past it)
-        assert_eq!(w.scheduler.tick().await.gates_granted, 0);
-        queued(&w, older, "g", (true, false)).await;
-    }
+    // a pass this side of the hint does not select the key
+    assert_eq!(w.scheduler.tick().await.gates_granted, 0);
+    queued(&w, older, "g", (true, false)).await;
+    // the clock passes the hint
+    sqlx::query("UPDATE concurrency_semaphores SET next_eligible_at = clock_timestamp() WHERE tenant_id = $1")
+        .bind(w.admin.tenant_id().as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("the hint back at the clock");
     assert_eq!(tick_once_due(&w).await.gates_granted, 1);
     granted(&w, older, "g", (true, false)).await;
     for run in [holder, older] {
@@ -224,12 +227,13 @@ async fn a_release_due_ahead_of_the_clock_is_granted_by_the_first_pass_once_the_
 }
 
 /// Decision D022-160: a start admitted after the database clock went back queues behind the waiters admitted before it,
-/// on both gates, and is granted after them. The step is emulated by moving the older waiter's `enqueued_at` 300 ms
-/// ahead (what a clock set back makes it relative to the next admission's reading); before the decision the younger
-/// start's reading was its place, and it was queued, and granted, first.
+/// on both gates, and is granted after them. The step is emulated by moving the older waiter's `enqueued_at` 60 seconds
+/// ahead (what a clock set back makes it relative to the next admission's reading), further than any runner is slow
+/// (decision D022-164); before the decision the younger start's reading was its place, and it was queued, and granted,
+/// first.
 #[tokio::test]
 async fn a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters() {
-    const STEP_US: i64 = 300_000;
+    const STEP_US: i64 = 60_000_000;
     let w = gated_world().await;
     let workflow = publish(
         &w,
@@ -290,6 +294,160 @@ async fn a_start_admitted_after_the_clock_went_back_queues_behind_the_older_wait
         rate_older,
         rate_younger,
     ] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// The waiter rows of `run` in `table`: (enqueued_at, deadline_at) in microseconds, one per waiting step.
+async fn place_and_deadline_us(w: &World, table: &str, run: RunId) -> Vec<(i64, i64)> {
+    let statement = match table {
+        "concurrency_waiters" | "rate_limit_waiters" => format!(
+            "SELECT (extract(epoch FROM enqueued_at) * 1000000)::bigint, (extract(epoch FROM deadline_at) * 1000000)::bigint \
+               FROM {table} WHERE run_id = $1 ORDER BY enqueued_at"
+        ),
+        other => panic!("no waiters in {other}"),
+    };
+    sqlx::query_as(sqlx::AssertSqlSafe(statement))
+        .bind(run.as_uuid())
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("waiter rows")
+}
+
+/// The queue deadline each of `run`'s `event` journal entries announced, in microseconds.
+async fn journal_deadlines_us(w: &World, run: RunId, event: &str) -> Vec<i64> {
+    sqlx::query_scalar(
+        "SELECT (detail ->> 'queue_deadline_us')::bigint FROM run_events \
+          WHERE run_id = $1 AND event_type = $2 ORDER BY seq",
+    )
+    .bind(run.as_uuid())
+    .bind(event)
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("journal deadlines")
+}
+
+/// Decision D022-163 (correctness review of `e0fffa984`, Major 1): a start admitted after a step back of the database
+/// clock larger than its `queueTimeoutMs` is queued behind the older waiter, on both gates, with a deadline one
+/// microsecond after its place at least, which its journal announces. Before the decision its place was raised past its
+/// deadline (the admission's reading plus one second) and the table's `deadline_at > enqueued_at` refused the insert.
+#[tokio::test]
+async fn a_start_admitted_after_a_step_back_larger_than_its_queue_timeout_is_queued_with_a_later_deadline()
+ {
+    const STEP_US: i64 = 60_000_000;
+    const TIMEOUT_MS: i64 = 1_000;
+    let w = gated_world().await;
+    for (gate, table, event, rule) in [
+        (
+            "concurrency",
+            "concurrency_waiters",
+            "concurrency.queued",
+            json!({"group": "place", "key": "input.accountId", "limit": 1}),
+        ),
+        (
+            "rateLimit",
+            "rate_limit_waiters",
+            "rate_limit.queued",
+            json!({"group": "place-rate", "key": "input.accountId", "limit": 1, "per": "hour"}),
+        ),
+    ] {
+        let mut short = rule.clone();
+        short["queueTimeoutMs"] = json!(TIMEOUT_MS);
+        let long = publish(
+            &w,
+            document(
+                &format!("place-long-{}", gate.to_lowercase()),
+                "g",
+                vec![with(activity("g"), gate, rule)],
+            ),
+        )
+        .await;
+        let short = publish(
+            &w,
+            document(
+                &format!("place-short-{}", gate.to_lowercase()),
+                "g",
+                vec![with(activity("g"), gate, short)],
+            ),
+        )
+        .await;
+        let account = json!({"accountId": format!("place-{}", gate.to_lowercase())});
+        let holder = w.start(long, &account).await;
+        let older = w.start(long, &account).await;
+        set_clock_back_after(&w, table, older, STEP_US).await;
+        let younger = w.start(short, &account).await;
+        let older_place = place_and_deadline_us(&w, table, older).await[0].0;
+        let rows = place_and_deadline_us(&w, table, younger).await;
+        assert_eq!(rows.len(), 1, "{gate}: the younger start waits");
+        let (place, deadline) = rows[0];
+        assert!(place > older_place, "{gate}: behind the older waiter");
+        assert!(deadline > place, "{gate}: the deadline follows the place");
+        assert_eq!(
+            journal_deadlines_us(&w, younger, event).await,
+            [deadline],
+            "{gate}: the journal announces the rows' deadline"
+        );
+        for run in [holder, older, younger] {
+            w.assert_consistent(run).await;
+        }
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// Decision D022-163: every branch of a same-key fan-out admitted after such a step back queues behind the older waiter,
+/// in its branches' order, each with a deadline after its own place. Before the decision the first branch's place was
+/// past the deadline of a 1 ms `queueTimeoutMs` and the run's start failed.
+#[tokio::test]
+async fn a_fan_out_admitted_after_a_step_back_queues_every_branch_behind_the_older_waiter() {
+    const STEP_US: i64 = 60_000_000;
+    let w = gated_world().await;
+    let rule = json!({"group": "fan", "key": "input.accountId", "limit": 1});
+    let mut short = rule.clone();
+    short["queueTimeoutMs"] = json!(1);
+    let long = publish(
+        &w,
+        document(
+            "fan-long",
+            "g",
+            vec![with(activity("g"), "concurrency", rule)],
+        ),
+    )
+    .await;
+    let fan = publish(
+        &w,
+        document(
+            "fan-short",
+            "p",
+            vec![
+                parallel_node("p", &["a", "b", "c"], "all"),
+                with(activity("a"), "concurrency", short.clone()),
+                with(activity("b"), "concurrency", short.clone()),
+                with(activity("c"), "concurrency", short),
+            ],
+        ),
+    )
+    .await;
+    let account = json!({"accountId": "fan-1"});
+    let holder = w.start(long, &account).await;
+    let older = w.start(long, &account).await;
+    set_clock_back_after(&w, "concurrency_waiters", older, STEP_US).await;
+    let run = w.start(fan, &account).await;
+    let older_place = place_and_deadline_us(&w, "concurrency_waiters", older).await[0].0;
+    let rows = place_and_deadline_us(&w, "concurrency_waiters", run).await;
+    assert_eq!(rows.len(), 3, "every branch waits: {rows:?}");
+    let mut after = older_place;
+    for (place, deadline) in &rows {
+        assert!(*place > after, "in admission order: {rows:?}");
+        assert!(deadline > place, "the deadline follows the place: {rows:?}");
+        after = *place;
+    }
+    let mut announced = journal_deadlines_us(&w, run, "concurrency.queued").await;
+    let mut held: Vec<i64> = rows.iter().map(|(_, deadline)| *deadline).collect();
+    announced.sort_unstable();
+    held.sort_unstable();
+    assert_eq!(announced, held, "the journal announces the rows' deadlines");
+    for run in [holder, older, run] {
         w.assert_consistent(run).await;
     }
     w.assert_keys_consistent().await;

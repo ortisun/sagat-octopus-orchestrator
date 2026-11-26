@@ -572,7 +572,7 @@ components:
             pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
             group: {type: string}
             keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
-            since: {type: string, format: date-time}
+            since: {type: string, format: date-time, description: 'When the permit was acquired (HOLDING) or the run''s place in the queue (WAITING): the database clock at its admission, or one microsecond after the key''s youngest waiter when that clock read earlier, so after a step back of the clock it can be later than the instant of the journal''s concurrency.queued event (D022-160, D022-165).'}
             queueDeadline: {type: [string, 'null'], format: date-time}
         rateLimit:
           description: Release 0.3.0 slice (US07, FR-022-048). The run-level rate limit of the run. A step waiting for a node-level slot is shown on the step (wait kind RATE_LIMIT), not here. Merged as the canonical `RunRateLimit` (T022-087, D022-110). Absent, never null, on a run that neither holds a slot that still counts nor waits.
@@ -586,7 +586,7 @@ components:
             keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
             limit: {type: integer, minimum: 1}
             per: {type: string, enum: [second, minute, hour]}
-            since: {type: string, format: date-time, description: 'When the run was buffered (WAITING) or granted (GRANTED).'}
+            since: {type: string, format: date-time, description: 'When the run was granted (GRANTED) or its place in the queue (WAITING): the database clock at its buffering, or one microsecond after the key''s youngest waiter when that clock read earlier, so after a step back of the clock it can be later than the instant of the journal''s rate_limit.queued event (D022-160, D022-165).'}
             queueDeadline: {type: [string, 'null'], format: date-time}
             position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings, and null for a caller to whom keyLabel is null, since the rank counts the runs that share the key (D022-153): rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
             estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), or when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2).'}

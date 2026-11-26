@@ -3043,6 +3043,9 @@ outcome below is delegate (OD-2026-11-24-4), written before its code.
   counts alone). The cost: after a step back, `enqueued_at` can be ahead of the clock by at most the step, so a wait
   measured from it (`concurrency_wait_seconds`, `rate_limit_wait_seconds`, `oldestWaitSince`, `CONCURRENCY_QUEUE_STUCK`)
   reads up to the step shorter; the deadline is still the admission's clock reading plus the wait bound, unchanged.
+  *Corrected 2026-11-26 (decision D022-163, correctness review Major 1):* the deadline could not stay unchanged: the
+  tables require `deadline_at > enqueued_at`, so a raised `enqueued_at` past the admission's deadline was refused;
+  the deadline is now at least one microsecond after the waiter's place.
   Different keys are not ordered against each other, as before. Test, red before:
   `integration_flow_control_step_policies` `queue::a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters`
   (both gates; the step is emulated by moving the older waiter's `enqueued_at` ahead, which is what a clock set back
@@ -3077,6 +3080,40 @@ outcome below is delegate (OD-2026-11-24-4), written before its code.
   guest's step of 17:36:35). After them, with the guest still setting the clock back by about 129 ms every 10 s: the
   test alone under load passed 6 of 6, the whole fault suite in the runtime role 3 of 3 (36 tests each), and
   `integration_flow_control_step_policies` 280 of 280 in the runtime role.
+- **D022-163 — A waiter's deadline follows its place in the queue (2026-11-26; NFR-022-008, FR-022-042, D022-160;
+  correctness review of `e0fffa984`, Major 1).** Delegate. D022-160 raised a new waiter's `enqueued_at` to one
+  microsecond after its key's youngest waiter's, but left the deadline at the admission's clock reading plus the
+  smallest `queueTimeout` of its gates. The waiter tables check `deadline_at > enqueued_at`
+  (`concurrency_waiters_deadline_after`, `rate_limit_waiters_deadline_after`), so after a step back of the database
+  clock larger than the timeout, or after a same-key fan-out of more waiters than the timeout has microseconds (a
+  round reads the clock once, so 1,001 steps with a 1 ms timeout reach it with no step at all), the insert was refused
+  with SQLSTATE 23514 and the start, or the worker completion that made the steps ready, failed as an internal error,
+  on every retry. Options: (a) give up the order for such a waiter (its clock reading as its place): the reordering
+  D022-160 removed; (b) drop or relax the check: the timeout pass would then fail a waiter as soon as it is queued;
+  (c) keep the order instant and the deadline apart: under the key lock the admission already holds, read each gate's
+  place first, `greatest(now, youngest + 1 µs)`, then set the target's one deadline to the later of `now + timeout`
+  and the latest of its places plus one microsecond. Chosen (c). The waiter then waits at least its bound from the
+  clock's reading, and a step back delays its timeout by at most the step, which is the delay NFR-022-008 allows; the
+  journal's `queue_deadline_us` is the deadline the rows hold, as before. The place is read in its own statement and
+  bound into the insert, instead of the subquery inside it. Tests, red before:
+  `queue::a_start_admitted_after_a_step_back_larger_than_its_queue_timeout_is_queued_with_a_later_deadline` (both
+  gates) and `queue::a_fan_out_admitted_after_a_step_back_queues_every_branch_behind_the_older_waiter`.
+- **D022-164 — The clock-step tests step further than a slow runner (2026-11-26; D022-160, D022-161, D022-162;
+  correctness review of `e0fffa984`, minors 2 and 3, nit 5).** Delegate. The D022-160 test moved the older waiter
+  only 300 ms ahead; on a slow runner more than 300 ms pass before the next admission, whose own reading is then
+  later, and the test passed without the fix. It now moves the waiter, and its deadline with it, as a step back
+  does, 60 seconds ahead. The D022-161 test compared the clock with the hint and then ran a whole pass, so the clock
+  could pass the hint in between and the pass grant: it now moves the hint 60 seconds ahead, asserts that a pass
+  grants nothing, moves the hint back to the clock and asserts the grant. The flood test's doc comment now says why
+  `age(xmin)` orders the grants: it orders by the assignment of transaction ids, which is the commit order there only
+  because the starts are issued one after another and `grant_key` decides a key's waiters in turn.
+- **D022-165 — A run's waiting `since` is its place in the queue (2026-11-26; D022-160, D022-163; correctness review
+  of `e0fffa984`, minor 4).** Delegate. The run view's `concurrency.since` and `rateLimit.since` read a waiting run's
+  `enqueued_at`; since D022-160 that is its place, which after a step back of the database clock can be later than
+  the instant of the journal's `concurrency.queued` or `rate_limit.queued` event, by at most the step. Options: (a)
+  read the journal's instant for the view: a second probe per run in every listing; (b) say so. Chosen (b): the
+  runbook and the description of both fields (the fragment and the canonical contract) state it; the order the view
+  shows, and the place it counts, are the queue's.
 
 ## Gaps
 

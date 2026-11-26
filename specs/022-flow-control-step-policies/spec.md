@@ -889,6 +889,9 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-26 (decision D022-160):* nor does it reorder a key's queue: a waiter's place MUST follow every
   waiter of its key admitted before it, whatever the clock read at its admission (its `enqueued_at` is at least one
   microsecond after the key's youngest waiter's).
+  *Amended 2026-11-26 (decision D022-163):* a waiter's queue deadline MUST be at least one microsecond after its place,
+  so that a step back larger than its `queueTimeout` delays its timeout by at most the step and never refuses its
+  admission.
 
 ### Key Entities
 

@@ -5895,7 +5895,7 @@ export interface components {
             per: "second" | "minute" | "hour";
             /**
              * Format: date-time
-             * @description When the slot was granted (GRANTED) or the run was buffered (WAITING).
+             * @description When the slot was granted (GRANTED) or the run's place in the queue (WAITING): the database clock at its buffering, or one microsecond after the key's youngest waiter when that clock read earlier, so after a step back of the clock it can be later than the instant of the journal's rate_limit.queued event (D022-160, D022-165).
              */
             since: string;
             /**
@@ -5922,7 +5922,7 @@ export interface components {
             keyLabel: string | null;
             /**
              * Format: date-time
-             * @description When the permit was acquired (HOLDING) or the run was queued (WAITING).
+             * @description When the permit was acquired (HOLDING) or the run's place in the queue (WAITING): the database clock at its admission, or one microsecond after the key's youngest waiter when that clock read earlier, so after a step back of the clock it can be later than the instant of the journal's concurrency.queued event (D022-160, D022-165).
              */
             since: string;
             /**

@@ -435,17 +435,35 @@ impl PgRunTx {
                 self.start_may_wait(&gates, &counts, rules, &refusing)
                     .await?;
             }
-            let deadline = gates.iter().map(|gate| gate.timeout).min().ok_or_else(|| {
+            let timeout = gates.iter().map(|gate| gate.timeout).min().ok_or_else(|| {
                 StoreError::Internal {
                     detail: "a gated target declares no gate".into(),
                 }
             })?;
-            let deadline = now
+            let mut deadline = now
                 .checked_add(
-                    time::Duration::try_from(deadline).map_err(|_| corrupt("queue timeout"))?,
+                    time::Duration::try_from(timeout).map_err(|_| corrupt("queue timeout"))?,
                 )
                 .ok_or_else(|| corrupt("queue deadline"))?;
-            for (gate, has_room) in gates.iter().zip(room) {
+            // a queued target's place on each of its keys, read before its deadline: the place follows the key's
+            // youngest waiter whatever the clock does (decision D022-160), and the deadline is at least one microsecond
+            // after the latest of its places, so that the table's `deadline_at > enqueued_at` holds after a step back
+            // larger than the wait bound, which then delays the timeout by at most the step (decision D022-163)
+            let mut places = Vec::with_capacity(gates.len());
+            if !admits {
+                for gate in &gates {
+                    let filed = gate.filed.as_ref().ok_or_else(|| StoreError::Internal {
+                        detail: "a gate's key was not filed".into(),
+                    })?;
+                    let place = self.place(gate, filed, now).await?;
+                    let after = place
+                        .checked_add(time::Duration::MICROSECOND)
+                        .ok_or_else(|| corrupt("queue deadline"))?;
+                    deadline = deadline.max(after);
+                    places.push(place);
+                }
+            }
+            for (index, (gate, has_room)) in gates.iter().zip(room).enumerate() {
                 let filed = gate.filed.as_ref().ok_or_else(|| StoreError::Internal {
                     detail: "a gate's key was not filed".into(),
                 })?;
@@ -455,7 +473,13 @@ impl PgRunTx {
                         .is_some_and(|count| count.waiters > 0);
                     self.grant(gate, filed, now, waiting).await?
                 } else {
-                    self.queue(gate, filed, now, deadline, has_room).await?
+                    let place = places
+                        .get(index)
+                        .copied()
+                        .ok_or_else(|| StoreError::Internal {
+                            detail: "a queued gate has no place".into(),
+                        })?;
+                    self.queue(gate, filed, place, deadline, has_room).await?
                 };
                 let outcomes = if node.is_some() {
                     &mut self.gate_outcomes
@@ -1099,11 +1123,46 @@ impl PgRunTx {
         }
     }
 
-    async fn queue(
+    /// A new waiter's place on `gate`'s key: the clock reading `now`, or one microsecond after the key's youngest waiter
+    /// when the clock reads earlier (a step back), read under the key row's lock this transaction holds since the keys
+    /// were filed, so the key's admissions queue in their commit order (decisions D022-160 and D022-163).
+    async fn place(
         &mut self,
         gate: &Pending,
         filed: &FiledKey,
         now: OffsetDateTime,
+    ) -> Result<OffsetDateTime, StoreError> {
+        let statement = match gate.kind {
+            GateKind::Concurrency => {
+                "SELECT greatest($1::timestamptz, max(x.enqueued_at) + interval '1 microsecond') FROM concurrency_waiters x \
+                  WHERE x.tenant_id = $2 AND x.namespace_id = $3 AND x.pool = $4 AND x.permit_scope = $5 \
+                    AND x.group_name = $6 AND x.key_digest = $7"
+            }
+            GateKind::RateLimit => {
+                "SELECT greatest($1::timestamptz, max(x.enqueued_at) + interval '1 microsecond') FROM rate_limit_waiters x \
+                  WHERE x.tenant_id = $2 AND x.namespace_id = $3 AND x.pool = $4 AND x.limit_scope = $5 \
+                    AND x.group_name = $6 AND x.key_digest = $7"
+            }
+        };
+        sqlx::query_scalar(statement)
+            .bind(now)
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.namespace_id.as_uuid())
+            .bind(GatePool::Ordinary.as_str())
+            .bind(gate.level().as_str())
+            .bind(gate.group.as_str())
+            .bind(filed.digest.as_slice())
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)
+    }
+
+    /// Queues `gate`'s target at `place` (see [`Self::place`]) until `deadline`, which is after it.
+    async fn queue(
+        &mut self,
+        gate: &Pending,
+        filed: &FiledKey,
+        place: OffsetDateTime,
         deadline: OffsetDateTime,
         has_room: bool,
     ) -> Result<GateChange, StoreError> {
@@ -1123,19 +1182,11 @@ impl PgRunTx {
                     0,
                 )
                 .await?;
-                // the queue's order is its admission order whatever the clock does: one microsecond after the key's
-                // youngest waiter when the clock reads earlier (a step back), read under the key row's lock this
-                // transaction holds since the keys were filed, so the key's admissions queue in their commit order
-                // (decision D022-160)
+                // at its place, so the queue's order is its admission order whatever the clock does (decision D022-160)
                 sqlx::query(
                     "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
                      group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard, pinned_limit) \
-                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, \
-                             greatest($10::timestamptz, \
-                                      (SELECT max(x.enqueued_at) + interval '1 microsecond' FROM concurrency_waiters x \
-                                        WHERE x.tenant_id = $1 AND x.namespace_id = $2 AND x.pool = $6 \
-                                          AND x.permit_scope = $12 AND x.group_name = $7 AND x.key_digest = $8)), \
-                             $11, run_shard($3), $13)",
+                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, $10, $11, run_shard($3), $13)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1146,7 +1197,7 @@ impl PgRunTx {
                 .bind(gate.group.as_str())
                 .bind(filed.digest.as_slice())
                 .bind(limit)
-                .bind(now)
+                .bind(place)
                 .bind(deadline)
                 .bind(level.as_str())
                 .bind(pinned)
@@ -1167,16 +1218,11 @@ impl PgRunTx {
                     period_ms(gate),
                 )
                 .await?;
-                // in admission order whatever the clock does, as a concurrency waiter (decision D022-160)
+                // at its place, in admission order whatever the clock does, as a concurrency waiter (decision D022-160)
                 sqlx::query(
                     "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                      group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard, pinned_limit) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, \
-                             greatest($11::timestamptz, \
-                                      (SELECT max(x.enqueued_at) + interval '1 microsecond' FROM rate_limit_waiters x \
-                                        WHERE x.tenant_id = $1 AND x.namespace_id = $2 AND x.pool = $6 \
-                                          AND x.limit_scope = $13 AND x.group_name = $7 AND x.key_digest = $8)), \
-                             $12, run_shard($3), $14)",
+                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, $11, $12, run_shard($3), $14)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1188,7 +1234,7 @@ impl PgRunTx {
                 .bind(filed.digest.as_slice())
                 .bind(limit)
                 .bind(i32::try_from(period_ms(gate)).map_err(|_| corrupt("period"))?)
-                .bind(now)
+                .bind(place)
                 .bind(deadline)
                 .bind(level.as_str())
                 .bind(pinned)
