@@ -288,10 +288,10 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 
 ## Owner decisions needed
 
-None is open. The one decision still to take is the acceptance of Architecture decisions 0120 and 0121, which falls under
-Owner decision 2026-11-24-4 when the review completes. Every other choice, including the read-only mount that relaxes
-Architecture decision 0013 (Decision 046-009, a partial supersession), is recorded in research.md as Decisions 046-001 to
-046-070 with the register's literal marker "delegate (OD-2026-11-24-4)".
+None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
+2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2. Every other choice,
+including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
+recorded in research.md as Decisions 046-001 to 046-072 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
