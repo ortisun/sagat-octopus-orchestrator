@@ -463,4 +463,7 @@ feature 034, ADR-0070); the register is append-only, so the older text is left a
   the document's digest; publication remains an explicit platform action under the namespace's approval policy.
 - **O1402 — May operators add catalog indexes?** **Recommended default:** yes, deployment-level only, each with its own
   pinned Ed25519 keys and the same verification; no tenant-level sources and no public submission. This keeps
-  curation with the operator and the hub outside "marketplace".
+  curation with the operator and the hub outside "marketplace". *Note (2026-11-24):* constitution 5.0.0
+  ("Admitted scope") permits operator indexes with operator-pinned keys and forbids tenant or public sources,
+  so the recommended default is the widest answer it allows; whether to offer operator indexes is still this
+  question.

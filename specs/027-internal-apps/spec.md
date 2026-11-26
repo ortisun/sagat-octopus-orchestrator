@@ -564,6 +564,10 @@ Details in [research.md](research.md#owner-questions).
 
 - **O1360 — Accept a bounded app builder into scope?** `docs/architecture/overview.md` defers a
   generic designer. *Recommended:* accept the bounded builder of this spec; keep a generic designer out.
+  **Answered 2026-11-24 by Owner decision 2026-11-24-2:** as recommended. Constitution 5.0.0 admits
+  internal apps over declared workflow operations whose sessions carry no more than the viewer's own
+  authority and whose author code runs only in an isolated frame, and keeps out a generic builder with
+  its own backend, database or server-side author code; the overview says the same.
 - **O1361 — Allow a delegated (publisher or app-principal) execution mode?** *Recommended:* no;
   viewer identity only; revisit after feature 029 with a separate ADR.
 - **O1362 — Ship custom components in the first release?** *Recommended:* yes, disabled per namespace

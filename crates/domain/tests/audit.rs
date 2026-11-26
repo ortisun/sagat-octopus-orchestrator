@@ -95,6 +95,15 @@ fn stored_names_are_a_stable_contract() {
         Some(std::time::Duration::from_secs(300))
     );
     assert!(!AuditAction::RunUpdated.collapses_repeats());
+    // Feature 041 (FR-041-013, FR-041-023): a read once per subject and run in 300 s, every delete.
+    assert_eq!(AuditAction::RunLogsRead.as_str(), "run.logs_read");
+    assert_eq!(AuditAction::RunLogsDeleted.as_str(), "run.logs_deleted");
+    assert!(AuditAction::RunLogsRead.collapses_repeats());
+    assert_eq!(
+        AuditAction::RunLogsRead.repeat_window(),
+        Some(std::time::Duration::from_secs(300))
+    );
+    assert!(!AuditAction::RunLogsDeleted.collapses_repeats());
     assert_eq!(
         AuditAction::MembershipGranted.as_str(),
         "membership.granted"

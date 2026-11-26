@@ -105,10 +105,12 @@ security and cross-feature consistency) and revised. Suggested order and gates: 
 | [032](specs/032-multi-region-failover/spec.md) | active-passive multi-region cells | ADR-0067 |
 
 **Owner decisions that gate the drafts** (each recorded as an `O…` question in the feature's `research.md`):
-the amendment of constitution principle I for retention (020, ADR-0054) and of the Delivery Constraints for
-multi-region (032, ADR-0067); the scope line of `docs/architecture/overview.md` that defers a low-code designer
-(027, O1360); one rule for `pii` leaving the platform (020, O1081, applied by 020/025/026/031); the placement
-rule for customer-credentialed calls (021, ADR-0055); and acceptance of every proposed ADR.
+the amendment of constitution principle I for retention (020, ADR-0054; still open); one rule for `pii` leaving
+the platform (020, O1081, applied by 020/025/026/031); the placement rule for customer-credentialed calls (021,
+ADR-0055); and acceptance of every proposed ADR. Constitution 5.0.0 (2026-11-24, Owner decision 2026-11-24-2) settled
+two that were listed here: the Delivery Constraints admit standby regions per cell (032, O1560 answered) and internal
+apps over declared operations (027, O1360 answered), together with workflow as code (design 044) and the curated hub
+(021, 028, design 047).
 
 **Cross-feature registries and their owners.** Each concern has one owner; the others cite it.
 

@@ -33,6 +33,14 @@ merges a pull request would prove again what the pull request proved):
   suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; the budget of the
   hot path (`integration_claim_transition_efficiency`, design 038) when a file of `crates/infra-postgres/` or of the worker,
   execution and run modules of `crates/application` changes (constitution 4.4.0, OD-2026-11-12-4).
+  The step logs of design 041 (constitution 4.5.0, OD-2026-11-15-10; task T041-32): a file of the server's step-log code
+  (a `step_logs` module or directory of any crate, a `step_log*` migration, the gRPC limits and service, the execution
+  and scripts routes, the scripts service, the maintenance store and the scheduler's passes) selects
+  `integration_step_logs`, the budget and isolation suite `integration_claim_transition_efficiency` and the fitness tests
+  of `contract_platform_foundation`; the report path that stores a carry (the worker module of `crates/application` and
+  the execution module of `crates/infra-postgres`) also selects `integration_step_logs`; and the worker protocol
+  (`worker.proto`, also when it is read as a contract) and each SDK's capture code select `integration_step_logs` and
+  `sdk_conformance`.
   A contract file (`specs/<feature>/contracts/`, Markdown included) selects the contract suites (`tests/contract/`) and
   the workspace packages whose Rust sources read it, and the packages that depend on those; the selector finds them from
   the string literals that are paths to the file, or to its directory joined with its name (constitution 4.6.0,

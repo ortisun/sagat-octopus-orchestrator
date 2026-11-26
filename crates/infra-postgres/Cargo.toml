@@ -23,3 +23,7 @@ time.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 uuid.workspace = true
+
+[features]
+# Design 041's spike T041-35 only: the report hook of `report_hook.rs`. Never enabled by a binary; removed by T041-36.
+perf-spike = []

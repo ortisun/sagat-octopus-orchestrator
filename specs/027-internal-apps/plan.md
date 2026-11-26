@@ -254,7 +254,8 @@ session metadata are `protected_system`.
 - Reserving the `app:` key prefix (D1365) is a behaviour change for ordinary callers: the migration
   counts existing idempotency records and Update receipts whose key starts with `app:` and reports the
   number (no row is changed; exact replays stay valid); the release notes state the refusal (G1373).
-- `docs/architecture/overview.md` scope line is updated only after O1360 (G1360).
+- `docs/architecture/overview.md` scope line is updated only after O1360 (G1360). Done 2026-11-24 with
+  constitution 5.0.0 (Owner decision 2026-11-24-2).
 - Rollback: disable the `apps` capability (no session creation, no publication); keep tables,
   versions and audit; the Studio shows Apps unavailable.
 

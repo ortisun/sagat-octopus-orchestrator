@@ -97,6 +97,12 @@ impl WorkerService for Stub {
         self.park().await;
         Ok(Response::new(StepCommandResponse::default()))
     }
+    async fn append_step_logs(
+        &self,
+        _: Request<sagat_api_grpc::pb::AppendStepLogsRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::AppendStepLogsResponse>, Status> {
+        Err(Status::unimplemented("AppendStepLogs"))
+    }
     async fn resolve_database(
         &self,
         _: Request<ResolveSecretsRequest>,

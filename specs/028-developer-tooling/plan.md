@@ -344,7 +344,7 @@ a shifted clock include the saga compensation-failure cases.
 | VI. Observability and audit | Pass | Spans, fixed-label metrics, audit in the decision's transaction, alerts for stuck sync |
 | VII. Redeliverable events | Pass | Webhook receipts deduplicate; webhooks are hints with head reconciliation; dead jobs visible and redrivable |
 | VIII. Failure tested honestly | Pass | Crash points, duplicates, races, lost webhook, restart, tenant and ceiling tests planned; replay and costs not claimed before measured |
-| Delivery constraints (no marketplace, security-by-default) | Justified | The catalog is curated by source (bundled + operator) with signatures; the test server is a development-only binary refused by production |
+| Delivery constraints (no marketplace, security-by-default) | Justified; since constitution 5.0.0 (2026-11-24) **Pass** against "Admitted scope" | The catalog is curated by source (bundled + operator) with signatures; the test server is a development-only binary refused by production |
 
 ### Complexity tracking
 

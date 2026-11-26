@@ -18,6 +18,9 @@ pub struct QuotaBody {
     /// How much is used now; absent for a per-namespace resource in the tenant-wide view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used: Option<u64>,
+    /// Present and true only for `tenant_step_log_bytes` when `used` is withheld (decision D041-133).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_withheld: Option<bool>,
 }
 
 impl From<&QuotaView> for QuotaBody {
@@ -28,6 +31,7 @@ impl From<&QuotaView> for QuotaBody {
             source: view.source.as_str(),
             ceiling: view.ceiling,
             used: view.used,
+            usage_withheld: view.usage_withheld.then_some(true),
         }
     }
 }

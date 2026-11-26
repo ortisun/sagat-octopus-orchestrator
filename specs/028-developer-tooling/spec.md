@@ -16,7 +16,9 @@ their logs through the CLI. (4) Bidirectional Studio↔Git sync: a repository pe
 produces a commit or pull request in the feature-011 manifest format; repository changes create drafts; conflicts
 are handled explicitly; credentials come from OpenBao; GitHub and GitLab are supported. (5) A curated, signed
 catalog of workflows, scripts and resource types imported as drafts — curated, because the constitution excludes a
-connector marketplace in V1.
+connector marketplace in V1. *Note (2026-11-24):* constitution 5.0.0 (Owner decision 2026-11-24-2) admits this hub by
+name: its only sources are the release-signed index and operator indexes with operator-pinned keys (D1434, O1402), its
+items are imported as drafts, it runs nothing in the server, and an open marketplace stays out.
 
 ## Context and delivery boundary
 
@@ -40,7 +42,9 @@ What is new is the *test deployment* with a virtual workflow clock, the intercep
 integration, a server-side Git synchronizer and a signed catalog. Concepts of Temporal that exist only because
 workflow code is replayed (workflow inbound/outbound interceptors, non-determinism errors, patching, sticky
 queues, local activities) do not apply: the platform interprets a declarative IR and does not run workflow code
-in an SDK (`sdks/SPEC.md`, "An SDK is not a workflow runtime").
+in an SDK (`sdks/SPEC.md`, "An SDK is not a workflow runtime"). *Note (2026-11-24):* constitution 5.0.0 admits a
+procedural model that does run workflow code in an SDK (design 044, Owner decision 2026-11-24-3); its replay concepts
+(non-determinism errors, version markers, interceptors of workflow code) belong to design 044, not to this feature.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -597,7 +601,8 @@ All evidence below is required future evidence, not completed tests.
 
 - A connector or template marketplace, third-party publishing, ratings or payments (constitution, Delivery
   Constraints); executable plugins in the server.
-- Workflow-code interceptors, determinism checks of user code and code replay (not applicable to the declarative IR).
+- Workflow-code interceptors, determinism checks of user code and code replay (not applicable to the declarative IR;
+  for the procedural model of constitution 5.0.0 they are design 044's).
 - Per-namespace virtual clocks, several clocks in one test server, and SDK-managed test-server processes (G1400,
   G1401).
 - Synchronizing scripts, connections, secrets, resources or app documents through Git (G1406); automatic merge of
