@@ -37,24 +37,31 @@ row it would drop exists.
 | `package_reservation_revisions` | `(tenant_id)` | `revision bigint` | increased under `FOR UPDATE` by every reservation change; read `FOR SHARE` by resolve completion and finish |
 | `private_packages` | `(tenant_id, ecosystem, normalised_name, version)` | `namespace_id` (where it is stored), `file_sha256`, `filename`, `size`, `blob_key`, `uploaded_by`, `uploaded_at`, `released_by`, `released_at` (an early release by another `package:manage` holder; a check refuses `released_by = uploaded_by`) | counted in `tenant_content_bytes` by trigger (Architecture decision 0027); SELECT, INSERT, DELETE, and UPDATE of `released_by` and `released_at` only |
 | `package_advisories` | `(ecosystem, snapshot_id, id)` | `aliases text[]`, `malicious boolean`, `severity`, `affected jsonb` (at most 64 KiB), `matched_pairs jsonb` (the exact name and version pairs computed at staging), `modified_at`, `withdrawn_at` | platform-wide; staged per snapshot; rows of old snapshots deleted after the switch; index `(ecosystem, snapshot_id, malicious)`; SELECT for `sagat_app`; INSERT, UPDATE, DELETE for the role `sagat_advisory_import`, which also holds INSERT on `script_artifact_blocks` and `script_policy_reevaluations` and UPDATE on `package_advisory_snapshots`, and SELECT on `script_locked_packages` (for the barrier, staging and the switch); the control plane's import pass connects with it (`SAGAT_ADVISORY_IMPORT_DATABASE_URL`); the trigger on block deletion guards against defects, not against a compromised control plane, which holds both roles |
-| `package_advisory_snapshots` | `(ecosystem)` | `current_snapshot_id`, `source`, `record_count`, `max_modified_at`, `switched_at`, `forced`, `held_snapshot_id` | the row the switch takes `FOR UPDATE` and resolve completion and finish `FOR SHARE`; the migration seeds one row per ecosystem (`npm`, `pypi`) so that it always exists |
+| `package_advisory_snapshots` | `(ecosystem)` | `current_snapshot_id`, `source`, `record_count`, `max_modified_at`, `switched_at`, `forced`, `held_snapshot_id` | read under the snapshot lock (Lock order) and updated by the switch under it; the migration seeds one row per ecosystem (`npm`, `pypi`) so that it always exists |
 | `package_store_pins` | `(id)` | `file_sha256`, `holder_kind` (`JOB`, `TEST_RUN`, `MATERIALIZATION`, `OFFLINE_BUNDLE`), `holder_id`, `lease_until` (null for bundles) | SELECT, INSERT, DELETE |
 | `package_store_marks` | `(file_sha256)` | `marked_at` | the collection pass's marks; SELECT, INSERT, DELETE |
 | `package_fetch_usage` | `(tenant_id, day)` | `bytes bigint` | the resolve claim charges the 1 GiB ceiling under this row's lock and refuses past the budget; every completion of the attempt, failures included, settles it, on the job's `charged_day` row only and never below zero, to the forwarded bytes; an expired lease keeps the ceiling; SELECT, INSERT, UPDATE |
 
 ## Lock order
 
-- **Resolve completion:** the job row, the version row, then `FOR SHARE` on `package_advisory_snapshots`, the namespace's
-  `script_runtime_policies` row and `package_reservation_revisions`, then inserts.
+- **The snapshot lock:** a transaction-level advisory lock on a fixed key per ecosystem. Decisions take it shared
+  through `sagat_lock_advisory_snapshot_share(ecosystem)`, which also returns the snapshot row as it stands; the switch
+  takes it exclusively, then the row `FOR UPDATE`. A heavyweight lock request that conflicts with a waiting one queues
+  behind it, so shared takers cannot starve the switch (a row lock gives no such order).
+- **Resolve completion:** the job row, the version row, then the snapshot lock shared, then `FOR SHARE` on the
+  namespace's `script_runtime_policies` row and `package_reservation_revisions`, then inserts.
 - **Install completion:** the job row, then the version row.
-- **Finish:** the version row, then the same three rows `FOR SHARE`, then the artifact, the records and the blocks.
+- **Finish:** the version row, then the snapshot lock shared and the same two rows `FOR SHARE`, then the artifact, the
+  records and the blocks.
 - **Advisory barrier:** `script_locked_packages` in `SHARE` mode (through `sagat_advisory_barrier()`), read the highest
   `locked_seq`, commit.
-- **Advisory switch:** `package_advisory_snapshots` `FOR UPDATE`, then block inserts (no version row is locked).
-- **Author-lock publication and any other writer of `script_locked_packages`:** `package_advisory_snapshots` `FOR SHARE`
-  (ordering the decision against a switch), then its inserts, whose table lock the advisory barrier waits for.
+- **Advisory switch:** the snapshot lock exclusively, then `package_advisory_snapshots` `FOR UPDATE`, then block inserts
+  (no version row is locked, so it cannot deadlock with a decision, which takes the snapshot lock after its own rows).
+- **Author-lock publication and any other writer of `script_locked_packages`:** the snapshot lock shared (ordering the
+  decision against a switch), then its inserts, whose table lock the advisory barrier waits for.
 - **Policy, rule and waiver writes:** the policy row `FOR UPDATE`. **Reservations:** the revision row `FOR UPDATE`.
-- **Re-evaluation page:** its job row, then the policy, snapshot and reservation-revision rows `FOR SHARE`, then the
+- **Re-evaluation page:** its job row, then the snapshot lock shared, then the policy and reservation-revision rows
+  `FOR SHARE`, then the
   page's blocks in artifact digest order.
 - **Block pass (`fail_ready_step`):** one step per transaction, in the engine's order: the run's chain, the run row, then
   the step row `FOR UPDATE`, rechecked; then the block row's `steps_failed_at` when the batch is done.
@@ -63,10 +70,11 @@ row it would drop exists.
 - **Advisory barrier:** `sagat_advisory_barrier()`, `SECURITY DEFINER` (fixed `search_path`, trusted owner), takes
   `script_locked_packages` in `SHARE` mode and returns the highest `locked_seq`; `EXECUTE` revoked from `PUBLIC` and
   granted to `sagat_advisory_import` only.
-- **Shared locks of the runtime role:** `sagat_app` takes `package_advisory_snapshots` `FOR SHARE` only through the
-  `SECURITY DEFINER` function `sagat_lock_advisory_snapshot_share(ecosystem)` (fixed `search_path`, trusted owner,
-  `EXECUTE` revoked from `PUBLIC` in the migration, as PostgreSQL grants it by default, and granted to `sagat_app` only), because a row lock needs an UPDATE privilege that the runtime role must not hold on that
-  table; tested as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`).
+- **Shared locks of the runtime role:** `sagat_app` takes the snapshot lock only through the `SECURITY DEFINER` function
+  `sagat_lock_advisory_snapshot_share(ecosystem)` (fixed `search_path`, trusted owner, `EXECUTE` revoked from `PUBLIC` in
+  the migration, as PostgreSQL grants it by default, and granted to `sagat_app` only), so that the key space of the
+  lock is the function's alone and the runtime role needs no privilege on `package_advisory_snapshots` beyond SELECT;
+  tested as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`).
 - **Collection:** in one transaction per object, re-read that no lock, upload or unexpired pin references the hash and
   that its mark is at least 7 days old, delete the mark, commit; then delete the object through the gateway. A reference
   gained after the commit finds the object still present (the deletion is after) or absent (the pin's holder fetches it

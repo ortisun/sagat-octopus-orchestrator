@@ -32,7 +32,7 @@ namespaces with different policies.
    and an upload's deletion each insert a durable re-evaluation job in the causing transaction; the jobs of a
    tenant are worked in creation order, in pages with a cursor, holding the policy, snapshot and reservation-revision rows
    `FOR SHARE`, and write or remove only their own kinds of block, never one evaluated at fresher revisions. The switch
-   rechecks age and size under the snapshot row's lock, and a held import still refuses the finishes and materializations
+   rechecks age and size under the ecosystem's snapshot lock (an advisory lock that decisions take shared and the switch exclusively), and a held import still refuses the finishes and materializations
    it would block.
 5. The engine MUST NOT lease a script step whose artifact has a block for its namespace or for all: the check is in the
    typed admission (`Admit`, `Wait`, `Deny`) that both lease paths call (`lease_one` and the scoped claims), and a blocked

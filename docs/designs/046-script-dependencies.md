@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
 2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2 (pull request 284). Every other choice,
 including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
-recorded in research.md as Decisions 046-001 to 046-077 with the register's literal marker "delegate (OD-2026-11-24-4)".
+recorded in research.md as Decisions 046-001 to 046-078 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -375,8 +375,8 @@ version. Every transition is one transaction fenced by the job's lease token; a 
 `AlreadyDone` and changes nothing, as feature 005 answers today.
 
 - **Resolve completes.** The control plane calls the gateway's metadata endpoint with no transaction open. Then one
-  transaction: lock the version row and require `BUILDING`; read the ecosystem's snapshot row, the namespace's policy row
-  and the tenant's reservation revision `FOR SHARE`; evaluate; store the lock, metadata, report and those three
+  transaction: lock the version row and require `BUILDING`; take the ecosystem's snapshot lock shared (Technical Plan 7)
+  and read its snapshot row; read the namespace's policy row and the tenant's reservation revision `FOR SHARE`; evaluate; store the lock, metadata, report and those three
   revisions; charge the fetch budget; then refuse the version (`FAILED` with its reason, an event and an audit record) or
   insert one install job per required target and the build job. A failed metadata call fails the resolve job as
   retryable.
@@ -413,7 +413,8 @@ install jobs and the build job directly.
 
 **Where the evaluation runs.** The evaluation is pure code in the application. Each store call that commits a decision
 (resolve completion, an author-lock publication, the finish) takes the snapshot, policy and reservation revisions and the
-earliest waiver expiry the application evaluated against, locks their rows `FOR SHARE` itself, compares, and answers
+earliest waiver expiry the application evaluated against, takes the snapshot lock shared and the policy and
+reservation rows `FOR SHARE` itself, compares, and answers
 `StaleInputs` when any differs or the waiver time has passed; the application then evaluates again and retries, at
 most 5 times in a row before the job fails retryable, or, for an author-lock publication, which has no job, before the
 request answers `503 SCRIPT_POLICY_BUSY`, retryable (`crates/infra-postgres/src/scripts.rs`, `finish_build` and
@@ -559,7 +560,7 @@ block names the tenant. Artifact rows stay immutable. A durable row of `script_p
 that changes the policy, adds or removes a waiver, imports a snapshot, creates a reservation or deletes an upload; the
 hourly waiver pass inserts one for each expired waiver. A leased pass works a tenant's jobs in creation order (a
 tenant-wide job before the namespace jobs created after it), in pages of 200 versions, one transaction per page that holds
-the policy, snapshot and reservation-revision rows `FOR SHARE` and advances the cursor in its commit. A page writes and
+the snapshot lock shared and the policy and reservation-revision rows `FOR SHARE`, and advances the cursor in its commit. A page writes and
 removes only `REEVALUATION` and `RESERVATION` blocks, removes one only when it evaluated at revisions at least those the
 block records, and never removes an `ADVISORY_IMPORT` or `OPERATOR` block.
 
@@ -598,8 +599,12 @@ inserted later gets a higher value. The import then stages its records under a n
 transactions, outside any lock, and computes, for each new malicious record, the exact (name, version) pairs it matches
 among the rows at or below the mark. Just before the switch, the application (`crates/application/src/scripts/packages.rs`,
 through the `PackageRules` port) reads the rows above the mark and range-evaluates them outside any lock. The switch is
-one transaction that takes the snapshot row `FOR UPDATE` (the seeded row of its ecosystem; the same timeout, retry and
-alert) and then: refuses the import if it is older than the current snapshot of that ecosystem or holds at least 1
+one transaction that takes the ecosystem's snapshot lock exclusively and then the snapshot row `FOR UPDATE` (the seeded
+row of its ecosystem; the same timeout, retry and alert). The snapshot lock is a transaction-level advisory lock on a
+fixed key per ecosystem: every decision that reads the snapshot (resolve completion, author-lock publication, finish,
+re-evaluation page) takes it shared, through the definer function `sagat_lock_advisory_snapshot_share(ecosystem)`, and
+the switch takes it exclusively (`pg_advisory_xact_lock`). Unlike a row lock, a heavyweight lock request that conflicts
+with a waiting request queues behind it, so overlapping publications cannot starve the switch. Under it the switch: refuses the import if it is older than the current snapshot of that ecosystem or holds at least 1
 percent fewer records (checked again under the lock); makes it current; inserts a block for every artifact that locks a
 precomputed pair, whatever its `locked_seq`, and for every artifact the range evaluation matched; inserts a `SNAPSHOT`
 re-evaluation row for the tenant of every row above the mark that the application did not evaluate (a writer that
@@ -665,8 +670,8 @@ republished.
 The finishing transaction of a bundle version 5, on the new-build path and on the cache-hit path
 (`finish_build_cached` gains these steps):
 
-1. takes the version row, then the ecosystem's snapshot row, the namespace's policy row and the tenant's reservation
-   revision `FOR SHARE`;
+1. takes the version row, then the ecosystem's snapshot lock shared (reading its snapshot row), then the namespace's
+   policy row and the tenant's reservation revision `FOR SHARE`;
 2. compares them, and the earliest waiver expiry, with what the application passed (it evaluated on the stored
    metadata, no network, just before the call); on any difference, or a waiver expiry passed, it answers `StaleInputs`
    and changes nothing, and the application evaluates again and calls again; after 5 such answers in a row the build
@@ -679,7 +684,7 @@ The finishing transaction of a bundle version 5, on the new-build path and on th
    within 65,536 bytes);
 5. signs the bundle (feature 005, Decision 98) and the layer records, and makes the version `READY`.
 
-A snapshot import's switch takes the snapshot row `FOR UPDATE`, and a policy write and a reservation take their rows
+A snapshot import's switch takes the snapshot lock exclusively, and a policy write and a reservation take their rows
 `FOR UPDATE`, so each is ordered against every finish.
 
 ### 10. Private packages
@@ -871,7 +876,7 @@ principles these rows rely on.
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass | Every job transition is one fenced transaction; the version row orders install completions; the finish holds the snapshot, policy and reservation rows `FOR SHARE` on both build paths; re-evaluation is a durable job with a cursor; a blocked step fails in the lease transaction with its journal event and outbox |
+| I. State and retry semantics are explicit and durable | Pass | Every job transition is one fenced transaction; the version row orders install completions; the finish holds the snapshot lock shared and the policy and reservation rows `FOR SHARE` on both build paths; re-evaluation is a durable job with a cursor; a blocked step fails in the lease transaction with its journal event and outbox |
 | II. Modular domain, ports and adapters | Pass with conditions | Policy types in the domain; version math behind ports in a new adapter; checks added. Condition: the gateway is a separate process from the start, without a measurement first, because it is the only process with internet egress and must share no process or credential with what reads tenant data (Complexity Tracking) |
 | III. External effects are at-least-once; sagas compensate | Not applicable | No external effect of a run is added |
 | IV. Compatibility is versioned and pinned | Pass | A version pins its lock, unpacker and runtime; layer records are signed per target; bundles 1 to 3 unchanged; images kept while named; framework-only build keys unchanged |
@@ -965,7 +970,7 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `matcher_agrees_with_the_version_order_*`, `an_older_snapshot_is_refused`, `a_large_import_is_held`,
   `the_switch_rechecks_age_under_the_lock`, `a_finish_between_staging_and_switch_is_matched`,
   `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched`,
-  `a_late_writer_with_a_lower_sequence_gets_a_reevaluation_row`, `publications_during_the_switch_never_hold_it`,
+  `a_late_writer_with_a_lower_sequence_gets_a_reevaluation_row`, `publications_during_the_switch_never_hold_it`, `the_switch_is_not_starved_by_overlapping_writers`,
   `the_barrier_is_not_starved_by_overlapping_writers` (held-lock tests, the writer's transaction held
   open with its `FOR SHARE` while the import starts),
   `a_held_import_refuses_matching_finishes`.
