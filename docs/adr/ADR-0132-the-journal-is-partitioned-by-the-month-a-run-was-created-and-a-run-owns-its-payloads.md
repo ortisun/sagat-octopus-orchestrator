@@ -40,7 +40,8 @@ a lock that blocks their writes, and a drop releases no quota because it fires n
    locks through feature 020's purge function; the frozen partitions checked and their bytes per tenant counted; for
    each table, one transaction under a lock timeout that locks only its parent and the bucket's partition, detaches and
    drops it; then an idempotent transaction releases, audits and records the bytes. Nothing is ever left detached and not
-   dropped; a retirement abandoned before its drops deletes by key the rows of the runs it already purged. Retirement is an operator's command run as a role that can only call its definer
+   dropped; a retirement abandoned before its drops deletes by key the journal rows of the runs it already purged and the
+   payloads of the trees whose runs are all purged; the retirement's functions serialize on its row. Retirement is an operator's command run as a role that can only call its definer
    functions, never a platform process. Deleting journal rows waits for constitution 5.1.0, approved by Owner decision
    2026-11-25-3.
 7. New roots get a dated bucket once their process has learned of the registry's activation of `journal-buckets-v1`; a
