@@ -95,15 +95,17 @@ impl PathReport<'_> {
         }
     }
 
-    fn acknowledges_cancellation(&self) -> bool {
-        matches!(
-            self,
+    /// The stop the fence lets this report through (decision D006-097): an acknowledged cancellation, or a hand-back of a
+    /// lease still `LEASED`.
+    fn stop_allowance(&self) -> super::StopAllowance {
+        match self {
             Self::Failure {
-                raw_code: "CANCELLED",
-                retryable: false,
+                raw_code,
+                retryable,
                 ..
-            }
-        )
+            } => super::StopAllowance::of_failure(raw_code, *retryable),
+            Self::Completion { .. } => super::StopAllowance::None,
+        }
     }
 }
 
@@ -221,7 +223,7 @@ where
             }
             // As for Root blob reports, retain the live lease but allow a known result to be
             // recorded during cancellation so scope drain can account for the effect.
-            Self::live_path_fence(&mut tx, task, true).await?;
+            Self::live_path_fence(&mut tx, task, super::StopAllowance::Cancellation).await?;
         }
         if self.vault.is_none() || names.is_empty() {
             return Ok(CheckedPathReport::Ready {
@@ -230,8 +232,16 @@ where
                 scanned_versions: None,
             });
         }
-        let allow_cancellation = report.acknowledges_cancellation();
-        Self::live_path_fence(&mut tx, task, allow_cancellation).await?;
+        // a hand-back passes a cancellation only from a session whose minor reserves the code (decision D006-100)
+        let stop = match report.stop_allowance() {
+            super::StopAllowance::HandBack
+                if !self.path_reserves_the_code(&mut tx, task).await? =>
+            {
+                super::StopAllowance::None
+            }
+            stop => stop,
+        };
+        Self::live_path_fence(&mut tx, task, stop).await?;
         let before = tx.secret_versions(&names).await?;
         tx.commit().await?;
         let scanned = self.secret_in_output(&before, report.scan_bytes()).await;
@@ -243,7 +253,7 @@ where
                 task.run_id,
             )));
         }
-        Self::live_path_fence(&mut tx, task, allow_cancellation).await?;
+        Self::live_path_fence(&mut tx, task, stop).await?;
         if before != tx.secret_versions(&names).await? {
             return Err(AppError::Unavailable);
         }
@@ -370,6 +380,44 @@ where
                 // that an external effect failed. Preserve recovery instead of routing onError;
                 // the code names the platform's refusal, not a worker's `OUTCOME_UNKNOWN`.
                 failure = Some((FailureCode::storage_quota_exceeded(), false));
+            }
+        }
+        // A host hands back a lease it never ran (decisions D006-005 and D006-030), as at the root.
+        if failure
+            .as_ref()
+            .is_some_and(|(code, _)| code.as_str() == super::TASK_NOT_STARTED)
+        {
+            match self.path_hand_back(&mut tx, task).await? {
+                super::HandBackVerdict::Withdraw(before) => {
+                    // dead for heartbeats too (decision D006-086)
+                    effects.reported = None;
+                    let snapshot = tx.snapshot();
+                    let progress = execution::withdraw_path_instance(
+                        &snapshot.definition,
+                        &mut snapshot.state,
+                        task.instance,
+                        task.fence,
+                        execution::WithdrawalCause::NotStarted,
+                        before,
+                    )
+                    .map_err(|e| engine_error(EngineError::Execution(e)))?;
+                    tx.persist_addressed(&progress.events, &[], effects).await?;
+                    let ack = self.finish_path_report(tx, task, idempotency).await?;
+                    super::count_undelivered(
+                        execution::WithdrawalCause::NotStarted,
+                        super::WithdrawalOutcome::Withdrawn,
+                        1,
+                    );
+                    return Ok(PathReportApply::Finished(ack));
+                }
+                // nothing recorded: the lease lapses as before (decision D006-089)
+                super::HandBackVerdict::Lapse(outcome) => {
+                    super::count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1);
+                    return Err(AppError::StaleAttempt);
+                }
+                super::HandBackVerdict::Fail(outcome) => {
+                    super::count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1)
+                }
             }
         }
         let now = tx.now();

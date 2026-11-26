@@ -84,7 +84,10 @@ pub use definitions::{
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
-pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};
+pub use instances::{
+    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep, OperatorBounds, PgInstanceStore,
+    capability_census, census_step, may_activate, requirement_recorded,
+};
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};

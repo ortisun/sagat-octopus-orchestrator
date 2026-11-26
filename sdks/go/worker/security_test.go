@@ -124,11 +124,11 @@ func TestTheBackoffAfterARefusedSessionIsResetByASuccessfulPoll(t *testing.T) {
 
 // ---- a server that sends more than was asked for
 
-func TestAPollAnswerWithMoreTasksThanTheHostAskedForRunsOnlyWhatItAskedFor(t *testing.T) {
+func TestAPollAnswerWithMoreTasksThanTheHostAskedForRunsOnlyWhatItAskedForAndHandsTheRestBack(t *testing.T) {
 	f := newFakeService(t)
 	var logged bytes.Buffer
 	var mu sync.Mutex
-	h := newHost(t, f, worker.WithMaxInflight(2), worker.WithLogger(slog.New(slog.NewTextHandler(&lockedWriter{&mu, &logged}, nil))))
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(2), worker.WithLogger(slog.New(slog.NewTextHandler(&lockedWriter{&mu, &logged}, nil))))
 	var running, peak, total atomic.Int32
 	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) {
 		total.Add(1)
@@ -155,11 +155,18 @@ func TestAPollAnswerWithMoreTasksThanTheHostAskedForRunsOnlyWhatItAskedFor(t *te
 	if peak.Load() > 2 || total.Load() != 2 || len(f.of("CompleteStep")) != 2 {
 		t.Errorf("peak %d, %d handlers, %d reports: only the first 2 of 6 may run", peak.Load(), total.Load(), len(f.of("CompleteStep")))
 	}
+	until(t, "the four hand-backs", func() bool { return len(f.of("FailStep")) == 4 })
+	for _, c := range f.of("FailStep") {
+		if r := c.request.(*pb.FailStepRequest); r.GetErrorCode() != "TASK_NOT_STARTED" || r.GetTaskId() == "run-1/charge/1" || r.GetTaskId() == "run-2/charge/1" {
+			t.Errorf("only the four leases beyond the credit are handed back, got %s for %s", r.GetErrorCode(), r.GetTaskId())
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	text := logged.String()
-	if !strings.Contains(text, "4") || strings.Contains(text, "LEASE-TOKEN") || strings.Contains(text, "run-3/charge") {
-		t.Errorf("the log says how many were left, and nothing more: %s", text)
+	// The log says how many were not run and which tasks, by their identifiers, and never a lease token.
+	if !strings.Contains(text, "not_run=4") || !strings.Contains(text, "run-3/charge/1") || strings.Contains(text, "LEASE-TOKEN") {
+		t.Errorf("the log names the count and the tasks, never a lease token: %s", text)
 	}
 }
 

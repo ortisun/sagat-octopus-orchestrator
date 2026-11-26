@@ -91,17 +91,31 @@ func (h *Host) run(ctx context.Context, l *link) {
 		}
 		failures, refused = 0, 0
 		tasks := response.GetTasks()
-		// The host runs at most as many tasks as it asked for: a server that sends more is not obeyed. The
-		// leases of the rest lapse and the server leases them again.
-		if asked := min(free, maxPoll); len(tasks) > asked {
-			h.log.Warn("the server sent more tasks than were asked for: the rest are left to lapse",
-				"asked", asked, "received", len(tasks), "ignored", len(tasks)-asked)
-			tasks = tasks[:asked]
+		if h.frameReceived != nil {
+			h.frameReceived(len(tasks))
 		}
-		h.emit(Event{Type: EventPoll, Tasks: len(tasks)})
+		// The host runs at most as many tasks as it asked for, and nothing once it is stopping: a server
+		// that sends more is not obeyed, and the rest are handed back from protocol 1.8 or left to lapse
+		// below it (sdks/SPEC.md section 6.2).
+		asked := min(free, maxPoll)
+		if len(tasks) > asked {
+			h.log.Warn("the server sent more tasks than were asked for: the rest are not run",
+				"asked", asked, "received", len(tasks), "not_run", len(tasks)-asked)
+		}
+		w, taken, stopping := newWindow(sess), 0, h.stopping.Load()
 		for _, lease := range tasks {
-			h.dispatch(l, lease)
+			why := ""
+			switch {
+			case stopping:
+				why = handBackStopping
+			case taken >= asked:
+				why = handBackCredit
+			}
+			if h.take(l, w, lease, why) {
+				taken++
+			}
 		}
+		h.emit(Event{Type: EventPoll, Tasks: taken})
 		if len(tasks) == 0 {
 			h.idle(ctx, boff.Jitter(pollWait(response.GetRetryAfterMs())))
 		}

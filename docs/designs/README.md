@@ -15,6 +15,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
+| 044 | [Workflow as code](044-workflow-as-code.md) | Approved | 0 of 37 |
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Approved | 0 of 20 |
 | 054 | [Buffered signals](054-buffered-signals.md) | Approved | 0 of 19 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |

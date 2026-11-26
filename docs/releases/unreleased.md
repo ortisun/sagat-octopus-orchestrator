@@ -3,6 +3,20 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Workers: leases no host received are withdrawn (feature 006, ADR-0098)
+
+- A lease the engine committed and never handed to a host goes back to `READY` with its attempt unspent, recorded as the new
+  journal event `step.lease_withdrawn`, once the operator records the requirement `lease-withdrawal-v1` with the new
+  generic command `control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-live N` (owner role).
+  Until then nothing changes. The requirement cannot be removed once a journal holds the event; `SAGAT_LEASE_WITHDRAWAL=off`
+  on an engine stops new withdrawals. `docs/runbooks/lease-withdrawal.md`.
+- Migration `20270208000200_lease_withdrawal_floor` builds a partial index on `run_events` under a SHARE lock (journal
+  writes wait for it); on a large journal build it `CONCURRENTLY` first (the recipe is in the runbook, "Before upgrading").
+- The six SDKs hand a lease they will not run back with `TASK_NOT_STARTED` only on a session of worker protocol 1.8 or
+  later; below it, as before, the lease lapses. A handler that raises `TASK_NOT_STARTED` is reported as `WORKER_ERROR`.
+- A release that carries this without its follow-up (the requests of ADR-0099, decision D006-090) cannot be the build a
+  protocol 1.8 build rolls back to (gap G006-032).
+
 ## Breaking: every run input is checked against its version's schema (design 043)
 
 From 0.3.0 the input of every run is checked against the `inputSchema` of the version the run pins, before the run is

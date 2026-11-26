@@ -104,6 +104,9 @@ describe('events', () => {
   it('says every event the platform writes in words, and an unknown one as it is', () => {
     expect(eventLabel('step.retry_scheduled')).toMatch(/retry/);
     expect(eventLabel('something.new')).toBe('something.new');
+    // a lease no worker started, taken back with its attempt unspent (feature 006, decision D006-087)
+    expect(eventLabel('step.lease_withdrawn')).toBe('A lease no worker started was taken back; the attempt was not spent');
+    expect(eventTone('step.lease_withdrawn')).toBe('normal');
     expect(eventTone('step.failed')).toBe('problem');
     expect(eventTone('step.retry_requested')).toBe('decision');
     expect(eventTone('step.completed')).toBe('normal');

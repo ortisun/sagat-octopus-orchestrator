@@ -29,18 +29,37 @@ internal sealed class MeterCapture : IDisposable
 
     internal long Total(string instrument) => totals.GetValueOrDefault(instrument);
 
+    /// <summary>How many measurements of <paramref name="instrument"/> carried the error code <paramref name="code"/> (the tag <c>sagat.error.code</c>).</summary>
+    internal long Total(string instrument, string code) => totals.GetValueOrDefault(instrument + "|" + code);
+
     public void Dispose() => listener.Dispose();
 
     private void OnMeasurement<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
         where T : struct
     {
+        var ours = false;
+        string? code = null;
         foreach (var tag in tags)
         {
             if (tag.Key == "sagat.worker" && (string?)tag.Value == worker)
             {
-                totals.AddOrUpdate(instrument.Name, 1, (_, count) => count + 1);
-                return;
+                ours = true;
             }
+            else if (tag.Key == "sagat.error.code")
+            {
+                code = tag.Value as string;
+            }
+        }
+
+        if (!ours)
+        {
+            return;
+        }
+
+        totals.AddOrUpdate(instrument.Name, 1, (_, count) => count + 1);
+        if (code is not null)
+        {
+            totals.AddOrUpdate(instrument.Name + "|" + code, 1, (_, count) => count + 1);
         }
     }
 }

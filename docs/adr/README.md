@@ -53,8 +53,9 @@ Run input validation, refined in the build: [ADR-0092](ADR-0092-the-application-
 ## Every decision
 
 Each record, in number order, with the status written at its top (shortened to its first clause; the file has the
-rest). Numbers 0011, 0034, 0041 to 0049 and 0091 have no file on `develop`; numbers are shared by every branch (rule 1
-above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
+rest). Numbers 0011, 0034, 0041 to 0049 and 0091 have no file on `develop`; on this branch 0093 to 0097 and 0101 to 0144 have
+no file either, being reserved or used on other branches (0130 to 0137 and 0143 to 0144 among them, seen on 2026-11-24); numbers
+are shared by every branch (rule 1 above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
 
 | Number | Decision | Status |
 |---|---|---|
@@ -138,6 +139,17 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0089 | [A gated step waits outside READY, and one fenced grant routine, driven by key, serves every waiter whatever its gates](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md) | Accepted |
 | 0090 | [Every run input is checked against its pinned version's schema before the run is created](ADR-0090-every-run-input-is-checked-against-its-pinned-version-schema-before-the-run-is-created.md) | Accepted |
 | 0092 | [The application names a runtime only for the blob-source parse, and the run-input rules refined in the build](ADR-0092-the-application-names-a-runtime-only-for-the-blob-source-parse-and-the-run-input-rules-refined-in-the-build.md) | Accepted |
+| 0098 | [A lease the server never handed to the transport is withdrawn, with a new journal event behind a fleet requirement](ADR-0098-a-lease-the-server-never-handed-to-the-transport-is-withdrawn-behind-a-fleet-requirement.md) | Accepted (OD-2026-11-21-4) |
+| 0099 | [A lease of worker protocol 1.8 is provisional until its host acknowledges it, and a provisional lease that expires is withdrawn](ADR-0099-a-lease-of-protocol-1-8-is-provisional-until-its-host-acknowledges-it-and-a-provisional-lease-that-expires-is-withdrawn.md) | Accepted (2026-11-21, OD-2026-11-21-5); decision 9 partly superseded by ADR-0145 |
+| 0100 | [Retired number: a fleet requirement may require another](ADR-0100-withdrawn-a-fleet-requirement-may-require-another.md) | Withdrawn (2026-11-21) |
+| 0103 | [A code workflow is a decider whose commands are IR nodes held in a per-run overlay, committed in the run's one transaction](ADR-0103-a-code-workflow-is-a-decider-whose-commands-are-ir-nodes-committed-in-the-run-transaction.md) | Proposed |
+| 0104 | [Replay follows the activation window of the journal, pending work is derived from the journal, and the server holds a command chain over data the worker is not sent](ADR-0104-replay-follows-the-activation-boundary-and-the-server-holds-the-command-chain.md) | Proposed |
+| 0105 | [A code run pins a code digest, moves to other code only on a person's request after a verified replay of its own history, and resets only within its code](ADR-0105-a-code-run-pins-a-code-digest-and-moves-only-after-a-verified-replay.md) | Proposed |
+| 0106 | [Each SDK runs workflow code under a named determinism runtime, with the same deterministic primitives in six languages](ADR-0106-each-sdk-runs-workflow-code-under-a-named-determinism-runtime.md) | Proposed |
+| 0107 | [Effects from code are leased steps in a code profile whose risk metadata the publisher owns, and a saga opened from code is planned by the engine](ADR-0107-effects-from-code-are-leased-steps-and-sagas-are-planned-by-the-engine.md) | Proposed |
+| 0108 | [Signals, updates and queries of code runs reuse the platform's mechanisms, and every result a code run discloses is declared](ADR-0108-code-queries-are-answered-from-declared-state-and-worker-queries-are-ephemeral.md) | Proposed |
+| 0109 | [Workflow tasks, worker queries and replay checks travel on the next free worker-protocol minor, as additive messages](ADR-0109-workflow-tasks-travel-on-the-next-free-worker-protocol-minor.md) | Proposed |
 | 0110 | [The timeouts of a leased step are deadlines on the database clock, only a deadline that ends a live attempt leaves its outcome unknown, and retry is decided per failure code](ADR-0110-step-timeouts-are-deadlines-on-the-database-clock-and-retry-is-decided-per-failure-code.md) | Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4) |
 | 0111 | [A workflow version may declare buffered signals, kept in a bounded inbox of the run and consumed once by a later wait](ADR-0111-a-version-may-declare-buffered-signals-kept-in-a-bounded-per-run-inbox.md) | Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4) |
 | 0112 | [Fleet requirements share one publication hold and one registry of replay floors](ADR-0112-fleet-requirements-share-one-publication-hold-and-one-registry-of-replay-floors.md) | Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4) |
+| 0145 | [At protocol 1.8, a hand-back the fleet cannot honour lapses](ADR-0145-at-protocol-1-8-a-hand-back-the-fleet-cannot-honour-lapses.md) | Accepted (2026-11-24, delegate, OD-2026-11-24-4) |
