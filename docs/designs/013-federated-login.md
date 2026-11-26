@@ -1474,9 +1474,12 @@ written plus one, never reused, the highest also kept in the document), material
   and writes only with `cas: 0`, so the ring documents get their own transport, in the submodule
   `identity_ring::transport`: `read_versioned(path: RingPath) -> Result<(u32, RingDocument), RingError>` and
   `write_cas(path: RingPath, version: u32, body: RingDocument) -> Result<u32, RingError>`. The ring operations, the
-  transport and `identity_mount`'s operations take an `IdentityOpenBao`, a newtype over the client built only from the
-  `SAGAT_IDENTITY_OPENBAO_*` settings, so the secrets-mount client, whose token engines also hold, cannot be passed to
-  them. The transport goes through the client's private `measured` wrapper with the closed operations `ring_read` and
+  transport and `identity_mount`'s operations take an `IdentityOpenBao`, a newtype over the client, defined in
+  `identity_ring` with a private field, whose one constructor, `IdentityOpenBao::from_lookup(get, development)`, reads
+  only the `SAGAT_IDENTITY_OPENBAO_*` settings (mount and token file) and builds the client itself
+  (`identity_openbao_never_reads_the_secrets_mount_settings` checks that it never reads `SAGAT_OPENBAO_MOUNT` or
+  `SAGAT_OPENBAO_TOKEN_FILE`); no other constructor and no conversion from an `OpenBao` or an `OpenBaoConfig` exists, so
+  the secrets-mount client, whose token engines also hold, cannot be wrapped or passed to them. The transport goes through the client's private `measured` wrapper with the closed operations `ring_read` and
   `ring_write`, so ring reads appear in `secret_provider_requests_total`. Because `identity_ring` is a
   child of `openbao`, the transport uses the client's private request helper, `bounded_body` and fields as they are:
   none of them is widened, so no other module of the crate, `TokenSigner` and `IdentitySecrets` included, gains a raw
@@ -1518,7 +1521,8 @@ written plus one, never reused, the highest also kept in the document), material
   `ProviderReference` as a path. `identity_ring` and its submodules: in any form other than private
   (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose` (sealed by `pub trait Sealed` in a private `sealed`
   submodule, the usual pattern that the `private_bounds` lint accepts), the two purpose markers, `KeyId`, `KeyState`,
-  `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError`, `IdentityOpenBao` and, to the module itself only, `RingPath`
+  `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError`, `IdentityOpenBao` (with `from_lookup` as its only
+  constructor) and, to the module itself only, `RingPath`
   and `RingDocument`; the operations above, the key-id and state accessors, `KeyId::new(i64) -> Option<KeyId>` and
   `KeyId::get`, `Tag::from_bytes([u8; 32])` and `Tag::as_bytes` (a tag is a MAC, not a key), and read-only accessors of
   `Sealed` (key id, salt, nonce, ciphertext); and the trait implementations `Debug` (hand-written), `Drop`, `Zeroize`,
@@ -1831,7 +1835,9 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   a `&str` path, a `pub(crate) fn` taking a `&str` path in `identity_mount.rs`, an `IdentityPath` field of any type other than `u32`, the tenant id, the connection id and `IdentitySecretName`
   (for example a `String`, `Box<str>` or a newtype over `String` such as `SecretName`), a data-carrying
   `IdentitySecretName` variant (`IdentitySecretName` is a fieldless enum), a ring or identity-mount operation called
-  with a plain `OpenBao`, a non-private function returning `RingKey`, `PurposeKey` or `RingDocument`; the shared table
+  with a plain `OpenBao`, a non-private `IdentityOpenBao` constructor taking an `OpenBao` or an `OpenBaoConfig`, an
+  `impl From<OpenBao> for IdentityOpenBao`, a non-private field of `IdentityOpenBao`;
+  `identity_openbao_never_reads_the_secrets_mount_settings`, a non-private function returning `RingKey`, `PurposeKey` or `RingDocument`; the shared table
   `tests/fixtures/sealed_envelope_malformed.json` run against the attempt cookie's codec; the alert test covering the
   three values of `key`; a `"rings/cli-refresh"` literal and an
   `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
