@@ -213,3 +213,93 @@ async fn a_schedule_of_another_tenant_or_namespace_is_not_found() {
         .await;
     assert_eq!(status, 404);
 }
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Bugfix T016-066 (G665, FR-016-030, D016-002): the schedule read used to return the input's unsalted SHA-256 as
+/// `action.inputDigest`, so a viewer (who holds `schedule:read`) could confirm a guessed `pii` input by hashing it.
+/// No answer that carries a schedule returns it now; `action.hasInput` says only that there is one.
+#[tokio::test]
+async fn no_schedule_answer_returns_the_digest_of_its_classified_input() {
+    use sagat_domain::identity::Role;
+    use sha2::{Digest as _, Sha256};
+
+    let r = rig().await;
+    r.p.grant(r.p.tenant, "vera", Role::Viewer).await;
+    let mut definition = document("classified-flag", "done", vec![end_node("done")]);
+    definition["inputSchema"] = json!({
+        "type": "object", "additionalProperties": false,
+        "x-sagat-classification": "public",
+        "properties": {"flag": {"type": "boolean", "x-sagat-classification": "pii"}}
+    });
+    let workflow = r.p.publish("classified-flag", &definition).await;
+    let guess = hex(&Sha256::digest(br#"{"flag":true}"#));
+    let mut answers = Vec::new();
+    let (status, created) =
+        r.p.rest(
+            Method::POST,
+            &r.schedules(),
+            Some(&json!({
+                "name": "flagged",
+                "spec": {"intervals": [{"everyMs": 3_600_000}]},
+                "action": {"workflowId": workflow, "input": {"flag": true}}
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{created}");
+    let id = created["scheduleId"].as_str().expect("id").to_owned();
+    answers.push(("create (administrator)", created));
+
+    // the attack: what the server keeps is the plain SHA-256 of the guessed input
+    let stored: Vec<u8> = sqlx::query_scalar(
+        "SELECT input_digest FROM schedule_revisions WHERE schedule_id = $1::uuid AND revision = 1",
+    )
+    .bind(&id)
+    .fetch_one(&r.p.api.db.pool)
+    .await
+    .expect("the revision keeps its input");
+    assert_eq!(
+        hex(&stored),
+        guess,
+        "the stored digest is the SHA-256 of the input"
+    );
+
+    for subject in ["vera", HUMAN] {
+        let (status, read) =
+            r.p.rest_as(
+                subject,
+                Method::GET,
+                &format!("{}/{id}", r.schedules()),
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{read}");
+        answers.push(("read", read));
+        let (status, listed) =
+            r.p.rest_as(subject, Method::GET, &r.schedules(), None)
+                .await;
+        assert_eq!(status, 200, "{listed}");
+        let one = listed["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|item| item["scheduleId"] == id.as_str())
+            .cloned()
+            .expect("the schedule is listed");
+        answers.push(("list", one));
+    }
+    for (label, answer) in &answers {
+        let text = answer.to_string();
+        assert!(
+            !text.contains(&guess),
+            "{label}: the digest of a pii input is returned: {text}"
+        );
+        assert!(
+            answer["action"].get("inputDigest").is_none(),
+            "{label}: {text}"
+        );
+        assert_eq!(answer["action"]["hasInput"], true, "{label}: {text}");
+    }
+}

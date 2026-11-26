@@ -8,6 +8,7 @@ mod disclosure;
 mod events;
 mod grants;
 mod journal;
+mod journal_reference;
 mod pinning;
 mod pinning_routes;
 mod rest;
