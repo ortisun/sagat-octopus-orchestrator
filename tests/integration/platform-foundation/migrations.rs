@@ -1206,7 +1206,7 @@ async fn the_marks_of_1_8_are_added_and_roll_back_only_while_no_provisional_mark
 
 /// Task 006-044: the claim stamps `pg_postmaster_start_time()`, so the runtime role must read it; a crash that the
 /// postmaster recovers without restarting keeps it (decision D006-062), which this test cannot provoke on a shared server
-/// (gap G006-040).
+/// (gap G006-049).
 #[tokio::test]
 async fn the_runtime_role_reads_the_start_time_of_the_server() {
     let db = migrated_db().await;

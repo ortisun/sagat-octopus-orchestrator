@@ -1607,7 +1607,7 @@ one receive call.
   never set", which fixes that meaning of 1.8 for good and moves delivery acknowledgement to a later minor, and releasing it (Decision
   006-057). Asked through the coordinator. **Answered 2026-11-21: "Reserve 1.8 now" (Owner decision 2026-11-21-6).**
 
-### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-119, G006-039 to G006-049)
+### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-119, G006-039 and G006-049 to G006-053; G006-040 to G006-048 are the design's)
 
 The server tasks of protocol 1.8, built dormant on `feature/delivery-acknowledgement` in the order of the task list. Each
 decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
@@ -1648,7 +1648,7 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   `the_runtime_role_reads_the_start_time_of_the_server` (`integration_platform_foundation`), the storage manifest test and
   the runtime privilege audit. Weighed: a `CHECK` that the marks pair up (a scan of `steps` at migration time, and the pairs
   are a property of the statements that write them, which the static check of Task 006-047 holds).
-- **G006-040 — That a crash the postmaster recovers keeps `pg_postmaster_start_time()` is recorded, not tested here.** D006-062
+- **G006-049 — That a crash the postmaster recovers keeps `pg_postmaster_start_time()` is recorded, not tested here.** D006-062
   rests on it (a crash without a restart loses the unwritten journal and keeps the start time, so the acknowledgement and the
   capability record commit with `synchronous_commit` at least `local`). Provoking that crash means killing a backend of the
   test server, which every test of the process shares. Closed by the failover drill of Task 006-054 (`infra/dr/drill.sh`),
@@ -1680,7 +1680,7 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   definer functions and the capability parity tests. Weighed: refusing a recording of `delivery-acknowledgement-v1` for other
   kinds than engines in the trigger (ADR-0099 says engines only; the entry of Task 006-057 records it so, and a recording by
   hand for more kinds only refuses more processes, which is safe).
-- **G006-041 — Of the evidence of Task 006-046, what the follow-up of pull request #260 proved is not repeated here.** The
+- **G006-050 — Of the evidence of Task 006-046, what the follow-up of pull request #260 proved is not repeated here.** The
   silent engine's refusals, the beat against an owner transaction, the activation against a beat that holds the epoch, the
   floor of `lease-withdrawal-v2`, and the statement timeout of the registry's connection are the tests of D006-098 and D006-100.
   Not built: the 60 s owner hold across a running engine process and the registry connection failing while the pool works
@@ -1707,7 +1707,7 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   and `managed_support_does_not_enable_scoped_protocol_for_ordinary_workers` (the unit tests of `crates/application/src/worker.rs`,
   the compiled ceiling raised to 8 in the test only), and
   `a_registration_that_declines_is_stored_and_a_later_one_that_does_not_clears_it` (`contract_grpc_sdk_multilanguage`).
-- **G006-042 — No task turns the adapter's proof of 1.8 on.** `supports_delivery_acknowledgement()` of the PostgreSQL adapter
+- **G006-051 — No task turns the adapter's proof of 1.8 on.** `supports_delivery_acknowledgement()` of the PostgreSQL adapter
   is false (D006-105); Task 006-057 raises the compiled minor and names no store proof, so after it the server would still
   answer 1.6 (1.7 once design 041 merges). Closed when Task 006-057, or the last task that builds a store path of 1.8 (Task
   006-052), turns the constant on with a test that a raised ceiling then answers 8 against the real store.
@@ -1783,11 +1783,11 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   barrier test is the statement Task 006-049 will run, written by SQL. Options weighed: the full product of the dimensions on
   the database (about 5,000 claims, minutes of a shared machine for no property the unit test of the order does not already
   give).
-- **G006-043 — What the rule of the marks does not see.** It reads the `SET` list of a statement within one string literal:
+- **G006-052 — What the rule of the marks does not see.** It reads the `SET` list of a statement within one string literal:
   an assignment to a mark in a later piece of a `concat!` is not judged (each lease statement keeps its marks in its first
   piece). It does not yet know which statement uses which form of the macro, since none uses either outside the parity test;
   Tasks 006-050 (the withdrawals, the form with the recording) and 006-054 (the gauges, the form without) add that knowledge
   with their first users.
-- **G006-044 — The barrier test of the marks writes the acknowledgement by SQL**, and the claim of a full-run transaction no
+- **G006-053 — The barrier test of the marks writes the acknowledgement by SQL**, and the claim of a full-run transaction no
   longer reaches `upsert_scoped_instance`, so that statement's marks are proven at the store only (D006-109). Closed by Task
   006-051, whose barrier tests run the acknowledgement of Task 006-049 against a run transaction loaded before it.
