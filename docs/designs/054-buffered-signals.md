@@ -61,9 +61,9 @@ for versions that declare a buffered name and for nothing else. The register of 
   pending: received, not yet consumed, moved or discarded. Each settlement deletes the row and is journaled.
 - **The invariant.** A root wait of a declared name that is waiting and a pending signal of that name never exist in one run at
   one commit: a signal that finds the wait is delivered live, and a wait that finds the signal consumes it at its entry. Live
-  delivery, consumption, the handoff's refusal of an entry wait, the reset's rebuild and the races all keep it. One test helper,
-  `assert_inbox_invariant(tx)`, checks it after every commit of `integration_buffered_signals` and `fault_buffered_signals`
-  (Requirement 054-020).
+  delivery, consumption, the handoff's refusal of an entry wait, the reset's rebuild and the races all keep it. In the tests it is
+  checked by `assert_inbox_invariant`, a deferred constraint trigger installed in the test database of `integration_buffered_signals`
+  and `fault_buffered_signals`, so every commit, the engine's background ones included, is checked (Requirement 054-020).
 - **Sequence.** A pending signal is identified by the run's journal sequence of its `signal.buffered` event, so the inbox's order
   is the journal's.
 - **Consumer.** For a graph version, a `waitEvent` node of the root graph whose `eventType` is the name (signals reach root waits
@@ -160,7 +160,9 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   the refusal applies only when no node of the name is a consumer ahead and the version has no `continueAsNew` node. So an early
   signal (CUJs 1 and 3) is kept, and a signal whose only wait sits on a branch not taken is kept until the run ends and is then
   discarded and counted; the refusal is never a guess;
-  a name that already holds `maxPending` pending signals, refused `409` with the reason `SIGNAL_INBOX_FULL`; retained bytes that the payload would take above 4 MiB,
+  a name that already holds `maxPending` pending signals, refused `409` with the reason `SIGNAL_INBOX_FULL`; for a code run continued
+  under another version, pending bytes above 2 MiB, refused `409 SIGNAL_PENDING_BYTES_FULL` (Requirement 054-007); retained bytes
+  that the payload would take above 4 MiB,
   refused `429 QUOTA_EXCEEDED` as today; the namespace's or the tenant's pending-signal bytes above their ceilings, refused `429
   QUOTA_EXCEEDED` with the reason `PENDING_SIGNAL_BYTES` (Technical Plan 2); the tenant's content quota (Architecture decision 0027), as today. A signal that passes is
   stored, journaled `signal.buffered`, audited `run.signalled` and answered `202` with `deliveredTo: []`, `buffered: true` and its
@@ -182,7 +184,9 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   run, design 044's headroom rules (`HISTORY_HEADROOM` from 3 MiB) also apply, and its guide says so (Gap 054-008). One exception,
   stated in the guide: a code run continued under another version keeps every moved signal of a name that version declares, even
   above its `maxPending` or `maxBytes`; new signals of that name are refused until its count is below `maxPending`, and new signals
-  of any name are refused (`SIGNAL_INBOX_FULL`) while the run's pending bytes are above 2 MiB, so the exception never adds to them. *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
+  of any name are refused `409` with their own reason, `SIGNAL_PENDING_BYTES_FULL`, while the run's pending bytes are above 2 MiB,
+  so the exception never adds to them (its place in Requirement 054-005's order: after the store's read of the ledger, in the
+  application, before the run's 4 MiB check; tested by Task 054-9). *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
 - **Requirement 054-008 — Pending payloads count in the retained bytes.** Every check of the 4 MiB bound MUST count the run's
   pending payloads with its step outputs, so that consuming a pending signal never takes a run over the bound. They are charged to
   the run's existing byte ledger (`run_instance_usage`, Technical Plan 6), whose check enforces the sum in the database.
@@ -311,7 +315,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
 
 ## Open Questions
 
-None. The questions raised while designing are decided in `specs/054-buffered-signals/research.md` (Decisions 054-001 to 054-014; Gaps 054-001 to 054-010).
+None. The questions raised while designing are decided in `specs/054-buffered-signals/research.md` (Decisions 054-001 to 054-017; Gaps 054-001 to 054-011).
 
 ## Owner decisions needed
 
@@ -797,7 +801,7 @@ it answers (principle VII).
   `run:payload:inspect`; another tenant's run is `404` as any missing run. It is a tenant-scoped read of the pool, as `get` is,
   never a run transaction, so a reader takes no lock of the run.
 - `SignalResult` gains `buffered` (boolean, false when absent) and `sequence`; `Run` gains `pendingSignals`; the problem body gains
-  the reasons `SIGNAL_INBOX_FULL`, `SIGNAL_TOO_LARGE`, `RUN_ENDED`, `RUN_STOPPING`, `NO_CONSUMER_AHEAD` and the publication reasons of Requirement 054-001.
+  the reasons `SIGNAL_INBOX_FULL`, `SIGNAL_PENDING_BYTES_FULL`, `SIGNAL_TOO_LARGE`, `RUN_ENDED`, `RUN_STOPPING`, `NO_CONSUMER_AHEAD` and the publication reasons of Requirement 054-001.
 - The descriptions that say "a signal is never buffered" (the signal routes, Signal-with-Start) say "unless the version declares
   the name", and `crates/api-http/src/error.rs`'s sentences follow.
 
@@ -813,7 +817,7 @@ refusals in six languages. The worker protocol does not change.
 ### 14. Telemetry and audit
 
 - Metrics, closed labels only: `signals_total{outcome}` with `delivered`, `buffered`, `not_waiting` (`NOT_WAITING`), `refused_full`
-  (`SIGNAL_INBOX_FULL`), `refused_size` (`SIGNAL_TOO_LARGE`), `refused_bytes` (the run's `429`), `refused_namespace` (`PENDING_SIGNAL_BYTES`), `refused_quota` (the tenant's content
+  (`SIGNAL_INBOX_FULL`), `refused_pending_bytes` (`SIGNAL_PENDING_BYTES_FULL`), `refused_size` (`SIGNAL_TOO_LARGE`), `refused_bytes` (the run's `429`), `refused_namespace` (`PENDING_SIGNAL_BYTES`), `refused_quota` (the tenant's content
   quota), `refused_ended` (`RUN_ENDED`), `refused_stopping` (`RUN_STOPPING`), `refused_no_consumer` (`NO_CONSUMER_AHEAD`); `signal_inbox_settled_total{how}` with `consumed`, `moved`, `discarded`;
   `signal_inbox_wait_seconds` (a histogram from a signal's buffering to its consumption, at the consumption).
 - Spans: the signal's transaction carries `sagat.signal.outcome` and, as spans may (principle V), the tenant and run
@@ -977,6 +981,9 @@ The signatures a builder needs, in the crates that own them:
 |---|---|---|
 | A tolerance of a run version advanced only by `signal.buffered`, on the paths that read a run outside its lock (one helper and a source rule) | A steady flow of buffered signals must not starve a continuation, a deadline's end or a collection's step | Retrying: bounded only by the inbox's fill, and every retry repeats the evaluation |
 | The shared hold and registry of floors (Architecture decision 0112) | Four requirements need a publication hold and a removal floor without one design replacing another's code | A function and a trigger rule per design, compared or replaced in landing order |
+| Two quota resources, `pending_signal_bytes` and `tenant_pending_signal_bytes` | Senders must not exhaust the tenant's content through inboxes | The run's 4 MiB alone: it bounds one run, not many |
+| The move limit (`moves`, the `move_limit` cause) | Each accepted signal must write a bounded number of records over a long chain | A summary event in the successor: its list grows the journal by the same bytes |
+| A test-only deferred constraint trigger for the invariant | Background commits of the engine must be checked too | A helper called by the test: it sees only the commits the test drives |
 | `SIGNAL_ENTRY_WAIT_CONTINUES` | The scheduler's handoff opens a successor's entry wait without the planner (Gap 054-009) | Consuming in the handoff: a satisfied step the handoff cannot plan on |
 | A table `run_signal_inbox` | Pending signals must be durable rows of the run with the run's lifecycle | Feature 004's `inbox_events` (Technical Plan 5) |
 | A count on `runs` and a column on the byte ledger | A transition of a run with an empty inbox must read and write nothing more, and pending bytes must count wherever outputs do | A count query in every transition; a second byte counter beside the ledger |
@@ -1031,7 +1038,7 @@ caller of a signature it changes, so the workspace builds after each.
 | 0 | either | 054-1 | `specs/001-platform-foundation/contracts/`, `specs/054-buffered-signals/contracts/`, `specs/018-schedules-bulk-operations/contracts/`, `docs/` | this design approved |
 | 1 | server | 054-2, 054-3 | `crates/domain`, its callers in `crates/application`, `crates/infra-postgres` (the event codec, exhaustive matches) and `crates/infra-ir` | slice 0 |
 | 2a | server | 054-18, only if neither design 044 nor 045 landed it; its own pull request | `crates/infra-postgres` (one migration), `tests/integration/platform-foundation/` | slice 1 |
-| 2 | server | 054-4, 054-5, 054-6 | `crates/infra-postgres`, `crates/infra-ir`, `crates/application` (the store port, the publication gate), the two new suites' skeletons | slice 2a, or design 044's or 045's equivalent landed |
+| 2 | server | 054-4, 054-5, 054-6 | `crates/infra-postgres`, `crates/infra-ir`, `crates/application` (the store port, the publication gate), the two new suites' skeletons | slice 2a: the hold and registry of Architecture decision 0112, landed by Task 054-18 or by design 044 or 045 once it cites that record (Gaps 054-007 and 054-010 are preconditions of their migration tasks); a build of the older body does not satisfy it |
 | 3 | server | 054-7, 054-8 | `crates/application`, `crates/infra-postgres`, `crates/scheduler`, `crates/api-http`, `apps/control-plane`, `apps/execution-engine`, `scripts/` | slice 2 |
 | 4 | server | 054-9, 054-10, 054-11 | `crates/infra-postgres` (`chain_progress.rs`, `primitives.rs`), `crates/application` (`runs/reset.rs`, `runs/reapply.rs`, `runs.rs`), `tests/fault/` | slice 3 |
 | 5 | server | 054-12, 054-16 | `tests/integration/buffered-signals/`, `tests/fault/buffered-signals/`, `tests/integration/claim-transition-efficiency/`, `tests/performance/` | slice 4 |
@@ -1083,6 +1090,7 @@ caller of a signature it changes, so the workspace builds after each.
   refusals). `integration_platform_foundation` first: migrations as the runtime role, the privilege audit, the registry's privilege
   test, the down migration's refusals.
   Refs: Requirement 054-002, Requirement 054-014, Non-functional requirement 054-003
+  Owner-gate: OD-2026-11-26-540
 - [ ] T054-5 Publication: `infra-ir` parses `signals` and maps the domain's refusals to pointers; `publish` computes the level,
   holds `signal-inbox-v1` through the store's hold and writes the level; the ad hoc insert writes 0. `integration_gitops_versioning`
   tests first: an IR fixture per reason, the requirement's refusal, the hold against a concurrent removal, a republication.
@@ -1097,6 +1105,7 @@ caller of a signature it changes, so the workspace builds after each.
   statements that update `runs`; the ledger's `pending_signal_bytes` and `logical_output_bytes()` returning the sum. Store tests per
   method first, with two tenants, and a test that the ledger's check refuses a write past 4 MiB.
   Refs: Requirement 054-006, Requirement 054-008, Requirement 054-014, Requirement 054-017
+  Owner-gate: OD-2026-11-26-540
 - [ ] T054-7 Retained bytes everywhere, the sites of Technical Plan 6: the ledger read returning both values, the charging
   statements' predicates (`charge_logical_output_bytes`, `charge_collection_owner_output`, the path charge), the consumption's move
   of bytes and its exclusion from the output charge, the three `total()` comparisons of `primitives.rs`, the collection-finalization scan of `maintenance.rs`, and
@@ -1126,7 +1135,10 @@ caller of a signature it changes, so the workspace builds after each.
   `finalize_continuation_expression`'s, and every path Technical Plan 7 names, through `advanced_only_by_buffering`), the move
   limit of 100 (a test of a signal discarded at its 101st handoff), the predecessor's
   events before its handoff event, the discard in `finalize_chain`, the collection's finish and the loop's two ends with their
-  shape matchers, and the rule of `scripts/check-architecture.py` over the writers of `run.finished`.
+  shape matchers, and two rules of `scripts/check-architecture.py` with their fixtures and allowlists: over the writers of
+  `run.finished`, and over every comparison of `run_version` in `crates/infra-postgres` and `crates/scheduler` (each through
+  `advanced_only_by_buffering` or allowlisted with its reason), each with a fixture that fails on an unlisted case; and the
+  refusal `SIGNAL_PENDING_BYTES_FULL` of a code run continued under another version (Requirement 054-007).
   Integration tests first: a signal buffered between the scheduler's evaluation and its handoff (barrier), each store-side end
   with pending signals and the check on `runs` refusing a terminal status with pending signals
   (`integration_buffered_signals::ends::<path>_discards_pending_signals`, one per path), the store-side release paths never

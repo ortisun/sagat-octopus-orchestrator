@@ -179,6 +179,10 @@ approved.
   step outputs included (`crates/infra-postgres/src/execution.rs`, `crates/api-http/src/dto_exec.rs`): a low-entropy output can be
   confirmed by hashing guesses. Design 054 withholds it for `signal.buffered`; the same exposure for step outputs is feature 016's
   to settle (security review of design 054, Major 1).
+- **Gap 054-012** Design 045 on this branch still gives the hold's older body, its drift guard and its floor as a rule of
+  Architecture decision 0098's trigger (its Technical Plan 13), and design 044 the older body (its section 14). Under Architecture
+  decision 0112 those texts must be revised before their migration tasks (Task 045-6, Task 044-6) are built; until then design
+  054's slice 2 accepts only the record's version of the hold (architecture re-read 1, Major 1).
 - **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
   them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
   dependency in their next revisions (stage 5 zoom-out, its Major 4). Design 044's Decision 044-206 body is replaced by the one of
