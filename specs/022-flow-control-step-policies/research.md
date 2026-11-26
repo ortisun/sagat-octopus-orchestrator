@@ -2282,33 +2282,36 @@ taken after `git grep D022-04` on every `origin/*` branch.
 - **D022-113 — The intermittent `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit`: no
   cause in the test or the product was found, and the test is left as it is (2026-11-26; D022-121, D022-122).**
   Delegate (OD-2026-11-24-4). The two failures were on 2026-11-25, in the owner's gate runs of 03:13 and 06:20, both
-  before the commit that made the assertion print the tick's report (`42cef743`, 07:49) and before D022-121 and D022-122;
-  neither log holds a report. In the 03:13 run five other tests failed with it: the two batch reruns that `c6cf8200`
-  then made hold on a loaded machine, a tick of the switched-off drain that granted nothing, and two rate-window cases
-  (a tick that granted where none was expected, a hint that was not cleared), so that run was loaded or on a defect of
-  its own revision; in the 06:20 run it failed alone, after the fault suite's flood case had failed for the cause of
-  D022-088. Reproduction under load, on this branch at `9bc2f486`, with
-  the shared four-processor Docker machine also serving another agent's builds and tests: 76 runs of the test, none
-  failed its assertion. Phase 1: `run_admission::` 30 times with two threads while the whole file (246 tests) ran twice
-  beside it in another process (the test passed in the 30 and in one whole-file run; in the other it could not create
-  its database, `53100`). Phase 2: three processes at once, 15 times each, `run_admission::` with eight threads, with two
-  threads as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`) and with two threads as the owner: 45 of 45 passed. What the code rules out, read for the test's one tick: (1) *a busy run* (`skipped`): from the start of the
-  waiting run to the tick no operation of the test takes that run's row, nor writes a row whose foreign key would
-  share-lock it (the two cancellations lock their own runs; the reads take no lock), and no pass of the tick before
-  the grants selects it (no timer, retry, wait deadline or gate deadline of it is due); since D022-122 a refused waiter's
-  rollback is awaited as well. (2) *A key not selected* (all counts zero): the holder's release writes the key's hint
-  `clock_timestamp()` in a transaction that commits before the tick starts, and the selection compares it with `now()`
-  of a later statement on the same server; only a database clock stepped back between the two leaves the key
-  unselected for that tick (gap G1183, accepted). (3) *The waiter timed out instead* (`gate_waits_timed_out`): its queue
-  deadline is the default ten minutes after its start; only a clock stepped forward by that much. (4) *Fenced*: the
-  world's scheduler has no placement, so every key is `Hold::Nothing`. (5) *Not listed by the fair selection*: one key
-  is a short first page, returned as read. (6) *The registry*: no grant reads the instance registry or its heartbeats.
-  What remains is a failure of the database that clears on its own (`failed`, decision D022-121: a pool or statement
-  timeout, a lost connection, a serialization failure, or class 53, which the shared Docker machine's disk produced in
-  these runs: `53100` on database creation and on migration, twelve times in other tests of phase 1), or a clock step; the tick's report, which
-  the assertion prints since `42cef743`, says which. Neither is a property of the test that a held lock or a barrier
-  can remove, and a retry would hide the next one: the test is left as it is, and its next failure's report is to be
-  recorded here.
+  before the commit that made the assertion print the tick's report (`42cef743`, 07:49) and before D022-121 and
+  D022-122; neither log holds a report. In the 03:13 run five other tests failed with it: the two batch reruns that
+  `c6cf8200` then made hold on a loaded machine, a tick of the switched-off drain that granted nothing, and two
+  rate-window cases (a tick that granted where none was expected, a hint that was not cleared), so that run was loaded
+  or on a defect of its own revision; in the 06:20 run it failed alone, after the fault suite's flood case had failed
+  for the cause of D022-088. Reproduction under load, on this branch at `9bc2f486`, with the shared four-processor
+  Docker machine also serving another agent's builds and tests: the runs of the test below, none failed its assertion.
+  Phase 1: `run_admission::` 30 times with two threads while the whole file (246 tests) ran twice beside it in another
+  process (the test passed in the 30 and in one whole-file run; in the other it could not create its database,
+  `53100`). Phase 2: three processes at once, 15 times each, `run_admission::` with eight threads, with two threads as
+  the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`) and with two threads as the owner: 45 of 45 passed. Phase 3, on a
+  fresh build in a target directory of its own (the shared one had been overwritten by another tree's build
+  meanwhile): two processes at once, 10 times each as the owner and as the runtime role: 20 of 20 passed. In all, 96
+  runs, none failed. What the code rules out, read for the test's one tick: (1) *a busy run* (`skipped`): from the
+  start of the waiting run to the tick no operation of the test takes that run's row, nor writes a row whose foreign
+  key would share-lock it (the two cancellations lock their own runs; the reads take no lock), and no pass of the tick
+  before the grants selects it (no timer, retry, wait deadline or gate deadline of it is due); since D022-122 a
+  refused waiter's rollback is awaited as well. (2) *A key not selected* (all counts zero): the holder's release
+  writes the key's hint `clock_timestamp()` in a transaction that commits before the tick starts, and the selection
+  compares it with `now()` of a later statement on the same server; only a database clock stepped back between the two
+  leaves the key unselected for that tick (gap G1183, accepted). (3) *The waiter timed out instead*
+  (`gate_waits_timed_out`): its queue deadline is the default ten minutes after its start; only a clock stepped
+  forward by that much. (4) *Fenced*: the world's scheduler has no placement, so every key is `Hold::Nothing`. (5)
+  *Not listed by the fair selection*: one key is a short first page, returned as read. (6) *The registry*: no grant
+  reads the instance registry or its heartbeats. What remains is a failure of the database that clears on its own
+  (`failed`, decision D022-121: a pool or statement timeout, a lost connection, a serialization failure, or class 53,
+  which the shared Docker machine's disk produced in these runs: `53100` on database creation and on migration, twelve
+  times in other tests of phase 1), or a clock step; the tick's report, which the assertion prints since `42cef743`,
+  says which. Neither is a property of the test that a held lock or a barrier can remove, and a retry would hide the
+  next one: the test is left as it is, and its next failure's report is to be recorded here.
 
 ## Gaps
 
