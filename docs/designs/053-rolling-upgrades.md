@@ -135,8 +135,10 @@ From the code and documents on `develop` at `546d5aa5`:
   first moves the capability to `draining` and records `draining_since`; processes stop starting new uses of it at their
   next heartbeat. The second removes it and is refused until every live process has heartbeated after `draining_since`
   (at least 12 s, the heartbeat's jittered bound), the drain check its design states passes (none for design 049's capability, which is permanent), and no contract migration naming the capability is applied. Only after the second phase may the
-  binaries roll back to N-1. A capability whose design declares it permanent (`platform_requirements.permanent`, set by
-  the migration that adds it) is refused by both phases: in 0.3.0, design
+  binaries roll back to N-1. A capability whose design declares it permanent is refused by both phases, and by the
+  registry's older `platform_requirement_remove`, whose guard trigger (`platform_requirements_guard`) refuses the delete
+  or the move to `draining` of a permanent row; a row is permanent by the check `permanent = (capability IN (...))`,
+  rewritten by the migration that adds a permanent capability, so the database sets the value at activation: in 0.3.0, design
   049's `journal-buckets-v1`, since a binary of the release before it cannot read a dated run's content.
 - **Requirement 053-009 Old and new writers run together.** `scripts/test-mixed-writers.py` MUST run engines and control
   planes of N-1 (built from its release's tag) and N on one database under the chain shape: apply N's migrations during
@@ -244,7 +246,9 @@ Rollback before step 3 rolls the binaries back onto N's schema; after it, the tw
 | `schema_compatibility` | as Requirement 053-004 | none; read through `sagat_schema_handshake()` |
 | `platform_requirements` (new columns) | `state text` (`active`, `draining`), `introduced_in text`, `draining_since timestamptz`, `permanent boolean not null default false` | as the table today (read) |
 
-**Order of the build.** Task 053-2 (the lint) before any other migration of designs 048, 049 and 052; design 051's
+**Order of the build.** Task 053-2 (the lint) before any other migration of designs 048, 049 and 052; Task 053-5 before
+design 049's Task 049-13 (the permanent column) and Task 053-3 before its Task 049-14 (the handshake granted to the
+retirement role); design 051's
 driver (its Task 051-2) before Task 053-6.
 
 ## Risks and Mitigations
@@ -265,7 +269,7 @@ driver (its Task 051-2) before Task 053-6.
 | II. Modular domain, ports and adapters | Pass | The handshake and the gate reasons are in the application's instance service; statements stay in `infra-postgres` |
 | III. External effects are at-least-once; sagas compensate | Pass | Unchanged |
 | IV. Compatibility is versioned and pinned | Pass | Expand and contract, the compatibility table, the handshake, distinct versions, the mixed-writer test |
-| V. Code, tenant boundary and secrets are isolated | Pass | The handshake is a definer function executable by the runtime role only; a 503 shows no version |
+| V. Code, tenant boundary and secrets are isolated | Pass | The handshake is a definer function executable by the runtime role and the retirement role only; a 503 shows no version |
 | VI. Observability and audit are part of the feature | Pass | `serving_gate_closed{reason}` with the two reasons; the activation and deactivation recorded in the registry's history |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | Unchanged |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Negative fixtures per rule, the injected failed index build, the mixed-writer test; what it cannot prove before 0.3.0 is said |
@@ -311,7 +315,7 @@ Each task names its files and tests.
   Refs: Requirement 053-004, Requirement 053-005, Success criterion 053-003
 - [ ] T053-4 Write `control-plane migrate`'s own loop (the confirmation, the bounded retry on `55P03`, the bounded invalid-index check, the contract refusals, the release check) in `apps/control-plane/src/lib.rs` and `crates/infra-postgres/src/lib.rs`, with the tests `a_failed_concurrent_index_build_is_retried_three_times_then_named` and `a_lock_held_longer_than_the_retries_ends_migrate_naming_the_table`.
   Refs: Requirement 053-003
-- [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, the column `permanent`, with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation`, `the_second_phase_waits_for_every_live_process_to_heartbeat` and `a_permanent_capability_refuses_both_deactivation_phases`, held by barriers.
+- [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, the column `permanent` with its check, the guard's refusal of a permanent row's delete or drain, with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation`, `the_second_phase_waits_for_every_live_process_to_heartbeat` and `a_permanent_capability_refuses_both_deactivation_phases` (which also calls `platform_requirement_remove`), held by barriers.
   Refs: Requirement 053-006, Requirement 053-007, Requirement 053-008
 - [ ] T053-6 Write `scripts/test-mixed-writers.py` and add it to the release workflow on a free standard runner; it uses design 051's driver (Task 051-2) and publishes its run with the runner named.
   Refs: Requirement 053-009, Success criterion 053-001
