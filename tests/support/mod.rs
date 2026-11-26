@@ -481,15 +481,3 @@ impl TestDb {
         format!("postgres://{user}:{password}@{rest}")
     }
 }
-
-/// The newest migration of this build, which a database migrated by it reaches: what an upgrade test expects after
-/// `migrate`, read from the migrator so that a later migration never makes the test stale (feature 022, batch 4
-/// correctness minor 1).
-pub fn migration_head() -> i64 {
-    sagat_infra_postgres::MIGRATOR
-        .iter()
-        .filter(|migration| migration.migration_type.is_up_migration())
-        .map(|migration| migration.version)
-        .max()
-        .expect("a migration")
-}

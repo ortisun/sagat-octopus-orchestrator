@@ -757,7 +757,8 @@ fn what_the_chart_renders_for_pools_is_accepted_by_the_engine_for_any_pool_it_al
 /// The bound of an index range has to be a stable expression: the planner can use `now()` as the
 /// end of a range and cannot use `clock_timestamp()`, which is volatile, so a pass bounded with it
 /// reads every waiting step in order to find the few that are due (`FR-010-003`). The plan of the
-/// due-timer query is in the benchmark's report; this keeps the mistake from coming back.
+/// due-timer query is in the benchmark's report; this keeps the mistake from coming back. The one comparison spared is
+/// the shard-lease fence `s.expires_at > clock_timestamp()`, a lookup by key (D022-119).
 #[test]
 fn no_candidate_query_bounds_an_index_range_with_a_volatile_clock() {
     let comparison = Regex::new(r"(<=|<|>=|>)\s*clock_timestamp\(\)").expect("regex");
@@ -768,8 +769,11 @@ fn no_candidate_query_bounds_an_index_range_with_a_volatile_clock() {
         let text = std::fs::read_to_string(repo().join(file)).expect("source");
         for (number, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or(line);
+            // the fence on a shard's lease (D022-119): a lookup of one `scheduler_shards` row by its key, no range, where
+            // the volatile clock is the exact one (a lease that ran out during the transaction must not fence in)
+            let code = code.replace("s.expires_at > clock_timestamp()", "");
             assert!(
-                !comparison.is_match(code),
+                !comparison.is_match(&code),
                 "{file}:{}: compares with clock_timestamp(), which the planner cannot use as the bound of an index range; use now(): {line}",
                 number + 1
             );

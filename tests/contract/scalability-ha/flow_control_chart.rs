@@ -6,7 +6,7 @@ use super::*;
 use serde_json::json;
 
 const CONTROL: &str = "sagat-octopus-orchestrator-control-plane";
-const ENGINE: &str = "sagat-octopus-orchestrator-execution-engine";
+const ENGINE: &str = "sagat-octopus-orchestrator-engine";
 const RATE: &str = "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED";
 const CONCURRENCY: &str = "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED";
 const KEYS_FILE: &str = "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE";
