@@ -91,9 +91,12 @@ From the code and documents on `develop` at `546d5aa5`:
   `smartShutdownTimeout: 5`; the operator installed for one namespace only; the database in a namespace apart from the
   platform's; the runtime role `sagat_app` created through the cluster's managed roles, its password Secret copied into
   the platform's namespace by the runbook's procedure (and on each rotation), never the operator's generated `-app`
-  Secret; superuser access off; a network policy that admits to the database only pods labelled as control planes,
-  engines and the migrate job (`app.kubernetes.io/component`), the instances to each other and the operator; and
-  `database-runner`'s `denyCidrs` covering the database namespace's pod range and Services, checked by Task 048-4.
+  Secret; the owner role `sagat_owner` created the same way, its Secret copied only for the operator's migrate run (the
+  chart has no migrate job); superuser access off; a network policy whose every peer pairs, in one `from` entry, a
+  `namespaceSelector` of the platform's namespace with a `podSelector` of the control planes, the engines or the migrate
+  run (`app.kubernetes.io/component`), and admits besides only the instances to each other and the operator; and
+  `database-runner`'s `denyCidrs` covering the cluster's pod range (or an address pool reserved for the database) and
+  its Service range, checked by Task 048-4.
   `reserved_connections` serve the operator's and monitoring's roles, and `sagat_app` has a `CONNECTION LIMIT` equal to
   the chart's connection budget (Task 048-4). Every version and image is pinned by digest. The reference is built and
   smoke-tested, and is not offered for production until the Kubernetes drill of Requirement 048-041 has passed; backups
@@ -150,16 +153,20 @@ From the code and documents on `develop` at `546d5aa5`:
   WRITE` itself fails) is classified as unavailable and retryable; the `WriteTx` closes its connection
   (`PoolConnection::close_on_drop`) and the process treats it as a change of identity (Requirement 048-013). `57P04` is
   not retryable. The registry re-reads `synchronous_standby_names` with each heartbeat and closes the serving gate with
-  the reason `DATABASE_NOT_SYNCHRONOUS` while it is empty and required.
+  the reason `DATABASE_NOT_SYNCHRONOUS` while it is empty and required; it learns of an emptied setting within one
+  heartbeat (10 s, jittered to 12 s), and when the reason clears it sets `DATABASE_UNCONFIRMED`, so that what was
+  committed locally in that window is served only after a confirmation.
 - **Requirement 048-012 Commits.** `WriteTx`, in `crates/infra-postgres/src/pool.rs`, owns a `PoolConnection`, sends
   `BEGIN READ WRITE`, runs its statements on that connection, and has no way to commit but `commit_safely`. If any of its
   statements fails, the `WriteTx` rolls back and the caller gets that error, a definite failure. `commit_safely` sends
   `COMMIT` in a task it spawns (as `begin_safely` does for `BEGIN`) and waits for it at most the commit deadline
   (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at least twice the statement timeout, the name feature 032 also uses).
-  The outcome is applied when `COMMIT` succeeds; not applied when it fails with a server error that
-  `confirmed_abort` (`capacity_finish.rs`) recognizes (class 23, `40001`, `40P01`), since PostgreSQL raises those before
-  the commit record; and unknown otherwise: the deadline passing, an I/O error, any other SQLSTATE, a closed pool or a
-  task that panicked are `StoreError::CommitOutcomeUnknown`, which replaces the five module-level variants of the same
+  The outcome is applied when `COMMIT` succeeds; not applied when the server answers it with an error of severity
+  `ERROR` on a session that stays alive, since PostgreSQL raises every error of a commit (deferred constraints, a
+  serialization failure, the deferred quota triggers' `54000`, a cancel) before it writes the commit record and turns any
+  failure after it into a `PANIC` (this generalizes `confirmed_abort` of `capacity_finish.rs` for the commit itself, and
+  keeps today's mapping of `54000` to `QuotaExceeded`); and unknown otherwise: the deadline passing, an I/O error, a
+  `FATAL` or `PANIC`, a closed pool or a task that panicked are `StoreError::CommitOutcomeUnknown`, which replaces the five module-level variants of the same
   name (Architecture decision 0078). After an unknown outcome the task keeps the connection, and its slot, until the
   server answers or the socket fails, and the process closes its serving gate (Requirement 048-013), so that no new
   write starts and the slots held are those of the commits in flight. The API answers `UNAVAILABLE` with the reason
@@ -168,8 +175,9 @@ From the code and documents on `develop` at `546d5aa5`:
   command identifier (the SDKs always send one on reports). The platform never cancels or terminates a backend that waits
   for a standby: the sessions set `client_connection_check_interval` to 0 and, where the server has it,
   `transaction_timeout` to 0, and `scripts/check-architecture.py` refuses, in `crates/infra-postgres` and `apps/`,
-  `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()` outside `pool.rs`, and `fetch()` on
-  a statement that writes. Whether the server's own timeouts can cancel the wait is established by Task 048-6 first; if
+  `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()` outside `pool.rs`, a raw `BEGIN`,
+  `START TRANSACTION`, `COMMIT`, `READ WRITE`, `SESSION CHARACTERISTICS` or `transaction_read_only` outside `pool.rs`,
+  and `fetch()` on a statement that writes. Whether the server's own timeouts can cancel the wait is established by Task 048-6 first; if
   they can, `commit_safely` sends `SET LOCAL statement_timeout = 0` and `COMMIT` in one message.
 - **Requirement 048-013 After a change of server, nothing is served until a write reaches a standby.** A server's
   identity is the pair (`pg_postmaster_start_time()`, the token of `server_incarnation`). `server_incarnation` is an
@@ -179,9 +187,11 @@ From the code and documents on `develop` at `546d5aa5`:
   DEFINER`, `search_path` pinned to `pg_catalog, pg_temp` with every name qualified, `REVOKE ALL ... FROM PUBLIC`,
   executable by `sagat_app` and the owner) returns the start time, the token, `pg_is_in_recovery()`, `synchronous_commit`
   and whether `synchronous_standby_names` is empty. In recovery it returns a null token without reading the table (an
-  unlogged table cannot be read during recovery); otherwise it inserts a token when the row is absent (`INSERT ... ON
-  CONFLICT (id) DO NOTHING`, then reads the row), a write to an unlogged table only, which PostgreSQL commits without
-  waiting for a standby. A null token means "unconfirmed", never an identity.
+  unlogged table cannot be read during recovery); otherwise it reads the row, and a missing row is a null token. It
+  only reads, so it runs on the read-only sessions of every connection. The token is written only by the confirmation's
+  `WriteTx` (`INSERT ... ON CONFLICT (id) DO NOTHING`, then a read). A null token means "unconfirmed", never an
+  identity; the registry's connection is admitted while the identity is unconfirmed, so that it can confirm, and every
+  other connection is refused.
   The process keeps one `DatabaseIdentity` (application-owned, in `crates/application/src/instances.rs`, behind a port
   implemented in `crates/infra-postgres/src/instances.rs`): the confirmed identity, the set of identities seen
   superseded, and `identity_changed_at`. `after_connect` reports what it read; under the gate's lock, an identity equal
@@ -204,15 +214,17 @@ From the code and documents on `develop` at `546d5aa5`:
   keeper), and only the registry's connection connects. A command of `control-plane` that writes (`migrate`, through
   design 053's Task 053-4, `cleanup-secrets`, `provision-tenant`, `reseal-secrets`, `quota-ceiling`,
   `scheduling-weight`, `schedule-trigger-handover`, `capability-activate`) waits, up to 60 s, until a live registry row
-  carries the server's current identity as confirmed, and otherwise exits with code 1 ("retry later"); on a database
-  with no live row (a fresh one) it proceeds. `seed-dev`, `script-key`, `healthcheck`, `help` and `version` are exempt.
+  carries the server's current identity as confirmed, and otherwise exits with code 1 ("retry later"); it proceeds
+  without waiting only on a database whose registry has never held a row (a fresh one), not on one whose processes are
+  merely down. `seed-dev`, `script-key`, `healthcheck`, `help` and `version` are exempt.
 - **Requirement 048-014 The serving gate has reasons.** The registry's serving gate (`crates/application/src/instances.rs`)
   MUST keep its epoch and capability state and gain a set of closing reasons (`DATABASE_UNCONFIRMED`,
   `DATABASE_NOT_SYNCHRONOUS`; design 053 adds two); it is open only when the registry's state allows it and the set is
   empty. Each owner clears only its own reason; a re-registration does not reopen a gate another reason holds. Readiness
   checks the gate before it pings storage. The reasons are added to `specs/001-platform-foundation/contracts/openapi.yaml`,
   the gRPC error metadata and `sdks/SPEC.md`; a request refused before authentication shows only `UNAVAILABLE` with
-  `Retry-After`, never the reason; while a reason holds, `Retry-After` is 2 s, over the gate's 10 s. The registry's
+  `Retry-After` of 10 s, never the reason or a value that depends on it; after authentication, while a reason holds,
+  `Retry-After` is 2 s, over the gate's 10 s. The registry's
   `registry_error` classifies `CommitOutcomeUnknown` and an `after_connect` refusal as a failed connection (Architecture
   decision 0082, decision 5).
 - **Requirement 048-015 Reports survive a failover.** The six SDKs MUST keep retrying a `CompleteStep` or `FailStep` that
@@ -273,8 +285,9 @@ From the code and documents on `develop` at `546d5aa5`:
   attempt, generation, lease token and a digest of its result, and `dr_verify` looks each up on the new primary, by key
   and content. A negative control proves the check: the drill blocks replication to both standbys, commits a ledger row
   through its own connection to the primary with `synchronous_commit=local`, stops the primary, and the check must find
-  that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary and
-  checks that every process refuses that principal once ready. Reports go to
+  that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
+  and checks that every process refuses that principal, or answers `UNAVAILABLE`, from 22 s after the isolation on
+  (Technical Plan, "Why one waited write protects what came before it"). Reports go to
   `tests/performance/reports/high-availability.md` with the runner (Owner decision 2026-11-25-1), the environment and
   every failure.
 - **Requirement 048-043 The drills gate the release.** A drill MUST exit non-zero when any repetition breaks the
@@ -416,8 +429,11 @@ restart, is on a standby. The confirmation writes a row of a logged table, so it
 exposed by an operator's cancel or termination of a waiting backend (forbidden in code and in the runbook), or by the HA
 manager's fast shutdown of an isolated primary, is visible for a moment to that server's sessions not yet ended; the
 platform's processes hold such sessions only until their next commit's outcome is unknown or a new connection observes
-the new identity, and close their gate then; `smartShutdownTimeout: 5` and HAProxy's session shutdown bound the rest,
-and the isolation drill measures it.
+the new identity, and close their gate then. A process that still reaches an isolated former primary serves reads from
+it for at most 22 s after the isolation: its registry heartbeat, a write, comes within 12 s (10 s jittered) and waits
+for a standby the isolated server cannot reach, so its commit deadline of 10 s makes the outcome unknown and closes the
+gate (12 + 10 = 22 s). `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
+apply, and the isolation drill asserts the bound.
 
 ### The drills
 
@@ -515,7 +531,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-010
 - [ ] T048-3 Add `infra/docker/compose.ha.yaml`, `infra/docker/patroni/` (Dockerfile pinned by digest, `patroni.yml`, `pg_hba.conf`, the init of `sagat_app` and the owner), `infra/docker/haproxy/haproxy.cfg`, the etcd users, the networks and the `.env.example` keys, with a smoke test in the `scale` job that stops the primary once and checks with `dr_verify`.
   Refs: Requirement 048-002, Requirement 048-003, Requirement 048-005
-- [ ] T048-4 Add `infra/kubernetes/ha/` (the operator's values for one namespace and its release pinned with the failover quorum's maturity, the `Cluster`, managed roles, reserved connections, the connection limit, the network policy) and `infra/helm/examples/ha-cloudnativepg.yaml`, the chart's `topologySpread` values, `kubeconform` and `helm template` checks in CI, a policy test of the admitted labels, a check that `database-runner`'s `denyCidrs` cover the database namespace, a check that the role's connection limit covers (the autoscaler's ceiling + the surge) × (the request pool + the registry pool) + the jobs + a margin of 10, and a check that every image is pinned by digest.
+- [ ] T048-4 Add `infra/kubernetes/ha/` (the operator's values for one namespace and its release pinned with the failover quorum's maturity, the `Cluster`, managed roles, reserved connections, the connection limit, the network policy) and `infra/helm/examples/ha-cloudnativepg.yaml`, the chart's `topologySpread` values, `kubeconform` and `helm template` checks in CI, a policy test of the admitted labels, a check that `database-runner`'s `denyCidrs` cover the database namespace, a check that the role's connection limit covers (the autoscaler's ceiling + the surge) × (twice the request pool + the registry pool) + the jobs + a margin of 10 (the second request pool covers the backends a pod replaced while the standbys are down leaves waiting, which hold their slots until the standbys return, as the runbook says), and a check that every image is pinned by digest.
   Refs: Requirement 048-001, Requirement 048-004
 - [ ] T048-5 Vendor `sqlx-core` with the keepalive and `TCP_USER_TIMEOUT` change and `socket2` in its manifest, generalize `scripts/check-vendor.py` to a list of vendored crates with their archive hashes and allowed diffs, and add `a_dead_peer_with_acknowledged_data_fails_within_ten_seconds` to `fault_high_availability` (asserted within 12 s: the 10 s bound plus one probe interval for the kernel's timer).
   Refs: Requirement 048-005, Requirement 048-010
