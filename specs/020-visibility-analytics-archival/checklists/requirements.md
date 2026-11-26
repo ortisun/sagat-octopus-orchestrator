@@ -53,7 +53,7 @@ that anything is built.
 - [ ] Owner accepts or amends ADR-0053 and ADR-0054 — T020-002.
 - [ ] The MINOR amendment of constitution principle I proposed in ADR-0054 is accepted by PR (terminal
   runs only; the verified archive as sole copy; `archive = NONE` means deletion) — T020-061; US08/US09
-  are gated on it (G1101).
+  are gated on it (G1101). *(2026-11-26: made in constitution 5.1.0 without `archive = NONE`; see G1101.)*
 - [ ] The `RunSelector` contract (contracts/list-query.md) is agreed with 018, its co-owner.
 - [ ] The shard-renewal contention gate (G1100) passes before analytics is enabled by default.
 - [ ] 016's carrier list (FR-016-002) is refined in the same delivery that adds the two carriers (D1091) —

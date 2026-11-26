@@ -39,7 +39,10 @@ proposal below. The constitution names **two** audited paths, this record's per-
 a month's partitions once every run in them is purged, not "one audited privileged path". Both run **only after a
 verified archive**: `archive = NONE` is not admitted. And the purge is admitted under a namespace retention policy only,
 so erasure before the policy's retention (feature 020, Requirement 020-037) is not admitted either; both wait for the
-owner (feature 020, Gap 1101). This record stays `Proposed`; its acceptance is feature 020's.
+owner (feature 020, Gap 1101). The same differences touch decision 1 (`archive` `NONE`), decision 3 (deletion
+only after the verified archive, which now holds without exception) and rejected option 3 (dropping a whole month,
+which design 049 admits once every run in it is purged; its record is ADR-0132 on branch
+`docs/scale-resilience-readiness`). This record stays `Proposed`; its acceptance is feature 020's.
 
 Principle I today: the journal is append-only, and no component other than PostgreSQL holds the only copy
 of a transition. Retention breaks both for some runs: it removes whole journals, and with

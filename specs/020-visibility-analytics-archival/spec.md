@@ -487,7 +487,7 @@ whose input payload is shared with a retained run and check what survives.
 ### Functional Requirements — retention, archival and history export
 
 - **FR-020-030 — Retention policy.** `retention:manage` holders MAY set a namespace policy:
-  `hotRetentionDays` (1..3650, clamped to the operator ceiling), `archive` (`REQUIRED`, `NONE`),
+  `hotRetentionDays` (1..3650, clamped to the operator ceiling), `archive` (`REQUIRED`; `NONE` *(2026-11-26, constitution 5.1.0: not admitted; Gap 1101 and the owner.)*),
   `archiveValues` (`METADATA_ONLY`, `UP_TO_INTERNAL`, `UP_TO_PII`), destination (`PLATFORM` or an object
   storage destination with a secret reference) and `sinkHoldDays`. `UP_TO_PII` needs the reveal grant.
   Without a policy nothing is deleted. Changes are audited and apply to eligibility from then on.
@@ -527,7 +527,7 @@ whose input payload is shared with a retained run and check what survives.
   `Cache-Control: private, no-store`, `run:history:export` plus FR-016-007 audiences, and audit
   (`run.history_exported`; `pii` reveals never collapsed). Oversize is HTTP 413
   `BAD_REQUEST`/`HISTORY_TOO_LARGE`.
-- **FR-020-037 — Erasure.** `retention:manage` holders MAY request erasure of a terminal run: same
+- **FR-020-037 — Erasure.** *(2026-11-26, constitution 5.1.0: erasure before the policy's retention or without a verified archive is not admitted; Gap 1101 and the owner.)* `retention:manage` holders MAY request erasure of a terminal run: same
   pipeline, eligibility now (still refusing unresolved effects with `CONFLICT`/`EFFECT_UNRESOLVED`),
   optional archive, archive object deleted (platform destination), subject replaced in the stub,
   every store of the content-store registry handled by its erasure rule (022 cache entries by

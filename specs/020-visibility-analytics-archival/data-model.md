@@ -192,7 +192,7 @@ ELIGIBLE ──claim──▶ EXPORTING ──PUT ok──▶ EXPORTED ──HEA
 
 Each arrow is one transaction; object-store I/O happens between transactions with the job leased
 (`FOR UPDATE SKIP LOCKED`, expiry on the database clock). `PURGING` is entered only from `VERIFIED` or
-from `ELIGIBLE` when `archive = NONE`, and is not reversible.
+from `ELIGIBLE` when `archive = NONE`, and is not reversible. *(2026-11-26: constitution 5.1.0 admits only the path through `VERIFIED`; the `archive = NONE` arrow waits for the owner, Gap 1101.)*
 
 ### Purge privilege
 

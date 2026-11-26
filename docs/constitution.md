@@ -16,23 +16,31 @@ Journal rows are deleted on two audited paths only, and only after a verified ar
 
 - **Per-run purge** (feature 020, ADR-0054). A run is eligible only under its namespace's explicit
   retention policy (without a policy every run is kept), once it is past that policy's retention,
-  terminal with its whole tree terminal and, for a chain, the chain final, and its effects settled:
-  not `PARTIAL` or `COMPENSATION_FAILED`, and no unresolved unknown outcome or review (Principle
-  III). Its archive is written and read back with matching size and SHA-256 before anything is
-  deleted. One privileged database function then removes, under the run's lock, the run's whole
-  journal and content, leaves the run row as a stub that points to the archive, and commits a
-  value-free audit record with the deletion.
+  terminal with its whole tree terminal and, for a chain, the chain final, with its effects settled
+  (no unresolved unknown outcome or review, and a run that ended `PARTIAL` or `COMPENSATION_FAILED`
+  only after an authorized, audited human resolution under Principle III), and under the further
+  conditions its design sets. Its archive is written and read back with matching size and SHA-256
+  before anything is deleted. One privileged database function then works in bounded
+  transactions: the first takes the run's lock, checks eligibility again and turns the run row
+  into a stub that points to the archive and accepts no further write; the others remove the run's
+  journal and content, or, in the mark-only form, leave them in their month's partition for the
+  second path to drop; an interrupted purge resumes until nothing of the journal is left; and a
+  value-free audit record commits with the last of them.
 - **Partition retirement** (design 049). The operator, with a credential that no platform process
   holds, drops a month's partitions of the journal tables only when every run in them has been
-  purged on the first path, and only after checking that the detached partitions hold no row of a
-  run that is not purged. The drop commits with the retirement's audit record and one per affected
-  tenant; every step is recorded, so that a crash resumes and never leaves rows half removed.
+  purged on the first path, in full or in its mark-only form, and only after checking that the
+  detached partitions hold no row of a run that is not purged. The drop commits with the
+  retirement's audit record and one per affected tenant; every step is recorded, so that a crash
+  resumes from where it stopped.
 
 Nothing else deletes or rewrites a journal entry: never an entry of a run that can still change,
-never part of a journal, never without a verified archive (a policy that keeps no archive is not
-admitted), and the runtime role holds no `DELETE` on runs, steps, the journal or payloads. After a
-purge the verified archive is the only copy of that run's transitions, outside the database's
-transactions and backups; that is the one exception to the first sentence of this principle.
+never without a verified archive (a policy that keeps no archive is not admitted), and a journal
+whose purge has started is removed in full; the runtime role holds no `DELETE` or `TRUNCATE` on
+runs, steps, the journal or payloads. After a purge the verified archive is the only copy of that
+run's transitions, outside the database's transactions and backups: it is deleted only by an
+audited act under its namespace's policy, and an archive in a customer's own store is as durable
+as that store, which the platform does not promise. These paths and that copy are the only
+exceptions to the first and third sentences of this principle.
 
 *Rationale:* a transition lost after the commit, or applied twice, cannot be repaired afterwards;
 history is removed only by a deliberate, audited act once nothing can depend on it any more.
@@ -118,9 +126,9 @@ decides:
   completion and of every command, the steps, timers, waits and subscriptions they create, the
   outbox, and the next state of the workflow task decided from the journal. A command refused by
   the checks refuses the whole completion. The command that ends the run is not applied while an
-  accepted signal, update or cancellation is still unseen by the function: it is deferred, the
-  rest of the completion commits all or nothing, and the function sees those events in its next
-  activation.
+  accepted signal, update or cancellation is still unseen by the function: it is deferred, and
+  the deferral journaled, the rest of the completion commits all or nothing, and the function sees
+  those events in its next activation.
 - **Waits resolve once.** A wait ends by the first commit of its timeout or its event, as in
   Principle I; a signal that arrives after the wait timed out is not dropped but kept in the
   journal for the next activation.
@@ -193,9 +201,10 @@ executor-read exception is limited to three declared sets:
   current publisher/initiator and secret-access rules of that capability. This disclosure
   exception does not itself authorize database execution or relax the isolation rule above.
 - A declared resource may disclose, to the executor of a step whose immutable task definition
-  declares it, the non-secret settings of its pinned revision and the values its slots bind at
-  that revision: their secrets and, for an OAuth credential, only its current access token, never
-  a refresh token, a client secret or a private or signing key. The authenticated caller's current
+  declares it, the non-secret settings of its pinned revision and, for an OAuth credential, only
+  its current access token, never a refresh token, a client secret or a private or signing key. A
+  secret that one of its slots binds reaches an executor only as a declared secret of the first
+  set. The authenticated caller's current
   membership, worker/activity binding and pool-delivery policy, the publisher's and initiator's
   permission to use the resource and to cause effects through it, and the secret-access rules of
   its slots MUST authorize that disclosure. Delivery to a managed integration runner is bound like
@@ -446,4 +455,4 @@ feature not yet converted, the Check and the table live in its `plan.md`.
 
 **Version**: 5.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-26
 
-Amendment scope and preserved obligations: [5.1.0 Sync Impact Report](governance/constitution-5.1.0-sync-impact.md). Previous amendments: [5.0.0 Sync Impact Report](governance/constitution-5.0.0-sync-impact.md), [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md), [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10). Version 5.0.0 is adopted by merging the pull request that carries it, on the owner's approval of the amendment that admits the full-parity scope of release 0.3.0 (`docs/owner-decisions.md`, Owner decisions 2026-11-24-1, 2026-11-24-2 and 2026-11-24-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment. Version 5.1.0 is adopted by merging the pull request that carries it, on the owner's approval of its four points (`docs/owner-decisions.md`, Owner decision 2026-11-25-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment.
+Amendment scope and preserved obligations: [5.1.0 Sync Impact Report](governance/constitution-5.1.0-sync-impact.md). Previous amendments: [5.0.0 Sync Impact Report](governance/constitution-5.0.0-sync-impact.md), [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md), [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10). Version 5.0.0 is adopted by merging the pull request that carries it, on the owner's approval of the amendment that admits the full-parity scope of release 0.3.0 (`docs/owner-decisions.md`, Owner decisions 2026-11-24-1, 2026-11-24-2 and 2026-11-24-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment. Version 5.1.0 is adopted by merging the pull request that carries it, on the owner's approval of its four points, which also lets it merge without returning to the owner unless a reviewer finds a Blocker (`docs/owner-decisions.md`, Owner decision 2026-11-25-3); its other findings are settled under Owner decision 2026-11-24-4, and every finding that touches a security exception is fixed or put to the owner; the owner may overrule it by a later amendment.

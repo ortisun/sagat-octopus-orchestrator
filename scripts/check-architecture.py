@@ -513,6 +513,42 @@ def run_creator_errors(root):
     return errors
 
 
+# Constitution 5.1.0, principle I: journal rows leave only by two audited paths (feature 020's per-run purge, design 049's
+# partition retirement), both privileged, and the runtime role holds no DELETE on runs, steps, the journal or payloads.
+# A migration is where such a grant would come from, so every GRANT of DELETE, TRUNCATE or ALL on one of those tables
+# (named, or through ALL TABLES or default privileges) to the runtime role or to PUBLIC is refused.
+JOURNAL_TABLES = {"runs", "steps", "run_events", "payloads"}
+RUNTIME_GRANTEES = {"sagat_app", "public"}
+GRANT_STATEMENT = re.compile(r"\bgrant\s+(?P<privs>.*?)\s+on\s+(?P<target>.*?)\s+to\s+(?P<grantees>[^;]*);", re.I | re.S)
+
+
+def journal_delete_grant_errors(root):
+    errors = []
+    base = pathlib.Path(root)
+    for path in sorted(base.glob("crates/infra-postgres/migrations/*.up.sql")):
+        text = path.read_text()
+        masked = re.sub(r"--[^\n]*", lambda m: " " * len(m.group(0)), text)
+        for m in GRANT_STATEMENT.finditer(masked):
+            if not re.search(r"\b(delete|truncate|all)\b", m.group("privs"), re.I):
+                continue
+            target = re.sub(r"\s+", " ", m.group("target").strip().lower())
+            if re.search(r"\ball tables\b", target) or target == "tables":
+                hit = "every table"
+            else:
+                names = {n.strip().strip('"').split(".")[-1].strip('"')
+                         for n in re.sub(r"^table\s+", "", target).split(",")}
+                hit = ", ".join(sorted(names & JOURNAL_TABLES))
+            grantees = {g.strip().strip('"').lower() for g in m.group("grantees").split(",")}
+            if hit and grantees & RUNTIME_GRANTEES:
+                privileges = re.sub(r"\s+", " ", m.group("privs").strip())
+                errors.append(
+                    f"{path.relative_to(base).as_posix()}:{text.count(chr(10), 0, m.start()) + 1}: a migration grants "
+                    f"{privileges} on {hit} to the runtime role: journal rows leave only by the "
+                    f"two audited privileged paths of principle I (constitution 5.1.0)"
+                )
+    return errors
+
+
 # The creators a composition root builds, each of which holds the unwired gate until it is given one (D043-120): a
 # service built without `.with_run_inputs` refuses every start of a version with an `inputSchema` as busy, and an engine
 # creator retries it forever (architecture review of 2026-11-15, Major 3).
@@ -669,6 +705,7 @@ def main(argv):
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
+    errors.extend(journal_delete_grant_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -699,7 +736,8 @@ def main(argv):
             print(f"  - {e}")
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
-          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input)")
+          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
+          f"the runtime role cannot delete the journal)")
     return 0
 
 
