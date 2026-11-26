@@ -697,7 +697,6 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
                     scope,
                     group: group.clone(),
                     digest,
-                    partial: None,
                 },
                 pool,
                 scope,
@@ -835,7 +834,6 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
                     scope,
                     group: group.clone(),
                     digest,
-                    partial: None,
                 },
                 pool,
                 scope,
@@ -878,11 +876,10 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
             .groups
             .into_iter()
             .map(|summed| ConcurrencyGroupView {
-                holders: summed.partial.sums[0],
-                waiters: summed.partial.sums[1],
-                oldest_wait_since: summed.partial.instant(0),
-                oldest_holder_since: summed.partial.instant(1),
-                spans_pages: summed.spans_pages,
+                holders: summed.sums.sums[0],
+                waiters: summed.sums.sums[1],
+                oldest_wait_since: summed.sums.instant(0),
+                oldest_holder_since: summed.sums.instant(1),
                 position: KeyPosition::of_group(summed.pool, summed.scope, summed.group.clone()),
                 pool: summed.pool,
                 scope: summed.scope,
@@ -923,11 +920,10 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
             .groups
             .into_iter()
             .map(|summed| RateLimitGroupView {
-                grants_in_window: summed.partial.sums[0],
-                unleased_grants: summed.partial.sums[1],
-                waiters: summed.partial.sums[2],
-                oldest_wait_since: summed.partial.instant(0),
-                spans_pages: summed.spans_pages,
+                grants_in_window: summed.sums.sums[0],
+                unleased_grants: summed.sums.sums[1],
+                waiters: summed.sums.sums[2],
+                oldest_wait_since: summed.sums.instant(0),
                 position: KeyPosition::of_group(summed.pool, summed.scope, summed.group.clone()),
                 pool: summed.pool,
                 scope: summed.scope,
@@ -1255,51 +1251,53 @@ pub const RATE_GROUP_AFTER_SQL: &str = group_after_sql!("rate_limit_windows", "l
 pub const RATE_GROUP_NAMED_AFTER_SQL: &str =
     group_named_after_sql!("rate_limit_windows", "limit_scope");
 
-/// At most `$7` keys of the concurrency group `($3, $4, $5)` after the digest `$6` (empty: from its first), in the order
-/// of the primary key, each with its counters, its oldest wait and its oldest holder (one probe of
-/// `concurrency_holders_key_age_idx`): what a group page sums of them (decision D022-086 item 5).
-pub const CONCURRENCY_GROUP_KEYS_SQL: &str = "SELECT s.key_digest, s.holders::bigint AS a, s.waiters::bigint AS b, \
-            0::bigint AS c, s.oldest_wait_at AS oldest_wait, \
-            (SELECT h.acquired_at FROM concurrency_holders h \
-              WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
-                AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
-                AND h.key_digest = s.key_digest \
-              ORDER BY h.acquired_at LIMIT 1) AS oldest_other \
+/// The sums of the concurrency group `($3, $4, $5)` read whole (decision D022-131): its keys' holders and waiters, its
+/// oldest wait, and the acquisition of its oldest holder (one range of `concurrency_holders` by group). One row, no key,
+/// no digest and no count of keys.
+pub const CONCURRENCY_GROUP_SUMS_SQL: &str = "SELECT coalesce(sum(s.holders), 0)::bigint AS a, \
+            coalesce(sum(s.waiters), 0)::bigint AS b, 0::bigint AS c, min(s.oldest_wait_at) AS oldest_wait, \
+            (SELECT min(h.acquired_at) FROM concurrency_holders h \
+              WHERE h.tenant_id = $1 AND h.namespace_id = $2 AND h.pool = $3 AND h.holder_scope = $4 \
+                AND h.group_name = $5) AS oldest_other \
        FROM concurrency_semaphores s \
-      WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = $3 AND s.permit_scope = $4 AND s.group_name = $5 \
-        AND s.key_digest > $6::bytea \
-      ORDER BY s.key_digest LIMIT $7";
+      WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = $3 AND s.permit_scope = $4 AND s.group_name = $5";
 
-/// At most `$7` windows of the rate-limit group `($3, $4, $5)` after the digest `$6`, each read as the key listing reads it
-/// ([`rate_key_columns_sql`]) at the page's instant: its counted grants, unleased grants and waiters, and its oldest wait.
-pub const RATE_GROUP_KEYS_SQL: &str = concat!(
-    "SELECT k.key_digest, (k.unleased + k.leased_counting)::bigint AS a, k.unleased::bigint AS b, \
-            k.waiters::bigint AS c, k.oldest_wait, NULL::timestamptz AS oldest_other \
-       FROM (",
-    rate_key_columns_sql!(),
-    "WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $4 AND w.group_name = $5 \
-        AND w.key_digest > $6::bytea \
-      ORDER BY w.key_digest LIMIT $7) k \
-      ORDER BY k.key_digest"
-);
+/// The sums of the rate-limit group `($3, $4, $5)` read whole at the page's instant (decision D022-131): its windows'
+/// waiters and oldest wait, and its grants counted once, each against its own window's longest period, as the key listing
+/// counts a window ([`rate_key_columns_sql`]): the unleased grants, and the grants that still count (unleased, or leased
+/// within the window). One row, no key, no digest and no count of keys.
+pub const RATE_GROUP_SUMS_SQL: &str = "WITH k AS ( \
+         SELECT w.key_digest, w.waiters, w.oldest_wait_at, w.max_period_ms FROM rate_limit_windows w \
+          WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $4 AND w.group_name = $5), \
+       g AS ( \
+         SELECT count(*) FILTER (WHERE g.leased_at IS NULL) AS unleased, \
+                count(*) FILTER (WHERE g.leased_at > now() - make_interval(secs => k.max_period_ms / 1000.0)) \
+                  AS leased_counting \
+           FROM rate_limit_grants g JOIN k ON k.key_digest = g.key_digest \
+          WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.pool = $3 AND g.limit_scope = $4 AND g.group_name = $5) \
+     SELECT (g.unleased + g.leased_counting)::bigint AS a, g.unleased::bigint AS b, \
+            (SELECT coalesce(sum(k.waiters), 0) FROM k)::bigint AS c, \
+            (SELECT min(k.oldest_wait_at) FROM k) AS oldest_wait, NULL::timestamptz AS oldest_other \
+       FROM g";
 
 /// The statements of one gate's group view.
 struct GroupStatements {
     after: &'static str,
     named_after: &'static str,
-    keys: &'static str,
+    /// The one statement that sums a group whole (decision D022-131).
+    sums: &'static str,
 }
 
 const CONCURRENCY_GROUPS: GroupStatements = GroupStatements {
     after: CONCURRENCY_GROUP_AFTER_SQL,
     named_after: CONCURRENCY_GROUP_NAMED_AFTER_SQL,
-    keys: CONCURRENCY_GROUP_KEYS_SQL,
+    sums: CONCURRENCY_GROUP_SUMS_SQL,
 };
 
 const RATE_GROUPS: GroupStatements = GroupStatements {
     after: RATE_GROUP_AFTER_SQL,
     named_after: RATE_GROUP_NAMED_AFTER_SQL,
-    keys: RATE_GROUP_KEYS_SQL,
+    sums: RATE_GROUP_SUMS_SQL,
 };
 
 /// A group a page summed whole.
@@ -1307,9 +1305,7 @@ struct SummedGroup {
     pool: GatePool,
     scope: GateLevel,
     group: ResolvedGroup,
-    partial: sagat_application::flow_control_keys::GroupPartial,
-    /// Whether an earlier page began its sums (it was resumed from the cursor's partial sums, decision D022-101).
-    spans_pages: bool,
+    sums: sagat_application::flow_control_keys::GroupSums,
 }
 
 /// What one page of a group view read in its snapshot.
@@ -1327,13 +1323,10 @@ fn micros(at: Option<time::OffsetDateTime>) -> Result<Option<i64>, StoreError> {
 }
 
 /// Reads one page of a group view in one read-only snapshot under the listing's statement timeout, with the namespace's
-/// queued runs and the digest key version that seals its cursor (decision D022-086 item 5). Each group it reads has a
-/// budget of its own of [`GROUP_PAGE_KEY_ROWS`](sagat_application::flow_control_keys::GROUP_PAGE_KEY_ROWS) key rows (and
-/// one more, to know whether it goes on), so where a group's pages break depends on that group alone, as under its own
-/// `group` filter (decision D022-128): it resumes the group `after` read in part, or finds the next group after
-/// `after`'s place with one probe, sums the group's keys in chunks of its primary-key range, emits a group whose range
-/// ends within its budget, and stops at `limit` groups (one probe says whether another follows) or after the first group
-/// it does not finish, whose place and partial sums become the next place. A page reads at most `limit` times the budget.
+/// queued runs and the digest key version that seals its cursor (decision D022-086 item 5). It never pages inside a
+/// group, filtered or not (decision D022-131): it finds the next group after `after`'s place with one probe, sums it whole
+/// with one statement, and stops at `limit` groups, one probe saying whether another follows; the next place is the last
+/// group's, so nothing the page tells depends on how many keys a group has.
 async fn group_page(
     pool: &sqlx::PgPool,
     statements: &GroupStatements,
@@ -1342,7 +1335,7 @@ async fn group_page(
     after: Option<&sagat_application::flow_control_keys::KeyPosition>,
     limit: u32,
 ) -> Result<GroupRead, StoreError> {
-    use sagat_application::flow_control_keys::{GROUP_PAGE_KEY_ROWS, GroupPartial, KeyPosition};
+    use sagat_application::flow_control_keys::{GroupSums, KeyPosition};
     use sqlx::Row as _;
     let mut tx = crate::pool::BeginSafely::begin_safely(pool)
         .await
@@ -1355,90 +1348,61 @@ async fn group_page(
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-    // every group's own budget (decision D022-128)
-    let budget = GROUP_PAGE_KEY_ROWS as usize;
     let mut groups: Vec<SummedGroup> = Vec::new();
-    // the place the next group is looked for after, and a group read in part to resume
+    // the place the next group is looked for after
     let mut place = after.map(|p| (p.pool, p.scope, p.group.clone()));
-    let mut current = after.and_then(|p| {
-        p.partial
-            .map(|partial| (p.pool, p.scope, p.group.clone(), p.digest.to_vec(), partial))
-    });
     let next = loop {
-        let spans_pages = current.is_some();
-        let (pool_of, scope, group, mut digest, mut partial) = match current.take() {
-            Some(resumed) => resumed,
-            None => {
-                let (pool_text, scope_text, group_text) =
-                    place.as_ref().map_or(("", "", ""), |(p, s, g)| {
-                        (p.as_str(), s.as_str(), g.as_str())
-                    });
-                let mut probe = sqlx::query(if named.is_some() {
-                    statements.named_after
-                } else {
-                    statements.after
-                })
-                .bind(tenant.as_uuid())
-                .bind(namespace.as_uuid())
-                .bind(pool_text)
-                .bind(scope_text)
-                .bind(group_text);
-                if let Some(named) = named {
-                    probe = probe.bind(named.as_str());
-                }
-                let Some(row) = probe.fetch_optional(&mut *tx).await.map_err(store_error)? else {
-                    break None;
-                };
-                // a group follows: the page ends before it when it holds its `limit` of groups
-                if groups.len() >= limit as usize {
-                    break place.map(|(p, s, g)| KeyPosition::of_group(p, s, g));
-                }
-                let (pool_of, scope, group) = group_of(&row)?;
-                (pool_of, scope, group, Vec::new(), GroupPartial::default())
-            }
+        let (pool_text, scope_text, group_text) =
+            place.as_ref().map_or(("", "", ""), |(p, s, g)| {
+                (p.as_str(), s.as_str(), g.as_str())
+            });
+        let mut probe = sqlx::query(if named.is_some() {
+            statements.named_after
+        } else {
+            statements.after
+        })
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(pool_text)
+        .bind(scope_text)
+        .bind(group_text);
+        if let Some(named) = named {
+            probe = probe.bind(named.as_str());
+        }
+        let Some(row) = probe.fetch_optional(&mut *tx).await.map_err(store_error)? else {
+            break None;
         };
-        let rows = sqlx::query(statements.keys)
+        // a group follows: the page ends before it when it holds its `limit` of groups
+        if groups.len() >= limit as usize {
+            break place.map(|(p, s, g)| KeyPosition::of_group(p, s, g));
+        }
+        let (pool_of, scope, group) = group_of(&row)?;
+        let row = sqlx::query(statements.sums)
             .bind(tenant.as_uuid())
             .bind(namespace.as_uuid())
             .bind(pool_of.as_str())
             .bind(scope.as_str())
             .bind(group.as_str())
-            .bind(&digest)
-            .bind(i64::try_from(budget + 1).unwrap_or(i64::MAX))
-            .fetch_all(&mut *tx)
+            .fetch_one(&mut *tx)
             .await
             .map_err(store_error)?;
-        let goes_on = rows.len() > budget;
-        for row in rows.iter().take(budget) {
-            let count = |column: &str| -> Result<u64, StoreError> {
-                u64::try_from(row.try_get::<i64, _>(column).map_err(store_error)?)
-                    .map_err(|_| corrupt("flow-control group counter"))
-            };
-            partial.add(
-                [count("a")?, count("b")?, count("c")?],
-                [
-                    micros(row.try_get("oldest_wait").map_err(store_error)?)?,
-                    micros(row.try_get("oldest_other").map_err(store_error)?)?,
-                ],
-            );
-            digest = row.try_get("key_digest").map_err(store_error)?;
-        }
-        // a group that does not finish within its budget ends the page (decision D022-128)
-        if goes_on {
-            let digest: [u8; 32] = digest
-                .try_into()
-                .map_err(|_| corrupt("flow-control key digest"))?;
-            break Some(KeyPosition::in_group(
-                pool_of, scope, group, digest, partial,
-            ));
-        }
+        let count = |column: &str| -> Result<u64, StoreError> {
+            u64::try_from(row.try_get::<i64, _>(column).map_err(store_error)?)
+                .map_err(|_| corrupt("flow-control group counter"))
+        };
+        let sums = GroupSums {
+            sums: [count("a")?, count("b")?, count("c")?],
+            oldest_us: [
+                micros(row.try_get("oldest_wait").map_err(store_error)?)?,
+                micros(row.try_get("oldest_other").map_err(store_error)?)?,
+            ],
+        };
         place = Some((pool_of, scope, group.clone()));
         groups.push(SummedGroup {
             pool: pool_of,
             scope,
             group,
-            partial,
-            spans_pages,
+            sums,
         });
     };
     let queued_runs: i64 = sqlx::query_scalar(QUEUED_RUNS_SQL)

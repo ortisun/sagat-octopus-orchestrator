@@ -533,9 +533,10 @@ Added after the review of 2026-11-13:
   (`view: GROUPS`) with its holders or counted grants, waiters and oldest instants, never how many keys a group has or
   when its next slot frees. A page of groups reads at most 200 key rows; a larger group is summed across the pages that
   read it, each page one snapshot, its partial sums carried in the sealed cursor.
-  *Amended 2026-11-26 (decision D022-128; re-read security new finding 1):* each group of a page reads its own 200 key
-  rows, a page ends after the first group it does not finish, and a page holds at most 5 groups whatever its `limit`,
-  so where a group's pages break depends on that group alone, as under its own `group` filter (D022-100).
+  *Amended 2026-11-26 (decisions D022-131 and D022-100; security re-reads of the batch-5 fixes):* the group view MUST
+  NOT page inside a group, filtered or not: each group is summed whole by one statement in the page's snapshot, a
+  cursor falls only between groups, a page holds at most 5 groups whatever its `limit`, and nothing a page tells
+  depends on how many keys a group has (`spansPages` is always false).
 
 #### Standalone steps (US05)
 

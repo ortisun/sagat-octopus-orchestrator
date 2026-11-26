@@ -123,6 +123,9 @@ describe('the flow-control keys of a namespace', () => {
     expect(cells(row)[5]).not.toMatch(/to the minute/);
     const region = screen.getByRole('region', { name: 'Concurrency keys' });
     expect(region).toHaveTextContent(/one row per group, summed over its keys, and no key/);
+    // decision D022-131: a group is read whole on one page; the note never says a group may take more than one page
+    expect(region).toHaveTextContent(/each group read whole on one page/);
+    expect(region).not.toHaveTextContent(/more than one page/);
     expect(region).not.toHaveTextContent(/Key label|Hidden/);
     await user.click(within(region).getByRole('button', { name: 'Load more concurrency keys' }));
     await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));

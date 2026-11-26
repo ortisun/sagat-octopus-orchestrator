@@ -91,7 +91,8 @@ pub struct ConcurrencyGroupBody {
     pub oldest_wait_since: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub oldest_holder_since: Option<OffsetDateTime>,
-    /// Whether an earlier page began its sums (decision D022-101).
+    /// Deprecated, always `false` (decision D022-131): a group is read whole on one page. Kept so that readers of the
+    /// contract in force still validate.
     pub spans_pages: bool,
 }
 
@@ -105,7 +106,7 @@ impl From<&ConcurrencyGroupView> for ConcurrencyGroupBody {
             waiters: group.waiters,
             oldest_wait_since: group.oldest_wait_since,
             oldest_holder_since: group.oldest_holder_since,
-            spans_pages: group.spans_pages,
+            spans_pages: false,
         }
     }
 }
@@ -284,7 +285,8 @@ pub struct RateLimitGroupBody {
     pub waiters: u64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub oldest_wait_since: Option<OffsetDateTime>,
-    /// Whether an earlier page began its sums (decision D022-101).
+    /// Deprecated, always `false` (decision D022-131): a group is read whole on one page. Kept so that readers of the
+    /// contract in force still validate.
     pub spans_pages: bool,
 }
 
@@ -298,7 +300,7 @@ impl From<&RateLimitGroupView> for RateLimitGroupBody {
             unleased_grants: group.unleased_grants,
             waiters: group.waiters,
             oldest_wait_since: group.oldest_wait_since,
-            spans_pages: group.spans_pages,
+            spans_pages: false,
         }
     }
 }

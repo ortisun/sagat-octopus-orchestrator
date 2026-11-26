@@ -341,12 +341,8 @@ pub enum KeyView {
     Groups,
 }
 
-/// The most key rows a page of a group view reads of one group (decisions D022-086 item 5 and D022-128): the per-key
-/// page's bound. A group with more keys is summed across the pages that read it, the page ending after it.
-pub const GROUP_PAGE_KEY_ROWS: u32 = 200;
-
-/// The most groups one page of a group view holds, whatever its `limit` (decision D022-128): each group reads its own
-/// [`GROUP_PAGE_KEY_ROWS`], so a page reads at most this many times as many key rows.
+/// The most groups one page of a group view holds, whatever its `limit` (decisions D022-128 and D022-131): each group is
+/// summed whole by one statement, a group having at most the namespace's live-keys ceiling of keys.
 pub const GROUP_PAGE_GROUPS: u32 = 5;
 
 /// One group of a namespace's concurrency keys, summed over its keys across the pages that read it, each page one
@@ -361,8 +357,6 @@ pub struct ConcurrencyGroupView {
     pub waiters: u64,
     pub oldest_wait_since: Option<OffsetDateTime>,
     pub oldest_holder_since: Option<OffsetDateTime>,
-    /// Whether an earlier page began its sums: they then mix the snapshots of the pages that read it (decision D022-101).
-    pub spans_pages: bool,
     /// Where a page that ends with this group resumes (its digest is all zero: groups are ordered by pool, scope and
     /// name).
     pub position: KeyPosition,
@@ -381,35 +375,20 @@ pub struct RateLimitGroupView {
     pub unleased_grants: u64,
     pub waiters: u64,
     pub oldest_wait_since: Option<OffsetDateTime>,
-    /// Whether an earlier page began its sums: they then mix the snapshots of the pages that read it (decision D022-101).
-    pub spans_pages: bool,
     pub position: KeyPosition,
 }
 
-/// What a page of a group view has read of a group it did not finish (decision D022-086 item 5): its sums (holders and
-/// waiters of a concurrency group; counted grants, unleased grants and waiters of a rate group) and its oldest instants
-/// in microseconds since the epoch (the oldest wait; the oldest holder of a concurrency group). Carried in the sealed
-/// cursor, never shown.
+/// What a page of a group view sums of one group, read whole in the page's snapshot (decision D022-131): its sums
+/// (holders and waiters of a concurrency group; counted grants, unleased grants and waiters of a rate group) and its
+/// oldest instants in microseconds since the epoch (the oldest wait; the oldest holder of a concurrency group). Never in a
+/// cursor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct GroupPartial {
+pub struct GroupSums {
     pub sums: [u64; 3],
     pub oldest_us: [Option<i64>; 2],
 }
 
-impl GroupPartial {
-    /// Adds what one key row adds.
-    pub fn add(&mut self, sums: [u64; 3], oldest_us: [Option<i64>; 2]) {
-        for (total, value) in self.sums.iter_mut().zip(sums) {
-            *total = total.saturating_add(value);
-        }
-        for (oldest, value) in self.oldest_us.iter_mut().zip(oldest_us) {
-            *oldest = match (*oldest, value) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-        }
-    }
-
+impl GroupSums {
     /// An instant of [`Self::oldest_us`].
     #[must_use]
     pub fn instant(&self, index: usize) -> Option<OffsetDateTime> {
@@ -499,9 +478,6 @@ pub struct KeyPosition {
     pub scope: GateLevel,
     pub group: ResolvedGroup,
     pub digest: [u8; 32],
-    /// In a group view, a group read in part: `digest` is then the last key read and these its sums so far (decision
-    /// D022-086 item 5). `None` in a key view and for a group read whole.
-    pub partial: Option<GroupPartial>,
 }
 
 /// Prints the key as its label, never the digest (NFR-022-002: logs).
@@ -513,7 +489,6 @@ impl std::fmt::Debug for KeyPosition {
             .field("scope", &self.scope)
             .field("group", &self.group)
             .field("key", &KeyLabel::of_digest(&self.digest))
-            .field("partial", &self.partial)
             .finish()
     }
 }
@@ -600,26 +575,6 @@ impl KeyPosition {
             scope,
             group,
             digest: [0; 32],
-            partial: None,
-        }
-    }
-
-    /// The place of a group read in part, up to and including the key `digest` (decision D022-086 item 5).
-    #[must_use]
-    pub const fn in_group(
-        pool: GatePool,
-        scope: GateLevel,
-        group: ResolvedGroup,
-        digest: [u8; 32],
-        partial: GroupPartial,
-    ) -> Self {
-        Self {
-            oldest_wait_us: None,
-            pool,
-            scope,
-            group,
-            digest,
-            partial: Some(partial),
         }
     }
 
@@ -642,19 +597,6 @@ impl KeyPosition {
             hex(&self.digest),
             hex(self.group.as_str().as_bytes())
         );
-        if let Some(partial) = &self.partial {
-            for sum in partial.sums {
-                let _ = write!(text, ".{sum}");
-            }
-            for oldest in partial.oldest_us {
-                match oldest {
-                    Some(us) => {
-                        let _ = write!(text, ".{us}");
-                    }
-                    None => text.push_str(".n"),
-                }
-            }
-        }
         text
     }
 
@@ -685,38 +627,17 @@ impl KeyPosition {
         let digest: [u8; 32] = unhex(parts.next()?)?.try_into().ok()?;
         let group = String::from_utf8(unhex(parts.next()?)?).ok()?;
         let group = ResolvedGroup::parse(&group).ok()?;
-        let rest: Vec<&str> = parts.collect();
-        let partial = match rest.as_slice() {
-            [] => None,
-            // only a group view carries a group read in part
-            [a, b, c, d, e]
-                if matches!(
-                    listing,
-                    KeyListing::ConcurrencyGroups | KeyListing::RateLimitGroups
-                ) =>
-            {
-                let instant = |text: &str| -> Option<Option<i64>> {
-                    if text == "n" {
-                        return Some(None);
-                    }
-                    let us = text.parse::<i64>().ok()?;
-                    OffsetDateTime::from_unix_timestamp_nanos(i128::from(us) * 1_000).ok()?;
-                    Some(Some(us))
-                };
-                Some(GroupPartial {
-                    sums: [a.parse().ok()?, b.parse().ok()?, c.parse().ok()?],
-                    oldest_us: [instant(d)?, instant(e)?],
-                })
-            }
-            _ => return None,
-        };
+        // a cursor of the build of D022-086 item 5 carried a group read in part: a group is now read whole, so it is no
+        // cursor (decision D022-131)
+        if parts.next().is_some() {
+            return None;
+        }
         Some(Self {
             oldest_wait_us,
             pool,
             scope,
             group,
             digest,
-            partial,
         })
     }
 }
@@ -838,7 +759,6 @@ mod tests {
             scope: GateLevel::Step,
             group: ResolvedGroup::parse(group).expect("a group"),
             digest: [0xab; 32],
-            partial: None,
         }
     }
 
@@ -1207,7 +1127,6 @@ mod tests {
             scope: GateLevel::Step,
             group,
             digest: [0xff; 32],
-            partial: None,
         };
         assert!(
             p.encode(KeyListing::Concurrency).len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES
@@ -1226,39 +1145,20 @@ mod tests {
             KeyPosition::open(&cursor, KeyListing::Concurrency, &ring, tenant, namespace),
             Some(p.clone())
         );
-        // a group view's place of a group read in part, its sums and instants at their longest (decision D022-086 item 5)
-        let longest = KeyPosition::in_group(
-            p.pool,
-            p.scope,
-            p.group.clone(),
-            p.digest,
-            GroupPartial {
-                sums: [u64::MAX; 3],
-                oldest_us: [Some(i64::MAX / 1_000_000 * 1_000); 2],
-            },
-        );
+        // decision D022-131: a group view's cursor is a group's place only; one that carries a group read in part (the
+        // partial sums of the build of D022-086 item 5) is no cursor
+        let place = KeyPosition::of_group(p.pool, p.scope, p.group.clone());
         for listing in [KeyListing::ConcurrencyGroups, KeyListing::RateLimitGroups] {
-            assert!(
-                longest.encode(listing).len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES,
-                "{}",
-                longest.encode(listing).len()
-            );
-            let cursor = longest
+            let cursor = place
                 .seal(listing, &ring, 1, tenant, namespace, page_instant())
                 .expect("sealed");
             assert_eq!(
                 KeyPosition::open(&cursor, listing, &ring, tenant, namespace),
-                Some(longest.clone())
+                Some(place.clone())
             );
+            let with_partial = format!("{}.1.2.3.n.n", place.encode(listing));
+            assert_eq!(KeyPosition::decode(&with_partial, listing), None);
         }
-        // a key view never carries a group read in part
-        assert_eq!(
-            KeyPosition::decode(
-                &longest.encode(KeyListing::Concurrency),
-                KeyListing::Concurrency
-            ),
-            None
-        );
     }
 
     #[test]

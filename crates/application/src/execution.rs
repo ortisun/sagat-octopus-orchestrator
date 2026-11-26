@@ -54,15 +54,33 @@ pub const DEFAULT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 /// without a limit the sum of many individually allowed outputs would be copied into every task.
 pub const MAX_RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
-/// Why a held signal was dropped at the grant (decision D022-087 item 3): no step waited for it.
-pub const HELD_SIGNAL_NOT_WAITING: &str = "NOT_WAITING_AT_GRANT";
-/// Why a held signal was dropped at the grant: the run's retained output would pass its bound.
-pub const HELD_SIGNAL_OUTPUT_BOUND: &str = "OUTPUT_BOUND";
-/// Why a held signal was dropped with its queued run: the run ended before its start was granted (item 4).
-pub const HELD_SIGNAL_RUN_ENDED: &str = "RUN_ENDED";
-/// Why a held signal was dropped at the grant: its delivery failed for a reason that does not clear on its own, so the
-/// start was granted without it (decision D022-121).
-pub const HELD_SIGNAL_DELIVERY_FAILED: &str = "DELIVERY_FAILED";
+/// Why a held signal was dropped (decisions D022-087 items 3 and 4, D022-121), a closed set (decision D022-132): its
+/// audit word and its counter outcome are each one `match`, so no drop goes uncounted or is counted as a delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldSignalDrop {
+    /// At the grant: no step waited for it.
+    NotWaitingAtGrant,
+    /// At the grant: the run's retained output would pass its bound.
+    OutputBound,
+    /// With its queued run: the run ended before its start was granted.
+    RunEnded,
+    /// At the grant: its delivery failed for a reason that does not clear on its own, so the start was granted without
+    /// it.
+    DeliveryFailed,
+}
+
+impl HeldSignalDrop {
+    /// The reason's word, the first word of the drop's audit record.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotWaitingAtGrant => "NOT_WAITING_AT_GRANT",
+            Self::OutputBound => "OUTPUT_BOUND",
+            Self::RunEnded => "RUN_ENDED",
+            Self::DeliveryFailed => "DELIVERY_FAILED",
+        }
+    }
+}
 
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
@@ -956,7 +974,7 @@ pub enum HeldDelivery {
     /// Delivered to these steps.
     Delivered(Vec<NodeId>),
     /// Dropped with an audit record, for this reason.
-    Dropped(&'static str),
+    Dropped(HeldSignalDrop),
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).
@@ -1254,7 +1272,7 @@ pub trait RunTx: Send {
     fn audit_held_signal_dropped<'a>(
         &'a mut self,
         _signal: &'a HeldSignal,
-        _reason: &'static str,
+        _reason: HeldSignalDrop,
     ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
         async {
             Err(StoreError::Internal {
@@ -2218,18 +2236,18 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 .collect()
         };
         if targets.is_empty() {
-            tx.audit_held_signal_dropped(&signal, HELD_SIGNAL_NOT_WAITING)
+            tx.audit_held_signal_dropped(&signal, HeldSignalDrop::NotWaitingAtGrant)
                 .await?;
-            return Ok(HeldDelivery::Dropped(HELD_SIGNAL_NOT_WAITING));
+            return Ok(HeldDelivery::Dropped(HeldSignalDrop::NotWaitingAtGrant));
         }
         let retained = tx.logical_output_bytes().await?;
         let additional = u64::try_from(signal.payload.len())
             .unwrap_or(u64::MAX)
             .saturating_mul(u64::try_from(targets.len()).unwrap_or(u64::MAX));
         if retained.saturating_add(additional) > MAX_RUN_OUTPUT_BYTES as u64 {
-            tx.audit_held_signal_dropped(&signal, HELD_SIGNAL_OUTPUT_BOUND)
+            tx.audit_held_signal_dropped(&signal, HeldSignalDrop::OutputBound)
                 .await?;
-            return Ok(HeldDelivery::Dropped(HELD_SIGNAL_OUTPUT_BOUND));
+            return Ok(HeldDelivery::Dropped(HeldSignalDrop::OutputBound));
         }
         let (tenant, run) = (tx.info().tenant_id, tx.info().run_id);
         let mut effects = Effects::by(
@@ -2300,7 +2318,7 @@ impl<E: ExpressionEvaluator> Engine<E> {
     pub async fn drop_held_signal<Tx: RunTx>(
         &self,
         tx: &mut Tx,
-        reason: &'static str,
+        reason: HeldSignalDrop,
     ) -> Result<bool, EngineError> {
         let Some(signal) = tx.take_held_signal().await? else {
             return Ok(false);

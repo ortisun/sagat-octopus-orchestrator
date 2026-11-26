@@ -2066,19 +2066,23 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `flow_control_keys::tests::a_cursor_expires_fifteen_minutes_after_its_page` and
   `rest::an_expired_cursor_is_refused_with_its_own_message` (a real page's cursor sealed again sixteen minutes earlier
   with the deployment's ring is refused, and fourteen minutes earlier is read).
-  *Amended 2026-11-26 (re-read security new finding 1 and nit 2; decisions D022-128 and D022-129):* a cursor stamped
-  more than one minute ahead of the reader's clock is refused as an expired one. What a page boundary of the group view
-  tells, once each group has its own budget of 200 key rows (D022-128), is no more than the `group` filter tells the
-  same caller, by this reasoning: (1) a page that begins a group either emits it, having read its remaining keys, at
-  most 200, or reads exactly 200 of them and ends with the group's place in its cursor; which of the two depends on the
-  group's own remaining keys only, never on the groups before it on the page, on `limit` or on the caller's own groups;
-  (2) a group of n keys is therefore read over ceil(n / 200) consecutive pages (one when n is 0), its row emitted on the
-  last with `spansPages` true exactly when n is more than 200; (3) the same caller (`ops:read`, the same view: the view
-  depends on the reveal right, not on the filter) may ask `?group=<the group>`, whose pages read that one group from its
-  first key, 200 keys a page, and so take the same ceil(n / 200) pages and carry the same `spansPages`; (4) the cursor's
-  partial sums are sealed and never shown, and a page's sums are those the filter's pages show. So the unfiltered view
-  reveals of a group exactly its size in steps of 200, which the filter already reveals; nothing about any other group,
-  and nothing finer. A caller who can add keys to the group changes both views alike.
+  *Amended 2026-11-26 (re-read security new finding 1 and nit 2; decisions D022-129 and D022-131):* a cursor stamped
+  more than one minute ahead of the reader's clock is refused as an expired one. A first amendment of the same day
+  (D022-128) argued that a page boundary of the group view tells no more than the `group` filter; the security re-read
+  of `c36e8336` (`reviews/2026-11-26/batch5-fixes-2-rereview-security-reviewer.md`) showed that the filter itself leaks:
+  both paged inside a group every 200 keys, so whether a group spanned pages, and over how many, depended on its live-key
+  count n; a caller with `run:start` on a workflow keyed into the group and `ops:read`, without the reveal right, adds m
+  keys of its own and reads whether the group still fits one page, learns n by a binary search over m, and then, as a
+  victim run ends, whether n drops (no other run used its key), which tells which runs share a key, and whether a value
+  of its own choosing is live. Since D022-131 the group view never pages inside a group, filtered or not: each group is
+  summed whole by one statement in the page's snapshot, a cursor falls only between groups, and `spansPages` is always
+  false. What a page boundary tells is now independent of every group's size: (1) a page holds the next groups after its
+  cursor's place, at most `min(limit, 5)`, each whole; (2) whether a next page exists depends only on whether another
+  group follows, a probe of the group order; (3) a group's row is the same, and on the same page position, whatever its
+  key count; (4) the cursor seals a group's place (pool, scope, name), no digest and no sums. The only thing that grows
+  with a group's size is the time its statement takes, bounded by the statement timeout and the namespace's
+  `concurrency_live_keys` ceiling (a `503` past the timeout says "large", never a count; measured at the ceiling in
+  D022-131).
 
 - **D022-101 — A group row says when its sums were read across pages (2026-11-25; batch 5 correctness minor 5; decision
   D022-086 item 5).** Delegate (OD-2026-11-24-4). A group with more keys than a page reads is summed across the pages
@@ -2091,6 +2095,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
   about which runs share a key. Test:
   `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached` (the big group's row
   `spansPages: true`, the next group's `false`, in both listings).
+  *Superseded 2026-11-26 (decision D022-131):* no group is read across pages any more, so `spansPages` is always
+  `false`; the field is kept, deprecated, so that a reader of the contract in force still validates, and goes in a
+  later contract version.
 
 - **D022-102 — The gates in the run state and a test's large scenario future are boxed where they are created
   (2026-11-25; CI runs 45637128106 and 45649612535, integration shard 1; D022-070).** Delegate (OD-2026-11-24-4).
@@ -2285,6 +2292,8 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
   written in D022-100. Tests: `rest::a_group_view_breaks_a_group_where_its_own_filter_does`,
   `rest::a_page_of_groups_holds_at_most_five_groups`, and the revised
   `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached`.
+  *Superseded 2026-11-26 (decision D022-131):* its residual, a group's size in steps of 200, was a leak (the filter
+  pages the same way), and the group view no longer pages inside a group.
 
 - **D022-129 — A cursor stamped more than a minute ahead is refused, and a dropped signal's record keeps its sender
   whole (2026-11-26; re-read security nits 2 and 3; decisions D022-100, D022-121).** Delegate (OD-2026-11-24-4). (1) A
@@ -2333,6 +2342,48 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
      `CONCURRENCY_QUEUE_STUCK` tests of `alerts.rs`, in the owner's run); a dropped transaction instead of an awaited
      rollback (the D022-122 test: "a released connection still held the run"); and the demotion's subject changed (the
      re-authorization test: no membership row changed).
+
+- **D022-131 — The group view never pages inside a group: each group is summed whole by one statement (2026-11-26;
+  security re-read of `c36e8336`, new finding 1; supersedes D022-128, D022-101 and the paging of D022-086 item 5(a);
+  FR-022-022, FR-022-057).** Delegate (OD-2026-11-24-4). A security finding is fixed, never settled: D022-128 left a
+  group's size in steps of 200 visible through `spansPages` and the page count, filtered or not, and with keys of its
+  own a caller refined that to the exact count and to which runs share a key (D022-100 as amended). Options: (a) one
+  aggregate statement per group over its whole key range, in the page's `REPEATABLE READ` snapshot, at most five groups a
+  page, cursors only between groups; (b) a fixed number of digest-range slices per group, the same for every group
+  whatever its size (a page would still read all of a group, in more statements, and the slices' bounds are fixed digest
+  values, so it only pays when one statement cannot meet the timeout); (c) counter rows per group (a lock on the gate's
+  path, rejected in D022-086 item 2). Chosen (a), kept unless the ceiling's measurement fails, which it does not:
+  1. *The statements.* `CONCURRENCY_GROUP_SUMS_SQL` sums a group's semaphore rows (holders, waiters, the oldest wait)
+     and takes the oldest holder of the group in one probe of `concurrency_holders`; `RATE_GROUP_SUMS_SQL` sums a group's
+     windows (waiters, the oldest wait) and counts its grants once, joined to their window for its longest period (the
+     unleased grants, and the leased ones that still count), the counts each window of the key listing reads, summed.
+     Neither returns a row per key, a digest or a count of keys.
+  2. *The cursor.* `KeyPosition` loses its partial sums and `KeyPosition::in_group`: a group view's cursor is a group's
+     place; a cursor that carries partial sums (written by the build of D022-086 item 5 within the last fifteen minutes)
+     is refused `400` "the cursor is not valid", which asks for a fresh read.
+  3. *The page.* At most `GROUP_PAGE_GROUPS` (5) groups, whatever `limit` asks; whether another page follows is one probe
+     of the group order. `spansPages` is always `false` and deprecated in the contract (kept so that the contract in force
+     still validates; removed by a later version); the Studio's note no longer says a group may take more than one page.
+  4. *The bound.* A group has at most the namespace's `concurrency_live_keys` (or `rate_limit_live_keys`) keys, hard
+     ceiling 100,000; the page runs under the listing's 2 s statement timeout, and a page past it is a `503` that names
+     no size. Measured: one page reads a group of 100,000 keys, both listings, within the timeout
+     (`rest::a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page`).
+  Tests: `rest::a_group_view_reads_each_group_whole_whatever_its_size` (groups of 200 and 201 keys, with and without the
+  filter, give the same page shape and flags; red with paging inside a group restored), the revised
+  `rest::a_page_of_groups_holds_at_most_five_groups`, and the planner test of the two statements
+  (`rest::a_group_is_summed_by_one_statement_over_its_own_rows`). They replace
+  `rest::a_page_of_groups_reads_at_most_its_budget_of_key_rows`,
+  `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached` and
+  `rest::a_group_view_breaks_a_group_where_its_own_filter_does`, which asserted the paging this decision removes.
+
+- **D022-132 — A dropped signal's reason is a closed type, and the entry path's test has a wait inside a loop body
+  (2026-11-26; security re-read of `c36e8336`, nits 1 and 2).** Delegate (OD-2026-11-24-4). (1) The drop's reason was a
+  string, and an unknown one kept the transaction's earlier outcome (`Delivered`), so a drop could be counted delivered:
+  `HeldSignalDrop` (`NotWaitingAtGrant`, `OutputBound`, `RunEnded`, `DeliveryFailed`) is the reason everywhere, its
+  audit word and its counter outcome each one `match`, so no drop is left uncounted or counted as a delivery. (2)
+  `the_entry_path_holds_what_the_release_of_a_start_reaches` gains the exact scenario of security suspicion 4: a
+  `waitEvent` of the signal's name only inside a `while` body is not on the entry path (bodies are separate graphs that
+  the walk never enters).
 
 ## Gaps
 

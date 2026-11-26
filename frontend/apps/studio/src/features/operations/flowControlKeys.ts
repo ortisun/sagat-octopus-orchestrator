@@ -5,8 +5,9 @@ import type { components } from '../../api/schema';
 /**
  * The flow-control keys of a namespace (feature 022): the live concurrency keys (FR-022-022) and the rate-limit keys
  * (FR-022-048), oldest wait first, by key label only, to a caller who may reveal personal data in the namespace; one row
- * per group to every other caller (`view: GROUPS`, decision D022-086). The cursor is opaque and sealed by the platform:
- * it is sent back as it came and never read.
+ * per group to every other caller (`view: GROUPS`, decision D022-086), each group read whole on one page and never across
+ * pages (decision D022-131: `spansPages` is always false, deprecated, and not shown). The cursor is opaque and sealed by
+ * the platform: it is sent back as it came and never read.
  */
 
 type Schemas = components['schemas'];

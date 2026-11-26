@@ -1178,18 +1178,17 @@ async fn seed_group_keys(
     }
 }
 
-/// Batch 4 reviews of 2026-11-25, correctness Major 1 and security minor 2 (decision D022-086 item 5): a page of groups
-/// reads at most its budget of key rows of each group (decision D022-128), whatever its groups' sizes: each statement of
-/// the walk, asked of the planner over
-/// a group of 20,000 keys beside 100 groups of 50, reads at most the budget and one more of the key table (and one probe
-/// of the holders a key), and the probe for the next group, named or not, at most four rows; never a scan.
+/// Decision D022-131 (and D022-086 item 5's bound on what a page reads): a group is summed by one statement over its own
+/// rows. Asked of the planner over a group of 2,000 keys beside 100 groups of 500, each gate's statement reads the
+/// group's key rows and no other group's (never a scan of the key table), and returns one row; the probe for the next
+/// group, named or not, reads at most four rows.
 #[tokio::test]
-async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
+async fn a_group_is_summed_by_one_statement_over_its_own_rows() {
     let (api, namespace, tenant) = api().await;
     let pool = &api.db.pool;
-    seed_group_keys(&api, tenant, &namespace, "big", 20_000).await;
+    seed_group_keys(&api, tenant, &namespace, "big", 2_000).await;
     for group in 0..100 {
-        seed_group_keys(&api, tenant, &namespace, &format!("group-{group:03}"), 50).await;
+        seed_group_keys(&api, tenant, &namespace, &format!("group-{group:03}"), 500).await;
     }
     for table in [
         "concurrency_semaphores",
@@ -1202,50 +1201,42 @@ async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
             .await
             .expect("analyze");
     }
-    let budget = i64::from(sagat_application::flow_control_keys::GROUP_PAGE_KEY_ROWS);
     let namespace_id = Uuid::parse_str(&namespace).expect("uuid");
     let explain = |sql: &'static str| format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}");
-    for (keys, relation, others) in [
+    for (sums, relation) in [
         (
-            sagat_infra_postgres::CONCURRENCY_GROUP_KEYS_SQL,
+            sagat_infra_postgres::CONCURRENCY_GROUP_SUMS_SQL,
             "concurrency_semaphores",
-            "concurrency_holders",
         ),
         (
-            sagat_infra_postgres::RATE_GROUP_KEYS_SQL,
+            sagat_infra_postgres::RATE_GROUP_SUMS_SQL,
             "rate_limit_windows",
-            "rate_limit_grants",
         ),
     ] {
-        // from the group's first key, and from the middle of its range
-        for after in [Vec::new(), vec![0x80_u8; 32]] {
-            let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain(keys)))
-                .bind(tenant.as_uuid())
-                .bind(namespace_id)
-                .bind("ORDINARY")
-                .bind("RUN")
-                .bind("big")
-                .bind(&after)
-                .bind(budget + 1)
-                .fetch_one(pool)
-                .await
-                .expect("a plan");
-            let text = plan.to_string();
-            assert!(
-                !scans_all_of(&plan[0]["Plan"], relation),
-                "no scan of every key: {text}"
-            );
-            let read = rows_of(&plan[0]["Plan"], relation);
-            assert!(
-                read > 0.0 && read <= (budget + 1) as f64,
-                "{relation} rows read {read} for a budget of {budget}: {text}"
-            );
-            let probed = rows_of(&plan[0]["Plan"], others);
-            assert!(
-                probed <= 4.0 * (budget + 1) as f64,
-                "{others} rows read {probed}: {text}"
-            );
-        }
+        let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain(sums)))
+            .bind(tenant.as_uuid())
+            .bind(namespace_id)
+            .bind("ORDINARY")
+            .bind("RUN")
+            .bind("big")
+            .fetch_one(pool)
+            .await
+            .expect("a plan");
+        let text = plan.to_string();
+        assert!(
+            !scans_all_of(&plan[0]["Plan"], relation),
+            "no scan of every key: {text}"
+        );
+        let read = rows_of(&plan[0]["Plan"], relation);
+        assert!(
+            (2_000.0..=2_001.0).contains(&read),
+            "{relation} rows read {read}: the big group's own: {text}"
+        );
+        assert_eq!(
+            plan[0]["Plan"]["Actual Rows"].as_f64(),
+            Some(1.0),
+            "one row: {text}"
+        );
     }
     for (sql, relation, named) in [
         (
@@ -1294,74 +1285,55 @@ async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
     }
 }
 
-/// Batch 4 reviews of 2026-11-25, correctness Major 1 (decision D022-086 item 5): one group of 100,000 keys and a group
-/// `zz` after it. A viewer pages both listings one group at a time: every page answers `200`, the first holds no group
-/// (the big group is summed across pages, its partial sums in the sealed cursor), the big group's row comes whole, its
-/// sums those of every key, and `zz` is reached. The big group's row says its sums were read across pages, `zz`'s does
-/// not (batch 5 correctness minor 5, decision D022-101).
+/// Decision D022-131, measured at the ceiling: one group of 100,000 keys (the hard ceiling of `concurrency_live_keys` and
+/// `rate_limit_live_keys`) and a group `zz` after it. A viewer reads both listings one group a page: the first page
+/// answers `200` within the listing's 2 s statement timeout with the big group whole, its sums those of every key and
+/// `spansPages` false; the next page holds `zz`; nothing is read across pages.
 #[tokio::test]
-async fn a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached() {
+async fn a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page() {
     use sagat_domain::identity::Role;
     let (api, namespace, tenant) = api().await;
     member(&api, tenant, "vera-viewer", Role::Viewer).await;
     seed_group_keys(&api, tenant, &namespace, "big", 100_000).await;
     seed_group_keys(&api, tenant, &namespace, "zz", 1).await;
-    for (listing, sums) in [
-        ("concurrency-keys", ["holders", "waiters"]),
-        ("rate-limit-keys", ["waiters", "unleasedGrants"]),
+    for table in ["concurrency_semaphores", "rate_limit_windows"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
+            .execute(&api.db.pool)
+            .await
+            .expect("analyze");
+    }
+    for (listing, sums, expected) in [
+        (
+            "concurrency-keys",
+            ["holders", "waiters"],
+            [100_000, 100_000],
+        ),
+        (
+            "rate-limit-keys",
+            ["waiters", "unleasedGrants"],
+            [100_000, 0],
+        ),
     ] {
-        let mut cursor: Option<String> = None;
-        let mut groups: Vec<Value> = Vec::new();
-        let mut pages = 0_u32;
-        loop {
-            let path = match &cursor {
-                Some(cursor) => {
-                    format!("/namespaces/{namespace}/{listing}?limit=1&cursor={cursor}")
-                }
-                None => format!("/namespaces/{namespace}/{listing}?limit=1"),
-            };
-            let (status, page) = read_as(&api, &path, "vera-viewer").await;
-            assert_eq!(status, StatusCode::OK, "page {pages} of {listing}: {page}");
-            assert_eq!(page["view"], "GROUPS", "{page}");
-            if pages == 0 {
-                assert_eq!(
-                    page["groups"],
-                    json!([]),
-                    "the big group does not fit one page: {page}"
-                );
-            }
-            pages += 1;
-            groups.extend(page["groups"].as_array().into_iter().flatten().cloned());
-            match page["nextCursor"].as_str() {
-                Some(next) => cursor = Some(next.to_owned()),
-                None => break,
-            }
-            assert!(pages <= 1_000, "{listing} never ends");
-        }
-        let names: Vec<&str> = groups.iter().filter_map(|g| g["group"].as_str()).collect();
-        assert_eq!(names, ["big", "zz"], "{listing}: {groups:?}");
-        assert!(
-            pages >= 500,
-            "{listing}: at most 200 keys a page, {pages} pages"
-        );
-        let expected = if listing == "concurrency-keys" {
-            [100_000, 100_000]
-        } else {
-            [100_000, 0]
-        };
+        let (status, page) = read_as(
+            &api,
+            &format!("/namespaces/{namespace}/{listing}?limit=1"),
+            "vera-viewer",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{listing}: {page}");
+        let groups = page["groups"].as_array().expect("groups").clone();
+        assert_eq!(groups.len(), 1, "{listing}: {page}");
+        assert_eq!(groups[0]["group"], "big", "{listing}: {page}");
         for (field, value) in sums.iter().zip(expected) {
-            assert_eq!(
-                groups[0][*field],
-                json!(value),
-                "{listing} {field}: {groups:?}"
-            );
+            assert_eq!(groups[0][*field], json!(value), "{listing} {field}: {page}");
         }
-        assert!(groups[0]["oldestWaitSince"].is_string(), "{groups:?}");
-        // batch 5 correctness minor 5 (decision D022-101): the row says its sums were read across pages
+        assert!(groups[0]["oldestWaitSince"].is_string(), "{page}");
+        assert_eq!(groups[0]["spansPages"], json!(false), "{page}");
+        let walk = group_walk(&api, &namespace, listing, "limit=1").await;
         assert_eq!(
-            (&groups[0]["spansPages"], &groups[1]["spansPages"]),
-            (&json!(true), &json!(false)),
-            "{listing}: {groups:?}"
+            walk,
+            [(0, "big".to_owned(), false), (1, "zz".to_owned(), false)],
+            "{listing}"
         );
     }
 }
@@ -1399,52 +1371,44 @@ async fn group_walk(
     rows
 }
 
-/// Re-read security new finding 1 (decision D022-128): where a group's pages break depends on that group alone, as
-/// under its own `group` filter. Groups `aa` (100 keys), `big` (150), `huge` (250) and `zz` (1): a viewer's first page of
-/// three groups holds `aa` and `big` whole (each its own 200 key rows; before, `aa`'s 100 rows left `big` 100 and it
-/// spanned pages) and ends inside `huge`, whose row comes on the next page marked `spansPages`; and every group's
-/// `spansPages` is what its own filter answers.
+/// Security re-read of `c36e8336`, new finding 1 (decision D022-131): nothing a page of the group view tells depends on
+/// how many keys a group has. Groups `g200` (200 keys) and `g201` (201 keys, one more than the page bound the earlier build
+/// paged a group by) and `zz`: read one group a page, every group comes whole on its own page with `spansPages` false,
+/// and read through its own filter each comes alone on one page, the same shape and flags. With paging inside a group,
+/// `g201` took two pages, the second marked `spansPages`.
 #[tokio::test]
-async fn a_group_view_breaks_a_group_where_its_own_filter_does() {
+async fn a_group_view_reads_each_group_whole_whatever_its_size() {
     use sagat_domain::identity::Role;
     let (api, namespace, tenant) = api().await;
     member(&api, tenant, "vera-viewer", Role::Viewer).await;
-    for (group, keys) in [("aa", 100), ("big", 150), ("huge", 250), ("zz", 1)] {
+    for (group, keys) in [("g200", 200), ("g201", 201), ("zz", 1)] {
         seed_group_keys(&api, tenant, &namespace, group, keys).await;
     }
     for listing in ["concurrency-keys", "rate-limit-keys"] {
-        let walk = group_walk(&api, &namespace, listing, "limit=3").await;
+        let walk = group_walk(&api, &namespace, listing, "limit=1").await;
         let shape: Vec<(u32, &str, bool)> = walk
             .iter()
             .map(|(page, group, spans)| (*page, group.as_str(), *spans))
             .collect();
         assert_eq!(
             shape,
-            [
-                (0, "aa", false),
-                (0, "big", false),
-                (1, "huge", true),
-                (1, "zz", false)
-            ],
+            [(0, "g200", false), (1, "g201", false), (2, "zz", false)],
             "{listing}"
         );
-        for (_, group, spans) in &walk {
+        for group in ["g200", "g201"] {
             let filtered =
-                group_walk(&api, &namespace, listing, &format!("limit=3&group={group}")).await;
+                group_walk(&api, &namespace, listing, &format!("limit=1&group={group}")).await;
             assert_eq!(
-                filtered
-                    .iter()
-                    .map(|(_, g, s)| (g.as_str(), *s))
-                    .collect::<Vec<_>>(),
-                [(group.as_str(), *spans)],
-                "{listing}: {group} as its own filter reads it"
+                filtered,
+                [(0, group.to_owned(), false)],
+                "{listing}: {group} through its own filter"
             );
         }
     }
 }
 
-/// Decision D022-128: a page of the group view holds at most five groups whatever its `limit`, since each group reads
-/// its own 200 key rows; the next page goes on after the fifth.
+/// Decisions D022-128 and D022-131: a page of the group view holds at most five groups whatever its `limit`, each summed
+/// whole; the next page goes on after the fifth.
 #[tokio::test]
 async fn a_page_of_groups_holds_at_most_five_groups() {
     use sagat_domain::identity::Role;

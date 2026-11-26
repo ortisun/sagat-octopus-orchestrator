@@ -6359,7 +6359,7 @@ where
                     self.engine
                         .drop_held_signal(
                             &mut *tx,
-                            sagat_application::execution::HELD_SIGNAL_DELIVERY_FAILED,
+                            sagat_application::execution::HeldSignalDrop::DeliveryFailed,
                         )
                         .await
                         .map_err(other)?;

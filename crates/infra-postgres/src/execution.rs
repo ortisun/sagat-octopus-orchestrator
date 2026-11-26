@@ -4689,7 +4689,7 @@ impl RunTx for PgRunTx {
     async fn audit_held_signal_dropped<'a>(
         &'a mut self,
         signal: &'a sagat_application::execution::HeldSignal,
-        reason: &'static str,
+        reason: sagat_application::execution::HeldSignalDrop,
     ) -> Result<(), StoreError> {
         self.audit_held_signal_dropped_inner(signal, reason).await
     }

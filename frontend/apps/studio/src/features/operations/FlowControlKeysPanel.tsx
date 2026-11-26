@@ -10,7 +10,7 @@ import type { ConcurrencyKey, ConcurrencyKeyGroup, FlowControlKeysApi, KeyQuery,
 import './flowControlKeys.css';
 
 const PAGE_SIZE = 50;
-const GROUPS_NOTE = 'You may not reveal personal data in this namespace, so the platform lists one row per group, summed over its keys, and no key. A large group can take more than one page: its row comes with the page that reads its last key.';
+const GROUPS_NOTE = 'You may not reveal personal data in this namespace, so the platform lists one row per group, summed over its keys, and no key: each group read whole on one page, at most five groups a page (decision D022-131).';
 
 /** An instant of a key or a group, whole (decision D022-086). */
 function Instant({ at, empty }: { at: string | null | undefined; empty: string }) {

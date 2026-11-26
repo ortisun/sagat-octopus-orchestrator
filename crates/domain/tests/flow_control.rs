@@ -110,6 +110,51 @@ fn the_entry_path_holds_what_the_release_of_a_start_reaches() {
     );
     assert!(joined.entry_path().can_end());
 
+    // security suspicion 4 exactly (decision D022-132): a wait of the name only inside a `while` body is not on the entry
+    // path; the walk never enters a body, which is a graph of its own
+    let body = sagat_domain::workflow::BodyDefinition::new(
+        id("iteration"),
+        id("w"),
+        vec![
+            wait("w", 60, None).with_next(id("returned")),
+            Node::new(
+                id("returned"),
+                NodeKind::Return {
+                    result: Expression::parse("1").expect("result"),
+                },
+            ),
+        ],
+    )
+    .expect("a loop body");
+    let in_body = WorkflowDefinition::new_structured(
+        Slug::parse("waits-in-a-body").expect("slug"),
+        id("loop"),
+        vec![
+            Node::new(
+                id("loop"),
+                NodeKind::While {
+                    condition: Expression::parse("carry < 2").expect("condition"),
+                    body: id("iteration"),
+                    initial: Expression::parse("0").expect("initial"),
+                    carry: Expression::parse("bodyResult").expect("carry"),
+                    max_iterations: 2,
+                    delay: None,
+                },
+            )
+            .with_timeout(Duration::from_secs(60))
+            .with_next(id("done")),
+            end("done"),
+        ],
+        vec![body],
+        sagat_domain::workflow::WorkflowLimits::default(),
+    )
+    .expect("a loop workflow");
+    assert_eq!(
+        in_body.entry_path().waits_for("payment.confirmed"),
+        0,
+        "a wait inside a loop body is not on the entry path"
+    );
+
     let ends = build("e", vec![end("e")]);
     assert!(ends.entry_path().can_end());
 
