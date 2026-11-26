@@ -1,6 +1,6 @@
 # ADR-0027: Durable content, log, rate and retention quotas
 
-**Status:** Accepted; engineering baseline implemented and verified. On 2026-10-16 the owner ratified the values below as the single default tier (G42); payload classification is decided separately in ADR-0033.
+**Status:** Accepted; engineering baseline implemented and verified. On 2026-10-16 the owner ratified the values below as the single default tier (G42); payload classification is decided separately in ADR-0033. Its Amendment of 2026-11-15 is partly superseded by [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md) and [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md) (accepted 2026-11-20, OD-2026-11-20-15) and amended by the Amendment of the Amendment of 2026-11-20 (OD-2026-11-20-16).
 
 **Traces:** FR-009-006, NFR-009-PERF, FR-004-008; G37, G80, G117. G42 remains a product decision about tier values and customer/regulatory retention classification.
 
@@ -160,6 +160,60 @@ the script report commits, through the unlocked `sagat_quota_step_log_allowance`
 row; a marker refused at the limit is skipped and counted. So `sagat_quota_lock_step_log_usage` of item 3 is not built,
 `take_log_prefix` keeps its present form, and item 1's "the script-output marker, which is skipped when it does not fit"
 holds without a lock.
+
+Note (2026-11-19, OD-2026-11-19-1): [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md),
+Proposed, would let a report store its attempt's last step-log rows in its own transaction; item 1's rule that a step-log
+charge never blocks a terminal state would then hold by one re-run of the report without those rows. Item 1 is unchanged
+until that ADR is accepted.
+
+Note (2026-11-20, OD-2026-11-20-15): the owner accepted ADR-0095 and ADR-0097 ("Accept both"). Item 1's clause "no
+terminal report writes a step-log row except the script-output marker" is superseded by ADR-0095: a report may store its
+attempt's last step-log rows in its own transaction, and item 1's rule that a step-log charge never blocks a terminal
+state holds by ADR-0095 decision 5 (a carry that fails its report is dropped by one re-run of the report without it).
+For the class `step_log`, the charge half of item 3 (a charge to `quota_transaction_deltas.step_log_delta` and the
+finalizer at commit) and the rule that the usage counters never go below zero are superseded by ADR-0097: the folded
+usage may go below zero while the usage (the folded usage plus what the leases hold) never does.
+
+### Amendment of the Amendment (2026-11-20), accepted 2026-11-20 (OD-2026-11-20-16)
+
+Amendment accepted 2026-11-20, OD-2026-11-20-16 ("Amend ADR-0027", design 041's question O041-040, option (a)). The owner
+chose its direction on 2026-11-20 ("Cortar custo, depois limite absoluto", OD-2026-11-20-1, design 041's O041-039 (a)) and
+kept it as a section of this ADR, an exception to rule 2 of `docs/adr/README.md`, as OD-2026-11-15-16 granted for the
+first Amendment. It replaces item 3's sentence "`sagat_quota_row_delta` routes the class `step_log` to the new delta"
+and item 4's per-row reading of the 128-byte charge as follows; items 1, 2 and 5 and the rest of items 3 and 4 are
+unchanged except as the Note above says.
+
+- **Step-log rows are charged once per insert statement, not once per row.** `step_log_lines` has no per-row
+  measurement trigger and no per-row flush trigger on `INSERT`. A statement-level `AFTER INSERT` trigger over the
+  statement's transition table (`REFERENCING NEW TABLE`), `SECURITY DEFINER` with a pinned `search_path` like the other
+  quota trigger functions and enabled `ALWAYS`, sums for each tenant what `sagat_quota_measure` measures for each row's
+  `message`, `exception` and `fields` (`octet_length_utf8`) and `level` (`fixed_octets`, 128), the same measurement the
+  per-row release applies, and charges that sum once per tenant to the inserting writer's own step-log quota lease, as
+  [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md)
+  states it (decisions 1 to 4: the lease of the tenant and the server backend, refilled from the usage row only when it
+  is short). The charge is measured by the database from the rows stored, never passed by a caller, so no writer can
+  under-charge or skip it. No step-log delta is written to `quota_transaction_deltas` on insert.
+- **No deferred flush on insert.** The deferred flush that a step-log delta would have queued at commit is replaced by
+  ADR-0097: an insert of step-log rows queues no flush and does not take the tenant's `tenant_retained_usage` row at
+  commit; the usage row is locked for the class `step_log` only by a refill (the top-up after a report included, which
+  replaced the ensure before it: OD-2026-11-20-18), a release, an idle reclaim or a limit change (ADR-0097).
+- **Release stays per row.** The purge's `DELETE` keeps the per-row `AFTER DELETE` delta and flush triggers, so what is
+  released equals what is deleted; the purge is off the hot path. The finalizer's step-log branch, reached then only by a
+  release, lowers the folded usage under the usage row without taking any lease (ADR-0097 decision 5).
+- **Enforced by** the manifest test, taught that the class `step_log` is measured by this shape; a test that an insert of
+  ten lines charges the writer's lease their text plus 1,280 bytes and queues no flush, and that their purge releases the
+  same; a property test that the charge of any inserted lines equals the release of their delete; and the runtime-role
+  bypass tests of this ADR extended to the statement trigger and the lease table (design 041, tasks T041-5 and T041-36).
+
+Why: design 041's carry stores an attempt's last lines in the report transaction, under the run lock; the first carry
+spike (T041-35, `specs/041-step-logs/validation-report.md`, 2026-11-20) measured the per-row trigger and per-row deferred
+call as part of a carry that added +40.6% and +23.7% to the completion p99, and the second diagnosis (D041-106) measured
+the queue on the usage row at commit. Consequence: the step-log class is the one class measured per statement and
+charged to leases; the generator does not write its triggers (the migration of design 041's task T041-5 does).
+
+Considered options (O041-040): (a) this text, a section of ADR-0027: chosen by the owner (OD-2026-11-20-16); (b) the same
+moved into ADR-0097: not chosen, the measurement belongs with the resource and class it amends; (c) accept with changes:
+not chosen.
 
 ## Implementation slices and ownership contract
 

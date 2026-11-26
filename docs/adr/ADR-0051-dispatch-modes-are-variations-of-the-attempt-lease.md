@@ -43,10 +43,10 @@ authority next to the run row:
    timeout, cancellation and fencing semantics that the step already has.
 
 The engine interprets a declarative IR (ADR-0003); Temporal's versioning exists largely for workflow-code replay,
-which does not apply to that model. Workflow as code (owner decision OD-2026-11-24-3, design 044) will add replayed
-workflow code; this decision does not design its versioning, but its deployment versions are the routing unit that design
-can reuse. What must be protected here is the contract of activity implementations across builds, the fence, and the
-tenant boundary.
+which does not apply. What must be protected here is the contract of activity implementations across builds, the
+fence, and the tenant boundary. *Note (2026-11-24, constitution 5.0.0):* code runs of design 044 replay workflow code;
+their version is pinned by code digest and changes only by a verified move (ADR-0105), outside this record's pins.
+Its deployment versions are the routing unit design 044 can reuse (corrected 2026-11-24, delegate (OD-2026-11-24-4)).
 
 ## Decision
 

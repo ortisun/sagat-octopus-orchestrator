@@ -356,6 +356,9 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
                 || operation["x-implemented"] == "018"
                 // Feature 035 merges its contract before its routes: the catalog-browse operations are planned.
                 || operation["x-planned"] == "035"
+                // Feature 041 merges its contract before its routes, and switches each to implemented as it lands.
+                || operation["x-planned"] == "041"
+                || operation["x-implemented"] == "041"
             {
                 continue;
             }

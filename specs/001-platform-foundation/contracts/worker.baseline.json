@@ -1,5 +1,89 @@
 {
   "messages": {
+    "sagat_octopus_orchestrator.v1.AppendStepLogsRequest": {
+      "1": {
+        "name": "worker_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "records",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.StepLogRecord"
+      },
+      "11": {
+        "name": "final_batch",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "12": {
+        "name": "highest_sequence",
+        "repeated": false,
+        "type": "Uint64"
+      },
+      "2": {
+        "name": "session_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "step_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "8": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "9": {
+        "name": "instance",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.AppendStepLogsResponse": {
+      "1": {
+        "name": "verdict",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.StepLogVerdict"
+      },
+      "2": {
+        "name": "stop_reason",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.StepLogStopReason"
+      },
+      "3": {
+        "name": "stored_through_sequence",
+        "repeated": false,
+        "type": "Uint64"
+      },
+      "4": {
+        "name": "retry_after_ms",
+        "repeated": false,
+        "type": "Int32"
+      }
+    },
     "sagat_octopus_orchestrator.v1.ClickHouseConnection": {
       "1": {
         "name": "url",
@@ -782,6 +866,11 @@
         "name": "accepted_protocol_version",
         "repeated": false,
         "type": "String"
+      },
+      "4": {
+        "name": "step_logs",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.StepLogPolicy"
       }
     },
     "sagat_octopus_orchestrator.v1.ResolveSecretsRequest": {
@@ -959,6 +1048,77 @@
         "name": "run_status",
         "repeated": false,
         "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.StepLogField": {
+      "1": {
+        "name": "key",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "string_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "int_value",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "4": {
+        "name": "double_value",
+        "repeated": false,
+        "type": "Double"
+      },
+      "5": {
+        "name": "bool_value",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.StepLogPolicy": {
+      "1": {
+        "name": "enabled",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.StepLogRecord": {
+      "1": {
+        "name": "sequence",
+        "repeated": false,
+        "type": "Uint64"
+      },
+      "2": {
+        "name": "worker_time_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "3": {
+        "name": "level",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.StepLogLevel"
+      },
+      "4": {
+        "name": "message",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "fields",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.StepLogField"
+      },
+      "6": {
+        "name": "exception",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "truncated",
+        "repeated": false,
+        "type": "Bool"
       }
     },
     "sagat_octopus_orchestrator.v1.TaskLease": {
@@ -1169,6 +1329,12 @@
   },
   "services": {
     "sagat_octopus_orchestrator.v1.WorkerService": {
+      "AppendStepLogs": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.AppendStepLogsRequest",
+        "output": ".sagat_octopus_orchestrator.v1.AppendStepLogsResponse",
+        "serverStreaming": false
+      },
       "CompleteStep": {
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.CompleteStepRequest",

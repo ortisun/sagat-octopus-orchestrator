@@ -32,13 +32,15 @@ opt-in modes: `prepared`, a container created ahead and used by one run, which k
 part). Each capability is switched on for the whole fleet through the instance registry (ADR-0082), never per process.
 
 The workflow engine interprets a declarative IR; it does not replay workflow code (ADR-0003). Temporal's
-Worker Versioning exists largely to keep *workflow code replay* deterministic; that reason does not apply to the
-declarative model. In Sagat a deployment version is the build of the **activity implementations** that serve steps:
-pinning keeps a run's steps on activity code with the contract the run started with, and ramping limits the blast
-radius of a new build. The workflow version pin (constitution IV, FR-002-008) is unchanged and independent.
-Corrected 2026-11-24: workflow as code (Owner decision 2026-11-24-3, design 044) will replay workflow code, for which
-the replay reason applies again; this feature keeps its deployment versions free of anything specific to activities
-beyond the owned patterns, so that design 044 can route code-first workflow tasks by them (D019-012).
+Worker Versioning exists largely to keep *workflow code replay* deterministic; that reason does not apply here.
+*Note (2026-11-24, constitution 5.0.0):* for graph runs this stands. Code runs of design 044 do replay workflow code;
+they pin a code version by its digest and change it only by a verified move (principle IV, ADR-0105), never through
+this feature's pins or auto-upgrade routing, which keep versioning activity builds only.
+In Sagat a deployment version is the build of the **activity implementations** that serve steps: pinning keeps a
+run's steps on activity code with the contract the run started with, and ramping limits the blast radius of a
+new build. The workflow version pin (constitution IV, FR-002-008) is unchanged and independent.
+This feature keeps its deployment versions free of anything specific to activities beyond the owned patterns, so that
+design 044 can route code-first workflow tasks by them (D019-012, corrected 2026-11-24).
 
 **Not in this feature:** concurrency limits by key, step result caches and standalone activities (022); run list
 query language and search attributes used to select runs by version (020); batch operations such as repinning
@@ -820,8 +822,8 @@ All criteria are future evidence; none is met by this document.
 
 ## Out of scope
 
-Workflow code replay concepts (patching, `getVersion`, sticky queues, local activities), which belong to design 044
-(workflow as code, Owner decision 2026-11-24-3; corrected 2026-11-24); concurrency limits by
+Workflow code replay concepts (patching, `getVersion`, sticky queues, local activities; since constitution 5.0.0
+they are design 044's, which has version markers and a sticky cache and refuses local activities); concurrency limits by
 key (022); bulk repin (018's `REPIN` batch action); static bearer credentials for push endpoints; push to private networks; push endpoints
 as deployment versions (Lambda aliases); asynchronous completion with blob outputs; fairness weight overrides per
 key; in-process reuse in warm containers (O1042); autoscaling of push functions or warm pools by the platform.
