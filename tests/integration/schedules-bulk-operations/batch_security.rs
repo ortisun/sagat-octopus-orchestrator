@@ -17,7 +17,7 @@ use crate::firing::{Fixture, fixture};
 use crate::support::engine::{chain, ctx};
 
 /// A run of the first tenant in the namespace `billing`, which is not the one the job is made in.
-async fn run_in_another_namespace(f: &Fixture) -> Uuid {
+pub(crate) async fn run_in_another_namespace(f: &Fixture) -> Uuid {
     f.w.add_namespace("billing").await;
     let doc = chain("billed");
     let bytes = serde_json::to_vec(&doc).expect("json");

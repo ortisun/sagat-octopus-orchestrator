@@ -90,9 +90,13 @@ fn due(job: &JobRecord) -> DueJob {
 /// steps it back: Colima's guest agent set the clock back to the host's every ten seconds on 2026-11-26, by 110 to 150 ms
 /// and, for two hours, by up to two seconds (`lima-guestagent` in the VM's journal, with journald's "Time jumped
 /// backwards"). The jobs of these tests are created a few milliseconds after their runs, so a step in between left the one
-/// run of a job outside it: `last item cut off: selected` was 0 for 1. What these tests prove is a death at a write and a
-/// restart, not the bound, so their runs are dated before any step could reach; the bound and a run that commits while a
-/// job is created are proved where they are the subject (`batch_selection`, and `batch_executor` of the integration suite).
+/// run of a job outside it: `last item cut off: selected` was 0 for 1. The jobs built on this helper (`write_of`) name their
+/// runs by id, which since D2405 are selected with no time bound, so a step no longer leaves them out; the runs stay dated
+/// back so that what these tests prove is a death at a write and a restart whatever the selection rule. A fault test whose
+/// job selects by a filter is still exposed to a step of the clock (G2403, option (b) open): `batch_thousand` starts its own
+/// runs a few seconds before its job and selects them with `Filter::default()`. The bound and a run that commits
+/// while a job is created are proved where they are the subject (`batch_selection_bound` and `batch_executor` of the
+/// integration suite).
 pub(crate) async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
     let mut ids = Vec::new();
     for _ in 0..n {

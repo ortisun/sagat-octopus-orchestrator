@@ -79,7 +79,8 @@ pub struct JobRecord {
     pub counts: Counts,
     /// The keyset cursor of the selection: the last run id looked at.
     pub select_cursor: Option<Uuid>,
-    /// The selection looks at the runs created at or before this instant (the database clock).
+    /// The selection of a filter looks at the runs created at or before this instant (the database clock); a selector of
+    /// run ids takes the runs it names whatever their recorded creation (D2405).
     pub selection_bound_at: OffsetDateTime,
     /// The earliest instant the next item may be applied.
     pub next_slot_at: OffsetDateTime,

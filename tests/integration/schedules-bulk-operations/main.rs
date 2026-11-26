@@ -17,6 +17,7 @@ mod batch_executor;
 mod batch_pass;
 mod batch_purge;
 mod batch_security;
+mod batch_selection_bound;
 mod batch_selection_failures;
 mod batch_selection_failures_migration;
 mod business_id_audit;

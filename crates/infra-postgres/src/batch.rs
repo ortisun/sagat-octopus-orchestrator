@@ -16,8 +16,8 @@ use sagat_application::quotas::QuotaLookup;
 use sagat_application::schedules::ShardFence;
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::batch::{
-    Action, FailureReason, ItemState, JobState, Rate, Retry, Selector, SelectorKind, next_slot,
-    selection_retry,
+    Action, FailureReason, Filter, ItemState, JobState, Rate, Retry, Selector, SelectorKind,
+    next_slot, selection_retry,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::QuotaResource;
@@ -230,21 +230,22 @@ fn item_from(row: &PgRow) -> Result<ItemRecord, StoreError> {
     })
 }
 
-/// The first part of every statement that reads the runs a selector matches in a namespace, created at or before `$11`. The
-/// parameters are fixed: tenant, namespace, workflow, version, statuses, origin, schedule, created after, created before, run
-/// ids and the bound (`$1` to `$11`, `NULL` meaning "no restriction").
+/// The first part of every statement that reads the runs a filter selector matches in a namespace, created at or before
+/// `$10`, the bound, which is always given: a filter's set is open-ended, and the bound freezes it against the runs committed
+/// after the job (D1033). The parameters are fixed: tenant, namespace, workflow, version, statuses, origin, schedule, created
+/// after, created before and the bound (`$1` to `$10`, `NULL` meaning "no restriction" for the third to the ninth). A
+/// selector of run ids is not read by these statements but by its own ([`SELECTION_BY_IDS_SQL`], [`PREVIEW_BY_IDS_SQL`]).
 macro_rules! matching_runs_base {
     () => {
         "SELECT r.id FROM runs r \
-         WHERE r.tenant_id = $1 AND r.namespace_id = $2 AND r.created_at <= $11 \
+         WHERE r.tenant_id = $1 AND r.namespace_id = $2 AND r.created_at <= $10 \
           AND ($3::uuid IS NULL OR r.workflow_id = $3) \
           AND ($4::uuid IS NULL OR r.workflow_version_id = $4) \
           AND (cardinality($5::text[]) = 0 OR r.status = ANY($5)) \
           AND ($6::text IS NULL OR r.origin = $6) \
           AND ($7::uuid IS NULL OR r.schedule_id = $7) \
           AND ($8::timestamptz IS NULL OR r.created_at > $8) \
-          AND ($9::timestamptz IS NULL OR r.created_at < $9) \
-          AND ($10::uuid[] IS NULL OR r.id = ANY($10)) "
+          AND ($9::timestamptz IS NULL OR r.created_at < $9) "
     };
 }
 
@@ -257,35 +258,52 @@ macro_rules! matching_runs {
 }
 
 /// The same for a selector with a business-id prefix (`G2027`): the runs whose id is in the range of texts that start with it,
-/// `$12` being the prefix and `$13` the first text past it (the prefix with its last character one step up). A range, and not
+/// `$11` being the prefix and `$12` the first text past it (the prefix with its last character one step up). A range, and not
 /// `LIKE`, because a range is a literal match whatever the prefix holds (`%`, `_` and `\` are not wildcards) and because it is
 /// an index condition of `runs_business_id_idx` (`text_pattern_ops`) whether the plan is made for these values or for any:
 /// the statement is its own text so that a selector without a prefix cannot make the plan of one with a prefix a scan of
-/// every run. The tail's parameters follow, from `$14`.
+/// every run. The tail's parameters follow, from `$13`.
 macro_rules! matching_runs_by_prefix {
     ($tail:literal) => {
         concat!(
             matching_runs_base!(),
-            "AND r.business_id ~>=~ $12 AND r.business_id ~<~ $13 ",
+            "AND r.business_id ~>=~ $11 AND r.business_id ~<~ $12 ",
             $tail
         )
     };
 }
 
-/// A page of the runs a job by business-id prefix selects: `$14` is the cursor (the last run id, or `NULL`) and `$15` the size
+/// A page of the runs a job by business-id prefix selects: `$13` is the cursor (the last run id, or `NULL`) and `$14` the size
 /// of the page. Public so that a test can ask the planner about the very text the selection runs.
 pub const SELECTION_BY_PREFIX_SQL: &str =
-    matching_runs_by_prefix!("AND ($14::uuid IS NULL OR r.id > $14) ORDER BY r.id LIMIT $15");
+    matching_runs_by_prefix!("AND ($13::uuid IS NULL OR r.id > $13) ORDER BY r.id LIMIT $14");
 
-/// The runs a preview by business-id prefix counts: `$14` is the most it reads. **No `ORDER BY`**: a preview only counts, up to the most
+/// The runs a preview by business-id prefix counts: `$13` is the most it reads. **No `ORDER BY`**: a preview only counts, up to the most
 /// it reads, and samples a few of the runs, so it takes the first matches the index of the business ids gives and stops. With the order
 /// of the run id (as the other previews and the selection have) a wide prefix made the database read and sort every run the prefix
 /// reaches to hand back the first few, whatever the limit (D2191). The sample is therefore the first runs in the order of the index,
 /// not the lowest run ids; the contract promises "a few of them" and no order.
-pub const PREVIEW_BY_PREFIX_SQL: &str = matching_runs_by_prefix!("LIMIT $14");
+pub const PREVIEW_BY_PREFIX_SQL: &str = matching_runs_by_prefix!("LIMIT $13");
 
-/// The filter of a selector as the statements take it: every parameter is optional, and the
-/// statement is one fixed text (`NULL` means "no restriction").
+/// A page of the runs a job by a list of run ids selects (D2405, D2406): `$1` the tenant, `$2` the namespace, `$3` the ids,
+/// `$4` the cursor (the last run id, or `NULL`) and `$5` the size of the page. A text of its own, and not the filter's with
+/// an optional list: `r.id = ANY($3)` is a condition of the primary key in every plan, also the generic plan PostgreSQL may
+/// use after five executions, where an optional list (`$n IS NULL OR r.id = ANY($n)`) let it read every run of the namespace
+/// and filter them. No time bound: a list of ids is a closed set, and a backward step of the database clock must not leave a
+/// named run out (G2403). The tenant and the namespace bind it as they bind every selector. Public so that a test can ask the
+/// planner about the very text the selection runs.
+pub const SELECTION_BY_IDS_SQL: &str = "SELECT r.id FROM runs r \
+     WHERE r.id = ANY($3) AND r.tenant_id = $1 AND r.namespace_id = $2 \
+       AND ($4::uuid IS NULL OR r.id > $4) ORDER BY r.id LIMIT $5";
+
+/// The runs a preview by a list of run ids counts and samples, lowest run id first: `$1` the tenant, `$2` the namespace, `$3`
+/// the ids and `$4` the most it reads. The same rules as [`SELECTION_BY_IDS_SQL`].
+pub const PREVIEW_BY_IDS_SQL: &str = "SELECT r.id FROM runs r \
+     WHERE r.id = ANY($3) AND r.tenant_id = $1 AND r.namespace_id = $2 \
+     ORDER BY r.id LIMIT $4";
+
+/// A filter selector as the statements take it: every parameter but the bound is optional, and
+/// the statement is one fixed text (`NULL` means "no restriction").
 struct Bind {
     workflow: Option<Uuid>,
     version: Option<Uuid>,
@@ -294,7 +312,6 @@ struct Bind {
     schedule: Option<Uuid>,
     after: Option<OffsetDateTime>,
     before: Option<OffsetDateTime>,
-    ids: Option<Vec<Uuid>>,
     /// A business-id prefix as the range of texts that start with it: the prefix and the first text past it.
     prefix: Option<(String, String)>,
 }
@@ -315,42 +332,29 @@ fn prefix_end(prefix: &str) -> String {
 }
 
 impl Bind {
-    fn of(selector: &Selector) -> Self {
-        match selector.kind() {
-            SelectorKind::RunIds(ids) => Self {
-                workflow: None,
-                version: None,
-                statuses: Vec::new(),
-                origin: None,
-                schedule: None,
-                after: None,
-                before: None,
-                ids: Some(ids.clone()),
-                prefix: None,
-            },
-            SelectorKind::Filter(filter) => Self {
-                workflow: filter.workflow_id,
-                version: filter.version_id,
-                statuses: filter
-                    .statuses
-                    .iter()
-                    .map(|s| s.as_str().to_owned())
-                    .collect(),
-                origin: filter.origin.clone(),
-                schedule: filter.schedule_id,
-                after: filter.created_after,
-                before: filter.created_before,
-                ids: None,
-                prefix: filter
-                    .business_id_prefix
-                    .as_deref()
-                    .map(|prefix| (prefix.to_owned(), prefix_end(prefix))),
-            },
+    fn of(filter: &Filter) -> Self {
+        Self {
+            workflow: filter.workflow_id,
+            version: filter.version_id,
+            statuses: filter
+                .statuses
+                .iter()
+                .map(|s| s.as_str().to_owned())
+                .collect(),
+            origin: filter.origin.clone(),
+            schedule: filter.schedule_id,
+            after: filter.created_after,
+            before: filter.created_before,
+            prefix: filter
+                .business_id_prefix
+                .as_deref()
+                .map(|prefix| (prefix.to_owned(), prefix_end(prefix))),
         }
     }
 }
 
-/// Binds the parameters `$1` to `$11` of the statements that read the runs of a selector: the same for every one of them.
+/// Binds the parameters `$1` to `$10` of the statements that read the runs of a filter selector: the same for every one of
+/// them.
 fn with_filter<'q>(
     query: sqlx::query::QueryScalar<'q, sqlx::Postgres, Uuid, sqlx::postgres::PgArguments>,
     tenant: Uuid,
@@ -368,7 +372,6 @@ fn with_filter<'q>(
         .bind(bind.schedule)
         .bind(bind.after)
         .bind(bind.before)
-        .bind(&bind.ids)
         .bind(bound)
 }
 
@@ -684,38 +687,53 @@ impl BatchStore for PgBatchStore {
         let bound: OffsetDateTime = col(&job, "selection_bound_at")?;
         let selector: Value = col(&job, "selector")?;
         let selector = selector_from_json(&selector).map_err(|_| corrupt("batch selector"))?;
-        let bind = Bind::of(&selector);
         let take = i64::from(page).min(i64::from(max_items - selected)).max(0);
-        let ids: Vec<Uuid> = match &bind.prefix {
-            None => {
-                with_filter(
-                    sqlx::query_scalar(matching_runs!(
-                        "AND ($12::uuid IS NULL OR r.id > $12) ORDER BY r.id LIMIT $13"
-                    )),
-                    tenant.as_uuid(),
-                    namespace,
-                    &bind,
-                    bound,
-                )
-                .bind(cursor)
-                .bind(take)
-                .fetch_all(&mut *tx)
-                .await
+        let ids: Vec<Uuid> = match selector.kind() {
+            // the runs it names, with no time bound (D2405), by the primary key (D2406)
+            SelectorKind::RunIds(named) => {
+                sqlx::query_scalar(SELECTION_BY_IDS_SQL)
+                    .bind(tenant.as_uuid())
+                    .bind(namespace)
+                    .bind(named)
+                    .bind(cursor)
+                    .bind(take)
+                    .fetch_all(&mut *tx)
+                    .await
             }
-            Some((from, to)) => {
-                with_filter(
-                    sqlx::query_scalar(SELECTION_BY_PREFIX_SQL),
-                    tenant.as_uuid(),
-                    namespace,
-                    &bind,
-                    bound,
-                )
-                .bind(from)
-                .bind(to)
-                .bind(cursor)
-                .bind(take)
-                .fetch_all(&mut *tx)
-                .await
+            SelectorKind::Filter(filter) => {
+                let bind = Bind::of(filter);
+                match &bind.prefix {
+                    None => {
+                        with_filter(
+                            sqlx::query_scalar(matching_runs!(
+                                "AND ($11::uuid IS NULL OR r.id > $11) ORDER BY r.id LIMIT $12"
+                            )),
+                            tenant.as_uuid(),
+                            namespace,
+                            &bind,
+                            bound,
+                        )
+                        .bind(cursor)
+                        .bind(take)
+                        .fetch_all(&mut *tx)
+                        .await
+                    }
+                    Some((from, to)) => {
+                        with_filter(
+                            sqlx::query_scalar(SELECTION_BY_PREFIX_SQL),
+                            tenant.as_uuid(),
+                            namespace,
+                            &bind,
+                            bound,
+                        )
+                        .bind(from)
+                        .bind(to)
+                        .bind(cursor)
+                        .bind(take)
+                        .fetch_all(&mut *tx)
+                        .await
+                    }
+                }
             }
         }
         .map_err(round_error)?;
@@ -1080,7 +1098,6 @@ impl BatchStore for PgBatchStore {
         max_items: u32,
         sample: usize,
     ) -> Result<Preview, StoreError> {
-        let bind = Bind::of(selector);
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // a preview is a read that must finish in a bounded time
         sqlx::query("SET LOCAL statement_timeout = '5s'")
@@ -1093,32 +1110,46 @@ impl BatchStore for PgBatchStore {
             .map_err(store_error)?;
         // one more than the job may take, to know whether the selector matches more
         let most = i64::from(max_items) + 1;
-        let found: Vec<Uuid> = match &bind.prefix {
-            None => {
-                with_filter(
-                    sqlx::query_scalar(matching_runs!("ORDER BY r.id LIMIT $12")),
-                    tenant.as_uuid(),
-                    namespace.as_uuid(),
-                    &bind,
-                    now,
-                )
-                .bind(most)
-                .fetch_all(&mut *tx)
-                .await
+        let found: Vec<Uuid> = match selector.kind() {
+            SelectorKind::RunIds(named) => {
+                sqlx::query_scalar(PREVIEW_BY_IDS_SQL)
+                    .bind(tenant.as_uuid())
+                    .bind(namespace.as_uuid())
+                    .bind(named)
+                    .bind(most)
+                    .fetch_all(&mut *tx)
+                    .await
             }
-            Some((from, to)) => {
-                with_filter(
-                    sqlx::query_scalar(PREVIEW_BY_PREFIX_SQL),
-                    tenant.as_uuid(),
-                    namespace.as_uuid(),
-                    &bind,
-                    now,
-                )
-                .bind(from)
-                .bind(to)
-                .bind(most)
-                .fetch_all(&mut *tx)
-                .await
+            SelectorKind::Filter(filter) => {
+                let bind = Bind::of(filter);
+                match &bind.prefix {
+                    None => {
+                        with_filter(
+                            sqlx::query_scalar(matching_runs!("ORDER BY r.id LIMIT $11")),
+                            tenant.as_uuid(),
+                            namespace.as_uuid(),
+                            &bind,
+                            now,
+                        )
+                        .bind(most)
+                        .fetch_all(&mut *tx)
+                        .await
+                    }
+                    Some((from, to)) => {
+                        with_filter(
+                            sqlx::query_scalar(PREVIEW_BY_PREFIX_SQL),
+                            tenant.as_uuid(),
+                            namespace.as_uuid(),
+                            &bind,
+                            now,
+                        )
+                        .bind(from)
+                        .bind(to)
+                        .bind(most)
+                        .fetch_all(&mut *tx)
+                        .await
+                    }
+                }
             }
         }
         .map_err(store_error)?;
