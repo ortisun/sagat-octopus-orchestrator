@@ -139,8 +139,9 @@ REST API to approve a step.
   0143, decision 1). *Acceptance:* `registry.test.ts` passes on the schema of `develop` and fails on a schema with an
   added kind or a changed required field.
 - **Requirement 050-002** `GET /version` MUST return `capabilities`, a list of deployment-wide names (never per
-  tenant) in the form of Architecture decision 0143; design 050 ships the field with the one name it uses
-  (`workflow.collection-operators`), present when the answering replica would accept the matching publication. A reader MUST ignore a name it does not know, and an absent field means a server older than
+  tenant) in the form of Architecture decision 0143; design 050 ships the field with the two names it uses
+  (`workflow.collection-operators`, `workflow.reset-reapply`), each present when the answering replica would accept the
+  matching publication. A reader MUST ignore a name it does not know, and an absent field means a server older than
   0.3.0. Other features add their names when they ship (Technical Plan 3). *Acceptance:* the contract test
   `capabilities_follow_the_switches_a_server_was_started_with` and `a_reader_ignores_an_unknown_capability`.
 - **Requirement 050-003** The palette MUST offer only the kinds whose requirement is met: an advertised capability, or,
@@ -230,7 +231,7 @@ REST API to approve a step.
   `GET /audit`, an action picker that suggests the known actions and accepts any text (the Studio may be served from
   another build, Architecture decision 0016, `SAGAT_STUDIO_DIR`), a record view with a link to the resource when its
   type has a page, and a bounded download of the filtered records as JSON lines that says when it stopped at its bound.
-  *Acceptance:* the component tests of the page; the test that the known actions of the OpenAPI `action` parameter
+  *Acceptance:* the component tests of the page; the test that the known actions of `audit-actions.json`
   equal `AuditAction` of `crates/domain/src/audit.rs`.
 - **Requirement 050-014** The run view MUST let a person call the version's declared Queries and Updates (run- and
   chain-addressed) with JSON arguments (the server's `422` shown at its pointer; no schema validator in the browser,
@@ -254,8 +255,9 @@ REST API to approve a step.
   dead letter or a subscription's failures, each redrive confirmed and its receipt shown. *Acceptance:* component
   tests; the journey `a_dead_letter_is_redriven_from_the_studio`.
 - **Requirement 050-019** The script editor MUST offer Go and Java as built, as it offers TypeScript, Python and C#
-  (`Language::is_built` holds for all five); a Studio served by another build learns otherwise from the build route's
-  `LANGUAGE_NOT_BUILT`, shown at the language. *Acceptance:* the script editor test with Go and Java built; the test of
+  (`Language::is_built` holds for all five); a Studio served by another build learns otherwise from the create-script route's
+  `LANGUAGE_NOT_BUILT` (`details.reason`; `ScriptService::create` refuses a language that is not built), shown at the
+  language picker of `CreateScriptDialog.tsx`. *Acceptance:* the script editor test with Go and Java built; the test of
   a `LANGUAGE_NOT_BUILT` answer.
 - **Requirement 050-020** The Studio MUST have a command palette (Ctrl or Command and K) that finds workflows, scripts,
   schedules and connections by name, a run by its identifier or business identifier, and the pages of the Studio,
@@ -268,8 +270,8 @@ REST API to approve a step.
 - **Requirement 050-022** Every new screen MUST be built from the Studio's interface module on Astryx (Architecture
   decision 0101). It MUST NOT use a raw control outside `src/ui/`, a literal colour, or a sample value where there is no
   data. It MUST support light, dark and forced colours and keyboard operation, give a table or list alternative to
-  every graph, and show state by text and shape as well as colour (Requirement 007-008, Requirement 007-010). *Acceptance:* the ESLint boundary rule, the
-  tokens test and axe in the journeys.
+  every graph, and show state by text and shape as well as colour (Requirement 007-008, Requirement 007-010). *Acceptance:* the ESLint boundary rule and the
+  tokens test, which arrive with pull request #267, and axe in the journeys.
 
 ### Non-functional
 
@@ -284,8 +286,8 @@ REST API to approve a step.
   threshold), and the journey records the size of `GET /runs/{runId}/graph` for that run and the time
   the browser spends parsing it (Gap 050-006). No figure is promised.
 - **Non-functional requirement 050-003 (compatibility)** The REST additions are additive: new routes, and new
-  optional fields that readers ignore when they do not know them (`sdks/SPEC.md`); `ApprovalListItem` and
-  `PublicationRequest`, closed schemas today, gain `youMayDecide` in the OpenAPI document, and the SDK type
+  optional fields that readers ignore when they do not know them (`sdks/SPEC.md`); `ApprovalListItem` (a closed
+  schema today) and `PublicationRequest` gain `youMayDecide` in the OpenAPI document, and the SDK type
   descriptions that say the per-run list carries no eligibility are corrected. No existing answer changes, and no IR,
   worker-protocol or AsyncAPI change.
 - **Non-functional requirement 050-004 (observability)** The three new routes have spans and closed-label metrics; a
@@ -293,7 +295,8 @@ REST API to approve a step.
 
 ### Success criteria
 
-- **Success criterion 050-001** A person builds, publishes and runs, without leaving the Studio, three workflows in
+- **Success criterion 050-001** A person sets the tenant's collection capacity on the settings page, then builds,
+  publishes and runs, without leaving the Studio, three workflows in
   shapes that publish in 0.3.0: a collection workflow (a `forEach` over 500 items with a `filter` stage, a body of an
   activity and a `return`, then `end`), a loop workflow (a `while` over an activity body, then `end`), and a workflow
   whose `switch` routes large amounts to an `approval`; approves the step from the inbox; and follows the 500
@@ -380,7 +383,7 @@ in `050-studio-catch-up.reviews/`.
   language (an earlier draft of this design); a field on the scripts routes; the constant. Chosen: the constant, settling Nit 8 of the
   Stage 5 review: `Language::is_built` is a compile-time constant true for all five languages, feature 023's languages
   need Studio changes anyway (a label, an editor mode, a sample), and a Studio served by another build learns of a
-  missing language from the build route's `LANGUAGE_NOT_BUILT`.
+  missing language from the create-script route's `LANGUAGE_NOT_BUILT`.
 - **Decision 050-008 — The journal download is client-side and bounded.** Options: a new export route; the existing
   `GET /runs/{runId}/events` read page by page. Chosen: the existing route, because it already applies the
   disclosure rules; design 044's `GET /runs/{runId}/history` (for replay) is a different document and is that
@@ -514,7 +517,7 @@ Order of the open Studio work, so that no two branches rewrite the same folder a
 1. Pull request #267 (Astryx) merges first.
 2. `feature/022-studio-flow-control` rebases on it and merges (concurrency and rate-limit fields, `FlowControlFields`
    in `features/workflows`, run gates in `features/runs`). Its registry entries use `runs: boolean` today; they move to
-   `capability` and `scope` in design 050's editor slice, by whichever branch merges second.
+   `requires` and `scope` in design 050's editor slice, by whichever branch merges second.
 3. Feature 041's Studio task (the Logs tab in `RunDetailPage.tsx` and `NodePanel.tsx`) merges before design 050's run
    slice, which rebases on it.
 4. Design 050's editor slice (Technical Plan 4: `model/registry.ts`, `features/workflows/`), then its run slice
@@ -551,7 +554,9 @@ absent.
 Three things are called a capability in this repository, and they stay distinct: the instance registry's `Capability`
 (`crates/application/src/instances.rs`: what a binary can honour, recorded by the operator), the workflow switches
 that publication follows (the collection-operators switch, read by `DefinitionService` in
-`crates/application/src/definitions.rs` from `apps/control-plane/src/config.rs`), and these advertised names (what a client
+`crates/application/src/definitions.rs` from `apps/control-plane/src/config.rs`, and the workflow capabilities of
+`crates/infra-ir/src/capabilities.rs`, Architecture decision 0032 decision 8, of which `SAGAT_RESET_REAPPLY_ENABLED`
+enables an Update's `reapplyOnReset`), and these advertised names (what a client
 may offer). The advertised names are the variants of `AdvertisedCapability` in `crates/application/src/capabilities.rs`,
 computed by one pure function, `advertised_capabilities(&CapabilitySwitches) -> Vec<AdvertisedCapability>` in that
 file, which `apps/control-plane` calls at start-up and the test harness (`tests/support/api.rs`, from its `Options`)
@@ -559,11 +564,12 @@ calls too, so a test exercises the same mapping; the list is kept in `AppState` 
 `AppState::with_capabilities`) and served by `platform_version` in `crates/api-http/src/routes/identity.rs`, which
 gains the state, on both routers that mount `/version` (`crates/api-http/src/lib.rs`).
 
-Design 050 ships one name:
+Design 050 ships two names, one per switch that changes what a field may hold:
 
 | Name | Present when |
 |---|---|
 | `workflow.collection-operators` | the deployment's collection-operators switch is on (design 042) |
+| `workflow.reset-reapply` | `SAGAT_RESET_REAPPLY_ENABLED` is on, so publication accepts an Update with `reapplyOnReset: true`; without the name the Studio shows that field read-only |
 
 Step-output destinations (feature 035: the `stepDestinations` field of a step, which also writes the step's output to
 a table or a stream) are refused by every server today (`DESTINATIONS_NOT_ENABLED`, `crates/infra-ir/src/convert.rs`)
@@ -572,12 +578,14 @@ its switch, its variant and its test when it builds them (Decision 050-002), and
 read-only, as for any absent name.
 
 Lake writes are already advertised by the database drivers list (`GET /namespaces/{namespaceId}/database-drivers`
-lists Iceberg only when `lake.enabled`), which the Studio reads for `icebergWrite`; no second advertisement is added.
+lists Iceberg only when `lake.enabled`; the route is mounted only with the connections service, so a `404
+ROUTE_NOT_FOUND` there means no Iceberg), which the Studio reads for `icebergWrite`; no second advertisement is added.
 The loops, `switch`, `approval` and `continueAsNew` need no name: publication accepts them in the shapes of Technical
 Plan 4 on every 0.3.0 server, and against a server without the field the Studio offers every kind that needs no name
 and lets validation decide.
 
-A field whose capability is absent (the collection-operator stage list of `forEach`, `stepDestinations`) is shown
+A field whose capability is absent (the collection-operator stage list of `forEach`, an Update's `reapplyOnReset`,
+`stepDestinations`) is shown
 read-only with the reason and kept on save, as a node of a disabled kind is.
 
 Each other 0.3.0 feature adds its names, with a variant and a row here, when it ships: feature 022
@@ -598,13 +606,16 @@ decision 2).
 
 ### 4. The registry and the editor
 
-`model/registry.ts` keeps one entry per `type` constant, with `capability`, its scopes (`root`, `body` or both), its
+`model/registry.ts` keeps one entry per `type` constant, with `requires`, its scopes (`root`, `body` or both), its
 fields and handles per scope (a root `activity` and a body `activity` are different schema members with different
 required fields), and a one-line note of where it publishes in 0.3.0. `registry.test.ts` reads
 `specs/001-platform-foundation/contracts/workflow.schema.json` (imported by path in the test, not copied) and asserts:
 every `type` constant of the members of `$defs/node` and `$defs/bodyNode` has one entry with exactly those scopes;
-every required property of the member of each scope is a field or a handle of that scope; no entry names a kind
-outside the schema.
+every required property of the member of each scope other than `id` and `type` is a field or a handle of that scope,
+or is listed by the entry as owned by its custom editor (`DatabaseFields`, the connection picker of `icebergWrite`);
+the legacy kinds list their required fields for the read-only inspector (`humanApproval`'s `formSchema` among them);
+the test resolves `allOf`, where the legacy members declare their `type` and `required`; no entry names a kind outside
+the schema.
 
 New entries (fields follow the schema; a duration is the existing duration field; an expression the existing
 expression field):
@@ -635,13 +646,19 @@ The Studio writes this table nowhere as a rule: it shows each kind's note in the
 validation (the existing `useValidation`, which asks `validate` after a quiet delay) marks a refused combination at its
 node with the codec's reason. A codec problem about a body node names it by its bare id today (`problems_of`,
 `crates/application/src/definitions.rs`), which the Studio cannot place inside a body or tell from a root node of the
-same id; the codec therefore sets the problem's existing JSON pointer to `/bodies/{name}/nodes/{index}`. The variants of
-`IrError` that name a node and are raised while a body is converted (`Unsupported`, `Pending`, `Expression`,
-`Operator`, `CollectionOperatorsDisabled` and the graph rules mapped in `problems_of`) gain an optional body scope
-(the body's name and the node's index), set by the body conversion path of `crates/infra-ir/src/convert.rs`, which
-knows both; `problems_of` writes the pointer when the scope is set and keeps `nodeId` as today. In
-`validationModel.ts`, `resolveNodeId` reads a `/bodies/{name}/nodes/{i}` pointer before `nodeId`, so a colliding root
-id never wins; no field is added. The codec reports its first
+same id; the codec therefore sets the problem's existing JSON pointer to `/bodies/{name}/nodes/{index}` for a problem about one
+body node, and to `/bodies/{name}` for a problem about a whole body (as `EscapingBodyEdge` already does in
+`problems_of`). The refusals about body nodes are raised at six sites, each of which learns the body's name and the
+node's index from the raw document by iterating `bodies` with its keys and keeping each node's position:
+`approval_in_a_body` (`crates/infra-ir/src/convert.rs`, a pre-scan of the raw document), `operators::check_surfaces`
+(`crates/infra-ir/src/operators.rs`, a pre-scan), `check_expressions` (`crates/infra-ir/src/lib.rs`, after conversion:
+it is given the index map the conversion builds from the raw document), `published_collection_definition` and
+`published_loop_definition` (`convert.rs`, whose `Unsupported { kind: "body" }` refusals name a whole body and get the
+`/bodies/{name}` pointer), and `DefinitionService::refused_collection_operator_node`
+(`crates/application/src/definitions.rs`). The `IrError` variants they raise gain an optional body scope (the name,
+and the index when the problem is about a node); `problems_of` writes the pointer when the scope is set and keeps
+`nodeId` as today. In `validationModel.ts`, `resolveNodeId` reads a `/bodies/{name}/nodes/{i}` pointer before `nodeId`,
+so a colliding root id never wins, and places a `/bodies/{name}` pointer on the body itself; no field is added. The codec reports its first
 structural refusal only, so a draft with two refused combinations shows the second after the first is fixed. As feature 014's remaining tasks and design 039 widen the subset during the release, the
 codec changes and the Studio's behaviour needs no change; only the per-kind notes in `registry.ts` and this table are
 corrected in the same delivery as the codec (documentation first).
@@ -685,8 +702,8 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   *Outcomes.* The engine stops a collection or a loop at its first permanent iteration failure: the failed
   iteration is named by `CollectionDrainStarted` or `LoopDrainStarted` with the reason `Failed { iteration, code }`,
   admission stops, and each iteration already in flight ends either with a result (`...Returned`, then
-  `...Checkpointed`) or without one (`CollectionIterationDrained`, `LoopIterationDrained`); a drain for the run-data
-  limit, the storage quota or a cancellation names no failed iteration (`crates/domain/src/execution/event.rs`). An
+  `...Checkpointed`) or without one (`CollectionIterationDrained`, `LoopIterationDrained`); a collection's drain for the run-data
+  limit, the storage quota or a cancellation, and a loop's for a timeout or a cancellation, names no failed iteration (`crates/domain/src/execution/event.rs`). An
   iteration's outcome is therefore one of `SUCCEEDED` (checkpointed), `FAILED` (the one named by the drain), `DRAINED`
   (ended without a result during the drain) and `RUNNING` (admitted, not yet settled); a collection also has items not
   admitted (`item_count` of `CollectionEntered` minus the admitted ones), which a loop, with no known total, has not. A
@@ -706,7 +723,8 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   and within design 039's nesting limit, resolved by the mapping that produced it, and an unknown owner answers an empty
   page with no detail about the run; answers carry `Cache-Control: no-store`, as the per-run list does; `limit` 1 to 500, default 100; `after` the last index
   returned, with the outcome filter applied in the query, so the keyset holds under a filter; items `index`,
-  `outcome`, `failureCode` on the failed one, `entryInstanceId`).
+  `outcome`, `failureCode` on the failed one, and `entryNodeId`, the `RuntimeNode.id` of the iteration's entry
+  instance, which the Studio uses to draw that iteration).
 
   *The source.* Both read the engine's progress tables, written in the transactions that append the iteration
   events: `iteration_scopes` and `collection_iterations` for a collection, `loop_scopes` and `loop_iterations` for a
@@ -747,8 +765,9 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   `run:query` or `run:update` sees the panel unavailable with the reason.
 - **Family.** Parent (from the run), children (from `childRunId` of the graph's `child` nodes and their run status),
   chain (from the chain route when the run has a chain).
-- **Download.** "Download events" reads `GET /runs/{runId}/events` through `collectPagesBounded`, one bounded variant
-  of the existing `collectPages` (`api/endpoints.ts`) that this design adds and the inbox and the audit download also
+- **Download.** "Download events" reads `GET /runs/{runId}/events` (the existing `endpoints.journal`) through `collectPagesBounded`, one bounded
+  variant of the existing `collectPages` (`api/endpoints.ts`), which takes its wait from the existing
+  `ApiError.retryAfterMs` (`src/api/errors.ts`, capped at one minute), that this design adds and the inbox and the audit download also
   use: it stops at a limit of pages, items or bytes (here 50,000 events or 32 MiB), waits for `Retry-After` on a `429`
   and stops after three refusals, and reports whether it stopped early. Each item is written as one compact line as the
   route returned it; the file says it is the journal as of the last page read.
@@ -830,7 +849,8 @@ editor, not a person who already decided it), which `decide` calls; the use case
 *Paging, port and index.* Order:
 `requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; a port `PublicationInboxStore::open_page` returns each request with its decisions, requester and last editor (for
 `may_decide`, never in the item) and `approvalsRequiredNow`, read by the same policy resolution that publication's
-recount uses (`crates/application/src/versioning.rs`), in one query per page; a migration adds `publication_requests_open_requested_idx ON publication_requests
+recount uses (`PublishingService::effective_policy` in `crates/application/src/publishing.rs`, made `pub(crate)` for
+the new use case), in one query per page; a migration adds `publication_requests_open_requested_idx ON publication_requests
 (tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`.
 
 *Items.* `requestId`, `workflowId`, `workflowName`, `kind`, `state`, `draftRevision`, `requestedBy`, `requestedAt`,
@@ -840,7 +860,7 @@ last edited stays on the workflow's own list, which discloses them under the sam
 named because a person needs to know whose change they review, and the per-workflow list names them too. The contract
 test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The items of the existing
 `GET /workflows/{id}/publication-requests`, which the versions page reads, gain the same `youMayDecide`
-(`PublicationRequest`, a closed schema, gains the property).
+(`PublicationRequest` gains the property).
 
 **Metrics.** `approval_inbox_requests_total{outcome}` and `publication_inbox_requests_total{outcome}` (`outcome` in
 `ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram); no tenant, namespace, workflow
@@ -872,14 +892,15 @@ browser history and of shared links; the download and the journal download are l
 server records each read of the audit trail in `audit.read`. `path()` in
 `src/api/client.ts` refuses a segment equal to `.` or `..`, which percent-encoding leaves as it is, so a business
 identifier or a resource identifier can never move a request to another route. Filters:
-action (a picker that suggests the known actions and accepts any text), resource type and id, actor, from and to. The table shows time, actor, action,
+action (a picker that suggests the known actions, without `access.denied.cross_tenant`, which `GET /audit` never
+returns, and accepts any text), resource type and id, actor, from and to. The table shows time, actor, action,
 resource and reason; a record view adds the trace link (the existing `TraceLink`). A resource link is made for the
 types that have a page (run, workflow, schedule, script, connection, namespace). The download reads pages until 10,000
 records or the end and saves JSON lines, saying which. The known actions are in `frontend/apps/studio/src/api/audit-actions.json`, which the picker imports (Decision
 050-006). `crates/domain/src/audit.rs` builds `AuditAction`, its codes and `AuditAction::ALL` from one table with a
 macro, as `crates/domain/src/database/failure.rs` does with `failures!`, so a variant cannot exist outside `ALL`. The
 contract test `the_known_audit_actions_equal_the_domain_actions` in `contract_rest_workflow_studio` compares the JSON
-file with `ALL`; `SAGAT_CONTRACT_BLESS=1` rewrites the JSON after the diff is read. The server already records each reading
+file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the diff is read. The server already records each reading
 (`audit.read`, collapsing within five minutes).
 
 ### 8. Versions, settings, events, scripts, palette
@@ -888,17 +909,19 @@ file with `ALL`; `SAGAT_CONTRACT_BLESS=1` rewrites the JSON after the diff is re
   into a page at route `workflows/:workflowId/versions`; design 044's Task 044-23 adds its column of open runs per code
   digest): versions list, activation history
   (`GET /workflows/{id}/activations`), activate or roll back (`PUT /workflows/{id}/active-version` with reason and the
-  version seen), promote (`POST .../versions/{n}/promote`, destination picker, missing names shown), publication
+  version seen; a `409 BREAKING_CHANGE` asks the person to confirm and resends with `acceptBreaking`, and
+  `ACTIVE_VERSION_CHANGED` re-reads the history), promote (`POST .../versions/{n}/promote`, destination picker, missing names shown), publication
   requests of the workflow, compensation plan (`GET .../versions/{n}/compensation-plans`) drawn as the reverse-order
   list with `after` dependencies.
-- **Settings** (`features/settings/`, route `settings`): publication policy (get, set with a reason), quotas and
-  activity quotas (read; set where the person holds `quota:manage`), worker bindings (list, bind, unbind), payload
+- **Settings** (`features/settings/`, route `settings`): publication policy (get, set with a reason), the namespace's
+  quotas and activity quotas and the tenant's quotas (`/quotas`, including `iteration_concurrency`, without which a
+  collection admits nothing; read, and set where the person holds `quota:manage`), worker bindings (list, bind, unbind), payload
   reveal grants (list, grant, revoke), and on the secret page the access list.
 - **Events** (`features/events/`): event endpoints, webhook and broker subscriptions with their deliveries, connector
   dead letters, redrive of one item or of a subscription's failures, each confirmed and its receipt shown. Feature 021
   later adds resources and triggers next to them.
 - **Scripts**: `features/scripts/languages.ts` marks Go and Java `built: true`; a `LANGUAGE_NOT_BUILT` answer of the
-  build route is shown at the language.
+  create-script route is shown at the language picker of `CreateScriptDialog.tsx`.
 - **Palette** (`src/app/CommandPalette.tsx`): opened by Ctrl or Command and K; searches the lists the person may read
   (workflows, scripts, schedules, connections by name prefix; a run by identifier or business identifier through
   `GET /namespaces/{namespaceId}/business-ids/{businessId}`), and the Studio's pages; never a route outside the
@@ -909,7 +932,7 @@ file with `ALL`; `SAGAT_CONTRACT_BLESS=1` rewrites the JSON after the diff is re
 - `specs/001-platform-foundation/contracts/openapi.yaml`: `PlatformVersion.capabilities` (strings with the pattern
   and `x-known-values`); the three new operations with their schemas and errors, marked `x-planned: '050'` (each task that adds its route
   switches it to `x-implemented: '050'`, as the repository does, because the cross-tenant battery attacks every
-  implemented operation); the known values of the audit `action` parameter; `frontend/apps/studio/src/api/schema.d.ts`
+  implemented operation); `frontend/apps/studio/src/api/schema.d.ts`
   regenerated. Two pinned digests change and are renewed after their diff is read: the operation baseline of
   `contract_iceberg_writes` (`SAGAT_CONTRACT_BASELINE_BLESS=1 cargo test -p sagat-tests --test contract_iceberg_writes`)
   and the byte-stability digest of `contract_payload_classification` (recomputed in its `openapi.rs`).
@@ -1011,7 +1034,7 @@ primitive goes in a new file of `src/ui/`.
   `cargo test -p sagat-tests --test contract_iceberg_writes --test contract_payload_classification`;
   `(cd frontend/apps/studio && npm run check:api)`; the docs checks.
   Refs: Requirement 050-002, Requirement 050-010, Requirement 050-011, Requirement 050-013
-- [ ] T050-3 Server builder: `AdvertisedCapability` and `advertised_capabilities` in
+- [ ] T050-3 Server builder: `AdvertisedCapability` (its two names) and `advertised_capabilities` in
   `crates/application/src/capabilities.rs`; the `AppState` field and `platform_version` on both routers; the control
   plane and the harness call the function.
   Red tests: `capabilities_follow_the_switches_a_server_was_started_with` and `a_reader_ignores_an_unknown_capability`
@@ -1056,7 +1079,9 @@ primitive goes in a new file of `src/ui/`.
   unit tests of `definitions.rs`).
   Verification: `cargo test -p sagat-application definitions`; `cargo test -p sagat-infra-ir`.
   Refs: Requirement 050-003
-- [ ] T050-15 Studio builder, after Task 050-6: the registry (capability, scope, nested handles, new edge kinds, the
+- [ ] T050-15 Studio builder, after Task 050-6: modify `model/registry.ts`, `features/workflows/AddNode.tsx`
+  (`Palette`, `AddNodeDialog`), `NodeInspector.tsx` and `NodesTable.tsx` (which read today's `runs` flag), create
+  `src/api/capabilities.ts`: the registry (`requires`, scope, nested handles, new edge kinds, the
   new kinds of Technical Plan 4), the schema drift test, `useCapabilities`, the palette filtered by capability, legacy
   and disabled kinds read-only, `documentIO.ts` keeping every root entry at its index, `resolveNodeId` reading body
   pointers first.
@@ -1138,13 +1163,15 @@ primitive goes in a new file of `src/ui/`.
   marked built in `languages.ts` with a Go and a Java sample in `SAMPLE_SOURCE` (taken from `runners/go/README.md` and
   the Java runner's), the command palette.
   Red tests: one component test per section with each role; `go_and_java_are_built_with_their_own_samples`;
-  `a_language_not_built_answer_is_shown_at_the_language`; `the_palette_never_calls_a_route_the_person_cannot_call`.
+  `a_language_not_built_answer_of_create_is_shown_at_the_picker`; `the_palette_never_calls_a_route_the_person_cannot_call`.
   Verification: `(cd frontend/apps/studio && npm test -- versions settings events scripts CommandPalette)`.
   Refs: Requirement 050-016, Requirement 050-017, Requirement 050-018, Requirement 050-019, Requirement 050-020
 - [ ] T050-19 Server builder, before Task 050-13: the journey harness. `tests/e2e/workflow-studio/studio_journeys.rs`
-  starts the server with `Options.collection_operators` and the engine with the matching environment, and seeds a
-  tenant collection policy row as the schema owner (no route records one); each new journey has a budget of three
-  minutes, so the job stays within its 60-minute cap.
+  starts the server with `Options.collection_operators` and the engine with the matching environment, and sets the
+  tenant's collection capacity through `PUT /quotas/iteration_concurrency` (a collection admits no iteration while it
+  is unset); the job already declares 14 journeys of up to 240 seconds each (56 minutes) against its 60-minute cap
+  (`studio_journeys.rs`), so the new journeys run as a second job selected with `SAGAT_STUDIO_GREP`, each within the
+  same 240 seconds.
   Verification: `cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys` runs the
   existing journeys unchanged.
   Refs: Success criterion 050-001
@@ -1158,10 +1185,12 @@ primitive goes in a new file of `src/ui/`.
   `perf_studio_catch_up` (`tests/performance/studio-catch-up/main.rs`) seeds 10,000 pending approvals and a run of
   10,000 iterations of an eight-step body through the test support as the schema owner, times the inbox and audit
   pages, and measures the inbox routes' latency at a fixed rate of 50 requests per second from one tenant, the worst
-  case Technical Plan 6 bounds for 300 open inboxes, against the tenant budget (no copy of the Studio's schedule); `frontend/e2e/tests/perf.spec.ts` measures the graph's size and
-  parse time and the input blocking in a real browser. The report goes to
-  `tests/performance/reports/studio-catch-up-<date>.md` with the environment and failures.
-  Verification: `cargo test -p sagat-tests --test perf_studio_catch_up --locked -- --ignored --nocapture`.
+  case Technical Plan 6 bounds for 300 open inboxes, against the tenant budget (no copy of the Studio's schedule); the existing `frontend/e2e/tests/perf.spec.ts`, which already benchmarks a run
+  of about 10,000 nodes when `STUDIO_PERF=1`, is extended with the graph's size and parse time and the inbox page. Both
+  report to `tests/performance/reports/workflow-studio.md` through `scripts/perf-report.mjs`, the report Decision
+  050-001's condition also reads.
+  Verification: `cargo test -p sagat-tests --test perf_studio_catch_up --locked -- --ignored --nocapture`;
+  `STUDIO_PERF=1 npm --prefix frontend/e2e test -- perf.spec.ts`.
   Refs: Non-functional requirement 050-002
 
 #### Follow-up tasks

@@ -65,3 +65,22 @@ change of any existing answer. The design is again read-only on the engine's tab
 | 3 | Nit | Fixed: one list, the Studio's JSON, held to `ALL`, with `AuditAction` built from one table as `failures!` does | Decision 050-006, Technical Plans 7 and 9, Tasks 050-2, 050-11 |
 | 4 | Nit | Fixed: the refresh is built on `refetchInterval` with a function, as `BatchPage.tsx` uses. Task 050-14 measures latency at the bounded worst case (50 requests per second) and does not copy the schedule | Technical Plan 6, Task 050-14 |
 | 5 | Nit | Fixed: the kind-level variant is marked as feature 022's, and `without_the_operators_capability_the_stage_list_is_read_only_and_kept` is added | Technical Plan 4, Task 050-15 |
+
+## egm-review Stage 9, codebase details lens (`codebase_details_report.md`, at `19a633cc`)
+
+All 20 findings are accepted and fixed; every Blocker is fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Blocker | Fixed: six raising sites are named, each with how it learns the body's name and the node's index from the raw document. Body-level refusals use `/bodies/{name}`, and `resolveNodeId` handles both forms | Technical Plan 4 |
+| 2 | Blocker | Fixed: the create-script route's `LANGUAGE_NOT_BUILT`, shown at the picker of `CreateScriptDialog.tsx`, and the test renamed | Requirement 050-019, Decision 050-007, Technical Plan 8, Task 050-12 |
+| 3 | Blocker | Fixed: `PublishingService::effective_policy` in `publishing.rs`, made `pub(crate)` | Technical Plan 6 |
+| 4 | Blocker | Fixed: the workflow capabilities of `infra-ir` added to the taxonomy, and a second shipped name `workflow.reset-reapply`. `reapplyOnReset` is read-only without it | Technical Plan 3, Requirement 050-002, Task 050-3 |
+| 5 | Blocker | Fixed: the harness uses `PUT /quotas/iteration_concurrency`. The settings page shows the tenant quotas, and Success criterion 050-001 starts by setting the capacity | Task 050-19, Technical Plan 8, Success criterion 050-001 |
+| 6 | Blocker | Fixed: only `ApprovalListItem` is closed | Non-functional requirement 050-003, Technical Plan 6 |
+| 7 | Major | Fixed: `id` and `type` exempt, custom-editor fields declared, legacy fields listed, `allOf` resolved | Technical Plan 4 |
+| 8 | Major | Fixed in part: Task 050-15 names the files it modifies and creates (`AddNode.tsx`, `NodeInspector.tsx`, `NodesTable.tsx`, `src/api/capabilities.ts`), and Task 050-14 extends the existing `perf.spec.ts`. Settled: the other tasks name new folders (`features/inbox/`, `features/audit/`, `features/settings/`, `features/events/`) or the files they change by name already, so no create-or-modify marker is added to each | Tasks 050-14, 050-15 |
+| 9 | Major | Fixed: `perf.spec.ts` is extended, and its `STUDIO_PERF=1` command joins the verification. One report, `workflow-studio.md`, which Decision 050-001's condition also reads | Task 050-14 |
+| 10 | Major | Fixed: the real arithmetic. The new journeys run as a second job selected with `SAGAT_STUDIO_GREP` | Task 050-19 |
+| 11 | Major | Fixed: `audit-actions.json` is named, and the OpenAPI item is dropped | Requirement 050-013, Technical Plan 9 |
+| 12 to 20 | Nit | Fixed: `SAGAT_CONTRACT_BASELINE_BLESS`; the loop's drain reasons; `entryNodeId`, the entry's graph id, replaces the internal UUID; a missing drivers route means no Iceberg; `access.denied.cross_tenant` is excluded from the picker; `requires` everywhere; the activation refusals handled; `retryAfterMs` and `endpoints.journal` reused; the lint rule and the tokens test said to arrive with #267. The `chainPolicy` refusal in the Loop row stays as the table already states it ("triggers" and an approval); the refusal is shown by live validation | Technical Plans 3 to 8, Tasks |
