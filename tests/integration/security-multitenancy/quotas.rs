@@ -544,6 +544,12 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::BatchJobs, false),
             (QuotaResource::TenantBatchJobs, true),
             (QuotaResource::PendingResets, false),
+            // Feature 041: the admin holds run:logs:read, so the step-log usage is shown.
+            // Withheld: the admin holds no PII reveal grant (decision D041-133).
+            (QuotaResource::TenantStepLogBytes, false),
+            (QuotaResource::StepLogAttemptRecords, false),
+            (QuotaResource::StepLogAttemptBytes, false),
+            (QuotaResource::StepLogRetentionDays, false),
         ]
     );
     let used = tenant_view
@@ -595,7 +601,306 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::ScheduleBackfills, Some(0)),
             (QuotaResource::BatchJobs, Some(0)),
             (QuotaResource::PendingResets, Some(0)),
+            (QuotaResource::StepLogAttemptRecords, None),
+            (QuotaResource::StepLogAttemptBytes, None),
+            (QuotaResource::StepLogRetentionDays, None),
         ]
+    );
+}
+
+/// Feature 041 (decision D041-133, OD-2026-11-20-19): the retained step-log bytes move with what other runs log, so
+/// `used` of `tenant_step_log_bytes` is shown only to a caller who holds `run:logs:read` and the PII reveal grant in
+/// every namespace of the tenant; anyone else sees the resource and its limit with `usage_withheld` and no usage.
+#[tokio::test]
+async fn the_step_log_usage_is_shown_only_with_the_grant_in_every_namespace() {
+    let w = world().await;
+    let step_log = |views: Vec<sagat_application::quotas::QuotaView>| {
+        views
+            .into_iter()
+            .find(|q| q.resource == QuotaResource::TenantStepLogBytes)
+            .map(|q| (q.used, q.usage_withheld))
+    };
+    let grants = sagat_application::reveal_grants::RevealGrantService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+    );
+    let grant = |namespace: NamespaceId, principal: Principal| {
+        let grants = &grants;
+        let admin = &w.admin;
+        async move {
+            let scope = grants
+                .prepare(admin, namespace, &ctx())
+                .await
+                .expect("admin scope");
+            grants
+                .grant(&scope, principal.subject().as_str(), &ctx())
+                .await
+                .expect("grant");
+        }
+    };
+    let viewer = w.member("a-viewer", Role::Viewer).await;
+    let developer = w.member("a-developer", Role::Developer).await;
+    let list = |principal: Principal| {
+        let quotas = &w.quotas;
+        async move { step_log(quotas.list(&principal, None, &ctx()).await.expect("list")) }
+    };
+    assert_eq!(
+        list(viewer.clone()).await,
+        Some((None, true)),
+        "a viewer: listed, usage withheld"
+    );
+    assert_eq!(
+        list(developer.clone()).await,
+        Some((None, true)),
+        "run:logs:read without the grant"
+    );
+    grant(w.namespace.id(), developer.clone()).await;
+    assert_eq!(
+        list(developer.clone()).await,
+        Some((Some(0), false)),
+        "the grant in the tenant's only namespace"
+    );
+    let second = w.add_namespace("second-ns").await;
+    assert_eq!(
+        list(developer.clone()).await,
+        Some((None, true)),
+        "the grant in one of the tenant's two namespaces"
+    );
+    grant(second.id(), developer.clone()).await;
+    assert_eq!(list(developer.clone()).await, Some((Some(0), false)));
+    // The view a change returns is withheld the same way: the admin holds no grant yet.
+    let set = w
+        .quotas
+        .set(
+            &w.admin,
+            None,
+            QuotaResource::TenantStepLogBytes,
+            1 << 20,
+            &ctx(),
+        )
+        .await
+        .expect("set");
+    assert_eq!((set.used, set.usage_withheld), (None, true));
+    grant(w.namespace.id(), w.admin.clone()).await;
+    grant(second.id(), w.admin.clone()).await;
+    let cleared = w
+        .quotas
+        .clear(&w.admin, None, QuotaResource::TenantStepLogBytes, &ctx())
+        .await
+        .expect("clear");
+    assert_eq!((cleared.used, cleared.usage_withheld), (Some(0), false));
+    // `run:logs:read` is decisive: the developer's membership with both grants, presented with a viewer's token.
+    let as_viewer = Principal::new(
+        w.admin.tenant_id(),
+        developer.subject().clone(),
+        Role::Viewer,
+    );
+    assert_eq!(
+        list(as_viewer).await,
+        Some((None, true)),
+        "a token without run:logs:read"
+    );
+    // The membership role is decisive: a viewer member whose grant rows exist (written here as the owner, since the
+    // grant route refuses a viewer) is withheld even with a developer's token.
+    let demoted = w.member("a-demoted", Role::Viewer).await;
+    for namespace in [w.namespace.id(), second.id()] {
+        sqlx::query(
+            "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+             VALUES ($1, $2, $3, $4, now())",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(demoted.subject().as_str())
+        .bind(w.admin.subject().as_str())
+        .execute(&w.db.pool)
+        .await
+        .expect("grant row");
+    }
+    let token_says_developer = Principal::new(
+        w.admin.tenant_id(),
+        demoted.subject().clone(),
+        Role::Developer,
+    );
+    assert_eq!(
+        list(token_says_developer).await,
+        Some((None, true)),
+        "a membership that cannot use a grant"
+    );
+    // The tenant is decisive: a member of both tenants who holds the grant in every namespace of the other tenant
+    // only is withheld in this one.
+    let stranger = w.member("a-stranger", Role::Developer).await;
+    let in_other = Principal::new(
+        w.other_admin.tenant_id(),
+        stranger.subject().clone(),
+        Role::Developer,
+    );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            in_other.tenant_id(),
+            in_other.subject().clone(),
+            Role::Developer,
+            time::OffsetDateTime::now_utc(),
+        ))
+        .await
+        .expect("member of the other tenant");
+    let scope = grants
+        .prepare(&w.other_admin, w.other_namespace.id(), &ctx())
+        .await
+        .expect("other admin scope");
+    grants
+        .grant(&scope, in_other.subject().as_str(), &ctx())
+        .await
+        .expect("grant in the other tenant");
+    assert_eq!(
+        list(in_other).await,
+        Some((Some(0), false)),
+        "shown in the other tenant"
+    );
+    assert_eq!(
+        list(stranger).await,
+        Some((None, true)),
+        "withheld in this one"
+    );
+    // Every other resource is never withheld.
+    let all = w.quotas.list(&viewer, None, &ctx()).await.expect("list");
+    assert!(
+        all.iter()
+            .all(|q| q.usage_withheld == (q.resource == QuotaResource::TenantStepLogBytes))
+    );
+}
+
+/// Feature 041 (decision D041-141, amending D041-140 item 5; OD-2026-11-20-19 is fail-closed): the grant and the
+/// usage of `tenant_step_log_bytes` are read in one snapshot, so a view either sees the grant and the usage together or
+/// neither. A revoke transaction deletes the admin's grant, sets the usage to a figure no view may show with the grant
+/// (7,777 bytes) and holds the usage table, all uncommitted. The view a `clear` returns is seen waiting on that
+/// transaction in `pg_stat_activity` (a `clear` of a resource with no setting touches no usage before its view does; a
+/// list would wait first on the content and log resources' reads of the same table); no sleep decides the order. The revoke commits and the view must answer one of the
+/// two consistent pairs: the usage before the revoke with the grant, or no usage without it; never 7,777 shown.
+#[tokio::test]
+async fn a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage() {
+    const AFTER_THE_REVOKE: u64 = 7_777;
+    let w = world().await;
+    let grants = sagat_application::reveal_grants::RevealGrantService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+    );
+    let scope = grants
+        .prepare(&w.admin, w.namespace.id(), &ctx())
+        .await
+        .expect("admin scope");
+    grants
+        .grant(&scope, w.admin.subject().as_str(), &ctx())
+        .await
+        .expect("grant");
+    let clear = || {
+        let quotas = sagat_application::quotas::QuotaService::new(
+            w.store.clone(),
+            sagat_application::clock::SystemClock,
+        );
+        let admin = w.admin.clone();
+        async move {
+            let view = quotas
+                .clear(&admin, None, QuotaResource::TenantStepLogBytes, &ctx())
+                .await
+                .expect("clear");
+            (view.used, view.usage_withheld)
+        }
+    };
+    assert_eq!(clear().await, (Some(0), false), "shown with the grant");
+
+    let tenant = w.admin.tenant_id().as_uuid();
+    let mut revoke = w.db.pool.begin().await.expect("revoke");
+    let revoke_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *revoke)
+        .await
+        .expect("the revoke's backend");
+    let deleted = sqlx::query(
+        "DELETE FROM payload_reveal_grants WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+    )
+    .bind(tenant)
+    .bind(w.namespace.id().as_uuid())
+    .bind(w.admin.subject().as_str())
+    .execute(&mut *revoke)
+    .await
+    .expect("revoke the grant")
+    .rows_affected();
+    assert_eq!(deleted, 1);
+    sqlx::query(
+        "INSERT INTO tenant_retained_usage (tenant_id, step_log_bytes) VALUES ($1, $2) \
+         ON CONFLICT (tenant_id) DO UPDATE SET step_log_bytes = EXCLUDED.step_log_bytes",
+    )
+    .bind(tenant)
+    .bind(i64::try_from(AFTER_THE_REVOKE).expect("small"))
+    .execute(&mut *revoke)
+    .await
+    .expect("the usage after the revoke");
+    sqlx::query("LOCK TABLE tenant_retained_usage IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *revoke)
+        .await
+        .expect("hold the usage table");
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM payload_reveal_grants WHERE tenant_id = $1 AND subject = $2)",
+        )
+        .bind(tenant)
+        .bind(w.admin.subject().as_str())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the grant before the commit"),
+        "the uncommitted revoke leaves the grant visible"
+    );
+
+    let view = tokio::spawn(clear());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock' \
+               AND query LIKE '%step_log%' AND $1 = ANY (pg_blocking_pids(pid)))",
+        )
+        .bind(revoke_pid)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the view waits");
+        if waiting {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the view did not reach the held usage table"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    revoke.commit().await.expect("commit the revoke");
+    let answer = view.await.expect("view task");
+    assert_ne!(
+        answer,
+        (Some(AFTER_THE_REVOKE), false),
+        "the usage after the revoke shown with the grant from before it"
+    );
+    assert!(
+        [(Some(0), false), (None, true)].contains(&answer),
+        "one snapshot: the grant and the usage together, or neither: {answer:?}"
+    );
+    assert_eq!(clear().await, (None, true), "the next view withholds");
+}
+
+/// Feature 041 (decision D041-141 (b)): the store's general usage read refuses `tenant_step_log_bytes`, so no caller
+/// reads that usage except through `step_log_usage_if_revealed`, which requires the grant.
+#[tokio::test]
+async fn the_store_refuses_the_step_log_usage_without_the_grant() {
+    use sagat_application::quotas::QuotaStore;
+    let w = world().await;
+    let read = w
+        .store
+        .usage(w.admin.tenant_id(), None, QuotaResource::TenantStepLogBytes)
+        .await;
+    assert!(
+        matches!(
+            read,
+            Err(sagat_application::error::StoreError::Internal { .. })
+        ),
+        "{read:?}"
     );
 }
 

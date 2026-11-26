@@ -11,6 +11,7 @@ checks the newest report against the constitution. Newest first:
 
 | Report | Version |
 |---|---|
+| [constitution-5.0.0-sync-impact.md](constitution-5.0.0-sync-impact.md) | 5.0.0: the full-parity scope of release 0.3.0: workflow as code beside the graph, one writable region per cell with fenced failover, internal apps and a curated hub admitted |
 | [constitution-4.7.0-sync-impact.md](constitution-4.7.0-sync-impact.md) | 4.7.0: documentation first, words in full, and the identifiers written as words |
 | [constitution-4.6.0-sync-impact.md](constitution-4.6.0-sync-impact.md) | 4.6.0: a change of a contract file runs the contract suites and the packages that read it |
 | [constitution-4.5.0-sync-impact.md](constitution-4.5.0-sync-impact.md) | 4.5.0: a change of the step-log code runs the step-log suites |

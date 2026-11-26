@@ -244,10 +244,10 @@ fn expected(role: Role) -> Vec<Permission> {
         ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
         DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
         NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch,
-        RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate,
-        ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish,
-        ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute,
-        WorkerManage, WorkspaceRead,
+        RunLogsRead, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
+        RunUpdate, ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute,
+        ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
+        WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
@@ -282,6 +282,8 @@ fn expected(role: Role) -> Vec<Permission> {
                 ScheduleRead,
                 ScheduleWrite,
                 ScheduleOperate,
+                // Feature 041 (OD-2026-11-13-14): step logs, never viewers, workers or runners.
+                RunLogsRead,
             ]
         }
         Role::Operator => vec![
@@ -309,6 +311,7 @@ fn expected(role: Role) -> Vec<Permission> {
             ScheduleRead,
             ScheduleOperate,
             RunBatch,
+            RunLogsRead,
         ],
         Role::Viewer => vec![
             WorkspaceRead,
@@ -330,7 +333,8 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    assert_eq!(Permission::ALL.len(), 53);
+    // 53 before feature 041, which adds run:logs:read and run:logs:delete.
+    assert_eq!(Permission::ALL.len(), 55);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"
@@ -391,7 +395,7 @@ fn database_browse_is_held_by_developers_and_admins_only() {
 
 /// The permissions only the admin role holds, decided one by one (the admin list is "everything but the PII reveal", so
 /// it would call any new permission decided).
-const ADMIN_ONLY: [Permission; 13] = [
+const ADMIN_ONLY: [Permission; 14] = [
     Permission::WorkspaceCreate,
     Permission::NamespaceCreate,
     Permission::MembershipManage,
@@ -405,6 +409,8 @@ const ADMIN_ONLY: [Permission; 13] = [
     Permission::DatabaseManage,
     Permission::DatabaseWrite,
     Permission::DatabaseResultRead,
+    // Feature 041: deleting a run's step logs is an incident act (FR-041-023).
+    Permission::RunLogsDelete,
 ];
 
 /// The permissions a built-in role grants to nobody on purpose.

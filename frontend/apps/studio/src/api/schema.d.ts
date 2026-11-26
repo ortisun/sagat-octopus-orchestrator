@@ -737,6 +737,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read the lines a run's steps logged
+         * @description Feature 041. Needs `run:read`, `run:logs:read` and the namespace's PII reveal grant, in every namespace (a missing
+         *     grant is `403` with `details.reason` `PII_REVEAL_NOT_GRANTED`). Lines come in stored order and only below the read
+         *     horizon (the oldest transaction still open when the reading statement runs); `heldBack` says lines are held back by
+         *     it. A request scans at most 5,000 rows and `nextCursor` moves past every row it scanned, matched or not; a read with
+         *     `stream` scans that stream only. The cursor names the run it was minted for and is refused (`400`) for another.
+         *     `complete` is true only when the run is finished, every line that can still be stored has been, and the scan ended
+         *     because no row below the horizon was left (neither the page limit nor the 5,000-row bound stopped it). Another
+         *     tenant's run is `404`. A read is audited as `run.logs_read` at most once per subject and run in 300 seconds.
+         */
+        get: operations["listRunLogs"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a run's step logs
+         * @description Feature 041, for the incident in which a secret or personal data was logged. Needs `run:logs:delete` (admin). Makes
+         *     the lines committed when it runs unreadable at once; a later batch for a deleted stream stores nothing, while a
+         *     stream created after it (a later attempt) is stored and a second delete removes it. Optional `stream` limits it to
+         *     one stream of this run. Every delete is audited as `run.logs_deleted` with the number of streams it changed, 0
+         *     included, and answers `204` with no body. The purge removes the rows. No route removes a script execution's log
+         *     before its retention.
+         */
+        delete: operations["deleteRunLogs"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/logs/streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the attempt logs and script executions of a run
+         * @description Feature 041. The permissions of `listRunLogs`. `source = worker` (the default) lists the attempt logs of the run with
+         *     their counters, which are read at the statement's snapshot and can be ahead of what a read below the horizon returns;
+         *     `source = script` lists the run's script executions, whose state comes from the execution itself. Each source is
+         *     paged on its own.
+         */
+        get: operations["listRunLogStreams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/logs/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Follow the lines a run's steps log, as a stream
+         * @description Feature 041. `text/event-stream`, the permissions and filters of `listRunLogs` except `cursor` and `limit`, plus
+         *     `after` (a cursor; `Last-Event-ID` wins). Events: `log` (`id` the cursor after its last line, `data`
+         *     `{"items": StepLogLine[]}`, at most 200), `progress` (`id` the cursor after the scanned position, `data`
+         *     `{"heldBack": bool}`, sent instead of a ping when the position moved without a matching line), `end` (the run is
+         *     finished and `complete` holds) and `reconnect` (token expiry or the 15-minute lifetime). A `: ping` comment every 15
+         *     seconds otherwise. It never skips or repeats a line across a reconnect. The reader's right is checked when it opens
+         *     and every 30 seconds, the PII reveal grant at every poll. The caps of `streamRunChanges` apply and are shared with
+         *     it (`429 RATE_LIMITED`, `STREAMS_GLOBAL`, `STREAMS_PER_SUBJECT`, `STREAMS_PER_TENANT`). Read it with `fetch`.
+         */
+        get: operations["streamRunLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/operations": {
         parameters: {
             query?: never;
@@ -4948,11 +5036,16 @@ export interface components {
          *     the jobs that have not finished. Resets that wait for their source run to end
          *     (`CANCEL_SOURCE`, feature 018) are pending_resets 16/64 in a namespace.
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
+         *     Step logs (feature 041): tenant_step_log_bytes is the tenant's retained step-log bytes, each line
+         *     charged its text plus 128 bytes (default and default ceiling 1 GiB, maximum 2^50); per namespace,
+         *     step_log_attempt_records 0..100,000 (default 10,000; 0 turns capture off in the namespace),
+         *     step_log_attempt_bytes 1,024..16,777,216 (default 1 MiB) and step_log_retention_days 1..365
+         *     (default 14). A step-log stream keeps the retention it was created with.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "tenant_step_log_bytes" | "step_log_attempt_records" | "step_log_attempt_bytes" | "step_log_retention_days";
             /** Format: int64 */
             limit: number;
             /**
@@ -4967,9 +5060,11 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view, and for tenant_step_log_bytes unless the caller holds `run:logs:read` and the PII reveal grant in every namespace of the tenant (then usageWithheld is true).
              */
             used?: number;
+            /** @description Present and true only for tenant_step_log_bytes when used is withheld: the caller lacks `run:logs:read` or the PII reveal grant in at least one namespace of the tenant, so the live step-log usage, which moves with what other runs log, is not shown (fail-closed; design 041, decision D041-133). */
+            usageWithheld?: boolean;
         };
         QuotaList: {
             items: components["schemas"]["Quota"][];
@@ -5906,6 +6001,107 @@ export interface components {
         ScriptTestRunList: {
             items: components["schemas"]["ScriptTestRunSummary"][];
         };
+        StepLogPage: {
+            items: components["schemas"]["StepLogLine"][];
+            /** @description Always present: the position after the last row scanned (at most 5,000 a request), whether or not it matched the filters, to poll from. */
+            nextCursor: string;
+            /** @description Lines of this run are stored but not yet returned, because an older transaction of the database is still open. */
+            heldBack: boolean;
+            /** @description The run is finished, every line that can still be stored for it has been, and the request's scan ended because no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row bound stopped it), whether or not the filters matched. After an empty page with complete false, read again at once while nextCursor moves; once it stops moving, poll at the tail's interval. */
+            complete: boolean;
+        };
+        StepLogLine: {
+            /** Format: uuid */
+            stream: string;
+            node: string;
+            attempt: number;
+            /** @description The existing {scopeNodeId, iterationIndex} schema; empty for a root step; null for a script marker, which has no iteration. */
+            instancePath: components["schemas"]["ApprovalScope"][] | null;
+            /** @description Decimal; above 2^53 for a marker. */
+            sequence: string;
+            /** Format: date-time */
+            workerTime?: string | null;
+            /** Format: date-time */
+            storedAt: string;
+            /** @enum {string} */
+            kind: "line" | "ceiling_marker" | "script_marker";
+            /**
+             * @description info for a marker; minLevel never hides a marker.
+             * @enum {string}
+             */
+            level: "trace" | "debug" | "info" | "warn" | "error";
+            message?: string | null;
+            exception?: string | null;
+            /** @description An integer outside -(2^53-1) to 2^53-1 is a decimal string, so that a JavaScript reader keeps it exact. */
+            fields?: {
+                [key: string]: string | number | boolean;
+            } | null;
+            truncated: boolean;
+            marker?: {
+                /**
+                 * @description ceiling_marker
+                 * @enum {string}
+                 */
+                reason?: "attempt_records" | "attempt_bytes";
+                /**
+                 * Format: uuid
+                 * @description script_marker: open it with getScriptExecution
+                 */
+                scriptExecutionId?: string;
+            } | null;
+        };
+        StepLogStreamPage: {
+            items: components["schemas"]["StepLogStream"][];
+            nextCursor: string | null;
+        };
+        StepLogStream: {
+            /**
+             * Format: uuid
+             * @description The stream public id; for source script, the script execution id, which is also the id of its marker stream.
+             */
+            id: string;
+            /** @enum {string} */
+            source: "worker" | "script";
+            node: string;
+            attempt: number;
+            /** @description Null for source script. */
+            instancePath: components["schemas"]["ApprovalScope"][] | null;
+            /**
+             * @description deleted: the delete route; expired: removal by retention has begun, and no line is returned
+             * @enum {string}
+             */
+            state: "open" | "ended" | "ended_without_final" | "deleted" | "expired";
+            /** @description worker only: lines stored */
+            records?: number;
+            /** @description worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line) */
+            bytes?: number;
+            /** @description worker only: sequences the worker numbered and never stored */
+            droppedByWorker?: number;
+            droppedByServer?: number;
+            /**
+             * @description Why the server dropped records at a ceiling: an attempt ceiling, or the tenant quota (full, or its last room held by other writers in flight). A busy loss is notStoredReason, never a ceiling.
+             * @enum {string|null}
+             */
+            ceiling?: "attempt_records" | "attempt_bytes" | "tenant_quota" | null;
+            /**
+             * @description Why the server did not store some of a carry's records for a reason that is not a ceiling: service_busy means the tenant's step-log quota could not be checked within its 200 ms budget or with no wait slot free (the log service was busy, not the tenant's quota); design 041 decision D041-129, gap G041-026. Null otherwise.
+             * @enum {string|null}
+             */
+            notStoredReason?: "service_busy" | null;
+            /** Format: date-time */
+            firstAt?: string | null;
+            /** Format: date-time */
+            lastAt?: string | null;
+            /**
+             * Format: date-time
+             * @description worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.
+             */
+            expiresAt?: string | null;
+            /** Format: date-time */
+            removedAt?: string | null;
+            /** @description script only */
+            logTruncated?: boolean;
+        };
         ScriptExecution: {
             /** Format: uuid */
             id: string;
@@ -5918,8 +6114,11 @@ export interface components {
             status: "SUCCEEDED" | "FAILED";
             failure?: string;
             exitCode?: number;
+            /** @description Planned by feature 041 (FR-041-022, T041-29; not served yet): for an execution of a run, returned only to a caller who may read that run's step logs (`run:logs:read` and the namespace's PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged. */
             log: string;
             logTruncated: boolean;
+            /** @description Planned by feature 041 (T041-29; not served yet): true when the log of a run's execution is withheld from this caller (see `log`). */
+            logWithheld?: boolean;
             denied: string[];
             wallMs: number;
             startMs: number;
@@ -5930,7 +6129,7 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
-        /** @description An execution as a listing shows it: without its log, which `getScriptExecution` has. */
+        /** @description An execution as a listing shows it: without its log, which `getScriptExecution` has. Planned by feature 041 (T041-29; not served yet): `logTruncated` is false for a caller who may not read the run's step logs. */
         ScriptExecutionSummary: {
             /** Format: uuid */
             id: string;
@@ -6782,7 +6981,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "tenant_step_log_bytes" | "step_log_attempt_records" | "step_log_attempt_bytes" | "step_log_retention_days";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -8135,6 +8334,170 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunLogs: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                /** @description One stream of this run (`StepLogStream.id`): an attempt log, or a script execution's id for its marker. Another stream is `404`. */
+                stream?: string;
+                node?: string;
+                attempt?: number;
+                /** @description Ordered as listed; never hides a marker. */
+                minLevel?: "trace" | "debug" | "info" | "warn" | "error";
+                /** @description Storage time, inclusive. */
+                from?: string;
+                /** @description Storage time, exclusive. */
+                to?: string;
+                /** @description A literal, case-insensitive substring of the message. */
+                q?: string;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of lines */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepLogPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteRunLogs: {
+        parameters: {
+            query?: {
+                /** @description One stream of this run (`StepLogStream.id`). Another stream, of this tenant or not, is `404`, as for `listRunLogs`. */
+                stream?: string;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunLogStreams: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                source?: "worker" | "script";
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of streams */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepLogStreamPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    streamRunLogs: {
+        parameters: {
+            query?: {
+                /** @description A cursor of this run; `Last-Event-ID` wins when both are sent. */
+                after?: string;
+                stream?: string;
+                node?: string;
+                attempt?: number;
+                minLevel?: "trace" | "debug" | "info" | "warn" | "error";
+                from?: string;
+                to?: string;
+                q?: string;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stream */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
