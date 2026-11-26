@@ -290,7 +290,11 @@ the contract of their shape; the validation test checks them.
 ### 4. The stream: a cursor safe against commit order
 
 A migration adds `audit_records.tx_id xid8` (nullable, then `SET DEFAULT pg_current_xact_id()`, which rewrites no row;
-rows written before stay `NULL`, Gap 040-004) and an index `(tx_id, id)`. Every insert gets the id of the transaction
+rows written before stay `NULL`, Gap 040-004) and two partial indexes where `tx_id` is not null: `(tenant_id, tx_id, id)`
+for tenant sinks and `(tx_id, id)` for the operator sink, so a tenant's sink never scans another tenant's rows. Both
+are empty when built (no row has a `tx_id` yet), but the build still reads the table under a `SHARE` lock; as for the
+purge index of `20270119000000_batch_purge`, the migration uses `CREATE INDEX IF NOT EXISTS`, and the runbook tells the
+operator of a large trail to build both `CONCURRENTLY` before the upgrade. Every insert gets the id of the transaction
 that writes it, at no extra statement. A transaction id below the snapshot's `xmin` belongs to a transaction that has
 ended, so the export reads, for a sink with cursor `(c_tx, c_id)`:
 
@@ -298,7 +302,7 @@ ended, so the export reads, for a sink with cursor `(c_tx, c_id)`:
 SELECT ... FROM audit_records
  WHERE tx_id < pg_snapshot_xmin(pg_current_snapshot())
    AND (tx_id, id) > ($c_tx, $c_id)
-   AND ($tenant IS NULL OR tenant_id = $tenant)
+   AND tenant_id = $tenant            -- left out for the operator sink, which reads the second index
  ORDER BY tx_id, id LIMIT 500
 ```
 
@@ -437,7 +441,7 @@ Three slices, each a pull request, in this order. Slice 1 touches `crates/domain
   Refs: Requirement 040-002
 - [ ] T040-8 Generate `docs/reference/ocsf-mapping.md` from the table and a test that fails when it is behind.
   Refs: Requirement 040-012, Success criterion 040-005
-- [ ] T040-9 Write the migration: `audit_records.tx_id` (nullable, then the default, no rewrite), the index, the
+- [ ] T040-9 Write the migration: `audit_records.tx_id` (nullable, then the default, no rewrite), the two indexes, the
   `audit_sinks` table, grants to the runtime role, classification entries, a down migration that refuses while a sink
   exists, and the `audit:sink:manage` permission for `admin`.
   Refs: Requirement 040-008, Requirement 040-009, Non-functional requirement 040-001
