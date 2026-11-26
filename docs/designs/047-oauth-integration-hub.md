@@ -196,7 +196,9 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   only, and of those a row without a vault mark only once it is older than 60 s (the 30 s lease, the 15 s call bound
   and three 5 s vault writes; `timings.md`), and after claiming its reference with a tombstone (so a vault write still
   running is never left behind); such a late row downgrades `revocation_outcome` until it is revoked,
-  and is audited. A stale `PENDING` row of a live credential is never revoked: the next acquire adopts it (step 2 of
+  and is audited. A holder whose vault write is refused because a tombstone won revokes the token it received itself,
+  and a row closed by a tombstone records `UNKNOWN`, never `REVOKED`, until that revocation is confirmed. A stale
+  `PENDING` row of a live credential is never revoked: the next acquire adopts it (step 2 of
   Technical Plan 4), and once a newer revision replaces it, it is abandoned and destroyed in the vault only, as
   Technical Plan 4 says. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
   `revocation_with_the_provider_down_ends_unknown`, `a_holder_crashing_after_a_late_store_leaves_no_live_token`.
@@ -329,7 +331,7 @@ integration runner waits on the same clause (feature 021, Decision 021-022).
 
 None open. The design follows Owner decision 2026-11-24-1, the 5.0.0 amendment (Owner decision 2026-11-24-2) and the
 third declared set of 5.1.0 (Owner decision 2026-11-25-3); its choices were taken under Owner decisions 2026-11-20-6 and
-2026-11-24-4 and are recorded as Decisions 047-001 to 047-065 in research.md, with the register's literal marker
+2026-11-24-4 and are recorded as Decisions 047-001 to 047-066 in research.md, with the register's literal marker
 "delegate (OD-2026-11-24-4)". Architecture decisions 0122 and 0123 are accepted with the approval of this design, under
 Owner decision 2026-11-24-4 (Owner decision 2026-11-24-320), on the approval rule of Owner decision 2026-11-25-2 (pull
 request 284).
@@ -512,7 +514,9 @@ A refresh (the statements are in data-model.md):
 6. A holder that fails clears its own lease with a statement that compares its fence.
 
 Provider answers: `invalid_grant` moves the credential to `NEEDS_REAUTHORIZATION`; `invalid_client` and
-`unauthorized_client` count toward `BROKEN` (three within 10 minutes) and leave the credentials as they are; `invalid_scope`
+`unauthorized_client` answers to a refresh or a client-credentials request count toward `BROKEN` (three within 10
+minutes) and leave the credentials as they are, while the same answers to a code exchange fail only that connection,
+because the code comes from the person's browser and anyone allowed to connect could send a crafted one; `invalid_scope`
 fails the step with `OAUTH_SCOPE_INSUFFICIENT`; `429`, `temporarily_unavailable`, `server_error` and transport failures are
 retryable, honouring `Retry-After`. Request windows are rows in PostgreSQL per registration (4 in flight, 10 per second)
 and, on a deployment registration, per tenant (1 in flight and 10 divided by the number of opted-in tenants per second,
@@ -554,8 +558,11 @@ set.
   call of the shim protocol, which the supervisor forwards as `ResolveDeclaredResources` for one resource; the supervisor
   adds the new token to the redaction set before answering. Test runs are refused.
 - **Activities.** The same method, in a fourth limit class `resource_delivery` added beside `discovery`, `lease` and
-  `transfer` in `crates/api-grpc/src/limits.rs` (stated in `sdks/SPEC.md`), under this design's
-  protocol minor; the six SDKs expose `resource(name)`.
+  `transfer` in `crates/api-grpc/src/limits.rs` (stated in `sdks/SPEC.md`), under this design's protocol minor; the six
+  SDKs expose `resource(name)`. The class is shed at the `discovery` threshold or below, has its own process cap and a
+  per-tenant cap, and never waits while it holds an admission place: a call that would wait for a refresh or a full
+  request window gives its place back and answers a retryable `RESOURCE_ASK_LIMIT`-style refusal with a retry delay,
+  so delivery cannot take the places kept for heartbeats and completions.
 
 Scripts and activities use ordinary delivery's binding: the capability token as a bearer credential with the caller's own
 authorities. The integration runner uses feature 021's session binding. The method's messages are in

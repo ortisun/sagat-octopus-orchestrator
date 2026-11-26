@@ -15,7 +15,7 @@
 | Sweeper's wait for an unmarked `PENDING` row | 60 s after the row was created (the 30 s lease, the 15 s call bound and three 5 s vault writes), then a tombstone claim |
 | `invalid_client` before `BROKEN` | 3 answers within 10 minutes |
 | Keep-alive | at half the provider's idle refresh-token lifetime |
-| Delivery | 2 full calls per attempt; 30 re-asks per hour of the attempt; 1 per 10 s per resource |
+| Delivery | 2 full calls per attempt; 30 re-asks in any 60-minute window (sliding); 1 per 10 s per resource |
 | Offer withdrawal or opt-out | new connections stop at once; refreshes stop after 7 days; then disconnect |
 | Revocation attempts | 5 over 1 hour, then `UNKNOWN` |
 | Revisions per credential | at most 8 not destroyed |

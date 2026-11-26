@@ -3,7 +3,7 @@
 ## Worker gRPC: `ResolveDeclaredResources`
 
 Added under this design's protocol minor (the next free one at merge, after feature 021's), in the limit class
-`resource_delivery` stated in `sdks/SPEC.md`: two full calls per attempt, 30 re-asks per hour of the attempt, one per 10 s
+`resource_delivery` stated in `sdks/SPEC.md`: two full calls per attempt, 30 re-asks in any 60-minute window (sliding), one per 10 s
 per resource (counted in `oauth_delivery_attempts`).
 
 ```proto
