@@ -69,8 +69,25 @@ callback:  UPDATE oauth_authorization_requests SET used_at = now()
              AND (tenant_registration_id, deployment_registration_id) IS NOT DISTINCT FROM ($g, $d) AND principal = $p
              AND used_at IS NULL AND expires_at > now()
            RETURNING ...
-writers:   every other credential write is UPDATE ... SET fence = fence + 1, ... WHERE tenant_id = $t AND id = $c
-           AND state IN (<the states that transition allows>)
+writers:   every other credential write that changes `state` is UPDATE ... SET fence = fence + 1, ... WHERE
+           tenant_id = $t AND id = $c AND state IN (<the states that transition allows>)
+non-state: writes that change no state never touch the fence (revised 2026-11-26, Decision 047-069), so they cannot
+           make an in-flight refresh lose its activation, its lease extension or its lease clear:
+           stale mark:    UPDATE ... SET access_stale = true WHERE tenant_id = $t AND id = $c
+                            AND access_revision = $reported
+           forceRefresh:  UPDATE ... SET access_stale = true, force_refresh_revision = access_revision
+                            WHERE tenant_id = $t AND id = $c AND access_revision = $reported
+                              AND force_refresh_revision IS DISTINCT FROM access_revision
+           bookkeeping:   last_used_at, last_error_code (no predicate on the fence)
+window:    in the acquire transaction, while the window rows are locked:
+           UPDATE <window> SET window_start = date_trunc('second', now()),
+             count_this_second = CASE WHEN window_start = date_trunc('second', now())
+                                      THEN count_this_second + 1 ELSE 1 END
+           (the room predicate reads the row as it was before this update; past the limit the acquire acquires nothing)
+expiry:    a token's expiry is the acquire statement's time (the callback statement's time for an exchange) plus
+           `expires_in`, never the store statement's time, so a delay before the store never overstates it
+limit:     the bound of 8 revisions not DESTROYED is checked by the acquire (a refresh needs two free slots); the store
+           never refuses a row once the provider has answered
 ```
 
 ## Vault references of token revisions
@@ -81,7 +98,12 @@ the adopt step and the sweeper claim an unmarked row's reference before abandoni
 tombstone is a fixed payload (`{"sagat_tombstone": true}`) with the custom metadata `sagat-tombstone=true`; a probe reads
 it as claimed, never as a token, so a claim interrupted before its row is marked abandoned is finished by the next probe,
 which abandons the row. Destroying a revision destroys the versions' data and keeps the key's metadata, so the reference
-can never be written again. Tests: `a_claim_interrupted_before_the_abandon_mark_is_finished_by_the_next_probe`,
+can never be written again; a reference that was never written has no metadata to keep, so the revocation pass and
+every other destroyer first claim an unmarked reference with a tombstone and only then destroy it. A holder that loses
+its activation to a disconnect and whose own revocation at the provider fails leaves its row `PENDING` and marked (not
+`RETIRED`), so the sweeper retries the revocation and the outcome is downgraded until it succeeds. Tests also:
+`the_revocation_pass_tombstones_an_unwritten_reference_before_destroying_it`,
+`a_failed_revocation_by_a_losing_holder_is_retried_by_the_sweeper`, `a_stale_mark_does_not_move_the_fence`. Tests: `a_claim_interrupted_before_the_abandon_mark_is_finished_by_the_next_probe`,
 `a_destroyed_reference_cannot_be_written_again`.
 
 ## Lock order
