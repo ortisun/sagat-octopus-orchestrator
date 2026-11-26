@@ -13,7 +13,9 @@ data, RPO/RTO as benchmark criteria, routing of clients, workers and webhook sen
 behaviour after failover (duplicates expected) and DR drills. Active-active stays out of scope. The
 single-region Delivery Constraint and ADR-0009 are addressed by the proposed
 [ADR-0067](../../docs/adr/ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md)
-and a stated, not applied, constitution amendment (owner decision O1560).
+and a stated, not applied, constitution amendment (owner decision O1560). *Note (2026-11-24):* the
+amendment is applied in constitution 5.0.0 (Delivery Constraints, "Regions") by Owner decision
+2026-11-24-2, which also answers O1560; the evidence gate of D1592 is now in the constitution's text.
 
 ## Context and delivery boundary
 
@@ -696,6 +698,12 @@ decision 2026-11-20-6. All three are settled as of 2026-11-24; the text each had
   with active-passive failover under ADR-0067"; multi-region active-active still out of scope; 1.0.0 →
   1.1.0, MINOR) wait for the region drill report and the commit-latency benchmark, as ADR-0009 and the
   constitution's Governance require (T032-063). The amendment text stays in ADR-0067.
+  **Answered 2026-11-24 by Owner decision 2026-11-24-2:** the direction is accepted and the
+  constitution is amended in 5.0.0 (MAJOR, not the MINOR planned here), ahead of the evidence:
+  the Delivery Constraints say "one writable region per cell" and a "Regions" bullet admits standby
+  regions with fenced active-passive failover, offered for production only after the drill report
+  and the commit-latency benchmark; active-active inside a cell stays out. ADR-0067 is accepted
+  (Owner decisions 2026-11-24-507 and 2026-11-24-514); the two reports are its release gate (T032-063).
 - **O1561 — Cross-region objectives and default mode.** *Decided 2026-11-24 as recommended, delegate (Owner decision
   2026-11-20-6), Owner decision 2026-11-24-508.* Reason: `sync_quorum` is the only mode in which a region's loss loses
   no acknowledged work, which is the property the platform claims over Temporal's asynchronous replication; publishing

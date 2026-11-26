@@ -44,7 +44,12 @@ pub async fn run(config: &Config, cleanup: &CleanupConfig) -> Result<(), RunErro
             .provider()
             .await
             .map_err(|_| RunError::Refused("could not configure OpenBao cleanup"))?;
-        let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+        let pool = open_pool(
+            &config.database,
+            config.database.statement_timeout,
+            sagat_infra_postgres::PoolName::Process("cleanup"),
+        )
+        .await?;
         let result = async {
             if config.environment != Environment::Dev {
                 PgIdentityStore::new(pool.clone())

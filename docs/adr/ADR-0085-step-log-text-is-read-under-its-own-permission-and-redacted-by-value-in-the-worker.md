@@ -190,6 +190,12 @@ schemas carry no annotation (design 041, T041-11). The owner accepted G041-017 i
 secret set lives for the process, a caller who can steer logged text can learn that a guessed value is a secret the
 process resolved.
 
+Note (2026-11-19, design 041 T041-3): rule 5's check on the server and the Rust SDK is built: the step-log messages
+skip their generated `Debug` in `crates/api-grpc`, `sdks/rust` and `sdks/rust/conformance`, the replacements print
+counts only, and `crates/api-grpc/tests/step_log_debug.rs` and a unit test beside each SDK module show that no message,
+exception, field or token prints; the domain's `FieldValue` prints its variant only. The other five SDKs are covered by
+their capture tasks (T041-15 to T041-20).
+
 ## Evidence
 
 None measured yet; nothing is built. Read in the code at `2e90dbb8`: `crates/domain/src/scripts.rs` (`redact`,

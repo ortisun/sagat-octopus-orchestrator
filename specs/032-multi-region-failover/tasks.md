@@ -15,15 +15,17 @@ files and no dependency on an unfinished task.
 
 ## Phase 1: Setup
 
-- [ ] T032-001 Owner gate: record the answers to O1560 (acceptance of ADR-0067's **direction**), O1561 and
+- [x] T032-001 Owner gate: record the answers to O1560 (acceptance of ADR-0067's **direction**), O1561 and
   O1562 in `docs/owner-decisions.md`. ADR-0067 stays `Proposed (direction accepted)`; its `Accepted`
   status, ADR-0009's line and the constitution amendment are T032-063, after the evidence exists. No
   implementation task starts before this. — FR-032-031 — evidence: the owner's recorded decision.
   Owner-gate: OD-2026-11-24-2
-  Note 2026-11-24 (done in part, so unticked): O1560 is answered by Owner decision 2026-11-24-2; O1561 and O1562 by
-  Owner decisions 2026-11-24-508 and 2026-11-24-509; ADR-0067 is accepted (Owner decision 2026-11-24-507), not
-  "direction accepted". What remains, and what this task now waits for, is the merge of the constitution 5.0.0
-  amendment; its evidence is that merge's commit.
+  Note 2026-11-24: O1560 is answered by Owner decision 2026-11-24-2; O1561 and O1562 by Owner decisions
+  2026-11-24-508 and 2026-11-24-509; ADR-0067 is accepted (Owner decisions 2026-11-24-507 and 2026-11-24-514).
+  Note 2026-11-26: constitution 5.0.0, which admits this feature, is merged into `develop` (`81e87775`), so
+  nothing of this task remains; it is ticked with that evidence.
+  Evidence (2026-11-26): `git log origin/develop` shows `81e87775 Merge pull request #275 from ortisun/docs/constitution-5.0.0`;
+  `docs/owner-decisions.md` holds Owner decisions 2026-11-24-2, 2026-11-24-507, 2026-11-24-508, 2026-11-24-509 and 2026-11-24-514.
 
 IDs T032-058 to T032-064 were added in the review round of 2026-10-27 and keep their numbers (IDs are never
 renumbered); they sit in the phase where they run.

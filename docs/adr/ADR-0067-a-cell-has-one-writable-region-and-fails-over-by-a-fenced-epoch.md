@@ -1,6 +1,6 @@
 # ADR-0067: A cell has one writable region at a time, fails over active-passive by an operator's activation, and fences everything granted before it with a region epoch
 
-**Status:** Accepted (2026-11-24). The evidence the constitution's Governance asks of an ADR that diverges from an accepted one (benchmark data, failure tests) is a release gate of feature 032, not a gate of this decision: feature 032 is not released until the region drill report and the commit-latency benchmark of Task T032-063 are in the Evidence section below. ADR-0009 carries the "superseded in part" line from today. Until 2026-11-24 the status read: "Proposed. The owner may accept the direction so that implementation can start; the status `Accepted`, ADR-0009's 'Superseded in part by ADR-0067' line and the constitution amendment below wait for the region drill report and the commit-latency benchmark" (feature 032, D1592, T032-063).
+**Status:** Accepted (2026-11-24; confirmed by the coordinating session, Owner decision 2026-11-24-514). Constitution 5.0.0's "Regions" bullet admits standby regions with fenced active-passive failover, offered for production only after the drill report and the commit-latency benchmark; those reports are this decision's release gate. The evidence the constitution's Governance asks of an ADR that diverges from an accepted one (benchmark data, failure tests) is a release gate of feature 032, not a gate of this decision: feature 032 is not released until the region drill report and the commit-latency benchmark of Task T032-063 are in the Evidence section below. ADR-0009 carries the "superseded in part" line from today. Until 2026-11-24 the status read: "Proposed. The owner may accept the direction so that implementation can start; the status `Accepted`, ADR-0009's 'Superseded in part by ADR-0067' line and the constitution amendment below wait for the region drill report and the commit-latency benchmark" (feature 032, D1592, T032-063).
 **Decided by:** agent proposal (2026-10-26); revised after independent architecture review (2026-10-27); accepted on 2026-11-24, delegate (Owner decision 2026-11-24-4), Owner decision 2026-11-24-507, after the owner decided the constitution amendment it needed (Owner decision 2026-11-24-2: "single region" becomes one writable region per cell with fenced failover, constitution 5.0.0). Reason: of the five options it weighs, it is the only one that keeps one authority per cell, reuses the lease and fence model, and needs no consensus service of the platform's own; waiting for the evidence before accepting would leave the build without a fixed design while the evidence can only come from the build
 **Refines / supersedes:** Would supersede [ADR-0009](ADR-0009-single-region-first.md) in part once accepted (the single-region constraint, for a cell that declares standby regions; in-region HA and the deferral of active-active stand). Refines [ADR-0020](ADR-0020-the-scheduler-is-sharded-by-run-and-owned-by-lease-with-a-fence.md) (the fence also checks the region epoch). Builds on ADR-0002, ADR-0004, ADR-0012, ADR-0017, ADR-0025.
 **Enforced by:** pending — the tests that must exist before acceptance of the implementation are named in [specs/032-multi-region-failover/tasks.md](../../specs/032-multi-region-failover/tasks.md): T032-020 (activation is one transaction, crash at every statement), T032-021 (epoch fence with a negative control), T032-023 and T032-058 (region loss mid-commit, cancelled synchronous wait, restart of the former primary, and acknowledgments through replays, duplicates and reads), T032-059 (an epoch-unaware binary cannot take a lease or write), T032-062 (in-region failover inside a two-region cell), T032-060 (tombstones downstream), T032-009 (no unlogged table or sequence), T032-045 (region drill fails on acknowledged loss in `sync_quorum`).
@@ -137,17 +137,20 @@ The forces:
 - **Operational cost.** A second (or third) region of database, bucket, broker and processes at standby
   capacity, replication monitoring with a `pg_monitor` role, quarterly region drills.
 
-## Constitution amendment required (stated, not applied)
+## Constitution amendment (applied in 5.0.0, ahead of the evidence, by Owner decision 2026-11-24-2)
 
-Delivery Constraints, technology baseline: replace "single region with high availability" with "one
-active region per cell with high availability; an optional cross-region standby region with
-active-passive failover as defined by ADR-0067". Keep "Out of scope for V1: multi-region active-active,
-…" unchanged. Version 1.0.0 → 1.1.0 (MINOR). Sync Impact Report: ADR-0009 status line ("Superseded in
-part by ADR-0067"), `docs/architecture/overview.md`, `docs/architecture/capacity-and-topology.md`,
-`docs/runbooks/disaster-recovery.md`, and an annotation of the "V1 single-region HA" assumption lines of
-specs 001–012. This amendment and this ADR are owner decisions (feature 032, O1560). The amendment pull
-request is opened only after the drill report and the commit-latency benchmark exist; until then this
-text stays here and the constitution is unchanged.
+The amendment this section proposed was applied in constitution 5.0.0 on 2026-11-24, earlier than this
+section planned: the owner approved it so that release 0.3.0 can contain feature 032 (Owner decisions
+2026-11-24-1 and 2026-11-24-2, which also answer O1560 by accepting this record's direction). The
+Delivery Constraints now say "one writable region per cell, with high availability inside the region"
+and carry a "Regions" bullet that admits standby regions with fenced active-passive failover; two
+regions accepting writes for the same cell stay out of scope. The evidence gate did not disappear; it
+moved into the constitution's text: cross-region failover is offered for production only after the
+region drill report and the commit-latency benchmark exist, and a mode or a forced activation that
+can lose acknowledged work never claims a recovery point objective of zero. This record's status
+`Accepted` and ADR-0009's "Superseded in part by ADR-0067" line still wait for that evidence
+(D1592, T032-063). The dependents are listed in
+[the 5.0.0 Sync Impact Report](../governance/constitution-5.0.0-sync-impact.md).
 
 **Overtaken on 2026-11-24.** The owner decided the amendment (Owner decision 2026-11-24-2, which answers O1560): the
 constitution becomes 5.0.0 (MAJOR, not 1.1.0 MINOR as written above, because it also removes items from the
