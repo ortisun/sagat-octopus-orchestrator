@@ -1,8 +1,14 @@
 # OCSF as the standard schema for security and audit events
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-26
+*   **Reviewed-commit:** 09e6543020101d0db05cabc1f7a853c95a0148b6
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/040-ocsf-event-standard.reviews/2026-11-26/approval/egm-review.md sha256:6f5d62506f1f9294c691e371aa4a0b56a47f9084684de0eb03e280878292ef99; docs/designs/040-ocsf-event-standard.reviews/2026-11-26/approval/architecture.md sha256:b26e2b9dc3ced699309913952752d81a480666369f9ce45f2008f913fff09d2b; docs/designs/040-ocsf-event-standard.reviews/2026-11-26/approval/security.md sha256:8984ee03da8f0a7361ec341bbbb313c279082a621351b4d2043013ca30417ad9; docs/designs/040-ocsf-event-standard.reviews/2026-11-26/approval/correctness.md sha256:ea086b47e0e9d75713440b59ec37d51281b59cfcbbe5730997e997f4ba5ddaac
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 3; OD-2026-11-26-108, OD-2026-11-26-109, OD-2026-11-26-167
 
 --------------------------------------------------------------------------------
 
@@ -863,6 +869,22 @@ Three slices, each a pull request, in this order.
   its re-seal, after Task 015-11.
   Refs: Requirement 040-008, Requirement 040-011
 
+
+- [ ] T040-28 Store and compare the operator sink's configured `start` as written (`now` or a time, a start kind beside
+  `start_at`), resolve `now` only on the first adoption of a changed value, and give `adopt_config` that type; say which
+  cursors applying `start` moves; the test of Task 040-24 covers it (Owner decisions 2026-11-26-108 and -109).
+  Refs: Requirement 040-011
+- [ ] T040-29 Add an operator refused-record table keyed by `(tenant_id, record_id)`, unreadable by tenants, written in
+  the transaction of the cursor move, and `control-plane audit-export refused` to list it (Owner decision 2026-11-26-167).
+  Refs: Requirement 040-009, Requirement 040-011
+- [ ] T040-30 Align the text the confirmation reads flagged as Nits before the build starts: section 4's count of
+  migration files, "contract suites" in Success criterion 040-002, the refused-window columns in the storage comment of
+  `audit_operator_export`, Task 040-11's method names with the `AuditExportStore` port (and a method that resets
+  `failures` and returns a `STALLED` sink to `ACTIVE`), signatures for `AuditSinkStore`, the adopted configuration
+  revision carried by an operator stream's claim, `discover` reporting a cursor of another cluster, a named test that a
+  sink's own `audit.sink_record_refused` is excluded while its other `audit.sink_*` records reach it, `rebase`'s
+  overclaim pointed at Gap 040-008, and Gap 040-007 worded for any logical restore without the epoch step.
+  Refs: Requirement 040-009
 
 ### Verification Plan
 
