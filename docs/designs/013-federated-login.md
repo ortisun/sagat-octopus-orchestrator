@@ -1479,9 +1479,13 @@ written plus one, never reused, the highest also kept in the document), material
   over `Zeroizing<Vec<u8>>` with no `Clone` and a hand-written `Debug` printing `[REDACTED]`. Every other use of the
   identity mount, `TokenSigner`'s signing keys and `IdentitySecrets`' connection secrets, goes through the one other
   child of `openbao`, `identity_mount`, whose path type `IdentityPath` is an enum of fixed prefixes other than `rings/`
-  (`signing-keys/<version>`, `connections/<tenant id>/<connection id>/<name>`) whose components are checked against
-  `[A-Za-z0-9_-]{1,64}`, so neither `/` nor `..` can appear and no path it builds reaches a ring
-  (`an_identity_path_cannot_reach_a_ring`); it has no variant that carries free text. Its operations, all taking an
+  (`signing-keys/<version>`, `connections/<tenant id>/<connection id>/<name>`) whose fields are only typed values with
+  no free text: the version a `u32`, the tenant and connection ids their UUID types, the name an enum of fixed names
+  (`IdentitySecretName`, which the allowlist names). Each of the four operations checks every component against
+  `[A-Za-z0-9_-]{1,64}` when it builds the URL, before any request, so the guarantee holds however the value was built:
+  neither `/` nor `..` can appear and no path reaches a ring (`an_identity_path_cannot_reach_a_ring` builds the
+  variants directly, and through a test-only rendering with `..`, `a/b`, an empty and a 65-character component, and
+  asserts that each operation refuses them without sending a request). Its operations, all taking an
   `IdentityPath`, are the ones the protocol of Architecture decision 0035 decision 7 needs: `read_version(path,
   version)`, `read_metadata(path)`, `write_checked(path, version, value)` (a check-and-set) and `destroy_version(path,
   version)`, values as
@@ -1504,7 +1508,7 @@ written plus one, never reused, the highest also kept in the document), material
   implementations `SecretProvider`, `Debug` and `Drop`) and the two added by this design, `pub(crate) mod
   identity_mount;` and `pub use identity_ring::{IdentityKeyRing, RingPurpose, CliRefresh, SigninAttempt, KeyId,
   KeyState, Tag, Verdict, Sealed, RingChange, RingError};`, and is an allowlist over both children of `openbao`. `identity_mount` exposes, in any form other than private, only
-  `IdentityPath` and its four operations; no non-private function of either child takes a `&str`, `String`, `Url` or
+  `IdentityPath`, `IdentitySecretName` and its four operations; no non-private function of either child takes a `&str`, `String`, `Url` or
   `ProviderReference` as a path. `identity_ring` and its submodules: in any form other than private
   (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose`, the two
   purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError` and, to the module itself only, `RingPath`
@@ -1812,8 +1816,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
   `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a `pub(crate)` request or
   body helper in `openbao.rs`, a `mod identity_secrets;` declared in `openbao.rs`, a `pub(crate) fn` on `OpenBao` taking
-  a `&str` path, a `pub(crate) fn` taking a `&str` path in `identity_mount.rs`, an `IdentityPath` variant holding a
-  `String`, a `"rings/cli-refresh"` literal and an
+  a `&str` path, a `pub(crate) fn` taking a `&str` path in `identity_mount.rs`, an `IdentityPath` variant holding any
+  `str`-backed type (`String`, `&'static str`, `Box<str>`, `Cow<str>`, `Arc<str>`), a `"rings/cli-refresh"` literal and an
   `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
