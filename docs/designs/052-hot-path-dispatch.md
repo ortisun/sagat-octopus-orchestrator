@@ -121,9 +121,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   `worker_poll_spread_total`, no label), and the statements of a poll (`stage="poll"` in design 038's
   `worker_claim_candidates_total`, for the authentication, the session read and each scan), so that statements per lease
   are measured, not only probes; and the wake counts its claims by outcome (`worker_wake_claims_total{outcome}`,
-  `leased` or `empty`), `worker_wake_published_total`, `worker_wake_dropped_total`, `worker_wake_received_total`,
-  `worker_wake_rate_limited_total`, `worker_wake_absent_key_total`, `worker_wake_coalesced_total`,
-  `worker_wake_local_only_total` and `worker_wake_checks_total`, with closed labels or none; a woken claim carries the span event `woken` (no tenant
+  `leased` or `empty`), its messages by outcome (`worker_wake_messages_total{outcome}`: `published`, `dropped`, `received`,
+  `rate_limited`, `absent_key`, `own`, `malformed`), and its local-only starts and broker checks
+  (`worker_wake_transport_total{outcome}`: `local_only`, `check_passed`, `check_failed`); a woken claim carries the span event `woken` (no tenant
   attribute), and the publish and the receipt each a span of their own.
 
 ### Wake on commit
@@ -133,8 +133,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   activity), with no `tokio` feature beyond `rt` (ADR-0092's check unchanged): a stream registers its keys from before its claim
   begins until it leaves its park (or its window ends), an entry exists only while a stream is registered for its key,
   so the registry holds at most the maximum number of open streams times `MAX_ACTIVITIES` entries, and goes with the last registration.
-  Parking, its timer and the coalescing (the parked streams of a key are woken at most once per 10 ms; a pass hands out
-  the permits gathered meanwhile) are in `crates/api-grpc`, which already parks with `tokio::time`.
+  Parking and its timer are in `crates/api-grpc`, which already parks with `tokio::time`.
 - **Requirement 052-051 Permits, not versions.** A commit that makes `k` steps of a key ready MUST add `k` permits to
   the key's registered entry (none when no stream is registered), the permits of a key never more than the streams
   registered for it, and a claim that leases `n` tasks of a key removes up to `n` of its permits, so that a fan-out
@@ -153,9 +152,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   `commit()` after the commit succeeded, hand them to the process's wake sink (`WakeSink`, a port of the application),
   never on a failed commit; the sink adds the local permits and queues the cross-process wake. One sink per process is
   handed to every store and to the gRPC service.
-- **Requirement 052-053 A best-effort wake across processes, on the selected transport.** With an internal event
-  transport configured, the sink MUST publish one message per key per commit through a port on that transport (core
-  NATS publish, or Redis `PUBLISH`), never through the outbox and never awaiting the broker: it `try_send`s into a
+- **Requirement 052-053 A best-effort wake across processes, on NATS.** With NATS as the internal event transport,
+  the sink MUST publish one message per key per commit through a port on it (a core NATS publish), never through the
+  outbox and never awaiting the broker: it `try_send`s into a
   bounded queue drained by one task on a connection of its own, and drops and counts what does not fit or cannot be
   sent. Each execution engine subscribes on a connection of its own and, for each message, looks the key's registry entry up
   first: a message for an absent key touches no state; otherwise, unless the message is the process's own (its payload, the publishing
@@ -164,26 +163,21 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   fan-out wider than one stream's credit leaves the other streams to `idle_retry`. The control plane, whose run starts make steps
   ready, publishes and does not subscribe. A lost wake costs at most `idle_retry`; the paths that make work leasable
   with no commit of a step (a breaker closing with time, quota freed by a lease's expiry, a binding added) stay bounded by
-  it. Without a transport, the wake covers the commits of the same process only.
+  it. With the Redis transport or none, the wake covers the commits of the same process only in 0.3.0; a Redis
+  transport for the wake is a follow-up if a Redis deployment's on and off measurement asks for it.
 - **Requirement 052-054 The wake's channel is a contract, and only the platform may use it.** The message is an
   internal channel of `specs/001-platform-foundation/contracts/events.asyncapi.yaml`, unstored, under the contract
-  baseline check: subject (NATS) or channel (Redis) `sagat.wake.v1.<tenant>.<namespace>.<activity token>`, the tenant and
+  baseline check: subject `sagat.wake.v1.<tenant>.<namespace>.<activity token>`, the tenant and
   namespace as their identifiers and the activity as the hexadecimal of the first 16 bytes of its name's SHA-256, outside
   the platform stream's filter `sagat.v1.>` so that JetStream never stores it; the payload is the publishing instance's
   identifier (16 bytes), read only to drop a process's own messages; the key is read from the subject alone (the registry is indexed by tenant, namespace and activity token as well as by activity name), a
   malformed message dropped and counted. The cross-process wake is on only when the broker authenticates the
-  platform with a wake user of its own, on a connection and credentials of its own (`nats.wakeCredentialsSecret`, or a
-  Redis wake URL secret, `redis.wakeUrlSecret`; the outbox keeps its own user, which needs the JetStream API), whose
-  permissions are: for engines, publish and subscribe on `sagat.wake.v1.>`; for the control plane, publish only; no
-  JetStream API and no other subject (NATS), no other command, channel or key (Redis ACLs, asserted by the chart's contract test: engines
-  `-@all +publish +subscribe +psubscribe resetchannels &sagat.wake.v1.*`, the control plane
-  `-@all +publish resetchannels &sagat.wake.v1.*`); and
-  when no other user or anonymous connection may publish or subscribe on those channels (Redis's `default` user disabled
-  or given `resetchannels`; no NATS `no_auth_user` and no open account). The chart refuses to render the wake on without
+  platform with a wake user of its own, on a connection and credentials of its own (`nats.wakeCredentialsSecret`; the outbox
+  keeps its own user, which needs the JetStream API), whose permissions are: for engines, publish and subscribe on
+  `sagat.wake.v1.>`; for the control plane, publish only; no JetStream API and no other subject; and when no other user
+  or anonymous connection may publish or subscribe on those subjects (no `no_auth_user` and no open account). The chart refuses to render the wake on without
   the wake's credentials secret, outside the development profile; and each process checks at start, before it turns the
-  cross-process wake on, that the broker refuses an anonymous connection (NATS), or that `ACL WHOAMI` is not `default`
-  and an unauthenticated connection's `SUBSCRIBE` and `PUBLISH` on the probe channel `sagat.wake.v1.probe` are both
-  refused (Redis); otherwise it stays local-only, counts it, logs why, and checks again with a backoff capped at 5 minutes, each
+  cross-process wake on, that the broker refuses an anonymous connection; otherwise it stays local-only, counts it, logs why, and checks again with a backoff capped at 5 minutes, each
   attempt counted. Compose's
   development broker is the development profile. The control plane's egress to the broker is opened only when the wake
   is on (`infra/helm/templates/networkpolicy-egress.yaml`).
@@ -333,7 +327,7 @@ The scan's two branches gain the missing filter.
 **Wake.** `WakeRegistry` and the `WakeSink` port in `crates/application/src/worker/wake.rs`; the stores collect keys
 where they write `task.ready` and call the sink inside `commit()`; the gRPC stream loop keeps its `SessionRecord`,
 registers its activities from before its claim until it leaves its park, takes a permit or parks with its timer; a `NatsWake` (core client, publish
-and subscribe) in `crates/infra-nats` and a `RedisWake` in `crates/infra-connectors/src/redis.rs`, beside the platform's Redis publisher and on a connection of its own, implement the transport port; the engine
+and subscribe) in `crates/infra-nats` implements the transport port; the engine
 builds one registry and sink and hands them to every store and to the gRPC service; the control plane builds a
 publish-only sink.
 
@@ -346,7 +340,7 @@ publish-only sink.
 | The bounded and spread poll and its counters | `crates/application/src/worker.rs`, `crates/application/src/worker/poll_order.rs`, `tests/integration/claim-transition-efficiency/` | 052-041, 052-042, 052-043 |
 | The registry, the permits and the parking | `crates/application/src/worker/wake.rs`, `crates/api-grpc/src/service.rs` | 052-050, 052-051, 052-055 |
 | The sink in every writer of `task.ready` | `crates/infra-postgres/src/execution.rs`, `execution/path.rs`, `chain_progress.rs`, `loop_progress.rs`, `primitives.rs` | 052-052 |
-| The transports, the processes and their configuration | `crates/infra-nats/src/lib.rs`, `crates/infra-connectors/src/redis.rs`, `apps/execution-engine/src/{lib,settings,cli}.rs`, `apps/control-plane/src/{config,lib}.rs`, `infra/helm/templates/` (both components, the wake's credentials secrets, the control plane's egress rule), `infra/helm/values.yaml`, `infra/docker/compose.yaml`, the chart's contract test, `docs/runbooks/execution-engine.md`, `docs/runbooks/events.md` | 052-053, 052-054 |
+| The transports, the processes and their configuration | `crates/infra-nats/src/lib.rs`, `apps/execution-engine/src/{lib,settings,cli}.rs`, `apps/control-plane/src/{config,lib}.rs`, `infra/helm/templates/` (both components, the wake's credentials secrets, the control plane's egress rule), `infra/helm/values.yaml`, `infra/docker/compose.yaml`, the chart's contract test, `docs/runbooks/execution-engine.md`, `docs/runbooks/events.md` | 052-053, 052-054 |
 | The channel's contract | `specs/001-platform-foundation/contracts/events.asyncapi.yaml` and its baseline | 052-054 |
 | The scenario, the gate and the selector | `tests/performance/scalability-ha/`, `scripts/throughput-gate.py`, `scripts/tests/`, `scripts/select-test-targets.py`, `.github/workflows/ci.yml`, a pilot workflow, `tests/performance/reports/throughput-gate.md` | 052-030 |
 
@@ -381,7 +375,7 @@ subject it cannot parse).
 | III. External effects are at-least-once; sagas compensate | Pass | Unchanged |
 | IV. Compatibility is versioned and pinned | Pass | No schema or protocol change; the wake's channel versioned in the AsyncAPI contract with a reader rule |
 | V. Code, tenant boundary and secrets are isolated | Pass | The channel's key from the subject alone, no activity name on the wire, the platform's own broker user with channel permissions; gap 052-G1 recorded for the connectors' owner |
-| VI. Observability and audit are part of the feature | Pass | Bounded, refetched and spread polls, poll statements, wakes published, dropped, received, rate-limited and coalesced, a span event "woken" with no tenant attribute, all with closed labels |
+| VI. Observability and audit are part of the feature | Pass | Bounded, refetched and spread polls, poll statements, wake messages by outcome, wake claims by outcome, the transport's checks, a span event "woken" with no tenant attribute, all with closed labels |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | The wake carries no record, is never the only signal of work, and is not an outgoing message in this principle's sense: the `task.ready` outbox row stays the durable signal (ADR-0134 refines ADR-0002 and ADR-0069) |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | The barrier tests, the broker stopped, the commit failed, the suite with the wake off, the gate's mutation and pilot, each seen failing first |
 | Delivery Constraints | Pass with conditions | Constitution 5.0.0 as merged; the CI gate needs the CI gates of constitution 5.1.0, approved by the owner (Owner decision 2026-11-25-3, point 3) and being drafted, so Task 052-11 waits for its merge |
@@ -436,7 +430,7 @@ subject it cannot parse).
   Refs: Requirement 052-042, Requirement 052-043
 - [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with, in the target `integration_hot_path_wake` of Task 052-6 (created here), the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_registered_stream`.
   Refs: Requirement 052-050, Requirement 052-051, Requirement 052-055
-- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS and Redis transports with their bounded queues and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and, in `integration_claim_transition_efficiency` (which the constitution already runs for a change of lease or completion code), the wake-off case `the_claim_suite_passes_with_the_wake_off`, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; these tests, and Task 052-5's, in a new target `integration_hot_path_wake` of `tests/Cargo.toml`, which a new rule of `scripts/select-test-targets.py` (with its selector test) selects for changes of `crates/application/src/worker/wake.rs`, `crates/api-grpc/src/service.rs`, `crates/infra-nats/` and the Redis transport; the Redis transport's `a_redis_wake_from_another_instance_claims_at_once` and `an_open_redis_keeps_the_wake_local` (the `default` user enabled) in `integration_redis_streams`.
+- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS transport with its bounded queue and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and, in `integration_claim_transition_efficiency` (which the constitution already runs for a change of lease or completion code), the wake-off case `the_claim_suite_passes_with_the_wake_off`, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; these tests, and Task 052-5's, in a new target `integration_hot_path_wake` of `tests/Cargo.toml`, which a new rule of `scripts/select-test-targets.py` (with its selector test) selects for changes of `crates/application/src/worker/wake.rs`, `crates/api-grpc/src/service.rs`, `crates/infra-nats/`.
   Refs: Requirement 052-052, Requirement 052-053, Requirement 052-054
 - [ ] T052-7 Give the in-process transitions scenario its gate configuration (workers end on completions and sleep the SDK's `receive_delay`), a JSON output, and an open-loop mode (runs started at a fixed rate, the maximum sustained rate found by stepping it) in `tests/performance/scalability-ha/`.
   Refs: Requirement 052-030, Success criterion 052-005, Success criterion 052-006
