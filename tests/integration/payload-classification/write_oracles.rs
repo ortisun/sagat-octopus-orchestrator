@@ -38,7 +38,10 @@ async fn post_keyed(
 #[ignore = "red: G016-002, fixed by bugfix T016-067 (the idempotency scope of start, signal and update must hold the caller)"]
 async fn another_caller_reusing_a_start_key_learns_nothing_of_the_input() {
     let p = platform().await;
+    // Two callers who are not the author each try one guess once, so the test holds whichever way the key is scoped
+    // by T016-067: neither may learn more than the other.
     p.grant(p.tenant, "olivia", Role::Operator).await;
+    p.grant(p.tenant, "oscar", Role::Operator).await;
     let mut ir = super::support::engine::document(
         "classified-start-key",
         "done",
@@ -54,15 +57,17 @@ async fn another_caller_reusing_a_start_key_learns_nothing_of_the_input() {
     let (status, first) = post_keyed(&p, HUMAN, "/runs", key, &start(true)).await;
     assert_eq!(status, 202, "{first}");
     let (right_status, right) = post_keyed(&p, "olivia", "/runs", key, &start(true)).await;
-    let (wrong_status, wrong) = post_keyed(&p, "olivia", "/runs", key, &start(false)).await;
+    let (wrong_status, wrong) = post_keyed(&p, "oscar", "/runs", key, &start(false)).await;
     assert_eq!(
         right_status, wrong_status,
         "a right and a wrong guess of a pii input are told apart: {right} / {wrong}"
     );
-    assert_ne!(
-        right["runId"], first["runId"],
-        "another caller's key replays their run"
-    );
+    for answer in [&right, &wrong] {
+        assert_ne!(
+            answer["runId"], first["runId"],
+            "another caller's key replays their run: {answer}"
+        );
+    }
 }
 
 /// G016-003: every API publisher of a namespace shares the source `api`, and a repeated event id is compared by
@@ -71,17 +76,19 @@ async fn another_caller_reusing_a_start_key_learns_nothing_of_the_input() {
 #[ignore = "red: G016-003, fixed by bugfix T016-068 (an API event id must be deduplicated per publisher)"]
 async fn another_publisher_reusing_an_event_id_learns_nothing_of_the_data() {
     let p = platform().await;
+    // Two publishers who are not the author each try one guess once (see the start test).
     p.grant(p.tenant, "devon", Role::Developer).await;
+    p.grant(p.tenant, "dana", Role::Developer).await;
     let event = |personal: &str| json!({"eventId": "evt-guess-1", "type": "classification.demo", "data": {"personal": personal}});
     let (status, first) = post_keyed(&p, HUMAN, "/events", "evt-key-1", &event("1970-01-01")).await;
     assert_eq!(status, 202, "{first}");
     let (right_status, right) =
         post_keyed(&p, "devon", "/events", "evt-key-2", &event("1970-01-01")).await;
     let (wrong_status, wrong) =
-        post_keyed(&p, "devon", "/events", "evt-key-3", &event("1970-01-02")).await;
+        post_keyed(&p, "dana", "/events", "evt-key-3", &event("1970-01-02")).await;
     assert_eq!(
-        (right_status, right.get("duplicate").cloned()),
-        (wrong_status, wrong.get("duplicate").cloned()),
+        (right_status, right.get("status").cloned()),
+        (wrong_status, wrong.get("status").cloned()),
         "a right and a wrong guess of an event's data are told apart: {right} / {wrong}"
     );
 }

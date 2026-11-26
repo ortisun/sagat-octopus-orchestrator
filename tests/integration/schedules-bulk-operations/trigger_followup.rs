@@ -958,6 +958,11 @@ async fn the_schedules_over_http_say_whether_the_control_of_a_trigger_owned_one_
     let (owned, own, described, described_own) = both(&p, &base, &api_id).await;
     assert_eq!(owned["controllable"], json!(false), "before the handover");
     assert_eq!(described["controllable"], json!(false), "described, before");
+    // a trigger-owned schedule has no input of its own; neither answer carries a digest (FR-016-030, G665)
+    assert_eq!(owned["action"]["hasInput"], json!(false), "{owned}");
+    assert_eq!(described["action"]["hasInput"], json!(false), "{described}");
+    assert_eq!(own["action"]["hasInput"], json!(true), "{own}");
+    assert!(own["action"].get("inputDigest").is_none(), "{own}");
     assert!(own.get("controllable").is_none(), "{own}");
     assert!(
         described_own.get("controllable").is_none(),

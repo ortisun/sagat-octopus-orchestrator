@@ -4032,7 +4032,7 @@ export interface components {
             /** @description user:<sub>, worker:<id> or system:<component>. */
             actor: string;
             traceId?: string | null;
-            /** @description Where the payload this event carries is kept: `journal:<runId>:<seq>`, the run and this event's sequence, which payload inspection and disclosure accept as `{"source": "journal", "sequence": <seq>}`. Null when the event carries none. It is not derived from the payload, so two equal payloads have different references, and it is no digest: no read returns a digest of a payload (FR-016-030, G665). Until T016-066 it was the SHA-256 of the payload. */
+            /** @description Where the payload this event carries is kept: `journal:<runId>:<seq>`, the run and this event's sequence, which payload inspection and disclosure accept as `{"source": "journal", "sequence": <seq>}` (disclosure gives values for a step output, a wait's or a reconciliation's result and a child's finish, and structure only for `state.updated`, `run.continued` and `continuation.selected`). Null when the event carries none. It is not derived from the payload, so two equal payloads have different references, and it is no digest: no read returns a digest of a payload (FR-016-030, G665). Until T016-066 it was the SHA-256 of the payload. */
             payloadRef?: string | null;
             /** @description Why it happened, when the event is the result of something going wrong, a person's choice or the clock. */
             cause?: components["schemas"]["Cause"] | null;

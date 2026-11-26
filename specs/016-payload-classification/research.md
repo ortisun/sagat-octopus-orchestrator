@@ -662,7 +662,11 @@ draft run-history export contract (`specs/020-visibility-analytics-archival/cont
 
 **Decision**: `payloadRef` keeps its name and its type (`string` or `null`). Its value is `journal:<runId>:<seq>`, the
 run and the journal sequence of the event. Payload inspection (ADR-0028) and disclosure (D271) accept exactly that place
-as the selector `{"source": "journal", "sequence": <seq>}`. It is `null` when the event carries no payload, as before.
+as the selector `{"source": "journal", "sequence": <seq>}`. Disclosure gives values only for the events FR-016-014
+lists (a step output, a wait's or a reconciliation's result, a child's finish). The other events that keep a payload
+are `state.updated`, `run.continued` and `continuation.selected`. They have no carrier, so disclosure answers their
+structure to a caller who may inspect and nothing to the others, as before. It is `null` when the event carries no
+payload, as before. A reset run re-emits its source's events with their payloads, so its references resolve too.
 No caller gets the digest, whatever their grants. The application type cannot carry it: `JournalEntry.payload` is a
 `JournalPayloadRef { run, seq }`, not a string. A store that selected the digest into it would not compile.
 
@@ -743,3 +747,20 @@ problems; each was fixed or registered, and none was accepted:
 | Test gaps: the schedule test read only create, read and list; the Rust SDK's typed journal field was not parsed with the new form; the compatibility check compared re-serialized JSON | Fixed: replace, pause and resume are checked; `journal_events_have_typed_fields…` parses `journal:<runId>:<seq>`; the frozen-binary comparison is byte for byte outside the `payloadRef` values, with a unit test of the comparison |
 | The canary of T016-049 looks for values, not digests | Not changed. The canary run has no step output, so there is no payload digest for it to find. The guard for this gap is `journal_reference`, which refuses any SHA-256-shaped value on the run reads, for every role that holds `run:read` |
 | The CLI's events are not tested | Not changed. The CLI reads the REST journal and prints sequence, type, step, attempt and cause, never `payloadRef` (`apps/cli/src/workflow.rs`, `inspect_run`), so it carries whatever the read carries |
+
+The correctness review read the branch after those fixes. It found the server change sound: references resolve for reset
+runs, children, scoped events and external payloads, and every schedule answer carries `hasInput`. Its findings and their
+dispositions:
+
+| Finding | Disposition |
+|---|---|
+| Major: `rest::a_schedule_goes_through_its_whole_life_over_http` still expected `inputDigest` | Fixed: it checks `hasInput` and the absence of the digest. The whole schedules target is run |
+| Major: the ignored red tests could not turn green under the fix their tasks prescribe | Fixed: two callers who are not the author each send one guess once, so the tests hold under either way of scoping the key |
+| Minor: the frozen-binary check compared only a journal with no payload | Fixed: it also compares the journal of the run with declared state, whose `state.updated` carries one |
+| Minor: the docs said only step, wait and reconciliation outputs get a reference, and that disclosure accepts every one | Fixed in FR-016-030, D016-001, the contract and the `JournalEntry` documentation: `state.updated`, `run.continued` and `continuation.selected` get one too, and disclosure gives their structure only |
+| Minor: the release note did not warn that an older SDK's empty `inputDigest` compares equal | Fixed |
+| Minor: the SDKs drop an older server's schedule digest but keep an older server's journal digest in raw events | Kept, on purpose (delegate, OD-2026-11-24-4). An older server has already sent that digest to that caller, so what the client does with it protects nothing; the fix is the server. The SDKs drop `inputDigest` only because their typed field is gone and to give one answer for `hasInput`. A raw journal event is the server's answer as sent, and its typed `payloadRef` keeps the server's string by design |
+| Minor: no golden has `hasInput: false` | Covered elsewhere: the server's `false` (a trigger-owned schedule has no input) is checked by `trigger_followup::the_schedules_over_http_say_whether…`, and each SDK's unit test parses `false`. No conformance scenario was blessed for it |
+| Minor: T016-066 names the CLI and the canary, which this change declines | The task stays unticked; its evidence line will say that the CLI prints no `payloadRef` and that `journal_reference` is the guard the canary could not be (see the table above) |
+| Nit: `listRunJournalEvents` leaves the byte-stability guard | Kept: it is now a feature-016 extension like the event reads, and the other 016 extensions are outside the guard too. Its shape is guarded by `journal_reference` and the contract tests |
+| Nit: the Go SDK kept the answer when it could not rewrite the action | Fixed: it keeps no action instead |

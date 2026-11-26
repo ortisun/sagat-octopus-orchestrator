@@ -707,7 +707,8 @@ func withoutInputDigest(raw map[string]json.RawMessage) map[string]json.RawMessa
 	}
 	encoded, err := json.Marshal(kept)
 	if err != nil {
-		return raw
+		// Never keep the digest: without an action that can be written again, keep no action.
+		encoded = json.RawMessage("null")
 	}
 	out := make(map[string]json.RawMessage, len(raw))
 	for key, value := range raw {

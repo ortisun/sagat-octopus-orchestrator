@@ -208,6 +208,14 @@ async fn unchanged_surfaces_match_actual_pre_classification_response_bytes() {
         Some(json!({"args":{}})),
     ));
     requests.push(("update", Method::POST, update_path, Some(update)));
+    // The journal of the run that holds declared state: its `state.updated` carries a payload, so the old binary
+    // answers a digest there and this one the place (T016-066, D016-003).
+    requests.push((
+        "operations-journal",
+        Method::GET,
+        format!("/runs/{operations}/events?limit=200"),
+        None,
+    ));
     let mut goldens = BTreeMap::new();
     for (label, method, path, body) in &requests {
         let (status, value, wire) = api(
@@ -257,10 +265,15 @@ async fn unchanged_surfaces_match_actual_pre_classification_response_bytes() {
         assert_eq!(status, StatusCode::OK, "current surface: {label}");
         fs::write(artifacts.join(format!("{label}.after.http-body")), &wire)
             .expect("current response artifact");
-        if *label == "journal" {
+        if matches!(*label, "journal" | "operations-journal") {
             // The one documented break of these surfaces (T016-066, FR-016-030, D016-003): `payloadRef` was the
             // payload's SHA-256 and is now its place. Every other byte stays what it was.
-            assert_journal_changed_only_in_payload_refs(&goldens[*label], &wire, terminal);
+            let run = if *label == "journal" {
+                terminal
+            } else {
+                operations
+            };
+            assert_journal_changed_only_in_payload_refs(&goldens[*label], &wire, run);
             continue;
         }
         assert!(

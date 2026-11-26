@@ -31,7 +31,9 @@ There is no setting that restores the digest. What to do:
   revision. Read the input through `input-disclosures` if you may. The SDKs drop the field and do not leave it `null`,
   because `null == null` would silently answer "unchanged".
 - *You keep a client of an older release*: it still parses both answers. An older Studio shows the reference where it
-  showed a short digest. An older SDK's typed `inputDigest` is `null`. Against an older server, a new SDK and the new
+  showed a short digest. An older SDK's typed `inputDigest` is empty (`null`, or `""` in Go). **Code that compares it
+  between two reads now always finds the two equal**, whatever the input: upgrade the SDK before you rely on such a
+  comparison, or remove it. Against an older server, a new SDK and the new
   Studio report `hasInput: true` when the server still sends `inputDigest`, without keeping the value.
 
 Inside the server nothing moves: the digest is still the content address of stored payloads, and no migration runs.

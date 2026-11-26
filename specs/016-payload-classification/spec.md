@@ -437,7 +437,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   classification, and it holds for every caller, a caller who may reveal every value included: that caller can disclose
   the value and needs no digest. The journal read's `payloadRef` is the reference `journal:<runId>:<seq>`. It names
   where the payload is: the run and the sequence that payload inspection and disclosure accept as the selector
-  `{"source": "journal", "sequence": <seq>}`. It is `null` for an event with no payload. Two equal payloads get two
+  `{"source": "journal", "sequence": <seq>}`. Disclosure gives values for the events FR-016-014 lists. For the other
+  events that keep a payload (`state.updated`, `run.continued`, `continuation.selected`) it gives the structure to a
+  caller who may inspect, and nothing to the others. It is `null` for an event with no payload. Two equal payloads get two
   different references. The schedule read says that the action has an input (`action.hasInput`); it no longer returns
   the input's digest (`action.inputDigest`). The server keeps the digest inside, where it identifies the stored
   content (the `payloads` table is addressed by it). It never leaves through the API, the event stream, the CLI, the

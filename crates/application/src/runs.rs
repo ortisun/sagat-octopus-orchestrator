@@ -290,8 +290,8 @@ pub struct JournalEntry {
     pub actor: String,
     pub trace_id: Option<String>,
     pub occurred_at: OffsetDateTime,
-    /// Where the payload the event carries is kept (a step output, a wait's or a reconciliation's result), or
-    /// `None` when it carries none. Never a digest of the payload: an unsalted digest of a guessable value lets any
+    /// Where the payload the event carries is kept (a step output, a wait's or a reconciliation's result, a
+    /// child's finish, declared state, a continuation's input), or `None` when it carries none. Never a digest of the payload: an unsalted digest of a guessable value lets any
     /// reader confirm the guess (FR-016-030, G665). The type has no room for one.
     pub payload: Option<JournalPayloadRef>,
     /// Why it happened, when it is the result of something going wrong, a person's choice or the
