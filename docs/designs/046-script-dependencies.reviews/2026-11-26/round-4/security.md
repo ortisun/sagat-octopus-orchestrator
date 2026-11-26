@@ -7,7 +7,7 @@ Agent-blob: c02123dd239a7128f22e02c9dc39de8f110cc811
 Note: the reviewer's output, condensed by the author; nothing of substance left out. The last targeted security re-read
 after review round 3, on the approval rule of Owner decision 2026-11-25-2 (fix Blockers and every security finding,
 re-read the fixes). Its history in this folder: `reread-1-security.md` (Major 1, Nit 5), `reread-2-security.md` (Nit 6),
-`reread-3-security.md` (Nit 3), a pass at `4b6a3e6d` with nothing open, then `reread-4-security.md` (Major 3, Nit 2) after
+`reread-3-security.md` (Nit 3), `reread-3b-security.md` (at `4b6a3e6d`, nothing open), then `reread-4-security.md` (Major 3, Nit 2) after
 the architecture and correctness answers, and `reread-5-security.md` (Major 1); every finding fixed before the next pass.
 The reviewer read the diff of the last fix, the design, the data model and the contracts, checked the lock behaviour
 against PostgreSQL's documented and source behaviour, and ran nothing.
