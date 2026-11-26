@@ -23,7 +23,7 @@ new authority, and is measured before anything heavier is built:
 
 Two heavier remedies of this design's earlier drafts are not built in 0.3.0 and wait for this design's measurement
 (Open Questions 2 and 3): a queue of ready steps claimed with `SKIP LOCKED`, and the lease of the next step in the answer
-to a completion. Each of the three server remedies is a setting, off until its on and off measurement keeps it.
+to a completion. The bound, the spread and the wake are each a setting, off until its on and off measurement keeps it.
 
 This design was the second part of design 051's first draft, whose review found it not ready. Its second draft was
 reviewed in full on 2026-11-26 (`docs/designs/052-hot-path-dispatch.reviews/2026-11-26/`, where each report lists its
@@ -50,6 +50,9 @@ Requirement 053-006 cites them in their earlier meaning (its Task 053-8 records 
   whichever comes first, then claims again. *Discovery admission* is the stream's per-pass admission of a claim
   (`admission.admit_discovery`, `crates/api-grpc/src/service.rs`; ADR-0029, decision 3); a refusal ends the stream with
   `RESOURCE_EXHAUSTED` and a retry hint, as today.
+- A *breaker* is a compensation circuit breaker; a *binding* a worker's authorization for an activity; the run's
+  *reducer* is the function that folds its journal into its state; features 002, 009 and 010 are durable execution,
+  compensations and capacity.
 - *Design 038's budget* is `tests/integration/claim-transition-efficiency/work_budget.rs`: 38 statements and 2
   transactions for a lease, 50 and 1 for a completion that makes the next step ready, at `develop` `546d5aa5`; *design
   038's selector* is its rule in `scripts/select-test-targets.py`.
@@ -85,7 +88,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   cardinality(st.instance_path_nodes) = 0`), and design 038's `probed` counter MUST count only a candidate for which a
   claim transaction was begun.
 - **Requirement 052-041 A bounded walk that fetches again.** A poll MUST stop walking its eligible window after 8
-  consecutive probes that met contention (probes that did not meet contention reset nothing and count nothing), in place
+  consecutive probes that met contention: a lease resets the count to zero, a refusal of this build or session neither
+  counts nor resets it, and each fetch starts at zero (a pool-refused candidate is such a refusal, wherever the scan's
+  sample of them falls in the window); in place
   of design 038's rule that a poll walks every candidate of its window (FR-038-004, refined: the order stays a
   preference, and no candidate is dropped, only deferred). A poll so stopped with untried eligible candidates fetches its
   window once more, starting past the candidates its first walk tried (its first start plus the number tried) and
@@ -101,7 +106,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
 - **Requirement 052-042 A spread start under contention, per process.** The polls of a namespace in a process MUST
   start as design 038's turn says, plus, while the namespace is *contended* in the process, an offset of `r mod len`
   positions, `len` being the window's length and `r` the process's registry instance identifier (Architecture decision
-  0082) read as an integer (its first eight bytes, little-endian), the rotation applied within one priority when
+  0082, a random version 4 identifier) read as an integer (its first eight bytes, little-endian), the rotation applied within one priority when
   feature 019 adds priorities (FR-019-013). A namespace is contended in a process from a probe there that met contention
   until a poll of the namespace there ends having met none, or 1 s after its last contended probe, whichever is first
   (a map of the namespaces contended in the last second, at most 10,000 entries, the oldest dropped first). The turn
@@ -112,8 +117,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   `worker_poll_spread_total`, no label), and the statements of a poll (`stage="poll"` in design 038's
   `worker_claim_candidates_total`, for the authentication, the session read and each scan), so that statements per lease
   are measured, not only probes; and the wake counts its claims by outcome (`worker_wake_claims_total{outcome}`,
-  `leased` or `empty`), its messages published, dropped, received, rate-limited, refused for an absent key and coalesced, and
-  its local-only starts and checks, with closed labels; a woken claim carries the span event `woken` (no tenant
+  `leased` or `empty`), `worker_wake_published_total`, `worker_wake_dropped_total`, `worker_wake_received_total`,
+  `worker_wake_rate_limited_total`, `worker_wake_absent_key_total`, `worker_wake_coalesced_total`,
+  `worker_wake_local_only_total` and `worker_wake_checks_total`, with closed labels or none; a woken claim carries the span event `woken` (no tenant
   attribute), and the publish and the receipt each a span of their own.
 
 ### Wake on commit
@@ -122,7 +128,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   (`crates/application/src/worker/wake.rs`) of per-key permits behind a standard mutex, a key being (tenant, namespace,
   activity), with no `tokio` feature beyond `rt` (ADR-0092's check unchanged): a stream registers its keys from before its claim
   begins until it leaves its park (or its window ends), an entry exists only while a stream is registered for its key,
-  so the registry holds at most the stream permits times `MAX_ACTIVITIES` entries, and goes with the last registration.
+  so the registry holds at most the maximum number of open streams times `MAX_ACTIVITIES` entries, and goes with the last registration.
   Parking, its timer and the coalescing (the parked streams of a key are woken at most once per 10 ms; a pass hands out
   the permits gathered meanwhile) are in `crates/api-grpc`, which already parks with `tokio::time`.
 - **Requirement 052-051 Permits, not versions.** A commit that makes `k` steps of a key ready MUST add `k` permits to
@@ -201,9 +207,11 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   (t(0.975, 5) + t(0.8, 5)) / √6 = (2.571 + 0.920) / 2.449, a heuristic, since the sign rule decides first. Under no
   change the sign rule alone fires with probability 1/64, about 1.6%; the pilot's report states the false-positive rate
   and the power at a 15% loss of transitions per second, estimated by resampling its pairs with that loss injected; if
-  that power is below 0.8, the gate runs ten pairs (A B B A five times) and fails on nine of ten slower (probability
+  that power is below 0.8, the gate runs ten pairs (A B B A five times) and fails on at least nine of ten slower (probability
   11/1024, about 1.1%, under no change) and the median beyond T10 = (t(0.975, 9) + t(0.8, 9)) / √10 × sd =
-  (2.262 + 0.883) / 3.162 × sd = 0.995 × sd. Both factors are a paired t-test's, applied to the median as a heuristic. A one-statement regression is the statement budget's to catch; the scenario uses unary polls, so a
+  (2.262 + 0.883) / 3.162 × sd = 0.995 × sd. Both factors are a paired t-test's, applied to the median as a heuristic. If ten pairs still give a power below 0.8 at
+  a 15% loss, the gate reports a 15% loss as undetectable on that runner and Task 052-11 does not start until the
+  scenario is changed to reach it. A one-statement regression is the statement budget's to catch; the scenario uses unary polls, so a
   slowdown of streams or of the wake, or one from a migration or a dependency's update, is the release benchmark's.
 
 ### Success criteria
@@ -314,7 +322,7 @@ design claims no number measured on a machine it was not run on.
 
 **The poll.** `claim()` in `crates/application/src/worker.rs` receives the eligible window's length, counts consecutive
 probes that met contention (`claim_run` reports which), stops at 8, fetches once more, then walks the ineligible
-sample; `poll_order.rs` adds the process's offset while the namespace's in-flight entry carries the contention flag.
+sample; `poll_order.rs` adds the process's offset while the namespace is in the contended map.
 The scan's two branches gain the missing filter.
 
 **Wake.** `WakeRegistry` and the `WakeSink` port in `crates/application/src/worker/wake.rs`; the stores collect keys
@@ -413,7 +421,7 @@ subject it cannot parse).
   Refs: Requirement 052-041, Requirement 052-042, Requirement 052-053
 - [ ] T052-2 Add the missing path filter to the two branches of the candidate scan and count `probed` only with a transaction begun, with the test `a_minor_four_session_reaches_its_forward_work_behind_nine_scoped_compensations` and the counters' test `probed_counts_only_a_begun_claim_transaction`, beside `a_poll_counts_each_stage_once_with_the_stage_as_its_only_label`.
   Refs: Requirement 052-040
-- [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the ChildRoot capacity guard's suite, `tests/integration/workflow-primitives/`, the guard being off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `the_second_fetch_starts_past_what_the_first_tried` (with an instance identifier of offset 0, set by the test constructor, and the namespace marked contended by a test hook), `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry`, `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
+- [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the suite of the ChildRoot capacity guard, `tests/integration/workflow-primitives/`, since only that guard produces ADR-0075's ineligible sample and it is off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `the_second_fetch_starts_past_what_the_first_tried` (with an instance identifier of offset 0, set by the test constructor, and the namespace marked contended by a test hook), `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry`, `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
   Refs: Requirement 052-041, Requirement 052-043
 - [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed identifiers, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database with identifiers set by a test constructor to offsets at least K apart modulo the window's length, round 2 started while round 1's locks are still held so that the namespace stays contended, a contended first round, then K pollers per instance asserting K probes for K leases), `one_poller_per_instance_stays_spread_within_a_second_of_contention` and `the_contended_map_drops_its_oldest_entry_past_ten_thousand`; the report of Task 052-9 records the instances' offsets.
   Refs: Requirement 052-042, Requirement 052-043
