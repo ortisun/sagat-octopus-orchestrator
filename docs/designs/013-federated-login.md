@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the `cli-refresh`
-string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, and no public function of that module returns a key or a derived key (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
+string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, and no item of that module that is not private names a key type (`RingKey`, `PurposeKey`, `Hmac`, `Hkdf`, `Aes256Gcm`) in its signature (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -1459,8 +1459,12 @@ to that module, so `SecretCipher`'s code cannot reach them. Its public operation
 `verify(key_id, sid, generation, random, tag) -> Verdict` in constant time; `IdentityKeyRing<SigninAttempt>::seal(aad,
 plaintext) -> Option<Sealed>`, which draws the salt and the nonce itself, and `open(key_id, salt, nonce, ciphertext,
 aad) -> Option<Vec<u8>>`. The `RefreshTokenMac` handles (`MacVerifier`, `MacMinter`) and the `AttemptSealer` adapter
-call only these. An architecture rule keeps the label literals there and refuses a public function of the module whose
-return type contains a key or a derived key (Technical Plan 2). Task 013-8 adds them with the `hmac` and `hkdf`
+call only these. Key bytes and derived keys live in module-private newtypes (`RingKey`, `PurposeKey`) held as
+`Zeroizing`, with no `Clone`, `Serialize`, `AsRef` or `Deref`; the ring has a hand-written `Debug` that shows only key
+ids and states, as `KeyRing`'s does, and the two adapters' `Debug` show only the ring's (`an_identity_key_ring_never_prints_key_material`
+formats the ring and both adapters with `{:?}`). An architecture rule keeps the label literals there and refuses any
+item of the module that is not private (a `pub`, `pub(crate)` or `pub(super)` function, field or trait implementation)
+whose signature names `RingKey`, `PurposeKey`, `Hmac`, `Hkdf` or `Aes256Gcm` (Technical Plan 2). Task 013-8 adds them with the `hmac` and `hkdf`
 crates. Every write of the document is a KV version 2
 check-and-set on the version the command read.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
@@ -1757,8 +1761,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   the module-private key bytes and `derive_purpose_key(key_id, salt)` of `IdentityKeyRing<P>` with its public
   operations `mint`, `verify`, `seal` and `open` and the purpose's `P::Salt` (`KeyRing` unchanged);
   the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
-  `"cli-refresh"`, a call outside the module and a public function returning a key; the command name `identity
-  cli-refresh-key` passes); the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
+  `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>` and an `AsRef<[u8]>` on
+  `RingKey`; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
