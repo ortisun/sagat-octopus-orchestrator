@@ -806,21 +806,54 @@ pub async fn serve(
     }
     // The worker protocol obeys the registry as the passes do: a replica that may not serve answers its workers
     // UNAVAILABLE and another replica serves them.
-    let mut worker_api = WorkerGrpc::new(state, workers).with_serving_gate(Arc::clone(&gate));
+    // Feature 006 (decision D006-004): the leases this replica committed and never handed to a host are withdrawn once the
+    // platform requires `lease-withdrawal-v1` of control planes and engines; the gate keeps the recorded requirements.
+    let workers = workers
+        .with_lease_withdrawal(Arc::clone(&gate))
+        .with_new_withdrawals(engine.lease_withdrawal);
+    if !engine.lease_withdrawal {
+        tracing::warn!(
+            "SAGAT_LEASE_WITHDRAWAL=off: this engine writes no new lease withdrawal; its leases lapse as before"
+        );
+    }
+    // at most a quarter of the pool withdraws at once (decision D006-038)
+    let mut worker_api = WorkerGrpc::new(state, workers)
+        .with_serving_gate(Arc::clone(&gate))
+        .with_withdrawal_concurrency(sagat_api_grpc::withdrawal_concurrency(
+            config.database.max_connections,
+        ));
+    let withdrawals = worker_api.withdrawals();
     if let Some(blobs) = blobs {
         worker_api = worker_api.with_blobs(blobs, engine.blob_transfer);
     }
     let grpc_stop = stop_rx.clone();
     let grpc_config = engine.grpc.clone();
     tasks.spawn("worker gRPC server", async move {
-        serve_grpc(
+        let stop_seen = Arc::new(std::sync::OnceLock::new());
+        let seen = Arc::clone(&stop_seen);
+        let served = serve_grpc(
             grpc_listener,
             worker_service(worker_api),
             grpc_config,
-            stopped(grpc_stop),
+            async move {
+                stopped(grpc_stop).await;
+                let _ = seen.set(tokio::time::Instant::now());
+            },
         )
         .await
-        .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())))
+        .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())));
+        // The claims in progress and the withdrawals of the leases the last streams never handed over run to their end
+        // before the pool closes (decisions D006-016 and D006-036), within the grace that is left; a crash does not wait
+        // (gap G006-002).
+        if !withdrawals
+            .drain(drain_bound(stop_seen.get().copied()))
+            .await
+        {
+            tracing::warn!(
+                "the withdrawal of undelivered leases did not finish within the grace; they lapse"
+            );
+        }
+        served
     });
 
     let outcome = supervision::supervise(
@@ -842,6 +875,15 @@ pub async fn serve(
     metrics_upkeep.abort();
     pool.close().await;
     outcome
+}
+
+/// How long the worker API may wait for its claims and withdrawals after the stop (decision D006-036): the shutdown's grace
+/// less what has passed since the stop and a margin of one second, so that the supervisor never aborts the wait.
+fn drain_bound(stop_seen: Option<tokio::time::Instant>) -> Duration {
+    let passed = stop_seen.map_or(Duration::ZERO, |at| at.elapsed());
+    SHUTDOWN_GRACE
+        .saturating_sub(passed)
+        .saturating_sub(Duration::from_secs(1))
 }
 
 /// `/livez` (the scheduler loop is ticking and the shard keeper is rounding) and `/readyz` (and the
@@ -921,4 +963,37 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
     Router::new()
         .route("/livez", get(live))
         .route("/readyz", get(ready))
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    /// Decision D006-036: the drain of the worker API gets the grace that is left after the stop, less a margin of one
+    /// second, so the supervisor (which aborts at `SHUTDOWN_GRACE` from the stop) never cuts it off; past the grace it is
+    /// zero, never a new grace of its own.
+    #[tokio::test(start_paused = true)]
+    async fn the_drain_gets_what_is_left_of_the_grace_less_one_second() {
+        let margin = Duration::from_secs(1);
+        assert_eq!(drain_bound(None), SHUTDOWN_GRACE - margin);
+        let stop = tokio::time::Instant::now();
+        assert_eq!(drain_bound(Some(stop)), SHUTDOWN_GRACE - margin);
+        for passed in [1, 10, 28] {
+            tokio::time::advance(Duration::from_secs(passed) - (stop.elapsed())).await;
+            let bound = drain_bound(Some(stop));
+            assert_eq!(
+                bound + Duration::from_secs(passed) + margin,
+                SHUTDOWN_GRACE,
+                "{passed} s after the stop"
+            );
+        }
+        for passed in [29, 30, 45] {
+            tokio::time::advance(Duration::from_secs(passed) - stop.elapsed()).await;
+            assert_eq!(
+                drain_bound(Some(stop)),
+                Duration::ZERO,
+                "{passed} s after the stop"
+            );
+        }
+    }
 }

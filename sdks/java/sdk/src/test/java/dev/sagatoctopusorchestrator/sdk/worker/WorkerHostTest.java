@@ -1016,19 +1016,24 @@ class WorkerHostTest {
 
     @Test
     void aStreamOverCapacityRunsOnlyTheCreditItWasGiven() {
-        fake.acceptedVersion = "1.4";
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        fake.acceptedVersion = "1.8";
         fake.ignoreMax = true;
         fake.holdStreamOpen = true;
         fake.addLeases(
                 lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1")),
                 lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2")));
-        WorkerHost h = host(b -> b.maxInflight(1));
+        WorkerHost h = host(b -> b.protocolVersion("1.8").maxInflight(1));
         h.registerActivity("charge", (in, ctx) -> 1);
 
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "one bounded task");
+        until(() -> fake.of("FailStep").size() == 1, "the lease beyond the credit to be handed back");
         sleep(100);
         assertEquals(1, fake.of("CompleteStep").size());
+        assertEquals(1, fake.of("FailStep").size());
+        assertEquals("run-2/charge/1", failed(0).getTaskId());
+        assertEquals("TASK_NOT_STARTED", failed(0).getErrorCode());
         assertEquals(1, ((Worker.PollTasksRequest) fake.of("StreamTasks").get(0).request()).getMaxTasks());
     }
 
@@ -1045,15 +1050,16 @@ class WorkerHostTest {
     }
 
     @Test
-    void aStreamCannotExceedTheAggregateEightMiBInputBudget() {
-        fake.acceptedVersion = "1.4";
+    void aStreamCannotExceedTheAggregateEightMiBInputBudgetAndHandsBackTheLeaseOverIt() {
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        fake.acceptedVersion = "1.8";
         fake.streamFrameSize = 1;
         String document = "{\"input\":\"" + "x".repeat(4 * 1024 * 1024) + "\"}";
         fake.addLeases(
                 lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1").setInputJson(document)),
                 lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2").setInputJson(document)));
         AtomicInteger handled = new AtomicInteger();
-        WorkerHost h = host(b -> b.maxInflight(2));
+        WorkerHost h = host(b -> b.protocolVersion("1.8").maxInflight(2));
         h.registerActivity("charge", (in, ctx) -> {
             handled.incrementAndGet();
             return 1;
@@ -1061,10 +1067,13 @@ class WorkerHostTest {
 
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "the first frame within the aggregate budget");
+        until(() -> fake.of("FailStep").size() == 1, "the lease over the budget to be handed back");
         sleep(150);
         assertEquals(1, handled.get());
         assertEquals(1, fake.of("CompleteStep").size());
-        assertTrue(fake.of("FailStep").isEmpty());
+        assertEquals(1, fake.of("FailStep").size());
+        assertEquals("run-2/charge/1", failed(0).getTaskId());
+        assertEquals("TASK_NOT_STARTED", failed(0).getErrorCode());
     }
 
     @Test

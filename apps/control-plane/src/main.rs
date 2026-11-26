@@ -181,6 +181,15 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             tracing::info!(tenant = %request.tenant_id, "scheduling weight changed");
             Ok(())
         }
+        Command::CapabilityActivate(args) => {
+            let said = sagat_control_plane::capability_activation::capability_activate(
+                &config.database,
+                &args,
+            )
+            .await?;
+            println!("{said}");
+            Ok(())
+        }
         Command::ScheduleTriggerHandover(args) if args.auto => {
             let interrupt = sagat_control_plane::handover_auto::Interrupt::default();
             sagat_control_plane::handover_auto::raise_on_signals(&interrupt);

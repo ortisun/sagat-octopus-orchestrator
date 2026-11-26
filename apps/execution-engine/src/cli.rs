@@ -86,6 +86,7 @@ ENVIRONMENT (serve):
     SAGAT_SCHEDULES_AUTO_HANDOVER     the deployment runs the job of the automatic handover; exported only, as
                                       trigger_schedule_auto_handover_expected, for the alert on a job that never writes [true]
     SAGAT_LAKE_ENABLED                let a run carry an Apache Iceberg write; the control plane has the same switch [false]
+    SAGAT_LEASE_WITHDRAWAL            on|off: write new lease withdrawals (docs/runbooks/lease-withdrawal.md) [on]
     SAGAT_SCHEDULES_BATCH             due schedules per round (1-5000) [100]
     SAGAT_SCHEDULES_POLL_MS           pause when a round found nothing [1000]
     SAGAT_BATCHES_ENABLED             run batch jobs from this replica [false]

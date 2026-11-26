@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -63,11 +64,125 @@ func activityInstanceOf(lease *pb.TaskLease, minor int) *ExecutionInstanceIdenti
 	return &ExecutionInstanceIdentity{InstancePath: path, DefinitionNodeID: instance.GetDefinitionNodeId()}
 }
 
-func (h *Host) dispatch(l *link, lease *pb.TaskLease) {
+// inflightKey is what identifies a task while it runs: the legacy task id is run/node/generation, which
+// sibling iterations of a collection share, so from protocol 1.5 the instance path is part of it.
+func inflightKey(lease *pb.TaskLease, minor int) string {
+	key := lease.GetTaskId()
+	for _, segment := range instanceOf(lease, minor).GetInstancePath() {
+		key += fmt.Sprintf("/%s[%d]", segment.GetScopeNodeId(), segment.GetIterationIndex())
+	}
+	return key
+}
+
+// Why a lease the host received is not run (sdks/SPEC.md section 6.2).
+const (
+	handBackStopping  = "stopping"
+	handBackCredit    = "credit"
+	handBackMalformed = "malformed"
+)
+
+// handBackItem is a hand-back waiting its turn.
+type handBackItem struct {
+	l     *link
+	lease *pb.TaskLease
+	minor int
+	key   string
+}
+
+// window is what one poll answer or one stream receive window has seen: the in-flight keys of the
+// leases it dispatched or handed back.
+type window struct {
+	minor int
+	seen  map[string]bool
+}
+
+func newWindow(sess *session) *window {
+	return &window{minor: minorOf(sess.accepted), seen: map[string]bool{}}
+}
+
+// take dispatches a lease, or drops it when why is not empty (handing it back from protocol 1.8), and
+// reports whether it dispatched it.
+// A lease whose key is in flight, or was already seen in the window, is a duplicate: it is ignored and
+// never reported, since its fence may be the one of the running handler.
+func (h *Host) take(l *link, w *window, lease *pb.TaskLease, why string) bool {
+	key := inflightKey(lease, w.minor)
+	h.mu.Lock()
+	_, inFlight := h.tasks[key]
+	inFlight = inFlight || h.handingBack[key]
+	h.mu.Unlock()
+	if inFlight || w.seen[key] {
+		h.log.Warn("a task that is in flight or was already received was leased again: ignored", "task", lease.GetTaskId())
+		return false
+	}
+	w.seen[key] = true
+	if why != "" {
+		h.handBack(l, lease, w.minor, key, why)
+		return false
+	}
+	h.dispatch(l, lease, key)
+	return true
+}
+
+// handBackConcurrency is how many hand-backs are on their way at once: a server that floods one answer
+// cannot make the host open a call per lease (sdks/SPEC.md section 6.2, decision D006-026).
+const handBackConcurrency = 8
+
+// handBackMinor is the first protocol minor on which the host hands a lease back: its server reserves
+// TASK_NOT_STARTED, and an older one would record it as an ordinary failure that spends the attempt
+// (decision D006-080).
+const handBackMinor = 8
+
+// handBack reports a lease the host received and will not run: FailStep TASK_NOT_STARTED, retryable,
+// before any handler of it runs (sdks/SPEC.md section 6.2), on a session of protocol 1.8 or later. The
+// server gives the step back without consuming the attempt when it can. Below 1.8 the lease is only
+// logged and left to lapse. The report waits its turn behind at most handBackConcurrency others; until it
+// ends its key is in flight, and Stop waits for it like a task in flight, so the connection is still open.
+func (h *Host) handBack(l *link, lease *pb.TaskLease, minor int, key, why string) {
+	if minor < handBackMinor {
+		h.log.Warn("the host drops a task it did not start; its lease lapses", "task", lease.GetTaskId(), "reason", why)
+		return
+	}
+	h.log.Warn("the host hands back a task it did not start", "task", lease.GetTaskId(), "reason", why)
+	h.mu.Lock()
+	h.wg.Add(1)
+	h.handingBack[key] = true
+	h.handBackQueue = append(h.handBackQueue, handBackItem{l: l, lease: lease, minor: minor, key: key})
+	more := h.handBackWorkers < handBackConcurrency
+	if more {
+		h.handBackWorkers++
+	}
+	h.mu.Unlock()
+	if more {
+		go h.handBackInTurn()
+	}
+}
+
+// handBackInTurn makes the hand-backs of the queue, one at a time, until the queue is empty.
+func (h *Host) handBackInTurn() {
+	for {
+		h.mu.Lock()
+		if len(h.handBackQueue) == 0 {
+			h.handBackWorkers--
+			h.mu.Unlock()
+			return
+		}
+		item := h.handBackQueue[0]
+		h.handBackQueue[0] = handBackItem{}
+		h.handBackQueue = h.handBackQueue[1:]
+		h.mu.Unlock()
+		h.fail(item.l, item.lease, item.minor, "TASK_NOT_STARTED", "the host did not start this task", true, time.Now())
+		h.mu.Lock()
+		delete(h.handingBack, item.key)
+		h.mu.Unlock()
+		h.wg.Done()
+	}
+}
+
+func (h *Host) dispatch(l *link, lease *pb.TaskLease, key string) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	task := &running{cancel: cancel}
 	h.mu.Lock()
-	h.tasks[lease.GetTaskId()] = task
+	h.tasks[key] = task
 	h.wg.Add(1)
 	h.mu.Unlock()
 	h.emit(Event{Type: EventTaskTaken, TaskID: lease.GetTaskId(), Activity: lease.GetActivityName(), Attempt: int(lease.GetAttempt()), Traceparent: lease.GetTraceparent()})
@@ -75,7 +190,7 @@ func (h *Host) dispatch(l *link, lease *pb.TaskLease) {
 		defer func() {
 			cancel(nil)
 			h.mu.Lock()
-			delete(h.tasks, lease.GetTaskId())
+			delete(h.tasks, key)
 			h.mu.Unlock()
 			h.wg.Done()
 			h.signal()
@@ -269,6 +384,11 @@ func failureOf(ctx context.Context, err error) (code, message string, retryable 
 	var failure *ActivityFailure
 	switch {
 	case errors.As(err, &failure):
+		// TASK_NOT_STARTED is the host's word that no handler ran (sdks/SPEC.md section 6.2): a handler that
+		// uses it reports an ordinary failure, with its own message and retryable.
+		if failure.Code == "TASK_NOT_STARTED" {
+			return "WORKER_ERROR", failure.Message, failure.Retryable
+		}
 		return failure.Code, failure.Message, failure.Retryable
 	case errors.Is(err, ErrInputInvalid):
 		return "INPUT_INVALID", "the input does not have the type of the handler", false

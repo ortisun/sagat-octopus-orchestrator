@@ -107,6 +107,10 @@ pub struct EngineConfig {
     /// Whether a run may carry an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default). It is the
     /// control plane's setting too, and a replica that leases the work reads it where it admits the claim.
     pub lake_enabled: bool,
+    /// Whether this engine writes new lease withdrawals (`SAGAT_LEASE_WITHDRAWAL`, `on` by default; feature 006, decision
+    /// D006-032). `off` stops it: its leases lapse as before, and it still lists `lease-withdrawal-v1` because it can still
+    /// replay the event. The way to stop withdrawing, since the requirement cannot be removed once a journal holds one.
+    pub lease_withdrawal: bool,
     pub schedules: ScheduleSettings,
     /// Pause between schedule rounds when the last one found nothing to do.
     pub schedule_poll: Duration,
@@ -637,6 +641,16 @@ impl EngineConfig {
         let schedules_enabled = flag_or(get, "SAGAT_SCHEDULES_ENABLED", true)?;
         let auto_handover_expected = flag_or(get, "SAGAT_SCHEDULES_AUTO_HANDOVER", true)?;
         let lake_enabled = flag(get, "SAGAT_LAKE_ENABLED")?;
+        let lease_withdrawal = match get("SAGAT_LEASE_WITHDRAWAL").as_deref() {
+            None | Some("" | "on") => true,
+            Some("off") => false,
+            Some(other) => {
+                return Err(ConfigError::Invalid {
+                    name: "SAGAT_LEASE_WITHDRAWAL",
+                    reason: format!("'{other}' is not on or off"),
+                });
+            }
+        };
         let schedule_defaults = ScheduleSettings::default();
         let schedules = ScheduleSettings {
             batch: u32::try_from(positive(
@@ -959,6 +973,7 @@ impl EngineConfig {
             schedules_enabled,
             auto_handover_expected,
             lake_enabled,
+            lease_withdrawal,
             schedules,
             schedule_poll,
             batches_enabled,

@@ -240,6 +240,11 @@ async fn run_profile(mode: control::ProfileMode) {
         }
         forward_after(&api.db.pool,tenant,run,&witness,applied_lookup).await;
         let receipt_count:i64=sqlx::query_scalar("SELECT count(*) FROM command_dedupe WHERE tenant_id=$1 AND idempotency_key='released-inflight-report'").bind(tenant.as_uuid()).fetch_one(&api.db.pool).await.expect("one total report receipt");assert_eq!(receipt_count,1);
+        // Feature 006, decision D006-004: upgrading from the release writes no `step.lease_withdrawn` and records no
+        // requirement; nothing is withdrawn until the operator activates it, and the run still replays.
+        let (withdrawn,required):(i64,bool)=sqlx::query_as("SELECT (SELECT count(*) FROM run_events WHERE event_type='step.lease_withdrawn'),EXISTS (SELECT 1 FROM platform_requirements WHERE capability='lease-withdrawal-v1')").fetch_one(&api.db.pool).await.expect("withdrawals after the upgrade");
+        assert_eq!((withdrawn,required),(0,false),"no withdrawal before the activation");
+        api.executions.verify_run(tenant,run).await.expect("the upgraded run replays after the report");
         if applied_lookup && !mode.refuses_output() {
             let payloads:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.node='charge~r' AND e.instance_path_nodes=ARRAY['lines']::text[] AND e.instance_path_indices=ARRAY[0]::int[] AND e.event_type='step.completed' AND e.payload_digest IS NULL),(SELECT count(*) FROM run_events e JOIN steps s ON s.tenant_id=e.tenant_id AND s.run_id=e.run_id AND s.node=e.node AND s.instance_path_nodes=e.instance_path_nodes AND s.instance_path_indices=e.instance_path_indices WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.node='charge' AND e.instance_path_nodes=ARRAY['lines']::text[] AND e.instance_path_indices=ARRAY[0]::int[] AND e.event_type='reconciliation.concluded' AND e.payload_digest=s.output_digest AND s.output_digest IS NOT NULL)").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("payload belongs only to the reconciled forward outcome");
             assert_eq!(payloads,(1,1));

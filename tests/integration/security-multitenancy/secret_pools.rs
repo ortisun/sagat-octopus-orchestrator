@@ -805,3 +805,77 @@ async fn a_resolution_cannot_read_the_value_past_a_grant_that_is_being_taken_awa
     )
     .await;
 }
+
+/// Feature 006, decision D006-092, security round 4 Minor 1: a run's transaction that refused one step outside its pools
+/// (and audited it) and leased another is not rolled back when the consumer of the claim goes away just before its commit.
+/// The refusal's audit is durable; the lease is committed and goes to the withdrawal, as before the decision.
+#[tokio::test]
+async fn a_claim_whose_consumer_goes_before_its_commit_keeps_the_audit_of_a_refusal() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use sagat_application::worker::{ClaimWatch, MAX_POLL_BYTES};
+
+    use crate::support::engine::parallel_node;
+
+    struct GoesBeforeCommit(AtomicBool);
+
+    impl ClaimWatch for GoesBeforeCommit {
+        fn consumer_gone(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+
+        fn before_commit(
+            &self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            self.0.store(true, Ordering::SeqCst);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    let w = world().await;
+    w.put_secret("stripe-key", VALUE).await;
+    let (wf, _) = w
+        .publish(document(
+            "pay-two",
+            "fork",
+            vec![
+                parallel_node("fork", &["a", "b"], "all"),
+                with(activity("a"), "secrets", json!(["stripe-key"])),
+                activity("b"),
+            ],
+        ))
+        .await;
+    let run = w.start(wf, &json!({})).await;
+    restrict(&w, "stripe-key", &["trusted"]).await;
+    let outsider = worker(&w, "outsider").await;
+    grant(&w, "outsider", &["scratch"]).await;
+    let session = w.session_as(&outsider, &["act.a", "act.b"], 10).await;
+    let gone = GoesBeforeCommit(AtomicBool::new(false));
+    let claimed = w
+        .workers
+        .poll_bounded(
+            &session.principal,
+            session.worker_id,
+            &session.token,
+            8,
+            MAX_POLL_BYTES,
+            None,
+            &gone,
+        )
+        .await
+        .expect("the claim");
+    assert!(gone.consumer_gone(), "the claim reached its commit");
+    assert_eq!(refusals(&w).await.len(), 1, "the refusal of a is audited");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "the lease of b was committed with the audit"
+    );
+    let b: (String, i32) =
+        sqlx::query_as("SELECT status, attempt FROM steps WHERE run_id = $1 AND node = 'b'")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("step b");
+    assert_eq!(b, ("LEASED".to_owned(), 1));
+}

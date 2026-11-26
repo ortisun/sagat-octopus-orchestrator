@@ -306,3 +306,5 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
 Note (2026-11-15, from feature 041): the owner gave worker-protocol minor 1.7 to feature 041 (step logs, OD-2026-11-15-8).
 Where this feature names 1.7 for its own addition, it takes the next free minor of the register in `sdks/SPEC.md` §9 when
 its contract merges.
+
+Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9. A host of 1.9 or later also carries the 1.8 host procedure (a flagged lease is acknowledged before it runs), so the SDK work of delivery acknowledgement comes before any later minor in the SDKs. `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken.

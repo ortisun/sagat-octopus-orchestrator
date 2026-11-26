@@ -10,7 +10,7 @@ use sagat_application::telemetry::{
 };
 use sagat_domain::execution::{
     ExecutionInstanceId, FailureCode, Fence, InstancePath, ReconcileResult, ResetReapply,
-    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason, WithdrawalCause,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{Digest, NodeId};
@@ -302,6 +302,113 @@ fn a_run_with_three_attempts_has_three_attempt_spans_and_a_run_span() {
         Some(&AttrValue::from("payment"))
     );
     assert_eq!(run[0].status, SpanStatus::Ok);
+}
+
+/// A lease that never reached a handler is not an attempt (feature 006, decisions D006-007 and D006-013): the attempts
+/// reader drops it, the attempt that ran keeps the ready time of the release for its scheduling latency, and the run span
+/// tells of the withdrawal with its cause.
+#[test]
+fn a_withdrawn_lease_is_not_an_attempt_and_the_run_span_tells_of_it() {
+    let facts = facts(&["charge"]);
+    let charge = node("charge");
+    let mut j = Journal::new();
+    j.push(
+        0,
+        "system:engine",
+        RunEvent::RunStarted {
+            entrypoint: charge.clone(),
+        },
+    )
+    .push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: charge.clone(),
+        },
+    )
+    .push(
+        20,
+        "worker:w1",
+        RunEvent::StepLeased {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    )
+    .push(
+        7,
+        "system:lease-withdrawal",
+        RunEvent::StepLeaseWithdrawn {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 1,
+            cause: WithdrawalCause::NotSent,
+        },
+    )
+    .push(
+        30,
+        "worker:w2",
+        RunEvent::StepLeased {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 2,
+        },
+    )
+    .push(
+        150,
+        "worker:w2",
+        RunEvent::StepCompleted {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 2,
+        },
+    )
+    .push(
+        1,
+        "system:engine",
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    );
+
+    let listed = attempts(&facts, &j.entries);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!((listed[0].attempt, listed[0].generation), (1, 2));
+    assert_eq!(listed[0].outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        listed[0].ready_at,
+        Some(j.entries[1].occurred_at),
+        "the ready time of the release, not of the withdrawal"
+    );
+
+    let derived = derive(&facts, &j.entries, 0);
+    assert_eq!(named(&derived.spans, "step.attempt").len(), 1);
+    let latencies: Vec<f64> = derived
+        .observations
+        .iter()
+        .filter_map(|o| match o {
+            Observation::AttemptEnded {
+                schedule_latency, ..
+            } => *schedule_latency,
+            Observation::RunFinished { .. } | Observation::PrimitiveTransition { .. } => None,
+        })
+        .collect();
+    // released at 5 ms, the lease that ran at 62 ms: 57 ms
+    assert_eq!(latencies.len(), 1);
+    assert!((latencies[0] - 0.057).abs() < 1e-9, "{latencies:?}");
+    let run = named(&derived.spans, "workflow.run");
+    let withdrawn = run[0]
+        .events
+        .iter()
+        .find(|event| event.name == "step.lease_withdrawn")
+        .expect("the run span tells of the withdrawal");
+    assert!(
+        withdrawn
+            .attributes
+            .iter()
+            .any(|(k, v)| k == "sagat.cause.code" && *v == AttrValue::from("NOT_SENT"))
+    );
+    assert!(CONTEXT_EVENTS.contains(&"step.lease_withdrawn"));
 }
 
 #[test]

@@ -96,7 +96,10 @@ pub use handover_role::{
     set_handover_floor, set_handover_login,
 };
 pub use identity::PgIdentityStore;
-pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};
+pub use instances::{
+    CapabilityCensus, FeatureStep, OperatorBounds, PgInstanceStore, capability_census, census_step,
+    may_activate,
+};
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};

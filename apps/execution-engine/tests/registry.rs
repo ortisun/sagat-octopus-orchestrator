@@ -40,6 +40,7 @@ fn an_engine_in_report_mode_does_not_list_run_input_validation() {
         if listed {
             expected.push(Capability::RunInputValidationV1);
         }
+        expected.push(Capability::LeaseWithdrawalV1);
         assert_eq!(list, expected, "SAGAT_RUN_INPUT_VALIDATION={mode:?}");
     }
 }
@@ -85,9 +86,16 @@ fn an_engine_lists_schedules_v1_when_and_only_when_its_configuration_runs_the_sc
         assert_eq!(
             list,
             if listed {
-                vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
+                vec![
+                    Capability::SchedulesV1,
+                    Capability::RunInputValidationV1,
+                    Capability::LeaseWithdrawalV1,
+                ]
             } else {
-                vec![Capability::RunInputValidationV1]
+                vec![
+                    Capability::RunInputValidationV1,
+                    Capability::LeaseWithdrawalV1,
+                ]
             },
             "SAGAT_SCHEDULES_ENABLED={flag:?}"
         );
@@ -101,7 +109,14 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
         ("SAGAT_BATCHES_ENABLED", "true"),
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
     ]));
-    assert_eq!(list, vec![Capability::RunInputValidationV1], "{list:?}");
+    assert_eq!(
+        list,
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1
+        ],
+        "{list:?}"
+    );
     let all = capabilities(&config(&[
         ("SAGAT_SCHEDULES_ENABLED", "true"),
         ("SAGAT_BATCHES_ENABLED", "true"),
@@ -109,7 +124,11 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
     ]));
     assert_eq!(
         all,
-        vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
+        vec![
+            Capability::SchedulesV1,
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1
+        ]
     );
 }
 
@@ -264,7 +283,10 @@ fn every_loop_the_engine_spawns_obeys_the_gate_and_the_set_of_loops_is_the_one_l
     }
     // the request surfaces: the worker API obeys the gate in its admission layer
     assert!(
-        source.contains("WorkerGrpc::new(state, workers).with_serving_gate("),
+        source
+            .split_whitespace()
+            .collect::<String>()
+            .contains("WorkerGrpc::new(state,workers).with_serving_gate("),
         "the worker API was not given the gate"
     );
 }
@@ -273,13 +295,21 @@ fn every_loop_the_engine_spawns_obeys_the_gate_and_the_set_of_loops_is_the_one_l
 /// says so, and only an explicit `false` takes it out.
 #[test]
 fn the_default_engine_lists_schedules_v1() {
-    // schedules on by default (OD-2026-11-13-8) and `enforce` by default (design 043)
+    // schedules on by default (OD-2026-11-13-8), `enforce` by default (design 043), and every engine of this build lists
+    // `lease-withdrawal-v1` (feature 006)
     assert_eq!(
         capabilities(&config(&[])),
-        vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
+        vec![
+            Capability::SchedulesV1,
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1
+        ]
     );
     assert_eq!(
         capabilities(&config(&[("SAGAT_SCHEDULES_ENABLED", "false")])),
-        vec![Capability::RunInputValidationV1]
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1
+        ]
     );
 }
