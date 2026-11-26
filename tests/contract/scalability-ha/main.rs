@@ -13,6 +13,7 @@ use regex::Regex;
 use serde_json::Value;
 
 mod database_chart;
+mod flow_control_chart;
 mod redis_chart;
 mod tls_chart;
 

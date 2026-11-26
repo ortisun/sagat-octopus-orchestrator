@@ -2153,6 +2153,15 @@ taken after `git grep D022-04` on every `origin/*` branch.
      runbook says plainly that it does not cover the clock and gives the query that does (sections 9 and 12); the plan's
      sentence is revised when the approved texts are next re-approved.
 
+- **D022-118 — Each gate has its own deployment switch (2026-11-26; gap G022-036; FR-022-053, D022-057).** Delegate
+  (OD-2026-11-24-4). The processes already read `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED` and refuse to start with either
+  switch on and no digest key file, but the chart and compose could set only the concurrency switch. Options: (a) one
+  chart value `flowControl.enabled` for both gates; (b) one value per gate. Chosen (b): the gates are activated per
+  capability (`flow-control-activate --capability`), an operator may want concurrency keys without rate limits, and
+  one value per gate keeps the chart's switches the processes' switches one for one. The render fails when either is
+  on without `flowControl.digestKeys.existingSecret`; `compose.yaml` passes the rate variable (default `false`); the
+  local overlay turns both on. Test: `contract_scalability_ha::flow_control_chart::*`.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -2216,7 +2225,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1194 | The pinned operation baseline of `contract_iceberg_writes` digests each operation without following `$ref`, so a change to a shared parameter or schema (as the quota enum of D022-040) moves no digest; `contract_flow_control_step_policies::quotas` pins this enum to the code instead. | Accepted |
 | G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). *O1170 answered 2026-11-19 (OD-2026-11-19-2). Also out of date since the force (D022-046): FR-022-056's "no key is ever split between two rows" and SC-022-028 (a forced rotation splits a key into at most two rows), and `data-model.md` lacks `flow_control_key_forced_retirements`. The texts, and the bound of D022-047 in `contracts/errors.md`, are revised when the approved texts are next re-approved (a change makes them drafts again).* | Open; re-approval of the texts |
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
-| G022-036 | The deployment files cannot turn the rate gate on: the Helm chart has one switch, `flowControl.concurrencyKeys` (`infra/helm/values.yaml`, `templates/_helpers.tpl` `sagat.flowControl.env`), and no value for `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its comment still says "The rate gate is not served by this release"; the overlay `infra/docker/compose.flow-control.yaml` sets the concurrency switch only. The runbook (section 6) says so and gives the local workaround (found 2026-11-26, task T022-088). | Open; a chart value `flowControl.rateLimits` and the overlay's variable |
+| G022-036 | The deployment files cannot turn the rate gate on: the Helm chart has one switch, `flowControl.concurrencyKeys` (`infra/helm/values.yaml`, `templates/_helpers.tpl` `sagat.flowControl.env`), and no value for `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its comment still says "The rate gate is not served by this release"; the overlay `infra/docker/compose.flow-control.yaml` sets the concurrency switch only. The runbook (section 6) says so and gives the local workaround (found 2026-11-26, task T022-088). | Closed by D022-118 (2026-11-26) |
 | G022-037 | An orphaned waiter (alert `FLOW_CONTROL_WAITER_ORPHANED`) is removed by a hand `DELETE` as the schema owner, with no API, command or audit record, while NFR-022-005 asks an audited API for every operator action; the same holds for the digest-key commands (G022-006). The runbook (section 14) tells the operator what to keep in the change record (found 2026-11-26, task T022-061). | Open; with G022-006's operator role |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 

@@ -37,8 +37,8 @@ ADR-0096). Off by default; nothing changes for a definition that does not declar
    compose overlay `compose.flow-control.yaml`). A process with a switch on and no file, or with a file that lacks a
    version the database has in force, does not start. The images' group is now gid 10001.
 2. Turn on `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED`, `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`, or both, and restart.
-   The Helm chart (`flowControl.concurrencyKeys`) and the compose overlay set only the first one: the rate switch has no
-   chart value yet (gap G022-036, runbook section 6).
+   In Helm the switches are `flowControl.concurrencyKeys` and `flowControl.rateLimits`; the compose overlay
+   `compose.flow-control.yaml` turns both on (decision D022-118, runbook section 6).
 3. Activate the digest key version (`SELECT * FROM flow_control_key_activate(1::smallint, '<your name>');`), then each
    capability for the fleet: `control-plane flow-control-activate --capability concurrency-keys --operator <your name>`
    and `--capability rate-limits`, as the schema-owning role. Until then publication and starts that use one are

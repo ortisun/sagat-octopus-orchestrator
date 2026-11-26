@@ -299,16 +299,16 @@ A process with the ring lists `flow-control-rate-v1` beside the concurrency gate
 `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED=true` and `control-plane flow-control-activate --capability rate-limits --operator <you>`
 (section 7).
 
-**The deployment files cannot turn the rate switch on yet (gap G022-036).** The Helm chart has one switch,
-`flowControl.concurrencyKeys`, and no value that sets `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its `values.yaml` still
-says "The rate gate is not served by this release", which this build no longer bears out. The local overlay
-`infra/docker/compose.flow-control.yaml` sets the concurrency switch only. What to do instead:
+**The deployment files (decision D022-118).** Each gate has its own switch, set alike on the control plane and the
+engine:
 
-- with the local stack, add the variable to both services in an override file of your own, next to the overlay, for
-  example `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED: "true"` under `control-plane` and `execution-engine`;
-- with the chart, do not plan on rate limits yet: an environment variable set by hand on the Deployments is undone by
-  the next `helm upgrade`. The digest key Secret is still needed for the rate gate's listing: today the chart mounts
-  the ring whenever `flowControl.digestKeys.existingSecret` is set, whatever the switch.
+- Helm: `flowControl.concurrencyKeys` and `flowControl.rateLimits`, each off by default; either one on needs
+  `flowControl.digestKeys.existingSecret` (the render fails without it, as the processes would refuse to start);
+- compose: `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED` beside the concurrency variable in `compose.yaml` (default
+  `false`); the local overlay `compose.flow-control.yaml` turns both on with the key file.
+
+A switch only lets a process serve the gate. Nothing is admitted until the operator activates the capability for the
+fleet (section 7).
 
 - A run's start that declares `rateLimit` takes a slot of its key when it is admitted, or is buffered `WAITING`
   (`rate_limit.queued`); a run's slot counts from its grant and is never given back: it stops counting after its window.
