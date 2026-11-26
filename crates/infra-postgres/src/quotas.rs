@@ -18,7 +18,7 @@ use sagat_application::authz::NamespaceDirectory;
 use sagat_application::error::StoreError;
 use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredActivityLimit, StoredLimit};
 use sagat_domain::audit::AuditRecord;
-use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::quota::{self, QuotaKind, QuotaResource};
 use sagat_domain::workflow::ActivityName;
 use sqlx::{PgConnection, PgPool};
@@ -700,6 +700,49 @@ fn resolve_rows(resource: QuotaResource, rows: &[(Option<uuid::Uuid>, i64, bool)
     quota::resolve(resource, value(true), value(false), ceiling).0
 }
 
+/// The effective value of `resource` for the namespace `namespace` of tenant `tenant` (two column expressions of the
+/// statement it is placed in), as a SQL expression: the twin of [`resolve_rows`], so that a statement that compares a
+/// count with a ceiling over many namespaces reads it in the same statement (the flow-control alerts, batch 3 reviews of
+/// 2026-11-25, correctness Major 2). The namespace's own setting, else the tenant's, else the ceiling; never above the
+/// ceiling, which is the tenant's grant (else the resource's default ceiling) under the resource's maximum. The
+/// constants are the resource's own, never input.
+///
+/// # Errors
+/// [`StoreError::Internal`] for `iteration_concurrency`, whose default is not its ceiling (`quota::resolve`) and which is
+/// not stored in `quota_limits`: an expression for it would be wrong in every build, not only in a debug one (batch 5
+/// correctness nit).
+pub(crate) fn effective_sql(
+    resource: QuotaResource,
+    tenant: &str,
+    namespace: &str,
+) -> Result<String, StoreError> {
+    if resource == QuotaResource::IterationConcurrency {
+        return Err(StoreError::Internal {
+            detail: "iteration_concurrency has no effective SQL expression".to_owned(),
+        });
+    }
+    let name = resource.as_str();
+    let bound = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+    let ceiling = format!(
+        "least(coalesce((SELECT greatest(c.max_value, 0) FROM quota_ceilings c \
+                          WHERE c.tenant_id = {tenant} AND c.resource = '{name}' LIMIT 1), {default}), {maximum})",
+        default = bound(resource.default_ceiling()),
+        maximum = bound(resource.maximum()),
+    );
+    let own = match resource.scope() {
+        sagat_domain::quota::QuotaScope::Namespace => format!(
+            "(SELECT greatest(q.max_value, 0) FROM quota_limits q \
+               WHERE q.tenant_id = {tenant} AND q.namespace_id = {namespace} AND q.resource = '{name}' LIMIT 1), "
+        ),
+        sagat_domain::quota::QuotaScope::Tenant => String::new(),
+    };
+    Ok(format!(
+        "least(coalesce({own}(SELECT greatest(q.max_value, 0) FROM quota_limits q \
+                               WHERE q.tenant_id = {tenant} AND q.namespace_id IS NULL AND q.resource = '{name}' \
+                               LIMIT 1), {ceiling}), {ceiling})"
+    ))
+}
+
 /// The namespace ceilings a gate decision applies (feature 022, G1199, T022-077): the limits of a key (`concurrency_limit`,
 /// `rate_limit_per_second`, `rate_limit_per_minute`, `rate_limit_per_hour`), the longest wait, the live keys of each kind
 /// and the two queue ceilings, read in one statement of the caller's transaction, effective as everywhere else
@@ -1149,6 +1192,14 @@ impl QuotaStore for PgRunStore {
         tx.commit().await.map_err(store_error)
     }
 
+    async fn step_log_usage_if_revealed(
+        &self,
+        tenant: TenantId,
+        subject: &Subject,
+    ) -> Result<Option<u64>, StoreError> {
+        crate::reveal_grants::step_log_usage_if_revealed(&self.pool, tenant, subject).await
+    }
+
     async fn usage(
         &self,
         tenant: TenantId,
@@ -1300,6 +1351,13 @@ impl QuotaStore for PgRunStore {
             .fetch_optional(&self.pool)
             .await
             .map(|value| value.unwrap_or(0)),
+            // Feature 041: the step-log usage is shown only with the PII reveal grant in every namespace, read with it in
+            // one snapshot (decisions D041-133 and D041-141), so this general read refuses it.
+            QuotaResource::TenantStepLogBytes => {
+                return Err(StoreError::Internal {
+                    detail: "the step-log usage is read with the grant, through step_log_usage_if_revealed".into(),
+                });
+            }
             QuotaResource::DatabaseConnections => sqlx::query_scalar(
                 "SELECT count(*) FROM database_connections WHERE tenant_id=$1 AND namespace_id=$2 AND status<>'DELETED'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
@@ -1411,6 +1469,9 @@ impl QuotaStore for PgRunStore {
             | QuotaResource::DatabaseConnectTimeoutMs
             | QuotaResource::DatabasePoolSize
             | QuotaResource::DatabaseIdleTimeoutMs
+            | QuotaResource::StepLogAttemptRecords
+            | QuotaResource::StepLogAttemptBytes
+            | QuotaResource::StepLogRetentionDays
             => {
                 return Err(StoreError::Internal {
                     detail: "an admission policy has no scalar usage".into(),
@@ -1464,5 +1525,24 @@ mod secrets_lock_rule {
             0,
             "a scoped transaction runs the shared check and must not take the exclusive lock"
         );
+    }
+}
+
+#[cfg(test)]
+mod effective_sql_tests {
+    use sagat_domain::quota::QuotaResource;
+
+    use super::effective_sql;
+
+    /// Batch 5 correctness nit: `iteration_concurrency` has no expression in any build (it was a debug assertion only),
+    /// and every other resource has one.
+    #[test]
+    fn iteration_concurrency_has_no_effective_expression_in_any_build() {
+        assert!(effective_sql(QuotaResource::IterationConcurrency, "t", "n").is_err());
+        for resource in QuotaResource::ALL {
+            if resource != QuotaResource::IterationConcurrency {
+                assert!(effective_sql(resource, "t", "n").is_ok(), "{resource}");
+            }
+        }
     }
 }

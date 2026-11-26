@@ -16,16 +16,21 @@ no `Error.code` value.
 
 ## 1. gRPC, protocol minor 1.7
 
+Revised on 2026-11-19 (D041-090, OD-2026-11-19-1, design section 2a): an attempt's last records ride on its report as a
+`StepLogCarry`; `AppendStepLogs` carries the records of a running attempt and no final mark, so its fields 11 and 12 are
+reserved. Minor 1.7 is not released, so the change is made in place; T041-3 copies this text.
+
 Added to `service WorkerService`:
 
 ```proto
-  // Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
-  // records are committed; a record is stored at most once (attempt, generation, sequence).
+  // Added in 1.7 (feature 041). Stores log records of one leased attempt that is still running. Answered
+  // only after the records are committed; a record is stored at most once (attempt, generation, sequence).
+  // The attempt's last records and its final mark travel on its report instead (StepLogCarry).
   //   Verdicts, not errors, say what the worker does next (StepLogVerdict).
   //   Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
   //   token); INVALID_ARGUMENT a malformed
-  //   batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
-  //   above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
+  //   batch (no record, more than 500 records, more than 192 KiB encoded, sequences not increasing, a
+  //   sequence at or above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
   //   by admission; UNAVAILABLE the database or the serving gate.
   rpc AppendStepLogs(AppendStepLogsRequest) returns (AppendStepLogsResponse);
 ```
@@ -46,10 +51,21 @@ message AppendStepLogsRequest {
   string step_id = 7;
   int32 attempt = 8;
   ExecutionInstanceIdentity instance = 9;
-  repeated StepLogRecord records = 10;        // 0 to 500, sequences strictly increasing
-  bool final_batch = 11;                      // the attempt's last batch, sent before CompleteStep/FailStep
-  uint64 highest_sequence = 12;               // with final_batch: the highest sequence the logger assigned (at most
-                                              // 2^62-1, else INVALID_ARGUMENT); else 0
+  repeated StepLogRecord records = 10;        // 1 to 500, sequences strictly increasing
+  reserved 11, 12;                            // final_batch and highest_sequence until 2026-11-19: the final mark
+  reserved "final_batch", "highest_sequence"; // is the report's StepLogCarry
+}
+
+// Added in 1.7. The last records of an attempt and its final mark, carried by the attempt's own
+// CompleteStepRequest or FailStepRequest (field 13) and stored by the transaction that records the report.
+// Sent by an attempt that assigned at least one sequence, unless it was answered STOP_ATTEMPT or STOP_CAPTURE or
+// its session's capture is off. A carry the server cannot check is ignored (or kept as a final mark with no line)
+// and never makes the report fail; a carry from a runner or database-runner token, or on a managed step, is
+// ignored; nothing about the carry is in the report's answer.
+message StepLogCarry {
+  repeated StepLogRecord records = 1;         // 0 to 64, sequences strictly increasing; the whole message at most 16 KiB
+  uint64 highest_sequence = 2;                // the highest sequence the attempt's logger assigned: 1 to 2^62-1, and at
+                                              // least the last record's
 }
 
 enum StepLogLevel {
@@ -84,7 +100,8 @@ message StepLogField {
 enum StepLogVerdict {
   STEP_LOG_VERDICT_UNSPECIFIED = 0;
   STEP_LOG_VERDICT_CONTINUE = 1;              // keep sending
-  STEP_LOG_VERDICT_FINAL_ONLY = 2;            // a ceiling was met: send no more records; still send the empty final batch
+  STEP_LOG_VERDICT_FINAL_ONLY = 2;            // a ceiling was met: send no more records; the report still carries the
+                                              // final mark (a StepLogCarry with no record)
   STEP_LOG_VERDICT_STOP_ATTEMPT = 3;          // send nothing more for this attempt (stop_reason says why)
   STEP_LOG_VERDICT_STOP_CAPTURE = 4;          // send nothing more on this session (stop_reason says why)
   STEP_LOG_VERDICT_RETRY_LATER = 5;           // nothing stored; send the same batch again after retry_after_ms
@@ -92,7 +109,8 @@ enum StepLogVerdict {
 
 enum StepLogStopReason {
   STEP_LOG_STOP_REASON_UNSPECIFIED = 0;
-  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the final batch is already stored (a resend of it gets this)
+  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the attempt's report recorded its final mark after this batch
+                                              // read the lease (a batch that reads it later gets LEASE)
   STEP_LOG_STOP_REASON_LEASE = 2;             // STOP_ATTEMPT: the lease is not this attempt's or has expired, or a report of
                                               // the attempt would be refused (run finished, step cancelled, run
                                               // stopping and the node not a compensation)
@@ -117,14 +135,29 @@ message StepLogPolicy {
 }
 ```
 
-`RegisterWorkerResponse` gains `StepLogPolicy step_logs = 4;`. Nothing else in the policy: the buffer, flush and batch
-numbers are constants of `sdks/SPEC.md` (design section 6), and every ceiling is enforced by the server whatever the
-worker does.
+`RegisterWorkerResponse` gains `StepLogPolicy step_logs = 4;`. Nothing else in the policy: the buffer, flush, batch and
+carry numbers are constants of `sdks/SPEC.md` (design section 6), and every ceiling is enforced by the server whatever
+the worker does.
 
-`worker.baseline.json` records the new rpc, the six messages and the field of `RegisterWorkerResponse`
-(`SAGAT_UPDATE_BASELINE=1`, `crates/api-grpc/tests/compatibility.rs`), read as a diff before it is committed.
-`crates/api-grpc/build.rs` adds `AppendStepLogsRequest`, `StepLogRecord`, `StepLogField` and `StepLogField.value` to
-`skip_debug`, with hand-written `Debug` impls that print counts only.
+`CompleteStepRequest` and `FailStepRequest` each gain, after their field 12 (`instance`):
+
+```proto
+  // Added in 1.7 (feature 041): the attempt's last log records and its final mark. Absent when the attempt
+  // assigned no sequence, when capture is off for the session, or after STOP_ATTEMPT or STOP_CAPTURE. An API
+  // replica older than 1.7 ignores it as an unknown field.
+  StepLogCarry step_logs = 13;
+```
+
+The report's answer (`StepCommandResponse`) does not change. A carry adds at most 16 KiB to a report, which with a
+256 KiB output stays under the server's decoding cap, `MAX_MESSAGE_BYTES` = `MAX_PAYLOAD_BYTES` (256 KiB) + 64 KiB
+(`crates/api-grpc/src/server.rs:14`); the cap does not change. The carry's 64 records are bounded by the time it runs
+under the run lock (design section 2a).
+
+`worker.baseline.json` records the new rpc, the seven messages, the field of `RegisterWorkerResponse` and the field 13
+of `CompleteStepRequest` and `FailStepRequest` (`SAGAT_UPDATE_BASELINE=1`, `crates/api-grpc/tests/compatibility.rs`),
+read as a diff before it is committed. `crates/api-grpc/build.rs` adds `AppendStepLogsRequest`, `StepLogCarry`,
+`StepLogRecord`, `StepLogField` and `StepLogField.value` to `skip_debug`, with hand-written `Debug` impls that print
+counts only, so that a printed `CompleteStepRequest` or `FailStepRequest` shows the carry's counts and no text.
 
 ## 2. REST
 
@@ -197,16 +230,17 @@ StepLogStream:
     bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
     droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
     droppedByServer: {type: integer}
-    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null]}
+    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null], description: 'Why the server dropped records at a ceiling: an attempt ceiling, or the tenant quota (full, or its last room held by other writers in flight). A busy loss is notStoredReason, never a ceiling.'}
+    notStoredReason: {type: [string, 'null'], enum: [service_busy, null], description: 'Why the server did not store some of a carry''s records for a reason that is not a ceiling: service_busy means the tenant''s step-log quota could not be checked within its 200 ms budget or with no wait slot free (the log service was busy, not the tenant''s quota); design 041 decision D041-129, gap G041-026. Null otherwise.'}
     firstAt: {type: [string, 'null'], format: date-time}
     lastAt: {type: [string, 'null'], format: date-time}
-    expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.'}
+    expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch or carry plus the retention the stream took when it was created; script: the execution expiry.'}
     removedAt: {type: [string, 'null'], format: date-time}
     logTruncated: {type: boolean, description: 'script only'}
 ```
 
 Items of `source = worker` are the workers' attempt logs; the marker streams of script attempts are not listed there.
-`ended` means the final batch was stored; `ended_without_final` means the attempt's lease is gone and no final batch was
+`ended` means the attempt's carry recorded its final mark; `ended_without_final` means the attempt's lease is gone and no final mark was
 stored (design FR-041-017); `open` otherwise. For `source = script` the item is a row of `script_executions` of the run, read under the same rule as FR-041-022;
 its `state` comes from the execution: `expired` once the execution's expiry has passed, `ended` before, whether or not
 its marker was written or deleted.
@@ -248,8 +282,13 @@ sends nothing new.
 Gain `tenant_step_log_bytes` (ADR-0027 Amendment of 2026-11-15), `step_log_attempt_records`, `step_log_attempt_bytes` and
 `step_log_retention_days` (definitions in `data-model.md`). The `Quota` description's rule that lowering a limit does
 not erase retained content holds for them as for every resource: a stream keeps the retention it was created with.
-The `used` description gains one absence: `tenant_step_log_bytes` has no `used` for a caller without `run:logs:read`
-(D041-066).
+The `used` description gains one absence: `tenant_step_log_bytes` has no `used` unless the caller holds `run:logs:read`
+(D041-066) and the PII reveal grant in every namespace of the tenant (D041-133, "Hide it without the grant",
+OD-2026-11-20-19, which closes gap G041-018). Without both, the item keeps its resource, limit, source and ceiling and
+gains `usageWithheld: true`, so the caller sees that the quota exists, not its live usage (fail-closed: one namespace
+without the grant withholds it). The grant and the usage are read in one snapshot, so a view whose read runs after a
+revoke commits never shows `used` (D041-141). `usageWithheld` is absent for every other resource and when `used` is
+shown.
 
 ### Error table
 
@@ -286,8 +325,8 @@ The SDK rules of `sdks/SPEC.md` (design section 6) are, per answer of `AppendSte
 | Answer | SDK action | Counts toward the two retries |
 |---|---|---|
 | `CONTINUE` | next batch | - |
-| `FINAL_ONLY` | numbers and drops further records locally; sends the empty final batch at the end; in answer to the final batch, its success | - |
-| `STOP_ATTEMPT` | sends nothing more for the attempt; a `FINAL_RECORDED` answer to a final batch is its success | - |
+| `FINAL_ONLY` | numbers and drops further records locally; the report carries the final mark with no record | - |
+| `STOP_ATTEMPT` | sends nothing more for the attempt, in a batch or a carry | - |
 | `STOP_CAPTURE`, `CAPTURE_OFF` | stops for the session until the next successful registration | - |
 | `STOP_CAPTURE`, `SESSION` | if the session token it now holds differs from the one it sent, sends the batch once more with it; otherwise as `CAPTURE_OFF` | - |
 | `RETRY_LATER` | waits `retry_after_ms`, sends the same bytes; a batch older than 10 s is dropped | no |
@@ -295,5 +334,25 @@ The SDK rules of `sdks/SPEC.md` (design section 6) are, per answer of `AppendSte
 | `UNAVAILABLE`, `DEADLINE_EXCEEDED` | resends the same bytes after 200 ms, then 1 s (each ±20%) | yes |
 | `INVALID_ARGUMENT` | drops the batch (the gap is counted by the server) and goes on | - |
 | `UNAUTHENTICATED`, `PERMISSION_DENIED` | stops for the session until the next successful registration | - |
-| `UNIMPLEMENTED` | stops for the attempt (an older API replica) | - |
+| `UNIMPLEMENTED` | stops batches for the attempt (an older API replica); the report still carries the rest | - |
 | any other | as `UNAVAILABLE` | yes |
+
+A carry gets no answer of its own. The report that holds it is retried as the SDK retries a report today, with the same
+bytes, carry included; the server stores a carry at most once (a resent report already recorded is answered as a
+replay before its carry is read). When the report is refused (a stale lease, a stopped or finished run, a revoked worker),
+its carry is lost with it, and the stream, if any, shows "ended without its final flush". When the report is recorded
+but its output or failure code held a declared secret, or its output did not fit, the carry is recorded as a final mark
+with no line (`ended`). A carry that found a step-log lock taken is skipped (`contended`) and leaves no final mark.
+
+## Changes recorded after T041-3
+
+- 2026-11-20 (the approval run of the revision, decisions D041-129 and D041-133): the stream item's `ceiling` loses
+  `tenant_quota_busy`, and the busy loss is reported in a field of its own, `notStoredReason` (`service_busy`); the
+  `Quota` item gains `usageWithheld`, and `used` of `tenant_step_log_bytes` needs the PII reveal grant in every
+  namespace of the tenant besides `run:logs:read`. Both the planned `openapi.yaml` and the Studio's `schema.d.ts` carry
+  it (edited by hand; `npm run api` was not run: no `node_modules` in `frontend/apps/studio`).
+
+- 2026-11-19 (T041-3, security and correctness reviews of the build): `deleteRunLogs` declares `400` and `422` as
+  `listRunLogs` does, and its `stream` says that another stream is `404`; the descriptions of `ScriptExecution.log`,
+  `logWithheld` and `ScriptExecutionSummary.logTruncated` say they are planned by T041-29 and not served yet.
+

@@ -405,6 +405,33 @@ PK `(tenant_id, namespace_id, slot)`, `slot` 0..15; `queued_runs bigint`, `live_
 (a run counts once whatever its waiter rows) and on the semaphore and window rows (a key counts once per
 row); `sagat_app` has `SELECT` only, as for `run_active_counts`.
 
+*Revised 2026-11-25 (task T022-105, decision D022-084; migration `20270213000200`):* built as `flow_control_counts
+(tenant_id, namespace_id, slot 0..15, queued_runs bigint)`, CHECK `queued_runs >= 0`, foreign key `(tenant_id,
+namespace_id)` → `namespaces`; the slot is `get_byte(uuid_send(run_id), 15) & 15`, the slots of `run_active_counts`;
+`flow_control_counts_track` (`SECURITY DEFINER`, `search_path = pg_catalog, pg_temp`, every name schema-qualified, not
+executable by the runtime role) runs after each insert and delete of a waiter row of either table and counts a run-scope
+row only, a run once: it adds one only when the run has no run-scope waiter row in the other table and takes one only
+when none is left there. The column `live_keys` is not built: the live keys are counted from the semaphore and window
+rows of the digest versions in force.
+
+*Lock order, corrected 2026-11-25 (batch 3 reviews, correctness Major 1):* a slot row is locked after the run's active-run
+counter row (slot 6) and after the start's keys (slot 7), on every path that writes or deletes a run-scope waiter row.
+The grant of a queued start can end the run in its own transaction (an entry that is an `end` node), so it locks the
+run's active-run counter row before the start's keys, as an admission does: run, slot 6, keys, slot 8b
+(`concurrency_locks::the_grant_of_a_queued_start_that_ends_takes_its_counter_row_before_the_key_and_the_queued_count`).
+
+### `flow_control_held_signals`
+
+*Added 2026-11-25 (task T022-109, decision D022-087; migration `20270214000000`).* The signal of a Signal-with-Start
+whose new run queued, held until the grant of the run's start delivers it. PK `(tenant_id, run_id)` (one held signal a
+run); `namespace_id`; `name text` (CHECK 1 to 128 characters, the signal's name as the request gave it); `payload_digest
+bytea` (CHECK 32 bytes), foreign key `(tenant_id, payload_digest)` → `payloads`; `actor text` (the requesting subject,
+CHECK 1 to 255) and `trace_id text` (CHECK the W3C format when present), so the delivery is audited as the caller's;
+`held_at timestamptz`. Foreign key `(tenant_id, namespace_id, run_id)` → `runs (tenant_id, namespace_id, id)` `ON DELETE
+CASCADE`. Written by the creation transaction of the run, deleted by the grant that delivers it or by the commit that
+ends the queued run (audited `run.signal_dropped`). `sagat_app`: `SELECT`, `INSERT`, `DELETE`. Invariant: a row exists
+only for a run whose start waits for its gates.
+
 ### `flow_control_key_versions`
 
 PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,
@@ -498,10 +525,10 @@ rows it actually deleted.
 
 - `concurrency_waiters.pinned_limit integer` null and `rate_limit_waiters.pinned_limit integer` null: the declaration
   the run's version pins (`limit` of the policy), before any ceiling, written with every new waiter row; `NULL` in a
-  row written before `20270210000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
+  row written before `20270213000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
   declaration clamped by the namespace's ceiling at admission, as the row's `*.queued` event records it. CHECK
   `concurrency_waiters_pinned_limit_valid` and `rate_limit_waiters_pinned_limit_valid` `(pinned_limit IS NULL OR
-  pinned_limit >= declared_limit)`, added `NOT VALID` by `20270210000000` and validated by `20270210000100`. The table
+  pinned_limit BETWEEN declared_limit AND 10000)`, added `NOT VALID` by `20270213000000` and validated by `20270213000100`. The table
   grants of `sagat_app` cover the column (`SELECT, INSERT, DELETE`); a fixed-size column has no storage class.
 - Every decision (admission, the grant routine, the place estimate, the run view) bounds a waiter by
   `least(coalesce(pinned_limit, declared_limit), the namespace's current ceiling)` (of its window's length for a slot,

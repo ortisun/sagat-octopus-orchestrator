@@ -11,6 +11,8 @@ import { FieldEditor } from './fields';
 import type { Change } from './fields';
 import { DatabaseFields } from './DatabaseFields';
 import { ScriptPicker } from './ScriptPicker';
+import { FlowControlFields } from './FlowControlFields';
+import { mayDeclareGates } from './flowControl';
 
 export interface NodeNote {
   kind: 'problem' | 'warning' | 'advice';
@@ -188,6 +190,8 @@ export const NodeInspector = forwardRef(function NodeInspector(
           <FieldEditor spec={field} node={node} disabled={disabled} change={actions.change} />
         </div>
       ))}
+
+      {mayDeclareGates(node) ? <FlowControlFields doc={doc} owner={{ level: 'node', nodeId: node.id }} disabled={disabled} change={actions.change} /> : null}
 
       {(spec?.handles ?? []).length > 0 ? (
         <section aria-label="Where this node leads">

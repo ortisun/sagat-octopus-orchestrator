@@ -96,6 +96,54 @@ pub(crate) async fn may_reveal_payload_unlocked(
         .any(|role| role.parse::<Role>().is_ok_and(role_can_use_reveal_grant)))
 }
 
+/// The retained step-log bytes of `tenant`, or `None` unless `subject` holds the reveal grant in every namespace of
+/// `tenant`, each read as [`has_effective_payload_reveal_grant`] reads it: the current membership role may use a grant,
+/// and a grant row exists for each namespace. A tenant with no namespace, or a subject with no membership, answers
+/// `None` (fail-closed; design 041, decision D041-133).
+///
+/// The usage is U = S + Σ used of the quota leases (ADR-0097), read through `sagat_quota_step_log_usage`, which is
+/// `STABLE` so that its queries run in the snapshot of the `SELECT` that calls it (a `VOLATILE` function would take
+/// snapshots of its own and could pair a grant from before a revoke with a usage from after it).
+///
+/// The membership role, the grants and the usage are one `SELECT`, so one snapshot (decision D041-141): a statement
+/// that waited behind a lock takes its snapshot when it runs, after the wait, so a revoke that committed meanwhile is
+/// seen, and the usage is never shown with a grant from before a revoke that the usage follows. A role change deletes
+/// the subject's grants in its own transaction (the trigger `memberships_role_change_revokes_reveal_grants`), and a
+/// membership's removal cascades to its grants; the snapshot sees either whole, so the membership row is read, not locked: nothing is disclosed after this read that a lock would keep
+/// stable, and no grant-set fence is taken, so a quota read and a revoke never wait for each other.
+pub(crate) async fn step_log_usage_if_revealed(
+    pool: &sqlx::PgPool,
+    tenant: TenantId,
+    subject: &Subject,
+) -> Result<Option<u64>, StoreError> {
+    let row: Option<(String, bool, i64)> = sqlx::query_as(
+        "SELECT m.role, \
+            EXISTS (SELECT 1 FROM namespaces WHERE tenant_id = m.tenant_id) \
+            AND NOT EXISTS (SELECT 1 FROM namespaces n WHERE n.tenant_id = m.tenant_id \
+                AND NOT EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                    WHERE g.tenant_id = n.tenant_id AND g.namespace_id = n.id AND g.subject = m.subject)), \
+            sagat_quota_step_log_usage(m.tenant_id) \
+         FROM memberships m WHERE m.tenant_id = $1 AND m.subject = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(subject.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(store_error)?;
+    let Some((role, revealed, used)) = row else {
+        return Ok(None);
+    };
+    let role = role
+        .parse::<Role>()
+        .map_err(|_| corrupt("membership role"))?;
+    if !(revealed && role_can_use_reveal_grant(role)) {
+        return Ok(None);
+    }
+    u64::try_from(used)
+        .map(Some)
+        .map_err(|_| corrupt("step-log usage"))
+}
+
 fn role_can_use_reveal_grant(role: Role) -> bool {
     role.grants(Permission::PayloadReadInternal)
 }

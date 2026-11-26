@@ -649,6 +649,11 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-211):* the one admission port is `Engine::start` (D022-049); the
   creators "022 standalone, draft-test and handler dispatch" and the derived `onFailure~h` child call it, each with a
   run-creator conformance case (task T022-221).
+  *Amended 2026-11-25 (decision D022-087, task T022-109):* a Signal-with-Start whose new run queues MUST create the
+  run and hold the signal with it (`held: true`, nothing delivered); the grant MUST deliver it in its transaction as
+  `signalRun` would, or drop it with an audit when no step waits for it; a queued run that ends instead MUST drop it
+  with an audit. A retry of the request MUST answer the same. A signal no node of the definition waits for keeps the
+  refusal of FR-018-024.
 - **FR-022-019 — Step permits** *(revised 2026-11-13 after review, D022-019; changes ADR-0056 decision 3
   through the proposed ADR-0089)*: A step whose node declares `concurrency` MUST NOT become `READY` before
   it holds a permit. The transaction that would make it ready (FR-022-051) MUST acquire the permit when its
@@ -679,6 +684,12 @@ Added after the review of 2026-11-13:
 - **FR-022-022 — Visibility**: A run MUST show its concurrency state (holding or waiting, since, queue
   deadline, group, key label). A namespace view MUST list keys with holders, waiters and oldest wait, by key
   label only. Raw key values MUST NOT appear in any response, log, span, metric or audit.
+  *Amended 2026-11-25 (decisions D022-061, D022-085 item 6, D022-086; batch 4 reviews, correctness Major 1, security
+  Major 1 and minor 1):* the namespace view lists keys by label, with whole instants, only to a caller who may reveal
+  personal data in the namespace (`view: KEYS`); every other caller reads one row per pool, scope and group
+  (`view: GROUPS`) with its holders or counted grants, waiters and oldest instants, never how many keys a group has or
+  when its next slot frees. A page of groups reads at most 200 key rows; a larger group is summed across the pages that
+  read it, each page one snapshot, its partial sums carried in the sealed cursor.
 
 #### Standalone steps (US05)
 
@@ -925,6 +936,9 @@ Added after the review of 2026-11-13:
   run's start would be refused by a full per-key buffer, a full `queued_runs` or the live-keys ceiling MUST
   fail with `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL` or `FLOW_CONTROL_LIMIT`, a retryable step
   failure handled by the node's retry policy and failure route; no child run is created.
+  *Amended 2026-11-25 (decision D022-080):* a `child` node has no retry policy in IR v1, so its failure route handles
+  the refusal; the capability refusals (`CAPABILITY_DISABLED`, `FLOW_CONTROL_ACTIVATION_PENDING`,
+  `BINARY_CAPABILITY_MISSING`) fail the node the same way, each with its own code.
 - **FR-022-056 — Key cardinality and retirement**: Publication MUST refuse a key that reads only the run's
   identity (run id, business id, idempotency key) (`FLOW_CONTROL_KEY_UNBOUNDED`). A window row MUST carry the
   longest period among its live grants and waiters, and the purge MUST keep a grant until that period plus
@@ -932,11 +946,18 @@ Added after the review of 2026-11-13:
   is in progress, a deciding transaction computes both digests and uses the row that exists under the old
   version, else the new one; the old version is retired when no row uses it, and no key is ever split
   between two rows.
+  *Amended 2026-11-25 (decision D022-081):* an expression sees the run's identity only as `run` (whose one field is the
+  run's id), and a key that reads it is refused whether or not it reads other data too.
 - **FR-022-057 — Classification of keys**: Publication MUST refuse a concurrency or rate-limit key that
   reads a location classified `secret` (FR-016-002 carriers; `FLOW_CONTROL_KEY_SECRET`) and warn for `pii`
   (`FLOW_CONTROL_KEY_PII`). A key label MUST be shown only to a caller who may disclose, at its level, every
   location the key reads; to others the label is `null`. A label stays an online oracle for those who may
   see it (G1185).
+  *Amended 2026-11-25 (decision D022-085 item 8; batch 4 reviews, security Major 2):* a location without a carrier
+  of its own (`state`, `steps` read whole, the output of a node whose kind has no output carrier, such as a
+  `database`, `forEach` or `while` node, or a path that cannot be followed) MUST take the strictest level of every
+  carrier of the document, never less than `pii`; a carrier whose classification walk did not complete MUST count as
+  `secret`.
   *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-229; security Major 4):* the rule extends to `cache.key`: a key over a
   `secret` location is refused (`CACHE_KEY_SECRET`), over `pii` warned (`CACHE_KEY_PII`), and the label rule applies to
   every surface that shows a cache key, its counts or a hit's source run.
@@ -944,6 +965,9 @@ Added after the review of 2026-11-13:
   ADR-0050 slot 8b, sharded like `run_active_counts` (16 slots), changed in the transaction that changes
   what they count and maintained by `SECURITY DEFINER` triggers; the runtime role reads them only. A run
   waiting for both gates counts once in `queued_runs` and once in each key's waiters.
+  *Amended 2026-11-25 (decision D022-084; batch 3 reviews, correctness minor 7):* only `queued_runs` is kept in the
+  counter rows; the live keys are counted from the semaphore and window rows of the digest versions in force, since a
+  live-key counter would be locked between the key locks of one decision (D022-084 item 2).
 - **FR-022-059 — The one admission port is enforced**: The gate MUST run inside `PgRunStore::create`
   (`crates/infra-postgres/src/execution.rs`), the one function that inserts a new run; the only other
   inserts into `runs`, the continue-as-new successors of `crates/infra-postgres/src/chain_progress.rs`,
@@ -956,6 +980,10 @@ Added after the review of 2026-11-13:
   MUST NOT re-check the initiator's permissions (a buffered run is an admitted run, like one waiting on a
   timer), and cancelling it is the remedy for a revoked initiator. The run keeps its original initiator in
   its journal and audit.
+  *Amended 2026-11-25 (batch 5 security minor 1, D022-087):* the same holds for the signal a Signal-with-Start
+  holds with its queued run: the grant delivers it under the caller's name without checking `run:signal` again
+  (it was authorized with the start it rides with), and cancelling the run is the remedy; a held signal that is
+  dropped is audited with the name of the caller who sent it.
 
 #### Cross-cutting
 

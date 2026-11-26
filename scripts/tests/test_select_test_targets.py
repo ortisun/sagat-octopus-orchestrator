@@ -32,8 +32,12 @@ TARGETS = {
     "integration_iceberg_writes": "integration/iceberg-writes/main.rs",
     "e2e_iceberg_writes": "e2e/iceberg-writes/main.rs",
     "integration_claim_transition_efficiency": "integration/claim-transition-efficiency/main.rs",
+    "integration_step_logs": "integration/step-logs/main.rs",
+    "contract_platform_foundation": "contract/platform-foundation/main.rs",
 }
 BUDGET = {"integration_claim_transition_efficiency"}
+# The suites of the server's step-log code (constitution 4.5.0, OD-2026-11-15-10; design 041, task T041-32).
+STEP_LOG_SERVER = {"integration_step_logs", "integration_claim_transition_efficiency", "contract_platform_foundation"}
 LAKE_SUITE_NAMES = {"integration_iceberg_writes", "e2e_iceberg_writes"}
 # What each target's own sources name: integration_a -> domain, contract_a -> application, contract_rest_a -> leaf.
 SOURCES = {
@@ -270,8 +274,9 @@ class Scope(unittest.TestCase):
         self.write(f"{self.CONTRACTS}/worker.proto", "syntax = \"proto3\"; // changed\n")
         self.commit()
         decision = self.decide()
-        # fault_b compiles it too, and is not a contract suite.
-        self.assertEqual(decision["targets"], "")
+        # fault_b compiles it too, and is not a contract suite. The worker protocol is also a harness of the step logs
+        # (design 041, task T041-32), which selects their suite and the six-language conformance; no contract suite.
+        self.assertEqual(decision["targets"], "integration_step_logs sdk_conformance")
         self.assertEqual(set(decision["crates"].split()), {"sagat-leaf", "sagat-domain", "sagat-application",
                                                            "sagat-cli"})
 
@@ -475,7 +480,9 @@ class Scope(unittest.TestCase):
 
     # -- the budget of the hot path (OD-2026-11-12-4) --------------------------------------
     def test_a_change_of_the_postgresql_adapter_selects_the_budget_suite_only(self):
-        for rel in ("crates/infra-postgres/src/execution.rs", "crates/infra-postgres/src/execution/path.rs",
+        # The execution module of the adapter also selects the step-log suite (the report path that stores a carry):
+        # test_the_report_path_that_stores_a_carry_selects_the_step_log_suite_and_the_budget.
+        for rel in ("crates/infra-postgres/src/runs.rs", "crates/infra-postgres/src/workers/claim.rs",
                     "crates/infra-postgres/migrations/20991231000000_x.up.sql"):
             with self.subTest(rel=rel):
                 self.write(rel, f"// {rel}\n")
@@ -484,8 +491,7 @@ class Scope(unittest.TestCase):
                 self.base = git(self.root, "rev-parse", "HEAD")
 
     def test_a_change_of_the_claim_or_the_command_path_selects_the_budget_suite(self):
-        for rel in ("crates/application/src/worker.rs", "crates/application/src/worker/claim_counters.rs",
-                    "crates/application/src/execution.rs", "crates/application/src/runs.rs"):
+        for rel in ("crates/application/src/execution.rs", "crates/application/src/runs.rs"):
             with self.subTest(rel=rel):
                 self.write(rel, f"// {rel}\n")
                 self.commit()
@@ -494,8 +500,9 @@ class Scope(unittest.TestCase):
 
     def test_a_change_of_the_scheduler_the_reducer_or_the_gates_selects_the_budget_suite(self):
         # feature 022 (D022-030, T022-092): the passes, the reducer and the flow-control ports can each move what a lease,
-        # a completion or an admission costs the database
-        for rel in ("crates/scheduler/src/flow_control.rs", "crates/scheduler/src/passes.rs",
+        # a completion or an admission costs the database (the passes, `crates/scheduler/src/passes.rs`, also run the
+        # step-log purge of design 041, so they select the step-log suites too: the step-log test below checks them)
+        for rel in ("crates/scheduler/src/flow_control.rs", "crates/scheduler/src/lib.rs",
                     "crates/domain/src/execution/state.rs", "crates/domain/src/execution/flow_control.rs",
                     "crates/application/src/concurrency.rs", "crates/application/src/rate_limits.rs",
                     "crates/application/src/flow_control.rs", "crates/application/src/flow_control/ports.rs",
@@ -514,6 +521,69 @@ class Scope(unittest.TestCase):
                 self.write(rel, f"// {rel}\n")
                 self.commit()
                 self.assertEqual(self.chosen(), set())
+    # -- the step logs of design 041 (constitution 4.5.0, OD-2026-11-15-10) ----------------
+    def test_the_servers_step_log_code_selects_the_step_log_suites_and_the_fitness_tests(self):
+        for rel in ("crates/domain/src/step_logs.rs", "crates/application/src/step_logs.rs",
+                    "crates/application/src/step_logs/carry.rs", "crates/infra-postgres/src/step_logs.rs",
+                    "crates/api-grpc/src/step_logs.rs", "crates/api-http/src/routes/step_logs.rs",
+                    "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql",
+                    "crates/infra-postgres/migrations/20270210000100_step_logs_validate.down.sql",
+                    "crates/infra-postgres/migrations/20270201000000_step_log_quotas.up.sql",
+                    "crates/api-grpc/src/limits.rs", "crates/api-grpc/src/service.rs",
+                    "crates/api-http/src/routes/execution.rs", "crates/api-http/src/routes/scripts.rs",
+                    "crates/application/src/scripts.rs", "crates/infra-postgres/src/maintenance.rs",
+                    "crates/scheduler/src/passes.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), STEP_LOG_SERVER)
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_the_report_path_that_stores_a_carry_selects_the_step_log_suite_and_the_budget(self):
+        for rel in ("crates/application/src/worker.rs", "crates/application/src/worker/claim_counters.rs",
+                    "crates/infra-postgres/src/execution.rs", "crates/infra-postgres/src/execution/path.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), BUDGET | {"integration_step_logs"})
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_the_worker_protocol_and_each_sdks_capture_code_select_the_step_log_suite_and_the_conformance(self):
+        for rel in ("specs/001-platform-foundation/contracts/worker.proto",
+                    "sdks/typescript/src/worker/step-logs.ts", "sdks/typescript/src/worker/activity.ts",
+                    "sdks/typescript/src/worker/host.ts", "sdks/typescript/src/worker/grpc.ts",
+                    "sdks/go/worker/steplogs.go", "sdks/go/worker/activity.go", "sdks/go/worker/task.go",
+                    "sdks/go/worker/host.go", "sdks/go/worker/rpc.go", "sdks/go/internal/safelog/safelog.go",
+                    "sdks/python/sagat_octopus_orchestrator/worker/_step_logs.py",
+                    "sdks/python/sagat_octopus_orchestrator/worker/host.py",
+                    "sdks/python/sagat_octopus_orchestrator/worker/activity.py",
+                    "sdks/python/sagat_octopus_orchestrator/worker/_grpc.py",
+                    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/StepLogCapture.cs",
+                    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/WorkerHost.cs",
+                    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/WorkerRpc.cs",
+                    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/ActivityExecutionContext.cs",
+                    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Internal/Safe.cs",
+                    "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/StepLogCapture.java",
+                    "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/ActivityLogger.java",
+                    "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/WorkerHost.java",
+                    "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/WorkerRpc.java",
+                    "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/Hooks.java",
+                    "sdks/rust/src/step_logs.rs", "sdks/rust/src/activity.rs", "sdks/rust/src/worker.rs",
+                    "sdks/rust/src/worker_rpc.rs", "sdks/rust/src/capabilities.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertTrue({"integration_step_logs", "sdk_conformance"} <= self.chosen(), rel)
+                self.assertFalse(self.chosen() & (BUDGET | {"contract_platform_foundation"}), rel)
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_other_sdk_files_and_other_contracts_select_no_step_log_suite(self):
+        for rel in ("sdks/go/worker/other.go", "sdks/typescript/src/client.ts",
+                    "specs/001-platform-foundation/contracts/other.proto", "crates/domain/src/step_logging.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertNotIn("integration_step_logs", self.chosen(), rel)
                 self.base = git(self.root, "rev-parse", "HEAD")
 
     def test_the_rest_of_the_application_selects_no_suite(self):

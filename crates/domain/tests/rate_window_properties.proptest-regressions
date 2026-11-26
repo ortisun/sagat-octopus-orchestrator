@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9207a3eecc82b7c51be24133faf4dae40b9c78af32ac3e1cd0a304b0b8677110 # shrinks to bounds = [Bound { limit: 3, per: Second }, Bound { limit: 1, per: Second }], script = [Arrive { acquirer: 0, may_queue: false }, Arrive { acquirer: 2, may_queue: false }, Lease(0), Lease(0), Arrive { acquirer: 2, may_queue: false }, Arrive { acquirer: 1, may_queue: true }, Lease(0), Arrive { acquirer: 2, may_queue: true }, Advance(1000000), Pass]
+cc 7171a81ce2c8fd9a0d54b240ab5eaa5fb53f2a39a20d1d5179d6cf07bb0933d7 # shrinks to bounds = [Bound { limit: 1, per: Second }, Bound { limit: 2, per: Second }], script = [Arrive { acquirer: 0, may_queue: false }, Arrive { acquirer: 6, may_queue: true }, Advance(1000000), Arrive { acquirer: 5, may_queue: true }, Pass]

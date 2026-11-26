@@ -66,4 +66,17 @@ ignore = [
   "RUSTSEC-2026-0543", # chrono is unmaintained
   "RUSTSEC-2026-0555", # chrono-tz is unmaintained
   "RUSTSEC-2026-0542", # humantime is unmaintained
+  # 2026-11-25: two advisories published after the last green runs (research.md, gap G709).
+  # url 2.5.8: a stack overflow in `Url::origin()` on nested `blob:` URLs. No code of this workspace calls
+  # `Url::origin()` (its `.origin()` calls are on workflow nodes), and the parsers that reach `url` (reqwest,
+  # sqlx, async-nats, redis, object_store, bollard, tower-http, the connectors and the database runner) take
+  # http(s), database and broker URLs, never a nested `blob:` one. The fix, 2.5.9, was released on 2026-11-20,
+  # so it passes the two-week rule on 2026-12-04: take it then with `cargo update -p url` in the root, sdks/rust,
+  # its conformance and its consumer lock files, and delete this entry.
+  "RUSTSEC-2026-0592",
+  # parquet 58.4.1: bloom filters written as plaintext when writing encrypted Parquet. The only path is the
+  # feature-035 independent reader (`iceberg` 0.10.1, which pins parquet 58), a dev-dependency of sagat-tests
+  # that reads, never writes encrypted Parquet; nothing that ships links it (as G035-024). Re-evaluate on
+  # 2026-12-04 or when an `iceberg` release takes a fixed parquet.
+  "RUSTSEC-2026-0595",
 ]

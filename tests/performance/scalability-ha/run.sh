@@ -47,6 +47,8 @@ REPORT="${SAGAT_PERF_REPORT:-tests/performance/reports/scalability-ha.md}"
 # Whatever happens from here on, the server is stopped and the directory removed.
 cleanup() {
   [ -f "$DATA/postmaster.pid" ] && "$PGBIN/pg_ctl" -D "$DATA" -m fast stop >/dev/null 2>&1 || true
+  # SAGAT_PERF_PGLOG: keep the server's log (its errors say what a failed call met on the server side).
+  [ -n "${SAGAT_PERF_PGLOG:-}" ] && cp "$WORK/postgres.log" "$SAGAT_PERF_PGLOG" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -63,7 +65,7 @@ if ! "$PGBIN/pg_ctl" -D "$DATA" -l "$WORK/postgres.log" -w \
   -o "-p $PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories=$WORK \
       -c shared_buffers=${SAGAT_BENCH_SHARED_BUFFERS:-2GB} -c effective_cache_size=${SAGAT_BENCH_CACHE:-16GB} \
       -c work_mem=16MB -c max_connections=400 -c max_wal_size=16GB -c checkpoint_timeout=15min \
-      -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on" start; then
+      -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on ${SAGAT_BENCH_PG_EXTRA:-}" start; then
   echo "the PostgreSQL of the benchmark did not start; its log:" >&2
   cat "$WORK/postgres.log" >&2 || true
   exit 1
@@ -88,6 +90,7 @@ HEAD
 # SAGAT_PERF_SCENARIOS names the ones to run (default: all four), e.g. to repeat one.
 for scenario in ${SAGAT_PERF_SCENARIOS:-waits_at_scale firing_scales_with_concurrency_and_replicas a_noisy_tenant_and_a_quiet_one step_transitions_per_second}; do
   echo "== $scenario"
-  cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored --nocapture --exact "$scenario"
+  # SAGAT_PERF_CARGO_FEATURES: features of sagat-tests a scenario needs (design 041's T041-35: perf-spike).
+  cargo test -p sagat-tests --test perf_scalability_ha --release ${SAGAT_PERF_CARGO_FEATURES:+--features "$SAGAT_PERF_CARGO_FEATURES"} -- --ignored --nocapture --exact "$scenario"
 done
 echo "report: $REPORT"

@@ -8,7 +8,9 @@
 mod support;
 
 mod admission;
+mod alerts;
 mod ceilings;
+mod child_starts;
 mod concurrency_locks;
 mod consistency;
 mod lifecycle;
@@ -17,6 +19,7 @@ mod publication;
 mod queue;
 mod rate_creators;
 mod rate_gate;
+mod rate_lifecycle;
 mod rate_limit_locks;
 mod rate_rest;
 mod readiness;
@@ -26,3 +29,4 @@ mod returns;
 mod rotation;
 mod run_admission;
 mod run_creators;
+mod window_model;

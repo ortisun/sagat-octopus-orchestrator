@@ -845,7 +845,7 @@ components:
               tenantId: {type: string, format: uuid}
               namespaceId: {type: string, format: uuid}
               alertId: {type: string, format: uuid}
-              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS]}
+              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS, CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED]}
               subject: {type: string, maxLength: 120}
               severity: {type: string, enum: [warning, critical]}
               state: {type: string, enum: [FIRING, RESOLVED]}

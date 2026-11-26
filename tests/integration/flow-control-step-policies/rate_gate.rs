@@ -42,6 +42,20 @@ fn rated_step(name: &str, group: &str, limit: u32, per: &str) -> Value {
     )
 }
 
+/// A scheduler of `w`'s store that runs one key's pass at a time: a test whose waiter waits on two keys, and that asserts
+/// what one pass decides about it, uses it, since two keys' passes at once may find that waiter's run held by each other
+/// (a busy waiter keeps its key's hint by design, decision D022-088; decision D022-099).
+fn one_key_at_a_time(w: &World) -> crate::support::engine::Sched {
+    crate::support::scale::scheduler(
+        w,
+        sagat_scheduler::SchedulerSettings {
+            concurrency: 1,
+            ..sagat_scheduler::SchedulerSettings::default()
+        },
+        None,
+    )
+}
+
 fn us(at: OffsetDateTime) -> i64 {
     i64::try_from(at.unix_timestamp_nanos() / 1_000).expect("an instant")
 }
@@ -514,8 +528,10 @@ async fn a_grant_through_another_keys_pass_wakes_the_waiters_of_its_window() {
     let behind = w.start(rate_only, &json!({"accountId": "acct-1"})).await;
     assert_eq!(count(&w, head, "rate_limit.queued").await, 1);
     assert_eq!(count(&w, behind, "rate_limit.queued").await, 1);
-    // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation)
-    assert_eq!(w.scheduler.tick().await.gates_granted, 0);
+    // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation).
+    // One key at a time: with both keys' passes at once, the window's pass may find the head's run held by the permit's
+    // pass and skip it, which keeps the window's hint by design (`Busy`; a loaded runner did so on 2026-11-25)
+    assert_eq!(one_key_at_a_time(&w).tick().await.gates_granted, 0);
     assert_eq!(
         hint_us(&w, behind).await,
         None,
@@ -730,6 +746,115 @@ async fn the_purge_keeps_a_short_grant_for_the_longest_period_its_window_has_see
         1
     );
     w.complete(&session, &task, &json!({})).await.expect("done");
+}
+
+/// Moves the instants of `run`'s grant rows by `by_us` microseconds, as the owner, with the guard that forbids it
+/// switched off for this transaction only (decision D022-072: counted instants are moved, the clock is not).
+pub(crate) async fn move_grant_instants(w: &World, run: RunId, by_us: i64) {
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    sqlx::query("ALTER TABLE rate_limit_grants DISABLE TRIGGER rate_limit_grants_guard")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard off in this transaction");
+    sqlx::query(
+        "UPDATE rate_limit_grants SET granted_at = granted_at + $2 * interval '1 microsecond', \
+                leased_at = leased_at + $2 * interval '1 microsecond' WHERE run_id = $1",
+    )
+    .bind(run.as_uuid())
+    .bind(by_us)
+    .execute(&mut *tx)
+    .await
+    .expect("the grant's instants moved");
+    sqlx::query("ALTER TABLE rate_limit_grants ENABLE ALWAYS TRIGGER rate_limit_grants_guard")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard on again");
+    tx.commit().await.expect("moved");
+}
+
+/// Task T022-103 (FR-022-056), mixed periods on one key: two per-second slots and one hourly slot of `acct-1`. The window
+/// row keeps the longest period (an hour), so a per-second grant is kept an hour and a minute after its lease, not its
+/// own second and a minute; the purge deletes only what is past that, at most `limit` rows a key, and the window's
+/// `live_grants` goes down by exactly the rows each purge deleted. The hourly grant, leased ten minutes later (its
+/// instants moved, decision D022-072), stays.
+#[tokio::test]
+async fn the_purge_of_a_key_with_mixed_periods_counts_down_the_rows_it_deleted() {
+    const LATER_US: i64 = 600 * SECOND_US;
+    let w = gated_world().await;
+    let secondly = publish(&w, rated_start("rate-purge-mixed-s", 5, "second")).await;
+    let hourly = publish(&w, rated_start("rate-purge-mixed-h", 5, "hour")).await;
+    let input = json!({"accountId": "acct-1"});
+    let short = [
+        w.start(secondly, &input).await,
+        w.start(secondly, &input).await,
+    ];
+    let long = w.start(hourly, &input).await;
+    for run in short.iter().chain([&long]) {
+        assert_eq!(start_slot(&w, *run).await.0, 1, "granted at once");
+    }
+    // the runs end: a grant counts until it ages out, whatever its run does since
+    let session = w.session(&["act.g"]).await;
+    for task in w.poll(&session, 8).await {
+        w.complete(&session, &task, &json!({})).await.expect("done");
+    }
+    move_grant_instants(&w, long, LATER_US).await;
+    let window = || async {
+        sqlx::query_as::<_, (i32, i32, i64)>(
+            "SELECT w.max_period_ms, w.live_grants, \
+                    (SELECT count(*) FROM rate_limit_grants g WHERE g.group_name = w.group_name) \
+               FROM rate_limit_windows w WHERE w.group_name = 'accounts'",
+        )
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the window")
+    };
+    assert_eq!(window().await, (3_600_000, 3, 3));
+    let mut latest = 0;
+    for run in short {
+        latest = latest.max(start_slot(&w, run).await.3.expect("a lease instant"));
+    }
+    let at = |micros: i64| {
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000).expect("an instant")
+    };
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(at(latest + SECOND_US + 60 * SECOND_US + 1), 64, 100)
+            .await
+            .expect("purge"),
+        0,
+        "a per-second grant is kept for the window's longest period"
+    );
+    let past_short = at(latest + HOUR_US + 60 * SECOND_US + 1);
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(past_short, 64, 1)
+            .await
+            .expect("purge"),
+        1,
+        "at most `limit` rows of a key"
+    );
+    assert_eq!(
+        window().await,
+        (3_600_000, 2, 2),
+        "down by the one row deleted"
+    );
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(past_short, 64, 100)
+            .await
+            .expect("purge"),
+        1,
+        "the other per-second grant; the hourly one is ten minutes younger"
+    );
+    assert_eq!(
+        window().await,
+        (3_600_000, 1, 1),
+        "down by the one row deleted"
+    );
+    assert_eq!(start_slot(&w, long).await.0, 1, "the hourly grant stays");
+    // (the consistency checks are not run: they compare the journal with the true clock, under which the grants this
+    // purge deleted as of an hour from now still count; the window's own count is checked above)
+    move_grant_instants(&w, long, -LATER_US).await;
 }
 
 // ------------------------------------------------------------------------------- the re-reviews of 2026-11-20 (D022-066)
@@ -1029,7 +1154,11 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_a
         w.journal(w2).await,
         ["run.started", "rate_limit.queued", "concurrency.queued"]
     );
-    let report = w.scheduler.grant_gates().await;
+    // one key at a time: w2 waits on both keys, so with both keys' passes at once the window's pass may find w2's run
+    // held by the permit's pass, and a busy waiter keeps its key's hint by design (decision D022-088; the case is
+    // `a_dual_gated_waiter_found_busy_keeps_its_window_due_and_the_next_pass_rests_it`; CI runs 45637128106 and
+    // 45649612535 failed so on 2026-11-25, decision D022-099)
+    let report = one_key_at_a_time(&w).grant_gates().await;
     assert_eq!(report.gates_granted, 0, "no permit for w2: {report:?}");
     let rested = hint_us(&w, w2).await.expect("a rested window");
     assert!(
@@ -1058,4 +1187,329 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_a
         w.assert_consistent(run).await;
     }
     w.assert_keys_consistent().await;
+}
+
+/// Decision D022-099 (CI runs 45637128106 and 45649612535, 2026-11-25), with decisions D022-088 and D022-073 item 4: the
+/// interleaving that failed the test above on CI, made deterministic. A dual-gated waiter `w2` (`limit: 3, per: hour` and
+/// a permit of `limit: 1`) behind a holder of both; its run held by another transaction, as the permit's pass of the same
+/// tick holds it while it tries `w2`. The window's pass finds `w2` busy: it decides nothing, so the window keeps its
+/// hint and stays due (a busy waiter is decided by a later pass, D022-088), and nothing is granted. Released, the next
+/// pass refuses `w2` (its permit) and rests the window until the holder's slot ages out, an hour ahead.
+#[tokio::test]
+async fn a_dual_gated_waiter_found_busy_keeps_its_window_due_and_the_next_pass_rests_it() {
+    let w = gated_world().await;
+    let mut dual = rated_start("rate-busy-dual", 3, "hour");
+    dual["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let dual = publish(&w, dual).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(dual, &input).await;
+    let w2 = w.start(dual, &input).await;
+    assert_eq!(
+        w.journal(w2).await,
+        ["run.started", "rate_limit.queued", "concurrency.queued"]
+    );
+    let queued = hint_us(&w, w2).await.expect("a due window");
+    let mut busy = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(w2.as_uuid())
+        .execute(&mut *busy)
+        .await
+        .expect("w2's run held");
+    let report = w.scheduler.grant_gates().await;
+    busy.rollback().await.expect("released");
+    assert_eq!(
+        (report.gates_granted, report.skipped > 0),
+        (0, true),
+        "w2 is busy, nothing is granted: {report:?}"
+    );
+    assert_eq!(
+        hint_us(&w, w2).await,
+        Some(queued),
+        "a busy waiter keeps its window's hint: the window stays due"
+    );
+    let report = one_key_at_a_time(&w).grant_gates().await;
+    assert_eq!(report.gates_granted, 0, "no permit for w2: {report:?}");
+    let granted = start_slot(&w, holder).await.2.expect("the holder's slot");
+    assert_eq!(
+        hint_us(&w, w2).await,
+        Some(granted + HOUR_US),
+        "refused by its permit, w2 keeps its room and the window rests until the holder's slot ages out"
+    );
+    for run in [holder, w2] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// Decision D022-076 item 7 (re-review minor 7; spec US07 edge cases, "a lowered policy applies to waiters at once", and
+/// its raised twin): a raised namespace ceiling applies to the starts already buffered, up to their declaration. Declared
+/// 3 an hour, the namespace's ceiling of an hour 1: one holder, two starts buffered under it (filed with 1, their
+/// declaration of 3 kept beside it). The ceiling raised to 3, one pass grants both (bounded by the filed 1, neither
+/// would be granted for the hour), each grant recording the limit of 3 it was decided with; a fourth start then waits.
+#[tokio::test]
+async fn a_raised_ceiling_applies_to_the_buffered_starts_up_to_their_declaration() {
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_start("rate-raised", 3, "hour")).await;
+    set(&w, QuotaResource::RateLimitPerHour, 1).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    let buffered = [
+        w.start(workflow, &input).await,
+        w.start(workflow, &input).await,
+    ];
+    for run in buffered {
+        assert_eq!(start_slot(&w, run).await.1, 1, "a ceiling of one an hour");
+    }
+    let (filed, pinned): (i32, Option<i32>) = sqlx::query_as(
+        "SELECT declared_limit, pinned_limit FROM rate_limit_waiters WHERE run_id = $1",
+    )
+    .bind(buffered[0].as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the waiter");
+    assert_eq!(
+        (filed, pinned),
+        (1, Some(3)),
+        "filed under the ceiling, its declaration kept"
+    );
+    set(&w, QuotaResource::RateLimitPerHour, 3).await;
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 2,
+        "the raised ceiling applies to the buffered starts: {report:?}"
+    );
+    for run in buffered {
+        assert_eq!(start_slot(&w, run).await.0, 1);
+        let decided: (i32, i64) = sqlx::query_as(
+            "SELECT (SELECT declared_limit FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'RUN'), \
+                    (SELECT (detail->>'limit')::bigint FROM run_events \
+                      WHERE run_id = $1 AND event_type = 'rate_limit.granted' AND node IS NULL)",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the grant");
+        assert_eq!(decided, (3, 3), "decided with the raised ceiling");
+    }
+    let fourth = w.start(workflow, &input).await;
+    assert_eq!(
+        start_slot(&w, fourth).await.1,
+        1,
+        "never above the declaration"
+    );
+    for run in [holder, buffered[0], buffered[1], fourth] {
+        w.assert_consistent(run).await;
+    }
+}
+
+// ------------------------------------------------------------------------------- no re-authorization at grant (T022-106)
+
+/// Task T022-106 (FR-022-060, decision D022-034): a grant from the buffer does not re-authorize. `carol`, a developer,
+/// starts a run that waits behind a holder for its permit and its slot; she then loses `run:start` (her membership is
+/// demoted to viewer, and a start of hers is refused). Once the holder ends and its slot ages out, the next pass grants
+/// her buffered run both gates all the same, and the run keeps her as its initiator: `runs.started_by`, the actor of its
+/// `run.started` and its one `run.started` audit record; the pass adds no start record of its own.
+#[tokio::test]
+async fn a_grant_from_the_buffer_does_not_reauthorize_and_keeps_the_initiator() {
+    use sagat_application::runs::StartRun;
+    use sagat_domain::identity::{Permission, Principal, Role};
+
+    let w = gated_world().await;
+    let mut doc = rated_start("rate-initiator", 1, "second");
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let session = w.session(&["act.g"]).await;
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let carol = w.member("carol", Role::Developer).await;
+    w.bind_everything(&carol).await;
+    let input = serde_json::to_vec(&json!({"accountId": "acct-1"})).expect("json");
+    let start = |principal: Principal, key: &'static str| {
+        let input = input.clone();
+        let w = &w;
+        async move {
+            w.runs
+                .start(
+                    &principal,
+                    &StartRun {
+                        namespace: "payments",
+                        workflow,
+                        version: None,
+                        input: &input,
+                        correlation_id: None,
+                        deadline: None,
+                        key,
+                    },
+                    &crate::support::engine::ctx(),
+                )
+                .await
+                .map(|record| record.info.run_id)
+        }
+    };
+    let buffered = start(carol.clone(), "initiator-buffered")
+        .await
+        .expect("admitted");
+    assert_eq!(
+        w.journal(buffered).await,
+        ["run.started", "rate_limit.queued", "concurrency.queued"]
+    );
+
+    sqlx::query(
+        "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = 'carol'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("demoted");
+    let demoted = Principal::new(w.admin.tenant_id(), carol.subject().clone(), Role::Viewer);
+    assert!(
+        matches!(
+            start(demoted, "initiator-refused").await,
+            Err(AppError::Forbidden {
+                permission: Permission::RunStart
+            })
+        ),
+        "carol may no longer start a run"
+    );
+
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    until_past(
+        &w.db.pool,
+        start_slot(&w, holder).await.2.expect("granted") + SECOND_US,
+    )
+    .await;
+    assert_eq!(w.scheduler.tick().await.gates_granted, 1);
+    assert_eq!(
+        start_slot(&w, buffered).await.0,
+        1,
+        "granted from the buffer"
+    );
+    assert_eq!(count(&w, buffered, "concurrency.acquired").await, 1);
+
+    let (started_by, journal_actor): (String, String) = sqlx::query_as(
+        "SELECT r.started_by, e.actor FROM runs r JOIN run_events e ON e.run_id = r.id \
+          WHERE r.id = $1 AND e.event_type = 'run.started'",
+    )
+    .bind(buffered.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the run");
+    // the run names its initiator as a subject, the journal as an actor
+    assert_eq!(started_by, carol.subject().as_str());
+    assert_eq!(journal_actor, format!("user:{}", carol.subject().as_str()));
+    let audit: Vec<String> = sqlx::query_scalar(
+        "SELECT actor FROM audit_records WHERE action = 'run.started' AND resource_id = $1",
+    )
+    .bind(buffered.to_string())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        audit,
+        [carol.subject().as_str().to_owned()],
+        "one start record, hers"
+    );
+    for run in [holder, buffered] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// The namespace's queued runs as the counter rows hold them (`flow_control_counts`, T022-105) and as a scan of the
+/// run-scope waiter rows finds them (the statement the counters replace): (counted, scanned).
+async fn queued_runs(w: &World) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT coalesce(sum(queued_runs), 0)::bigint FROM flow_control_counts), \
+                (SELECT count(*) FROM (SELECT run_id FROM concurrency_waiters WHERE permit_scope = 'RUN' \
+                                       UNION SELECT run_id FROM rate_limit_waiters WHERE limit_scope = 'RUN') q)",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("queued runs")
+}
+
+/// Task T022-105 (FR-022-058; decisions D022-026, D022-084): the namespace's queued runs are kept in slot rows by the
+/// triggers of the waiter rows, in the transaction that writes them; a run waiting for both gates counts once, when it
+/// queues and when it leaves; a step waiter is not a queued run; and the runtime role reads the counters and writes none
+/// of them, nor a counter of a key row, while it may still move a key's hint.
+#[tokio::test]
+async fn a_dual_gated_queued_run_counts_once_and_the_runtime_role_cannot_write_a_counter() {
+    use sagat_application::runs::RunOperation;
+    let w = gated_world().await;
+    let mut doc = rated_start("rate-counts-dual", 1, "hour");
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    assert_eq!(queued_runs(&w).await, (0, 0));
+    let second = w.start(workflow, &input).await;
+    let third = w.start(workflow, &input).await;
+    for run in [second, third] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT (SELECT count(*) FROM concurrency_waiters WHERE run_id = $1) \
+                      + (SELECT count(*) FROM rate_limit_waiters WHERE run_id = $1)",
+            )
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("rows"),
+            2,
+            "a waiter row of each gate"
+        );
+    }
+    assert_eq!(queued_runs(&w).await, (2, 2), "two runs, four waiter rows");
+    // a dual-gated run leaves both queues in one transaction, and the count once
+    w.operate_run(second, RunOperation::Cancel).await;
+    assert_eq!(queued_runs(&w).await, (1, 1));
+    // a step that waits is not a queued run
+    let stepped = publish(&w, rated_step("rate-counts-step", "provider", 1, "hour")).await;
+    let _step_holder = w.start(stepped, &input).await;
+    let step_waiter = w.start(stepped, &input).await;
+    let step_waiters: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rate_limit_waiters WHERE run_id = $1 AND limit_scope = 'STEP'",
+    )
+    .bind(step_waiter.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!(step_waiters, 1, "the second step waits");
+    assert_eq!(queued_runs(&w).await, (1, 1));
+    w.operate_run(third, RunOperation::Cancel).await;
+    assert_eq!(queued_runs(&w).await, (0, 0));
+    let slots: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM flow_control_counts WHERE queued_runs <> 0")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("slots");
+    assert_eq!(slots, 0);
+
+    let runtime = w.db.runtime_pool().await;
+    let read: i64 = sqlx::query_scalar("SELECT count(*) FROM flow_control_counts")
+        .fetch_one(&runtime)
+        .await
+        .expect("the runtime role reads the counters");
+    assert!(read >= 1, "the slot rows stay, at zero");
+    for forged in [
+        "UPDATE flow_control_counts SET queued_runs = 0",
+        "INSERT INTO flow_control_counts (tenant_id, namespace_id, slot, queued_runs) \
+         SELECT tenant_id, namespace_id, 15, 0 FROM flow_control_counts LIMIT 1",
+        "DELETE FROM flow_control_counts",
+        "UPDATE rate_limit_windows SET waiters = 0, live_grants = 0",
+        "UPDATE concurrency_semaphores SET holders = 0, waiters = 0",
+    ] {
+        let refused = sqlx::query(forged).execute(&runtime).await;
+        let code = match refused {
+            Err(sqlx::Error::Database(error)) => error.code().map(|c| c.into_owned()),
+            other => panic!("{forged}: {other:?}"),
+        };
+        assert_eq!(code.as_deref(), Some("42501"), "{forged}");
+    }
+    sqlx::query("UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp()")
+        .execute(&runtime)
+        .await
+        .expect("the runtime role moves a window's hint");
+    for run in [holder, second, third, step_waiter] {
+        w.assert_consistent(run).await;
+    }
 }

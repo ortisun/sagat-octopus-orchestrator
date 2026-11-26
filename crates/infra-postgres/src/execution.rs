@@ -11,6 +11,7 @@ use crate::pool::BeginSafely;
 mod ad_hoc;
 mod database;
 mod gate_queue;
+mod held_signals;
 mod path;
 mod path_read;
 mod readiness_gate;
@@ -153,6 +154,9 @@ pub struct PgRunStore {
     flow_control: sagat_application::flow_control::FlowControlSwitches,
     /// The digest keys of the gates (feature 022): without them a gated step is never decided (fail closed).
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
+    /// Design 041's spike only: the hook a report transaction runs before its commit.
+    #[cfg(feature = "perf-spike")]
+    report_hook: crate::report_hook::HookSlot,
 }
 
 impl PgRunStore {
@@ -172,6 +176,8 @@ impl PgRunStore {
                 rate_limits: false,
             },
             flow_control_keys: None,
+            #[cfg(feature = "perf-spike")]
+            report_hook: crate::report_hook::HookSlot::default(),
         }
     }
 
@@ -251,6 +257,14 @@ impl PgRunStore {
             return Ok(Some(FlowControlRefusal::BinaryCapabilityMissing));
         }
         Ok(None)
+    }
+
+    /// Design 041's spike T041-35 only: runs `hook` in every root report transaction, before its commit.
+    #[cfg(feature = "perf-spike")]
+    #[must_use]
+    pub fn with_report_hook(mut self, hook: Arc<dyn crate::report_hook::ReportHook>) -> Self {
+        self.report_hook = crate::report_hook::HookSlot(Some(hook));
+        self
     }
 
     /// Makes every command check that a projection its definition excludes is in fact empty. For
@@ -559,6 +573,10 @@ impl PgRunStore {
             gate_returns_applied: BTreeSet::new(),
             gate_outcomes: Vec::new(),
             run_gate_outcomes: Vec::new(),
+            #[cfg(feature = "perf-spike")]
+            report_hook: self.report_hook.clone(),
+            #[cfg(feature = "perf-spike")]
+            reported_attempt: None,
         }))
     }
 
@@ -759,6 +777,22 @@ impl PgRunStore {
             ));
         }
         verify_start_rate(&mut stored_tx.tx, tenant, run, &replayed, &events).await?;
+        // feature 022 (decision D022-087; batch 5 correctness minor 3): a held signal exists only while the run's start
+        // waits in its queue; its grant takes it, and the end of a run whose start never ran drops it
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM flow_control_held_signals WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&mut *stored_tx.tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if held > 0 && !(replayed.run_gates().is_waiting() && !replayed.status().is_terminal()) {
+            return Err(format!(
+                "a held signal is kept for a run whose start does not wait (status {:?})",
+                replayed.status()
+            ));
+        }
         drop(stored_tx);
         // The run's result (G21) is the payload its `end.reached` event names.
         let result_agrees: bool = sqlx::query_scalar(
@@ -1863,6 +1897,10 @@ impl RunStore for PgRunStore {
                     gate_returns_applied: BTreeSet::new(),
                     gate_outcomes: Vec::new(),
                     run_gate_outcomes: Vec::new(),
+                    #[cfg(feature = "perf-spike")]
+                    report_hook: self.report_hook.clone(),
+                    #[cfg(feature = "perf-spike")]
+                    reported_attempt: None,
                 }));
             }
         }
@@ -1933,7 +1971,7 @@ impl RunStore for PgRunStore {
     }
 
     async fn get(&self, tenant: TenantId, run: RunId) -> Result<Option<RunRecord>, StoreError> {
-        sqlx::query(RUN_SELECT)
+        let mut record = sqlx::query(RUN_SELECT)
             .bind(tenant.as_uuid())
             .bind(run.as_uuid())
             .fetch_optional(&self.pool)
@@ -1941,7 +1979,10 @@ impl RunStore for PgRunStore {
             .map_err(store_error)?
             .as_ref()
             .map(run_record)
-            .transpose()
+            .transpose()?;
+        // a waiting run shows the limit it is decided with, also when its place cannot be read (decision D022-076 item 5)
+        crate::flow_control::bound_waiting_rate_slots(&self.pool, record.as_mut_slice()).await?;
+        Ok(record)
     }
 
     async fn list(
@@ -1952,7 +1993,7 @@ impl RunStore for PgRunStore {
         before: Option<RunId>,
         limit: u32,
     ) -> Result<Vec<RunRecord>, StoreError> {
-        sqlx::query(concat!(
+        let mut records = sqlx::query(concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
@@ -1999,7 +2040,10 @@ impl RunStore for PgRunStore {
         .map_err(store_error)?
         .iter()
         .map(run_record)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+        // a waiting run shows the limit it is decided with (decision D022-076 item 5)
+        crate::flow_control::bound_waiting_rate_slots(&self.pool, &mut records).await?;
+        Ok(records)
     }
 
     async fn journal(
@@ -4209,6 +4253,11 @@ pub struct PgRunTx {
         sagat_domain::workflow::GateKind,
         readiness_gate::GateOutcome,
     )>,
+    /// Design 041's spike only: the store's report hook, and the attempt this transaction reported.
+    #[cfg(feature = "perf-spike")]
+    report_hook: crate::report_hook::HookSlot,
+    #[cfg(feature = "perf-spike")]
+    reported_attempt: Option<crate::report_hook::ReportedAttempt>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -4516,11 +4565,11 @@ impl RunTx for PgRunTx {
         &'a mut self,
         node: Option<&'a NodeId>,
         attempt: u32,
-        counted_at: OffsetDateTime,
-    ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
+        order: sagat_application::flow_control::PassOrder<'a>,
+    ) -> impl Future<Output = Result<sagat_application::flow_control::QueueDecision, StoreError>>
     + Send
     + 'a {
-        self.grant_from_queue(node, attempt, counted_at)
+        self.grant_from_queue(node, attempt, order)
     }
 
     fn refusing_gate<'a>(
@@ -4615,6 +4664,29 @@ impl RunTx for PgRunTx {
             insert_audit(&mut self.tx, audit).await?;
         }
         Ok(())
+    }
+
+    async fn hold_start_signal<'a>(
+        &'a mut self,
+        signal: &'a sagat_application::execution::HeldSignal,
+        receipt: &'a Idempotency,
+        marker: &'a Idempotency,
+    ) -> Result<(), StoreError> {
+        self.hold_start_signal_inner(signal, receipt, marker).await
+    }
+
+    async fn take_held_signal(
+        &mut self,
+    ) -> Result<Option<sagat_application::execution::HeldSignal>, StoreError> {
+        self.take_held_signal_inner().await
+    }
+
+    async fn audit_held_signal_dropped<'a>(
+        &'a mut self,
+        signal: &'a sagat_application::execution::HeldSignal,
+        reason: &'static str,
+    ) -> Result<(), StoreError> {
+        self.audit_held_signal_dropped_inner(signal, reason).await
     }
 
     async fn apply_declared_update<'a>(
@@ -5518,6 +5590,28 @@ impl RunTx for PgRunTx {
                 self.persist_gate_returns(events).await?;
             }
         }
+        // a commit of a run that ended and whose start never ran (each gate of its start still queued, timed out or
+        // dequeued, none ever held) drops the signal a Signal-with-Start held with it, audited, whatever ended the run
+        // (decision D022-087 item 4; batch 5 correctness minor 3, security suspicion 1); the end of a run whose start
+        // ran adds no statement
+        let start_never_ran = {
+            let gates = self.state.run_gates();
+            let mut slots = gates.concurrency().into_iter().chain(gates.rate());
+            let mut any = false;
+            let never_held = slots.all(|slot| {
+                any = true;
+                matches!(
+                    slot.phase(),
+                    sagat_domain::execution::GatePhase::Queued { .. }
+                        | sagat_domain::execution::GatePhase::TimedOut
+                        | sagat_domain::execution::GatePhase::Dequeued
+                )
+            });
+            any && never_held
+        };
+        if self.state.status().is_terminal() && start_never_ran {
+            self.drop_held_signal_of_ended_run().await?;
+        }
 
         // 1. Outputs: content-addressed payloads, remembered per root node.
         let output_charges = effects
@@ -6086,6 +6180,10 @@ impl RunTx for PgRunTx {
         worker_capacity::available(&mut self.tx, &self.info).await
     }
 
+    async fn rollback(self) -> Result<(), StoreError> {
+        self.tx.rollback().await.map_err(store_error)
+    }
+
     async fn commit(mut self) -> Result<(), StoreError> {
         if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
             return Err(corrupt(
@@ -6126,7 +6224,28 @@ impl RunTx for PgRunTx {
                     },
                 })?;
         }
+        #[cfg(feature = "perf-spike")]
+        let mut timed = None;
+        #[cfg(feature = "perf-spike")]
+        if let (Some(hook), Some(attempt)) =
+            (self.report_hook.0.clone(), self.reported_attempt.take())
+        {
+            hook.on_report_commit(&mut self.tx, &attempt)
+                .await
+                .map_err(store_error)?;
+            if hook.times_commit() {
+                let xid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+                    .fetch_one(&mut *self.tx)
+                    .await
+                    .map_err(store_error)?;
+                timed = Some((hook, xid, crate::report_hook::now_us()));
+            }
+        }
         self.tx.commit().await.map_err(store_error)?;
+        #[cfg(feature = "perf-spike")]
+        if let Some((hook, xid, sent)) = timed {
+            hook.on_committed(xid, sent, crate::report_hook::now_us());
+        }
         readiness_gate::record_gate_outcomes(
             &self.gate_outcomes,
             sagat_telemetry::flow_control::FlowControlScope::Step,
@@ -7801,6 +7920,18 @@ impl PgRunTx {
         let switch_case_id = stored_switch_case_id(&step);
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
+        #[cfg(feature = "perf-spike")]
+        if reported.is_some() && self.report_hook.0.is_some() {
+            self.reported_attempt = Some(crate::report_hook::ReportedAttempt {
+                tenant: self.info.tenant_id.as_uuid(),
+                namespace: self.info.namespace_id.as_uuid(),
+                run: self.info.run_id.as_uuid(),
+                step: step_uuid,
+                node: node.as_str().to_owned(),
+                attempt,
+                generation,
+            });
+        }
         let inserted = !self.stored.contains(&instance);
         // The secrets the step declares, copied onto its row so that the claim query can leave out
         // the steps a worker is not entitled to receive (G48). None when it declares none.

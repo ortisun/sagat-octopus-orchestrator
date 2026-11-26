@@ -14,6 +14,7 @@ pub use capabilities::{reset_reapply_enabled, set_reset_reapply};
 pub use collection_chain::distinct_form;
 mod carrier_schema_check;
 mod classification_check;
+mod classified_locations;
 mod continuation;
 mod convert;
 pub mod cron;
@@ -166,7 +167,11 @@ impl IrCodec for JsonIrCodec {
         // a new publication needs every capability its document uses to be on; `parse_stored` below
         // restores what was published while one was
         capabilities::check_publication(&value)?;
+        // a key that reads the run's identity is refused at publication only (decision D022-081; review of 2026-11-25)
+        flow_control::check_publication_keys(&value)?;
         let parsed = published_definition(value)?;
+        // and a key over a `secret` location (decision D022-085); a stored one keeps its level, whose label nobody sees
+        flow_control::check_secret_keys(&parsed.definition)?;
         // the rules of flow control across the definition hold for a new publication; a stored one is restored as
         // it was, and the one other writer of runs asserts what it relies on itself (FR-022-059)
         parsed
@@ -384,8 +389,12 @@ fn converted_document(
 ) -> Result<ParsedDefinition, IrError> {
     // The levels of what an Iceberg write sends out are read from the schemas of this document, once, for publication and
     // for the restore that admission relies on; they are derived, so they never reach the canonical bytes.
-    let definition = input_schema::attach(value, lake_egress::attach(value, convert(value)?))
-        .with_run_flow_control(flow_control::run(value)?);
+    // So are the levels of what each flow-control key reads (decision D022-085), which its warnings report.
+    let definition = flow_control::attach_key_levels(
+        value,
+        input_schema::attach(value, lake_egress::attach(value, convert(value)?))
+            .with_run_flow_control(flow_control::run(value)?),
+    );
     check_expressions(&definition)?;
     let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);

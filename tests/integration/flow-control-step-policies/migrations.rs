@@ -1508,3 +1508,261 @@ async fn the_reset_slot_reason_rolls_back_only_once_no_entry_carries_it() {
     .expect("the constraint");
     assert!(validated, "20270209000100 validates it");
 }
+
+/// The migration before the waiters' declarations (decision D022-078 item 1). They were renumbered after the latest
+/// migration of every branch (their first number was taken by feature 041), and the queued-runs counters and the alert
+/// kinds after them (review of 2026-11-25, correctness minor 8), so this is still the reset slot's validation.
+const BEFORE_PINNED_LIMIT: i64 = 20_270_209_000_100;
+
+/// Decisions D022-076 item 7 and D022-078 item 1 (migration `20270213000000_flow_control_waiter_pinned_limit`): the waiter
+/// rows of both gates carry the declaration their version pins (`pinned_limit`), never below the filed limit; the
+/// rollback refuses while a waiter's declaration is above its filed limit (no older binary could recover it) and goes
+/// through once the rows agree or are gone; forward again, a row written before has none and the CHECKs are validated.
+#[tokio::test]
+async fn the_waiters_declaration_rolls_back_only_once_no_waiter_would_lose_it() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let anchor = a_run(&w).await;
+    let (tenant, namespace, run) = anchor;
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    window(pool, anchor, 1).await;
+    let waiter = |filed: i32, pinned: Option<i32>| async move {
+        sqlx::query(
+            "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
+             group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard, pinned_limit) \
+             VALUES ($1, $2, $3, 'a', 1, 'ORDINARY', 'STEP', 'provider-starts', $4, $5, 1000, clock_timestamp(), \
+                     clock_timestamp() + interval '1 minute', 3, $6)",
+        )
+        .bind(tenant)
+        .bind(namespace)
+        .bind(run)
+        .bind(DIGEST.as_slice())
+        .bind(filed)
+        .bind(pinned)
+        .execute(pool)
+        .await
+        .map(drop)
+    };
+    let below = waiter(5, Some(4)).await;
+    assert_eq!(
+        db_error(below.expect_err("a declaration below its filed limit")).0,
+        "23514",
+        "the filed limit is never above the declaration"
+    );
+    waiter(2, Some(5))
+        .await
+        .expect("a waiter filed under a lowered ceiling");
+    // the later migrations first, so that the refused rollback below is the pinned-limit one alone and "changes
+    // nothing" is measured against the schema it starts from (batch 4 correctness minor 4)
+    const PINNED_LIMIT_VALIDATED: i64 = 20_270_213_000_100;
+    undo(pool, PINNED_LIMIT_VALIDATED)
+        .await
+        .expect("the later migrations rolled back");
+    let head = |pool: &PgPool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations WHERE success")
+                .fetch_one(&pool)
+                .await
+                .expect("the applied head")
+        }
+    };
+    assert_eq!(head(pool).await, PINNED_LIMIT_VALIDATED);
+    let refused = undo(pool, BEFORE_PINNED_LIMIT).await;
+    assert!(
+        format!("{refused:?}").contains("bounded by a declaration above their filed limit"),
+        "{refused:?}"
+    );
+    // its validation (a `SELECT 1` down) goes, the refused migration itself stays applied with its column
+    assert!(
+        exists_column(pool, "rate_limit_waiters").await
+            && head(pool).await == PINNED_LIMIT_VALIDATED - 100,
+        "a refused rollback changes nothing of its own migration"
+    );
+    sqlx::query("DELETE FROM rate_limit_waiters WHERE run_id = $1")
+        .bind(run)
+        .execute(pool)
+        .await
+        .expect("the waiter drains");
+    // the emptied window went with its last waiter
+    window(pool, anchor, 1).await;
+    waiter(3, Some(3))
+        .await
+        .expect("a waiter whose two limits agree");
+    undo(pool, BEFORE_PINNED_LIMIT)
+        .await
+        .expect("rolled back: a waiter whose limits agree loses nothing");
+    assert!(!exists_column(pool, "rate_limit_waiters").await);
+    assert!(!exists_column(pool, "concurrency_waiters").await);
+    MIGRATOR.run(pool).await.expect("forward again");
+    let kept: Option<i32> =
+        sqlx::query_scalar("SELECT pinned_limit FROM rate_limit_waiters WHERE run_id = $1")
+            .bind(run)
+            .fetch_one(pool)
+            .await
+            .expect("the older row");
+    assert_eq!(kept, None, "a row written before the column has none");
+    let validated: Vec<bool> = sqlx::query_scalar(
+        "SELECT convalidated FROM pg_constraint \
+          WHERE conname IN ('concurrency_waiters_pinned_limit_valid', 'rate_limit_waiters_pinned_limit_valid')",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("the constraints");
+    assert_eq!(validated, [true, true], "20270213000100 validates both");
+    sqlx::query("DELETE FROM rate_limit_waiters WHERE run_id = $1")
+        .bind(run)
+        .execute(pool)
+        .await
+        .expect("cleaned");
+}
+
+/// Whether `table` has the column `pinned_limit`.
+async fn exists_column(pool: &PgPool, table: &str) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                         WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'pinned_limit')",
+    )
+    .bind(table)
+    .fetch_one(pool)
+    .await
+    .expect("query")
+}
+
+/// Task T022-105 (migration `20270213000200`; decision D022-084): the queued-runs counters are filled from the waiter rows
+/// present when they are created, a dual-gated run once and a step waiter not at all; rolling them back loses nothing
+/// (the waiter rows stay, the counters are derived), and migrating forward again counts the same. The alert kinds of task
+/// T022-082 (`20270213000300`) roll back while no alert of theirs is kept, and refuse while one is.
+#[tokio::test]
+async fn the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss() {
+    // the waiters' declarations, so the rollback takes the counters and the alert kinds only (correctness minor 8)
+    const BEFORE_COUNTS: i64 = 20_270_213_000_100;
+    let w = crate::support::flow_control::gated_world().await;
+    let pool = &w.db.pool;
+    let mut dual = document("counts-dual", "g", vec![activity("g")]);
+    dual["rateLimit"] =
+        json!({"group": "accounts", "key": "input.accountId", "limit": 1, "per": "hour"});
+    dual["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let dual = crate::support::flow_control::publish(&w, dual).await;
+    let input = json!({"accountId": "acct-1"});
+    let _holder = w.start(dual, &input).await;
+    let _first = w.start(dual, &input).await;
+    let _second = w.start(dual, &input).await;
+    let queued = |pool: &PgPool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT coalesce(sum(queued_runs), 0)::bigint FROM flow_control_counts",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("counted")
+        }
+    };
+    assert_eq!(queued(pool).await, 2);
+    // the migration locks the waiter tables in the order a dual-gated admission writes them, rate first (batch 3
+    // correctness minor 6)
+    let counts = MIGRATOR
+        .iter()
+        .find(|m| m.version == 20_270_213_000_200 && m.migration_type.is_up_migration())
+        .expect("the counts migration");
+    assert!(
+        counts
+            .sql
+            .as_str()
+            .contains("LOCK TABLE rate_limit_waiters, concurrency_waiters"),
+        "rate first"
+    );
+    // a run's waiter only: each counting trigger is guarded by `node = ''`, so a step's waiter fires none (batch 3
+    // correctness nit)
+    let guarded: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT tgname::text, tgqual IS NOT NULL FROM pg_trigger \
+          WHERE tgname LIKE '%waiters_queued_runs%' ORDER BY tgname",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("the counting triggers");
+    assert_eq!(
+        guarded,
+        [
+            ("concurrency_waiters_queued_runs".to_owned(), true),
+            ("concurrency_waiters_queued_runs_out".to_owned(), true),
+            ("rate_limit_waiters_queued_runs".to_owned(), true),
+            ("rate_limit_waiters_queued_runs_out".to_owned(), true),
+        ]
+    );
+    undo(pool, BEFORE_COUNTS).await.expect("rolled back");
+    assert!(!exists(pool, "flow_control_counts").await);
+    let waiters: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM concurrency_waiters) + (SELECT count(*) FROM rate_limit_waiters)",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("waiters");
+    assert_eq!(waiters, 4, "the waiter rows stay");
+    MIGRATOR.run(pool).await.expect("forward again");
+    assert_eq!(
+        queued(pool).await,
+        2,
+        "filled from the rows present, a dual-gated run once"
+    );
+
+    // an alert of a flow-control kind is retained: its rollback refuses
+    sqlx::query(
+        "INSERT INTO operational_alerts (id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
+                last_seen_at, fired_count, item_count, oldest_seconds) \
+         VALUES (gen_random_uuid(), $1, $2, 'RATE_LIMIT_QUEUE_SATURATED', 'accounts', 'FIRING', 'warning', now(), now(), 1, 1, 0)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(pool)
+    .await
+    .expect("an alert");
+    let refused = undo(pool, BEFORE_COUNTS).await;
+    assert!(
+        format!("{refused:?}").contains("flow-control alerts are retained"),
+        "{refused:?}"
+    );
+    MIGRATOR.run(pool).await.expect("forward");
+}
+
+/// Task T022-109 (migration `20270214000000`; decision D022-087): the held signals of Signal-with-Start roll back while
+/// none is kept, and refuse while one is (a request answered `202` is never dropped by a rollback); migrating forward
+/// again restores the table.
+#[tokio::test]
+async fn the_held_signals_roll_back_only_when_none_is_kept() {
+    const BEFORE_HELD_SIGNALS: i64 = 20_270_213_000_400;
+    let w = crate::support::flow_control::gated_world().await;
+    let pool = &w.db.pool;
+    let workflow = crate::support::flow_control::publish(
+        &w,
+        crate::run_creators::gated_waiter("migrations-held-signal"),
+    )
+    .await;
+    crate::run_creators::signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the holder");
+    let held = crate::run_creators::signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    assert!(held.held);
+    let refused = undo(pool, BEFORE_HELD_SIGNALS).await;
+    assert!(
+        format!("{refused:?}").contains("held Signal-with-Start signals remain"),
+        "{refused:?}"
+    );
+    assert!(
+        exists(pool, "flow_control_held_signals").await,
+        "nothing was dropped"
+    );
+    // the queued run ends: its end drops the signal, audited, and the rollback goes through
+    w.operate_run(
+        held.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    undo(pool, BEFORE_HELD_SIGNALS).await.expect("rolled back");
+    assert!(!exists(pool, "flow_control_held_signals").await);
+    MIGRATOR.run(pool).await.expect("forward again");
+    assert!(exists(pool, "flow_control_held_signals").await);
+}

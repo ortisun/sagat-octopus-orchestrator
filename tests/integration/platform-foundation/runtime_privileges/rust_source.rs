@@ -348,6 +348,13 @@ fn literal_template(body: &[Tok], macros: &BTreeMap<String, Expansion>) -> Optio
     let mut parts = Vec::new();
     let mut at = 0;
     while at < inner.len() {
+        // a template called with literals and this template's parameters (`live_gate_run!($r)` inside
+        // `eligible_gate_waiter!`): its parts, each parameter of the call replaced by what the caller gave
+        if let Some((nested, next)) = nested_template(inner, at, macros, &params) {
+            parts.extend(nested);
+            at = next;
+            continue;
+        }
         if let Some((name, next, _)) = fixed_call(inner, at) {
             parts.push(Part::Text(
                 fixed_text(macros, &name)
@@ -375,6 +382,46 @@ fn literal_template(body: &[Tok], macros: &BTreeMap<String, Expansion>) -> Optio
         template: Some(parts),
         ..Expansion::default()
     })
+}
+
+/// A call at `at`, inside a template's `concat!`, of another template whose arguments are literals or parameters of the
+/// enclosing template (`params`): the called template's parts with each of its parameters replaced by its argument, and
+/// the index after the call's `)`. `None` when `at` is no such call.
+fn nested_template(
+    tokens: &[Tok],
+    at: usize,
+    macros: &BTreeMap<String, Expansion>,
+    params: &[String],
+) -> Option<(Vec<Part>, usize)> {
+    let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
+        (tokens.get(at)?, tokens.get(at + 1), tokens.get(at + 2))
+    else {
+        return None;
+    };
+    let called = macros.get(name)?.template.as_ref()?;
+    let close = matching(tokens, at + 2, '(', ')');
+    let mut args = Vec::new();
+    for item in tokens[at + 3..close].split(|t| *t == Tok::Punct(',')) {
+        match item {
+            [] => {}
+            [Tok::Str(text, _)] => args.push(Part::Text(Expansion {
+                text: text.clone(),
+                ..Expansion::default()
+            })),
+            [Tok::Punct('$'), Tok::Ident(param, _)] => {
+                args.push(Part::Param(params.iter().position(|p| p == param)?));
+            }
+            _ => return None,
+        }
+    }
+    let mut parts = Vec::with_capacity(called.len());
+    for part in called {
+        parts.push(match part {
+            Part::Text(text) => Part::Text(text.clone()),
+            Part::Param(index) => args.get(*index)?.clone(),
+        });
+    }
+    Some((parts, close + 1))
 }
 
 /// A call `name!("a", "b")` of a template at `at`: its expansion and the index after the call's `)`. A call that does
@@ -889,6 +936,21 @@ mod tests {
         );
         assert_eq!(found.statements.len(), 1);
         assert_eq!(found.statements[0].text, "DELETE FROM visible");
+    }
+
+    #[test]
+    fn a_template_calling_a_template_with_its_parameters_is_expanded() {
+        // the shape of `eligible_gate_waiter!` (crates/infra-postgres/src/lib.rs, task T022-112), which calls
+        // `live_gate_run!` with its own parameter
+        let source = "macro_rules! live { ($r:literal) => { concat!($r, \".status IN ('RUNNING') AND NOT \", $r, \".paused\") }; }\n\
+             macro_rules! eligible { ($w:literal, $r:literal, $now:literal) => { concat!($w, \".deadline_at > \", $now, \" AND \", live!($r)) }; }\n\
+             fn f() { q(concat!(\"SELECT 1 FROM waiters w JOIN runs r ON true WHERE \", eligible!(\"w\", \"r\", \"now()\"))); }";
+        let found = extract(source);
+        assert_eq!(found.statements.len(), 1, "{found:?}");
+        assert_eq!(
+            found.statements[0].text,
+            "SELECT 1 FROM waiters w JOIN runs r ON true WHERE w.deadline_at > now() AND r.status IN ('RUNNING') AND NOT r.paused"
+        );
     }
 
     #[test]

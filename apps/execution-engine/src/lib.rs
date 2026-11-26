@@ -92,7 +92,15 @@ pub async fn serve(
     // Everything checkable without the database comes first.
     let fetcher = HttpJwksFetcher::new(&engine.auth).map_err(|e| RunError::Auth(e.to_string()))?;
     let verifier = TokenVerifier::new(Arc::new(fetcher), &engine.auth);
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    // The instance id names this replica's pools before they open, so that its connections, its step-log quota leases
+    // and its step-log wait slots are attributable to it in `pg_stat_activity` (design 041, task T041-5).
+    let instance = sagat_control_plane::registry::new_instance_id();
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        sagat_infra_postgres::PoolName::Instance(instance),
+    )
+    .await?;
     let identity = PgIdentityStore::new(pool.clone());
     if config.environment == Environment::Dev {
         tracing::debug!("database role privileges are not checked when SAGAT_ENV=dev");
@@ -194,12 +202,13 @@ pub async fn serve(
     // heartbeat of a healthy replica does not wait for the pool that its passes may have saturated. Nothing is written
     // until `join`, below, and a closed gate stops every pass, the connectors and the worker API, and fails readiness.
     let registry_pool = sagat_infra_postgres::connect(
-        &sagat_control_plane::registry::registry_pool_config(&config.database),
+        &sagat_control_plane::registry::registry_pool_config(&config.database, instance),
     )
     .await
     .map_err(|e| RunError::Database(e.to_string()))?;
     let member = sagat_control_plane::registry::member(
         &registry_pool,
+        instance,
         InstanceKind::ExecutionEngine,
         &capabilities::capabilities(engine),
         Some(placement.owner().to_owned()),

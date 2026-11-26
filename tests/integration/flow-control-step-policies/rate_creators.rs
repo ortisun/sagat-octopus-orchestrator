@@ -405,3 +405,244 @@ async fn a_dual_gated_start_is_granted_both_from_the_queue_or_times_out_rate_fir
         w.assert_consistent(run).await;
     }
 }
+
+// ------------------------------------------------------------------------------------------- the rate twins (T022-113)
+// The creators of task T022-064 that `run_creators` proves for a permit, each proved here for a slot (FR-022-041;
+// decision D022-069 item 7): the run is admitted through its key, `rate_limit.granted` with a grant row or
+// `rate_limit.queued` with a waiter row, and the consistency check agrees (`admitted`).
+
+/// `doc` with its start's `concurrency` replaced by a `rateLimit` of the same key, `limit` per hour.
+fn hourly_instead(mut doc: Value, limit: u32) -> Value {
+    doc.as_object_mut()
+        .expect("a document")
+        .remove("concurrency");
+    doc["rateLimit"] =
+        json!({"group": "accounts", "key": "input.accountId", "limit": limit, "per": "hour"});
+    doc
+}
+
+/// Row 1 (`POST /runs` with feature 018's options): a start under a business identifier takes the slot while the key's
+/// window has room and is buffered behind it when it has not.
+#[tokio::test]
+async fn the_start_api_with_a_business_identifier_admits_a_rate_limited_start() {
+    use crate::run_creators::{business, idempotency, request};
+    use sagat_application::runs::StartOptions;
+
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        rated("rate-twin-api", Some("input.accountId"), 1, "hour"),
+    )
+    .await;
+    let input = br#"{"accountId": "acct-1"}"#;
+    let mut runs = Vec::new();
+    for id in ["order-1", "order-2"] {
+        let key = idempotency();
+        let started = w
+            .runs
+            .start_with_options(
+                &w.admin,
+                &request(workflow, input, &key),
+                StartOptions {
+                    business: Some(business(id)),
+                    start_delay: None,
+                },
+                &ctx(),
+            )
+            .await
+            .expect("started");
+        assert!(!started.existing);
+        runs.push(started.run.info.run_id);
+    }
+    assert_eq!(admitted(&w, runs[0]).await, Admitted::Granted);
+    assert_eq!(admitted(&w, runs[1]).await, Admitted::Buffered);
+}
+
+/// Row 4 (`RERUN_AS_NEW`): the rerun of an ended run is a new run that takes a slot of its own: with `limit: 2, per:
+/// hour`, the source's slot and a holder's fill the window, and the rerun is buffered.
+#[tokio::test]
+async fn a_rerun_as_new_of_a_rate_limited_run_admits_through_the_key() {
+    use crate::run_creators::{complete_all, idempotency};
+
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        rated("rate-twin-rerun", Some("input.accountId"), 2, "hour"),
+    )
+    .await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.g").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let rerun = w
+        .runs
+        .rerun(
+            &w.admin,
+            source,
+            "the price list was wrong",
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect("rerun")
+        .info
+        .run_id;
+    assert_eq!(admitted(&w, holder).await, Admitted::Granted);
+    assert_eq!(admitted(&w, rerun).await, Admitted::Buffered);
+}
+
+/// Row 3 (Signal-with-Start): a run whose key's window has room takes its slot and receives the signal in its creation
+/// transaction; a second one on the full window is buffered and its signal held with it (task T022-109, decision
+/// D022-087), and the grant of its slot, once the first slot leaves the window, delivers it.
+#[tokio::test]
+async fn a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_holds_its_signal() {
+    use crate::run_creators::{gated_waiter, signal_with_start};
+
+    let w = gated_world().await;
+    let workflow = publish(&w, hourly_instead(gated_waiter("rate-twin-signal"), 1)).await;
+    let done = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("started and signalled");
+    assert!(done.started && !done.held);
+    assert_eq!(admitted(&w, done.run.info.run_id).await, Admitted::Granted);
+    let delivered: Vec<&str> = done.delivered_to.iter().map(|n| n.as_str()).collect();
+    assert_eq!(delivered, ["w"]);
+    let held = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("buffered and held");
+    assert!(
+        held.started && held.held && held.delivered_to.is_empty(),
+        "{held:?}"
+    );
+    let run = held.run.info.run_id;
+    assert_eq!(admitted(&w, run).await, Admitted::Buffered);
+    // the first slot two hours old, out of its window (the guard of a grant row off in this one transaction)
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    for statement in [
+        "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
+        "UPDATE rate_limit_grants SET granted_at = granted_at - interval '2 hours', \
+                leased_at = leased_at - interval '2 hours' WHERE limit_scope = 'RUN'",
+        "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .expect(statement);
+    }
+    tx.commit().await.expect("aged");
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded),
+        "{:?}",
+        w.journal(run).await
+    );
+    let (rows, signalled): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM flow_control_held_signals WHERE run_id = $1), \
+                (SELECT count(*) FROM audit_records WHERE resource_id = $1::text AND action = 'run.signalled')",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!((rows, signalled), (0, 1), "delivered once by the grant");
+    // not `assert_consistent`: the first grant was aged in its rows only, so its journal still places it in the window
+}
+
+/// Row 3 (Update-with-Start): the run takes its slot or is buffered, and the Update is applied to its declared state in
+/// its creation transaction either way.
+#[tokio::test]
+async fn an_update_with_start_of_a_rate_limited_definition_admits_through_the_key() {
+    use crate::run_creators::{declared, update_with_start};
+
+    let w = gated_world().await;
+    let workflow = publish(&w, hourly_instead(declared("rate-twin-update"), 1)).await;
+    let first = update_with_start(&w, workflow, "acct-a", 20)
+        .await
+        .expect("started");
+    assert!(first.started);
+    assert_eq!(admitted(&w, first.run.info.run_id).await, Admitted::Granted);
+    let second = update_with_start(&w, workflow, "acct-b", 30)
+        .await
+        .expect("started");
+    assert!(second.started);
+    let run = second.run.info.run_id;
+    assert_eq!(admitted(&w, run).await, Admitted::Buffered);
+    assert_eq!(
+        w.journal(run).await,
+        ["run.started", "rate_limit.queued", "state.updated"],
+        "the Update is applied while the run waits"
+    );
+}
+
+/// Row 4 (a batch `RERUN`): the rerun a job makes is a new run admitted through its key: buffered behind the source's
+/// and a holder's slots of `limit: 2, per: hour`.
+#[tokio::test]
+async fn a_batch_rerun_of_a_rate_limited_run_admits_through_the_key() {
+    use crate::run_creators::{complete_all, rerun_the_succeeded_by_a_batch};
+
+    let w = std::sync::Arc::new(gated_world().await);
+    let workflow = publish(
+        &w,
+        rated("rate-twin-batch", Some("input.accountId"), 2, "hour"),
+    )
+    .await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.g").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    rerun_the_succeeded_by_a_batch(&w, workflow, 3).await;
+    let runs = runs_of(&w, workflow).await;
+    assert_eq!(
+        runs.len(),
+        3,
+        "the source, the holder and the rerun: {}",
+        crate::run_creators::batch_state(&w).await
+    );
+    assert_eq!(admitted(&w, holder).await, Admitted::Granted);
+    assert_eq!(admitted(&w, runs[2]).await, Admitted::Buffered);
+}
+
+/// Row 13 (an ad hoc database workflow, and its private rerun): a caller's ad hoc document whose start declares
+/// `rateLimit` takes a slot like a published one; the second is buffered, and so is the first's private rerun (a
+/// cancelled run's slot still counts for its window).
+#[tokio::test]
+async fn an_ad_hoc_rate_limited_workflow_and_its_private_rerun_admit_through_the_key() {
+    use crate::run_creators::{ad_hoc_connection, idempotency, start_ad_hoc};
+    use sagat_application::runs::RunOperation;
+
+    let w = gated_world().await;
+    ad_hoc_connection(&w).await;
+    let mut doc = document(
+        "rate-twin-ad-hoc",
+        "query",
+        vec![json!({
+            "id": "query", "type": "database", "connectionRef": {"name": "creators-db"},
+            "operation": "query", "statement": "SELECT 1::bigint"
+        })],
+    );
+    doc["rateLimit"] = json!({"group": "reports", "limit": 1, "per": "hour"});
+    let bytes = serde_json::to_vec(&doc).expect("json");
+    let first = start_ad_hoc(&w, &bytes, "rate-twin-ad-hoc-0001").await;
+    let second = start_ad_hoc(&w, &bytes, "rate-twin-ad-hoc-0002").await;
+    assert_eq!(admitted(&w, first).await, Admitted::Granted);
+    assert_eq!(admitted(&w, second).await, Admitted::Buffered);
+    w.operate_run(first, RunOperation::Cancel).await;
+    assert_eq!(w.run_status(first).await, RunStatus::Cancelled);
+    let rerun = w
+        .runs
+        .rerun(
+            &w.admin,
+            first,
+            "run the report again",
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect("a private rerun");
+    assert_eq!(
+        rerun.info.origin.map(|origin| origin.as_str()),
+        Some("AD_HOC_WORKFLOW")
+    );
+    assert_eq!(admitted(&w, rerun.info.run_id).await, Admitted::Buffered);
+}

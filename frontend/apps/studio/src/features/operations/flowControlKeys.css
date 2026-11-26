@@ -1,0 +1,46 @@
+/* The flow-control keys of a namespace (FlowControlKeysPanel.tsx). */
+.operations-keys-panel {
+  margin-top: var(--space-8);
+}
+
+.operations-keys + .operations-keys {
+  margin-top: var(--space-8);
+}
+
+.operations-key-filter {
+  flex-direction: row;
+  align-items: flex-end;
+}
+
+.operations-key-filter label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.operations-key-filter input {
+  min-height: var(--control-height);
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+}
+
+.operations-key-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: var(--space-6);
+}
+
+.operations-key-scroll:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.operations-keys .operations-panel-heading {
+  flex-wrap: wrap;
+}
+
+.operations-key-filter input {
+  max-width: 100%;
+}

@@ -75,7 +75,7 @@ async fn admitted(w: &World, run: RunId) -> Admitted {
     decision
 }
 
-async fn runs_of(w: &World, workflow: WorkflowId) -> Vec<RunId> {
+pub(crate) async fn runs_of(w: &World, workflow: WorkflowId) -> Vec<RunId> {
     let ids: Vec<Uuid> =
         sqlx::query_scalar("SELECT id FROM runs WHERE workflow_id = $1 ORDER BY created_at, id")
             .bind(workflow.as_uuid())
@@ -85,11 +85,11 @@ async fn runs_of(w: &World, workflow: WorkflowId) -> Vec<RunId> {
     ids.into_iter().map(RunId::new).collect()
 }
 
-fn idempotency() -> String {
+pub(crate) fn idempotency() -> String {
     format!("creators-{}", Uuid::now_v7())
 }
 
-fn request<'a>(workflow: WorkflowId, input: &'a [u8], key: &'a str) -> StartRun<'a> {
+pub(crate) fn request<'a>(workflow: WorkflowId, input: &'a [u8], key: &'a str) -> StartRun<'a> {
     StartRun {
         namespace: "payments",
         workflow,
@@ -101,7 +101,7 @@ fn request<'a>(workflow: WorkflowId, input: &'a [u8], key: &'a str) -> StartRun<
     }
 }
 
-fn business(id: &str) -> BusinessStart {
+pub(crate) fn business(id: &str) -> BusinessStart {
     BusinessStart {
         id: BusinessId::new(id).expect("an identifier"),
         conflict: ConflictPolicy::UseExisting,
@@ -111,7 +111,7 @@ fn business(id: &str) -> BusinessStart {
 }
 
 /// Completes every task of `activity` that is offered now; returns how many.
-async fn complete_all(w: &World, activity: &str) -> usize {
+pub(crate) async fn complete_all(w: &World, activity: &str) -> usize {
     let session = w.session(&[activity]).await;
     let tasks = w.poll(&session, 16).await;
     for task in &tasks {
@@ -184,7 +184,7 @@ async fn a_rerun_as_new_admits_through_the_key() {
 }
 
 /// The entry of `doc` waits for the signal `payment.confirmed`; its start takes a permit of `input.accountId`.
-fn gated_waiter(name: &str) -> Value {
+pub(crate) fn gated_waiter(name: &str) -> Value {
     let mut doc = document(
         name,
         "w",
@@ -201,7 +201,7 @@ fn gated_waiter(name: &str) -> Value {
     doc
 }
 
-async fn signal_with_start(
+pub(crate) async fn signal_with_start(
     w: &World,
     workflow: WorkflowId,
     id: &str,
@@ -237,13 +237,13 @@ async fn a_signal_with_start_with_room_holds_a_permit_and_is_signalled_at_creati
     assert_eq!(delivered, ["w"]);
 }
 
-fn declared(name: &str) -> Value {
+pub(crate) fn declared(name: &str) -> Value {
     let mut doc = declared_waiter(name);
     doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
     doc
 }
 
-async fn update_with_start(
+pub(crate) async fn update_with_start(
     w: &World,
     workflow: WorkflowId,
     id: &str,
@@ -565,15 +565,35 @@ impl ItemActions for Runs {
     }
 }
 
-/// Row 4 (a batch `RERUN`): each rerun the job makes is a new run admitted through its key.
-#[tokio::test]
-async fn a_batch_rerun_admits_through_the_key() {
-    let w = Arc::new(gated_world().await);
-    let workflow = publish(&w, serial_start("creators-batch", 1)).await;
-    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
-    assert_eq!(complete_all(&w, "act.g").await, 1);
-    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
-    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+/// The batch jobs of the namespace and their items, as `(job state, failure, [(item state, reason, error)])`: what a
+/// failed assertion on a batch rerun shows.
+pub(crate) async fn batch_state(w: &World) -> String {
+    let jobs: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT state, failure_reason FROM batch_jobs WHERE namespace_id = $1 ORDER BY created_at",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("jobs");
+    let items: Vec<(String, Option<String>, Option<String>, i16)> = sqlx::query_as(
+        "SELECT i.state, i.reason, i.error_code, i.attempts FROM batch_items i \
+           JOIN batch_jobs j ON j.tenant_id = i.tenant_id AND j.id = i.job_id \
+          WHERE j.namespace_id = $1 ORDER BY i.ordinal",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("items");
+    format!("jobs {jobs:?}, items {items:?}")
+}
+
+/// Creates a batch job that reruns the namespace's succeeded runs and steps it until `workflow` has `runs_after` runs (or
+/// two minutes passed).
+pub(crate) async fn rerun_the_succeeded_by_a_batch(
+    w: &Arc<World>,
+    workflow: WorkflowId,
+    runs_after: usize,
+) {
     let clock = TestClock::at(OffsetDateTime::now_utc() + Duration::seconds(2));
     let store = PgBatchStore::new(w.db.pool.clone());
     let job = BatchService::new(store.clone(), clock.clone())
@@ -604,7 +624,7 @@ async fn a_batch_rerun_admits_through_the_key() {
         .expect("a job");
     let executor = BatchExecutor::new(
         store,
-        Runs(Arc::clone(&w)),
+        Runs(Arc::clone(w)),
         PgIdentityStore::new(w.db.pool.clone()),
         clock,
         ExecutorSettings::default(),
@@ -614,11 +634,17 @@ async fn a_batch_rerun_admits_through_the_key() {
         id: job.id,
     };
     let give_up = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    for _ in 0..400 {
+    // bounded by `give_up` only: under a loaded machine the wait for older transactions outlasts any count of steps
+    loop {
+        if std::time::Instant::now() > give_up {
+            break;
+        }
         match executor.step(&due, None).await.expect("a step") {
             Stepped::Acted => {}
             Stepped::Idle | Stepped::Refused(_) | Stepped::Backoff => {
-                if runs_of(&w, workflow).await.len() == 3 || std::time::Instant::now() > give_up {
+                if runs_of(w, workflow).await.len() == runs_after
+                    || std::time::Instant::now() > give_up
+                {
                     break;
                 }
                 // the selection waits for transactions open at the job's creation (another test's)
@@ -626,8 +652,25 @@ async fn a_batch_rerun_admits_through_the_key() {
             }
         }
     }
+}
+
+/// Row 4 (a batch `RERUN`): each rerun the job makes is a new run admitted through its key.
+#[tokio::test]
+async fn a_batch_rerun_admits_through_the_key() {
+    let w = Arc::new(gated_world().await);
+    let workflow = publish(&w, serial_start("creators-batch", 1)).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.g").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    rerun_the_succeeded_by_a_batch(&w, workflow, 3).await;
     let runs = runs_of(&w, workflow).await;
-    assert_eq!(runs.len(), 3, "the source, the holder and the rerun");
+    assert_eq!(
+        runs.len(),
+        3,
+        "the source, the holder and the rerun: {}",
+        batch_state(&w).await
+    );
     assert_eq!(admitted(&w, holder).await, Admitted::Acquired);
     assert_eq!(admitted(&w, runs[2]).await, Admitted::Queued);
 }
@@ -681,18 +724,14 @@ async fn a_with_start_the_key_refuses_creates_nothing() {
     assert_eq!(runs_of(&w, workflow).await.len(), 1);
 }
 
-/// Row 13 (an ad hoc database workflow, and the private rerun of one): a caller's ad hoc document that gates its start
-/// is admitted through its key like a published one, and so is its private rerun. (A connection probe's document is the
-/// platform's own and declares no gate.)
-#[tokio::test]
-async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
+/// The connection `creators-db` of the namespace, whose credentials are a secret held by OpenBao (nothing reads or
+/// connects in these tests).
+pub(crate) async fn ad_hoc_connection(w: &World) {
     use sagat_application::database::{ConnectionService, ConnectionWrite};
-    use sagat_application::runs::{AdHocMode, RunOperation, StartDatabaseExecution};
     use sagat_domain::database::{ConnectionConfig, ConnectionStatus, DatabaseLimits, TlsPolicy};
     use sagat_domain::identity::Slug;
     use sagat_domain::secrets::SecretName;
 
-    let w = gated_world().await;
     // the connection names a secret of the namespace held by OpenBao; nothing reads or connects in this test, so the
     // fixture records the authority without a provider (a fixture value)
     w.put_secret("db-credentials", "creators-fixture-value")
@@ -724,6 +763,39 @@ async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
         )
         .await
         .expect("the connection");
+}
+
+/// Starts the caller's ad hoc workflow `document` under the idempotency key `key`.
+pub(crate) async fn start_ad_hoc(w: &World, document: &[u8], key: &str) -> RunId {
+    use sagat_application::runs::{AdHocMode, StartDatabaseExecution};
+    w.runs
+        .start_database(
+            &w.admin,
+            &StartDatabaseExecution {
+                namespace: w.namespace.id(),
+                mode: AdHocMode::Workflow,
+                document,
+                input: b"{}",
+                timeout_ms: None,
+                key,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("an ad hoc start")
+        .info
+        .run_id
+}
+
+/// Row 13 (an ad hoc database workflow, and the private rerun of one): a caller's ad hoc document that gates its start
+/// is admitted through its key like a published one, and so is its private rerun. (A connection probe's document is the
+/// platform's own and declares no gate.)
+#[tokio::test]
+async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
+    use sagat_application::runs::RunOperation;
+
+    let w = gated_world().await;
+    ad_hoc_connection(&w).await;
     let mut doc = document(
         "creators-ad-hoc",
         "query",
@@ -736,23 +808,7 @@ async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
     let bytes = serde_json::to_vec(&doc).expect("json");
     let mut runs = Vec::new();
     for key in ["creators-ad-hoc-0001", "creators-ad-hoc-0002"] {
-        let run = w
-            .runs
-            .start_database(
-                &w.admin,
-                &StartDatabaseExecution {
-                    namespace: w.namespace.id(),
-                    mode: AdHocMode::Workflow,
-                    document: &bytes,
-                    input: b"{}",
-                    timeout_ms: None,
-                    key,
-                },
-                &ctx(),
-            )
-            .await
-            .expect("an ad hoc start");
-        runs.push(run.info.run_id);
+        runs.push(start_ad_hoc(&w, &bytes, key).await);
     }
     assert_eq!(admitted(&w, runs[0]).await, Admitted::Acquired);
     assert_eq!(admitted(&w, runs[1]).await, Admitted::Queued);
@@ -1338,11 +1394,53 @@ async fn a_release_and_a_start_at_the_queued_runs_ceiling_are_decided_one_after_
     w.assert_consistent(delayed).await;
 }
 
-/// Row 3 when the start would queue (G022-010; D022-050 item 6): no step waits for the signal while the entry is held,
-/// so until the hold-and-deliver of the chosen design is built the request keeps 018's typed refusal
-/// (`SIGNAL_NOT_ACCEPTED_AT_START`) and nothing of the run exists: no run, no waiter row.
+/// A Signal-with-Start of `workflow` for business identifier `id` under the idempotency key `key`, signal `name`.
+async fn signal_with_start_as(
+    w: &World,
+    workflow: WorkflowId,
+    id: &str,
+    key: &str,
+    name: &str,
+) -> Result<sagat_application::runs::SignalStarted, AppError> {
+    w.runs
+        .signal_with_start(
+            &w.admin,
+            &request(workflow, br#"{"k": "s", "accountId": "acct-1"}"#, key),
+            business(id),
+            SignalAtStart {
+                name,
+                payload: br#"{"paid": true}"#,
+            },
+            &ctx(),
+        )
+        .await
+}
+
+/// The held signal rows of `run`, and the audit records of `action` about it.
+async fn held_and_audited(w: &World, run: RunId, action: &str) -> (i64, Vec<Option<String>>) {
+    let held: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM flow_control_held_signals WHERE run_id = $1")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("held rows");
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE resource_id = $1 AND action = $2 ORDER BY created_at",
+    )
+    .bind(run.to_string())
+    .bind(action)
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    (held, reasons)
+}
+
+/// Row 3 when the start would queue (task T022-109, decision D022-087; FR-022-018, FR-018-024 as amended): the run is
+/// created and queued, the signal held with it, and the answer says so (`held`, nothing delivered); a retry of the request
+/// answers the same. When the holder ends, the grant of the queued start delivers the signal in its own transaction,
+/// once, audited `run.signalled` as the caller's; a later pass delivers nothing more, and a retry still answers `held`.
 #[tokio::test]
-async fn a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing() {
+async fn a_signal_with_start_whose_start_queues_holds_the_signal_and_the_grant_delivers_it() {
     let w = gated_world().await;
     let workflow = publish(&w, gated_waiter("creators-signal-queued")).await;
     let first = signal_with_start(&w, workflow, "cart-1")
@@ -1352,7 +1450,177 @@ async fn a_signal_with_start_whose_start_would_queue_is_refused_and_creates_noth
         admitted(&w, first.run.info.run_id).await,
         Admitted::Acquired
     );
-    let refused = signal_with_start(&w, workflow, "cart-2")
+    let key = idempotency();
+    let queued = signal_with_start_as(&w, workflow, "cart-2", &key, "payment.confirmed")
+        .await
+        .expect("created and held");
+    let run = queued.run.info.run_id;
+    assert!(queued.started && queued.held, "{queued:?}");
+    assert!(queued.delivered_to.is_empty(), "{queued:?}");
+    assert_eq!(admitted(&w, run).await, Admitted::Queued);
+    assert_eq!(
+        held_and_audited(&w, run, "run.signalled").await,
+        (1, vec![])
+    );
+    let retried = signal_with_start_as(&w, workflow, "cart-2", &key, "payment.confirmed")
+        .await
+        .expect("a retry answers the same");
+    assert_eq!(
+        (
+            retried.run.info.run_id,
+            retried.started,
+            retried.held,
+            retried.delivered_to.len()
+        ),
+        (run, true, true, 0)
+    );
+    // the holder ends: the next pass grants the queued start and delivers the held signal with it
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_rows(&w, run).await, (1, 0), "granted");
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded),
+        "{:?}",
+        w.journal(run).await
+    );
+    let (held, delivered) = held_and_audited(&w, run, "run.signalled").await;
+    assert_eq!(
+        (held, delivered.len()),
+        (0, 1),
+        "delivered once: {delivered:?}"
+    );
+    let signalled_by: String = sqlx::query_scalar(
+        "SELECT actor FROM audit_records WHERE resource_id = $1 AND action = 'run.signalled'",
+    )
+    .bind(run.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the actor");
+    assert_eq!(
+        signalled_by,
+        w.admin.subject().as_str(),
+        "audited as the caller's"
+    );
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 0);
+    assert_eq!(held_and_audited(&w, run, "run.signalled").await.1.len(), 1);
+    let again = signal_with_start_as(&w, workflow, "cart-2", &key, "payment.confirmed")
+        .await
+        .expect("a retry after the delivery answers the same");
+    assert!(again.held && again.delivered_to.is_empty(), "{again:?}");
+    w.assert_consistent(run).await;
+}
+
+/// Decision D022-087 item 4: a queued run whose queue timeout passes, or which is cancelled, drops the signal held with
+/// it in the commit that ends it, audited `run.signal_dropped` (reason `RUN_ENDED`), and nothing is delivered.
+#[tokio::test]
+async fn a_held_signal_is_dropped_with_an_audit_when_its_queued_run_times_out_or_is_cancelled() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-dropped")).await;
+    let _first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let timed_out = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    let cancelled = signal_with_start(&w, workflow, "cart-3")
+        .await
+        .expect("held");
+    for started in [&timed_out, &cancelled] {
+        assert!(started.held, "{started:?}");
+    }
+    let (timed_out, cancelled) = (timed_out.run.info.run_id, cancelled.run.info.run_id);
+    crate::run_admission::age_start_deadline(&w, timed_out).await;
+    let report = w.scheduler.time_out_gates().await;
+    assert_eq!(report.gate_waits_timed_out, 1, "{report:?}");
+    w.operate_run(cancelled, sagat_application::runs::RunOperation::Cancel)
+        .await;
+    for run in [timed_out, cancelled] {
+        assert!(w.run_status(run).await.is_terminal());
+        let (held, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+        assert_eq!(held, 0, "the row went with the run's end");
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+        assert!(
+            dropped[0]
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("RUN_ENDED")),
+            "{dropped:?}"
+        );
+        assert!(
+            held_and_audited(&w, run, "run.signalled")
+                .await
+                .1
+                .is_empty(),
+            "nothing was delivered"
+        );
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Decision D022-087 item 3: a held signal whose node is not on the entry's path (an activity runs first) finds no step
+/// waiting at the grant; it is dropped with an audit record (`NOT_WAITING_AT_GRANT`), as `signalRun` would refuse it,
+/// and the run goes on.
+#[tokio::test]
+async fn a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit() {
+    let w = gated_world().await;
+    let mut doc = document(
+        "creators-signal-later",
+        "g",
+        vec![
+            with(activity("g"), "next", json!("w")),
+            wait_node("w", "payment.confirmed", "input.k", 300_000, None),
+        ],
+    );
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let first = signal_with_start(&w, workflow, "cart-1").await;
+    assert!(
+        matches!(first, Err(AppError::SignalRefused { .. })),
+        "with room, nothing waits at creation: {first:?}"
+    );
+    let holder = w
+        .start(workflow, &json!({"k": "s", "accountId": "acct-1"}))
+        .await;
+    let held = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    assert!(held.held, "{held:?}");
+    let run = held.run.info.run_id;
+    w.operate_run(holder, sagat_application::runs::RunOperation::Cancel)
+        .await;
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    let (rows, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+    assert_eq!(rows, 0);
+    assert!(
+        dropped.len() == 1
+            && dropped[0]
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("NOT_WAITING_AT_GRANT")),
+        "{dropped:?}"
+    );
+    assert_eq!(
+        w.step_status(run, "g").await,
+        Some(sagat_domain::execution::StepStatus::Ready),
+        "the run goes on"
+    );
+    w.assert_consistent(run).await;
+}
+
+/// FR-018-024 as amended by D022-087 item 2: a Signal-with-Start whose start would queue, of a signal no node of the
+/// definition waits for, keeps 018's typed refusal (`SIGNAL_NOT_ACCEPTED_AT_START`) and nothing of the run exists.
+#[tokio::test]
+async fn a_signal_with_start_of_a_name_no_node_waits_for_is_refused_when_the_start_would_queue() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-unknown")).await;
+    let _first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let refused = signal_with_start_as(&w, workflow, "cart-2", &idempotency(), "order.shipped")
         .await
         .expect_err("refused");
     assert_eq!(
@@ -1362,12 +1630,14 @@ async fn a_signal_with_start_whose_start_would_queue_is_refused_and_creates_noth
         }
     );
     assert_eq!(runs_of(&w, workflow).await.len(), 1, "nothing was created");
-    let waiters: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM concurrency_waiters WHERE permit_scope = 'RUN'")
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("waiters");
-    assert_eq!(waiters, 0, "no waiter row was left");
+    let (waiters, held): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM concurrency_waiters WHERE permit_scope = 'RUN'), \
+                (SELECT count(*) FROM flow_control_held_signals)",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!((waiters, held), (0, 0), "no waiter row and no held signal");
 }
 
 /// Reviews of 2026-11-20 (architecture B1, security Major 1, correctness M1): a release a ceiling refused is held back
@@ -1872,6 +2142,81 @@ async fn a_reset_without_a_free_slot_is_refused_rate_first_and_never_waits() {
     }
 }
 
+/// Decision D022-076 item 3 (re-review Major 3; FR-022-041, SC-022-022): a reset is refused only without a free slot, by
+/// the reservation rule: it takes a fresh slot when its key's counted grants plus the eligible waiters are below its
+/// limit, and a waiter ahead keeps its slot. With `limit: 3, per: hour`, the source's slot counted and one eligible
+/// waiter (a start that also waits for a permit another run holds, so it keeps its slot reserved), the reset finds
+/// `1 + 1 < 3` and takes a fresh slot; under strict order it was refused. With the reset's slot and a second such waiter
+/// (`2 + 2`), the next reset is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, and the waiters keep their room.
+#[tokio::test]
+async fn a_reset_takes_a_fresh_slot_beside_the_eligible_waiters_and_is_refused_only_without_one() {
+    let w = gated_world().await;
+    let rated = publish(&w, rated_pair("creators-rate-reset-reservation", 3, "hour")).await;
+    let mut dual = rated_pair("creators-rate-reset-reservation-dual", 3, "hour");
+    dual["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let dual = publish(&w, dual).await;
+    let mut permit = document(
+        "creators-rate-reset-reservation-permit",
+        "p",
+        vec![activity("p")],
+    );
+    permit["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let permit = publish(&w, permit).await;
+    let input = json!({"accountId": "acct-1"});
+    let source = w.start(rated, &input).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let holder = w.start(permit, &input).await;
+    assert_eq!(start_rows(&w, holder).await, (1, 0), "it holds the permit");
+    let first = w.start(dual, &input).await;
+    assert_eq!(
+        slot_rows(&w, first).await,
+        (0, 1),
+        "its slot has room, its permit has not: it waits for both"
+    );
+    let made = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(point_after(&w, source, "a").await),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect("one slot counted and one eligible waiter leave room for the reset");
+    let reset = made.run.expect("the reset run").info.run_id;
+    assert_eq!(slot_rows(&w, reset).await, (1, 0), "a fresh slot");
+    let second = w.start(dual, &input).await;
+    assert_eq!(slot_rows(&w, second).await, (0, 1));
+    let refused = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(point_after(&w, source, "a").await),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect_err("two slots counted and two eligible waiters fill the limit");
+    assert_eq!(
+        refused,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable)
+    );
+    for run in [first, second] {
+        assert_eq!(
+            slot_rows(&w, run).await,
+            (0, 1),
+            "the waiters keep their room"
+        );
+    }
+    for run in [source, holder, first, reset, second] {
+        w.assert_consistent(run).await;
+    }
+}
+
 /// Task T022-086 (`CANCEL_SOURCE`; 018's plan, row 18; D022-069 item 4): the completion of a pending reset of a
 /// rate-limited source takes a fresh slot once the source has ended, or fails its entry `RATE_LIMIT_SLOT_UNAVAILABLE`
 /// when the key's window has no free slot; it never waits. With `limit: 2, per: hour`, the first key holds its source's
@@ -1899,9 +2244,6 @@ async fn a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable
         let b = w.one_task_of(&session, "act.b").await;
         open.push((run, b, point_after(&w, run, "a").await));
     }
-    // a second slot of the first key: its window is full
-    let other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
-    assert_eq!(slot_rows(&w, other).await, (1, 0));
     let mut entries = Vec::new();
     for (run, _, after_a) in &open {
         let mut request = reset_request(*after_a);
@@ -1914,6 +2256,10 @@ async fn a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable
         assert!(made.run.is_none(), "it waits for its source");
         entries.push(made.reset.id);
     }
+    // a second slot of the first key after its request was accepted (a full window at the request is refused there,
+    // decision D022-079): the window is full when the source ends
+    let other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(slot_rows(&w, other).await, (1, 0));
     for (run, b, _) in &open {
         w.complete(&session, b, &json!({})).await.expect("b");
         assert!(w.run_status(*run).await.is_terminal());
@@ -2111,4 +2457,311 @@ async fn a_reset_whose_prefix_returned_a_step_slot_restores_it_as_history() {
     assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
     assert_eq!(step_slot_nodes(&w, reset).await, ["b"]);
     w.assert_consistent(reset).await;
+}
+
+/// Task T022-114 (decision D022-079, gap G022-019): a `CANCEL_SOURCE` reset of an open source whose start took the only
+/// slot of `limit: 1, per: hour` finds the key's window full as it arrives (the source's own slot counts for its window
+/// and cancelling frees none): it is refused `RATE_LIMIT_SLOT_UNAVAILABLE` at once, and nothing happens: the source is
+/// not cancelled, no entry and no run exist. A source of a key whose window has room is accepted as before.
+#[tokio::test]
+async fn a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_cancels_nothing() {
+    use sagat_application::runs::ResetSourcePolicy;
+
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_pair("creators-rate-full-cancel", 1, "hour")).await;
+    let session = w.session(&["act.a", "act.b"]).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let after_a = point_after(&w, source, "a").await;
+    let mut request = reset_request(after_a);
+    request.source_policy = ResetSourcePolicy::CancelSource;
+    let refused = w
+        .runs
+        .reset(&w.admin, source, request, &idempotency(), &ctx())
+        .await
+        .expect_err("refused at its request");
+    assert_eq!(
+        refused,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable)
+    );
+    assert_eq!(
+        w.run_status(source).await,
+        RunStatus::Running,
+        "not cancelled"
+    );
+    // the refusal tells only a caller who may reset the run: another tenant's principal does not see the run and a
+    // viewer may not reset it, whatever its key's window (review of 2026-11-25, security minor 1)
+    {
+        use sagat_domain::identity::{Principal, Role};
+        let mut request = reset_request(after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        let foreign = w
+            .runs
+            .reset(&w.other_admin, source, request, &idempotency(), &ctx())
+            .await
+            .expect_err("another tenant's principal");
+        assert_eq!(foreign, AppError::NotFound);
+        let viewer = w.member("vera", Role::Viewer).await;
+        let viewer = Principal::new(w.admin.tenant_id(), viewer.subject().clone(), Role::Viewer);
+        let mut request = reset_request(after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        let forbidden = w
+            .runs
+            .reset(&viewer, source, request, &idempotency(), &ctx())
+            .await
+            .expect_err("a viewer");
+        assert!(
+            matches!(forbidden, AppError::Forbidden { .. }),
+            "{forbidden:?}"
+        );
+    }
+    let stopping: bool =
+        sqlx::query_scalar("SELECT stop_reason IS NOT NULL FROM runs WHERE id = $1")
+            .bind(source.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the source");
+    assert!(!stopping, "no cancellation was requested");
+    let entries: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_resets WHERE source_run_id = $1")
+            .bind(source.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("entries");
+    assert_eq!(entries, 0, "no entry");
+    assert_eq!(runs_of(&w, workflow).await, [source], "no run");
+    w.assert_consistent(source).await;
+
+    // a source of another key, whose window has room once the source's own slot is counted (`limit: 2`)
+    let roomy = publish(&w, rated_pair("creators-rate-roomy-cancel", 2, "hour")).await;
+    let open = w.start(roomy, &json!({"accountId": "acct-2"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    assert_eq!(a.run_id, open);
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let mut request = reset_request(point_after(&w, open, "a").await);
+    request.source_policy = ResetSourcePolicy::CancelSource;
+    let made = w
+        .runs
+        .reset(&w.admin, open, request, &idempotency(), &ctx())
+        .await
+        .expect("accepted");
+    assert!(made.run.is_none(), "it waits for its source");
+}
+
+/// Review of 2026-11-25 (correctness minor 2, security minor 2; decision D022-079): a `CANCEL_SOURCE` reset's advisory
+/// window check is asked under the source's row, after the receipt, so a retry that arrives while the accepted request
+/// is still in flight, the window filled meanwhile, answers that request's entry instead of being refused.
+#[tokio::test]
+async fn a_cancel_source_reset_retried_while_the_first_is_in_flight_answers_its_entry() {
+    use sagat_application::runs::ResetSourcePolicy;
+
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_pair("creators-rate-replay-cancel", 2, "hour")).await;
+    let session = w.session(&["act.a", "act.b"]).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let after_a = point_after(&w, source, "a").await;
+    let key = idempotency();
+    let request = || {
+        let mut request = reset_request(after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        request
+    };
+    // the first request holds the source's row, has passed its advisory check (one slot of two is free) and waits to
+    // write its entry, which the test holds back; the window then fills, and a retry with the same key arrives before the
+    // first commits: it must wait for the source's row and answer the first request's entry
+    let mut held = w.db.pool.begin().await.expect("tx");
+    sqlx::query("LOCK TABLE run_resets IN SHARE MODE")
+        .execute(&mut *held)
+        .await
+        .expect("the entries held back");
+    let waiting = |pool: sqlx::PgPool, n: i64| async move {
+        for _ in 0..3_000 {
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                   AND wait_event_type = 'Lock' AND query NOT LIKE '%pg_stat_activity%'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("activity");
+            if blocked >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    };
+    let context = ctx();
+    let first = w.runs.reset(&w.admin, source, request(), &key, &context);
+    let controller = async {
+        assert!(
+            waiting(w.db.pool.clone(), 1).await,
+            "the first request waits to write its entry"
+        );
+        let _other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+        let retry = w.runs.reset(&w.admin, source, request(), &key, &context);
+        let release = async {
+            // the retry waits for the source's row (its receipt and the window are read under it), or it answered at once
+            let _ = waiting(w.db.pool.clone(), 2).await;
+            held.commit().await.expect("released");
+        };
+        tokio::join!(retry, release).0
+    };
+    let (first, again) = tokio::join!(first, controller);
+    let first = first.expect("accepted: one slot of two was free");
+    let again = again.expect("the retry answers the first request's entry, not the full window");
+    assert_eq!(again.reset.id, first.reset.id);
+}
+/// Batch 5 correctness Major 1 and security suspicion 2 (decision D022-121): a held signal whose delivery fails (here a
+/// trigger refuses its `run.signalled` audit record, as any failure of the delivery would) no longer fails the grant of
+/// its start, which would end the key's pass on every pass: the grant is tried again without it, the signal dropped with
+/// its audit record (`DELIVERY_FAILED`, naming the caller who sent it), and the start granted.
+#[tokio::test]
+async fn a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-undeliverable")).await;
+    let first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let queued = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("created and held");
+    let run = queued.run.info.run_id;
+    assert!(queued.held, "{queued:?}");
+    for statement in [
+        format!(
+            "CREATE FUNCTION test_refuse_signalled() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+               IF NEW.resource_id = '{run}' AND NEW.action = 'run.signalled' THEN \
+                 RAISE EXCEPTION 'the test refuses this delivery'; END IF; RETURN NEW; END $$"
+        ),
+        "CREATE TRIGGER test_refuse_signalled BEFORE INSERT ON audit_records FOR EACH ROW \
+           EXECUTE FUNCTION test_refuse_signalled()"
+            .to_owned(),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&w.db.pool)
+            .await
+            .expect("the refusing trigger");
+    }
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    let report = w.scheduler.grant_gates().await;
+    sqlx::query("DROP TRIGGER test_refuse_signalled ON audit_records")
+        .execute(&w.db.pool)
+        .await
+        .expect("the trigger dropped");
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_rows(&w, run).await, (1, 0), "granted");
+    let (held, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+    assert_eq!(held, 0, "the held row is gone");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    let reason = dropped[0].as_deref().unwrap_or_default();
+    assert!(
+        reason.starts_with("DELIVERY_FAILED") && reason.contains(w.admin.subject().as_str()),
+        "dropped for its delivery, naming its sender: {reason}"
+    );
+    assert_eq!(held_and_audited(&w, run, "run.signalled").await.1.len(), 0);
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Waiting),
+        "nothing was delivered"
+    );
+    w.assert_consistent(run).await;
+}
+
+/// Batch 5 correctness minor 3 (decision D022-087): `verify_run` holds that a signal is held only while the run's start
+/// waits in its queue. A held row kept for a run whose start was granted (here written by hand beside a run that took its
+/// permit at creation) is a breach.
+#[tokio::test]
+async fn verify_run_refuses_a_held_signal_kept_for_a_run_whose_start_does_not_wait() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-held-stray")).await;
+    let done = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("started and signalled");
+    let run = done.run.info.run_id;
+    assert_eq!(admitted(&w, run).await, Admitted::Acquired);
+    w.assert_consistent(run).await;
+    sqlx::query(
+        "INSERT INTO flow_control_held_signals (tenant_id, namespace_id, run_id, name, payload_digest, actor, held_at) \
+         SELECT r.tenant_id, r.namespace_id, r.id, 'payment.confirmed', p.digest, 'admin', now() \
+           FROM runs r JOIN payloads p ON p.tenant_id = r.tenant_id WHERE r.id = $1 LIMIT 1",
+    )
+    .bind(run.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("a stray held row");
+    let verdict = w.store.verify_run(w.admin.tenant_id(), run).await;
+    assert!(
+        verdict
+            .as_ref()
+            .is_err_and(|breach| breach.contains("held signal")),
+        "{verdict:?}"
+    );
+}
+
+/// Batch 5 security minor 1 (FR-022-060 as amended, task T022-106 for signals): the signal a Signal-with-Start held with
+/// its queued run is delivered by the grant under the name of the caller who sent it, without checking `run:signal`
+/// again: a caller demoted to a role without it while the start waits still has its signal delivered, audited as its own.
+#[tokio::test]
+async fn a_held_signal_is_delivered_without_reauthorization_and_keeps_its_sender() {
+    use sagat_domain::identity::Role;
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-held-reauthorize")).await;
+    let first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    // an operator holds `run:start` and `run:signal`; a viewer holds neither
+    let carol = w.member("carol", Role::Operator).await;
+    w.bind_everything(&carol).await;
+    let key = idempotency();
+    let queued = w
+        .runs
+        .signal_with_start(
+            &carol,
+            &request(workflow, br#"{"k": "s", "accountId": "acct-1"}"#, &key),
+            business("cart-2"),
+            SignalAtStart {
+                name: "payment.confirmed",
+                payload: br#"{"paid": true}"#,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("created and held");
+    let run = queued.run.info.run_id;
+    assert!(queued.held, "{queued:?}");
+    sqlx::query(
+        "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = 'carol'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("demoted");
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded),
+        "delivered: {:?}",
+        w.journal(run).await
+    );
+    let signalled_by: String = sqlx::query_scalar(
+        "SELECT actor FROM audit_records WHERE resource_id = $1 AND action = 'run.signalled'",
+    )
+    .bind(run.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the actor");
+    assert_eq!(signalled_by, "carol", "audited as its sender's");
+    w.assert_consistent(run).await;
 }

@@ -1513,9 +1513,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
      new settings would be configuration nobody has a reason to tune apart.
   8. *Stale comments* (`apps/control-plane/src/flow_control.rs`, the build lists both capabilities;
      `crates/telemetry/src/flow_control.rs`, decisions are counted since decision D022-045) are corrected.
-- **D022-078 — The declaration a waiter is bounded by is a column of its own, `pinned_limit`, and the order bound of a
-  pass starts at any refusal for lack of room (2026-11-24; decision D022-076 items 4 and 7).** Delegate
-  (OD-2026-11-24-4). Building decision D022-076 found two places where its text cannot be built as written:
+- **D022-078 — The declaration a waiter is bounded by is a column of its own, `pinned_limit`, the order bound of a
+  pass starts at any refusal for lack of room, and the place counts the waiters that will be ahead (2026-11-24;
+  decision D022-076 items 4, 5 and 7).** Delegate
+  (OD-2026-11-24-4). Building decision D022-076 found three places where its text cannot be built as written:
   1. *The column of item 7.* The waiter rows of both gates already have a `declared_limit`: the filed limit (the
      declaration clamped by the namespace's ceiling at admission), which the `*.queued` event of the row records as its
      `limit`. A second column of that name cannot be added. Options: (a) rename the column to `filed_limit` and add
@@ -1526,8 +1527,15 @@ taken after `git grep D022-04` on every `origin/*` branch.
      the run's version before any ceiling (the specification's "its own pinned `limit`", US07 edge cases), `NULL` in a
      row written before it, which is then bounded by its filed limit as item 7 says. Chosen (c): additive, each column
      keeps one meaning, the row still records its event. Every decision bounds a waiter, deciding or ahead, by
-     `least(coalesce(pinned_limit, declared_limit), the current ceiling)`; a CHECK holds `pinned_limit >= declared_limit`
-     (the filed limit is never above the declaration), added `NOT VALID` and validated by a second migration. The
+     `least(coalesce(pinned_limit, declared_limit), the current ceiling)`; a CHECK holds `pinned_limit BETWEEN declared_limit AND
+     10000` (the filed limit is never above the declaration, which the domain bounds at 10,000), added `NOT VALID` and validated by a second migration
+     (`20270213000000` and `20270213000100`; first numbered `20270210000000` and `20270210000100`, which feature 041's
+     step logs also took, and renumbered on 2026-11-25 after the latest migration of every branch; the queued-runs
+     counters and the alert kinds then moved after them, to `20270213000200`..`20270213000400`, so the rollback order
+     follows the order they were built in, review of 2026-11-25, correctness minor 8). A development database that
+     applied the first numbers no longer starts against this build (its history names migrations the build does not
+     have): the branch is unreleased, so such a database is recreated, never repaired by hand (batch 4 reviews,
+     correctness minor 2; `quickstart.md`, Prerequisites). The
      migration's rollback refuses while a waiter row's declaration is above its filed limit: dropping the column would
      lose a bound no older binary can recover; a row whose two limits agree loses nothing. No grant changes (the table
      grants cover the column) and no storage class is added (a fixed-size column, outside the variable-size review).
@@ -1542,6 +1550,586 @@ taken after `git grep D022-04` on every `origin/*` branch.
      free came between), the pass leaves the key due, and the next pass grants in admission order. Weighed: the literal
      reading (a younger waiter granted first in the reviewer's case, against FR-022-042) and a count of frees since the
      selection (a statement more per waiter tried, for a case the bound already closes).
+  3. *The place of item 5.* The grant routine decides eligibility at the decision's instant: at a full window every
+     waiter is refused by its own limit, so counting ahead only the waiters eligible now would give every waiter of a
+     full key the position 1 and the estimate of the first (found by `rate_rest::a_run_shows_its_rate_slot_and_a_waiting_run_its_place`).
+     The place is an estimate of the instant this waiter has room, and at that instant every waiter ahead whose limit is
+     not lower and whose window is not longer than this one's has room too, so the grant routine will count it ahead.
+     Chosen: a waiter ahead counts when it is of no tighter limit and window than this one, or, tighter, when its own
+     window has room for it now (the reviewer's case: a waiter refused by its own lower limit, or over a longer window,
+     is not ahead). Weighed: the literal reading (a position that says nothing at a full key) and a projection of every
+     waiter's window to the estimated instant (a second pass over the counted leases, for a read the plan bounds).
+
+- **D022-079 — A `CANCEL_SOURCE` reset of a rate-limited source whose key's window is full is refused at its request,
+  before the source is cancelled (2026-11-25; task T022-114; gap G022-019; decision D022-069 items 3 and 8; reviews of
+  2026-11-21, architecture Major 1, security minor).** Delegate (OD-2026-11-24-4; T022-114 left the choice open).
+  Options: (a) an advisory refusal at the request: `409 CONFLICT`, `details.reason` `RATE_LIMIT_SLOT_UNAVAILABLE`,
+  nothing written and the source left running; (b) a warning in the reset preview (`previewReset`) that the key's
+  window is full now; (c) both. Chosen **(a)**:
+  1. *What it buys.* The trap of D022-069 item 3 destroys work: the source is cancelled and no run replaces it. (a)
+     prevents that outcome for every caller in the case the request can see (the window full when it arrives); (b)
+     informs only a caller that previews first and reads the warning (a batch job, a script or an SDK call does not),
+     and leaves the destructive request accepted. (c) adds a second reading of the same fact to the preview's contract
+     for a caller who is told at the request anyway. The refusal follows the precedent of the same request (design 043
+     row 5: the input is checked before the source is cancelled, so a reset that could never be made is refused at its
+     request).
+  2. *The rule.* The request reads, in a read-only transaction, the source's own run-level slot row (its grant, or its
+     waiter while it is buffered), which names the key, and counts the key's grants that count over the start's window
+     now (run-scope grants only: a run's grant is leased at its grant, and a step's window is a row of its own; corrected
+     2026-11-25, review of the batch, security nit 2); the window is full when they reach the lower of the version's declared
+     `limit` and the namespace's current ceiling of that window length. Waiters are not counted: the request refuses
+     only what the window itself makes impossible, and the completion, which counts eligible waiters by the reservation
+     rule (D022-076 item 3), stays the authority. A source without such a row (its grant purged, a window and a minute
+     after it ended counting) is not refused here.
+  3. *Advisory, never a promise.* The window may empty or fill between the request and the source's end, so an
+     accepted entry can still end `FAILED` `RATE_LIMIT_SLOT_UNAVAILABLE` (the outcome D022-069 item 8 accepts), and a
+     refused request may have succeeded later; the runbook says to retry the request once a slot has stopped counting
+     or to use `REQUIRE_TERMINAL`. Cost: one statement at the request of a `CANCEL_SOURCE` reset of a rate-limited
+     version, none on any other path; no budget line covers a reset.
+  4. *A permit is not checked:* cancelling the source gives its permit back at its end, so the window's trap has no
+     equivalent for `concurrency`.
+  Proved by `run_creators::a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_cancels_nothing`
+  (`limit: 1, per: hour`). Closes gap G022-019 when the task is ticked.
+- **D022-080 — A child node whose child's start the gate refuses fails with the refusal's reason, through its failure
+  route (2026-11-25; task T022-102; FR-022-055; decision D022-024; the follow-up of decision D022-062).** Delegate
+  (OD-2026-11-24-4). The scheduler's pass that starts a reserved child passed every flow-control refusal up as an
+  error: the pass failed on every tick and the parent's node neither completed nor failed. Now:
+  1. *Every refusal of the gate fails the node,* with the refusal's own `details.reason` as the step's failure code:
+     `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT` (a full `queued_runs` or the live-keys
+     ceiling), `CAPABILITY_DISABLED` (the deployment switched the capability off since the version was published),
+     `FLOW_CONTROL_ACTIVATION_PENDING` (the capability is no longer activated for the fleet) and
+     `BINARY_CAPABILITY_MISSING` (this process does not serve the gate, or the definition has a collection or a loop,
+     G1197). The refusal is decided either in the child's creation (`PgRunStore::create`) or in its start
+     (`Engine::start`); both roll the child back. The failure is applied only while the step's child is not started,
+     under the step's row lock, as the input refusal of design 043 is (D043-038). Weighed: leaving the reservation in
+     place for a later pass (the head of an oldest-first queue that one key could hold for every tenant, the reason the
+     quota refusals of feature 010 fail too, G32) and failing only the three codes FR-022-055 names (the capability
+     refusals would then stay errors on every tick). A process that does not serve the gate is a misconfiguration once
+     the capability is activated (D022-057: activation waits for every live process to list it), so a visible, routable
+     failure is preferred to a reservation that waits silently.
+  2. *"Handled by the node's retry policy"* (FR-022-055, D022-024) cannot be built as written: a `child` node has no
+     retry policy in IR v1 (`Node::retry_policy`: only an activity retries), and adding one is a change of the IR and of
+     the six SDKs that no task of this feature carries. The codes are retryable as a class (each clears when the key
+     drains or the deployment is put right), and the node's `onError` route is what handles them; an author who wants a
+     retry routes the failure to a timer and back. The specification gains a dated amendment line under FR-022-055.
+  3. *A `child` node inside a collection body* is refused at publication on this tree (the body subset of
+     `crates/infra-ir/src/convert.rs`, `is_collection_body`), and the pass reads root children only, so the body's case
+     has no path yet; `child_starts::a_child_node_inside_a_collection_body_is_refused_at_publication` holds the refusal
+     and fails when a body child is enabled, to be replaced by the body's own case.
+  Proved by `child_starts::{a_child_refused_by_a_full_buffer_or_a_ceiling_fails_its_node_through_the_route,
+  a_child_refused_by_its_capability_fails_its_node_through_the_route}`.
+  *Amended 2026-11-25 (review of the batch, correctness minor 3):* `BINARY_CAPABILITY_MISSING` is a fact of the replica
+  that decides (it holds no digest key ring), not of the child: the reservation is left for a replica that serves the
+  gate, as the grant pass leaves a key it cannot grant, and the pass counts a failure; `CAPABILITY_DISABLED` and
+  `FLOW_CONTROL_ACTIVATION_PENDING` (the operator's switch and the fleet's activation, which the runbook says to drain
+  before changing) still fail the node through its route. Proved by
+  `child_starts::a_child_a_replica_cannot_serve_is_left_for_one_that_can` (red first: the node failed).
+- **D022-081 — A key that reads the run's identity is refused, alone or beside other data (2026-11-25; task T022-103;
+  FR-022-056; decision D022-025).** Delegate (OD-2026-11-24-4). FR-022-056 names "a key that reads only the run's
+  identity (run id, business id, idempotency key)". On this tree an expression sees the run's identity through one
+  variable, `run`, whose only field is the run's id (`crates/infra-ir/src/evaluator.rs`); the business identifier and
+  the idempotency key are not visible to an expression, and a top-level key reads only `input`. Options: (a) refuse a key
+  whose every variable is `run` (the literal reading); (b) refuse any key that reads `run`. Chosen (b): `input.accountId +
+  run.id` makes one key per run exactly as `run.id` does, so the literal reading leaves the unbounded cardinality the
+  rule exists for (the security review of 2026-11-13, Major 3) one concatenation away. The codec refuses it with the rule
+  `FlowControlRule::UnboundedKey`, reported as `FLOW_CONTROL_KEY_UNBOUNDED` at the node; when `run` gains a field that is
+  not the identity, the rule narrows to the identity's fields. *Amended 2026-11-25 (review of the batch, correctness minor
+  1, security nit 1):* the rule is publication's only (`flow_control::check_publication_keys`, called by `parse` and not
+  by `parse_stored`): a stored version is restored as it was published, so a version an earlier build published keeps
+  its runs going. The specification gains a dated amendment line
+  under FR-022-056.
+- **D022-082 — The window decision has one pure model in the domain, and a differential test in the flow-control suite
+  holds the SQL to it (2026-11-25; task T022-071; FR-022-040, FR-022-048; decisions D022-003, D022-005, D022-009,
+  D022-014, D022-073, D022-078).** Delegate (OD-2026-11-24-4). The SQL of the gate (`readiness_gate.rs`,
+  `gate_queue.rs`, `RATE_PLACE_SQL`) is the only implementation of the window's rules; nothing checked it against an
+  independent statement of them except the cases each test chose.
+  1. *Where the model lives.* Options: (a) the domain (`sagat_domain::execution::window`), pure functions of instants
+     passed in; (b) a test-only model in `tests/support`; (c) no model, more example tests. Chosen (a): the task names the
+     domain, the rules are business rules (constitution, layering: the domain owns them, the adapter executes them), and
+     the estimate's arithmetic, which the application already held (`flow_control_keys::estimated_grant`), now calls the
+     domain's `estimate_us`, so a waiter's estimate has one rule and the model is not a second copy that can drift. (b)
+     would make the oracle test code that no production path uses; (c) never finds the case nobody thought of.
+  2. *Where the differential test lives.* Domain property tests cannot reach PostgreSQL. Options: (a) the integration
+     suite of the feature (`integration_flow_control_step_policies::window_model`), the real adapter and the real grant
+     pass; (b) the fault suite; (c) a `proptest` run against PostgreSQL. Chosen (a): it decides through the same
+     `PgRunStore` and `Scheduler` the other cases use, is selected with them by `scripts/select-test-targets.py`, and its
+     sequences are not faults. Not (c): a shrinking property needs a fresh database per case, which costs minutes per
+     failure on the shared machine; the sequences come from a fixed list of seeds through a small generator written in the
+     test (SplitMix64), so a failure names its seed and replays exactly.
+  3. *Time.* A sequence never depends on elapsed time (D022-072): before each operation every grant row of the key is
+     written at an age the test chose, at least five seconds from the edge of every window, as the owner with the guard
+     off in that transaction; an admission is decided by the model at the instant its row records; a pass counts as of
+     its selection, which lies between two readings of the clock, and the model must decide the same at both ends (else the
+     test's own setup is at fault and it says so). The run scope only: a step's lease instant is copied by the lease pass
+     from a worker's lease, which the sequences would have to drive through a worker; the lease rules are held by the
+     domain's properties (a lease never puts more than `limit` instants in a window of one bound) and by the existing
+     cases of `rate_gate` and the fault suite.
+  4. *What the properties assert.* For mixed acquirers (decision D022-009) the guarantee is per decision: after a grant
+     decided by an acquirer of `limit` over `per` at instant `t`, at most `limit` grants count for `(t - per, t]` (an
+     unleased grant counts, a grant ahead of a set-back clock counts); for run starts, invariant 10 over the decisions made
+     up to each grant (D022-032). A whole-history window holds for one bound only: with mixed acquirers a later grant
+     admitted by a looser limit may land in an earlier grant's window, which D022-009 allows.
+- **D022-083 — What the flow-control telemetry measures, and how the four alerts read their conditions (2026-11-25; task
+  T022-082; FR-022-049; decision D022-077 items 4, 6 and 7; gaps G022-001, G022-005).** Delegate (OD-2026-11-24-4). The
+  plan names the series and the runbook the conditions; these choices were left open:
+  1. *The wait histograms* (`concurrency_wait_seconds`, `rate_limit_wait_seconds`, by scope) observe each waiter the grant
+     routine grants, from its queueing to its grant, after the commit. A wait that ends by a timeout or a dequeue is
+     counted by its outcome in the decisions counters; observing it too would mix "how long until served" with "how long
+     until given up".
+  2. *The grant lag* (`rate_limit_grant_lag_seconds`) is measured, for a slot of the pass's own key, from the key's
+     next-eligible hint as the pass selected it (or the waiter's queueing if later) to the grant. Options: (a) the hint;
+     (b) the exact instant the waiter's slot freed, recomputed in the grant's transaction (one more statement over the key's
+     grants on the hot path of every buffered grant). Chosen (a): it costs nothing, it is the quantity
+     `RATE_LIMIT_GRANT_LAGGING` alerts on, and since the hint is early and never late it is an upper bound of the true lag,
+     never an understatement.
+  3. *The gauges* (`concurrency_waiters`, `rate_limit_waiters` by scope, `rate_limit_unleased_grants`) are set by the
+     monitor every look, deployment-wide, from the key rows' counters (one statement), and zeroed with the monitor's other
+     gauges when another process holds its lease.
+  4. *The alerts* are four `AlertKind`s of the monitor, one alert per (namespace, group), the group the subject (cut to
+     the table's 120 characters), never a key's value or label. `CONCURRENCY_QUEUE_STUCK` and `RATE_LIMIT_QUEUE_SATURATED`
+     compare with the namespace's current ceilings (`concurrency_limit`; the effective `flow_control_key_waiters`), which
+     the quota rules resolve: the monitor reads each namespace's ceilings once a look with the statement the gate decides
+     with (`quotas::step_gate_ceilings`), over at most 5,000 candidate keys a look (beyond it the look is short and resolves
+     nothing it did not see). *Revised 2026-11-25 (batch 3 reviews, correctness Major 2, security Major 1):* the cut came
+     before each namespace's condition, deployment-wide, so one tenant's keys hid another's saturated key and a cut
+     resolved nothing for anyone. The condition is now applied in the statement, joining each namespace's effective
+     ceilings resolved in SQL by the same rules (`quotas::effective_sql`, the twin of `resolve_rows`), before any bound;
+     the groups are ranked per namespace, per tenant and in all by severity (the longest wait for stuck; the fullest key's
+     share of its ceiling for saturated), at most `MAX_PER_NAMESPACE`, `MAX_PER_TENANT` and `MAX_CANDIDATES` as for every
+     kind, and a look that stops short records it for the namespace or the tenant beyond the bound, never for everyone. `RATE_LIMIT_GRANT_LAGGING` and `FLOW_CONTROL_WAITER_ORPHANED` are one aggregate statement
+     each, as the earlier kinds. Severities: lagging and orphaned critical (the gate is not serving, or an invariant is
+     broken), stuck and saturated warning.
+  5. *Contracts.* The kind enumeration of `Alert` in 001's OpenAPI and of the alert events in the AsyncAPI grows by four
+     values (additive: an enumeration may gain values, `contract_asyncapi_events_webhooks_messaging`); the Studio client is
+     regenerated. Migrations `20270213000300` and `20270213000400` widen `operational_alerts_kind_valid` (`NOT VALID`, then
+     validated); the down refuses while an alert of a new kind is kept. Feature 008's data model, an approved text, still
+     lists the five earlier kinds: it is revised when it is next re-approved.
+- **D022-084 — `flow_control_counts` holds the namespace's queued runs; the live keys stay counted from the key rows
+  (2026-11-25; task T022-105; FR-022-058; decisions D022-026, D022-051).** Delegate (OD-2026-11-24-4). D022-026 put both
+  `queued_runs` and the live keys in sixteen slot rows per namespace kept by `SECURITY DEFINER` triggers. Building it:
+  1. *Queued runs: built.* `flow_control_counts (tenant_id, namespace_id, slot, queued_runs)`, the slot from the run's
+     identifier (the slots of `run_active_counts`), kept by triggers on the run-scope waiter rows of both tables in the
+     transaction that writes them; a run counts once (a row adds one only when the run has no run-scope waiter row in the
+     other table, and takes one only when none is left there: both rows of a dual-gated run are written and removed in one
+     transaction of the run, FR-022-044). `sagat_app` holds `SELECT` only. The check, the quota usage and the key listing
+     read the sum of the slots (`QUEUED_RUNS_SQL`), exact under the admission lock as before (D022-051). Lock order: the
+     slot row is locked when the run's own waiter row is written, after the run's active-run counter row (slot 6) and the
+     start's keys (slot 7 and the rate rows of 8b); the only keys locked after it are the step keys of a buffered run's
+     entry steps, and no transaction that holds a step key writes a run waiter after it. *Corrected 2026-11-25 (batch 3
+     reviews, correctness Major 1):* the grant of a queued start deleted its waiter row (the slot row) before its settle
+     ended the run (the active-run counter row); it now locks the active-run counter row before its keys.
+  2. *Live keys: not kept in counters.* A key row is created in the middle of the sorted pass over a decision's keys and
+     deleted at the commit by the deferred prune. A counter kept by an immediate trigger would be locked before the
+     later keys of the same pass (two transactions sharing a slot can then wait on each other); one kept at the commit
+     (a deferred trigger) would be locked in no fixed order beside the deferred quota flush of feature 009. Options: (a)
+     counters anyway, with an advisory lock per namespace at the commit (serialises a namespace's key churn at its commits
+     and still orders against the quota flush by event order); (b) insert-only delta rows folded by the housekeeping (no
+     lock, but a read grows with the churn between folds); (c) keep counting the key rows of the versions in force, which
+     only a decision that would create a key does, bounded by the ceiling. Chosen (c): exact, aware of the digest key
+     versions in force (ADR-0093 decision 5, which a counter by namespace alone would lose), and without a new lock. The
+     cost of the count is the benchmark's to measure (tasks T022-062 and T022-089); the data model's `live_keys` column
+     is not built.
+  3. *The rest of the task was built before:* foreign keys `(tenant_id, namespace_id, run_id)` → `runs` on the holder,
+     waiter and grant rows (migrations `20270130000000`, `20270130000100`), `SECURITY DEFINER` count triggers on the key
+     rows, and `UPDATE (next_eligible_at, updated_at)` as the runtime role's only update of semaphores and windows.
+
+- **D022-085 — What a key reads, its level, and who sees its label (2026-11-25; task T022-104; FR-022-057; gaps G1185,
+  G022-015; amends D022-060).** Delegate (OD-2026-11-24-4).
+  1. *What a key reads.* Options: (a) only a plain reference (`input.a.b`, as the Iceberg write's fields are read,
+     feature 035), anything else `pii`; (b) every place of the expression's syntax tree; (c) the places an evaluation
+     touches (needs data). Chosen **(b)**: `Compiled::reads` (`crates/infra-expr/src/reads.rs`) lists each variable and
+     literal path the expression names, each standing for the value there and everything under it (an expression may
+     size, compare or convert a structure); a computed index ends the path where it stands and is read in turn; both arms
+     of a condition count. It is conservative (more than an evaluation touches, never less) and keys are usually
+     concatenations, which (a) would make `pii` for no reason.
+  2. *The level of a place.* The carriers of feature 016 (FR-016-002) through the walk publication already runs, read
+     once per document (`crates/infra-ir/src/classified_locations.rs`, shared with the Iceberg write's reading):
+     `input.<path>` is the input carrier, `steps.<id>.output.<path>` (and `steps.<id>`) a root node's output carrier,
+     `steps` whole every node's output; the level is the strictest at or under the place, at least `pii` when the schema
+     does not say the value is a scalar, and `pii` for a place no schema declares, for `state` (no carrier: 016 refuses
+     an annotation there) and for anything the reading cannot follow. A key's level is the strictest of its places;
+     a key that reads nothing (the group's single key, a constant) is `public`.
+  3. *Publication.* `secret` is refused `FLOW_CONTROL_KEY_SECRET` at the declaration (node, or the workflow) by
+     publication only; `pii` is published with the warning `FLOW_CONTROL_KEY_PII` at each declaration. A stored version
+     is restored with the level its key reads (an earlier build may have published a `secret` key), so its label is
+     shown to nobody.
+  4. *Where the level lives.* Options: (a) a column on the holder, waiter and grant rows, written by every decision;
+     (b) a column on the key rows, raised by each decision; (c) derived from the run's pinned version, read by the codec
+     (`ConcurrencyPolicy::key_level`, `RateLimitPolicy::key_level`, set by `WorkflowDefinition::with_flow_control_key_levels`
+     for publication and restore alike, never canonical). Chosen **(c)**: no migration and no write on the gate's path
+     (the hot-path budget is untouched), exact per run (the key of that run's definition, which (b) blurs across the
+     definitions sharing a group), and one source with publication's check. A run read parses the version once (the
+     definition cache) and checks the reveal grant once per namespace, only for runs with a permit or a slot; a version
+     that cannot be read hides its labels (`secret`).
+  5. *Who sees `Run.concurrency.keyLabel` and `Run.rateLimit.keyLabel`.* A key over `public` places: every reader; over
+     `internal` places: a role that reads internal payloads (`payload:read-internal`: developer, operator, admin; not a
+     viewer); over `pii` places: a caller who may reveal personal data in the namespace (D022-060's one rule,
+     `reveal_grants::may_reveal_payload_unlocked`); `secret`: nobody. The reveal right needs no explicit reveal request
+     here, as D022-060 decided: a label is a pseudonym, not an audited disclosure.
+  6. *The key listings.* A key row does not say which definitions filed it (two definitions may share a group and a key
+     value from places of different levels), so the per-key listings stay the view of a caller who may reveal personal
+     data, which covers every level a published key may read; every other caller is given the group rows of T022-111
+     (D022-086). A `secret` key of a version published before this rule could reach a revealer's listing by its label;
+     none exists in production, since the runbook forbids activating the capability before T022-104 (G022-015).
+     *Stated 2026-11-25 (batch 4 reviews, security nits):* a page of `listRuns` may parse up to its 200 runs' pinned
+     versions to grade their labels (each version once a page, from the definition cache), a cost bounded by the page;
+     and a continuation never attaches key levels: a continuation successor cannot declare a run-level gate
+     (FR-022-059), and its node-level gates are graded when its own version is read.
+  Evidence: `contract_flow_control_step_policies::ir::{a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers,
+  a_key_over_personal_data_is_published_with_a_warning_and_one_over_internal_data_is_not,
+  every_invalid_fixture_is_refused_with_its_code_before_a_version_exists}` and
+  `integration_flow_control_step_policies::rest::a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_reads`.
+  8. *Revised 2026-11-25 (batch 4 reviews, security Major 2 and the security suspicion).* A value carried through a node
+     without an output carrier of its own (a `forEach` returning a body activity's `secret` output, a `while` or
+     `repeatUntil` carry, a `database` node's rows, `state`) was graded `pii` and published with a warning: the level
+     of "no schema says", not of what can reach it. Options: (a) follow each value's flow through expressions (a data
+     flow analysis this build does not have); (b) refuse every key over such a location (refuses keys over `state`,
+     which are legitimate); (c) the strictest level of every carrier of the document, never less than `pii`. Chosen
+     (c): what reaches a carrierless location came from the run's input or from some node's output, so it is at most
+     the strictest of them; it is exact for a document without a `secret` field and safe otherwise. `steps` read whole
+     folds every carrier, the bodies' included. A carrier whose walk did not complete (`CLASSIFICATION_TOO_COMPLEX`,
+     `CLASSIFICATION_UNRESOLVED_REF`, `CLASSIFICATION_UNSUPPORTED_KEYWORD`) cannot be proved not to hold a secret, so a
+     key over it, and the floor of every carrierless location, is `secret`: publication refuses such a schema already,
+     and a version restored with it hides the key's label from everyone. Evidence:
+     `ir::{a_key_over_a_node_without_its_own_carrier_takes_the_strictest_level_of_the_document,
+     a_key_over_a_carrier_whose_walk_did_not_complete_counts_as_secret}` and the revised cases of
+     `a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers` (`state`, a missing node, `steps`).
+
+- **D022-086 — The key listings' group view, read by a walk of the groups, not from counter rows (2026-11-25; task
+  T022-111; FR-022-022, FR-022-057; decisions D022-061, D022-068 item 6; gap G022-014; departs from T022-111's "per-group
+  counter rows").** Delegate (OD-2026-11-24-4).
+  1. *Who reads which view.* Both listings answer `view: KEYS` (one row per key by label, whole instants) to a caller
+     who may reveal personal data in the namespace, and `view: GROUPS` (one row per pool, scope and group: its keys,
+     holders or counted and unleased grants, waiters, oldest wait, oldest holder or earliest next slot, whole instants)
+     to every other caller, with `items` empty. D022-061 (b) allows whole instants for a group: a group is the
+     definition's name or a declared slug, already on each run. The minute cut of D022-060 is gone with the per-key
+     rows it protected (`to_the_minute` removed). A key's label stays the reveal right's in the listings (D022-085 item 6).
+  2. *Where a group's sums come from.* Options: (a) per-group counter rows kept by the triggers that keep the key rows'
+     counters, as the task says; (b) sharded counter rows (as `flow_control_counts`); (c) insert-only delta rows folded
+     by the housekeeping; (d) a walk of the page's groups over the key rows, in one snapshot. (a) and (b) lock a group's
+     counter row from the trigger of a holder or waiter row, between the key locks of one decision: a transaction that
+     takes two keys of one group (two root steps of one run in one explicit group, a run's terminal release) holds the
+     group's row while it waits for its second key, which another transaction holds while it waits for the group's row:
+     a deadlock no lock order removes, since the trigger fires between the key locks (the reason D022-084 item 2 kept
+     the live keys out of counters); one unsharded row would also serialise every decision of a group, the throughput
+     the feature exists for. (c) adds a fold job, a write per holder and waiter change, and a first insert of a group's
+     base row that waits on the inserting transaction (the same cycle, rarer). Chosen **(d)**: no write and no lock on
+     the gate's path (the hot-path budget is untouched), no migration, exact in one `REPEATABLE READ` snapshot, and a
+     page costs its own groups only: the groups are found by a recursive walk of the key table's primary key that skips
+     from one group to the next (one probe a group, `groups_after_sql!`; for a named group, one probe of each of the four
+     pools and scopes, `groups_named_sql!`), and each group is summed over its own key range and its holders' range of
+     `concurrency_holders_key_age_idx` (a rate group over its windows, each read as the per-key listing reads it). A
+     page's cost grows with its own groups' keys, never with the namespace's, and paging the whole listing reads each
+     key once (the per-key listing's bound, D022-058); the 2 s statement timeout still bounds a page.
+  3. *Order and cursor.* Groups by pool, scope and name (the primary key's order), not oldest wait first: an order by a
+     group's oldest wait would need that minimum kept per group, which is the counter of item 2. The cursor is the
+     group's place sealed as a key's (`KeyPosition::of_group`, its digest all zero), under listing tags of their own
+     (`kg1`, `rg1`), so a cursor of one view is a `400` in the other (a caller whose reveal right changed between two
+     pages starts again), and of one gate's view in the other gate's.
+  4. *One opening for both handlers* (D022-068 item 6): `routes::concurrency::open_key_listing` reads the namespace and
+     the group, opens the cursor of either view (`KeyPosition::open_either`), admits the caller and refuses a cursor of a
+     version out of force (`key_cursor_in_force`), returning a `KeyListingQuery`; each handler then asks its service.
+  Evidence: `integration_flow_control_step_policies::rest::{a_caller_without_the_reveal_right_reads_one_row_per_group_and_pages_them,
+  a_page_of_groups_reads_only_its_own_groups, a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data}` and
+  `rate_rest::the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protections`.
+  5. *Revised 2026-11-25 (batch 4 reviews, correctness Major 1, security Major 1 and minor 1, security minor 2).* (a) A
+     page summed each of its groups whole, and the lookahead group too: one group of 100,000 keys made every page a
+     `503` past the statement timeout, and no cursor got past it. A page now reads at most `GROUP_PAGE_KEY_ROWS` (200,
+     the per-key page bound) key rows in one `REPEATABLE READ` snapshot: each group is read in chunks of its primary-key
+     range after the last digest read, its sums accumulated; a group whose range ends within the budget is emitted, and
+     one that does not is carried in the cursor (`KeyPosition::partial`: the group's place, the last digest read, the
+     partial sums and oldest instants), sealed as before, so the next page resumes it. The lookahead is one probe of the
+     primary key for the next group, never its sums. A group's row is therefore summed across the pages that read it,
+     each page one snapshot (a rate group's counts each at its page's instant), and a page can hold no group and still
+     have a cursor; the order and the tags are unchanged, and a cursor of the earlier build (a place without partial
+     sums) still opens. Options weighed: a summary table per group (rejected in item 2: a lock on the gate's path); a
+     larger statement timeout (no bound at all); sampling (inexact). (b) The group row's count of keys told a caller
+     without the reveal right which runs share a key (a group of two runs and one key against two keys); it is removed
+     from both group bodies, the OpenAPI and the Studio. (c) A rate group's `nextSlotAt` linked a waiting run to a granted
+     one (the grant instant plus the window); it is omitted from the group view. Evidence:
+     `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached`,
+     `rest::a_page_of_groups_reads_at_most_its_budget_of_key_rows`,
+     `rest::a_group_view_tells_nothing_that_changes_with_the_number_of_keys`.
+
+- **D022-087 — A Signal-with-Start whose start queues holds its signal with the run, delivered by the grant (2026-11-25;
+  task T022-109; FR-022-018, FR-018-024; decision D022-050 item 6; gap G022-010).** Delegate (OD-2026-11-24-4).
+  1. *Where the signal waits.* Options: (a) a row of its own, `flow_control_held_signals`, one per run, its payload a
+     `payloads` row named by digest (the content-addressed store every signal payload already lands in, charged to
+     `tenant_content_bytes`); (b) the start's receipt carrying the payload (a receipt is a replay answer, not a work
+     item, and it outlives the run); (c) a pending `step` row (a step that does not exist in the definition's graph
+     breaks replay equals projection). Chosen (a): the row is the run's own (foreign key to `runs`, `ON DELETE
+     CASCADE`), so it lives and dies with the run, and the grant finds it by the run's primary key, one probe.
+  2. *What the request answers.* The run is created and queued, the signal is held, and the answer is `202` with
+     `started: true`, `deliveredTo: []` and `held: true`. The receipts are written in the creation transaction: the
+     signal's under its usual scope (`run.signal:<run>`, nothing delivered) and a marker (`run.signal:<run>.held`), so a
+     retry of the request answers the same, `held: true`, whatever the run is now. A request whose definition declares
+     no `waitEvent` for the signal's name keeps the refusal of FR-018-024 (`SIGNAL_NOT_ACCEPTED_AT_START`, nothing
+     created): no grant could ever deliver it, and the answer does not depend on the key's load.
+  3. *The delivery.* The grant routine, in the transaction that grants the run its start (T26, D022-073), after the
+     grant's settle, takes the held row and delivers the signal exactly as `signalRun` would: to every step that waits
+     for it, the payload the step's output, audited `run.signalled` by the original caller (the subject and the trace
+     kept with the row), journaled `wait.satisfied` with `via: SIGNAL_WITH_START`. When no step waits for it at the
+     grant (the waiting node is not on the entry's path), it is dropped with an audit record `run.signal_dropped`
+     (actor the engine, reason `NOT_WAITING_AT_GRANT`), as `signalRun` would refuse it; when the run's retained output
+     would pass its bound, dropped the same way (`OUTPUT_BOUND`).
+  4. *A queued run that ends instead.* Its queue timeout, a cancellation, or any other end of a queued run drops the
+     held signal in the commit that ends the run, audited `run.signal_dropped` (reason `RUN_ENDED`); the payload stays
+     the tenant's content under its retention, as the payload of a delivered signal does. Only a commit that ends a run
+     whose start declares a gate looks for the row, inside the flow-control step of `persist` (no statement on the hot
+     path of a plain definition).
+  5. *An open holder whose start is queued* is signalled exactly as `signalRun` (FR-018-024): nothing waits, `409`
+     `NOT_WAITING`, nothing changed. Only the request that creates the run holds its signal; holding a second signal
+     for an existing run would be a buffer, which FR-018-024 refuses.
+  Migration `20270214000000_flow_control_held_signals` (`sagat_app`: `SELECT`, `INSERT`, `DELETE`; a down that refuses
+  while a row is kept; the signal's name, customer content, charged to `tenant_content_bytes` by the ALWAYS accounting
+  triggers, added 2026-11-25 after the merge with `develop` when
+  `durable_quotas::manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers` failed on
+  the table: the branch is unreleased, so the migration itself carries them, as D022-089 does for the quota lists). Evidence: `run_creators::{a_signal_with_start_whose_start_queues_holds_the_signal_and_the_grant_delivers_it,
+  a_held_signal_is_dropped_with_an_audit_when_its_queued_run_times_out_or_is_cancelled,
+  a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit,
+  a_signal_with_start_of_a_name_no_node_waits_for_is_refused_when_the_start_would_queue}` and
+  `rate_creators::a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_holds_its_signal`.
+
+- **D022-088 — A waiter the grant routine cannot decide now holds back the younger waiters of its key (2026-11-25; batch 3
+  work item 2; decision D022-073; ADR-0089 decision 3).** Delegate (OD-2026-11-24-4). The fault test
+  `rate_limits::a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window` failed twice on a
+  loaded runner with "grants follow admission order". Cause, reproduced with a held lock
+  (`run_admission::a_waiter_whose_run_is_busy_holds_back_the_younger_waiters_of_its_key`): the grant routine takes a
+  waiter's run with `SKIP LOCKED`; a run another transaction holds (a pass that has not yet released it: a transaction
+  that ends without a commit is rolled back by the pool when it takes the connection back, in a task of its own, so for
+  a moment after a pass the run it refused is still locked; a statement in flight) was counted `skipped` and the pass
+  went on, and on a window with room for both it granted the younger waiter behind it first. A failed grant did the
+  same. Options: (a) wait for the run (`Lock::Wait`, a pass holding a key could then wait on a run, ADR-0089 decision 3
+  forbids it); (b) hold back only the younger waiters of no looser limit and window (the waiter's limit is not known
+  without its run); (c) end the key's pass at that waiter, the key keeping its hint, so the next pass starts from it.
+  Chosen (c): exact admission order, one pass of delay at most, no new lock. The integration test
+  `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit` also failed twice in full owner runs
+  ("the tick did not grant exactly one"); it was not reproduced (25 repetitions unloaded), and its tick has no other
+  transaction on the waiter's run: the remaining causes are a grant that failed on the loaded runner (a statement or
+  pool acquisition timeout) or the pool's late rollback above. Its assertion now prints the tick's report, which names
+  which (`skipped`, `failed`, `fenced`).
+
+- **D022-089 — The merge with `develop` names both features' quota resources in every restatement this feature owns
+  (2026-11-25).** Delegate (OD-2026-11-24-4). Merging `develop` (feature 041, step logs) into this branch put feature
+  041's `20270201000000_step_log_quotas` between this feature's `20270130000300_flow_control_quota_resources` and
+  `20270206000000_flow_control_rate_quota_resources`. Each of the three restates the whole lists of the CHECKs
+  `quota_ceilings_resource_valid`, `quota_limits_resource_valid` and `quota_limits_tenant_scoped`, and migrations run in
+  version order: the last one, `20270206000000`, was written without the four step-log names, so on the merged tree a
+  fresh database refused every step-log limit and ceiling. Seen failing on the merged tree:
+  `migrations::every_quota_resource_is_accepted_by_the_checks_in_force_on_a_fresh_database` (inserts every value of
+  `QuotaResource::ALL` at its default) and `develop`'s
+  `migrations::the_last_restatement_of_each_quota_resource_list_names_every_resource` (reads the text), both in
+  integration_platform_foundation. Options: (a) name the step-log resources in this feature's two restatements
+  (`20270130000300`, `20270206000000`); (b) leave them and add a migration stamped after every migration of both that
+  restates the union. (b) was built first and failed the upgrade of a database of `develop`: such a database has
+  `20270201000000` and may store step-log limits before it takes this feature's migrations (sqlx applies a missing
+  earlier version after later ones), and the validations `20270130000700` and `20270206000100` then fail on those rows
+  (seen in `step_log_isolation::schema::the_migration_rolls_back_only_without_lines_and_restores_what_it_replaced`,
+  integration_claim_transition_efficiency, which rolls back to `20270201000100` with a step-log limit stored and
+  migrates again). Chosen (a): `20270206000000`, the last restatement, names all 51 resources, and a database of
+  `develop` takes this feature's migrations with its step-log limits stored
+  (`migrations::a_database_of_develop_with_step_log_limits_takes_the_flow_control_migrations`). It changes the checksum
+  of two migrations of this unreleased branch: a database that applied them is recreated, as for the renumbering of
+  D022-078. The reverse, a database of this branch that stores a flow-control limit and then takes `20270201000000`, is
+  not supported for the same reason (that migration, already on `develop`, is not changed). The downs had the same
+  hazard: the down of `20270201000000` restored the pre-041 lists, without this feature's six concurrency names, so
+  `migrations::the_quota_and_declaration_migrations_roll_back_only_once_their_rows_are_drained`
+  (integration_flow_control_step_policies), which rolls back to `20270130000300` with a `queued_runs` limit stored,
+  failed on the restored CHECK before the clean refusal it expects. Each down now restores the lists in force before
+  its migration on the merged tree: `20270201000000`'s down names the concurrency names of `20270130000300`, and
+  `20270206000000`'s down the step-log names (a down is not checksummed). Value ranges are not restated: only
+  `20270201000000` restated them, and this feature's resources take the general range (their bounds are in code). The
+  same merge brought `develop`'s `migrations::a_constraint_added_not_valid_is_validated_by_a_later_migration`, which
+  failed on `steps_waiting_kind_valid` (restated `NOT VALID` by `20270130000600` and left unvalidated, as every earlier
+  restatement had left it): `20270215000000_flow_control_waiting_kind_validate` validates it under `SHARE UPDATE
+  EXCLUSIVE` (every restatement only added kinds, so every stored row satisfies it).
+
+- **D022-121 — Only a busy run and a failure that clears on its own end a key's grant pass (2026-11-25; batch 5
+  correctness Major 1, security suspicion 2; amends D022-088) (numbered D022-090 until 2026-11-26, when the merge with the SDK-builders branch renumbered it).** Delegate (OD-2026-11-24-4). D022-088 ended a key's pass
+  at a waiter whose grant failed, whatever the failure: a waiter whose grant always fails (a version this build cannot
+  load, an execution error, a row a constraint refuses, a held signal whose delivery fails) then held back every younger
+  waiter of its key until its own deadline. Options: (a) end the pass on every failure (as built; a poisoned waiter
+  stalls its key); (b) skip every failure (a younger waiter overtakes an older one whenever the database hiccups,
+  breaking admission order under load, the cause of D022-088); (c) end the pass only on what clears on its own, the
+  store's `Unavailable` and `DatabaseUnavailable` (a pool or statement timeout, a serialization failure, a deadlock, a
+  lost connection: SQLSTATE classes 08, 40, 53, 55, 57) and a busy run, and skip any other failure, counted `failed`
+  in `scheduler_actions_total{kind="gate_grant"}` and logged with its run. Chosen (c). The skipped waiter stays queued
+  until its deadline, which bounds it; on a concurrency key `CONCURRENCY_QUEUE_STUCK` names the key's group once younger
+  waiters keep taking the permits, so no new alert kind is added. A held signal whose delivery fails (anything but a
+  transient failure) no longer fails the grant: the grant's transaction is rolled back and the grant is tried once more
+  in a new transaction that drops the signal with its audit record, reason `DELIVERY_FAILED`, and grants the start
+  without it. Every drop's audit record (`NOT_WAITING_AT_GRANT`, `OUTPUT_BOUND`, `RUN_ENDED`, `DELIVERY_FAILED`) names
+  the caller who sent the signal, the held row's actor, in its reason (batch 5 security minor 2): the record's actor
+  stays the engine, which dropped it. Tests: `run_admission::a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters` (a
+  trigger refuses the older waiter's holder row; the younger is granted in the same pass) and
+  `run_creators::a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted`.
+
+- **D022-122 — Every waiter's transaction that does not commit is rolled back and the rollback awaited (2026-11-25; batch
+  5 correctness Major 2) (numbered D022-091 until 2026-11-26, when the merge with the SDK-builders branch renumbered it).** Delegate (OD-2026-11-24-4). `grant_waiter` returned a refusal by dropping its transaction:
+  the pool rolls a dropped transaction back later, in a task of its own, so for a moment the run stayed locked and a
+  second waiter of the same run (two root nodes of one run on one key, or a start gated on two keys) found it busy,
+  which since D022-088 ends the key's pass. `RunTx` gains `rollback`, and every return of `grant_waiter` that does not
+  commit awaits it before the next waiter is tried (an adapter without a transaction drops it, as before). A failed
+  rollback is logged; the connection is then closed by the pool, which releases the lock. Test:
+  `run_admission::a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_is_tried` (two waiters of one
+  run adjacent on one key, the first refused by its other gate; a younger waiter of another run is granted in the first
+  pass). The intermittent `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit` was
+  re-examined against this cause: its key has one waiter, so no earlier waiter of the same pass can leave the run
+  locked; a transaction an earlier pass of the same tick drops on that run could, and is now named by the report
+  (`skipped` counts a busy run). It is not closed by this change: when it fails again, the report says which cause.
+
+- **D022-123 — The batch-5 minors and nits built on 2026-11-25 (batch 5 rulings) (numbered D022-092 until 2026-11-26, when the merge with the SDK-builders branch renumbered it).** Delegate (OD-2026-11-24-4).
+  1. *A held row exists only while its run's start waits* (correctness minor 3, security suspicion 1). `verify_run`
+     refuses a held signal kept for a run whose start does not wait
+     (`run_creators::verify_run_refuses_a_held_signal_kept_for_a_run_whose_start_does_not_wait`). The drop of
+     D022-087 item 4 no longer looks only at a commit with a dequeue or timeout event of the start: a commit of a run
+     that has ended and whose start never ran (each gate of its start queued, timed out or dequeued, none ever held)
+     drops it, whatever ended the run. A run whose start ran has a gate held or given back, so its end adds no statement
+     (the budget of design 038 is unchanged).
+  2. *Two doc comments said a signal is never buffered* (security minor 3): `routes/execution.rs` and `runs.rs` now name
+     the one buffer, a new run whose start queues.
+  3. *`effective_sql` guarded `iteration_concurrency` with a debug assertion only* (correctness nit): it returns a
+     `Result` and refuses it in every build (`quotas::effective_sql_tests`).
+  4. *A grant from the buffer is not re-authorized, for signals too* (security minor 1): FR-022-060 is amended in words.
+  Correctness minor 4 is the dated amendment of ADR-0089 decision 4 (D022-121); security minor 2 is in D022-121.
+  Batch 4, built the same day: the release-upgrade tests read the migration head from the migrator (correctness minor
+  1, `support::migration_head`); the pinned-limit rollback test rolls the later migrations back first, so that its
+  refused rollback is measured from its own schema (minor 4); the label test asserts the group view and its empty key
+  list where its two checks of key rows would pass on an empty list (minor 6); a cursor of the other view of a key
+  listing (what the caller may see changed between two pages) answers `400` with its own message, "the cursor was
+  written for the other view of this listing", not "the cursor is not valid" (nit 1,
+  `rest::a_cursor_of_the_other_view_is_refused_with_its_own_message`).
+  Batch 3, built the same day: the counts migration `20270213000200` locks `rate_limit_waiters` before
+  `concurrency_waiters`, the order a dual-gated admission writes them (correctness minor 6), and its counting trigger is
+  two per table, `AFTER INSERT ... WHEN (NEW.node = '')` and `AFTER DELETE ... WHEN (OLD.node = '')`, so a step's waiter
+  row fires none (correctness nit); both are checked in
+  `migrations::the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss`. The migration is on no
+  released tree; a database that applied it is recreated (D022-089).
+
+- **D022-099 — A test that asserts what one grant pass decides about a waiter of two keys runs one key at a time
+  (2026-11-25; CI runs 45637128106 at `f30d4ffd` and 45649612535 at `484c6047`, integration shard 2; decisions D022-088,
+  D022-073 item 4).** Delegate (OD-2026-11-24-4). (The numbers D022-090 to D022-098 are taken by the SDK-builders branch,
+  `feature/022-sdk-builders`, which wrote them first, on 2026-11-20; the three decisions of this branch that took D022-090
+  to D022-092 on 2026-11-25 are renumbered D022-121 to D022-123.)
+  `rate_gate::a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_and_the_next_pass_grants_it` failed
+  on both runs, and passed locally, with "the window rests until the holder's slot ages out": after the first pass, the
+  window's hint of the dual-gated waiter `w2` was still the instant of its queueing. Cause: `w2` waits on the window and
+  on a permit, so both keys are due, and the grant routine runs up to `SchedulerSettings::concurrency` keys' passes at
+  once (eight by default); the permit's pass held `w2`'s run while the window's pass tried it, the window's pass found it
+  busy (`SKIP LOCKED`) and, since D022-088, a busy waiter ends its key's pass and the key keeps its hint, so the window did
+  not rest. It is the rule working, not a refusal mistaken for an undecided waiter: a busy waiter may be grantable the
+  moment its run is free, and the next pass decides it (one pass more, as D022-088 accepted: the key that won the run
+  decides the waiter in that pass, so the loser is alone in the next). The test depended on which key's pass took the run
+  first. Reproduced red by holding `w2`'s run in a transaction of the test during the pass (the same assertion failed, the
+  hint unchanged). Options: (a) the test runs that pass one key at a time, as
+  `rate_gate::a_grant_through_another_keys_pass_wakes_the_waiters_of_its_window` already did for the same
+  cause, and a test of its own pins the busy case down; (b) the routine awaits a waiter's run that another key's pass of
+  the same process holds (an in-process registry of the runs in flight), which saves that one pass but adds coordination
+  to every pass for a cost D022-088 already bounds; (c) wait for the run's lock (`Lock::Wait`), which ADR-0089 decision 3
+  forbids. Chosen (a). Tests: the first pass of the failing test runs one key at a time; the new
+  `rate_gate::a_dual_gated_waiter_found_busy_keeps_its_window_due_and_the_next_pass_rests_it` holds `w2`'s run during a
+  pass of the default scheduler (nothing granted, `skipped` counted, the window's hint unchanged), then a pass one key at a
+  time refuses `w2` for its permit and rests the window at the holder's grant plus one hour.
+
+- **D022-100 — A key listing's cursor expires fifteen minutes after its page (2026-11-25; batch 5 security suspicion 3;
+  decisions D022-059, D022-086 item 5).** Delegate (OD-2026-11-24-4). A cursor of a group view carries the sums of a
+  group read in part; replayed later, it adds those old sums to rows read now, and a page boundary kept for long tells
+  whether a group still crosses 200 keys. Options: (a) every cursor of both key listings, in both views, carries the
+  instant its page sealed it, and is refused fifteen minutes later; (b) only a cursor that carries a group read in part
+  expires (a key view's cursor replayed later only resumes a later snapshot, but two rules for one opaque value are
+  harder to state and to test); (c) no partial sums, each page reading its groups whole (the 200-row bound of a page,
+  D022-086 item 5, is lost). Chosen (a). The instant is the serving process's clock in whole seconds, inside the sealed
+  text, so a caller can neither read nor move it; a cursor older than fifteen minutes is a `400` with a message of its
+  own, "the cursor has expired: read the listing again without a cursor", decided with the other refusals of a cursor
+  before admission (it tells nothing of the namespace: the cursor was sealed for it). A cursor whose instant is ahead of
+  the reader's clock (replicas' clocks differ by far less than the lifetime) is read. The longest position sealed grows
+  by the instant's at most 21 bytes and stays under `MAX_CURSOR_PLAIN_BYTES`. Tests:
+  `flow_control_keys::tests::a_cursor_expires_fifteen_minutes_after_its_page` and
+  `rest::an_expired_cursor_is_refused_with_its_own_message` (a real page's cursor sealed again sixteen minutes earlier
+  with the deployment's ring is refused, and fourteen minutes earlier is read).
+
+- **D022-101 — A group row says when its sums were read across pages (2026-11-25; batch 5 correctness minor 5; decision
+  D022-086 item 5).** Delegate (OD-2026-11-24-4). A group with more keys than a page reads is summed across the pages
+  that read it, each page one snapshot, so its sums mix instants: a group may show more holders than its keys' limits
+  allow, or a waiter counted on one page and its holder row on the next. Options: (a) a required `spansPages` boolean
+  on each group row of both listings, `true` when its sums were begun by an earlier page (the page resumed it from the
+  cursor's partial sums), so a reader knows the row is not one snapshot; (b) words in the contract only (a reader
+  cannot tell which row); (c) read a group whole on one page (the bound of a page is lost). Chosen (a): it tells nothing
+  a viewer could not already infer from following the cursor (a page with no group and a `nextCursor`), and nothing
+  about which runs share a key. Test:
+  `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached` (the big group's row
+  `spansPages: true`, the next group's `false`, in both listings).
+
+- **D022-102 — The gates in the run state and a test's large scenario future are boxed where they are created
+  (2026-11-25; CI runs 45637128106 and 45649612535, integration shard 1; D022-070).** Delegate (OD-2026-11-24-4).
+  `scoped_event_storage::receiver::a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_lookback` (first
+  run) and `..._with_held_inbox_keeps_lookback_pending` (second) aborted integration_workflow_primitives with a stack
+  overflow of the 2 MiB test thread (debug build); both passed in the same job's isolated step and locally. Measured on
+  the arm64 debug build, `RUST_MIN_STACK` bisected in 32 KiB steps, one test at a time: on `develop` (`b42eb7d5`) the
+  held-inbox test needs 1,920 KiB (fails at 1,888), on this branch 2,048 KiB (fails at 2,016), and so does its sibling:
+  the tests already sat at 94% of the stack on `develop`, and this feature's growth pushed them over on x86. What grew
+  (`-Zprint-type-sizes`, both trees): `StepState` 128 to 288 bytes and `RunState` 336 to 520 (the 160-byte `Gates` of a
+  step's attempts and of a run's start, inline), `Node` 560 to 704 (its 144-byte `FlowControl`), and the poll frames
+  that copy them (`Engine::run`'s from 14,288 to 17,056 bytes); the futures on the dispatcher's path grew by at most
+  about 500 bytes each. Options: (a) raise the test thread's stack (`RUST_MIN_STACK` in CI) — refused, it hides the
+  growth from every other caller; (b) box the gates and the node's declaration (an ungated run, step or node allocates
+  nothing) and pin the sizes; (c) also box the test's own scenario future where it is created, as D022-070 boxed a
+  creator's futures. Chosen (b) and (c). `Gates` holds one pointer (`StepState` 136, `RunState` 368), a node's
+  `flow_control` is `Option<Box<FlowControl>>` (`Node` 568); the gated tests need 1,984 KiB with (b) (the node's box
+  moved nothing on this path, kept for the definition's own frames), and 1,376 KiB with (c), 544 KiB under `develop`.
+  Tests: `crates/domain/tests/state_sizes.rs` (red at 288, 520, 160 and 704 bytes before the boxes) and
+  `scoped_event_storage::receiver::the_quota_refusal_future_kept_on_the_test_thread_stays_small` (red without the box:
+  78,272 bytes with the gates boxed, 80,592 before); the plan's table "Stack and future sizes of a run creator" holds the bounds.
+
+### Decisions of the Studio slice (2026-11-24)
+
+- **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
+  FR-022-022, FR-022-035, FR-022-048, FR-022-050, FR-022-057; FR-007-010). Delegate (OD-2026-11-24-4).** The tasks
+  name the screens; these choices are left open by the specification and the contracts. Each option was weighed for
+  the architecture and for the person using the Studio, not for the least code.
+  1. *What turning a gate on writes.* Options: (a) a default policy (`limit` 1, `per` minute), so the draft validates
+     at once; (b) an empty policy `{}` that the author completes, with each missing member said beside its field and
+     the platform's own check (`CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`) in the checks panel; (c) no
+     switch: the policy exists once a limit is typed and disappears when the limit is cleared. Chosen: **(b)**. A
+     default is a value nobody chose: `limit` 1 silently serialises every run of a key, which an author who forgets to
+     change it learns in production; the Studio's rule is that it never invents a field (`model/ir.ts`). (c) loses the
+     key, group and timeout typed before the limit, and makes "no limit" and "limit being typed" one state. A draft is
+     saved even when it does not validate, so (b) costs no work, and publication is refused until the policy is whole.
+  2. *What the Studio checks itself.* Only what the server refuses, with the server's bounds
+     (`crates/domain/src/workflow/flow_control.rs`, `crates/infra-ir/src/flow_control.rs`): `limit` a whole number from
+     1 to 10,000 for a concurrency limit and to the window's ceiling for a rate limit (100 a second, 6,000 a minute,
+     10,000 an hour); `per` one of `second`, `minute`, `hour`; `group` `^[a-z][a-z0-9.-]{0,63}$`; `queueTimeoutMs` a
+     whole number from 1 to 86,400,000; `key` from 1 to 1,024 bytes. What a key may read (`input` at the top level;
+     `input`, `steps`, `state` on a step; never `run`, decision D022-081) needs the platform's expression compiler, so it
+     is said in the hint and checked by the platform's validation, not guessed by a second parser in the browser. A namespace ceiling lowers a
+     limit at admission and never refuses a publication, so it is not a check either.
+  3. *The order of the members.* The policy is written with its members in alphabetical order (`group`, `key`,
+     `limit`, `per`, `queueTimeoutMs`), the canonical form the shared fixtures and the SDKs' canonical JSON use, so the
+     Studio's policy is byte-identical to the fixtures' text and not only equal after sorting. Members the Studio does not
+     know (a newer platform's) are kept after them, untouched, and said to be kept (FR-007-010); a policy that is not an
+     object is shown unreadable, kept as it is, and only removable.
+  4. *Where a run's gates are shown.* Options: a section of the selected step's panel, a column of the runs list, or
+     the facts of the run's header. Chosen: **the header** (`features/runs/RunGates.tsx`), because `Run.concurrency` and
+     `Run.rateLimit` are the run's own state and are what an operator opens a waiting run to see; the position and the
+     estimate come from the single-run read only (FR-022-048), which the run page already makes, and the runs list does
+     not compute them. A step waiting for a gate is said by its waiting words (`waitingOn` `rate_limit` or
+     `concurrency`) wherever a step's waiting state is shown already (the step panel, the table, the card's name). The
+     estimate is called an estimate and never a promise; an absent estimate is said absent, with the reasons the contract
+     gives, and never replaced by a computed one.
+  5. *A hidden key label.* `keyLabel` `null` is said in words ("hidden: you may not reveal personal data in this
+     namespace") rather than left blank, so an operator knows the platform withheld it and does not read an empty cell
+     as "no key"; in the listings the instants of such a key are said to be cut to the minute, as the contract says
+     they are.
+  6. *Unknown values.* A state, pool, scope or window this Studio does not know is shown as unsupported, with the value
+     clipped, never mapped to a known word and never a crash (FR-007-010); a gate value that is not an object is shown
+     as unsupported too.
+  7. *Where the keys are listed.* Options: a page of its own, a tab of the Operations page, or two panels of it.
+     Chosen: **one panel of the Operations page with the two listings** (`features/operations/FlowControlKeysPanel.tsx`):
+     both need `ops:read`, which the page already checks, they answer one question (which queue is stuck, for how long),
+     and a page of their own would add a route and a menu entry for two tables. Each listing is a table with a caption,
+     column headers and the group as each row's header, pages through `nextCursor` with "Load more", and filters by
+     group; the group filter is sent as typed and the platform's `422` is shown, so the Studio keeps no second copy of
+     the derived-group rule. The namespace's `queuedRuns` is shown once per listing, as the platform reads it.
 
 ### Decisions of the design of the rest of 022 for release 0.3.0 (2026-11-24)
 
@@ -2301,25 +2889,25 @@ delegate (OD-2026-11-24-4).
 | G1197 | The collection- and loop-finish paths (`crates/infra-postgres/src/primitives.rs`, `loop_progress.rs`, `crates/scheduler/src/passes.rs`) write their successor's step row directly: a gated root successor of a `forEach` or a loop is refused there (`RuntimeNotIntegrated`, fail closed; the finish is retried) instead of being decided. Corrected 2026-11-19: the first text said they refused an unexpected evaluation, which was true only for an `end` successor. *2026-11-24 (decision D022-207): the two finish paths are routed through the reducer by task T022-207, which closes this gap; until then publication refuses `cache`, `earlyReturn` and `onFailure` with a `forEach`, `while` or `repeatUntil` node (task T022-206).* | Open; T022-207 |
 | G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* *Closed 2026-11-20 (D022-057): the ring is the file `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` in both binaries (a switch on without it does not start); both list `flow-control-concurrency-v1` with the switch and the ring; the admission point admits a gate a process serves. Open: the rate gate's listing (T022-072, T022-074).* | Closed for the concurrency gate; rate with T022-074 |
 | G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* *2026-11-20 (D022-057): the concurrency half is met: run waiters per key are bounded at admission (`CONCURRENCY_QUEUE_FULL` under the key's lock, `run_admission::*`) and `queued_runs` is exact (D022-051), so the concurrency capability is listed; the rate half (T022-077) stays open and the rate capability unlisted.* *2026-11-20 (D022-064): the rate half is met: `rate_limit_live_keys` and the per-window limits apply at readiness and admission, and the rate capability is listed.* | Closed (D022-057, D022-064) |
-| G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. *Partly closed 2026-11-19 (D022-045): decisions, grants, timeouts, dequeues and returns of the step scope are counted after commit and spanned by group. Open: the wait histograms and waiter gauges, the grant-lag and unleased-grant series and their alerts (T022-082).* | Open; T022-082, T022-074, T022-104 |
+| G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. *Partly closed 2026-11-19 (D022-045): decisions, grants, timeouts, dequeues and returns of the step scope are counted after commit and spanned by group. Open: the wait histograms and waiter gauges, the grant-lag and unleased-grant series and their alerts (T022-082).* *Built 2026-11-25 (D022-083): the wait histograms and the grant lag at the grant from the queue, the waiter and unleased-grant gauges by the monitor, and the four alerts.* | Closed for the telemetry (T022-082, not ticked until its review); T022-074, T022-104 |
 | G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most the new keys the others create (their number minus one when each creates one key). *Accepted 2026-11-19 by the owner (O1172 (a), OD-2026-11-19-4) for 0.3.0; the bound is documented in `docs/runbooks/flow-control.md` (D022-047). The exact bound is in keys when a round creates several (O1173), accepted 2026-11-20 (OD-2026-11-20-3).* *Extended 2026-11-20 by the owner to `rate_limit_live_keys` (OD-2026-11-20-11, "Yes, extend it"; D022-066 item 6), which closes the security reviews' suspicion 4.* | Accepted (OD-2026-11-19-4; in keys, OD-2026-11-20-3; rate keys, OD-2026-11-20-11) |
 | G022-003 | A rate-limit grant's lease instant is recorded by a pass that is not built (transaction T23, T022-074): a leased grant counts for ever, so a rate key that reached its limit frees only by a returned slot or a dequeue, and its window never rests until an age-out instant. T022-097's rate half rests on it. *Closed 2026-11-20 (D022-064 items 4 and 5): the lease pass records the instant; the rest rule waits for the age-out of every waiter's window.* | Closed; T022-074 |
 | G022-004 | `verify_run` does not check that a `wait_timed_out` comes at or after the deadline its `*.queued` journaled; the reservation counts an eligible waiter ahead without its own position (conservative). | Open |
-| G022-005 | An orphaned waiter (of a run that ended) is logged and counted (`outcome="orphan"`), not alerted; the runbook does not list the `gate_grant` and `gate_timeout` action kinds. | Open; T022-061, T022-082 |
+| G022-005 | An orphaned waiter (of a run that ended) is logged and counted (`outcome="orphan"`), not alerted; the runbook does not list the `gate_grant` and `gate_timeout` action kinds. *2026-11-25 (D022-083): alert `FLOW_CONTROL_WAITER_ORPHANED` (runbook section 14).* | Alert built (T022-082); the action kinds with T022-061 |
 | G022-006 | The digest-key commands (activation, force, listing) are SQL functions with no audited API, CLI, span or metric (NFR-022-005, constitution VI; security review of 2026-11-20, finding 4); the force's history is append-only only for roles that may not drop its trigger, and a deployment where operators share the schema owner's login records whatever name they type and can retire a version by a direct `UPDATE` with no record (finding 5). The runbook tells operators to use their own login and never to edit the table by hand. | Open; T022-061, T022-082; a dedicated operator role |
 | G022-007 | FR-022-021 says "pausing a holder MUST NOT release its permit", and FR-022-019 counts a granted, unleased step as a holder, while FR-022-046 says a pause returns the permit and slot of a granted, unleased step: the approved texts disagree for that case; the build follows FR-022-046 (D022-048). T022-025's "pause keeps permit" holds for a leased step and a run holder. `data-model.md` ("Steps and their gates", invariant 11) does not say that a step a pause gave back waits with no waiter row. Revised when the approved texts are next re-approved. | Open; re-approval of the texts |
 | G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 (a) accepted without option (c) (OD-2026-11-20-2), so the deadline rule is a later decision |
 | G022-009 | A start delay or a reset of a definition that gates its start is refused `BINARY_CAPABILITY_MISSING` (D022-049): the plan says the gate is decided at the delay's release, and a reset takes a fresh permit or is refused `CONCURRENCY_PERMIT_UNAVAILABLE` (never queues); neither is built. A child node whose run's start is refused (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`) is retried by the next pass instead of failing its node with the typed retryable code (T022-102). *Closed in part 2026-11-20 (T022-064): the delay is decided at its release (D022-052) and the reset takes a fresh permit or is refused (D022-053). Open: the child node's typed code (T022-102).* | Open; T022-102 |
-| G022-010 | A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. *2026-11-20 (T022-064):* an Update-with-Start is not affected (it changes the declared state, which a queued run has: `run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`); a Signal-with-Start keeps the typed refusal with nothing created (`run_creators::a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing`). The hold-and-deliver needs a durable held signal, its delivery in the grant's transaction and the replay of its receipt: follow-up T022-109. | Open; T022-109 |
+| G022-010 | *Closed 2026-11-25 (D022-087, T022-109): the signal is held with the queued run and delivered by the grant.* A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review Major 2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. *2026-11-20 (T022-064):* an Update-with-Start is not affected (it changes the declared state, which a queued run has: `run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`); a Signal-with-Start keeps the typed refusal with nothing created (`run_creators::a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing`). The hold-and-deliver needs a durable held signal, its delivery in the grant's transaction and the replay of its receipt: follow-up T022-109. | Built (D022-087); closed when T022-109 is ticked |
 | G022-011 | `queued_runs` was believed counted without a lock (D022-050 item 3). *Closed 2026-11-20 (D022-051):* the count is exact. Only an admission adds a run waiter, every admission holds the namespace's active-run quota lock from before its runs row to its commit, and the start's gate counts after it in a fresh READ COMMITTED statement; proved by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (the lock held by the test, both starts observed waiting on it, then exactly one queued and one refused), red under two hand mutations (the lock removed; the ceiling ignored). The merge blocker the owner set on it is met. T022-105's counter rows remain for the cost of the count (a scan of the namespace's run waiters, at most the ceiling) and its privileges. | Closed (exactness); T022-105 open for the counter rows |
 | G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review Major 1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* *Closed 2026-11-20 (D022-064 item 2): `gates_of` and `decide_filed` serve both levels and both gates.* | Closed; T022-072 |
 | G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |
-| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). *2026-11-20 (D022-067 item 8):* `getRun`'s `rateLimit.position` is another surface of the same class (how many runs of the key are ahead); the estimate is withheld from such callers. *2026-11-21 (T022-086 security re-review, nit):* one bit more of the same class, a key's fullness: the synchronous `409` of a reset refused `RATE_LIMIT_SLOT_UNAVAILABLE` or `CONCURRENCY_PERMIT_UNAVAILABLE`, and the `failureReason` of the reset register (`run_resets.failure_reason`), which shows it afterwards to anyone who can read the entry; no code change. | Open; T022-111, a release item with T022-104 |
-| G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. | Open; release gate, T022-104 |
+| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). *2026-11-20 (D022-067 item 8):* `getRun`'s `rateLimit.position` is another surface of the same class (how many runs of the key are ahead); the estimate is withheld from such callers. *2026-11-21 (T022-086 security re-review, nit):* one bit more of the same class, a key's fullness: the synchronous `409` of a reset refused `RATE_LIMIT_SLOT_UNAVAILABLE` or `CONCURRENCY_PERMIT_UNAVAILABLE`, and the `failureReason` of the reset register (`run_resets.failure_reason`), which shows it afterwards to anyone who can read the entry; no code change. *Built 2026-11-25 (D022-086): a caller without the reveal right reads one row per group in both listings.* | Open until T022-111 is ticked; a release item with T022-104 |
+| G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. *Built 2026-11-25 (D022-085): `FLOW_CONTROL_KEY_SECRET` refused at publication, `FLOW_CONTROL_KEY_PII` warned, a run's labels per the level its key reads.* | Open until T022-104 is ticked; release gate |
 | G022-016 | A reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` (D022-064 item 7): `RATE_LIMIT_SLOT_UNAVAILABLE` (018's code, G1181) and the reset rules of the `rate_limit.*` events land with T022-086. The refusal is retryable and no process of this build lifts it, so a pending reset of such a run is retried until it is cancelled: the runbook forbids production activation before it (D022-066 item 5), and `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built` pins it. *Built 2026-11-21 (T022-086, D022-069):* a reset takes a fresh slot right after `run.reset` or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first, and the five `rate_limit.*` events have the rules of `contracts/journal-events.md`; the interim refusal and its test are gone. *Closed 2026-11-21:* T022-086 ticked after its re-review (three reviewers, 0 Blockers, 0 Majors). | Closed (T022-086) |
 | G022-017 | The purge keeps a grant for its window row's longest period seen (`max_period_ms`) plus a minute: an acquirer that later declares a longer window on the same key (a `RATE_LIMIT_MISMATCH` warned at publication) does not count the grants purged before it arrived, and may be admitted up to their number early in its first window. | Open; documented in the runbook |
 | G022-018 | The grant purge visits keys in no order, without key-shard partitioning or an index on the lease instant (a full scan of `rate_limit_grants` a call): under steady per-second traffic on more keys than it visits per housekeeping its backlog grows (reviews of 2026-11-20, architecture Major 5). *2026-11-20 (D022-066 item 1):* the rows of a namespace are bounded by its `rate_limit_live_keys` again, and a decision that would be refused reclaims its own namespace's purgeable windows of at most 64 grants first, so only a window of more grants waits for this purge. Open: the order, the shards, the index, a time budget, an `outcome="failed"` and an oldest-purgeable-age gauge; a call stops at the first round that deleted nothing, which a round of keys all held by others also is (re-review correctness minor 3). | Open; production gate (runbook section 6); T022-062, T022-089 |
-| G022-019 | A reset with the strategy `CANCEL_SOURCE` of a rate-limited source whose key's window is full cancels its source and then fails `RATE_LIMIT_SLOT_UNAVAILABLE`, with no run replacing it (D022-069 items 3 and 8; reviews of 2026-11-21, architecture Major 1, security minor; re-review architecture minor C). The runbooks warn and advise `REQUIRE_TERMINAL`; the two contracts say so. Task T022-114 builds the advisory refusal at the request, or a warning in the reset preview. | Open; not a production gate (D022-069 item 8); T022-114 |
+| G022-019 | A reset with the strategy `CANCEL_SOURCE` of a rate-limited source whose key's window is full cancels its source and then fails `RATE_LIMIT_SLOT_UNAVAILABLE`, with no run replacing it (D022-069 items 3 and 8; reviews of 2026-11-21, architecture Major 1, security minor; re-review architecture minor C). The runbooks warn and advise `REQUIRE_TERMINAL`; the two contracts say so. Task T022-114 builds the advisory refusal at the request, or a warning in the reset preview. *Built 2026-11-25 (decision D022-079):* the request is refused `RATE_LIMIT_SLOT_UNAVAILABLE` before the source is cancelled when the key's window is full as it arrives (advisory: the window can still fill before the source ends). | Open until T022-114 is ticked; not a production gate (D022-069 item 8) |
 | G022-020 | A namespace's `concurrency_limit` lowered while runs are queued for a permit: the grant routine compares a queued waiter with the limit filed at its admission, as the rate gate did before D022-071; the specification's edge case speaks of a new version's lower limit only (`spec.md`, US02 edge cases). Whether a lowered concurrency ceiling applies to queued waiters at once is a product question for the coordinator (OD-2026-11-20-6) before it is built. *Closed 2026-11-21 (decision D022-074):* the grant from the queue evaluates a permit waiter, and a waiter ahead, against the lower of its filed limit and the current `concurrency_limit`; held permits are never revoked; `lifecycle::a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit`. | Closed; D022-074 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |

@@ -54,6 +54,16 @@ pub const DEFAULT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 /// without a limit the sum of many individually allowed outputs would be copied into every task.
 pub const MAX_RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Why a held signal was dropped at the grant (decision D022-087 item 3): no step waited for it.
+pub const HELD_SIGNAL_NOT_WAITING: &str = "NOT_WAITING_AT_GRANT";
+/// Why a held signal was dropped at the grant: the run's retained output would pass its bound.
+pub const HELD_SIGNAL_OUTPUT_BOUND: &str = "OUTPUT_BOUND";
+/// Why a held signal was dropped with its queued run: the run ended before its start was granted (item 4).
+pub const HELD_SIGNAL_RUN_ENDED: &str = "RUN_ENDED";
+/// Why a held signal was dropped at the grant: its delivery failed for a reason that does not clear on its own, so the
+/// start was granted without it (decision D022-121).
+pub const HELD_SIGNAL_DELIVERY_FAILED: &str = "DELIVERY_FAILED";
+
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
 pub const MAX_CHILD_DEPTH: u8 = 8;
@@ -927,6 +937,28 @@ pub trait PathExecutionTx: Send {
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
+/// The signal of a Signal-with-Start whose new run queued for its start (feature 022, T022-109, decision D022-087): held
+/// with the run until the grant of its start delivers it as `signalRun` would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldSignal {
+    pub name: String,
+    pub payload: Vec<u8>,
+    /// The subject that asked for it, and its trace: the delivery is audited as theirs.
+    pub actor: String,
+    pub trace_id: Option<String>,
+}
+
+/// What the grant of a queued start did with the signal held with it (decision D022-087 item 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldDelivery {
+    /// No signal was held.
+    None,
+    /// Delivered to these steps.
+    Delivered(Vec<NodeId>),
+    /// Dropped with an audit record, for this reason.
+    Dropped(&'static str),
+}
+
 /// Who caused the events of one transaction (stored with every journal entry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
@@ -1096,22 +1128,24 @@ pub trait RunTx: Send {
     }
 
     /// Feature 022 (the grant routine T26, T022-097; ADR-0089 decisions 3 and 4): under one sorted lock of the keys of
-    /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether every gate it waits for admits it now by the
-    /// reservation rule, and if so its grants, as the events to journal, with their holder and grant rows written and its
-    /// waiter rows removed. `None` when a gate refuses it, or its queue deadline passed (the timeout routine's). The
-    /// key's grants are counted as of `counted_at`, the instant the pass selected its key (at or before every decision of
-    /// the pass): within one pass no grant ages out, so a waiter is never granted after a younger one that the same rule
-    /// refused earlier in that pass (strict admission order, decision D022-073 item 2); counting more grants than the
-    /// decision's own instant would is never an over-grant. The queue deadline is checked at the decision's instant. The
-    /// run's state is not changed; the domain applies the events. An adapter that does not run the gate refuses.
+    /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether
+    /// every gate it waits for admits it now by the reservation rule, and if so its grants, as the events to journal,
+    /// with their holder and grant rows written and its waiter rows removed. Refused when a gate refuses it, or its queue
+    /// deadline passed (the timeout routine's). The key's grants are counted as of `order.counted_at`, the instant the
+    /// pass selected its key (at or before every decision of the pass): within one pass no grant ages out, so a waiter is
+    /// never granted after a younger one that the same rule refused earlier in that pass (strict admission order,
+    /// decision D022-073 item 2); counting more grants than the decision's own instant would is never an over-grant. A
+    /// waiter that a refusal of the pass on its key holds back is refused (`order.refused`, decision D022-078 item 2),
+    /// and a refusal by the pass's own key reports its limit and window. The queue deadline is checked at the decision's
+    /// instant. The run's state is not changed; the domain applies the events. An adapter that does not run the gate
+    /// refuses.
     fn grant_queued_step<'a>(
         &'a mut self,
         _node: Option<&'a NodeId>,
         _attempt: u32,
-        _counted_at: time::OffsetDateTime,
-    ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
-    + Send
-    + 'a {
+        _order: crate::flow_control::PassOrder<'a>,
+    ) -> impl Future<Output = Result<crate::flow_control::QueueDecision, StoreError>> + Send + 'a
+    {
         async {
             Err(StoreError::FlowControl(
                 crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
@@ -1189,6 +1223,42 @@ pub trait RunTx: Send {
         async {
             Err(StoreError::Internal {
                 detail: "this adapter cannot keep the receipt of a start served by a holder".into(),
+            })
+        }
+    }
+
+    /// Holds `signal` with the run of this transaction, whose start queued (feature 022, T022-109, decision D022-087),
+    /// and keeps the receipts that answer a retry of the request: `receipt` (nothing delivered) and `marker` (held). An
+    /// adapter that cannot refuses.
+    fn hold_start_signal<'a>(
+        &'a mut self,
+        _signal: &'a HeldSignal,
+        _receipt: &'a Idempotency,
+        _marker: &'a Idempotency,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot hold a signal".into(),
+            })
+        }
+    }
+
+    /// Takes the signal held with the run of this transaction, deleting its row, or `None` (decision D022-087 item 3).
+    fn take_held_signal(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<HeldSignal>, StoreError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// Records that a held signal taken by [`Self::take_held_signal`] was dropped, and why (`run.signal_dropped`).
+    fn audit_held_signal_dropped<'a>(
+        &'a mut self,
+        _signal: &'a HeldSignal,
+        _reason: &'static str,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot audit a held signal".into(),
             })
         }
     }
@@ -1756,6 +1826,10 @@ pub trait RunTx: Send {
 
     /// Commits. Dropping the transaction instead rolls everything back.
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Rolls everything back and waits until it is done, so that the run's lock is released when this returns (decision
+    /// D022-122): a dropped transaction is rolled back later, by the pool, in a task of its own.
+    fn rollback(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 fn root_events_for_legacy_adapter(
@@ -2107,6 +2181,134 @@ impl<E: ExpressionEvaluator> Engine<E> {
     /// # Errors
     /// The adapter's refusals (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`, `BINARY_CAPABILITY_MISSING`). A gated start
     /// with a start delay decides nothing here: its release asks for its gates (D022-052).
+    /// Delivers the signal held with the run of `tx`, whose start was just granted in it (feature 022, T022-109,
+    /// decision D022-087 item 3), exactly as `signalRun` would: to every step that waits for it, the payload the step's
+    /// output, audited `run.signalled` as the caller who asked for it. When no step waits for it now, or the run's
+    /// retained output would pass its bound, it is dropped with an audit record (`run.signal_dropped`). Nothing for a
+    /// run without a held signal.
+    ///
+    /// # Errors
+    /// The store's and the run's failures.
+    pub async fn deliver_held_signal<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+    ) -> Result<HeldDelivery, EngineError> {
+        let Some(signal) = tx.take_held_signal().await? else {
+            return Ok(HeldDelivery::None);
+        };
+        let targets: Vec<NodeId> = {
+            let (def, state) = tx.parts();
+            state
+                .steps()
+                .filter(|(_, step)| {
+                    step.status() == sagat_domain::execution::StepStatus::Waiting
+                        && matches!(
+                            step.waiting_on(),
+                            Some(sagat_domain::execution::WaitingOn::Event { .. })
+                        )
+                })
+                .filter(|(node, _)| {
+                    matches!(
+                        def.node(node).map(sagat_domain::workflow::Node::kind),
+                        Some(sagat_domain::workflow::NodeKind::WaitEvent { event_type, .. })
+                            if event_type.as_str() == signal.name
+                    )
+                })
+                .map(|(node, _)| node.clone())
+                .collect()
+        };
+        if targets.is_empty() {
+            tx.audit_held_signal_dropped(&signal, HELD_SIGNAL_NOT_WAITING)
+                .await?;
+            return Ok(HeldDelivery::Dropped(HELD_SIGNAL_NOT_WAITING));
+        }
+        let retained = tx.logical_output_bytes().await?;
+        let additional = u64::try_from(signal.payload.len())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::try_from(targets.len()).unwrap_or(u64::MAX));
+        if retained.saturating_add(additional) > MAX_RUN_OUTPUT_BYTES as u64 {
+            tx.audit_held_signal_dropped(&signal, HELD_SIGNAL_OUTPUT_BOUND)
+                .await?;
+            return Ok(HeldDelivery::Dropped(HELD_SIGNAL_OUTPUT_BOUND));
+        }
+        let (tenant, run) = (tx.info().tenant_id, tx.info().run_id);
+        let mut effects = Effects::by(
+            Actor::Principal(signal.actor.clone()),
+            signal.trace_id.clone(),
+        );
+        let reason = format!(
+            "signal '{}' held with the queued start",
+            signal.name.chars().take(64).collect::<String>()
+        );
+        let now = tx.now();
+        // audited as the caller's; a subject the identity rules no longer read (it was checked when the request was
+        // admitted) is audited as the engine's, with the same reason, rather than leaving the run without its grant
+        effects.audit = Some(
+            match sagat_domain::identity::Subject::parse(&signal.actor) {
+                Ok(subject) => AuditRecord::restore(
+                    sagat_domain::audit::AuditId::generate(),
+                    tenant,
+                    subject,
+                    sagat_domain::audit::AuditAction::RunSignalled,
+                    sagat_domain::audit::ResourceType::Run,
+                    run.to_string(),
+                    Some(reason),
+                    signal.trace_id.clone(),
+                    now,
+                ),
+                Err(_) => AuditRecord::engine(
+                    tenant,
+                    sagat_domain::audit::AuditAction::RunSignalled,
+                    sagat_domain::audit::ResourceType::Run,
+                    run.to_string(),
+                    reason,
+                    signal.trace_id.clone(),
+                    now,
+                ),
+            },
+        );
+        effects.outputs = targets
+            .iter()
+            .map(|node| (node.clone(), signal.payload.clone()))
+            .collect();
+        let woken = targets.clone();
+        self.run(tx, effects, move |def, state, now| {
+            let mut events = Vec::new();
+            let mut pending = None;
+            for node in &targets {
+                let progress = sagat_domain::execution::satisfy_wait(
+                    def,
+                    state,
+                    node,
+                    now,
+                    Some(sagat_domain::execution::WaitVia::SignalWithStart),
+                )?;
+                events.extend(progress.events);
+                pending = pending.or(progress.pending);
+            }
+            Ok(((), Progress { events, pending }))
+        })
+        .await?;
+        Ok(HeldDelivery::Delivered(woken))
+    }
+
+    /// Drops the signal held with the run of `tx`, with its audit record for `reason`, without delivering it: the grant
+    /// of a queued start whose delivery failed in an earlier transaction (decision D022-121). Whether a signal was held.
+    ///
+    /// # Errors
+    /// The store's failures.
+    pub async fn drop_held_signal<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        reason: &'static str,
+    ) -> Result<bool, EngineError> {
+        let Some(signal) = tx.take_held_signal().await? else {
+            return Ok(false);
+        };
+        tx.audit_held_signal_dropped(&signal, reason).await?;
+        Ok(true)
+    }
+
     pub async fn start<Tx: RunTx>(
         &self,
         tx: &mut Tx,

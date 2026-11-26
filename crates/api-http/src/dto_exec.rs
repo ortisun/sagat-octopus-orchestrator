@@ -308,6 +308,8 @@ pub struct SignalWithStartResultBody {
     pub run_id: String,
     pub started: bool,
     pub delivered_to: Vec<String>,
+    /// The new run's start queued and the signal is held with it (feature 022, decision D022-087).
+    pub held: bool,
 }
 
 /// `POST /runs/update-with-start`: a start with a business identifier, and the declared Update that goes

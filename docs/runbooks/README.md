@@ -15,6 +15,7 @@ first, see the [quickstarts](../quickstarts/README.md).
 | [scripts.md](scripts.md) | Scripts and the sandbox runner (feature 005) |
 | [workflow-primitives.md](workflow-primitives.md) | Workflow primitives: operating and validating the current build (feature 014) |
 | [api-rate-admission.md](api-rate-admission.md) | How each namespace's API calls are admitted against a durable rate limit |
+| [step-logs.md](step-logs.md) | Step logs per run: capture, the four quota resources and their sizing, the busy loss, the quota leases' top-up and wait slots, poolers, the 1 × 16 cost, and the incident path (design 041) |
 
 ## Schedules and run operations
 

@@ -50,6 +50,9 @@ struct Pending {
     group: sagat_domain::workflow::ResolvedGroup,
     /// The effective limit: the lower of the declaration and the namespace's ceiling (FR-022-034, FR-022-047).
     limit: u32,
+    /// The declaration the run's version pins, before any ceiling: what bounds the waiter, under the namespace's current
+    /// ceiling, at every later decision (decisions D022-076 item 7, D022-078 item 1).
+    pinned: u32,
     /// The window of a rate limit, `None` for a concurrency permit.
     per: Option<sagat_domain::workflow::RatePeriod>,
     /// The effective queue timeout.
@@ -127,7 +130,7 @@ struct KeyCount {
     taken: i64,
     waiters: i64,
     /// Whether the key has an eligible waiter (decision D022-073): read only when it has waiters and room
-    /// ([`PgRunTx::has_eligible_waiter`]), `None` until then.
+    /// ([`PgRunTx::eligible_waiters`]), `None` until then.
     eligible: Option<bool>,
 }
 
@@ -268,6 +271,7 @@ impl PgRunTx {
                     GateKind::RateLimit,
                     policy.group(),
                     ceilings.rate_limit(policy),
+                    policy.limit(),
                     Some(policy.per()),
                     policy.queue_timeout(),
                     rate,
@@ -278,6 +282,7 @@ impl PgRunTx {
                     GateKind::Concurrency,
                     policy.group(),
                     ceilings.concurrency_limit(policy),
+                    policy.limit(),
                     None,
                     policy.queue_timeout(),
                     concurrency,
@@ -285,7 +290,8 @@ impl PgRunTx {
             }),
         ];
         let mut gates = Vec::new();
-        for (kind, group, limit, per, timeout, canonical) in declared.into_iter().flatten() {
+        for (kind, group, limit, pinned, per, timeout, canonical) in declared.into_iter().flatten()
+        {
             let canonical = canonical.ok_or_else(|| StoreError::Internal {
                 detail: "a declared gate came without its key".into(),
             })?;
@@ -315,6 +321,7 @@ impl PgRunTx {
                     kind,
                     group,
                     limit,
+                    pinned,
                     per,
                     timeout: ceilings.queue_timeout(timeout),
                     filed: None,
@@ -357,6 +364,10 @@ impl PgRunTx {
             .map_err(store_error)?;
         let mut counts: BTreeMap<CountKey, KeyCount> = BTreeMap::new();
         let mut events = Vec::new();
+        // a start that may not queue (a reset, a pending reset) is decided by the reservation rule, not by strict order:
+        // it is refused only when its key's counted holders or grants plus the eligible waiters leave it no room
+        // (FR-022-018, FR-022-041; decision D022-076 item 3)
+        let may_queue = start.is_none_or(|rules| rules.cause.may_queue());
         for ((node, _), gates) in by_target {
             // the gates that do not admit the target now, in the order of `gates` (rate first): a full key, or one with an
             // eligible waiter, which is ahead of a new arrival (strict admission order, decision D022-073); and whether
@@ -367,11 +378,18 @@ impl PgRunTx {
                 let count = self.key_count(&mut counts, gate, now).await?;
                 let has_room = count.taken < i64::from(gate.limit);
                 room.push(has_room);
-                if !has_room
-                    || self
-                        .eligible_ahead(&mut counts, gate, now, ceilings)
+                let refuses = if !has_room {
+                    true
+                } else if may_queue {
+                    self.eligible_ahead(&mut counts, gate, now, ceilings)
                         .await?
-                {
+                } else {
+                    let reserved = self
+                        .reserved_for_waiters(&counts, gate, now, ceilings)
+                        .await?;
+                    count.taken + reserved >= i64::from(gate.limit)
+                };
+                if refuses {
                     refusing.push(gate.kind);
                 }
             }
@@ -784,62 +802,97 @@ impl PgRunTx {
         if let Some(eligible) = count.eligible {
             return Ok(eligible);
         }
-        let eligible = self.has_eligible_waiter(gate, filed, now, ceilings).await?;
+        let eligible = self.eligible_waiters(gate, filed, now, ceilings, 1).await? > 0;
         if let Some(entry) = counts.get_mut(&slot) {
             entry.eligible = Some(eligible);
         }
         Ok(eligible)
     }
 
-    /// Whether the key of `gate` has an eligible waiter (decision D022-073; ADR-0089 decision 4): not past its deadline at
-    /// `now`, of a live run that is not paused, and below its own window's count by the lower of its filed limit and the
-    /// namespace's current ceiling (decisions D022-071, D022-074, D022-075 item 4). Read once per key and period in this
-    /// transaction, only when the key has waiters and room for `gate`; the key row is locked. The waiters are read in queue
-    /// order up to the first eligible one.
-    async fn has_eligible_waiter(
+    /// How many eligible waiters of `gate`'s key a start that may not queue leaves room for (decision D022-076 item 3; the
+    /// reservation rule of ADR-0089 decision 4): none to read for a key without waiters; else counted up to the start's
+    /// own limit, which is all that can matter.
+    async fn reserved_for_waiters(
+        &mut self,
+        counts: &BTreeMap<CountKey, KeyCount>,
+        gate: &Pending,
+        now: OffsetDateTime,
+        ceilings: &sagat_domain::workflow::FlowControlCeilings,
+    ) -> Result<i64, StoreError> {
+        let filed = gate.filed.as_ref().ok_or_else(|| StoreError::Internal {
+            detail: "a gate's key was not filed".into(),
+        })?;
+        let waiters = counts
+            .get(&count_key(gate, filed))
+            .map_or(0, |count| count.waiters);
+        if waiters == 0 {
+            return Ok(0);
+        }
+        self.eligible_waiters(gate, filed, now, ceilings, i64::from(gate.limit))
+            .await
+    }
+
+    /// How many eligible waiters the key of `gate` has, at most `up_to` (decision D022-073; ADR-0089 decision 4): not past
+    /// their deadline at `now`, of a live run that is not paused, and below their own window's count by the lower of their
+    /// declaration and the namespace's current ceiling (decisions D022-071, D022-074, D022-075 item 4, D022-076 item 7).
+    /// Read only when the key has waiters and room for `gate`; the key row is locked. The waiters are read in queue order
+    /// up to `up_to` eligible ones.
+    async fn eligible_waiters(
         &mut self,
         gate: &Pending,
         filed: &FiledKey,
         now: OffsetDateTime,
         ceilings: &sagat_domain::workflow::FlowControlCeilings,
-    ) -> Result<bool, StoreError> {
+        up_to: i64,
+    ) -> Result<i64, StoreError> {
         let statement = match gate.kind {
             GateKind::Concurrency => {
-                "SELECT EXISTS (SELECT 1 FROM concurrency_waiters w \
+                concat!(
+                    "SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
                                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                    AND w.permit_scope = $6 AND w.group_name = $4 AND w.key_digest = $5 \
-                                   AND w.deadline_at > $7 AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
-                                   AND least(w.declared_limit, $11::bigint) > \
+                                   AND ",
+                    eligible_gate_waiter!("w", "r", "$7"),
+                    " \
+                                   AND least(coalesce(w.pinned_limit, w.declared_limit), $11::bigint) > \
                                        (SELECT s.holders FROM concurrency_semaphores s \
                                          WHERE s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id \
                                            AND s.pool = w.pool AND s.permit_scope = w.permit_scope \
                                            AND s.group_name = w.group_name AND s.key_digest = w.key_digest) \
-                                   AND $8::bigint >= 0 AND $9::bigint >= 0 AND $10::bigint >= 0)"
+                                   AND $8::bigint >= 0 AND $9::bigint >= 0 AND $10::bigint >= 0 \
+                                 ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $12) eligible"
+                )
             }
             // each waiter counts the key's grants over its own window (D022-009): the count is taken once for each window
             // length up to the longest the window row has seen, which is at least every waiter's
             GateKind::RateLimit => {
-                "WITH counted AS ( \
+                concat!(
+                    "WITH counted AS ( \
                    SELECT p.ms, (SELECT count(*) FROM rate_limit_grants g \
                                   WHERE g.tenant_id = k.tenant_id AND g.namespace_id = k.namespace_id \
                                     AND g.pool = k.pool AND g.limit_scope = k.limit_scope \
                                     AND g.group_name = k.group_name AND g.key_digest = k.key_digest \
                                     AND (g.leased_at IS NULL \
                                          OR g.leased_at > $7 - make_interval(secs => p.ms / 1000.0))) AS n \
-                     FROM (VALUES (1000), (60000), (3600000)) p(ms), rate_limit_windows k \
+                     FROM (SELECT 1000 AS ms UNION ALL SELECT 60000 UNION ALL SELECT 3600000) p, rate_limit_windows k \
                     WHERE k.tenant_id = $1 AND k.namespace_id = $2 AND k.pool = $3 AND k.limit_scope = $6 \
                       AND k.group_name = $4 AND k.key_digest = $5 AND p.ms <= k.max_period_ms) \
-                 SELECT EXISTS (SELECT 1 FROM rate_limit_waiters w \
+                 SELECT count(*) FROM (SELECT 1 FROM rate_limit_waiters w \
                                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                   LEFT JOIN counted c ON c.ms = w.period_ms \
                                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                    AND w.limit_scope = $6 AND w.group_name = $4 AND w.key_digest = $5 \
-                                   AND w.deadline_at > $7 AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
-                                   AND least(w.declared_limit, CASE w.period_ms WHEN 1000 THEN $8::bigint \
+                                   AND ",
+                    eligible_gate_waiter!("w", "r", "$7"),
+                    " \
+                                   AND least(coalesce(w.pinned_limit, w.declared_limit), \
+                                             CASE w.period_ms WHEN 1000 THEN $8::bigint \
                                              WHEN 60000 THEN $9::bigint WHEN 3600000 THEN $10::bigint \
                                              ELSE w.declared_limit END) > coalesce(c.n, 0) \
-                                   AND $11::bigint >= 0)"
+                                   AND $11::bigint >= 0 \
+                                 ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $12) eligible"
+                )
             }
         };
         sqlx::query_scalar(statement)
@@ -863,6 +916,7 @@ impl PgRunTx {
                 sagat_domain::workflow::RatePeriod::Hour,
             ))
             .bind(super::gate_queue::concurrency_ceiling(Some(ceilings)))
+            .bind(up_to)
             .fetch_one(&mut *self.tx)
             .await
             .map_err(store_error)
@@ -1018,6 +1072,7 @@ impl PgRunTx {
     ) -> Result<GateChange, StoreError> {
         let attempt_column = i32::try_from(gate.attempt).map_err(|_| corrupt("attempt"))?;
         let limit = i32::try_from(gate.limit).map_err(|_| corrupt("declared limit"))?;
+        let pinned = i32::try_from(gate.pinned).map_err(|_| corrupt("declared limit"))?;
         let deadline_us = unix_micros(deadline)?;
         let level = gate.level();
         match (gate.kind, gate.per) {
@@ -1028,12 +1083,13 @@ impl PgRunTx {
                     &gate.group,
                     &filed.digest,
                     has_room,
+                    0,
                 )
                 .await?;
                 sqlx::query(
                     "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
-                     group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
-                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, $10, $11, run_shard($3))",
+                     group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard, pinned_limit) \
+                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, $10, $11, run_shard($3), $13)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1047,6 +1103,7 @@ impl PgRunTx {
                 .bind(now)
                 .bind(deadline)
                 .bind(level.as_str())
+                .bind(pinned)
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
@@ -1061,12 +1118,13 @@ impl PgRunTx {
                     &gate.group,
                     &filed.digest,
                     has_room,
+                    period_ms(gate),
                 )
                 .await?;
                 sqlx::query(
                     "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
-                     group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, $11, $12, run_shard($3))",
+                     group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard, pinned_limit) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, $11, $12, run_shard($3), $14)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1081,6 +1139,7 @@ impl PgRunTx {
                 .bind(now)
                 .bind(deadline)
                 .bind(level.as_str())
+                .bind(pinned)
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
@@ -1470,9 +1529,8 @@ impl PgRunTx {
 }
 
 impl PgRunTx {
-    /// A key gains a waiter: unless it is due already, it is due now (correctness review Major 1, 2026-11-19). The gate
-    /// counts every waiter of the key and the grant routine only the eligible ones, so a new waiter behind ineligible
-    /// ones may be grantable at once; the next pass decides, and rests the key if not (early, never late).
+    /// A key gains a waiter: its hint is set so that the next pass that may grant the waiter visits the key (correctness
+    /// review Major 1 of 2026-11-19; decision D022-076 items 1 and 2), early and never late.
     async fn key_due(
         &mut self,
         table: KeyTable,
@@ -1480,22 +1538,38 @@ impl PgRunTx {
         group: &sagat_domain::workflow::ResolvedGroup,
         digest: &[u8; 32],
         has_room: bool,
+        period_ms: i64,
     ) -> Result<(), StoreError> {
-        // a waiter queued only by admission order (its gate had room) can be granted by the next pass: a later hint (a
-        // window rested until a counted grant ages out) drops to now (decision D022-073 item 4); a waiter queued at a full
-        // key keeps the hint it found, so a full key is not visited every tick
+        // a waiter queued while its gate had room (behind an eligible waiter, strict order) can be granted by the next
+        // pass: the hint is written to the statement's instant whatever it was, so a pass in progress on the key, which
+        // listed its waiters before this one and rests the key only while its hint is the one it selected, keeps the key
+        // due (decision D022-076 item 1). A waiter queued at a full key: an absent hint becomes now; a semaphore keeps the
+        // hint it found (a release sets it); a window lowers it to the first instant a grant it counts for the new
+        // waiter's own window ages out of that window (an unleased grant from now: it frees by a return or a lease, each
+        // of which sets the hint), so a hint computed for a longer window never holds a shorter one back (item 2)
         let statement = match table {
             KeyTable::Semaphores => {
                 "UPDATE concurrency_semaphores SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
                   WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = $6 \
-                    AND group_name = $4 AND key_digest = $5 \
-                    AND (next_eligible_at IS NULL OR ($7 AND next_eligible_at > clock_timestamp()))"
+                    AND group_name = $4 AND key_digest = $5 AND ($7 OR next_eligible_at IS NULL) \
+                    AND $8::bigint >= 0"
             }
             KeyTable::Windows => {
-                "UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND limit_scope = $6 \
-                    AND group_name = $4 AND key_digest = $5 \
-                    AND (next_eligible_at IS NULL OR ($7 AND next_eligible_at > clock_timestamp()))"
+                "UPDATE rate_limit_windows w \
+                    SET next_eligible_at = CASE WHEN $7 OR w.next_eligible_at IS NULL THEN clock_timestamp() \
+                          ELSE least(w.next_eligible_at, \
+                                     (SELECT min(coalesce(g.leased_at, clock_timestamp()) \
+                                                 + make_interval(secs => $8::bigint / 1000.0)) \
+                                        FROM rate_limit_grants g \
+                                       WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                         AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                         AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                                         AND (g.leased_at IS NULL \
+                                              OR g.leased_at > clock_timestamp() \
+                                                               - make_interval(secs => $8::bigint / 1000.0)))) END, \
+                        updated_at = clock_timestamp() \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $6 \
+                    AND w.group_name = $4 AND w.key_digest = $5"
             }
         };
         sqlx::query(statement)
@@ -1506,6 +1580,7 @@ impl PgRunTx {
             .bind(digest.as_slice())
             .bind(level.as_str())
             .bind(has_room)
+            .bind(period_ms)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -1775,8 +1850,13 @@ pub(super) enum GateOutcome {
     /// Granted at once by the readiness gate.
     Granted,
     Queued,
-    /// Granted by the grant routine.
-    GrantedFromQueue,
+    /// Granted by the grant routine, with how long the waiter waited (from its queueing to its grant) and, for a slot of
+    /// the pass's own rate-limit key, the grant's lag (from the instant the key became due, or the waiter's queueing if
+    /// later, to the grant), both in microseconds of the database clock (T022-082; decision D022-083).
+    GrantedFromQueue {
+        waited_us: Option<i64>,
+        lag_us: Option<i64>,
+    },
     TimedOut,
     Dequeued,
     /// A permit released or an unleased slot returned.
@@ -1789,7 +1869,10 @@ impl GateOutcome {
             GateChange::ConcurrencyAcquired => Self::Granted,
             GateChange::RateGranted { from_queue, .. } => {
                 if from_queue {
-                    Self::GrantedFromQueue
+                    Self::GrantedFromQueue {
+                        waited_us: None,
+                        lag_us: None,
+                    }
                 } else {
                     Self::Granted
                 }
@@ -1880,15 +1963,30 @@ pub(super) fn record_gate_outcomes(
     scope: sagat_telemetry::flow_control::FlowControlScope,
 ) {
     use sagat_telemetry::flow_control::{
-        ConcurrencyOutcome, RateLimitOutcome, record_concurrency, record_rate_limit,
+        ConcurrencyOutcome, RateLimitOutcome, record_concurrency, record_concurrency_wait,
+        record_grant_lag, record_rate_limit, record_rate_limit_wait,
     };
+    #[allow(clippy::cast_precision_loss)] // a histogram's observation
+    let seconds = |us: i64| us.max(0) as f64 / 1_000_000.0;
     for (kind, outcome) in outcomes {
+        // the wait of a waiter granted from the queue, and the lag of a slot's grant (plan "Observability"; T022-082)
+        if let GateOutcome::GrantedFromQueue { waited_us, lag_us } = outcome {
+            if let Some(waited) = waited_us {
+                match kind {
+                    GateKind::Concurrency => record_concurrency_wait(scope, seconds(*waited)),
+                    GateKind::RateLimit => record_rate_limit_wait(scope, seconds(*waited)),
+                }
+            }
+            if let (GateKind::RateLimit, Some(lag)) = (kind, lag_us) {
+                record_grant_lag(seconds(*lag));
+            }
+        }
         match kind {
             GateKind::Concurrency => {
                 let label = match outcome {
                     GateOutcome::Granted => Some(ConcurrencyOutcome::Acquired),
                     GateOutcome::Queued => Some(ConcurrencyOutcome::Queued),
-                    GateOutcome::GrantedFromQueue => Some(ConcurrencyOutcome::Granted),
+                    GateOutcome::GrantedFromQueue { .. } => Some(ConcurrencyOutcome::Granted),
                     GateOutcome::TimedOut => Some(ConcurrencyOutcome::TimedOut),
                     GateOutcome::Dequeued => Some(ConcurrencyOutcome::Dequeued),
                     // a release is not an acquisition: the vocabulary has no outcome for it
@@ -1903,7 +2001,7 @@ pub(super) fn record_gate_outcomes(
                 match outcome {
                     GateOutcome::Granted => RateLimitOutcome::Granted,
                     GateOutcome::Queued => RateLimitOutcome::Queued,
-                    GateOutcome::GrantedFromQueue => RateLimitOutcome::GrantedFromQueue,
+                    GateOutcome::GrantedFromQueue { .. } => RateLimitOutcome::GrantedFromQueue,
                     GateOutcome::TimedOut => RateLimitOutcome::TimedOut,
                     GateOutcome::Dequeued => RateLimitOutcome::Dequeued,
                     GateOutcome::GivenBack => RateLimitOutcome::SlotReturned,
@@ -2142,6 +2240,56 @@ mod tests {
     }
     use sagat_domain::workflow::GateKind;
 
+    /// T022-082: a waiter granted from the queue records how long it waited, by family and scope, and a slot's grant its
+    /// lag, in the closed vocabulary; a grant at once and a grant without the readings record neither.
+    #[test]
+    fn a_grant_from_the_queue_records_its_wait_and_a_slot_its_lag() {
+        let (telemetry, recorder) =
+            sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+        let from_queue = GateOutcome::GrantedFromQueue {
+            waited_us: Some(2_500_000),
+            lag_us: Some(750_000),
+        };
+        metrics::with_local_recorder(&recorder, || {
+            record_gate_outcomes(
+                &[
+                    (GateKind::Concurrency, from_queue),
+                    (GateKind::RateLimit, from_queue),
+                    (GateKind::RateLimit, GateOutcome::Granted),
+                ],
+                sagat_telemetry::flow_control::FlowControlScope::Run,
+            );
+        });
+        let rendered = telemetry.render();
+        let line = |prefix: &str| {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(prefix))
+                .unwrap_or_else(|| panic!("{prefix}: {rendered}"))
+                .to_owned()
+        };
+        assert!(
+            line("concurrency_wait_seconds_sum{scope=\"run\"}").ends_with(" 2.5"),
+            "{rendered}"
+        );
+        assert!(
+            line("concurrency_wait_seconds_count{scope=\"run\"}").ends_with(" 1"),
+            "{rendered}"
+        );
+        assert!(
+            line("rate_limit_wait_seconds_sum{scope=\"run\"}").ends_with(" 2.5"),
+            "{rendered}"
+        );
+        assert!(
+            line("rate_limit_grant_lag_seconds_sum").ends_with(" 0.75"),
+            "{rendered}"
+        );
+        assert!(
+            line("rate_limit_grant_lag_seconds_count").ends_with(" 1"),
+            "{rendered}"
+        );
+    }
+
     /// G022-001: what a committed transaction decided is counted once per gate, step scope, in the closed vocabulary;
     /// a released permit is not an acquisition and is not counted as one.
     #[test]
@@ -2151,7 +2299,10 @@ mod tests {
         let all = [
             GateOutcome::Granted,
             GateOutcome::Queued,
-            GateOutcome::GrantedFromQueue,
+            GateOutcome::GrantedFromQueue {
+                waited_us: None,
+                lag_us: None,
+            },
             GateOutcome::TimedOut,
             GateOutcome::Dequeued,
             GateOutcome::GivenBack,

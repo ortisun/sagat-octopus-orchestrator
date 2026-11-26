@@ -498,6 +498,15 @@ slot for longer than a threshold: the pass is not keeping up or the clock went b
 `docs/runbooks/flow-control.md` next to `concurrency_queue_stuck`. No audit action is added: admission and
 grants are journal facts, and policy changes use the existing quota-policy audit.
 
+*Built 2026-11-25 (task T022-082; decisions D022-077 items 4, 6 and 7, and D022-083).* The monitor raises four alerts,
+`CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING`, `RATE_LIMIT_QUEUE_SATURATED` and `FLOW_CONTROL_WAITER_ORPHANED`, one
+per namespace and group, the group the subject, with the runbook's thresholds (`SAGAT_ALERT_UNCLAIMED_SECS`,
+`SAGAT_ALERT_LEASE_GRACE_SECS`, 80% of the effective `flow_control_key_waiters`, none for an orphan). The wait histograms
+observe each waiter granted from the queue, from its queueing to its grant; `rate_limit_grant_lag_seconds` observes each
+slot the pass grants on its own key, from the key's hint as the pass selected it (or the waiter's queueing if later) to
+the grant, an upper bound of the time a slot was free with the waiter present; the waiter gauges by scope and
+`rate_limit_unleased_grants` are set by the monitor from the key rows' counters every look.
+
 ### Migration and compatibility (the slice)
 
 - **Database**: two additive migrations, each with a refusing down migration, grants for `sagat_app` and
@@ -663,6 +672,13 @@ from the run shard (waiters) or the key shard (keys), maintained by `SECURITY DE
 holder, grant and key rows; `sagat_app` has `SELECT` only. A dual-gated run counts once in `queued_runs`.
 Ceilings compare the sum of the 16 slots read after the transaction's own rows, as for `active_runs`.
 
+*Amended 2026-11-25 (task T022-105, decision D022-084):* the table holds `queued_runs` only (its slot from the run's
+identifier, kept by triggers on the run-scope waiter rows); the live keys stay counted from the key rows under the digest
+versions in force, which only a decision that would create a key reads: a counter of keys would be locked in the middle of
+a sorted pass over the keys, or at the commit beside the deferred quota flush, where two transactions could wait on each
+other. No line of the hot-path budget moves: the sum of the slots is one statement, as the scan it replaces was, and
+the budget counts top-level statements and rows only.
+
 ### Ceilings, revised
 
 | Resource | Default | Hard ceiling |
@@ -690,6 +706,24 @@ bound changes here first, with its reason.
 The bounds are the measured sizes and about a fifth to a half more, and each lies below the size it had before its box,
 so a change that inlines the future again fails the test, not a CI process. The test that overflowed needs 1,418 KiB of
 stack after the boxes, against 2,080 KiB before (bisected with `RUST_MIN_STACK`, 32 KiB steps, on the arm64 debug build).
+
+The run state's values a debug frame copies grow every frame that holds one (D022-102). The gates of a run's start and of
+a step's attempts are boxed (`Gates` holds one pointer, an ungated run or step none), so is a node's declaration of its
+gates (absent for an ungated node), and `crates/domain/tests/state_sizes.rs` holds the sizes below their bounds; a bound
+changes here first, with its reason.
+
+| Type | Measured (bytes) | Bound (bytes) | Reason of the last change |
+|---|---|---|---|
+| `StepState` | 136 | 160 | 2026-11-25: was 288 with its gates inline (128 on `develop`) |
+| `RunState` | 368 | 384 | 2026-11-25: was 520 with its start's gates inline (336 on `develop`) |
+| `Node` | 568 | 576 | 2026-11-25: was 704 with its gates' declaration inline (560 on `develop`) |
+
+`scoped_event_storage::receiver::a_dispatcher_quota_refusal_with_held_inbox_keeps_lookback_pending` and its sibling
+(integration_workflow_primitives) overflowed the 2 MiB test thread on CI (runs 45637128106 and 45649612535): they needed
+2,048 KiB on this branch against 1,920 KiB on `develop` (same bisection), 1,984 KiB with the gates boxed (the node's box
+moved nothing on this path), and 1,376 KiB once the test's own scenario future (about 80 KB, which a debug build kept in
+several frames of the test thread) is boxed where it is created; that future is held below 4,096 bytes by
+`scoped_event_storage::receiver::the_quota_refusal_future_kept_on_the_test_thread_stays_small` (D022-102).
 
 ### Hot-path budget of a gated definition
 

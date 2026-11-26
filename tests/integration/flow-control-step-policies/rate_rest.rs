@@ -482,7 +482,7 @@ async fn the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protect
     let (status, _) = read(&api, &format!("{path}?group=NOT%20A%20GROUP")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // a member without the reveal grant: no label, the instants to the minute
+    // a member without the reveal grant: the group, summed over its windows, no key (decision D022-086)
     api.owner_store
         .insert_membership(&sagat_domain::identity::Membership::restore(
             sagat_domain::identity::TenantId::new(
@@ -502,15 +502,21 @@ async fn the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protect
         .expect("membership");
     let (status, hidden) = read_as(&api, &path, "olivia").await;
     assert_eq!(status, StatusCode::OK, "{hidden}");
-    let item = &hidden["items"][0];
-    assert!(item["keyLabel"].is_null(), "{item}");
-    for field in ["oldestWaitSince", "nextSlotAt"] {
-        assert_eq!(
-            us(&item[field]) % (60 * SECOND_US),
-            0,
-            "{field} to the minute: {item}"
-        );
-    }
+    assert_eq!(hidden["view"], "GROUPS", "{hidden}");
+    assert_eq!(hidden["items"], json!([]), "{hidden}");
+    let group = &hidden["groups"][0];
+    assert!(group.get("keyLabel").is_none(), "{group}");
+    // whole, the earliest of its windows' (decision D022-061 (b))
+    assert_eq!(
+        group["oldestWaitSince"], waited["oldestWaitSince"],
+        "{hidden}"
+    );
+    // neither when its next slot frees nor how many windows it has (batch 4 reviews, security Major 1 and minor 1)
+    assert!(
+        group.get("nextSlotAt").is_none() && group.get("keys").is_none(),
+        "{hidden}"
+    );
+    conforms("/namespaces/{namespaceId}/rate-limit-keys", &hidden);
 }
 
 /// Decision D022-067 item 5: a cursor of the concurrency listing is refused by the rate-limit listing.
@@ -1137,6 +1143,18 @@ async fn a_rate_cursor_of_a_forced_version_is_refused() {
     let namespace = api
         .create_namespace("alice", "acme", &workspace, "payments", "dev")
         .await;
+    // the keys' own cursors: a caller with the reveal grant (decision D022-086)
+    let granted = api
+        .as_user(
+            Method::PUT,
+            &format!("/namespaces/{namespace}/payload-reveal-grants/alice"),
+            "alice",
+            "acme",
+        )
+        .send()
+        .await
+        .expect("grant");
+    assert_eq!(granted.status(), StatusCode::OK);
     let workflow = publish(
         &api,
         "rest-rate-rotation",
@@ -1239,4 +1257,53 @@ async fn a_lowered_ceiling_moves_the_estimate_and_the_limit_a_waiting_run_shows(
         granted_us(&api, &holders[2]).await + HOUR_US,
         "the third counted slot's age-out"
     );
+    // the listing shows the limit the grant is decided with too (decision D022-076 item 5; re-review minor 2)
+    let (status, listed) = read(&api, "/runs").await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed_limit = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["runId"] == waiter.as_str())
+        .map(|item| item["rateLimit"]["limit"].as_u64());
+    assert_eq!(listed_limit, Some(Some(1)), "{listed}");
+}
+
+/// Decision D022-076 item 5 (re-review minor 2): the place of a waiting run counts ahead only the waiters the grant
+/// routine counts ahead. On a key shared by an hour's `limit: 1` and a minute's `limit: 2`, the hour's holder counts for
+/// both and the hour's waiter `wa` is refused by its own limit for the hour; the minute's waiter `wb` behind it is first
+/// in its key's queue (`wa` is not eligible), while a count of every live waiter ahead would place it second.
+#[tokio::test]
+async fn the_place_of_a_waiting_run_counts_only_the_eligible_waiters_ahead() {
+    let (api, _) = api().await;
+    let hourly = publish(
+        &api,
+        "rest-rate-place-hour",
+        rated_start("rest-rate-place-hour", 1, "hour"),
+    )
+    .await
+    .expect("published");
+    let minutely = publish(
+        &api,
+        "rest-rate-place-minute",
+        rated_start("rest-rate-place-minute", 2, "minute"),
+    )
+    .await
+    .expect("published");
+    let _holder = start(&api, &hourly, CANARY).await;
+    let wa = start(&api, &hourly, CANARY).await;
+    let other = start(&api, &minutely, CANARY).await;
+    let wb = start(&api, &minutely, CANARY).await;
+    let (_, run) = read(&api, &format!("/runs/{wb}")).await;
+    let slot = &run["rateLimit"];
+    assert_eq!(slot["state"].as_str(), Some("WAITING"), "{slot}");
+    assert_eq!(
+        slot["position"].as_u64(),
+        Some(1),
+        "the hour's waiter is not ahead of it: {slot}"
+    );
+    let (_, run) = read(&api, &format!("/runs/{wa}")).await;
+    assert_eq!(run["rateLimit"]["state"].as_str(), Some("WAITING"));
+    let (_, run) = read(&api, &format!("/runs/{other}")).await;
+    assert_eq!(run["rateLimit"]["state"].as_str(), Some("GRANTED"), "{run}");
 }
