@@ -7,7 +7,7 @@ Feature 028's index lists each item with its kind, version (semantic), digest an
 ## `OAUTH_PROVIDER`
 
 `{slug, title, issuer, authorizationEndpoint, tokenEndpoint, revocationEndpoint?, methods: [...], pkce: "S256",
-sendsIss: bool, rotatesRefreshTokens: bool, refreshTokenIdleDays?: int, defaultLifetimeSeconds?: int,
+sendsIss: bool, rotatesRefreshTokens: bool, revocation: "per-token" | "grant" (default "grant": revoking one token may end the whole grant), refreshTokenIdleDays?: int, defaultLifetimeSeconds?: int,
 subject: {from: "id_token" | "userinfo" | "token_response" | "none", field?}, userinfoEndpoint?, scopes: [{name, title,
 required?}], extraAuthorizationParameters: {name: [allowed values]}, hostBindings?: {tokenEndpointPath?: "registration"}}`.
 Endpoints are https; hosts are fixed names (no wildcard) except where `hostBindings` binds a path segment from the

@@ -165,7 +165,8 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
 - **Requirement 047-009** At most one refreshed token set MUST be activated per fence value, and a second token request
   for a credential MUST NOT start before the first one's lease has lapsed. Once a provider has answered, the broker MUST
   store what it answered before anything else. *Acceptance:* `two_control_planes_refresh_once`,
-  `a_holder_paused_past_its_lease_activates_nothing`, `a_disconnect_between_answer_and_store_revokes_the_new_token`.
+  `a_holder_paused_past_its_lease_activates_nothing`, `a_disconnect_between_answer_and_store_revokes_the_new_token`,
+  `a_withdrawn_offer_cannot_be_opted_into`.
 - **Requirement 047-010** Two thresholds govern freshness: an access token is delivered only while it is valid for at
   least 60 s more, and a refresh is due when it is valid for less than 120 s. A caller that finds a refresh in flight and
   no deliverable token waits at most 10 s, acquiring itself if the holder's lease lapses, then fails retryable.
@@ -183,8 +184,11 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
   that names it, MUST move it to `DISCONNECTING` in that transaction. A pass MUST then, once no refresh lease is held,
   revoke at the provider (RFC 7009) every refresh revision of the credential that has a vault entry, pending ones
   included, record the outcome (`REVOKED`, `NOT_SUPPORTED`, or `UNKNOWN` after the last attempt), destroy every revision
-  and end in `DISCONNECTED`. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
-  `revocation_with_the_provider_down_ends_unknown`.
+  and end in `DISCONNECTED`. A `PENDING` revision stored after that (a holder whose lease lapsed during its call) MUST
+  be revoked and destroyed by the sweeper, which takes every `PENDING` row of a `DISCONNECTING` or `DISCONNECTED`
+  credential and every `PENDING` row older than the lease plus the store deadlines; such a late row downgrades
+  `revocation_outcome` until it is revoked, and is audited. *Acceptance:* `disconnect_revokes_every_refresh_revision`,
+  `revocation_with_the_provider_down_ends_unknown`, `a_holder_crashing_after_a_late_store_leaves_no_live_token`.
 
 #### Delivery to executors
 
@@ -303,19 +307,21 @@ in the server (Delivery Constraints, as amended by version 5.0.0).
 
 ## Open Questions
 
-One question blocks approval and is not this design's to settle. Principle V lists two declared sets an executor may read;
-delivering a declared resource (to a script, an activity, or feature 021's integration runner) is a third, worded in
-Technical Plan 12. The coordinating session of release 0.3.0, which drafts the 5.0.0 amendment (pull request #275), is
-asked to add it there or in the next amendment. Approval has two preconditions: pull request #275 (constitution 5.0.0, which admits the hub) is merged, and the wording
-of Technical Plan 12 is in Principle V. Until both hold, this design stays In Review, and feature 021's integration
-runner waits on the same clause (feature 021, Decision 021-022).
+None blocks the design. Principle V listed two declared sets an executor may read; delivering a declared resource (to a
+script, an activity, or feature 021's integration runner) is a third, worded in Technical Plan 12. Constitution 5.0.0
+(pull request #275, merged) admits the curated hub, and the owner approved the third declared set for constitution 5.1.0
+(Owner decision 2026-11-25-3), drafted from Technical Plan 12's wording. This design's approval is conditional on 5.1.0
+merging: until it merges, no task of this design that delivers a declared resource is built, and feature 021's
+integration runner waits on the same clause (feature 021, Decision 021-022).
 
 ## Owner decisions needed
 
-None besides the amendment above. The design follows Owner decision 2026-11-24-1 and the 5.0.0 amendment (Owner decision
-2026-11-24-2); its choices were taken under Owner decisions 2026-11-20-6 and 2026-11-24-4 and are recorded as Decisions
-047-001 to 047-060 in research.md, with the register's literal marker "delegate (OD-2026-11-24-4)". Architecture decisions
-0122 and 0123 are accepted or rejected under Owner decision 2026-11-24-4 when the review completes.
+None open. The design follows Owner decision 2026-11-24-1, the 5.0.0 amendment (Owner decision 2026-11-24-2) and the
+third declared set of 5.1.0 (Owner decision 2026-11-25-3); its choices were taken under Owner decisions 2026-11-20-6 and
+2026-11-24-4 and are recorded as Decisions 047-001 to 047-061 in research.md, with the register's literal marker
+"delegate (OD-2026-11-24-4)". Architecture decisions 0122 and 0123 are accepted with the approval of this design, under
+Owner decision 2026-11-24-4 (Owner decision 2026-11-24-320), on the approval rule of Owner decision 2026-11-25-2 (pull
+request 284).
 
 ## Critical User Journeys (CUJs)
 
@@ -491,15 +497,22 @@ Provider answers: `invalid_grant` moves the credential to `NEEDS_REAUTHORIZATION
 `unauthorized_client` count toward `BROKEN` (three within 10 minutes) and leave the credentials as they are; `invalid_scope`
 fails the step with `OAUTH_SCOPE_INSUFFICIENT`; `429`, `temporarily_unavailable`, `server_error` and transport failures are
 retryable, honouring `Retry-After`. Request windows are rows in PostgreSQL per registration (4 in flight, 10 per second)
-and, on a deployment registration, per tenant (half of that), so neither control planes nor tenants multiply the limit;
-a caller past the window waits like a waiter.
+and, on a deployment registration, per tenant (1 in flight and 10 divided by the number of opted-in tenants per second,
+at least 1), so neither control planes nor tenants multiply the limit; a caller past the window waits like a waiter. A
+request in flight is an unexpired lease, counted from the credential rows of the registration (`lease_until > now()`)
+under the registration's window row lock, never a counter, so a crashed holder frees its slot when its lease lapses. Every broker call to a registration goes
+through the windows: refreshes, code exchanges, userinfo calls and the revocation pass's calls.
 
 Waiters poll the credential row with a backoff from 200 ms to 1 s for at most 10 s, acquire themselves once the holder's lease lapses, and fail
 at once when the state leaves `ACTIVE`. The keep-alive pass reads `refresh_used_at`. A provider refusal reported by an executor (an `AUTHENTICATION` failure of feature 021, or a `forceRefresh` re-ask) marks
 the access revision stale, so the next delivery refreshes. With the default limits a registration allows 10 refreshes
 per second, which with one-hour tokens covers tens of thousands of active credentials; the benchmark of Task 047-21
-measures it. A sweeper revokes and destroys retired and abandoned refresh revisions; a credential holds at most 8 revisions not destroyed, and past that a refresh
-fails retryable with an alarm. Tests drive the monotonic clock and the waiter through injected test doubles of the
+measures it. A sweeper destroys retired and abandoned refresh revisions in the vault only: it never revokes them at the provider,
+because a provider that returns the same refresh value on refresh, or revokes the whole grant when any of its tokens is
+revoked, would lose the live grant. The provider is called only on a disconnect (Requirement 047-013), and for an
+abandoned revision only when its value hash differs from the active one's and the provider definition declares
+`revocation: "per-token"`. A credential holds at most 8 revisions not destroyed, and past that a refresh fails
+retryable with an alarm. Tests drive the monotonic clock and the waiter through injected test doubles of the
 `Waiter` port, never sleeps.
 
 ### 5. Delivery
@@ -662,7 +675,8 @@ replacement of the sentence that begins "Both paths":
 
 The rest of the principle (revalidation after provider input or output, the value-free audit before values, fail closed)
 applies unchanged to all three. Feature 021's integration runner needs the same set; its research records the dependency
-(Decision 021-022). The coordinating session is asked to carry this into pull request #275 or the next amendment.
+(Decision 021-022). The owner approved this set for constitution 5.1.0 (Owner decision 2026-11-25-3), drafted from this
+wording; this design's approval is conditional on 5.1.0 merging.
 
 ### 13. Compatibility and rollout
 
@@ -710,8 +724,9 @@ acceptance stays with its phase.
 
 ## Constitution Check
 
-Written against version 4.7.0, in force at this commit, and the 5.0.0 amendment (Owner decision 2026-11-24-2, pull
-request #275), whose "Admitted scope" names this design for the hub. The Principle V row depends on Technical Plan 12.
+Written against version 5.0.0 (Owner decision 2026-11-24-2, pull request #275, merged), whose "Admitted scope" names this
+design for the hub, and the 5.1.0 amendment the owner approved (Owner decision 2026-11-25-3), which adds Technical Plan
+12's declared set to Principle V; the Principle V row holds once 5.1.0 merges, the condition of this design's approval.
 
 | Principle | Result | Evidence |
 |---|---|---|
@@ -803,7 +818,8 @@ feature 028's Tasks T028-062 to T028-066.
 - [ ] T047-4 Migrations, grants and storage classification of data-model.md; the capability `oauth-broker-v1` in the
   three capability constraints; the OAuth vault's second mount, token and reference type; the OpenBao policy and token in
   Helm and the runbook. Tests: the privilege audit of `integration_platform_foundation`,
-  `ordinary_token_is_refused_on_the_oauth_mount`, `without_the_capability_declarations_are_refused`.
+  `ordinary_token_is_refused_on_the_oauth_mount`, `without_the_capability_declarations_are_refused`,
+  `a_credential_names_exactly_one_registration`, `hub_record_revocation_never_lifts_a_block`.
   Refs: Requirement 047-025, Non-functional requirement 047-001
 - [ ] T047-5 Providers and tenant registrations: REST, write-time checks, vault writes as `oauth-broker`, secret rotation,
   audit. Files: `crates/application/src/oauth/providers.rs`, `crates/api-http/src/routes/oauth.rs`. Tests: the REST contract
@@ -820,12 +836,14 @@ feature 028's Tasks T028-062 to T028-066.
   `apps/control-plane`. Tests: `two_control_planes_refresh_once`, `a_holder_paused_past_its_lease_activates_nothing`,
   `a_pending_revision_is_adopted_after_a_crash`, `a_disconnect_between_answer_and_store_revokes_the_new_token`,
   `the_first_client_credentials_token_is_acquired`, `waiters_acquire_after_a_crashed_holder`,
-  `one_tenant_cannot_starve_a_shared_registration`, `no_transaction_is_open_during_a_token_request`.
+  `one_tenant_cannot_starve_a_shared_registration`, `no_transaction_is_open_during_a_token_request`,
+  `a_crashed_holder_frees_its_window_slot`.
   Refs: Requirement 047-008, Requirement 047-009, Requirement 047-010, Requirement 047-011
 - [ ] T047-8 The broker passes: keep-alive, expired and incomplete requests, revocation and destruction, withdrawal
   disconnects, delivery-row cleanup. Files: `crates/application/src/oauth/passes.rs`, `apps/control-plane`. Tests:
   `keep_alive_refreshes_idle_tokens`, `disconnect_revokes_every_refresh_revision`,
-  `revocation_with_the_provider_down_ends_unknown`, `withdrawal_disconnects_after_seven_days`.
+  `revocation_with_the_provider_down_ends_unknown`, `withdrawal_disconnects_after_seven_days`,
+  `a_holder_crashing_after_a_late_store_leaves_no_live_token`, `a_retired_revision_is_never_revoked_at_the_provider`.
   Refs: Requirement 047-012, Requirement 047-013
 - [ ] T047-9 Feature 021's `oauth` scheme served by the broker inside `ResolveResource`; the binding rule; resource deletion
   moving a credential to `DISCONNECTING` with the credential row locked first. Files:
