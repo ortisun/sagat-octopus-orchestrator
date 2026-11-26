@@ -1537,7 +1537,7 @@ written plus one, never reused, the highest also kept in the document), material
   only a `RingChange` or a `RingError`. `IdentityKeyRing`, `RingChange` and `RingError` have hand-written `Debug`
   showing only key ids, states, versions and rules, as `KeyRing`'s does, and the adapters' `Debug` show only the ring's
   (`an_identity_key_ring_never_prints_key_material` formats with `{:?}` the ring, both adapters, a `RingKey`, a
-  `RingDocument`, and the
+  `RingDocument`, a `Tag`, a `RefreshMac`, and the
   errors, audit rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of
   31 bytes, and of a cancelled rotation and a `revoke` that loses five check-and-sets).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
@@ -1556,7 +1556,9 @@ written plus one, never reused, the highest also kept in the document), material
   `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError`, `IdentityOpenBao` (with `from_lookup` as its only
   constructor) and, to the module itself only, `RingPath`
   and `RingDocument`; the operations above, the key-id and state accessors, `KeyId::new(i64) -> Option<KeyId>` and
-  `KeyId::get`, `Tag::from_bytes([u8; 32])` and `Tag::as_bytes` (a tag is a MAC, not a key), and read-only accessors of
+  `KeyId::get`, `Tag::from_bytes([u8; 32])` and `Tag::as_bytes` (a tag is not key material, but it is the secret part of a refresh
+  token, so `Tag`, like the application's `RefreshMac`, has a hand-written `Debug` printing `[REDACTED]` and no
+  `Display` or `Serialize`), and read-only accessors of
   `Sealed` (key id, salt, nonce, ciphertext); and the trait implementations `Debug` (hand-written), `Drop`, `Zeroize`,
   the derived `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Hash` on `KeyId`, `KeyState` and
   `Verdict`, and `Display` and `std::error::Error` on `RingError` (fixed text). Only `RingKey`, `PurposeKey` and
