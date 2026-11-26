@@ -94,8 +94,8 @@ stream is a reason for a regulated customer to choose this platform.
   with the profile `trace` declared only on an event that has one, the record id as `metadata.uid`, the tenant id as
   `metadata.tenant_uid`, the product as `metadata.product` (`name` "Sagat Octopus Orchestrator", `vendor_name` "Sagat",
   `version` the release's major and minor only) and the schema version as `metadata.version`. Every string attribute
-  is capped (1,024 characters for an identifier, 2,048 for the reason, as `scrub` already cuts it) and a cut value ends
-  with the marker `…[truncated]`.
+  is capped: an identifier at 1,024 characters, ending with `…[truncated]` when cut; the reason by `scrub` (2,048
+  characters, with its own marker `…[N characters cut]`).
 - **Requirement 040-004** The OCSF version MUST be pinned (1.10.0) and stated in every event. The JSON Schema that the
   OCSF server of that version exports for each class used, with the declared profiles, MUST be vendored in the
   repository with its SHA-256 recorded; moving to another version is a new architecture decision with the validation
@@ -146,7 +146,10 @@ stream is a reason for a regulated customer to choose this platform.
 - **Requirement 040-013** Before each batch, the pass MUST check the authorizing subject's current authority: membership
   of the tenant, `audit:sink:manage` and `audit:read`. When it fails, the sink is `PAUSED_AUTHORITY_LOST`, audited.
   Any change of the URL, the credential, the home namespace or the ceiling, and any resume, makes the person who does it
-  the authorizing subject; a `pii` ceiling then needs their grant (Requirement 040-010) or drops to `internal`.
+  the authorizing subject. On a `pii` sink such a request is refused with `403 PII_CEILING_NOT_PERMITTED` unless the
+  person holds the grant of Requirement 040-010 or the same request sets `ceiling: internal`. A change of the URL or the
+  credential leaves `PAUSED_DESTINATION_REFUSED`; a change of the ceiling to `internal` leaves `PAUSED_GRANT_REVOKED`;
+  a resume by a subject whose checks pass leaves any paused state.
 
 ### Non-functional
 
@@ -309,7 +312,7 @@ enum OcsfSeverity { Unknown = 0, Informational = 1, Low = 2, Medium = 3 }
 struct OcsfMapping { class: OcsfClass, activity: u8, severity: OcsfSeverity, status: Status }
 const fn mapping(action: AuditAction) -> OcsfMapping { match action { /* one arm per action, no wildcard */ } }
 const UNKNOWN: OcsfMapping = /* API Activity 99, severity Unknown, status Unknown */;
-#[derive(Serialize)] struct OcsfEvent { /* the attributes the five classes use */ }
+#[derive(Serialize)] struct OcsfEvent { /* the attributes the four classes use; class 0 for the tombstone follows */ }
 ```
 
 `OcsfClass` gives `class_uid` and `category_uid` (6003/6, 3007/3, 3004/3, 2004/2); `type_uid` is
@@ -326,7 +329,7 @@ filled from structured fields only, never from the reason:
 | Class | Required object | Filled from |
 |---|---|---|
 | API Activity 6003 | `api`, `actor`, `src_endpoint` | `api.operation` the dotted action, `api.service.name` "sagat-octopus-orchestrator"; `actor.user.uid` the subject (`type_id` 3 Service for a `system:` subject); `src_endpoint.svc_name` the constant `sagat` (Gap 040-001) |
-| User Management 3007 | `user` | the subject in the resource id: the whole id of a `membership` resource; the part after the namespace of a `payload_reveal_grant` resource (`<namespace>/<subject>`) |
+| User Management 3007 | `user` | the subject in the resource id: the whole id of a `membership` resource; the part after the first `/` of a `payload_reveal_grant` resource (`<namespace uuid>/<subject>`; a UUID has no `/`) |
 | Entity Management 3004 | `entity` | `type` the resource type, `uid` the resource id |
 | Detection Finding 2004 | `finding_info` and the `security_control` attributes | `uid` the record id, `title` from a closed table per action, `analytic` `{type_id: 1, name: sandbox, egress or tenant-boundary}`; `evidences[0].actor` the subject; `status_id` 1, `action_id` 2, `disposition_id` 2 |
 
@@ -388,21 +391,23 @@ read, so they never hold it back). The byte bound (1 MiB) counts the uncompresse
 **Where a sink starts.** At creation, the cursor is `(pg_snapshot_xmin(pg_current_snapshot()), 00000000-…-0000)` read
 then: the sink receives every record committed after its creation, and also those of transactions still running at that
 moment, which at most the longest open transaction of the cluster bounds. With `startFrom: {createdAt: t}` on creation
-(it needs `audit:read`, which the creator holds, and is audited; `t` is at most 90 days back, and the lookup runs under
-a statement timeout of 5 seconds with a typed error), the cursor is set below the smallest `tx_id` of the tenant's
-records whose `created_at` is at or after `t`: the sink also receives some records created slightly before `t` (at least
-once, never fewer).
+(it needs `audit:read`, which the creator holds, and is audited; `t` is at most 90 days back), the cursor is set below
+the smallest `tx_id` of the tenant's records whose `created_at` lies in `[t, t + 10 minutes]`, a window longer than any
+transaction the platform lets live (the oldest transaction-id holder is alerted at 5 minutes), read through the
+`(tenant_id, created_at)` index over that window only, or below the first record after `t` when the window is empty:
+the sink also receives some records created slightly before `t` (at least once, never fewer).
 
 **A cluster whose transaction ids went back.** A logical restore (`pg_dump` and `pg_restore`, the procedure of
 `docs/runbooks/control-plane.md`) or a move by logical replication copies `tx_id` and the cursors as data, while the new
-cluster's counter starts lower: new records would sort below every cursor, and restored records above the new `xmin`
-would wait until the counter caught up. The restore runbook therefore advances the new cluster's transaction-id epoch
-above the largest `tx_id` before the data is loaded (`pg_resetwal --epoch` on the stopped, empty cluster), so that every
-new `xid8` is higher and nothing is lost. As a guard, the pass refuses to export while
-`max(tx_id) >= pg_snapshot_xmax(pg_current_snapshot())` (read through the `(tx_id, id)` index, assigning no transaction
-id): every sink is reported `CURSOR_INVALID`, audited and alerted, until the operator has run the step; then the cursors
-are valid again and the sinks resume where they stood. A test restores into a fresh container, runs the step, and sees
-a record written after the last delivery and before the dump arrive.
+cluster's counter starts lower: new records would sort below every cursor. Every cursor therefore records the cluster it
+was read on (`cursor_cluster`, from `pg_control_system().system_identifier`). When the pass finds a cursor of another
+cluster, the sink becomes `CURSOR_INVALID` (audited, alerted; for the operator sink, logged), and stays so, whatever the
+counter does, until the operator runs `control-plane audit-export rebase`: it sets each such cursor from the time of its
+last delivered record minus 10 minutes, with `startFrom`'s rule, on the new cluster, so that nothing is skipped and some
+records are sent twice. Where the operator can, the runbook also advances the new cluster's transaction-id epoch above
+the largest `tx_id` before loading (`pg_resetwal --epoch`, not available on managed services), which keeps the restored
+records' order. A test restores into a fresh container, sees `CURSOR_INVALID` hold after the counter passes the restored
+maximum, runs `rebase`, and sees a record written after the last delivery and before the dump arrive.
 
 **Who serves which sink, and what makes a commit correct.** A tenant sink is served by the replica that holds the shard
 of its tenant (`Shard::of` keyed by the tenant: ADR-0020 keys run work by run, and tenant keying is acceptable here
@@ -430,7 +435,7 @@ its configuration stops it.
 | `PAUSED_GRANT_REVOKED` | the pass, when the grant check of a `pii` sink fails | `/resume` by a subject whose grant passes, or a change of the ceiling to `internal` |
 | `PAUSED_AUTHORITY_LOST` | the pass, when Requirement 040-013's check fails | `/resume` by a subject whose authority passes |
 | `PAUSED_DESTINATION_REFUSED` | the pass, at a `401`, `403`, `404`, `405`, `410` or an egress refusal | `/resume` by a subject whose authority passes, or a change of the destination |
-| `CURSOR_INVALID` | the pass, section 4 | the pass, once the epoch step of the restore runbook has been run |
+| `CURSOR_INVALID` | the pass, at a cursor read on another cluster (section 4) | `control-plane audit-export rebase` |
 | deleted | an administrator (`DELETE`) | none |
 
 **The pass.** `audit_export` runs in its own loop of the execution engine (`run_audit_export` beside `run_deliveries`,
@@ -472,32 +477,36 @@ any, has expired. For each due sink:
    as the step-log quota's `step_log_usage_if_revealed` reads; when it fails, the same transaction still advances the
    cursor (the batch has left), sets `PAUSED_GRANT_REVOKED` and writes `audit.sink_paused`. The collapsed record
    `audit.sink_delivered` (no count, one per sink and minute) is written in this transaction and is never itself
-   exported; counts go to metrics.
+   exported, written only for a `pii` sink, where the rule of Requirement 040-010 asks for the audit of its deliveries;
+   counts go to metrics for every sink.
 6. **Failures.**
    - `408`, `429`, `5xx`, a transport error and a key-authority error (a sealed credential that cannot be opened now) are
      retryable: exponential back-off from 1 second to 5 minutes with jitter, `STALLED` after 5 in a row (audited once).
    - `401`, `403`, `404`, `405`, `410` and an egress refusal are failures of the destination, not of a record: the sink
      becomes `PAUSED_DESTINATION_REFUSED`, audited and alerted, and no record is passed.
-   - `400`, `413` and `422` are failures of the batch: the pass halves it and retries at once, committing after each
-     accepted half (step 5), down to one record. One record is passed as refused only when, in that same halving, the
-     receiver accepted a sibling half: `audit.sink_record_refused` (the record id) commits in the transaction that moves
-     the cursor past it, and `GET /audit/sinks/{sinkId}/refused` lists it. When no half was accepted the batch is a
-     failure of the destination, as above.
+   - `400`, `413` and `422` are failures of the batch: the pass splits it, left half first, depth first, and commits the
+     cursor only over a contiguous accepted prefix. When the leftmost unresolved part is one record and the receiver
+     refuses it alone, the record is passed as refused if this sink has ever had a `2xx` (so the destination works):
+     `audit.sink_record_refused` (the record id) commits in the transaction that moves the cursor past it, and
+     `GET /audit/sinks/{sinkId}/refused` lists it; the pass then goes on with the rest. A sink that has never had a `2xx`
+     treats the refusal as a failure of the destination, as above.
+   - `SendFailure::Invalid` (the request could not be built for the destination) is a failure of the destination; a
+     `Retry-After` on `429` or `503` is honoured within the 5-minute cap.
 
-**The operator sink.** Its row in `audit_operator_export` has the same claim token and expiry, state,
-`next_attempt_at`, revision and cursor as a tenant sink, and the same compare-and-set; it leaves a paused state on a
-change of its configuration or a restart of the engine, which the runbook says. It reads all tenants; order is promised
-per tenant, not across tenants. A batch is split into
-one group per tenant, each group sent in cursor order as one message; the cursor moves to the end of the longest prefix
-of the batch, in `(tx_id, id)` order, whose records were all in acknowledged messages; a later pass sends the rest again
-(duplicates, never gaps).
+**The operator sink.** It is one destination served as one stream per tenant: `audit_operator_export` holds one row per
+tenant with records (created when a tenant's first record is written after the sink is configured), each with the claim
+token and expiry, state, `next_attempt_at`, revision and cursor of a tenant sink and the same compare-and-set, halving
+and refusal; a message holds one tenant's records, so messages keep tenant scope, and order is promised per tenant. Up
+to 8 tenants' streams are sent at once per replica. A stream leaves a paused state on a change of the configuration or
+a restart of the engine, which the runbook says; a configured `start` (`now`, or a time) applies when the configured
+destination changes, so that a new destination does not receive the whole backlog unless the operator asks.
 
 The pass holds no lock across an HTTP call. A crash between a receiver's `2xx` and the commit sends that request's
 records again on a later pass, under a new delivery id.
 
 **Credentials.** The URL, the collector credential and the signing keys of a tenant sink are sealed through today's
-`SecretCipher::seal` and `open` (`crates/domain/src/secrets.rs`), each with its own key id, nonce and ciphertext
-columns, and the associated data `"sagat/audit-sink/v1"`, then the tenant id, the sink id and the column name, each
+`SecretCipher::seal` and `open` (`crates/domain/src/secrets.rs`), each with its own key id column and a column holding
+its nonce and ciphertext, and the associated data `"sagat/audit-sink/v1"`, then the tenant id, the sink id and the column name, each
 preceded by its length in four bytes, so a sealed value cannot be moved to another sink or column. Slice 2 needs nothing
 of design 015; the sealed columns of `audit_sinks` join design 015's re-seal inventory, and when design 015's `transit`
 authority is built they move to it with its re-seal (Task 040-22, after Task 015-11). The operator sink's URL,
@@ -513,7 +522,8 @@ CREATE TABLE audit_sinks (
   url_host text NOT NULL, url_path_fingerprint text NOT NULL,          -- first 16 hex of SHA-256 of the path
   url_sealed bytea NOT NULL, credential_sealed bytea NOT NULL, signing_key_sealed bytea NOT NULL,
   previous_signing_key_sealed bytea, previous_signing_key_expires_at timestamptz,
-  seal_key_id text NOT NULL,                                          -- the ring key id of the four sealed columns
+  url_key_id text NOT NULL, credential_key_id text NOT NULL, signing_key_key_id text NOT NULL,
+  previous_signing_key_key_id text,                                   -- the ring key id of each sealed column
   format text NOT NULL CHECK (format = 'ndjson'), gzip boolean NOT NULL, ceiling text NOT NULL CHECK (ceiling IN ('internal','pii')),
   state text NOT NULL CHECK (state IN ('ACTIVE','STALLED','PAUSED','PAUSED_GRANT_REVOKED','PAUSED_AUTHORITY_LOST',
                                        'PAUSED_DESTINATION_REFUSED','CURSOR_INVALID')),
@@ -522,8 +532,9 @@ CREATE TABLE audit_sinks (
   authorizing_subject text NOT NULL, claim_token uuid, claim_expires_at timestamptz, last_test_at timestamptz,
   PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, slot),
   FOREIGN KEY (tenant_id, home_namespace_id) REFERENCES namespaces (tenant_id, id));
--- audit_operator_export: one row (id = 1) with state, revision, cursor_tx, cursor_id, failures, next_attempt_at,
--- claim_token, claim_expires_at, last_delivered_id, last_delivered_at; no destination column.
+-- audit_operator_export: one row per tenant (tenant_id primary key) with state, revision, cursor_cluster, cursor_tx,
+-- cursor_id, failures, next_attempt_at, claim_token, claim_expires_at, last_delivered_id, last_delivered_at; no
+-- destination column. audit_sinks also has cursor_cluster bigint NOT NULL beside its cursor.
 ```
 
 Each sealed column holds the nonce and the ciphertext of `SealedSecret`, framed as `nonce || ciphertext`. The ports:
@@ -532,11 +543,13 @@ Each sealed column holds the nonce and the ciphertext of `SealedSecret`, framed 
 `crates/application/src/audit_export.rs`, implemented in `crates/infra-postgres/src/audit_sinks.rs`; the loop is
 `crates/scheduler/src/audit_export.rs`, run by `apps/execution-engine/src/loops.rs`.
 
-**After a failover that lost work.** Every event carries the region epoch (`unmapped.sagat.region_epoch`; feature
-032's epoch, 1 until feature 032 is built). After an activation whose failover report states a window of possibly lost
-work (feature 032, Delivery Constraints of the constitution), each sink first sends a tombstone message, an OCSF Base
-Event (class 0, activity 99) with `unmapped.sagat.tombstone: {epoch, lostFrom, lostTo}`, before any event of the new
-epoch, so that a SIEM can mark the events of the lost window as not on the surviving timeline.
+**After a failover that lost work.** Every event carries the region epoch in force when it is sent
+(`unmapped.sagat.region_epoch`; feature 032's epoch, 1 until feature 032 is built). After an activation whose failover
+report states a window of possibly lost work (feature 032, Delivery Constraints of the constitution), each sink first
+sends a tombstone message, an OCSF Base Event (class 0, activity 99) with `unmapped.sagat.tombstone: {epoch, lostFrom,
+lostTo}`, then rewinds its cursor to the first record at or after `lostFrom` and sends again, under the new epoch, every
+record of the window that survived; a receiver treats an event of an older epoch in that window that was not sent again
+as lost.
 
 ### 6. Surfaces
 
@@ -548,7 +561,10 @@ epoch, so that a SIEM can mark the events of the lost window as not on the survi
   audited), and `GET /audit/sinks/{sinkId}/refused`. The answers that carry a signing key (`POST /audit/sinks` and
   `/rotate-signing-key`) are `Cache-Control: no-store`, and the key is never logged or put in an audit reason, as the
   one-time `leaseToken` of the worker protocol is. A sink of another tenant answers `404` exactly as a missing one,
-  audited as a cross-tenant denial with a new `ResourceType::AuditSink`. The limit of 4 sinks per tenant is held by a
+  audited as a cross-tenant denial with a new `ResourceType::AuditSink`. Two creates that take the same free slot meet the
+  unique constraint; the second retries once with the next free slot, then answers `409 AUDIT_SINK_LIMIT`. The `/test`
+  event is an API Activity 99 marked `metadata.labels: ["test"]` with a random `metadata.uid`, sent in `ACTIVE`,
+  `STALLED` and `PAUSED_DESTINATION_REFUSED` only, and moves no cursor. The limit of 4 sinks per tenant is held by a
   `slot smallint CHECK (slot BETWEEN 1 AND 4)` column with `UNIQUE (tenant_id, slot)`, so it needs no lock on the
   tenant's row. A sink shows `scheme://host`, the path fingerprint, the state, the id and time of the last delivered
   record and the age of the oldest undelivered one; never the cursor, the URL path, the credential or a key. Typed
@@ -596,11 +612,11 @@ does not list the capability.
 | A lossy mapping hides what happened | The native record stays the authority; the dotted action is always in `unmapped.sagat.action`; the mapping is reviewed per action in the appendix |
 | The stream misses a record that commits late | The cursor is ordered by transaction id and reads only below the snapshot's `xmin`; Success criterion 040-003 forces the order |
 | A long transaction of one tenant, or outside the platform, delays every sink | It delays, never loses; the oldest-undelivered and oldest-transaction gauges and their alerts; idle-in-transaction timeouts on the platform's pools |
-| Transaction ids go back after a restore | `CURSOR_INVALID`, resumed from time (section 4) |
+| Transaction ids go back after a restore | Cursors record their cluster; `CURSOR_INVALID` holds until `rebase` (section 4) |
 | A sink leaks across tenants or shows the cluster's activity | Tenant predicate and withheld actions in the query; the cursor is never shown; Success criterion 040-004 |
 | Personal data leaves without authority | The reason is left out below `pii`; `pii` needs the grant in every namespace, checked per batch and at commit; authority rechecked per batch |
 | Someone who can read a namespace secret forges or reads the stream | Sink credentials and keys are not namespace secrets and are never delivered |
-| A receiver is flooded by duplicates | A batch is resent once per failed commit or lost claim; `metadata.uid` dedupes |
+| A receiver is flooded by duplicates | A request's records are resent after a failed commit, a lost claim or a `rebase`; `metadata.uid` dedupes |
 | One bad record blocks a sink | Halving isolates it; it is recorded as refused and passed |
 
 ## Constitution Check
