@@ -133,11 +133,15 @@ SELECT id, action, capability, kinds, actor, database_user, epoch, at FROM platf
 **Recording a requirement is an operator act with the owner role**, never a tenant's or the API's: the functions that do it
 (`platform_requirement_lock`, `platform_requirement_activate`, `platform_requirement_remove`) are not executable by the runtime
 role, so a compromised API process cannot make the fleet refuse to serve by recording one (section 6 says what it still can do). A command that runs as `sagat_app`
-fails with `permission denied for function`: run it with the owner role, as `migrate` is run. Each feature that activates through
-the registry has its own command (`control-plane schedule-trigger-handover` for feature 018, a later task), which in **one
+fails with `permission denied for function`: run it with the owner role, as `migrate` is run. A requirement that only gates serving is
+recorded by the one generic command `control-plane capability-activate <capability>` (ADR-0098 decision 4, decision D006-034
+of feature 006; `docs/runbooks/lease-withdrawal.md`); the one-way handover of `schedules-v1` keeps its own,
+`control-plane schedule-trigger-handover`. Each, in **one
 transaction** locks the epoch, verifies every live process of the required kinds, records the requirement, moves the epoch,
 writes the history and does the feature's own step. The transaction is bounded (lock wait 2 s, statement 3 s, the feature's step
-3 s): a step that takes longer is rolled back, because every process that registers waits for the epoch meanwhile. **The
+3 s): a step that takes longer is rolled back, because every process that registers waits for the epoch meanwhile. A removal
+waits at most one second for each lock (`platform_requirement_remove` carries `lock_timeout = 1s`, feature 006 decision
+D006-085); run it by hand under `SET statement_timeout = '1500ms'`. **The
 feature's step reads, it does not lock**: it must not take a lock that a transaction reading the epoch may hold. (The one
 step that locks, because a publication in flight is invisible to a count, is the cron-trigger handover: it takes the table of
 the cron triggers for at most two seconds and the handover row, which no transaction that reads the epoch ever takes; ADR-0083
@@ -213,7 +217,7 @@ remain per-process settings with the rollout orders of their own runbooks; the r
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Every replica of a kind answers `503 BINARY_CAPABILITY_MISSING` | A requirement for the kind was recorded and the build you run lacks it, or its configuration does not run the pass | Section 2; or remove the requirement (section 5) |
+| Every replica of a kind answers `503 BINARY_CAPABILITY_MISSING` | A requirement for the kind was recorded and the build you run lacks it, or its configuration does not run the pass | Section 2; or remove the requirement (section 5), except `lease-withdrawal-v1` once a journal holds `step.lease_withdrawn` (it is refused: `docs/runbooks/lease-withdrawal.md`, Rollback) |
 | One replica answers `503 BINARY_CAPABILITY_MISSING`, the others serve | It is an old build that was silent at the activation and came back, or an engine started without the pass | Upgrade it, set the flag, or stop it |
 | An engine is refused after a restart that changed its flags | It no longer runs the pass that provides a required capability | Set the flag again, or remove the requirement if you mean to roll the feature back |
 | An activation is refused naming instance ids | Those processes are live and lack the capability (an engine without `SAGAT_SCHEDULES_ENABLED` is one of them) | Upgrade, set the flag, or stop them; query `serving_instances` for their version and capabilities |

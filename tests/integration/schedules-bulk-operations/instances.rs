@@ -1215,12 +1215,14 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
     let rows = sqlx::query(
         "SELECT proname, prosecdef, proconfig, prosrc FROM pg_proc \
           WHERE proname IN ('instance_register', 'instance_heartbeat', 'instance_deregister', \
-                            'platform_requirement_lock', 'platform_requirement_activate', 'platform_requirement_remove')",
+                            'platform_requirement_lock', 'platform_requirement_activate', 'platform_requirement_remove', \
+                            'lease_withdrawal_required', 'platform_capability_census')",
     )
     .fetch_all(&r.db.pool)
     .await
     .expect("functions");
-    assert_eq!(rows.len(), 6);
+    // the two of the lease withdrawal too (feature 006, D006-093: security round 4 Nit 3)
+    assert_eq!(rows.len(), 8);
     for row in &rows {
         let name: String = row.get("proname");
         assert!(row.get::<bool, _>("prosecdef"), "{name} runs as its owner");
@@ -1236,7 +1238,10 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
         let source: String = row.get("prosrc");
         if matches!(
             name.as_str(),
-            "instance_heartbeat" | "platform_requirement_activate" | "instance_register"
+            "instance_heartbeat"
+                | "platform_requirement_activate"
+                | "instance_register"
+                | "platform_capability_census"
         ) {
             assert!(
                 source.contains("interval '30 seconds'"),

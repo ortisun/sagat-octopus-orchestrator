@@ -1488,6 +1488,17 @@ impl StepState {
         self.attempt == attempt && self.generation == generation
     }
 
+    /// A lease that never reached a handler is taken back (feature 006, decision D006-003): the step is ready again, the
+    /// attempt that never began is given back so the next lease reuses its number, and the generation is kept so the next
+    /// lease has the next one. A request to stop is cleared, as a new lease clears it: the planner cancels a ready step of a
+    /// stopping scope at once (decision D006-011).
+    fn withdraw_lease(&mut self) {
+        self.status = StepStatus::Ready;
+        self.attempt = self.attempt.saturating_sub(1);
+        self.cancel_requested = false;
+        self.next_attempt_at = None;
+    }
+
     pub(super) fn apply_instance_lifecycle(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -1523,6 +1534,17 @@ impl StepState {
                 self.generation = *generation;
                 self.cancel_requested = false;
                 self.next_attempt_at = None;
+            }
+            RunEvent::StepLeaseWithdrawn {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Leased])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.withdraw_lease();
             }
             RunEvent::StepStarted {
                 attempt,
@@ -4078,6 +4100,15 @@ impl RunState {
                 step.cancel_requested = false;
                 step.next_attempt_at = None;
             }
+            RunEvent::StepLeaseWithdrawn {
+                node,
+                attempt,
+                generation,
+                ..
+            } => {
+                self.fenced_step(node, name, &[Leased], *attempt, *generation)?
+                    .withdraw_lease();
+            }
             RunEvent::StepStarted {
                 node,
                 attempt,
@@ -4712,6 +4743,7 @@ impl RunState {
             }
             event @ (RunEvent::StepReleased { .. }
             | RunEvent::StepLeased { .. }
+            | RunEvent::StepLeaseWithdrawn { .. }
             | RunEvent::StepStarted { .. }
             | RunEvent::StepCompleted { .. }
             | RunEvent::StepRetryScheduled { .. }

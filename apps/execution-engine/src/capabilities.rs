@@ -26,6 +26,8 @@ pub fn capabilities(config: &EngineConfig) -> Vec<Capability> {
     if config.run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
         listed.push(Capability::RunInputValidationV1);
     }
+    // feature 006 (decision D006-004): every engine of this build replays `step.lease_withdrawn`, whatever it runs
+    listed.push(Capability::LeaseWithdrawalV1);
     // feature 022: a gate this engine runs (readiness, grant and timeout passes, and the admission of the runs it creates
     // while its switch is on), backed by the digest keys whatever its switches, so a draining engine stays in the fleet
     // (D022-057, D022-062)

@@ -128,6 +128,7 @@ instance) applies in addition to these rules.
 | --- | --- | --- | --- |
 | 019 | `run.started` + `dispatch` | `COPY` (fairness key re-read from the source run row) | declared by 019 — `specs/019-worker-deployments-dispatch/contracts/errors-and-events.md` |
 | 019 | `run.deployment_pinned`, `run.deployment_repinned` | `REMATERIALIZE` (re-create `run_deployment_pins` at the folded version under 019's fences; a retired version pins at the first claim with `source: reset`) | declared by 019 — same file |
+| 006 | `step.lease_withdrawn` | `COPY` (it is part of the step's history, like `step.leased`; the prefix ends with the step `READY`, so it is no attempt in flight) | declared by 006 — `specs/006-sdk-multilanguage/research.md` D006-003, ADR-0098 |
 | 019 | `step.leased` + dispatch detail, `step.detached` | `COPY` (an open detached attempt is an attempt in flight) | declared by 019 — same file |
 | 020 | `search_attributes.upserted` | `REMATERIALIZE` (fold into `run_search_attributes`, same `set_seq`) | declared by 020 — FR-020-006, D1618 |
 | 020 | `search_attributes.rejected` | `COPY` | declared by 020 — D1618 |

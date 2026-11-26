@@ -115,6 +115,10 @@ pub enum Capability {
     /// Design 043: the process refuses every run input its version's `inputSchema` refuses (`enforce` mode); one in
     /// `report` mode does not list it (FR-043-013).
     RunInputValidationV1,
+    /// Feature 006 (ADR-0098): the process replays `step.lease_withdrawn`, and an engine withdraws the leases it never handed
+    /// to a host once both kinds are required to list it. Listed unconditionally by every control plane and engine of a build
+    /// that knows the event: every configuration of it replays the event (decision D006-004).
+    LeaseWithdrawalV1,
     /// Feature 022: the control plane and the engine run the concurrency gate on every path that admits a run or makes
     /// a step ready (ADR-0089 decision 6). No build lists it before the gate exists (D022-037).
     FlowControlConcurrencyV1,
@@ -123,11 +127,12 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::SchedulesV1,
         Self::AccessNarrowingV1,
         Self::PayloadEncodingV1,
         Self::RunInputValidationV1,
+        Self::LeaseWithdrawalV1,
         Self::FlowControlConcurrencyV1,
         Self::FlowControlRateV1,
     ];
@@ -139,6 +144,7 @@ impl Capability {
             Self::AccessNarrowingV1 => "access-narrowing-v1",
             Self::PayloadEncodingV1 => "payload-encoding-v1",
             Self::RunInputValidationV1 => crate::run_input::CAPABILITY,
+            Self::LeaseWithdrawalV1 => "lease-withdrawal-v1",
             Self::FlowControlConcurrencyV1 => "flow-control-concurrency-v1",
             Self::FlowControlRateV1 => "flow-control-rate-v1",
         }
@@ -292,6 +298,9 @@ pub struct ServingGate {
     missing: Mutex<Vec<String>>,
     created: Instant,
     last_heard: Mutex<Option<Instant>>,
+    /// The requirements as last read, with their epoch, for a member that keeps them ([`Member::keeping_requirements`]);
+    /// `None` before the first read. A feature asks it whether it may act ([`Self::requires`]).
+    kept: Mutex<Option<Requirements>>,
 }
 
 impl Default for ServingGate {
@@ -310,6 +319,7 @@ impl ServingGate {
             missing: Mutex::new(Vec::new()),
             created: Instant::now(),
             last_heard: Mutex::new(None),
+            kept: Mutex::new(None),
         }
     }
 
@@ -358,6 +368,40 @@ impl ServingGate {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Keeps the requirements as read under their epoch.
+    pub fn keep(&self, requirements: &Requirements) {
+        *self.kept.lock().unwrap_or_else(PoisonError::into_inner) = Some(requirements.clone());
+    }
+
+    /// The epoch of the requirements kept (`-1` before the first read).
+    #[must_use]
+    pub fn kept_epoch(&self) -> i64 {
+        self.kept
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(-1, |kept| kept.epoch)
+    }
+
+    /// Whether the platform requires `capability` of every kind in `kinds`, as of the requirements last read. Before the
+    /// first read the answer is no: a feature that waits for a fleet requirement does nothing until it knows (feature 006,
+    /// decision D006-015).
+    #[must_use]
+    pub fn requires(&self, capability: Capability, kinds: &[InstanceKind]) -> bool {
+        self.kept
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|kept| {
+                kept.required.iter().any(|requirement| {
+                    requirement.capability == capability.as_str()
+                        && kinds
+                            .iter()
+                            .all(|kind| requirement.kinds.iter().any(|k| k == kind.as_str()))
+                })
+            })
     }
 
     /// The registry answered now.
@@ -456,6 +500,8 @@ pub struct Member<S> {
     capabilities: Vec<Capability>,
     scheduler_owner: Option<String>,
     gate: Arc<ServingGate>,
+    /// Whether the gate keeps the recorded requirements for the features that ask it ([`ServingGate::requires`]).
+    keeps_requirements: bool,
 }
 
 impl<S: InstanceStore> Member<S> {
@@ -504,7 +550,16 @@ impl<S: InstanceStore> Member<S> {
             capabilities,
             scheduler_owner,
             gate: Arc::new(ServingGate::closed()),
+            keeps_requirements: false,
         }
+    }
+
+    /// The gate keeps the recorded requirements: they are read right after the process registers and whenever the epoch
+    /// moves (one more read at the start and at each change, none on a beat whose epoch did not move).
+    #[must_use]
+    pub const fn keeping_requirements(mut self) -> Self {
+        self.keeps_requirements = true;
+        self
     }
 
     #[must_use]
@@ -567,8 +622,28 @@ impl<S: InstanceStore> Member<S> {
                 Err(refusal)
             }
         };
+        if outcome.is_ok() {
+            self.refresh_kept().await;
+        }
         self.observe(Instant::now());
         outcome
+    }
+
+    /// Reads the requirements for the gate to keep, when this member keeps them and has not read them under the gate's
+    /// epoch. A failure is logged and not returned: the gate keeps what it had (nothing, at the start), and the next beat
+    /// tries again.
+    async fn refresh_kept(&self) {
+        if !self.keeps_requirements || self.gate.kept_epoch() == self.gate.epoch() {
+            return;
+        }
+        match self.store.requirements().await {
+            Ok(requirements) => self.gate.keep(&requirements),
+            Err(error) => tracing::warn!(
+                instance = %self.instance,
+                %error,
+                "could not read the recorded requirements; the features that wait for one stay off until the next beat"
+            ),
+        }
     }
 
     /// One heartbeat: says the process is alive and, when the epoch moved, reads the requirements again and decides
@@ -582,6 +657,9 @@ impl<S: InstanceStore> Member<S> {
         self.gate.heard();
         self.publish_live(&heartbeat);
         let beat = self.decide(&heartbeat).await;
+        if beat.is_ok() {
+            self.refresh_kept().await;
+        }
         self.observe(Instant::now());
         beat
     }
@@ -610,6 +688,9 @@ impl<S: InstanceStore> Member<S> {
             return Ok(self.current());
         }
         let requirements = self.store.requirements().await?;
+        if self.keeps_requirements {
+            self.gate.keep(&requirements);
+        }
         let missing = missing_for(self.kind, &self.capabilities, &requirements);
         if missing.is_empty() {
             self.reopen(requirements.epoch);
@@ -1019,6 +1100,112 @@ mod tests {
             epoch,
             live: vec![("EXECUTION_ENGINE".to_owned(), 2)],
         })
+    }
+
+    const BOTH: [InstanceKind; 2] = [InstanceKind::ControlPlane, InstanceKind::ExecutionEngine];
+
+    /// Feature 006 (decision D006-015): a member that keeps the requirements reads them once after it registers and again
+    /// only when the epoch moves, and the gate answers for a capability required of every kind asked.
+    #[tokio::test]
+    async fn a_member_that_keeps_the_requirements_reads_them_at_the_start_and_when_the_epoch_moves()
+    {
+        let fake = Arc::new(Fake::default());
+        fake.registers
+            .lock()
+            .expect("lock")
+            .push_back(Ok(Registered::Serving { epoch: 5 }));
+        fake.reads.lock().expect("lock").extend([
+            Ok(requirements(
+                5,
+                vec![requirement(
+                    "lease-withdrawal-v1",
+                    &["CONTROL_PLANE", "EXECUTION_ENGINE"],
+                )],
+            )),
+            Ok(requirements(6, vec![])),
+        ]);
+        let member = member(&fake, &[Capability::LeaseWithdrawalV1]).keeping_requirements();
+        assert!(
+            !member.gate().requires(Capability::LeaseWithdrawalV1, &BOTH),
+            "nothing is known before the first read"
+        );
+        member.register().await.expect("registered");
+        assert_eq!(
+            *fake.read_count.lock().expect("lock"),
+            1,
+            "read once after registering"
+        );
+        assert!(member.gate().requires(Capability::LeaseWithdrawalV1, &BOTH));
+        assert!(!member.gate().requires(Capability::SchedulesV1, &BOTH));
+
+        fake.heartbeats
+            .lock()
+            .expect("lock")
+            .extend([beat(true, 5), beat(true, 6)]);
+        assert_eq!(member.beat().await, Ok(Beat::Serving));
+        assert_eq!(
+            *fake.read_count.lock().expect("lock"),
+            1,
+            "the epoch did not move"
+        );
+        // the operator removed the requirement: the epoch moves, the one read decides the gate and is kept
+        assert_eq!(member.beat().await, Ok(Beat::Serving));
+        assert_eq!(*fake.read_count.lock().expect("lock"), 2);
+        assert!(!member.gate().requires(Capability::LeaseWithdrawalV1, &BOTH));
+        assert_eq!(member.gate().kept_epoch(), 6);
+    }
+
+    #[tokio::test]
+    async fn a_requirement_of_one_kind_is_not_a_requirement_of_both() {
+        let fake = Arc::new(Fake::default());
+        fake.registers
+            .lock()
+            .expect("lock")
+            .push_back(Ok(Registered::Serving { epoch: 2 }));
+        fake.reads.lock().expect("lock").push_back(Ok(requirements(
+            2,
+            vec![requirement("lease-withdrawal-v1", &["EXECUTION_ENGINE"])],
+        )));
+        let member = member(&fake, &[Capability::LeaseWithdrawalV1]).keeping_requirements();
+        member.register().await.expect("registered");
+        assert!(member.gate().requires(
+            Capability::LeaseWithdrawalV1,
+            &[InstanceKind::ExecutionEngine]
+        ));
+        assert!(!member.gate().requires(Capability::LeaseWithdrawalV1, &BOTH));
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_at_the_start_keeps_nothing_and_the_next_beat_reads_again() {
+        let fake = Arc::new(Fake::default());
+        fake.registers
+            .lock()
+            .expect("lock")
+            .push_back(Ok(Registered::Serving { epoch: 3 }));
+        fake.reads.lock().expect("lock").extend([
+            Err(StoreError::DatabaseUnavailable),
+            Ok(requirements(
+                3,
+                vec![requirement(
+                    "lease-withdrawal-v1",
+                    &["CONTROL_PLANE", "EXECUTION_ENGINE"],
+                )],
+            )),
+        ]);
+        let member = member(&fake, &[Capability::LeaseWithdrawalV1]).keeping_requirements();
+        member
+            .register()
+            .await
+            .expect("a failed read does not refuse the start");
+        assert!(member.gate().is_open());
+        assert!(!member.gate().requires(Capability::LeaseWithdrawalV1, &BOTH));
+        fake.heartbeats
+            .lock()
+            .expect("lock")
+            .push_back(beat(true, 3));
+        assert_eq!(member.beat().await, Ok(Beat::Serving));
+        assert!(member.gate().requires(Capability::LeaseWithdrawalV1, &BOTH));
+        assert_eq!(*fake.read_count.lock().expect("lock"), 2);
     }
 
     #[tokio::test]

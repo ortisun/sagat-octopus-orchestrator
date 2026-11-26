@@ -40,6 +40,7 @@ use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+pub mod capability_activation;
 pub mod cleanup;
 pub mod cli;
 pub mod config;

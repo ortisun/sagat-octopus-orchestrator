@@ -53,8 +53,9 @@ Run input validation, refined in the build: [ADR-0092](ADR-0092-the-application-
 ## Every decision
 
 Each record, in number order, with the status written at its top (shortened to its first clause; the file has the
-rest). Numbers 0011, 0034, 0041 to 0049, 0091 and 0095 have no file on `develop`; numbers are shared by every branch (rule 1
-above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
+rest). Numbers 0011, 0034, 0041 to 0049, 0091 and 0101 to 0144 have no file on `develop`, 0101 to 0144 being reserved or
+used on other branches (0130 to 0137 and 0143 to 0144 among them, seen on 2026-11-24); numbers are shared by every branch
+(rule 1 above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
 
 | Number | Decision | Status |
 |---|---|---|
@@ -141,3 +142,7 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0093 | [The flow-control digest key is rotated per key, with live rows](ADR-0093-the-flow-control-digest-key-is-rotated-per-key-with-live-rows.md) | Accepted (2026-11-19, OD-2026-11-19-2) |
 | 0094 | [The readiness gate decides in an evaluation round, before `persist`](ADR-0094-the-readiness-gate-decides-in-an-evaluation-round-before-persist.md) | Accepted (2026-11-19, OD-2026-11-19-3) |
 | 0096 | [A paused run gives back what its granted, unleased steps hold, and they ask again on resume](ADR-0096-a-paused-run-gives-back-its-granted-unleased-steps-and-asks-again-on-resume.md) | Accepted (2026-11-20, OD-2026-11-20-2) |
+| 0098 | [A lease the server never handed to the transport is withdrawn, with a new journal event behind a fleet requirement](ADR-0098-a-lease-the-server-never-handed-to-the-transport-is-withdrawn-behind-a-fleet-requirement.md) | Accepted (OD-2026-11-21-4) |
+| 0099 | [A lease of worker protocol 1.8 is provisional until its host acknowledges it, and a provisional lease that expires is withdrawn](ADR-0099-a-lease-of-protocol-1-8-is-provisional-until-its-host-acknowledges-it-and-a-provisional-lease-that-expires-is-withdrawn.md) | Accepted (2026-11-21, OD-2026-11-21-5); decision 9 partly superseded by ADR-0145 |
+| 0100 | [Retired number: a fleet requirement may require another](ADR-0100-withdrawn-a-fleet-requirement-may-require-another.md) | Withdrawn (2026-11-21) |
+| 0145 | [At protocol 1.8, a hand-back the fleet cannot honour lapses](ADR-0145-at-protocol-1-8-a-hand-back-the-fleet-cannot-honour-lapses.md) | Accepted (2026-11-24, delegate, OD-2026-11-24-4) |

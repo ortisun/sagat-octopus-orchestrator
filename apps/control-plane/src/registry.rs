@@ -30,6 +30,7 @@ pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What this control plane process will honour: the code of the binary narrowed by its configuration, read once, so the
 /// list is true for the life of the process. Design 043: `run-input-validation-v1` only in `enforce` mode
 /// (`SAGAT_RUN_INPUT_VALIDATION`, FR-043-013), so that a replica in `report` is refused once the operator requires it.
+/// Feature 006: `lease-withdrawal-v1` always, since every configuration of this build replays `step.lease_withdrawn`.
 #[must_use]
 pub fn capabilities(
     run_input_validation: sagat_application::run_input::InputValidationMode,
@@ -39,6 +40,8 @@ pub fn capabilities(
     if run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
         listed.push(Capability::RunInputValidationV1);
     }
+    // feature 006 (decision D006-004): every control plane of this build replays `step.lease_withdrawn`
+    listed.push(Capability::LeaseWithdrawalV1);
     // feature 022: a capability whose gate this process runs, switched on and backed by the digest keys (D022-057)
     listed.extend(flow_control.iter().map(|capability| capability.registry()));
     listed.sort_by_key(|capability| Capability::ALL.iter().position(|c| c == capability));
@@ -73,14 +76,19 @@ pub fn member(
     capabilities: &[Capability],
     scheduler_owner: Option<String>,
 ) -> Arc<Member<PgInstanceStore>> {
-    Arc::new(Member::new(
-        PgInstanceStore::new(pool.clone()),
-        instance,
-        kind,
-        BINARY_VERSION,
-        capabilities,
-        scheduler_owner,
-    ))
+    // the gate keeps the recorded requirements: the engine withdraws undelivered leases only once one is recorded
+    // (feature 006, decision D006-015)
+    Arc::new(
+        Member::new(
+            PgInstanceStore::new(pool.clone()),
+            instance,
+            kind,
+            BINARY_VERSION,
+            capabilities,
+            scheduler_owner,
+        )
+        .keeping_requirements(),
+    )
 }
 
 /// What one beat came to, as far as the log is concerned.
@@ -408,17 +416,23 @@ mod tests {
     }
 
     #[test]
-    fn the_control_plane_lists_run_input_validation_only_in_enforce() {
+    fn the_control_plane_lists_run_input_validation_only_in_enforce_and_lease_withdrawal_always() {
         use sagat_application::run_input::InputValidationMode;
         assert_eq!(
             capabilities(InputValidationMode::Enforce, &[]),
-            vec![Capability::RunInputValidationV1]
+            vec![
+                Capability::RunInputValidationV1,
+                Capability::LeaseWithdrawalV1
+            ]
         );
-        assert!(capabilities(InputValidationMode::Report, &[]).is_empty());
+        assert_eq!(
+            capabilities(InputValidationMode::Report, &[]),
+            vec![Capability::LeaseWithdrawalV1]
+        );
     }
 
     /// Decision D022-057, tasks T022-072 and T022-074: a gate is listed by a process whose switch for it is on and which
-    /// holds the digest keys; this build serves both gates.
+    /// holds the digest keys; this build serves both gates. Feature 006's `lease-withdrawal-v1` is listed in every case.
     #[test]
     fn the_control_plane_lists_each_gate_switched_on_with_its_keys() {
         use sagat_application::flow_control::{FlowControlSwitches, served};
@@ -431,18 +445,22 @@ mod tests {
             capabilities(InputValidationMode::Enforce, &served(on, true)),
             vec![
                 Capability::RunInputValidationV1,
+                Capability::LeaseWithdrawalV1,
                 Capability::FlowControlConcurrencyV1,
                 Capability::FlowControlRateV1
             ]
         );
-        assert!(capabilities(InputValidationMode::Report, &served(on, false)).is_empty());
+        assert_eq!(
+            capabilities(InputValidationMode::Report, &served(on, false)),
+            vec![Capability::LeaseWithdrawalV1]
+        );
         let rate_only = FlowControlSwitches {
             concurrency_keys: false,
             rate_limits: true,
         };
         assert_eq!(
             capabilities(InputValidationMode::Report, &served(rate_only, true)),
-            vec![Capability::FlowControlRateV1]
+            vec![Capability::LeaseWithdrawalV1, Capability::FlowControlRateV1]
         );
     }
 

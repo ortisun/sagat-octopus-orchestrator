@@ -888,6 +888,24 @@ TEST_ONLY_FEATURES = (
 )
 
 
+# Feature 006, decisions D006-008, D006-092 and D006-093: the delivery probe and the commit probe hold a claim (the commit probe
+# inside its open run transaction, with the run's locks) until a test lets it go. They are for the tests only: no production
+# source may call them; the tests package and a crate's own test modules may.
+TEST_PROBE_CALL = re.compile(r"\.\s*(with_delivery_probe|with_commit_probe)\s*\(")
+
+
+def test_probe_errors(root):
+    """A call of a test-only probe of the worker API in a production source under `crates/*/src` or `apps/*/src`."""
+    errors = []
+    for rel, text, masked, _ in production_sources(root):
+        for m in TEST_PROBE_CALL.finditer(masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is called outside the tests: the probe holds "
+                f"claims until a test releases them, and production never sets one (D006-093)"
+            )
+    return errors
+
+
 def test_support_errors(pkgs):
     """A test-only feature (`TEST_ONLY_FEATURES`) enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
     errors = []
@@ -940,6 +958,100 @@ def purge_as_of_door_errors(root):
     return errors
 
 
+# Feature 006, decision D006-033: the three checks of the instance-capability registry list the capabilities by hand, and two
+# branches (feature 022 and feature 006) redefine them with only their own values each. A fresh database ends with the newest
+# definition by version, so that one must list exactly what the code lists (`Capability::as_str` over `Capability::ALL`):
+# whichever branch merges second takes the union in its own migration, or this fails.
+CAPABILITY_SOURCE = "crates/application/src/instances.rs"
+CAPABILITY_MIGRATIONS = "crates/infra-postgres/migrations"
+CAPABILITY_CHECKS = (
+    "serving_instances_capabilities_known",
+    "platform_requirements_capability_known",
+    "platform_requirement_history_capability_known",
+)
+
+
+def code_capabilities(root):
+    """The tokens of `Capability::as_str`, a constant resolved in the application crate; None when the body is not found."""
+    base = pathlib.Path(root)
+    text = (base / CAPABILITY_SOURCE).read_text(encoding="utf-8")
+    impl = text.find("impl Capability {")
+    if impl < 0:
+        return None
+    body = text.find("fn as_str(", impl)
+    end = text.find("\n    }\n", body)
+    if body < 0 or end < 0:
+        return None
+    tokens = set()
+    for arm in re.finditer(r"Self::\w+\s*=>\s*([^,\n]+),", text[body:end]):
+        value = arm.group(1).strip()
+        if value.startswith('"'):
+            tokens.add(value.strip('"'))
+            continue
+        name = value.split("::")[-1]
+        found = None
+        for source in sorted((base / "crates/application/src").rglob("*.rs")):
+            match = re.search(rf'pub const {re.escape(name)}: &str = "([^"]+)";', source.read_text(encoding="utf-8"))
+            if match:
+                found = match.group(1)
+                break
+        if found is None:
+            return None
+        tokens.add(found)
+    return tokens
+
+
+def defined_capabilities(text, check):
+    """The quoted values of the last `CONSTRAINT <check> CHECK (...)` of a migration (inline or after `ADD`), or None."""
+    listed = None
+    for found in re.finditer(rf"CONSTRAINT {check} CHECK \(", text):
+        depth, i = 1, found.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        listed = set(re.findall(r"'([^']+)'", text[found.end():i]))
+    return listed
+
+
+def capability_list_errors(root):
+    errors = []
+    code = code_capabilities(root)
+    if not code:
+        return [f"`Capability::as_str` was not found in {CAPABILITY_SOURCE}: the capability-list rule would check nothing"]
+    folder = pathlib.Path(root) / CAPABILITY_MIGRATIONS
+    migrations = sorted(folder.glob("*.up.sql")) if folder.is_dir() else []
+    for check in CAPABILITY_CHECKS:
+        newest = None
+        for migration in migrations:
+            listed = defined_capabilities(migration.read_text(encoding="utf-8"), check)
+            if listed is None:
+                continue
+            # decision D006-083: the down of this migration restores the list in force before it (none for the first)
+            down = migration.with_name(migration.name.replace(".up.sql", ".down.sql"))
+            restored = defined_capabilities(down.read_text(encoding="utf-8"), check) if down.is_file() else None
+            before = newest[1] if newest else None
+            if restored != before:
+                errors.append(
+                    f"{down.name} restores {sorted(restored) if restored is not None else 'no list'} of {check}, but the "
+                    f"list before {migration.name} is {sorted(before) if before is not None else 'none'}: a rollback "
+                    "must restore the list in force before its migration (decision D006-083)"
+                )
+            newest = (migration.name, listed)
+        if newest is None:
+            errors.append(f"no migration under {CAPABILITY_MIGRATIONS} defines {check}: the capability-list rule would check nothing")
+            continue
+        name, listed = newest
+        missing, unknown = sorted(code - listed), sorted(listed - code)
+        if missing or unknown:
+            errors.append(
+                f"{check}, last defined by {name}, does not list what `Capability::ALL` lists"
+                + (f"; it drops {', '.join(missing)}" if missing else "")
+                + (f"; it lists {', '.join(unknown)}, which the code does not know" if unknown else "")
+                + ": the branch that merges second takes the union of both lists in its own, newest migration (decision D006-033)"
+            )
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
@@ -957,12 +1069,25 @@ def main(argv):
         if "--rust-root" in argv
         else str(pathlib.Path(__file__).resolve().parents[1])
     )
+    capability_root = (
+        argv[argv.index("--capability-root") + 1]
+        if "--capability-root" in argv
+        else str(pathlib.Path(__file__).resolve().parents[1])
+    )
+    if "--capability-root" in argv:
+        # the capability-list rule alone, over a tree a test built
+        errors = capability_list_errors(capability_root)
+        for e in errors:
+            print(f"  - {e}")
+        return 1 if errors else 0
     md = load(metadata_file)
     root = md["workspace_root"]
     ws_ids = set(md["workspace_members"])
     pkgs = {p["id"]: p for p in md["packages"] if p["id"] in ws_ids}
     by_name = {p["name"]: p for p in pkgs.values()}
     errors = []
+    if metadata_file is None:
+        errors.extend(capability_list_errors(capability_root))
 
     graph = {}
     for p in pkgs.values():
@@ -1040,6 +1165,7 @@ def main(argv):
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
     errors.extend(key_value_free_errors(rust_root))
+    errors.extend(test_probe_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -1072,7 +1198,8 @@ def main(argv):
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
           f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start, "
-          f"queued runs are counted by one statement, a waiter's eligibility is one text, flow-control bodies hold no key value, the reveal rule has one implementation)")
+          f"queued runs are counted by one statement, a waiter's eligibility is one text, flow-control bodies hold no key value, the reveal rule has one implementation, "
+          f"the capability checks list the code's capabilities, no test probe in production)")
     return 0
 
 

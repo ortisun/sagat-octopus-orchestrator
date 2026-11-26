@@ -47,6 +47,7 @@ mod instances_migration;
 mod instances_process;
 mod instances_rest;
 mod lag;
+mod lease_withdrawal_activation;
 mod limits;
 mod migration;
 mod observability;

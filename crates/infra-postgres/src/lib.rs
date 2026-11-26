@@ -142,7 +142,8 @@ pub use flow_control::{
 };
 pub use identity::PgIdentityStore;
 pub use instances::{
-    FeatureStep, OperatorBounds, PgInstanceStore, live_capable_step, no_feature_step,
+    CapabilityCensus, FeatureStep, OperatorBounds, PgInstanceStore, capability_census, census_step,
+    live_capable_step, may_activate, no_feature_step,
 };
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;

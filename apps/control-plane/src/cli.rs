@@ -27,6 +27,9 @@ pub enum Command {
         capability: sagat_application::flow_control::FlowControlCapability,
         operator: String,
     },
+    /// Record a fleet requirement of the instance-capability registry (feature 006, decision D006-034), then exit. Needs the
+    /// schema-owning database role.
+    CapabilityActivate(crate::capability_activation::ActivationArgs),
     /// List the stored workflow versions whose `inputSchema` is outside the supported subset (design 043), then exit
     /// 0 (none), 1 (at least one) or 2 (the command failed). Reads only; it runs with the process's database settings (the runtime role is enough).
     /// A superseded version nothing starts never counts; `--all` (`all`) lists those as well (OD-2026-11-16-5).
@@ -70,6 +73,9 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     }
     if first == Some("flow-control-activate") {
         return parse_flow_control_activate(args);
+    }
+    if first == Some("capability-activate") {
+        return parse_activation(args);
     }
     if first == Some("input-schema-inventory") {
         return match (args.next(), args.next()) {
@@ -184,6 +190,63 @@ fn parse_flow_control_activate<'a>(
     }
 }
 
+fn parse_activation<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command, UsageError> {
+    let mut parsed = crate::capability_activation::ActivationArgs::default();
+    match args.next() {
+        Some(token) if !token.starts_with('-') => {
+            if crate::capability_activation::activatable(token).is_none() {
+                return Err(UsageError(crate::capability_activation::not_activatable(
+                    token,
+                )));
+            }
+            token.clone_into(&mut parsed.capability);
+        }
+        _ => {
+            return Err(UsageError(
+                "capability-activate needs the capability first: capability-activate <capability> --operator NAME \
+                 [--expect-live N] [--dry-run]"
+                    .to_owned(),
+            ));
+        }
+    }
+    while let Some(arg) = args.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (arg, None),
+        };
+        let mut value = |name: &str| -> Result<String, UsageError> {
+            let given = inline
+                .map(str::to_owned)
+                .or_else(|| args.next().map(str::to_owned))
+                .ok_or_else(|| UsageError(format!("{name} needs a value")))?;
+            if given.starts_with('-') {
+                return Err(UsageError(format!(
+                    "{name} needs a value, not the option '{given}'"
+                )));
+            }
+            Ok(given)
+        };
+        match flag {
+            "--operator" => parsed.operator = Some(value("--operator")?),
+            "--expect-live" => {
+                let text = value("--expect-live")?;
+                parsed.expect_live = Some(text.parse::<u32>().map_err(|_| {
+                    UsageError(format!(
+                        "--expect-live needs a whole number of processes, not '{text}'"
+                    ))
+                })?);
+            }
+            "--dry-run" if inline.is_none() => parsed.dry_run = true,
+            other => {
+                return Err(UsageError(format!(
+                    "unexpected argument '{other}' for capability-activate"
+                )));
+            }
+        }
+    }
+    Ok(Command::CapabilityActivate(parsed))
+}
+
 pub const USAGE: &str = "\
 Sagat Octopus Orchestrator control plane
 
@@ -203,6 +266,9 @@ COMMANDS:
                   flow-control-activate --capability concurrency-keys|rate-limits --operator NAME
     schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
                   owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
+    capability-activate  Record a fleet requirement of the instance-capability registry (lease-withdrawal-v1: the engines
+                  withdraw the leases they never handed to a host); with the owner role:
+                  capability-activate <capability> --operator NAME [--expect-live N] [--dry-run]
     input-schema-inventory [--all]  List the stored workflow versions whose inputSchema is outside the supported subset (every
                   start of them is refused in enforce mode), and for information those with an inputSchema and a trigger;
                   reads only, with the process's database settings. A superseded version nothing starts (not active, no

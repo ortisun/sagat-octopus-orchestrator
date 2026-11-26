@@ -110,6 +110,10 @@ pub struct EngineConfig {
     /// setting too, required with a switch on; the grant pass needs them as the admission does. Prints its versions
     /// only.
     pub flow_control_keys: Option<std::sync::Arc<sagat_application::keyed_digest::KeyRing>>,
+    /// Whether this engine writes new lease withdrawals (`SAGAT_LEASE_WITHDRAWAL`, `on` by default; feature 006, decision
+    /// D006-032). `off` stops it: its leases lapse as before, and it still lists `lease-withdrawal-v1` because it can still
+    /// replay the event. The way to stop withdrawing, since the requirement cannot be removed once a journal holds one.
+    pub lease_withdrawal: bool,
     pub schedules: ScheduleSettings,
     /// Pause between schedule rounds when the last one found nothing to do.
     pub schedule_poll: Duration,
@@ -644,6 +648,16 @@ impl EngineConfig {
             rate_limits: flag(get, "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED")?,
         };
         let flow_control_keys = sagat_control_plane::config::flow_control_keys(get, flow_control)?;
+        let lease_withdrawal = match get("SAGAT_LEASE_WITHDRAWAL").as_deref() {
+            None | Some("" | "on") => true,
+            Some("off") => false,
+            Some(other) => {
+                return Err(ConfigError::Invalid {
+                    name: "SAGAT_LEASE_WITHDRAWAL",
+                    reason: format!("'{other}' is not on or off"),
+                });
+            }
+        };
         let schedule_defaults = ScheduleSettings::default();
         let schedules = ScheduleSettings {
             batch: u32::try_from(positive(
@@ -967,6 +981,7 @@ impl EngineConfig {
             lake_enabled,
             flow_control,
             flow_control_keys,
+            lease_withdrawal,
             schedules,
             schedule_poll,
             batches_enabled,

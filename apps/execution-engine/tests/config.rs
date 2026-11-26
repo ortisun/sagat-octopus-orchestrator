@@ -86,6 +86,31 @@ fn a_run_may_carry_an_iceberg_write_only_when_the_lake_flag_is_set() {
     );
 }
 
+/// `SAGAT_LEASE_WITHDRAWAL` (feature 006, decision D006-032): on unless it says `off`, and anything else stops the process.
+#[test]
+fn new_lease_withdrawals_are_on_unless_the_switch_says_off() {
+    assert!(
+        parse(&[]).expect("config").lease_withdrawal,
+        "on by default"
+    );
+    assert!(
+        parse(&[("SAGAT_LEASE_WITHDRAWAL", "on")])
+            .expect("config")
+            .lease_withdrawal
+    );
+    assert!(
+        !parse(&[("SAGAT_LEASE_WITHDRAWAL", "off")])
+            .expect("config")
+            .lease_withdrawal
+    );
+    for mistyped in ["Off", "false", "0", " off"] {
+        assert!(
+            parse(&[("SAGAT_LEASE_WITHDRAWAL", mistyped)]).is_err(),
+            "{mistyped:?} is refused, not guessed"
+        );
+    }
+}
+
 #[test]
 fn a_mistyped_schedule_setting_is_refused_not_guessed() {
     for (name, value) in [

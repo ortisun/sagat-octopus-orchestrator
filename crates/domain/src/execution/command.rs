@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{
     AddressedRunEvent, ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult,
-    ResetReapply, ReviewOutcome, RunEvent, StopReason, SwitchSelection, WaitVia,
+    ResetReapply, ReviewOutcome, RunEvent, StopReason, SwitchSelection, WaitVia, WithdrawalCause,
 };
 use super::instance::ExecutionInstanceId;
 use super::path_state::PathExecutionState;
@@ -2223,6 +2223,118 @@ pub fn expire_attempt(
         jitter_sample,
     };
     end_attempt(def, state, node, failure, now)
+}
+
+/// How many times one attempt may be withdrawn (feature 006, decision D006-031 of `specs/006-sdk-multilanguage/research.md`).
+/// One delivery is withdrawn at most once, and four causes can each end one delivery of an honest attempt before any handler
+/// runs: the consumer's call ending before the frame reached the transport, and a host that is stopping, a frame over its
+/// credit or a malformed frame. A cause that repeats for the same attempt is a property of the task, the host or the client,
+/// and spends the attempt like any other failure.
+pub const MAX_WITHDRAWALS_PER_ATTEMPT: u32 = 4;
+
+/// Withdraws a lease that never reached a handler (feature 006, decisions D006-001 and D006-005; ADR-0098): the step must
+/// still be `LEASED` to exactly `fence`, and `withdrawn_before` (the journal's `step.lease_withdrawn` of this step that carry
+/// `fence.attempt`: a withdrawal gives its attempt back, so they all carry the same number) must be below
+/// [`MAX_WITHDRAWALS_PER_ATTEMPT`]. The count is the caller's because the state is restored from the projection, which does
+/// not keep it; it is read in the same transaction, under the run lock. It goes back to `READY` without spending the attempt, and the run is settled in the
+/// same command, so a step of a run that is stopping is cancelled at once (decision D006-011). Never a review: nothing ran.
+///
+/// # Errors
+/// [`ExecutionError::StaleAttempt`] when `fence` is not the lease's; [`ExecutionError::IllegalTransition`] when the step is
+/// not `LEASED` (a heartbeat started it: a handler may have run); [`ExecutionError::RunFinished`] when the run ended;
+/// [`ExecutionError::WithdrawalsSpent`] when the attempt was withdrawn as often as one attempt may be (decision D006-031).
+pub fn withdraw_lease(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    fence: Fence,
+    cause: WithdrawalCause,
+    withdrawn_before: u32,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    require_lease(state, node, fence)?;
+    if withdrawn_before >= MAX_WITHDRAWALS_PER_ATTEMPT {
+        return Err(ExecutionError::WithdrawalsSpent {
+            node: node.clone(),
+            attempt: fence.attempt,
+        });
+    }
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::StepLeaseWithdrawn {
+            node: node.clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            cause,
+        },
+    )
+}
+
+/// Withdraws the lease of one scoped instance, as [`withdraw_lease`] does at the root.
+///
+/// # Errors
+/// The typed instance errors for a stale fence or a step that is not `LEASED`.
+pub fn withdraw_instance(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    cause: WithdrawalCause,
+    withdrawn_before: u32,
+) -> Result<AddressedProgress, ExecutionError> {
+    withdraw_scoped(def, state, instance, fence, cause, withdrawn_before)
+}
+
+/// Withdraws the lease of one scoped instance over one complete bounded path snapshot.
+///
+/// # Errors
+/// As [`withdraw_instance`], and a command addressing a different path.
+pub fn withdraw_path_instance(
+    def: &WorkflowDefinition,
+    state: &mut PathExecutionState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    cause: WithdrawalCause,
+    withdrawn_before: u32,
+) -> Result<AddressedProgress, ExecutionError> {
+    withdraw_scoped(def, state, instance, fence, cause, withdrawn_before)
+}
+
+fn withdraw_scoped<S: ScopedAttemptState>(
+    def: &WorkflowDefinition,
+    state: &mut S,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    cause: WithdrawalCause,
+    withdrawn_before: u32,
+) -> Result<AddressedProgress, ExecutionError> {
+    if instance.path().is_root() {
+        return Err(ExecutionError::Invariant(
+            "root withdrawal used the scoped command",
+        ));
+    }
+    state.require_lease(instance, fence)?;
+    if withdrawn_before >= MAX_WITHDRAWALS_PER_ATTEMPT {
+        return Err(ExecutionError::WithdrawalsSpent {
+            node: instance.node().clone(),
+            attempt: fence.attempt,
+        });
+    }
+    let mut events = Vec::new();
+    emit(
+        state,
+        &mut events,
+        instance.path(),
+        RunEvent::StepLeaseWithdrawn {
+            node: instance.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            cause,
+        },
+    )?;
+    state.settle_scoped(def, instance.path(), events)
 }
 
 /// Ends an expired scoped attempt under its exact fence.

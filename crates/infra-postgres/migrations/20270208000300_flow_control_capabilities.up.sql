@@ -1,25 +1,32 @@
 -- Feature 022 (T022-094; FR-022-053; ADR-0089 decision 6, ADR-0050 decision 9): the two flow-control capabilities join the
 -- closed list of the instance-capability registry (`specs/018-schedules-bulk-operations/data-model.md`, rule 5: a value is
 -- owned by the feature that introduces it). `flow-control-concurrency-v1` and `flow-control-rate-v1` are required of the
--- control plane and the engine; a process lists one only when it runs the gate (D022-037), which no build does yet.
+-- control plane and the engine; a process lists one only when it runs the gate (D022-037).
+--
+-- Stamped after feature 006's `20270208000200_lease_withdrawal_floor` (decision D006-033 of
+-- `specs/006-sdk-multilanguage/research.md`): feature 022 merged after feature 006, which redefines the same three checks, so
+-- this migration and its validation were restamped from `20270130000200` and `20270130000700` to follow the other's newest.
+-- An older stamp would be applied by sqlx after `20270208*` on a database of `develop` and narrow the lists again. The lists
+-- are the union of both features' values, the tokens of `Capability::ALL`; the down restores feature 006's list, the newest
+-- before this one (D006-083).
 --
 -- Additive: the three checks are widened, nothing else changes. No row uses the new values until a process lists one.
--- The checks are the ones `20270118000000_run_input_validation` named `*_known` (design 043); each is replaced under the same
--- name with the six values, added `NOT VALID` (a superset of the old one, so every stored row satisfies it) and validated by
--- `20270130000700_flow_control_validate` in a transaction of its own (D043-145).
+-- Each check is replaced under the same name with the seven values, added `NOT VALID` (a superset of the old one, so every
+-- stored row satisfies it) and validated by `20270208000400_flow_control_capabilities_validate` in a transaction of its own
+-- (D043-145).
 ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_known;
 ALTER TABLE serving_instances ADD CONSTRAINT serving_instances_capabilities_known CHECK (
     capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
-                          'flow-control-concurrency-v1', 'flow-control-rate-v1']::text[]
+                          'lease-withdrawal-v1', 'flow-control-concurrency-v1', 'flow-control-rate-v1']::text[]
     AND cardinality(capabilities) <= 32) NOT VALID;
 ALTER TABLE platform_requirements DROP CONSTRAINT platform_requirements_capability_known;
 ALTER TABLE platform_requirements ADD CONSTRAINT platform_requirements_capability_known CHECK (
     capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
-                   'flow-control-concurrency-v1', 'flow-control-rate-v1')) NOT VALID;
+                   'lease-withdrawal-v1', 'flow-control-concurrency-v1', 'flow-control-rate-v1')) NOT VALID;
 ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_known;
 ALTER TABLE platform_requirement_history ADD CONSTRAINT platform_requirement_history_capability_known CHECK (
     capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
-                   'flow-control-concurrency-v1', 'flow-control-rate-v1')) NOT VALID;
+                   'lease-withdrawal-v1', 'flow-control-concurrency-v1', 'flow-control-rate-v1')) NOT VALID;
 
 -- The feature step of a flow-control activation (T022-094): how many of the required kinds have no live process (seen
 -- within 30 seconds) that lists the capability. The registry records a requirement whenever no live process lacks it, an

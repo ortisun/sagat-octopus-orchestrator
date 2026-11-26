@@ -1,6 +1,7 @@
 -- Rollback is an operator/quiesced-service operation. A process that lists a flow-control capability, a requirement of
 -- one or its history says what the registry of this version understood: rolling back never destroys any of them, so it
--- refuses while one exists.
+-- refuses while one exists. The lists it restores are those of `20270208000000_lease_withdrawal`, the newest definition before
+-- this migration (D006-083).
 LOCK TABLE serving_instances, platform_requirements, platform_requirement_history IN SHARE ROW EXCLUSIVE MODE;
 DO $guard$
 BEGIN
@@ -18,11 +19,14 @@ END $guard$;
 DROP FUNCTION flow_control_kinds_without_capable_process(text, text[]);
 ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_known;
 ALTER TABLE serving_instances ADD CONSTRAINT serving_instances_capabilities_known CHECK (
-    capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1']::text[]
+    capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
+                          'lease-withdrawal-v1']::text[]
     AND cardinality(capabilities) <= 32);
 ALTER TABLE platform_requirements DROP CONSTRAINT platform_requirements_capability_known;
 ALTER TABLE platform_requirements ADD CONSTRAINT platform_requirements_capability_known CHECK (
-    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1'));
+    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
+                   'lease-withdrawal-v1'));
 ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_known;
 ALTER TABLE platform_requirement_history ADD CONSTRAINT platform_requirement_history_capability_known CHECK (
-    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1'));
+    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
+                   'lease-withdrawal-v1'));

@@ -148,6 +148,25 @@ adapter does not qualify a real provider.
   compensation scheduling is authorized.
 - **FR-037-006**: An unknown external-effect outcome MUST default to consultation/review in original
   and compensation work, including shutdown/drain paths; `highRisk` MUST NOT authorize an exception.
+  *Clarification (2026-11-20, D006-007 of `specs/006-sdk-multilanguage/research.md`, delegate OD-2026-11-20-6):* a lease
+  the server withdrew because it never handed it to the transport, or that a host handed back with `TASK_NOT_STARTED` while
+  the step was still `LEASED` (for a lease claimed by a session at protocol 1.8 or later, which reserves the code, within the cap of
+  four withdrawals per attempt, not yet `RUNNING` and with no capability served: the server review of pull request #260 and
+  decision 9 of Architecture decision 0099), is not an attempt and has a known outcome (no handler ran), so Requirement 037-006 does not apply to it.
+  A lease that lapses is unchanged: its outcome is unknown.
+  *Clarification (2026-11-20, Decision 006-044, Decision 006-045, Decision 006-049, Decision 006-052, Decision 006-053, Decision 006-061, Decision 006-062 and Decision 006-064 of the same research, Architecture decision 0099,
+  delegate Owner decision 2026-11-20-6, the trust assumption to be accepted by the owner with Architecture decision 0099):* a lease of protocol 1.8 flagged
+  `acknowledge_before_start` that the server withdrew because the first of its expiry and its attempt deadline passed while it
+  was still provisional (its host never acknowledged it, cause `NOT_ACKNOWLEDGED`) is not an attempt either, for a host that keeps
+  the protocol, which starts nothing before the acknowledgement; neither is such a lease handed back with `TASK_NOT_STARTED`
+  (after the verdict `CANCELLED` too, and also after its expiry, until the pass has ended it) while it is not yet `RUNNING` and no
+  capability was served to it, whether or not it was acknowledged. Both hold within the cap of four
+  withdrawals per attempt and while the requirement `delivery-acknowledgement-v1` is recorded; otherwise the lease lapses with an
+  unknown outcome and its hand-back is an ordinary failure. The server cannot verify that promise and records the violations it
+  sees; a mark written on another database server (before a promotion, a recovery or a restore that started one), or ended after a
+  restore, does not count, and such a lease keeps today's meaning, its hand-back an ordinary failure. A lease that has run (a
+  heartbeat made it `RUNNING`) or to which a capability was served is an attempt: when it lapses its outcome is unknown, as before,
+  and a hand-back of it is an ordinary retryable failure.
 - **FR-037-007**: An unresolved lookup or manual decision about an unknown effect MUST survive
   cancellation/deadline unless an explicitly authorized resolution or qualified action settles it.
 - **FR-037-008**: A negative lookup MUST authorize subsequent work only when the integration's

@@ -53,6 +53,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Every statement of the store is audited as the runtime role, fragments spliced from another module included | `integration_platform_foundation::runtime_privileges` (`rust_source.rs` resolves macros by module path and by import) |
 | The document leads and the code follows: a pull request that changes behaviour code changes a document, or each such commit says why not (`Docs: none, <reason>`) (constitution 4.7.0, Documentation first) | `scripts/check-docs-first.py` (CI `documentation`, every pull request), tests in `scripts/tests/test_check_docs_first.py`; it cannot see whether the right document changed, review does |
 | Documents and code comments write words in full, not abbreviations such as "rule R8" or "architecture B1" (constitution 4.7.0, Words in full) | `scripts/check-plain-words.py` over the lines a pull request adds (CI `documentation`, every pull request), tests in `scripts/tests/test_check_plain_words.py`; the list is in `docs/governance/identifier-scheme.md` |
+| The capability lists of the registry's three checks in SQL equal `Capability::ALL`, and each down migration restores the list in force before its up (feature 006, decisions D006-033 and D006-083) | `crates/infra-postgres/tests/capability_lists.rs` (every pull request that changes `infra-postgres` or `application`) and `scripts/check-architecture.py` |
 
 When you add a rule worth keeping, add its row and its check in the same change.
 
