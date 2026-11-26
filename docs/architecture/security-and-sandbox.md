@@ -4,6 +4,13 @@
 
 Studio/API browser → API auth gateway → privileged engine → queue/task descriptors → untrusted user code (sandbox) → egress broker → external systems.
 
+Release 0.3.0 adds four boundaries (constitution 5.0.0, principle IV and Delivery Constraints); none of them is built yet:
+
+- **Workflow code in tenant workers** (design 044). The function runs only in the tenant's SDK worker, never in a platform process. Each command it proposes is checked against the version's envelope, the current authorization and the quotas. A workflow task carries no secret. The history it receives is that run's own journal projection, sent only to an authorized session and under the classification rules.
+- **Internal apps and their component frames** (feature 027). A session carries only the intersection of the viewer's authority and the app's declared operations. Author code runs in an opaque-origin frame that holds no credential.
+- **The hub's indexes** (feature 028, design 047). The server fetches and verifies the release-signed index and operator-pinned indexes; every item is pinned by digest and imported as a draft. The server executes nothing from them.
+- **The region epoch** (feature 032). Leases, fences and writes are checked against the active region's epoch in the database. A failover that can lose a revocation keeps the revoked access refused until an operator reviews it.
+
 - Tenant and namespace scope authorization, persistence, messages and audit. Identifiers may appear in authorized logs/spans; metrics use bounded labels and do not carry tenant/namespace IDs. Constitution V scopes tenant diagnosis to authorized records/logs/spans and excludes tenant/namespace identifiers from metric labels, consistently with Constitution VI. Namespace also defines environment and RBAC.
 - OIDC/JWT tokens with JWKS verification; machine auth via OAuth2 client credentials, optional mTLS.
 - Built-in role names come from [Role](../../crates/domain/src/identity.rs): `admin`, `developer`, `operator`, `viewer`, `worker`, `runner` and `database-runner`. Human and machine roles have different permissions; PII reveal uses a separate namespace grant, not a custom role.

@@ -16,3 +16,11 @@ RTO/RPO depend on the configured backup/replication; test it.
 
 ## Review criteria
 Open a new ADR with benchmark data, failure tests, operational cost and compatibility with existing runs. Do not change the semantics silently.
+
+## Note (2026-11-24, constitution 5.0.0)
+
+The constitution (version 5.0.0, Delivery Constraints, Owner decision 2026-11-24-2) now admits one writable region per
+cell with standby regions and fenced active-passive failover (feature 032). This record stays accepted until
+[ADR-0067](ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md) is accepted on its evidence
+(the region drill report and the commit-latency benchmark), which supersedes it in part; in-region high availability
+and the deferral of active-active inside a cell stand.

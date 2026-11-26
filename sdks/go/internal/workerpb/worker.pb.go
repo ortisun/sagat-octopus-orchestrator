@@ -278,6 +278,185 @@ func (LakeConditionalCreate) EnumDescriptor() ([]byte, []int) {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{4}
 }
 
+type StepLogLevel int32
+
+const (
+	StepLogLevel_STEP_LOG_LEVEL_UNSPECIFIED StepLogLevel = 0 // refused as INVALID_ARGUMENT
+	StepLogLevel_STEP_LOG_LEVEL_TRACE       StepLogLevel = 1
+	StepLogLevel_STEP_LOG_LEVEL_DEBUG       StepLogLevel = 2
+	StepLogLevel_STEP_LOG_LEVEL_INFO        StepLogLevel = 3
+	StepLogLevel_STEP_LOG_LEVEL_WARN        StepLogLevel = 4
+	StepLogLevel_STEP_LOG_LEVEL_ERROR       StepLogLevel = 5
+)
+
+// Enum value maps for StepLogLevel.
+var (
+	StepLogLevel_name = map[int32]string{
+		0: "STEP_LOG_LEVEL_UNSPECIFIED",
+		1: "STEP_LOG_LEVEL_TRACE",
+		2: "STEP_LOG_LEVEL_DEBUG",
+		3: "STEP_LOG_LEVEL_INFO",
+		4: "STEP_LOG_LEVEL_WARN",
+		5: "STEP_LOG_LEVEL_ERROR",
+	}
+	StepLogLevel_value = map[string]int32{
+		"STEP_LOG_LEVEL_UNSPECIFIED": 0,
+		"STEP_LOG_LEVEL_TRACE":       1,
+		"STEP_LOG_LEVEL_DEBUG":       2,
+		"STEP_LOG_LEVEL_INFO":        3,
+		"STEP_LOG_LEVEL_WARN":        4,
+		"STEP_LOG_LEVEL_ERROR":       5,
+	}
+)
+
+func (x StepLogLevel) Enum() *StepLogLevel {
+	p := new(StepLogLevel)
+	*p = x
+	return p
+}
+
+func (x StepLogLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StepLogLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[5].Descriptor()
+}
+
+func (StepLogLevel) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[5]
+}
+
+func (x StepLogLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StepLogLevel.Descriptor instead.
+func (StepLogLevel) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{5}
+}
+
+type StepLogVerdict int32
+
+const (
+	StepLogVerdict_STEP_LOG_VERDICT_UNSPECIFIED  StepLogVerdict = 0
+	StepLogVerdict_STEP_LOG_VERDICT_CONTINUE     StepLogVerdict = 1 // keep sending
+	StepLogVerdict_STEP_LOG_VERDICT_FINAL_ONLY   StepLogVerdict = 2 // a ceiling was met: send no more records; still send the empty final batch
+	StepLogVerdict_STEP_LOG_VERDICT_STOP_ATTEMPT StepLogVerdict = 3 // send nothing more for this attempt (stop_reason says why)
+	StepLogVerdict_STEP_LOG_VERDICT_STOP_CAPTURE StepLogVerdict = 4 // send nothing more on this session (stop_reason says why)
+	StepLogVerdict_STEP_LOG_VERDICT_RETRY_LATER  StepLogVerdict = 5 // nothing stored; send the same batch again after retry_after_ms
+)
+
+// Enum value maps for StepLogVerdict.
+var (
+	StepLogVerdict_name = map[int32]string{
+		0: "STEP_LOG_VERDICT_UNSPECIFIED",
+		1: "STEP_LOG_VERDICT_CONTINUE",
+		2: "STEP_LOG_VERDICT_FINAL_ONLY",
+		3: "STEP_LOG_VERDICT_STOP_ATTEMPT",
+		4: "STEP_LOG_VERDICT_STOP_CAPTURE",
+		5: "STEP_LOG_VERDICT_RETRY_LATER",
+	}
+	StepLogVerdict_value = map[string]int32{
+		"STEP_LOG_VERDICT_UNSPECIFIED":  0,
+		"STEP_LOG_VERDICT_CONTINUE":     1,
+		"STEP_LOG_VERDICT_FINAL_ONLY":   2,
+		"STEP_LOG_VERDICT_STOP_ATTEMPT": 3,
+		"STEP_LOG_VERDICT_STOP_CAPTURE": 4,
+		"STEP_LOG_VERDICT_RETRY_LATER":  5,
+	}
+)
+
+func (x StepLogVerdict) Enum() *StepLogVerdict {
+	p := new(StepLogVerdict)
+	*p = x
+	return p
+}
+
+func (x StepLogVerdict) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StepLogVerdict) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[6].Descriptor()
+}
+
+func (StepLogVerdict) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[6]
+}
+
+func (x StepLogVerdict) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StepLogVerdict.Descriptor instead.
+func (StepLogVerdict) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{6}
+}
+
+type StepLogStopReason int32
+
+const (
+	StepLogStopReason_STEP_LOG_STOP_REASON_UNSPECIFIED    StepLogStopReason = 0
+	StepLogStopReason_STEP_LOG_STOP_REASON_FINAL_RECORDED StepLogStopReason = 1 // STOP_ATTEMPT: the final batch is already stored (a resend of it gets this)
+	StepLogStopReason_STEP_LOG_STOP_REASON_LEASE          StepLogStopReason = 2 // STOP_ATTEMPT: the lease is not this attempt's or has expired, or a report of
+	// the attempt would be refused (run finished, step cancelled, run
+	// stopping and the node not a compensation)
+	StepLogStopReason_STEP_LOG_STOP_REASON_AUTHORITY   StepLogStopReason = 3 // STOP_ATTEMPT: binding or membership no longer covers the step
+	StepLogStopReason_STEP_LOG_STOP_REASON_REMOVED     StepLogStopReason = 4 // STOP_ATTEMPT: the attempt's log was deleted or purged
+	StepLogStopReason_STEP_LOG_STOP_REASON_CAPTURE_OFF StepLogStopReason = 5 // STOP_CAPTURE: the deployment switch or the namespace turned capture off
+	StepLogStopReason_STEP_LOG_STOP_REASON_SESSION     StepLogStopReason = 6 // STOP_CAPTURE: the session is unknown, expired, of another subject,
+)
+
+// Enum value maps for StepLogStopReason.
+var (
+	StepLogStopReason_name = map[int32]string{
+		0: "STEP_LOG_STOP_REASON_UNSPECIFIED",
+		1: "STEP_LOG_STOP_REASON_FINAL_RECORDED",
+		2: "STEP_LOG_STOP_REASON_LEASE",
+		3: "STEP_LOG_STOP_REASON_AUTHORITY",
+		4: "STEP_LOG_STOP_REASON_REMOVED",
+		5: "STEP_LOG_STOP_REASON_CAPTURE_OFF",
+		6: "STEP_LOG_STOP_REASON_SESSION",
+	}
+	StepLogStopReason_value = map[string]int32{
+		"STEP_LOG_STOP_REASON_UNSPECIFIED":    0,
+		"STEP_LOG_STOP_REASON_FINAL_RECORDED": 1,
+		"STEP_LOG_STOP_REASON_LEASE":          2,
+		"STEP_LOG_STOP_REASON_AUTHORITY":      3,
+		"STEP_LOG_STOP_REASON_REMOVED":        4,
+		"STEP_LOG_STOP_REASON_CAPTURE_OFF":    5,
+		"STEP_LOG_STOP_REASON_SESSION":        6,
+	}
+)
+
+func (x StepLogStopReason) Enum() *StepLogStopReason {
+	p := new(StepLogStopReason)
+	*p = x
+	return p
+}
+
+func (x StepLogStopReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StepLogStopReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[7].Descriptor()
+}
+
+func (StepLogStopReason) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[7]
+}
+
+func (x StepLogStopReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StepLogStopReason.Descriptor instead.
+func (StepLogStopReason) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{7}
+}
+
 type WorkerCapabilities struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Languages   []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
@@ -421,8 +600,10 @@ type RegisterWorkerResponse struct {
 	WorkerId                string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	SessionToken            string                 `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
 	AcceptedProtocolVersion string                 `protobuf:"bytes,3,opt,name=accepted_protocol_version,json=acceptedProtocolVersion,proto3" json:"accepted_protocol_version,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Added in 1.7 (feature 041). Sent only when the accepted minor is at least 7.
+	StepLogs      *StepLogPolicy `protobuf:"bytes,4,opt,name=step_logs,json=stepLogs,proto3" json:"step_logs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RegisterWorkerResponse) Reset() {
@@ -474,6 +655,13 @@ func (x *RegisterWorkerResponse) GetAcceptedProtocolVersion() string {
 		return x.AcceptedProtocolVersion
 	}
 	return ""
+}
+
+func (x *RegisterWorkerResponse) GetStepLogs() *StepLogPolicy {
+	if x != nil {
+		return x.StepLogs
+	}
+	return nil
 }
 
 type PollTasksRequest struct {
@@ -3666,6 +3854,469 @@ func (x *ResolvedDatabase) GetClickhouse() *ClickHouseConnection {
 	return nil
 }
 
+// Added in 1.7. The attempt is named and fenced exactly as HeartbeatRequest names and fences it, plus
+// the session that registered the worker.
+type AppendStepLogsRequest struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId     string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`             // the session id RegisterWorkerResponse returned
+	SessionToken string                 `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"` // the session token currently held (after a re-registration, the new one)
+	TaskId       string                 `protobuf:"bytes,3,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`                   // carried as HeartbeatRequest carries it; the step is found by
+	// run_id, step_id and instance
+	Generation      int64                      `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken      string                     `protobuf:"bytes,5,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	RunId           string                     `protobuf:"bytes,6,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId          string                     `protobuf:"bytes,7,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt         int32                      `protobuf:"varint,8,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Instance        *ExecutionInstanceIdentity `protobuf:"bytes,9,opt,name=instance,proto3" json:"instance,omitempty"`
+	Records         []*StepLogRecord           `protobuf:"bytes,10,rep,name=records,proto3" json:"records,omitempty"`                                         // 0 to 500, sequences strictly increasing
+	FinalBatch      bool                       `protobuf:"varint,11,opt,name=final_batch,json=finalBatch,proto3" json:"final_batch,omitempty"`                // the attempt's last batch, sent before CompleteStep/FailStep
+	HighestSequence uint64                     `protobuf:"varint,12,opt,name=highest_sequence,json=highestSequence,proto3" json:"highest_sequence,omitempty"` // with final_batch: the highest sequence the logger assigned (at most
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *AppendStepLogsRequest) Reset() {
+	*x = AppendStepLogsRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppendStepLogsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppendStepLogsRequest) ProtoMessage() {}
+
+func (x *AppendStepLogsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppendStepLogsRequest.ProtoReflect.Descriptor instead.
+func (*AppendStepLogsRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *AppendStepLogsRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *AppendStepLogsRequest) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *AppendStepLogsRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *AppendStepLogsRequest) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *AppendStepLogsRequest) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *AppendStepLogsRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *AppendStepLogsRequest) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *AppendStepLogsRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *AppendStepLogsRequest) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
+func (x *AppendStepLogsRequest) GetRecords() []*StepLogRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+func (x *AppendStepLogsRequest) GetFinalBatch() bool {
+	if x != nil {
+		return x.FinalBatch
+	}
+	return false
+}
+
+func (x *AppendStepLogsRequest) GetHighestSequence() uint64 {
+	if x != nil {
+		return x.HighestSequence
+	}
+	return 0
+}
+
+type StepLogRecord struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Sequence          uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"` // 1 .. 2^62-1, one per logger call that passed the level floor
+	WorkerTimeEpochMs int64                  `protobuf:"varint,2,opt,name=worker_time_epoch_ms,json=workerTimeEpochMs,proto3" json:"worker_time_epoch_ms,omitempty"`
+	Level             StepLogLevel           `protobuf:"varint,3,opt,name=level,proto3,enum=sagat_octopus_orchestrator.v1.StepLogLevel" json:"level,omitempty"`
+	Message           string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`      // redacted and cut by the SDK; the server cuts again at 8 KiB
+	Fields            []*StepLogField        `protobuf:"bytes,5,rep,name=fields,proto3" json:"fields,omitempty"`        // at most 32, keys unique after redaction
+	Exception         string                 `protobuf:"bytes,6,opt,name=exception,proto3" json:"exception,omitempty"`  // formatted exception text and stack, redacted; empty when none
+	Truncated         bool                   `protobuf:"varint,7,opt,name=truncated,proto3" json:"truncated,omitempty"` // the SDK cut the message, the exception or the fields
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *StepLogRecord) Reset() {
+	*x = StepLogRecord{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StepLogRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StepLogRecord) ProtoMessage() {}
+
+func (x *StepLogRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StepLogRecord.ProtoReflect.Descriptor instead.
+func (*StepLogRecord) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *StepLogRecord) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *StepLogRecord) GetWorkerTimeEpochMs() int64 {
+	if x != nil {
+		return x.WorkerTimeEpochMs
+	}
+	return 0
+}
+
+func (x *StepLogRecord) GetLevel() StepLogLevel {
+	if x != nil {
+		return x.Level
+	}
+	return StepLogLevel_STEP_LOG_LEVEL_UNSPECIFIED
+}
+
+func (x *StepLogRecord) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *StepLogRecord) GetFields() []*StepLogField {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+func (x *StepLogRecord) GetException() string {
+	if x != nil {
+		return x.Exception
+	}
+	return ""
+}
+
+func (x *StepLogRecord) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+type StepLogField struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Types that are valid to be assigned to Value:
+	//
+	//	*StepLogField_StringValue
+	//	*StepLogField_IntValue
+	//	*StepLogField_DoubleValue
+	//	*StepLogField_BoolValue
+	Value         isStepLogField_Value `protobuf_oneof:"value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StepLogField) Reset() {
+	*x = StepLogField{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StepLogField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StepLogField) ProtoMessage() {}
+
+func (x *StepLogField) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StepLogField.ProtoReflect.Descriptor instead.
+func (*StepLogField) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *StepLogField) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *StepLogField) GetValue() isStepLogField_Value {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *StepLogField) GetStringValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*StepLogField_StringValue); ok {
+			return x.StringValue
+		}
+	}
+	return ""
+}
+
+func (x *StepLogField) GetIntValue() int64 {
+	if x != nil {
+		if x, ok := x.Value.(*StepLogField_IntValue); ok {
+			return x.IntValue
+		}
+	}
+	return 0
+}
+
+func (x *StepLogField) GetDoubleValue() float64 {
+	if x != nil {
+		if x, ok := x.Value.(*StepLogField_DoubleValue); ok {
+			return x.DoubleValue
+		}
+	}
+	return 0
+}
+
+func (x *StepLogField) GetBoolValue() bool {
+	if x != nil {
+		if x, ok := x.Value.(*StepLogField_BoolValue); ok {
+			return x.BoolValue
+		}
+	}
+	return false
+}
+
+type isStepLogField_Value interface {
+	isStepLogField_Value()
+}
+
+type StepLogField_StringValue struct {
+	StringValue string `protobuf:"bytes,2,opt,name=string_value,json=stringValue,proto3,oneof"`
+}
+
+type StepLogField_IntValue struct {
+	IntValue int64 `protobuf:"varint,3,opt,name=int_value,json=intValue,proto3,oneof"`
+}
+
+type StepLogField_DoubleValue struct {
+	DoubleValue float64 `protobuf:"fixed64,4,opt,name=double_value,json=doubleValue,proto3,oneof"` // finite only; NaN and the infinities travel as string_value
+}
+
+type StepLogField_BoolValue struct {
+	BoolValue bool `protobuf:"varint,5,opt,name=bool_value,json=boolValue,proto3,oneof"`
+}
+
+func (*StepLogField_StringValue) isStepLogField_Value() {}
+
+func (*StepLogField_IntValue) isStepLogField_Value() {}
+
+func (*StepLogField_DoubleValue) isStepLogField_Value() {}
+
+func (*StepLogField_BoolValue) isStepLogField_Value() {}
+
+type AppendStepLogsResponse struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Verdict               StepLogVerdict         `protobuf:"varint,1,opt,name=verdict,proto3,enum=sagat_octopus_orchestrator.v1.StepLogVerdict" json:"verdict,omitempty"`
+	StopReason            StepLogStopReason      `protobuf:"varint,2,opt,name=stop_reason,json=stopReason,proto3,enum=sagat_octopus_orchestrator.v1.StepLogStopReason" json:"stop_reason,omitempty"` // set with STOP_ATTEMPT and STOP_CAPTURE, else UNSPECIFIED
+	StoredThroughSequence uint64                 `protobuf:"varint,3,opt,name=stored_through_sequence,json=storedThroughSequence,proto3" json:"stored_through_sequence,omitempty"`                   // the stream's highest worker sequence now known to the server; only
+	// with CONTINUE, FINAL_ONLY and FINAL_RECORDED, else 0
+	RetryAfterMs  int32 `protobuf:"varint,4,opt,name=retry_after_ms,json=retryAfterMs,proto3" json:"retry_after_ms,omitempty"` // with RETRY_LATER: 50 to 5,000
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AppendStepLogsResponse) Reset() {
+	*x = AppendStepLogsResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppendStepLogsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppendStepLogsResponse) ProtoMessage() {}
+
+func (x *AppendStepLogsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppendStepLogsResponse.ProtoReflect.Descriptor instead.
+func (*AppendStepLogsResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *AppendStepLogsResponse) GetVerdict() StepLogVerdict {
+	if x != nil {
+		return x.Verdict
+	}
+	return StepLogVerdict_STEP_LOG_VERDICT_UNSPECIFIED
+}
+
+func (x *AppendStepLogsResponse) GetStopReason() StepLogStopReason {
+	if x != nil {
+		return x.StopReason
+	}
+	return StepLogStopReason_STEP_LOG_STOP_REASON_UNSPECIFIED
+}
+
+func (x *AppendStepLogsResponse) GetStoredThroughSequence() uint64 {
+	if x != nil {
+		return x.StoredThroughSequence
+	}
+	return 0
+}
+
+func (x *AppendStepLogsResponse) GetRetryAfterMs() int32 {
+	if x != nil {
+		return x.RetryAfterMs
+	}
+	return 0
+}
+
+// Added in 1.7. Sent only when the accepted minor is at least 7.
+type StepLogPolicy struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"` // the deployment switch and the namespace's capture are both on
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StepLogPolicy) Reset() {
+	*x = StepLogPolicy{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StepLogPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StepLogPolicy) ProtoMessage() {}
+
+func (x *StepLogPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StepLogPolicy.ProtoReflect.Descriptor instead.
+func (*StepLogPolicy) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *StepLogPolicy) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
 var File_sagat_octopus_orchestrator_v1_worker_proto protoreflect.FileDescriptor
 
 const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
@@ -3683,11 +4334,12 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\vworker_name\x18\x01 \x01(\tR\n" +
 	"workerName\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12U\n" +
-	"\fcapabilities\x18\x03 \x01(\v21.sagat_octopus_orchestrator.v1.WorkerCapabilitiesR\fcapabilities\"\x96\x01\n" +
+	"\fcapabilities\x18\x03 \x01(\v21.sagat_octopus_orchestrator.v1.WorkerCapabilitiesR\fcapabilities\"\xe1\x01\n" +
 	"\x16RegisterWorkerResponse\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
 	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\x12:\n" +
-	"\x19accepted_protocol_version\x18\x03 \x01(\tR\x17acceptedProtocolVersion\"q\n" +
+	"\x19accepted_protocol_version\x18\x03 \x01(\tR\x17acceptedProtocolVersion\x12I\n" +
+	"\tstep_logs\x18\x04 \x01(\v2,.sagat_octopus_orchestrator.v1.StepLogPolicyR\bstepLogs\"q\n" +
 	"\x10PollTasksRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
 	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\x12\x1b\n" +
@@ -3998,7 +4650,49 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0eobject_storage\x18\x0e \x01(\v26.sagat_octopus_orchestrator.v1.ObjectStorageConnectionR\robjectStorage\x12S\n" +
 	"\n" +
 	"clickhouse\x18\x0f \x01(\v23.sagat_octopus_orchestrator.v1.ClickHouseConnectionR\n" +
-	"clickhouse*e\n" +
+	"clickhouse\"\xe7\x03\n" +
+	"\x15AppendStepLogsRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
+	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\x12\x17\n" +
+	"\atask_id\x18\x03 \x01(\tR\x06taskId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x03R\n" +
+	"generation\x12\x1f\n" +
+	"\vlease_token\x18\x05 \x01(\tR\n" +
+	"leaseToken\x12\x15\n" +
+	"\x06run_id\x18\x06 \x01(\tR\x05runId\x12\x17\n" +
+	"\astep_id\x18\a \x01(\tR\x06stepId\x12\x18\n" +
+	"\aattempt\x18\b \x01(\x05R\aattempt\x12T\n" +
+	"\binstance\x18\t \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\x12F\n" +
+	"\arecords\x18\n" +
+	" \x03(\v2,.sagat_octopus_orchestrator.v1.StepLogRecordR\arecords\x12\x1f\n" +
+	"\vfinal_batch\x18\v \x01(\bR\n" +
+	"finalBatch\x12)\n" +
+	"\x10highest_sequence\x18\f \x01(\x04R\x0fhighestSequence\"\xba\x02\n" +
+	"\rStepLogRecord\x12\x1a\n" +
+	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12/\n" +
+	"\x14worker_time_epoch_ms\x18\x02 \x01(\x03R\x11workerTimeEpochMs\x12A\n" +
+	"\x05level\x18\x03 \x01(\x0e2+.sagat_octopus_orchestrator.v1.StepLogLevelR\x05level\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\x12C\n" +
+	"\x06fields\x18\x05 \x03(\v2+.sagat_octopus_orchestrator.v1.StepLogFieldR\x06fields\x12\x1c\n" +
+	"\texception\x18\x06 \x01(\tR\texception\x12\x1c\n" +
+	"\ttruncated\x18\a \x01(\bR\ttruncated\"\xb3\x01\n" +
+	"\fStepLogField\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12#\n" +
+	"\fstring_value\x18\x02 \x01(\tH\x00R\vstringValue\x12\x1d\n" +
+	"\tint_value\x18\x03 \x01(\x03H\x00R\bintValue\x12#\n" +
+	"\fdouble_value\x18\x04 \x01(\x01H\x00R\vdoubleValue\x12\x1f\n" +
+	"\n" +
+	"bool_value\x18\x05 \x01(\bH\x00R\tboolValueB\a\n" +
+	"\x05value\"\x92\x02\n" +
+	"\x16AppendStepLogsResponse\x12G\n" +
+	"\averdict\x18\x01 \x01(\x0e2-.sagat_octopus_orchestrator.v1.StepLogVerdictR\averdict\x12Q\n" +
+	"\vstop_reason\x18\x02 \x01(\x0e20.sagat_octopus_orchestrator.v1.StepLogStopReasonR\n" +
+	"stopReason\x126\n" +
+	"\x17stored_through_sequence\x18\x03 \x01(\x04R\x15storedThroughSequence\x12$\n" +
+	"\x0eretry_after_ms\x18\x04 \x01(\x05R\fretryAfterMs\")\n" +
+	"\rStepLogPolicy\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled*e\n" +
 	"\x15DatabaseOperationKind\x12\"\n" +
 	"\x1eDATABASE_OPERATION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDATABASE_QUERY\x10\x01\x12\x14\n" +
@@ -4020,7 +4714,30 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x15LakeConditionalCreate\x12#\n" +
 	"\x1fLAKE_CONDITIONAL_CREATE_UNKNOWN\x10\x00\x12%\n" +
 	"!LAKE_CONDITIONAL_CREATE_SUPPORTED\x10\x01\x12'\n" +
-	"#LAKE_CONDITIONAL_CREATE_UNSUPPORTED\x10\x022\xa4\t\n" +
+	"#LAKE_CONDITIONAL_CREATE_UNSUPPORTED\x10\x02*\xae\x01\n" +
+	"\fStepLogLevel\x12\x1e\n" +
+	"\x1aSTEP_LOG_LEVEL_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14STEP_LOG_LEVEL_TRACE\x10\x01\x12\x18\n" +
+	"\x14STEP_LOG_LEVEL_DEBUG\x10\x02\x12\x17\n" +
+	"\x13STEP_LOG_LEVEL_INFO\x10\x03\x12\x17\n" +
+	"\x13STEP_LOG_LEVEL_WARN\x10\x04\x12\x18\n" +
+	"\x14STEP_LOG_LEVEL_ERROR\x10\x05*\xda\x01\n" +
+	"\x0eStepLogVerdict\x12 \n" +
+	"\x1cSTEP_LOG_VERDICT_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19STEP_LOG_VERDICT_CONTINUE\x10\x01\x12\x1f\n" +
+	"\x1bSTEP_LOG_VERDICT_FINAL_ONLY\x10\x02\x12!\n" +
+	"\x1dSTEP_LOG_VERDICT_STOP_ATTEMPT\x10\x03\x12!\n" +
+	"\x1dSTEP_LOG_VERDICT_STOP_CAPTURE\x10\x04\x12 \n" +
+	"\x1cSTEP_LOG_VERDICT_RETRY_LATER\x10\x05*\x90\x02\n" +
+	"\x11StepLogStopReason\x12$\n" +
+	" STEP_LOG_STOP_REASON_UNSPECIFIED\x10\x00\x12'\n" +
+	"#STEP_LOG_STOP_REASON_FINAL_RECORDED\x10\x01\x12\x1e\n" +
+	"\x1aSTEP_LOG_STOP_REASON_LEASE\x10\x02\x12\"\n" +
+	"\x1eSTEP_LOG_STOP_REASON_AUTHORITY\x10\x03\x12 \n" +
+	"\x1cSTEP_LOG_STOP_REASON_REMOVED\x10\x04\x12$\n" +
+	" STEP_LOG_STOP_REASON_CAPTURE_OFF\x10\x05\x12 \n" +
+	"\x1cSTEP_LOG_STOP_REASON_SESSION\x10\x062\xa3\n" +
+	"\n" +
 	"\rWorkerService\x12}\n" +
 	"\x0eRegisterWorker\x124.sagat_octopus_orchestrator.v1.RegisterWorkerRequest\x1a5.sagat_octopus_orchestrator.v1.RegisterWorkerResponse\x12n\n" +
 	"\tPollTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse\x12r\n" +
@@ -4031,7 +4748,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0eResolveSecrets\x124.sagat_octopus_orchestrator.v1.ResolveSecretsRequest\x1a5.sagat_octopus_orchestrator.v1.ResolveSecretsResponse\x12x\n" +
 	"\x0fResolveDatabase\x124.sagat_octopus_orchestrator.v1.ResolveSecretsRequest\x1a/.sagat_octopus_orchestrator.v1.ResolvedDatabase\x12p\n" +
 	"\tWriteBlob\x12/.sagat_octopus_orchestrator.v1.WriteBlobRequest\x1a0.sagat_octopus_orchestrator.v1.WriteBlobResponse(\x01\x12m\n" +
-	"\bReadBlob\x12..sagat_octopus_orchestrator.v1.ReadBlobRequest\x1a/.sagat_octopus_orchestrator.v1.ReadBlobResponse0\x01B\xbf\x01\n" +
+	"\bReadBlob\x12..sagat_octopus_orchestrator.v1.ReadBlobRequest\x1a/.sagat_octopus_orchestrator.v1.ReadBlobResponse0\x01\x12}\n" +
+	"\x0eAppendStepLogs\x124.sagat_octopus_orchestrator.v1.AppendStepLogsRequest\x1a5.sagat_octopus_orchestrator.v1.AppendStepLogsResponseB\xbf\x01\n" +
 	"(dev.sagatoctopusorchestrator.protocol.v1Zlgithub.com/ortisun/sagat-octopus-orchestrator/proto/sagat_octopus_orchestrator/v1;sagatoctopusorchestratorv1\xaa\x02$SagatOctopusOrchestrator.Protocol.V1b\x06proto3"
 
 var (
@@ -4046,126 +4764,143 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP() []byte {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescData
 }
 
-var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
+var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_sagat_octopus_orchestrator_v1_worker_proto_goTypes = []any{
 	(DatabaseOperationKind)(0),        // 0: sagat_octopus_orchestrator.v1.DatabaseOperationKind
 	(DatabaseTlsMode)(0),              // 1: sagat_octopus_orchestrator.v1.DatabaseTlsMode
 	(EgressCeiling)(0),                // 2: sagat_octopus_orchestrator.v1.EgressCeiling
 	(LakeRestAuth)(0),                 // 3: sagat_octopus_orchestrator.v1.LakeRestAuth
 	(LakeConditionalCreate)(0),        // 4: sagat_octopus_orchestrator.v1.LakeConditionalCreate
-	(*WorkerCapabilities)(nil),        // 5: sagat_octopus_orchestrator.v1.WorkerCapabilities
-	(*RegisterWorkerRequest)(nil),     // 6: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	(*RegisterWorkerResponse)(nil),    // 7: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	(*PollTasksRequest)(nil),          // 8: sagat_octopus_orchestrator.v1.PollTasksRequest
-	(*ScopePathSegment)(nil),          // 9: sagat_octopus_orchestrator.v1.ScopePathSegment
-	(*ExecutionInstanceIdentity)(nil), // 10: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	(*TaskLease)(nil),                 // 11: sagat_octopus_orchestrator.v1.TaskLease
-	(*PollTasksResponse)(nil),         // 12: sagat_octopus_orchestrator.v1.PollTasksResponse
-	(*HeartbeatRequest)(nil),          // 13: sagat_octopus_orchestrator.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),         // 14: sagat_octopus_orchestrator.v1.HeartbeatResponse
-	(*CompleteStepRequest)(nil),       // 15: sagat_octopus_orchestrator.v1.CompleteStepRequest
-	(*FailStepRequest)(nil),           // 16: sagat_octopus_orchestrator.v1.FailStepRequest
-	(*ResolveSecretsRequest)(nil),     // 17: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	(*ResolvedSecret)(nil),            // 18: sagat_octopus_orchestrator.v1.ResolvedSecret
-	(*ResolveSecretsResponse)(nil),    // 19: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	(*WriteBlobRequest)(nil),          // 20: sagat_octopus_orchestrator.v1.WriteBlobRequest
-	(*WriteBlobHeader)(nil),           // 21: sagat_octopus_orchestrator.v1.WriteBlobHeader
-	(*WriteBlobResponse)(nil),         // 22: sagat_octopus_orchestrator.v1.WriteBlobResponse
-	(*ReadBlobRequest)(nil),           // 23: sagat_octopus_orchestrator.v1.ReadBlobRequest
-	(*ReadBlobResponse)(nil),          // 24: sagat_octopus_orchestrator.v1.ReadBlobResponse
-	(*ReadBlobHeader)(nil),            // 25: sagat_octopus_orchestrator.v1.ReadBlobHeader
-	(*StepCommandResponse)(nil),       // 26: sagat_octopus_orchestrator.v1.StepCommandResponse
-	(*DatabaseValue)(nil),             // 27: sagat_octopus_orchestrator.v1.DatabaseValue
-	(*PostgresConnection)(nil),        // 28: sagat_octopus_orchestrator.v1.PostgresConnection
-	(*DatabaseLimits)(nil),            // 29: sagat_octopus_orchestrator.v1.DatabaseLimits
-	(*LakeLimits)(nil),                // 30: sagat_octopus_orchestrator.v1.LakeLimits
-	(*IcebergRestCatalog)(nil),        // 31: sagat_octopus_orchestrator.v1.IcebergRestCatalog
-	(*IcebergGlueCatalog)(nil),        // 32: sagat_octopus_orchestrator.v1.IcebergGlueCatalog
-	(*IcebergHiveCatalog)(nil),        // 33: sagat_octopus_orchestrator.v1.IcebergHiveCatalog
-	(*IcebergJdbcCatalog)(nil),        // 34: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
-	(*LakeS3Storage)(nil),             // 35: sagat_octopus_orchestrator.v1.LakeS3Storage
-	(*LakeGcsStorage)(nil),            // 36: sagat_octopus_orchestrator.v1.LakeGcsStorage
-	(*LakeAdlsStorage)(nil),           // 37: sagat_octopus_orchestrator.v1.LakeAdlsStorage
-	(*LakeStorage)(nil),               // 38: sagat_octopus_orchestrator.v1.LakeStorage
-	(*IcebergConnection)(nil),         // 39: sagat_octopus_orchestrator.v1.IcebergConnection
-	(*ObjectStorageConnection)(nil),   // 40: sagat_octopus_orchestrator.v1.ObjectStorageConnection
-	(*ClickHouseConnection)(nil),      // 41: sagat_octopus_orchestrator.v1.ClickHouseConnection
-	(*ResolvedDatabase)(nil),          // 42: sagat_octopus_orchestrator.v1.ResolvedDatabase
-	nil,                               // 43: sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
-	nil,                               // 44: sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
-	nil,                               // 45: sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
+	(StepLogLevel)(0),                 // 5: sagat_octopus_orchestrator.v1.StepLogLevel
+	(StepLogVerdict)(0),               // 6: sagat_octopus_orchestrator.v1.StepLogVerdict
+	(StepLogStopReason)(0),            // 7: sagat_octopus_orchestrator.v1.StepLogStopReason
+	(*WorkerCapabilities)(nil),        // 8: sagat_octopus_orchestrator.v1.WorkerCapabilities
+	(*RegisterWorkerRequest)(nil),     // 9: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	(*RegisterWorkerResponse)(nil),    // 10: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	(*PollTasksRequest)(nil),          // 11: sagat_octopus_orchestrator.v1.PollTasksRequest
+	(*ScopePathSegment)(nil),          // 12: sagat_octopus_orchestrator.v1.ScopePathSegment
+	(*ExecutionInstanceIdentity)(nil), // 13: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	(*TaskLease)(nil),                 // 14: sagat_octopus_orchestrator.v1.TaskLease
+	(*PollTasksResponse)(nil),         // 15: sagat_octopus_orchestrator.v1.PollTasksResponse
+	(*HeartbeatRequest)(nil),          // 16: sagat_octopus_orchestrator.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),         // 17: sagat_octopus_orchestrator.v1.HeartbeatResponse
+	(*CompleteStepRequest)(nil),       // 18: sagat_octopus_orchestrator.v1.CompleteStepRequest
+	(*FailStepRequest)(nil),           // 19: sagat_octopus_orchestrator.v1.FailStepRequest
+	(*ResolveSecretsRequest)(nil),     // 20: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	(*ResolvedSecret)(nil),            // 21: sagat_octopus_orchestrator.v1.ResolvedSecret
+	(*ResolveSecretsResponse)(nil),    // 22: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	(*WriteBlobRequest)(nil),          // 23: sagat_octopus_orchestrator.v1.WriteBlobRequest
+	(*WriteBlobHeader)(nil),           // 24: sagat_octopus_orchestrator.v1.WriteBlobHeader
+	(*WriteBlobResponse)(nil),         // 25: sagat_octopus_orchestrator.v1.WriteBlobResponse
+	(*ReadBlobRequest)(nil),           // 26: sagat_octopus_orchestrator.v1.ReadBlobRequest
+	(*ReadBlobResponse)(nil),          // 27: sagat_octopus_orchestrator.v1.ReadBlobResponse
+	(*ReadBlobHeader)(nil),            // 28: sagat_octopus_orchestrator.v1.ReadBlobHeader
+	(*StepCommandResponse)(nil),       // 29: sagat_octopus_orchestrator.v1.StepCommandResponse
+	(*DatabaseValue)(nil),             // 30: sagat_octopus_orchestrator.v1.DatabaseValue
+	(*PostgresConnection)(nil),        // 31: sagat_octopus_orchestrator.v1.PostgresConnection
+	(*DatabaseLimits)(nil),            // 32: sagat_octopus_orchestrator.v1.DatabaseLimits
+	(*LakeLimits)(nil),                // 33: sagat_octopus_orchestrator.v1.LakeLimits
+	(*IcebergRestCatalog)(nil),        // 34: sagat_octopus_orchestrator.v1.IcebergRestCatalog
+	(*IcebergGlueCatalog)(nil),        // 35: sagat_octopus_orchestrator.v1.IcebergGlueCatalog
+	(*IcebergHiveCatalog)(nil),        // 36: sagat_octopus_orchestrator.v1.IcebergHiveCatalog
+	(*IcebergJdbcCatalog)(nil),        // 37: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
+	(*LakeS3Storage)(nil),             // 38: sagat_octopus_orchestrator.v1.LakeS3Storage
+	(*LakeGcsStorage)(nil),            // 39: sagat_octopus_orchestrator.v1.LakeGcsStorage
+	(*LakeAdlsStorage)(nil),           // 40: sagat_octopus_orchestrator.v1.LakeAdlsStorage
+	(*LakeStorage)(nil),               // 41: sagat_octopus_orchestrator.v1.LakeStorage
+	(*IcebergConnection)(nil),         // 42: sagat_octopus_orchestrator.v1.IcebergConnection
+	(*ObjectStorageConnection)(nil),   // 43: sagat_octopus_orchestrator.v1.ObjectStorageConnection
+	(*ClickHouseConnection)(nil),      // 44: sagat_octopus_orchestrator.v1.ClickHouseConnection
+	(*ResolvedDatabase)(nil),          // 45: sagat_octopus_orchestrator.v1.ResolvedDatabase
+	(*AppendStepLogsRequest)(nil),     // 46: sagat_octopus_orchestrator.v1.AppendStepLogsRequest
+	(*StepLogRecord)(nil),             // 47: sagat_octopus_orchestrator.v1.StepLogRecord
+	(*StepLogField)(nil),              // 48: sagat_octopus_orchestrator.v1.StepLogField
+	(*AppendStepLogsResponse)(nil),    // 49: sagat_octopus_orchestrator.v1.AppendStepLogsResponse
+	(*StepLogPolicy)(nil),             // 50: sagat_octopus_orchestrator.v1.StepLogPolicy
+	nil,                               // 51: sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
+	nil,                               // 52: sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
+	nil,                               // 53: sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
 }
 var file_sagat_octopus_orchestrator_v1_worker_proto_depIdxs = []int32{
-	5,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
-	9,  // 1: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
-	10, // 2: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	10, // 3: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	11, // 4: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
-	10, // 5: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	10, // 6: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	10, // 7: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	10, // 8: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	18, // 9: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	21, // 10: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
-	10, // 11: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	10, // 12: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	25, // 13: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
-	1,  // 14: sagat_octopus_orchestrator.v1.PostgresConnection.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	3,  // 15: sagat_octopus_orchestrator.v1.IcebergRestCatalog.auth:type_name -> sagat_octopus_orchestrator.v1.LakeRestAuth
-	1,  // 16: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	35, // 17: sagat_octopus_orchestrator.v1.LakeStorage.s3:type_name -> sagat_octopus_orchestrator.v1.LakeS3Storage
-	36, // 18: sagat_octopus_orchestrator.v1.LakeStorage.gcs:type_name -> sagat_octopus_orchestrator.v1.LakeGcsStorage
-	37, // 19: sagat_octopus_orchestrator.v1.LakeStorage.adls:type_name -> sagat_octopus_orchestrator.v1.LakeAdlsStorage
-	31, // 20: sagat_octopus_orchestrator.v1.IcebergConnection.rest:type_name -> sagat_octopus_orchestrator.v1.IcebergRestCatalog
-	32, // 21: sagat_octopus_orchestrator.v1.IcebergConnection.glue:type_name -> sagat_octopus_orchestrator.v1.IcebergGlueCatalog
-	33, // 22: sagat_octopus_orchestrator.v1.IcebergConnection.hive:type_name -> sagat_octopus_orchestrator.v1.IcebergHiveCatalog
-	34, // 23: sagat_octopus_orchestrator.v1.IcebergConnection.jdbc:type_name -> sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
-	38, // 24: sagat_octopus_orchestrator.v1.IcebergConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
-	2,  // 25: sagat_octopus_orchestrator.v1.IcebergConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
-	30, // 26: sagat_octopus_orchestrator.v1.IcebergConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
-	43, // 27: sagat_octopus_orchestrator.v1.IcebergConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
-	38, // 28: sagat_octopus_orchestrator.v1.ObjectStorageConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
-	4,  // 29: sagat_octopus_orchestrator.v1.ObjectStorageConnection.conditional_create:type_name -> sagat_octopus_orchestrator.v1.LakeConditionalCreate
-	2,  // 30: sagat_octopus_orchestrator.v1.ObjectStorageConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
-	30, // 31: sagat_octopus_orchestrator.v1.ObjectStorageConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
-	44, // 32: sagat_octopus_orchestrator.v1.ObjectStorageConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
-	2,  // 33: sagat_octopus_orchestrator.v1.ClickHouseConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
-	30, // 34: sagat_octopus_orchestrator.v1.ClickHouseConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
-	45, // 35: sagat_octopus_orchestrator.v1.ClickHouseConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
-	28, // 36: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
-	0,  // 37: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
-	27, // 38: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
-	29, // 39: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
-	18, // 40: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	39, // 41: sagat_octopus_orchestrator.v1.ResolvedDatabase.iceberg:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection
-	40, // 42: sagat_octopus_orchestrator.v1.ResolvedDatabase.object_storage:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection
-	41, // 43: sagat_octopus_orchestrator.v1.ResolvedDatabase.clickhouse:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection
-	6,  // 44: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	8,  // 45: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	8,  // 46: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	13, // 47: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
-	15, // 48: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
-	16, // 49: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
-	17, // 50: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	17, // 51: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	20, // 52: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
-	23, // 53: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
-	7,  // 54: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	12, // 55: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	12, // 56: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	14, // 57: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
-	26, // 58: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	26, // 59: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	19, // 60: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	42, // 61: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
-	22, // 62: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
-	24, // 63: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
-	54, // [54:64] is the sub-list for method output_type
-	44, // [44:54] is the sub-list for method input_type
-	44, // [44:44] is the sub-list for extension type_name
-	44, // [44:44] is the sub-list for extension extendee
-	0,  // [0:44] is the sub-list for field type_name
+	8,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
+	50, // 1: sagat_octopus_orchestrator.v1.RegisterWorkerResponse.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogPolicy
+	12, // 2: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
+	13, // 3: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	13, // 4: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	14, // 5: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
+	13, // 6: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	13, // 7: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	13, // 8: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	13, // 9: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	21, // 10: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	24, // 11: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
+	13, // 12: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	13, // 13: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	28, // 14: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
+	1,  // 15: sagat_octopus_orchestrator.v1.PostgresConnection.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	3,  // 16: sagat_octopus_orchestrator.v1.IcebergRestCatalog.auth:type_name -> sagat_octopus_orchestrator.v1.LakeRestAuth
+	1,  // 17: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	38, // 18: sagat_octopus_orchestrator.v1.LakeStorage.s3:type_name -> sagat_octopus_orchestrator.v1.LakeS3Storage
+	39, // 19: sagat_octopus_orchestrator.v1.LakeStorage.gcs:type_name -> sagat_octopus_orchestrator.v1.LakeGcsStorage
+	40, // 20: sagat_octopus_orchestrator.v1.LakeStorage.adls:type_name -> sagat_octopus_orchestrator.v1.LakeAdlsStorage
+	34, // 21: sagat_octopus_orchestrator.v1.IcebergConnection.rest:type_name -> sagat_octopus_orchestrator.v1.IcebergRestCatalog
+	35, // 22: sagat_octopus_orchestrator.v1.IcebergConnection.glue:type_name -> sagat_octopus_orchestrator.v1.IcebergGlueCatalog
+	36, // 23: sagat_octopus_orchestrator.v1.IcebergConnection.hive:type_name -> sagat_octopus_orchestrator.v1.IcebergHiveCatalog
+	37, // 24: sagat_octopus_orchestrator.v1.IcebergConnection.jdbc:type_name -> sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
+	41, // 25: sagat_octopus_orchestrator.v1.IcebergConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
+	2,  // 26: sagat_octopus_orchestrator.v1.IcebergConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	33, // 27: sagat_octopus_orchestrator.v1.IcebergConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	51, // 28: sagat_octopus_orchestrator.v1.IcebergConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
+	41, // 29: sagat_octopus_orchestrator.v1.ObjectStorageConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
+	4,  // 30: sagat_octopus_orchestrator.v1.ObjectStorageConnection.conditional_create:type_name -> sagat_octopus_orchestrator.v1.LakeConditionalCreate
+	2,  // 31: sagat_octopus_orchestrator.v1.ObjectStorageConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	33, // 32: sagat_octopus_orchestrator.v1.ObjectStorageConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	52, // 33: sagat_octopus_orchestrator.v1.ObjectStorageConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
+	2,  // 34: sagat_octopus_orchestrator.v1.ClickHouseConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	33, // 35: sagat_octopus_orchestrator.v1.ClickHouseConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	53, // 36: sagat_octopus_orchestrator.v1.ClickHouseConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
+	31, // 37: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
+	0,  // 38: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
+	30, // 39: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
+	32, // 40: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
+	21, // 41: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	42, // 42: sagat_octopus_orchestrator.v1.ResolvedDatabase.iceberg:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection
+	43, // 43: sagat_octopus_orchestrator.v1.ResolvedDatabase.object_storage:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection
+	44, // 44: sagat_octopus_orchestrator.v1.ResolvedDatabase.clickhouse:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection
+	13, // 45: sagat_octopus_orchestrator.v1.AppendStepLogsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	47, // 46: sagat_octopus_orchestrator.v1.AppendStepLogsRequest.records:type_name -> sagat_octopus_orchestrator.v1.StepLogRecord
+	5,  // 47: sagat_octopus_orchestrator.v1.StepLogRecord.level:type_name -> sagat_octopus_orchestrator.v1.StepLogLevel
+	48, // 48: sagat_octopus_orchestrator.v1.StepLogRecord.fields:type_name -> sagat_octopus_orchestrator.v1.StepLogField
+	6,  // 49: sagat_octopus_orchestrator.v1.AppendStepLogsResponse.verdict:type_name -> sagat_octopus_orchestrator.v1.StepLogVerdict
+	7,  // 50: sagat_octopus_orchestrator.v1.AppendStepLogsResponse.stop_reason:type_name -> sagat_octopus_orchestrator.v1.StepLogStopReason
+	9,  // 51: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	11, // 52: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	11, // 53: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	16, // 54: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
+	18, // 55: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
+	19, // 56: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
+	20, // 57: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	20, // 58: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	23, // 59: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
+	26, // 60: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
+	46, // 61: sagat_octopus_orchestrator.v1.WorkerService.AppendStepLogs:input_type -> sagat_octopus_orchestrator.v1.AppendStepLogsRequest
+	10, // 62: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	15, // 63: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	15, // 64: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	17, // 65: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
+	29, // 66: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	29, // 67: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	22, // 68: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	45, // 69: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
+	25, // 70: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
+	27, // 71: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
+	49, // 72: sagat_octopus_orchestrator.v1.WorkerService.AppendStepLogs:output_type -> sagat_octopus_orchestrator.v1.AppendStepLogsResponse
+	62, // [62:73] is the sub-list for method output_type
+	51, // [51:62] is the sub-list for method input_type
+	51, // [51:51] is the sub-list for extension type_name
+	51, // [51:51] is the sub-list for extension extendee
+	0,  // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_sagat_octopus_orchestrator_v1_worker_proto_init() }
@@ -4204,13 +4939,19 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_init() {
 		(*IcebergConnection_Hive)(nil),
 		(*IcebergConnection_Jdbc)(nil),
 	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40].OneofWrappers = []any{
+		(*StepLogField_StringValue)(nil),
+		(*StepLogField_IntValue)(nil),
+		(*StepLogField_DoubleValue)(nil),
+		(*StepLogField_BoolValue)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc), len(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc)),
-			NumEnums:      5,
-			NumMessages:   41,
+			NumEnums:      8,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

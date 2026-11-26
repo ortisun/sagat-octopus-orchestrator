@@ -93,3 +93,33 @@ impl std::fmt::Debug for pb::database_value::Value {
         f.write_str("DatabaseValue::Value(<redacted>)")
     }
 }
+
+// A step-log batch (feature 041): only counts print, never a message, an exception, a field, a token
+// or the identity of the attempt (FR-041-007 (d)).
+impl std::fmt::Debug for pb::AppendStepLogsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppendStepLogsRequest")
+            .field("records", &self.records.len())
+            .field("final_batch", &self.final_batch)
+            .field("highest_sequence", &self.highest_sequence)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::StepLogRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepLogRecord")
+            .field("sequence", &self.sequence)
+            .field("fields", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::StepLogField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StepLogField { <redacted> }")
+    }
+}
+impl std::fmt::Debug for pb::step_log_field::Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StepLogField::Value(<redacted>)")
+    }
+}

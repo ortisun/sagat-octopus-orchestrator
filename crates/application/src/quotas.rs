@@ -9,7 +9,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
-use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 use sagat_domain::quota::{self, QuotaError, QuotaResource, QuotaScope, QuotaSource};
 use sagat_domain::workflow::ActivityName;
 
@@ -183,6 +183,17 @@ pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
         namespace: Option<NamespaceId>,
         resource: QuotaResource,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// The retained step-log bytes of `tenant`, or `None` unless `subject` holds the PII reveal grant in every namespace
+    /// of `tenant`, each read as `has_effective_payload_reveal_grant` reads it (its current membership role may use a
+    /// grant, and the grant row exists). A tenant with no namespace, or a subject with no membership, answers `None`
+    /// (fail-closed; design 041, decision D041-133). The grant and the usage are read in one snapshot, so a read that
+    /// runs after a revoke commits never answers `Some` (decision D041-141).
+    fn step_log_usage_if_revealed(
+        &self,
+        tenant: TenantId,
+        subject: &Subject,
+    ) -> impl Future<Output = Result<Option<u64>, StoreError>> + Send;
 }
 
 /// One line of the quota view.
@@ -193,8 +204,12 @@ pub struct QuotaView {
     pub source: QuotaSource,
     /// The most the tenant may set for this resource (and the most that can be in force).
     pub ceiling: u64,
-    /// `None` when the view is the tenant-wide default of a resource that is counted per namespace.
+    /// `None` when the view is the tenant-wide default of a resource that is counted per namespace, or when the usage is
+    /// withheld.
     pub used: Option<u64>,
+    /// True only for `tenant_step_log_bytes` when its usage is withheld: the caller lacks `run:logs:read` or the PII
+    /// reveal grant in some namespace of the tenant (decision D041-133, OD-2026-11-20-19).
+    pub usage_withheld: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,19 +406,14 @@ where
                 setting(&tenant_level, resource),
                 ceiling,
             );
-            let used = match (resource.has_usage(), resource.scope(), namespace) {
-                (false, _, _) => None,
-                (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
-                    Some(self.store.usage(tenant, namespace, resource).await?)
-                }
-                (true, QuotaScope::Namespace, None) => None,
-            };
+            let (used, usage_withheld) = self.used(principal, namespace, resource).await?;
             views.push(QuotaView {
                 resource,
                 limit,
                 source,
                 ceiling,
                 used,
+                usage_withheld,
             });
         }
         Ok(views)
@@ -528,19 +538,14 @@ where
                 .map(|r| r.value),
             ceiling,
         );
-        let used = match (resource.has_usage(), resource.scope(), namespace) {
-            (false, _, _) => None,
-            (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
-                Some(self.store.usage(tenant, namespace, resource).await?)
-            }
-            (true, QuotaScope::Namespace, None) => None,
-        };
+        let (used, usage_withheld) = self.used(principal, namespace, resource).await?;
         Ok(QuotaView {
             resource,
             limit,
             source,
             ceiling,
             used,
+            usage_withheld,
         })
     }
 
@@ -617,6 +622,40 @@ where
             .put_scheduling_weight(tenant, weight, &audit)
             .await?;
         Ok(())
+    }
+
+    /// The usage a view shows for `resource`, and whether it is withheld. The retained step-log bytes of a tenant move
+    /// with what its runs log, so they are shown only to a caller who holds `run:logs:read` and the PII reveal grant in
+    /// every namespace of the tenant, and `run:read` as ADR-0085 rule 6 states (decision D041-133, OD-2026-11-20-19,
+    /// replacing D041-066's permission-only rule). The store reads the grant and the usage in one snapshot, so a view
+    /// whose read runs after a revoke commits withholds the usage (decision D041-141). A store error fails the whole
+    /// view rather than show the usage (fail-closed; decision D041-140).
+    async fn used(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+    ) -> Result<(Option<u64>, bool), AppError> {
+        let tenant = principal.tenant_id();
+        if resource == QuotaResource::TenantStepLogBytes {
+            let permitted = principal.authorize(Permission::RunRead).is_ok()
+                && principal.authorize(Permission::RunLogsRead).is_ok();
+            let used = if permitted {
+                self.store
+                    .step_log_usage_if_revealed(tenant, principal.subject())
+                    .await?
+            } else {
+                None
+            };
+            return Ok((used, used.is_none()));
+        }
+        let used = match (resource.has_usage(), resource.scope(), namespace) {
+            (false, _, _) | (true, QuotaScope::Namespace, None) => None,
+            (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
+                Some(self.store.usage(tenant, namespace, resource).await?)
+            }
+        };
+        Ok((used, false))
     }
 
     /// A namespace of another tenant looks exactly like one that does not exist, and is audited.

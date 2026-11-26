@@ -48,6 +48,9 @@ mod pool;
 mod primitives;
 mod privilege;
 mod quotas;
+/// Design 041's spike T041-35 only (`perf-spike`): runs the step-log carry inside a report transaction.
+#[cfg(feature = "perf-spike")]
+pub mod report_hook;
 mod reveal_grants;
 mod schedules;
 mod scope_compensation;
@@ -56,6 +59,7 @@ mod scoped_leaf_finish;
 mod scripts;
 mod secrets;
 mod signals;
+mod step_logs;
 mod telemetry;
 mod trigger_schedules;
 mod versioning;
@@ -87,7 +91,10 @@ pub use instances::{
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
-pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
+pub use pool::{
+    APPLICATION_NAME_PREFIX, BeginSafely, PoolConfig, PoolName, connect, spawn_pool_metrics,
+    step_log_wait_slots, step_log_wait_slots_for,
+};
 pub use primitives::PgCollectionStore;
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use reveal_grants::has_effective_payload_reveal_grant;

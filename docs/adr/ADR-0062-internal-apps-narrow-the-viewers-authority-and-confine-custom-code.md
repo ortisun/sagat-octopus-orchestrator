@@ -5,7 +5,10 @@
 **Scope:** brings a bounded app builder into the product although `docs/architecture/overview.md`
 ("Explicit scope left for later releases") defers a "Generic low-code style application designer".
 Acceptance of this ADR requires the owner's answer to O1360 (`specs/027-internal-apps/research.md`)
-and the matching edit of the overview; until then the decision is a proposal only.
+and the matching edit of the overview; until then the decision is a proposal only. *Note
+(2026-11-24):* O1360 is answered by Owner decision 2026-11-24-2 (constitution 5.0.0 admits the
+bounded builder and keeps a generic builder with its own backend out), and the overview's scope list
+says so; acceptance of this record itself is still to be decided.
 **Refines / supersedes:** refines ADR-0016 and is the single home of its combined refinement for
 origins and content security policy (decision 8, coordinator decision C15 of 2026-10-27): the Studio
 origin stays unframeable and serves no author or anonymous content; three operator-configured origins
