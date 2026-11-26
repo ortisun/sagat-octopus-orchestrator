@@ -3176,7 +3176,7 @@
         },
         "key": {
           "$ref": "#/$defs/expression",
-          "description": "Top level: over `input`. Node level: over the run data when the step becomes ready. Canonical value at most 256 bytes; digested with the keyed digest. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR. A key over an encoded location (feature 031 registry) is refused with ENCODING_READ_BY_CONCURRENCY_KEY."
+          "description": "Top level: over `input`. Node level: over the run data when the step becomes ready. Canonical value at most 256 bytes; digested with the keyed digest. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR. A key over an encoded location (feature 031 registry) is refused with ENCODING_READ_BY_CONCURRENCY_KEY. Publication refuses a key that reads the run's identity (`run`; FLOW_CONTROL_KEY_UNBOUNDED) or a location classified secret (FLOW_CONTROL_KEY_SECRET), and warns of one that reads a location classified pii (FLOW_CONTROL_KEY_PII: its label is shown only to a caller who may reveal personal data). A node-level key that fails to evaluate or is longer than 256 bytes fails its step FLOW_CONTROL_KEY_INVALID, with no attempt spent."
         },
         "group": {
           "type": "string",
@@ -3191,7 +3191,7 @@
           "description": "How long a run (top level) or a ready step (node level) waits for a permit before failing with CONCURRENCY_WAIT_TIMEOUT. Must not exceed the run deadline."
         }
       },
-      "description": "Feature 022 (US02, ADR-0056, ADR-0089): at most `limit` holders of one key at once. At the top level it limits run starts; on a root activity or script node, the attempts of that step (body nodes are refused: UNSUPPORTED_NODE, dependency SCOPED_CONCURRENCY). Publication also needs the concurrencyKeys capability and its fleet activation (FLOW_CONTROL_ACTIVATION_PENDING until then) and refuses it beside continueAsNew (FLOW_CONTROL_COMBINATION)."
+      "description": "Feature 022 (US02, ADR-0056, ADR-0089): at most `limit` holders of one key at once. At the top level it limits run starts; on a root activity or script node, the attempts of that step (body nodes are refused: UNSUPPORTED_NODE, dependency SCOPED_CONCURRENCY). Publication also needs the concurrencyKeys capability and its fleet activation (FLOW_CONTROL_ACTIVATION_PENDING until then) and refuses it beside continueAsNew (FLOW_CONTROL_COMBINATION). A bad limit, group or timeout, a timeout above the run deadline, a top-level key that reads other data than `input`, a node of a kind other than activity or script, or more declarations than the namespace allows (one top-level and 16 node-level by default, the namespace's flow_control_node_declarations, 64 at most) is CONCURRENCY_POLICY_INVALID. Warnings: CONCURRENCY_SELF_CHILD when a child node starts this workflow, whose run-level permit of the same key the child may then wait for while its parent holds it; CONCURRENCY_LIMIT_MISMATCH when an explicit group is declared by another published definition of the namespace with a different limit (each acquirer applies its own)."
     },
     "rateLimitPolicy": {
       "type": "object",
@@ -3200,7 +3200,7 @@
         "limit",
         "per"
       ],
-      "description": "Feature 022 (US07, ADR-0088, ADR-0089): at most `limit` grants of one key in any window of `per` on the database clock. At the top level it limits run starts; on a root activity or script node, the attempt leases of that step (body nodes are refused: UNSUPPORTED_NODE, dependency SCOPED_RATE_LIMIT). Publication also needs the rateLimits capability and its fleet activation (FLOW_CONTROL_ACTIVATION_PENDING until then) and refuses it beside continueAsNew (FLOW_CONTROL_COMBINATION).",
+      "description": "Feature 022 (US07, ADR-0088, ADR-0089): at most `limit` grants of one key in any window of `per` on the database clock. At the top level it limits run starts; on a root activity or script node, the attempt leases of that step (body nodes are refused: UNSUPPORTED_NODE, dependency SCOPED_RATE_LIMIT). Publication also needs the rateLimits capability and its fleet activation (FLOW_CONTROL_ACTIVATION_PENDING until then) and refuses it beside continueAsNew (FLOW_CONTROL_COMBINATION). A bad limit, window, group or timeout, a limit above the ceiling of its window, a timeout above the run deadline, a top-level key that reads other data than `input`, a node of a kind other than activity or script, or more declarations than the namespace allows (one top-level and 16 node-level by default, 64 at most) is RATE_LIMIT_POLICY_INVALID. Warning RATE_LIMIT_MISMATCH when an explicit group is declared by another published definition of the namespace with a different limit or per (each acquirer applies its own). There is no burst: the window is strict (owner question O1163).",
       "properties": {
         "limit": {
           "type": "integer",
@@ -3218,7 +3218,7 @@
         },
         "key": {
           "$ref": "#/$defs/expression",
-          "description": "Top level: over `input`. Node level: over the run data when the step would become ready. Same bounds, keyed digest and label as concurrencyPolicy.key. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR."
+          "description": "Top level: over `input`. Node level: over the run data when the step would become ready. Same bounds, keyed digest, label and publication rules as concurrencyPolicy.key. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR."
         },
         "group": {
           "type": "string",

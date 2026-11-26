@@ -5152,7 +5152,10 @@ components:
             platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with
             `Retry-After`; another replica serves the call);
             flow control (feature 022) refines `QUOTA_EXCEEDED` (`retryable: false`) with
-            `CONCURRENCY_QUEUE_FULL` (the start would wait beyond its key's queue) and `FLOW_CONTROL_LIMIT`
+            `CONCURRENCY_QUEUE_FULL` (the start would wait beyond its key's queue), `RATE_LIMIT_QUEUE_FULL` (the
+            start would be buffered beyond its rate-limit key's buffer, or the namespace's `queued_runs` is full for a
+            start that declares a rate limit; a start that declares both gates is refused by the key that is full,
+            rate first) and `FLOW_CONTROL_LIMIT`
             (a namespace ceiling of flow control, named in `details.limit`), `VALIDATION_FAILED` with
             `FLOW_CONTROL_ACTIVATION_PENDING` and `CAPABILITY_DISABLED` (with `details.capability`), and `CONFLICT`
             with `CONCURRENCY_PERMIT_UNAVAILABLE` (a reset of a run whose start takes a permit found no free one; a
@@ -5698,7 +5701,7 @@ components:
       required: [severity, code, message]
       properties:
         severity: {type: string, enum: [error, warning]}
-        code: {type: string, description: 'Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules. Classification uses CLASSIFICATION_INVALID_LEVEL, CLASSIFICATION_LOOSENED, CLASSIFICATION_UNSUPPORTED_KEYWORD, CLASSIFICATION_UNRESOLVED_REF, CLASSIFICATION_NOT_APPLICABLE and CLASSIFICATION_TOO_COMPLEX errors, plus the CLASSIFICATION_INHERITED_OPEN warning; other warnings include COMPENSATION_OUTSIDE_SAGA and RECURSIVE_CHILD.'}
+        code: {type: string, description: 'Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules. Classification uses CLASSIFICATION_INVALID_LEVEL, CLASSIFICATION_LOOSENED, CLASSIFICATION_UNSUPPORTED_KEYWORD, CLASSIFICATION_UNRESOLVED_REF, CLASSIFICATION_NOT_APPLICABLE and CLASSIFICATION_TOO_COMPLEX errors, plus the CLASSIFICATION_INHERITED_OPEN warning; other warnings include COMPENSATION_OUTSIDE_SAGA and RECURSIVE_CHILD. Flow control (feature 022) adds the errors CONCURRENCY_POLICY_INVALID and RATE_LIMIT_POLICY_INVALID (a bad limit, window, group or timeout, a limit above the ceiling of its window, a timeout above the run deadline, a top-level key that reads other data than `input`, a gate on a node of a kind other than activity or script, or more declarations than the namespace allows), FLOW_CONTROL_KEY_UNBOUNDED (a key reads the run''s identity), FLOW_CONTROL_KEY_SECRET (a key reads a location classified `secret`) and FLOW_CONTROL_COMBINATION (a gate beside `continueAsNew`), and the warnings CONCURRENCY_SELF_CHILD (a child node starts this workflow, whose run-level permit it may then wait for), CONCURRENCY_LIMIT_MISMATCH and RATE_LIMIT_MISMATCH (an explicit group that another published definition of the namespace declares with another limit, or window; each applies its own) and FLOW_CONTROL_KEY_PII (a key reads a location classified `pii`; its label is shown only to a caller who may reveal personal data).'}
         message: {type: string, description: 'Safe: never holds a value of the document beyond a clipped fragment.'}
         nodeId: {type: [string, 'null'], description: 'The node the problem is about, when a rule names one.'}
         path: {type: [string, 'null'], description: 'A JSON pointer into the document, for a schema problem.'}
@@ -5835,7 +5838,7 @@ components:
         attempt: {type: integer}
         generation: {type: integer}
         cancelRequested: {type: boolean}
-        failureCode: {type: [string, 'null']}
+        failureCode: {type: [string, 'null'], description: 'The code the node failed with; null while it has not failed. Flow control (feature 022) adds, for a step: CONCURRENCY_WAIT_TIMEOUT and RATE_LIMIT_WAIT_TIMEOUT (its wait for a permit or a slot passed its queue deadline), FLOW_CONTROL_KEY_INVALID (its key failed to evaluate or is longer than 256 bytes) and FLOW_CONTROL_LIMIT (its key would be a new key beyond the namespace''s live-keys ceiling, or a ceiling of the namespace is zero), each through the step''s failure route, the last three with no attempt spent; and, for a `child` node whose child run''s start was refused (no child run exists; retryable as a class, through the node''s failure route): CONCURRENCY_QUEUE_FULL, RATE_LIMIT_QUEUE_FULL, FLOW_CONTROL_LIMIT, CAPABILITY_DISABLED, FLOW_CONTROL_ACTIVATION_PENDING and BINARY_CAPABILITY_MISSING. The list grows only: read a code you do not know as a failure.'}
         nextAttemptAt: {type: [string, 'null'], format: date-time}
         dueAt: {type: [string, 'null'], format: date-time}
         waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, loop, approval, collection, rate_limit, concurrency, null], description: '`rate_limit` and `concurrency` (feature 022): a step waiting for its rate-limit slot or its concurrency permit, rate first when it waits for both. `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.'}
