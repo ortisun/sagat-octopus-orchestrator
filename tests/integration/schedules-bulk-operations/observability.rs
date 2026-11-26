@@ -10,7 +10,8 @@
 //! **A search that finds nothing proves something only when it can find.** Three things keep these tests from passing on
 //! a pipeline that exports nothing:
 //! * the search is shown to find a canary put into a span, a log line and a metric label the way the pipeline would export
-//!   it (`the_search_finds_…`), and `assert_absent` is shown to refuse it;
+//!   it, and into a log record and a gauge sent to the OTLP logs and metrics endpoints (`the_search_finds_…`), and
+//!   `assert_absent` is shown to refuse it;
 //! * the flow runs inside a root span with a trace id, because the exporter takes a span only when it has a trace (its own,
 //!   or its parent's): a span a service created with customer text in it is exported, and a mutant that creates one turns
 //!   the test red (it was shown to, once). And spans of the platform's crates, not only the probes, are required to have
@@ -18,6 +19,9 @@
 //! * every class of canary is shown to have been carried (stored where the platform keeps it: the prefix of a schedule's action
 //!   in its revision, the prefix of a batch selector in its job, both again in the ids of the runs they made or reached), and the
 //!   run each class concerns is shown to have been told to the collector.
+//!
+//! The exporter of the flows is configured as an operator's `OTEL_EXPORTER_OTLP_ENDPOINT` configures it, with the traces, the
+//! logs and the metrics endpoints of the collector set, and the bodies of the three are searched (`G2028`).
 //!
 //! The canaries are `[a-z0-9-]`, which JSON writes as they are: the wire is searched for the text as it is.
 #![allow(clippy::expect_used, clippy::panic)]
@@ -36,7 +40,7 @@ use sagat_domain::execution::{ResetReapply, RunId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::Note;
 use sagat_scheduler::{ProjectorSettings, TelemetryProjector};
-use sagat_telemetry::{Metrics, TraceId};
+use sagat_telemetry::{AttrValue, GaugeData, LogData, Metrics, SpanId, TraceId};
 use serde_json::{Value, json};
 use time::Duration;
 use tracing::Instrument;
@@ -165,12 +169,13 @@ fn the_search_finds_a_canary_that_is_put_where_the_pipeline_exports_it_and_asser
     let collector = runtime.block_on(Collector::start());
     collector.keep_bodies();
     let _enter = runtime.enter();
-    let (guard, sink, logs) = collector.install_with_logs(1.0);
+    let (guard, sink, logs, signals) = collector.install_with_signals(1.0);
     let ((), page) = observed(&runtime, || async {
+        let trace_id = TraceId::generate();
         let span = tracing::info_span!(
             target: "sagat_observability_control",
             "observability_control",
-            trace_id = %TraceId::generate(),
+            trace_id = %trace_id,
             customer = %control.text
         );
         async {
@@ -180,14 +185,60 @@ fn the_search_finds_a_canary_that_is_put_where_the_pipeline_exports_it_and_asser
         }
         .instrument(span)
         .await;
+        // a log record and a gauge point, each with the canary in its body or name and in an attribute, sent by the
+        // exporter of the same settings to the logs and the metrics endpoints
+        signals
+            .export_log(&LogData {
+                trace_id,
+                span_id: SpanId::generate(),
+                unix_nano: 1,
+                event_name: "observability_control".to_owned(),
+                body: control.text.clone(),
+                error: false,
+                attributes: vec![(
+                    "customer".to_owned(),
+                    AttrValue::from(control.text.as_str()),
+                )],
+            })
+            .await
+            .expect("the control log record was accepted");
+        signals
+            .export_gauge(&GaugeData {
+                name: "observability_control".to_owned(),
+                description: "the control".to_owned(),
+                unit: "1".to_owned(),
+                unix_nano: 1,
+                value: 1.0,
+                attributes: vec![("label".to_owned(), AttrValue::from(control.text.as_str()))],
+            })
+            .await
+            .expect("the control gauge point was accepted");
     });
     runtime.block_on(sink.shutdown(StdDuration::from_secs(5)));
     drop(guard);
 
+    // each signal reached its own endpoint: the traces' bodies are not the logs' or the metrics'
+    assert_eq!(
+        (collector.log_requests(), collector.metric_requests()),
+        (1, 1),
+        "the log record went to /v1/logs and the gauge to /v1/metrics, once each"
+    );
     let wire = collector.bodies().join("\n");
+    let log_wire = collector.log_bodies().join("\n");
+    let metric_wire = collector.metric_bodies().join("\n");
+    assert!(
+        log_wire.contains("resourceLogs") && metric_wire.contains("resourceMetrics"),
+        "each endpoint kept the body of its own signal"
+    );
+    assert!(
+        !wire.contains("resourceLogs") && !wire.contains("resourceMetrics"),
+        "the traces' bodies hold only traces"
+    );
     let log_text = logs.text();
     for (surface, haystack) in [
         ("the OTLP export", wire.as_str()),
+        ("the OTLP logs export", log_wire.as_str()),
+        ("the OTLP metrics export", metric_wire.as_str()),
         ("a log line", log_text.as_str()),
         ("a metric label", page.as_str()),
     ] {
@@ -230,7 +281,7 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
     collector.keep_bodies();
     // every span of this thread is exported to the collector, and every log line, at any level, is kept
     let _enter = runtime.enter();
-    let (guard, sink, logs) = collector.install_with_logs(1.0);
+    let (guard, sink, logs, signals) = collector.install_with_signals(1.0);
     tracing::warn!(probe = "observability-probe", "the capture is on");
     drop(tracing::info_span!(
         target: "sagat_observability_probe",
@@ -510,7 +561,7 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
                 create_job(&f, by_prefix_job, "observability-batch-prefix-key").await;
             live(&f);
             let exec = executor(&f);
-            select(&exec, &by_prefix_job).await;
+            select(&f, &exec, &by_prefix_job).await;
             let _ = settle(&exec, &by_prefix_job).await;
             let reached: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT run_id FROM batch_items WHERE job_id = $1 ORDER BY run_id",
@@ -534,7 +585,7 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
             // the clock of the test follows the database's, which the job was stamped with
             live(&f);
             let exec = executor(&f);
-            select(&exec, &job).await;
+            select(&f, &exec, &job).await;
             let _ = settle(&exec, &job).await;
             assert!(
                 f.w.run_status(batch_target).await.is_terminal()
@@ -569,7 +620,7 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
             }
             let projector = TelemetryProjector::new(
                 f.w.store.clone(),
-                Some(collector.client()),
+                Some(signals.clone()),
                 ProjectorSettings::default(),
             );
             for _ in 0..12 {
@@ -659,6 +710,26 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
     // the OTLP wire conversion: every body, whole, as the exporter sent it
     let wire = bodies.join("\n");
     assert_absent("the OTLP export", &wire, &canaries);
+    // the OTLP logs and metrics endpoints (`G2028`): the exporter of the flows had them set, and the control shows the search
+    // finds a canary in what they receive. The services send no log record and no gauge over OTLP (only the `sagat`
+    // command line does, with closed values: `apps/cli/tests/telemetry.rs`); their log lines are the text searched below and
+    // their metrics the page. That nothing reached the two endpoints is asserted, so that a change that starts sending
+    // either signal turns this red and has the search below made to require a body, as the traces' does.
+    assert_eq!(
+        (collector.log_requests(), collector.metric_requests()),
+        (0, 0),
+        "the flows sent a log record or a gauge over OTLP: require a body of each and search it, as for the traces"
+    );
+    assert_absent(
+        "the OTLP logs export",
+        &collector.log_bodies().join("\n"),
+        &canaries,
+    );
+    assert_absent(
+        "the OTLP metrics export",
+        &collector.metric_bodies().join("\n"),
+        &canaries,
+    );
     assert_absent("a log line", &logs.text(), &canaries);
     assert_absent("a metric label", &page, &canaries);
     // and the closed labels of the series this feature adds

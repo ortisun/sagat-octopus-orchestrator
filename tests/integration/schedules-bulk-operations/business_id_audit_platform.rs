@@ -4,14 +4,6 @@
 //! the failed entry). A replica whose lease moves between the refusal and that record writes nothing, and the replica that
 //! records the decision writes the one record. The lease is moved while the refused step waits for it, with held locks
 //! seen in `pg_stat_activity`, never with a sleep.
-//!
-//! The order of the takeover and of the refused step is never left to the two backends: the test goes on only once the
-//! takeover's `UPDATE` has done what the scenario needs ([`takeover`]). Until 2026-11-26 the test went on as soon as the
-//! takeover's transaction had a backend, before its `UPDATE` had reached the row, and released the binding at once. On a
-//! busy runner (CI run 45800749482) the refused step then read the fence first, found the old lease still held, wrote its
-//! record under it, and the stage that waits for that record to be blocked by the takeover never ended. For 120 seconds the
-//! open takeover, which has a transaction id, also held the snapshot horizon of the whole server, and with it the selection
-//! of every batch job of the other tests of the process (`business_id_rerun` failed with it).
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
@@ -32,7 +24,7 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::batch_executor::{create, due, executor, items, live, reach_slot, select, write};
+use crate::batch_executor::{create, due, executor, items, live, select, write};
 use crate::business_ids::{business, cancel, key, start};
 use crate::cancel_source::{Completer, Completions, asking, completer, due_of, request};
 use crate::firing::Fixture;
@@ -109,17 +101,20 @@ fn fence(shard: Shard, owner: &str, generation: u64) -> ShardFence {
     }
 }
 
-/// Another replica takes `shard` over in a transaction that stays open until `release` is sent, so a fence read after its
-/// `UPDATE` waits for its commit.
+/// Another replica takes `shard` over in a transaction that stays open until `release` is sent: the takeover waits for
+/// what holds the row in shared mode, and then holds it itself, so a fence read after it waits for its commit.
 ///
-/// It returns the id of the takeover's backend as soon as the transaction has one, which is **before** the `UPDATE` has
-/// reached the row; the caller waits for what the `UPDATE` must have done before it goes on. When nothing holds the row,
-/// the `UPDATE` takes it at once and `taken` is sent then (the batch rerun takes no fence before the binding). When a step
-/// holds the row in shared mode (the completion of a reset takes its fence before the binding), the `UPDATE` waits behind
-/// it, which `pg_stat_activity` shows ([`blocked_on`] that step's backend); `taken` comes only after that step has ended.
-async fn takeover(f: &Fixture, shard: Shard) -> Takeover {
+/// It returns only once the takeover's update has the row or is seen waiting for it. It used to return as soon as the
+/// backend was known, before the update was sent: under the whole suite the caller then released the binding first, the
+/// refused step read the old fence and recorded its decision, nothing ever waited for the takeover, and its open
+/// transaction held the server's horizon, and with it the selections of the other tests' batch jobs, for the 120 s of the
+/// stage (CI of PR #226, D2340).
+async fn takeover(
+    f: &Fixture,
+    shard: Shard,
+) -> (i32, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let (pid_tx, pid_rx) = oneshot::channel();
-    let (taken_tx, taken) = oneshot::channel::<()>();
+    let (updated_tx, mut updated) = oneshot::channel::<()>();
     let (release, released) = oneshot::channel::<()>();
     let pool = f.w.db.pool.clone();
     let task = tokio::spawn(async move {
@@ -137,28 +132,67 @@ async fn takeover(f: &Fixture, shard: Shard) -> Takeover {
         .execute(&mut *tx)
         .await
         .expect("take the shard over");
-        // the caller may not wait for it (it waits for the backend instead)
-        let _ = taken_tx.send(());
+        // the caller may have seen the update wait already and stopped listening
+        let _ = updated_tx.send(());
         released.await.expect("the signal to commit");
         tx.commit().await.expect("commit the takeover");
     });
-    Takeover {
-        mover: pid_rx.await.expect("the pid"),
-        taken,
-        release,
-        task,
-    }
+    let pid = pid_rx.await.expect("the pid");
+    within(
+        "the takeover has the row or waits for it",
+        StdDuration::from_secs(120),
+        async {
+            loop {
+                match updated.try_recv() {
+                    Ok(()) => return,
+                    Err(oneshot::error::TryRecvError::Closed) => panic!("the takeover failed"),
+                    Err(oneshot::error::TryRecvError::Empty) => {}
+                }
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE pid = $1 AND wait_event_type = 'Lock' AND strpos(query, 'scheduler_shards') > 0)",
+                )
+                .bind(pid)
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("look at the takeover");
+                if waiting {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    (pid, release, task)
 }
 
-/// The takeover of a shard by another replica, its transaction still open.
-struct Takeover {
-    /// The id of its backend.
-    mover: i32,
-    /// Sent once its `UPDATE` holds the row.
-    taken: oneshot::Receiver<()>,
-    /// Commits it.
-    release: oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<()>,
+/// Waits until the takeover whose backend is `mover` holds the row of `shard` with its update: the row as other
+/// transactions see it names the takeover's transaction as the one that replaced it (`xmax`). A takeover that only waits
+/// for the row has not replaced it, and one that has is what a fence read must then wait for.
+async fn takeover_holds(f: &Fixture, mover: i32, shard: Shard) {
+    within(
+        "the takeover holds the lease",
+        StdDuration::from_secs(120),
+        async {
+            loop {
+                let holds: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM scheduler_shards s JOIN pg_stat_activity a ON a.pid = $1 \
+                     WHERE s.shard = $2 AND a.backend_xid IS NOT NULL AND s.xmax = a.backend_xid)",
+                )
+                .bind(mover)
+                .bind(i16::from(shard.index()))
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("look at the lease");
+                if holds {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
 }
 
 /// A completer whose own transactions (the read of the entry, its failure) begin on a pool of **one** connection, returned
@@ -225,8 +259,7 @@ async fn a_rerun_item_that_finds_its_id_held_is_audited_once_by_the_engine_with_
         "conflict-rerun-item",
     )
     .await;
-    select(&exec, &job).await;
-    reach_slot(&f, &job).await;
+    select(&f, &exec, &job).await;
     let shard = Shard::of(job.id);
     lease(&f.w.db.pool, shard, "replica-old", 11).await;
     f.clock.advance(time::Duration::seconds(1));
@@ -246,26 +279,17 @@ async fn a_rerun_item_that_finds_its_id_held_is_audited_once_by_the_engine_with_
         "the rerun waits for the binding",
     )
     .await;
-    let moved = takeover(&f, shard).await;
-    // nothing holds the lease's row while the rerun waits (its transaction takes no fence before the binding): the takeover
-    // holds the row before the binding is released, so the record of the refusal can only find it taken
-    within(
-        "the takeover holds the lease",
-        StdDuration::from_secs(120),
-        moved.taken,
-    )
-    .await
-    .expect("the takeover's UPDATE");
+    let (mover, release, moved) = takeover(&f, shard).await;
     binding.commit().await.expect("release the binding");
     blocked_on(
         &f,
-        moved.mover,
+        mover,
         "scheduler_shards",
         "the record of the refusal waits for the fence",
     )
     .await;
-    moved.release.send(()).expect("commit the takeover");
-    moved.task.await.expect("the takeover");
+    release.send(()).expect("commit the takeover");
+    moved.await.expect("the takeover");
     let refused = step.await.expect("join").expect("step");
 
     assert!(
@@ -340,45 +364,33 @@ async fn a_reset_completion_that_finds_its_id_held_is_audited_once_by_the_engine
         let stale = fence(shard, "replica-old", 11);
         async move { stale_completer.step(&due, Some(stale)).await }
     });
-    let completion = blocked_on(
+    blocked_on(
         &f,
         binder,
         "business_ids",
         "the completion waits for the binding",
     )
     .await;
-    let moved = takeover(&f, shard).await;
-    // the completion holds the lease's row in shared mode while it waits (its fence comes before the binding): the takeover
-    // is queued behind it, and can take the row only when that transaction ends
-    blocked_on(
-        &f,
-        completion,
-        "scheduler_shards",
-        "the takeover waits for the fence of the completion",
-    )
-    .await;
-    // The failure of the entry reads the fence first thing in a transaction of its own, which begins on the completer's one
-    // connection: the test holds it until the takeover holds the row. Without it the order of the takeover and of that read
-    // was the server's (the row was handed to the queued takeover at once, the read was round trips away), not forced.
+    // The completion holds the lease's row in shared mode while it waits (its fence comes before the binding), so the
+    // takeover can only queue behind it ([`takeover`] returns once it is seen waiting) and takes the row when that
+    // transaction ends. The failure of the entry reads the fence first thing in a transaction of its own, which begins on
+    // the completer's one connection: the test holds it until the takeover's update holds the row. Without it the order of
+    // the two was the server's: the row was handed to the queued takeover at once and the fence read was round trips away,
+    // likely but not forced.
+    let (mover, release, moved) = takeover(&f, shard).await;
     let held = writes.acquire().await.expect("the completer's connection");
     binding.commit().await.expect("release the binding");
-    within(
-        "the takeover holds the lease",
-        StdDuration::from_secs(120),
-        moved.taken,
-    )
-    .await
-    .expect("the takeover's UPDATE");
+    takeover_holds(&f, mover, shard).await;
     drop(held);
     blocked_on(
         &f,
-        moved.mover,
+        mover,
         "scheduler_shards",
         "the failure of the entry waits for the fence",
     )
     .await;
-    moved.release.send(()).expect("commit the takeover");
-    moved.task.await.expect("the takeover");
+    release.send(()).expect("commit the takeover");
+    moved.await.expect("the takeover");
     let refused = step.await.expect("join").expect("step");
 
     assert!(matches!(refused, Completed::Refused(_)), "{refused:?}");

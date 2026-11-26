@@ -65,20 +65,6 @@ pub(crate) fn live(f: &Fixture) {
         .set(OffsetDateTime::now_utc() + Duration::seconds(2));
 }
 
-/// Moves the clock of the test to the first slot of `created` when it is behind it, so that the job's items are due.
-///
-/// The database stamps that slot when the job is created (`clock_timestamp()`), and the executor compares it with this
-/// clock (`now < next_slot_at` is `Idle`). [`live`] sets the clock once, two seconds after the wall clock, and a job created
-/// later than that has its slot ahead of it: its steps are `Idle` and [`settle`] returns at once with the job `RUNNING`.
-/// That is common, not rare, because [`select`] waits for every transaction open on the server when the job was created,
-/// another test's too, and the next job of the test is created only after it.
-pub(crate) async fn reach_slot(f: &Fixture, created: &JobRecord) {
-    let slot = job(f, created.id).await.next_slot_at;
-    if f.clock.now() < slot {
-        f.clock.set(slot);
-    }
-}
-
 pub(crate) fn due(job: &JobRecord) -> DueJob {
     DueJob {
         tenant_id: job.tenant_id,
@@ -154,18 +140,20 @@ pub(crate) async fn status_of(f: &Fixture, run: Uuid) -> String {
         .expect("status")
 }
 
-/// Steps until the selection has taken a page. It waits, as it should, for a transaction of the time of
-/// creation that is still open: the world has loops of its own, and the horizon it waits for is the
-/// whole server's, so a transaction of another test on the same server holds it too. The bound is
-/// therefore a time, not a number of round trips (500 of them passed in a few milliseconds on a busy
-/// runner and the test gave up while the other test's transaction was still open).
-pub(crate) async fn select<A: ItemActions>(
-    exec: &BatchExecutor<PgBatchStore, A, PgIdentityStore, TestClock>,
-    job: &JobRecord,
+/// Steps under `fence` until the selection has taken a page. It waits, as it should, for a transaction of the time of
+/// creation that is still open: the world has loops of its own, and the horizon it waits for is the whole server's, so a
+/// transaction of another test on the same server holds it too. The bound is therefore a time, not a number of round trips
+/// (500 of them passed in a few milliseconds on a busy runner and the test gave up while the other test's transaction was
+/// still open; the same count in `a_replica_that_lost_its_lease_records_nothing_and_the_new_owner_goes_on` did it again
+/// under the whole suite, D2338), and the time only keeps a defect from hanging the binary.
+pub(crate) async fn selected<A: ItemActions, C: Clock>(
+    exec: &BatchExecutor<PgBatchStore, A, PgIdentityStore, C>,
+    due: &DueJob,
+    fence: Option<ShardFence>,
 ) {
     let give_up = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
-        if exec.step(&due(job), None).await.expect("step") == Stepped::Acted {
+        if exec.step(due, fence.clone()).await.expect("step") == Stepped::Acted {
             return;
         }
         assert!(
@@ -173,6 +161,23 @@ pub(crate) async fn select<A: ItemActions>(
             "the selection never started"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// [`selected`] with no fence, and then the clock of the test is brought up to the job's first slot. The slot is the
+/// database's clock when the job was created, and [`live`] gave the test's clock a margin of two seconds over it: a
+/// selection that waited longer than that for another test's transaction left the clock behind the slot, every item
+/// idle, and the job `RUNNING` (CI of PR #226, `a_batch_rerun_keeps_the_identifier_unless_the_job_says_to_drop_it`,
+/// D2339). The clock moves forward only, and only to the slot.
+pub(crate) async fn select<A: ItemActions>(
+    f: &Fixture,
+    exec: &BatchExecutor<PgBatchStore, A, PgIdentityStore, TestClock>,
+    job_: &JobRecord,
+) {
+    selected(exec, &due(job_), None).await;
+    let slot = job(f, job_.id).await.next_slot_at;
+    if f.clock.now() < slot {
+        f.clock.set(slot);
     }
 }
 
@@ -228,7 +233,7 @@ async fn the_selection_takes_the_runs_in_pages_by_id_and_stops_at_max_items() {
     )
     .await;
 
-    select(&exec, &capped).await;
+    select(&f, &exec, &capped).await;
     assert_eq!(
         job(&f, capped.id).await.state,
         JobState::Selecting,
@@ -263,7 +268,7 @@ async fn a_job_over_no_run_runs_and_completes_with_no_item() {
     let exec = executor(&f);
     let empty = create(&f, write(Action::Cancel, everything()), "select-empty").await;
 
-    select(&exec, &empty).await;
+    select(&f, &exec, &empty).await;
     assert!(settle(&exec, &empty).await >= 1, "the end of the job");
 
     let done = job(&f, empty.id).await;
@@ -295,8 +300,31 @@ async fn the_selection_waits_for_the_transactions_that_were_open_when_the_job_wa
     assert_eq!(job(&f, waiting.id).await.counts.selected, 0);
 
     open.rollback().await.expect("the transaction ends");
-    select(&exec, &waiting).await;
+    select(&f, &exec, &waiting).await;
     assert_eq!(job(&f, waiting.id).await.counts.selected, 2);
+}
+
+/// A job created after the margin [`live`] gave the clock (the selection of the job before it waited for another test's
+/// transaction, CI of PR #226) has its first slot ahead of the test's clock: [`select`] brings the clock up to the slot, so
+/// that its items are due (D2339). Without that, every step of the item is idle and the job stays `RUNNING`.
+#[tokio::test]
+async fn a_job_created_after_the_margin_of_the_test_clock_runs_once_it_is_selected() {
+    let f = fixture().await;
+    let all = runs_started(&f, 1).await;
+    let exec = executor(&f);
+    let database_now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&f.w.db.pool)
+        .await
+        .expect("the database's clock");
+    // the margin is spent: the test's clock is a second behind the database's when the job is created
+    f.clock.set(database_now - Duration::seconds(1));
+    let job_ = create(&f, write(Action::Cancel, everything()), "behind-the-slot").await;
+
+    select(&f, &exec, &job_).await;
+    settle(&exec, &job_).await;
+
+    assert_eq!(job(&f, job_.id).await.state, JobState::Completed);
+    assert_eq!(status_of(&f, all[0]).await, "CANCELLED");
 }
 
 // --- one item per slot ----------------------------------------------------------------------------
@@ -316,7 +344,7 @@ async fn an_item_is_applied_per_slot_with_its_effect_its_outcome_and_the_counter
         "apply-per-slot",
     )
     .await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
 
     assert_eq!(
         exec.step(&due(&job_), None).await.expect("first"),
@@ -402,7 +430,7 @@ async fn a_run_that_has_ended_or_is_not_there_is_skipped_with_its_reason() {
     .await;
 
     // the unknown id selects nothing: only the runs that exist become items
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     for _ in 0..4 {
         f.clock.advance(Duration::seconds(1));
         settle(&exec, &job_).await;
@@ -445,7 +473,7 @@ async fn an_effect_that_committed_before_its_record_existed_is_recorded_once_and
         "crash-after-effect",
     )
     .await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     // the effect under the item's key, with no record of the item
     let key = format!("batch:{}:{}", job_.id, runs[0]);
     f.w.runs
@@ -497,7 +525,7 @@ async fn a_creator_who_loses_a_permission_fails_the_job_and_nothing_more_is_appl
         )
         .await
         .expect("create");
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     assert_eq!(
         exec.step(&due(&job_), None).await.expect("first"),
         Stepped::Acted
@@ -549,7 +577,7 @@ async fn cancelling_a_job_marks_the_items_that_have_not_run_and_undoes_nothing()
         },
     );
     let job_ = create(&f, write(Action::Cancel, everything()), "cancel-midway").await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     assert_eq!(
         exec.step(&due(&job_), None).await.expect("first"),
         Stepped::Acted
@@ -625,7 +653,7 @@ async fn a_refusal_for_now_is_tried_again_after_a_backoff_and_succeeds_once_ther
         "rerun-deferred",
     )
     .await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
 
     assert_eq!(
         exec.step(&due(&job_), None).await.expect("refused"),
@@ -704,7 +732,7 @@ async fn an_item_refused_too_often_fails_instead_of_waiting_for_ever() {
     )
     .await;
 
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     for _ in 0..12 {
         f.clock.advance(Duration::minutes(6));
         settle(&exec, &job_).await;
@@ -729,12 +757,21 @@ async fn an_item_refused_too_often_fails_instead_of_waiting_for_ever() {
 
 // --- the lease --------------------------------------------------------------------------------------
 
+/// The new owner's selection waits for the transactions of the time of creation like any other, and those are the whole
+/// server's: here one of them stands for another test's, held while the job is created and ended only once the new owner has
+/// been seen waiting for it. The test used to step 500 times a second of the clock apart and then require `COMPLETED`; under
+/// the whole suite another test's transaction outlived the 500 round trips and the job was still `SELECTING` (D2338).
 #[tokio::test]
 async fn a_replica_that_lost_its_lease_records_nothing_and_the_new_owner_goes_on() {
     let f = fixture().await;
     let all = runs_started(&f, 1).await;
     live(&f);
     let exec = executor(&f);
+    let mut other = f.w.db.pool.begin().await.expect("begin");
+    sqlx::query("SELECT txid_current()")
+        .fetch_one(&mut *other)
+        .await
+        .expect("take an identity");
     let job_ = create(&f, write(Action::Cancel, everything()), "stale-lease-job").await;
     let shard = Shard::of(job_.id);
     sqlx::query(
@@ -768,16 +805,26 @@ async fn a_replica_that_lost_its_lease_records_nothing_and_the_new_owner_goes_on
         0,
         "nothing was selected"
     );
-    for _ in 0..500 {
-        f.clock.advance(Duration::seconds(1));
+    assert_eq!(
         exec.step(&due(&job_), Some(holder.clone()))
             .await
-            .expect("step");
-        if job(&f, job_.id).await.state == JobState::Completed {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+            .expect("step"),
+        Stepped::Idle,
+        "the new owner waits for the transaction that was open when the job was created"
+    );
+    assert_eq!(job(&f, job_.id).await.state, JobState::Selecting);
+    other.rollback().await.expect("the other transaction ends");
+
+    selected(&exec, &due(&job_), Some(holder.clone())).await;
+    f.clock.advance(Duration::seconds(1));
+    assert_eq!(
+        exec.step(&due(&job_), Some(holder.clone()))
+            .await
+            .expect("the item"),
+        Stepped::Acted
+    );
+    f.clock.advance(Duration::seconds(1));
+    exec.step(&due(&job_), Some(holder)).await.expect("the end");
     assert_eq!(job(&f, job_.id).await.state, JobState::Completed);
     assert_eq!(status_of(&f, all[0]).await, "CANCELLED");
 }
@@ -790,7 +837,7 @@ async fn a_replica_that_lost_its_lease_neither_applies_nor_records_an_item_and_t
     live(&f);
     let exec = executor(&f);
     let job_ = create(&f, write(Action::Cancel, everything()), "stale-item-record").await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     let shard = Shard::of(job_.id);
     sqlx::query(
         "UPDATE scheduler_shards SET owner = 'replica-new', generation = 12, \
@@ -863,7 +910,7 @@ async fn the_last_look_before_an_effect_refuses_an_ended_item_a_stale_lease_and_
     live(&f);
     let exec = executor(&f);
     let job_ = create(&f, write(Action::Cancel, everything()), "last-look").await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     let store = PgBatchStore::new(f.w.db.pool.clone());
     let ordinals: Vec<u32> = items(&f, job_.id)
         .await

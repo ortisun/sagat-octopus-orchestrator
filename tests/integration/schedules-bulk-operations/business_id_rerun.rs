@@ -12,9 +12,7 @@ use sagat_domain::business_ids::{ConflictPolicy, ReusePolicy};
 use sagat_domain::execution::RunId;
 use uuid::Uuid;
 
-use crate::batch_executor::{
-    create, executor, items, job, live, reach_slot, select, settle, write,
-};
+use crate::batch_executor::{create, executor, items, job, live, select, settle, write};
 use crate::business_ids::{business, cancel, holder_of, key, runs_of, start};
 use crate::firing::{Fixture, fixture};
 use crate::support::engine::ctx;
@@ -232,11 +230,6 @@ async fn new_run_of(f: &Fixture, job: Uuid) -> Option<Uuid> {
         .expect("the item")
 }
 
-/// Each job is stepped from its own first slot ([`reach_slot`]). Until 2026-11-26 the clock was set once, two seconds after
-/// the wall clock, before the first job: the second job is created after the first one's selection, which waits for every
-/// transaction open on the server, and on a busy runner (CI run 45800749482, behind the open takeover of
-/// `business_id_audit_platform`) it waited more than a minute. The database stamped the second job's slot then, ahead of the
-/// clock, every step was `Idle`, and the job was left `RUNNING`.
 #[tokio::test]
 async fn a_batch_rerun_keeps_the_identifier_unless_the_job_says_to_drop_it() {
     let f = fixture().await;
@@ -246,12 +239,10 @@ async fn a_batch_rerun_keeps_the_identifier_unless_the_job_says_to_drop_it() {
     let exec = executor(&f);
 
     let keeping = create(&f, rerun_job(kept, false), "rerun-keeps-the-id").await;
-    select(&exec, &keeping).await;
-    reach_slot(&f, &keeping).await;
+    select(&f, &exec, &keeping).await;
     settle(&exec, &keeping).await;
     let dropping = create(&f, rerun_job(dropped, true), "rerun-drops-the-id").await;
-    select(&exec, &dropping).await;
-    reach_slot(&f, &dropping).await;
+    select(&f, &exec, &dropping).await;
     settle(&exec, &dropping).await;
 
     for finished in [&keeping, &dropping] {
@@ -295,8 +286,7 @@ async fn a_batch_rerun_whose_identifier_is_held_fails_the_item_as_a_conflict_and
     let exec = executor(&f);
 
     let held = create(&f, rerun_job(source, false), "rerun-meets-a-holder").await;
-    select(&exec, &held).await;
-    reach_slot(&f, &held).await;
+    select(&f, &exec, &held).await;
     settle(&exec, &held).await;
 
     let done = job(&f, held.id).await;
