@@ -151,9 +151,12 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   idempotency key, whose repeated use answers the first answer (`buffered` included) before any bound; a payload above the name's
   `maxBytes`, refused as an oversized payload is today (`VALIDATION_FAILED`) with the reason `SIGNAL_TOO_LARGE` (checked for live
   delivery too, Requirement 054-004); a run that has ended or is stopping, refused `409` with the reason `RUN_ENDED` or
-  `RUN_STOPPING`; for a graph run, a name that nothing can still consume, because no root `waitEvent` of that name is still
-  `PENDING` (every one has been entered) and the version has no `continueAsNew` node, refused `409` with the reason
-  `NO_CONSUMER_AHEAD`, the honest "too late" (a step not yet entered counts as a consumer, so the refusal is certain, never a guess);
+  `RUN_STOPPING`; for a graph run, a name that nothing can still consume, refused `409` with the reason `NO_CONSUMER_AHEAD`, the
+  honest "too late". The predicate is over the version's nodes: a root `waitEvent` node of the name is a *consumer ahead* when the
+  run has no step for it yet (it has not been routed, which includes a branch the run may never take) or its step is `PENDING`;
+  the refusal applies only when no node of the name is a consumer ahead and the version has no `continueAsNew` node. So an early
+  signal (CUJs 1 and 3) is kept, and a signal whose only wait sits on a branch not taken is kept until the run ends and is then
+  discarded and counted; the refusal is never a guess;
   a name that already holds `maxPending` pending signals, refused `409` with the reason `SIGNAL_INBOX_FULL`; retained bytes that the payload would take above 4 MiB,
   refused `429 QUOTA_EXCEEDED` as today; the tenant's content quota (Architecture decision 0027), as today. A signal that passes is
   stored, journaled `signal.buffered`, audited `run.signalled` and answered `202` with `deliveredTo: []`, `buffered: true` and its
@@ -435,7 +438,7 @@ composes with when it merges (design 045's and design 044's), built by the check
 its index; the three new columns with their checks and the ledger's replaced check (`NOT VALID`, validated in the same migration because the new columns hold only
 their defaults); the capability `signal-inbox-v1` in the registry's three closed lists (`serving_instances_capabilities_known`,
 `platform_requirements_capability_known`, `platform_requirement_history_capability_known`, replaced as design 043's migration did,
-restating the lists in force); the comparison guard of the hold function (Technical Plan 15); the floor's predicate; the grants
+restating the lists in force); the comparison guard of the hold function (Technical Plan 15); the floor's row and its function; the grants
 (`SELECT, INSERT, DELETE ON run_signal_inbox TO sagat_app`); and the storage classification of each variable-size column in
 `crates/infra-postgres/storage-classification.json` (`name` as `content`; `payload_digest` as `protected_system`, because the
 content it names is measured in `payloads`). The down migration refuses while a row of the table exists, while a version of level
@@ -477,19 +480,25 @@ correlation of a root `waitEvent` whose `eventType` is a declared name while `st
 for such an evaluation, makes one more store call, `take_oldest_pending_signal(name)`:
 
 ```sql
-DELETE FROM run_signal_inbox
- WHERE (tenant_id, run_id, sequence) = (
-       SELECT tenant_id, run_id, sequence FROM run_signal_inbox
-        WHERE tenant_id = $1 AND run_id = $2 AND name = $3
-        ORDER BY sequence LIMIT 1)
-RETURNING sequence, payload_digest, bytes;
+WITH taken AS (
+  DELETE FROM run_signal_inbox
+   WHERE (tenant_id, run_id, sequence) = (
+         SELECT tenant_id, run_id, sequence FROM run_signal_inbox
+          WHERE tenant_id = $1 AND run_id = $2 AND name = $3
+          ORDER BY sequence LIMIT 1)
+  RETURNING tenant_id, sequence, payload_digest, bytes)
+SELECT taken.sequence, taken.payload_digest, taken.bytes, p.content
+  FROM taken JOIN payloads p ON p.tenant_id = taken.tenant_id AND p.digest = taken.payload_digest;
 ```
 
 and passes it back in `Resolution::Correlation { node, key, taken }`. With a signal, the domain emits `wait.started` and then
 `WaitSatisfied { node, via: Buffered, signal: sequence }`, and lowers `pending_signals`; the store writes the step's
 `output_digest` from the taken row (the payload row exists, nothing is copied), lowers `runs.pending_signals`, and moves the
 row's bytes from the ledger's `pending_signal_bytes` to its `logical_output_bytes` in the statement that charges an output today,
-so the total does not change. Without one (another name holds the pending signals), the wait
+so the total does not change. The one statement returns the content too, and the engine stages it as the node's output in the
+transaction's `RunData` (`stage_outputs`, as a live signal's payload is staged today), so a condition, a correlation or an
+activity's input evaluated later in the same transaction reads it; a test reads the consumed output in the entry transaction.
+Without one (another name holds the pending signals), the wait
 waits. Because the read deletes in the same statement, a second wait of the same name entered later in the same transaction reads
 the next row; a rollback restores both. A correlation that fails to evaluate fails the step as today, and takes no signal.
 
@@ -538,9 +547,13 @@ payloads to a sibling column of the same row, `pending_signal_bytes`, under one 
 database refuses any write that would take outputs and pending payloads past 4 MiB, whatever path makes it. Every place that
 compares with the bound then reads the sum:
 
-- the ledger read (`collection_outputs::inspect` and the path transaction's) returns both values, the output bytes as read and the
-  pending bytes; the port method `logical_output_bytes()` returns their sum, the room's measure, and the charging statements, which
-  compare the column with the value they read for their own concurrency check, keep comparing the raw column with the raw value;
+- the ledger read (`collection_outputs::inspect`, which builds `EffectiveOutputBytes`, and the path transaction's) reads both
+  columns: `EffectiveOutputBytes` gains `pending()`, `ledger()` stays the output bytes as read (the charging statements compare the
+  column with it for their own concurrency check), `total()` becomes outputs, verified collections and pending together, and
+  `legacy_bytes()` subtracts the pending bytes too; the port method `logical_output_bytes()` returns `total()`;
+- the sites that compare `total()` with `MAX_RUN_OUTPUT_BYTES` then count pending bytes with no change of their own, and each gets a
+  test: `crates/infra-postgres/src/primitives.rs` (two, the collection's finish), the loop's carry check in
+  `crates/scheduler/src/passes.rs`, and the callers of `logical_output_bytes()`;
 - the charging statements' predicates (`charge_logical_output_bytes` in `crates/infra-postgres/src/execution.rs`, twice, and the
   path charge in `execution/path.rs`), today `logical_output_bytes + $4 + $5 <= $6`, add `pending_signal_bytes`;
 - the collection-finalization scan of `crates/infra-postgres/src/maintenance.rs`, which selects work that fits the room, subtracts
@@ -679,6 +692,13 @@ completion, an end, a handoff after the chain lock, a path transaction). The los
 | a crash after the commit of a buffering, before the answer | the retry with the same key answers the first answer | the answer dropped by the harness |
 | a restart | nothing is lost: the inbox is rows and the journal | the engine restarted with pending signals |
 
+Each row is built test-first by the task that makes it possible, in `tests/fault/buffered-signals/races.rs`: Task 054-8 the
+signal against a wait's entry (`signal_and_wait_entry_in_both_orders`), against its timeout (`signal_and_wait_timeout_in_both_orders`),
+against the run's end (`signal_and_run_end_in_both_orders`), two waits and one signal (`two_waits_take_one_signal`) and two signals
+at the bound (`two_signals_at_the_bound`); Task 054-9 the continuation (`signal_and_continuation_in_both_orders`) and the signal
+between the evaluation and the handoff (`signal_between_evaluation_and_handoff`); Task 054-10 the reset (`signal_and_reset`); Task
+054-12 the crash and the restart (`crash_after_buffering_answers_the_first_answer`, `restart_keeps_pending_signals`).
+
 No broker hint is involved: a wait consumes in its entry transaction, and a signal is admitted by an API call that commits before
 it answers (principle VII).
 
@@ -722,21 +742,42 @@ refusals in six languages. The worker protocol does not change.
   Architecture decision 0082); until then publication of a version of level 1 answers `422 CAPABILITY_NOT_ACTIVE` with `capability: signal-inbox-v1`. Once recorded,
   a binary without the capability serves nothing (the closed gate). Both kinds need it: a control plane admits and buffers signals
   and publishes versions; an engine enters waits, ends runs and hands off continuations.
-- **The publication hold** is the function shared with designs 044 and 045, `platform_requirement_hold(capability text) RETURNS
-  boolean`, `SECURITY DEFINER`, `SET search_path = pg_catalog, pg_temp`, schema-qualified names, `REVOKE ALL ... FROM PUBLIC`
-  before `EXECUTE` is granted to `sagat_app`, with no list of capabilities in its body: it reads the requirement's row `FOR SHARE`
-  and returns true only when it is recorded for both control planes and engines. Its exact body is the one design 044 gives in its
-  Decision 044-206. It is built once, with the scaffold of the floor's trigger, by a prerequisite migration and pull request of its
-  own (Task 054-18), which whichever of designs 044, 045 and 054 builds first lands and the other two depend on; each design then
-  adds only its capability to the closed lists and its predicate to the floor. A later migration that finds the function still
-  compares its security, configuration, owner and whitespace-normalized body with that text and fails on any difference, as a guard
-  against drift, not as the way it is shared (Gap 054-007). The store calls it inside the
-  publication's transaction under a `lock_timeout`; `false` is `CAPABILITY_NOT_ACTIVE` with the capability named, a lock timeout `UNAVAILABLE` with the
-  reason `REQUIREMENT_BUSY`.
-- **The floor for a rollback.** A rule in the replay-floor trigger on `platform_requirements` (Architecture decision 0098's build,
-  its scaffold in the prerequisite of Task 054-18, shared with designs 044 and 045) refuses removing `signal-inbox-v1` while a workflow version of level
-  1 exists, retired included: an older build cannot parse those versions or decode their runs' journals. One predicate on the
-  partial index of Technical Plan 2.
+- **The publication hold** is the function shared with designs 044 and 045, built once, with the floor's scaffold below, by a
+  prerequisite migration and pull request of its own (Task 054-18) that whichever of the three designs builds first lands and the
+  other two depend on (Gap 054-007). It is `SECURITY DEFINER`, `SET search_path = pg_catalog, pg_temp`, uses schema-qualified
+  names, and has `EXECUTE` revoked from `PUBLIC` and granted to `sagat_app`. It has no list of capabilities in its body: the closed
+  check `platform_requirements_capability_known` bounds the value, so each design adds its capability to that check, not to the
+  function. Its body, the one design 044 gives in its Decision 044-206:
+
+  ```sql
+  CREATE FUNCTION public.platform_requirement_hold(capability text) RETURNS boolean
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  DECLARE
+      v_kinds text[];
+  BEGIN
+      SELECT r.kinds INTO v_kinds FROM public.platform_requirements r
+       WHERE r.capability = platform_requirement_hold.capability FOR SHARE;
+      RETURN FOUND AND v_kinds @> ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']::text[];
+  END;
+  $$;
+  ```
+
+  A design's own migration that finds the function compares `prosecdef`, `proconfig`, the owner and the body normalized as
+  `regexp_replace(btrim(prosrc), '\s+', ' ', 'g')` with this text, and fails on any difference: a guard against drift, never a
+  way to replace it. The store calls it inside the publication's transaction under a `lock_timeout` (store port:
+  `hold_requirement(capability: Capability) -> Result<bool, StoreError>` on the publication transaction); `false` is
+  `CAPABILITY_NOT_ACTIVE` with the capability named, a lock timeout `UNAVAILABLE` with the reason `REQUIREMENT_BUSY`.
+- **The floor for a rollback.** The prerequisite also builds the floor's scaffold, so that no design replaces another's code: a
+  table `platform_requirement_floors (capability text PRIMARY KEY, holds regprocedure NOT NULL)`, its capability under the same
+  closed check as `platform_requirements`, owned by the migration role, with no grant to `sagat_app`; and a trigger function `platform_requirement_floor()`,
+  `SECURITY DEFINER` with a fixed search path, `BEFORE UPDATE OR DELETE` on `platform_requirements`, which refuses unless the
+  transaction is `READ COMMITTED` (so that, after waiting for a publication's `FOR SHARE`, it reads the committed versions) and,
+  when the change removes a capability or narrows its kinds, calls the `holds` function registered for that capability (`EXECUTE
+  format('SELECT %s()', holds)`, a `regprocedure` that only a migration can insert) and refuses with `FLOOR_HELD` when it returns
+  true. Each design adds one row and one function. This design's: `signal_inbox_floor_holds() RETURNS boolean`, `SECURITY DEFINER`,
+  fixed search path, `SELECT EXISTS (SELECT 1 FROM public.workflow_versions WHERE signal_inbox_level > 0)`, one probe of the partial
+  index of Technical Plan 2, retired versions included: an older build cannot parse those versions or decode their runs' journals.
+  Architecture decision 0098's own rule (on the branch of pull request #260) and design 045's join the same registry.
 - The released 0.2 scenario (`scripts/test-release-upgrade-profile.py`): runs started on 0.2 finish on 0.3 unchanged; a 0.2 SDK
   client signalling a declared name reads the new optional fields as unknown and ignores them.
 
@@ -755,6 +796,31 @@ refusals in six languages. The worker protocol does not change.
 | 044 (workflow as code) | being designed | the inbox, the consumption by sequence and the lifecycle (Technical Plan 10); shares the hold function |
 | 045 (activity timeouts) | being designed | shares the hold function and the floor trigger |
 | ADR-0082 (instance registry) | accepted | one capability, `signal-inbox-v1` |
+
+### 17. Interfaces
+
+The signatures a builder needs, in the crates that own them:
+
+- `crates/domain`: `WorkflowDefinition::signals() -> &SignalDeclarations`; `SignalDeclarations::get(&EventType) ->
+  Option<&SignalDeclaration>` with `max_pending: u16` and `max_bytes: u32`; `Evaluation::Correlation { node, expression,
+  take_buffered: bool }`; `Resolution::Correlation { node, key: Result<CorrelationKey, ()>, taken: Option<TakenSignal> }` with
+  `TakenSignal { sequence: u64, bytes: u32 }`; `RunEvent::SignalBuffered { name: EventType, bytes: u32, payload: PayloadDigest,
+  accepted_by: WorkflowVersionId, moved_from: Option<(RunId, u64)> }`; `RunEvent::WaitSatisfied { node, via: Option<WaitVia>,
+  signal: Option<u64> }` with `WaitVia::Buffered`; `RunEvent::SignalsMoved { count: u16, to: RunId }`;
+  `RunEvent::SignalsDiscarded { count: u16, cause: DiscardCause }` with `DiscardCause::{RunEnded, NotDeclared}`;
+  `buffer_signal(def, state, name, bytes, payload, now) -> Result<Progress, ExecutionError>`; `RunState::pending_signals() -> u16`.
+  `PayloadDigest` is the 32 bytes of the SHA-256 of the payload, the key `payloads` uses; the application computes it (it
+  already depends on `sha2`), and the store inserts the content under it and treats a mismatch as an invariant error.
+- `crates/application`: `deliver_signal(...) -> Result<SignalOutcome, AppError>` with `enum SignalOutcome { Delivered(Vec<NodeId>),
+  Buffered { sequence: u64 } }`; `signal` and `signal_item` return `SignalOutcome`, `signal_with_receipt` returns
+  `(SignalOutcome, bool)`; `Effects` gains `buffered_payload: Option<Vec<u8>>`, the content the store writes to `payloads` with the
+  `signal.buffered` it persists; the `RunTx` port gains `take_oldest_pending_signal(&EventType) -> Result<Option<(TakenSignal,
+  Vec<u8>)>, StoreError>`, `pending_signal_count(&EventType, limit: u16) -> Result<u16, StoreError>`, `consume_pending_signals(&[u64])
+  -> Result<Result<(), NotPending>, StoreError>`, `discard_pending_signals() -> Result<u16, StoreError>` and
+  `list_pending_signals(after: Option<u64>, limit: u16) -> Result<PendingSignalPage, StoreError>`; the publication transaction gains
+  `hold_requirement(Capability) -> Result<bool, StoreError>`.
+- `crates/api-http`: `SignalResult { deliveredTo, buffered, sequence }`, `PendingSignal { sequence, name, bytes, receivedAt,
+  movedFrom }`, `PendingSignalPage { items, next }`, as in `openapi.yaml` after Task 054-1.
 
 ## Risks and Mitigations
 
@@ -842,7 +908,7 @@ caller of a signature it changes, so the workspace builds after each.
 | 0 | either | 054-1 | `specs/001-platform-foundation/contracts/`, `specs/054-buffered-signals/contracts/`, `specs/018-schedules-bulk-operations/contracts/`, `docs/` | this design approved |
 | 1 | server | 054-2, 054-3 | `crates/domain`, its callers in `crates/application`, `crates/infra-postgres` (the event codec, exhaustive matches) and `crates/infra-ir` | slice 0 |
 | 2a | server | 054-18, only if neither design 044 nor 045 landed it; its own pull request | `crates/infra-postgres` (one migration), `tests/integration/platform-foundation/` | slice 1 |
-| 2 | server | 054-4, 054-5, 054-6 | `crates/infra-postgres`, `crates/infra-ir`, `crates/application` (the store port, the publication gate) | slice 1 |
+| 2 | server | 054-4, 054-5, 054-6 | `crates/infra-postgres`, `crates/infra-ir`, `crates/application` (the store port, the publication gate), the two new suites' skeletons | slice 2a, or design 044's or 045's equivalent landed |
 | 3 | server | 054-7, 054-8 | `crates/application`, `crates/infra-postgres`, `crates/scheduler`, `crates/api-http`, `apps/control-plane`, `apps/execution-engine`, `scripts/` | slice 2 |
 | 4 | server | 054-9, 054-10, 054-11 | `crates/infra-postgres` (`chain_progress.rs`, `primitives.rs`), `crates/application` (`runs/reset.rs`, `runs/reapply.rs`, `runs.rs`), `tests/fault/` | slice 3 |
 | 5 | server | 054-12, 054-16 | `tests/integration/buffered-signals/`, `tests/fault/buffered-signals/`, `tests/integration/claim-transition-efficiency/`, `tests/performance/` | slice 4 |
@@ -868,22 +934,23 @@ caller of a signature it changes, so the workspace builds after each.
 - [ ] T054-3 Domain events and planning: `SignalBuffered`, `SignalsMoved`, `SignalsDiscarded`, `WaitVia::Buffered` and the
   `signal` field of `WaitSatisfied`; `RunState.pending_signals` and `restore`; `buffer_signal`; the choice of the first waiter
   (Requirement 054-004); `take_buffered` on `Evaluation::Correlation` and `taken` on `Resolution::Correlation`; the discard before `run.finished` for every
-  way the planner ends a run; the check of the invariant of Terms in the replay corpus; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the test that the store-side
-  release paths never enter a `waitEvent` of a declared name without the planner. Unit tests first; replay equals projection over a corpus that buffers,
+  way the planner ends a run; the check of the invariant of Terms in the replay corpus; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the event codec of the new
+  events and every exhaustive match, so the workspace builds. Unit tests first; replay equals projection over a corpus that buffers,
   consumes, moves and discards; journals written before this design decode as before.
   Refs: Requirement 054-004, Requirement 054-006, Requirement 054-011, Requirement 054-020
   Owner-gate: OD-2026-11-26-540
 - [ ] T054-18 The shared prerequisite (Gap 054-007; listed here, in the order of its slice 2a, though numbered last), its own
   migration and pull request, built only if neither design 044 nor design 045 has
-  landed it: `platform_requirement_hold` with the exact body of Decision 044-206, its `REVOKE` and grant, the one refusal reason
-  `CAPABILITY_NOT_ACTIVE` naming the capability, and the scaffold of the
-  replay-floor trigger on `platform_requirements` (with its `READ COMMITTED` check) that each design extends with one predicate.
+  landed it: `platform_requirement_hold` with the body of Technical Plan 15, its `REVOKE` and grant, the one refusal reason
+  `CAPABILITY_NOT_ACTIVE` naming the capability, and the floor's scaffold of Technical Plan 15 (the table
+  `platform_requirement_floors`, the trigger function `platform_requirement_floor()` with its `READ COMMITTED` check) that each
+  design extends with one row and one function.
   `integration_platform_foundation` tests first: the function's privileges and configuration, a hold against a concurrent removal,
   the trigger's refusal through a test capability.
   Refs: Requirement 054-002
 - [ ] T054-4 The migration of Technical Plan 2 (the table with its `version_id` and index, the new columns and their checks, the
   check on `runs` that a terminal status has no pending signal, the ledger's replaced check, the capability in the three closed
-  lists, the comparison guard of the hold function, the floor's predicate, the grants, the classification, the down migration's
+  lists, the comparison guard of the hold function, the floor's row and its function `signal_inbox_floor_holds`, the grants, the classification, the down migration's
   refusals). `integration_platform_foundation` first: migrations as the runtime role, the privilege audit, the registry's privilege
   test, the down migration's refusals.
   Refs: Requirement 054-002, Requirement 054-014, Non-functional requirement 054-003
@@ -891,7 +958,10 @@ caller of a signature it changes, so the workspace builds after each.
   holds `signal-inbox-v1` through the store's hold and writes the level; the ad hoc insert writes 0. `integration_gitops_versioning`
   tests first: an IR fixture per reason, the requirement's refusal, the hold against a concurrent removal, a republication.
   Refs: Requirement 054-001, Requirement 054-002
-- [ ] T054-6 The store: the event codec of the new events; the inbox written from `signal.buffered`; `take_oldest_pending_signal`,
+- [ ] T054-6 The store (the event codec of the new events is slice 1's, Task 054-3): the skeletons of the suites
+  `integration_buffered_signals` and `fault_buffered_signals` (their `[[test]]` entries in `tests/Cargo.toml`, their `main.rs`,
+  their entries in `scripts/integration-suite-durations.toml`), so that later tasks add their tests there first; the inbox written
+  from `signal.buffered`; `take_oldest_pending_signal`,
   `consume_pending_signals` (for design 044), `discard_pending_signals`, `list_pending_signals`, the per-name count; the count in the
   statements that update `runs`; the ledger's `pending_signal_bytes` and `logical_output_bytes()` returning the sum. Store tests per
   method first, with two tenants, and a test that the ledger's check refuses a write past 4 MiB.
@@ -905,17 +975,21 @@ caller of a signature it changes, so the workspace builds after each.
   Refs: Requirement 054-008
 - [ ] T054-8 Admission: `deliver_signal` and the chain path through one decision (Technical Plan 3), the engine's resolve of a
   correlation with `take_buffered`, batch items; `crates/api-http`'s list route, the answers and reasons; the capability
-  `signal-inbox-v1` in both process kinds and the registry tests (`apps/control-plane/src/registry.rs`,
-  `apps/execution-engine/src/settings.rs`). Contract tests first (`contract_rest_durable_execution`), then a test per refusal and
+  `signal-inbox-v1` known to both process kinds and their registry tests (`apps/control-plane/src/registry.rs`,
+  `apps/execution-engine/src/settings.rs`), but not yet listed as offered (Task 054-9 lists it). Contract tests first (`contract_rest_durable_execution`), then a test per refusal and
   its order (`NO_CONSUMER_AHEAD` included), the idempotency answer and its `#` receipt (with-start replay included), and a wait's
   entry per entry path.
   Refs: Requirement 054-002, Requirement 054-003, Requirement 054-004, Requirement 054-005, Requirement 054-006, Requirement 054-009, Requirement 054-013, Requirement 054-016
   Owner-gate: OD-2026-11-26-540
-- [ ] T054-9 Continue-as-new and the store-side ends: the move and the discard in both handoffs (`continue_as_new`,
+- [ ] T054-9 Continue-as-new and the store-side ends, and the capability: a build lists `signal-inbox-v1` as offered only from
+  this slice on, since before it a run that buffers could not continue or end correctly, so no version of level 1 publishes
+  earlier; the move and the discard in both handoffs (`continue_as_new`,
   `continue_evaluated`) in the order of Technical Plan 7, their tolerance of a run version advanced only by `signal.buffered` (and
   `finalize_continuation_expression`'s), the discard in `finalize_chain` and the collection's finish with their shape matchers.
   Integration tests first: a signal buffered between the scheduler's evaluation and its handoff (barrier), each store-side end
-  with pending signals, all names declared, some undeclared (a code run's
+  with pending signals and the check on `runs` refusing a terminal status with pending signals
+  (`integration_buffered_signals::ends::<path>_discards_pending_signals`, one per path), the store-side release paths never
+  entering a `waitEvent` of a declared name (`integration_buffered_signals::entries::store_side_paths_never_enter_a_declared_wait`), all names declared, some undeclared (a code run's
   continuation under another version, built with design 044's fixtures), an empty inbox (no statement added), the
   successor's first wait consuming the oldest moved signal, replay of both runs.
   Refs: Requirement 054-010, Requirement 054-011, Requirement 054-015
@@ -930,9 +1004,8 @@ caller of a signature it changes, so the workspace builds after each.
   then the with-start tests.
   Refs: Requirement 054-013, Requirement 054-015
   Owner-gate: OD-2026-11-26-540
-- [ ] T054-12 The suites `integration_buffered_signals` and `fault_buffered_signals` (their `[[test]]` entries in
-  `tests/Cargo.toml`, `main.rs` files and entries in `scripts/integration-suite-durations.toml`): every race of Technical Plan 12
-  with its barrier, the crash and restart, the look-back precedence, the run-driven barrier test with a pending signal, the metrics
+- [ ] T054-12 Complete the suites `integration_buffered_signals` and `fault_buffered_signals` (created by Task 054-6, their race
+  rows written by Tasks 054-8 to 054-10 as Technical Plan 12 assigns them): the crash and restart, the look-back precedence, the run-driven barrier test with a pending signal, the metrics
   text test, the read tests (no payload, another tenant's run), the replay corpus, and the chain of CUJ 2 handling 500 `order`
   signals one per segment, each consumed once and in order, with every signal accounted for in the chain's journals; every suite also with
   `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
@@ -950,7 +1023,7 @@ caller of a signature it changes, so the workspace builds after each.
   after reading its diff.
   Refs: Requirement 054-007, Requirement 054-019
 - [ ] T054-16 Measure Non-functional requirements 054-001 and 054-002: the budget lines of `integration_claim_transition_efficiency`
-  (the existing lines seen passing before and after; new lines for a consuming entry, a completion with pending signals, a
+  (the existing lines recorded as a baseline before slice 1, and run again in every server slice, which must keep them; new lines for a consuming entry, a completion with pending signals, a
   continuation and an end with 1,000 pending), and the time of a continuation moving 1,000 signals, recorded with its environment in
   `tests/performance/reports/`.
   Refs: Non-functional requirement 054-001, Non-functional requirement 054-002, Success criterion 054-004
