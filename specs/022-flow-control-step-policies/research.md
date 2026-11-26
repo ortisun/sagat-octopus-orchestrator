@@ -2228,6 +2228,26 @@ taken after `git grep D022-04` on every `origin/*` branch.
   on without `flowControl.digestKeys.existingSecret`; `compose.yaml` passes the rate variable (default `false`); the
   local overlay turns both on. Test: `contract_scalability_ha::flow_control_chart::*`.
 
+- **D022-119 — The upgrade tests name their current schema again, and the clock rule spares the shard fence
+  (2026-11-26; the merged-tree gates of the slice; batch 4 correctness minor 1; FR-010-003).** Delegate
+  (OD-2026-11-24-4). The gates run on the merged slice found two disagreements with rules that `develop` holds:
+  1. *The current-schema oracle.* Batch 4 correctness minor 1 had the three release-upgrade tests read the migration
+     head from the migrator (`migration_head()`), so that a new migration would not break them. `develop`'s
+     `scripts/check-upgrade-boundary.py` requires exactly one written-out `assert_eq!(after, <version>)` in each, so
+     that a new migration forces whoever adds it to look at the upgrade tests again. Options: (a) keep the migrator
+     read and change the check; (b) write the version out again. Chosen (b): the check is the project's fitness rule,
+     and the friction is its purpose; the ruling's concern (a hard-coded head that goes stale) is what the check turns
+     into a failure with a message. The oracle is `20270215000000`, this branch's last migration.
+  2. *The volatile clock in `maintenance.rs`.* `contract_scalability_ha::no_candidate_query_bounds_an_index_range_with_a_volatile_clock`
+     refuses any comparison with `clock_timestamp()` in `maintenance.rs` and `operations.rs`, because the planner
+     cannot use it as the bound of an index range (FR-010-003). The rest of a key's window (D022-064, commit
+     `d08bb79b`) checks its shard's lease with `s.expires_at > clock_timestamp()` inside an `EXISTS` on
+     `scheduler_shards` by its key: one row, no range. There the volatile clock is the correct one: `now()` is the
+     transaction's start, and a lease that ran out during the transaction would still fence in. Options: (a) use
+     `now()`; (b) narrow the rule to spare that fence. Chosen (b): the fence must be exact, and the rule's reason
+     does not apply to a lookup by key. The test spares exactly the text `s.expires_at > clock_timestamp()` and says
+     why; any other comparison with the volatile clock in those files is still refused.
+
 ## Gaps
 
 | ID | Gap | Status |
