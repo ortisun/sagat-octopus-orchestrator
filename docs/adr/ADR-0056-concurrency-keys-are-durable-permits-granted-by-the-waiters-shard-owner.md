@@ -53,10 +53,10 @@ ceiling above the proposed defaults is published.
    Every transaction that touches a semaphore MUST already hold (or be creating) the run whose permit
    changes, holding that run's row lock; a commit that ends the run MUST lock its active-run counter row
    (`run_active_counts_lock_slot`) before it gives back any key; the `runs` row is written by `persist` after
-   the evaluation rounds (ADR-0094). *(Replaced 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decision D022-234):
-   accepted 2026-11-25 with the amendments, decision D022-271; the sentence read "and MUST have written that run's `runs` row first (so the `run_active_counts` trigger rows
-   precede the semaphore)", which the build since ADR-0094 does not do; what it protected, the counter row before
-   the key, is kept by the explicit lock.)* It MUST lock semaphore rows in `(pool, scope, group, key_digest)` order, after
+   the evaluation rounds (ADR-0094). *(Replaced 2026-11-25, delegate OD-2026-11-24-4, feature 022 decision D022-234,
+   accepted 2026-11-25 with the amendments, decision D022-271. The sentence read "and MUST have written that run's `runs` row first, so the `run_active_counts` trigger rows
+   precede the semaphore", which the build since ADR-0094 does not do; what it protected, the counter row before
+   the key, is kept by the explicit lock. Punctuation revised 2026-11-26, decision D022-285.)* It MUST lock semaphore rows in `(pool, scope, group, key_digest)` order, after
    every entity lock the path takes before it acquires, releases or grants a permit. After a semaphore it
    MAY lock only (a) the transition rows this ADR lists for that path — on the terminal path the namespace
    failure-handler policy row (~~`FOR SHARE`~~, struck 2026-11-25: read without a lock) — and (b) quota, rate and usage rows, which always come last

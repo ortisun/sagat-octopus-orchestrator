@@ -2799,7 +2799,9 @@ delegate (OD-2026-11-24-4).
 - **D022-262 — The overdue pass is a typed no-op on a run in its handler phase (ruling 3; correctness Major 3).**
   Delegate (OD-2026-11-24-4). Between the pass's pick and its lock a commit may open the phase; `stop_run(TimedOut)` on
   such a run is a typed no-op the pass counts as skipped. Evidence: a barrier test with the pass held between pick and
-  apply while the commit that opens the phase lands; no `failure_handler.draining` follows.
+  apply while the commit that opens the phase lands; no `failure_handler.draining` follows. *(Restated 2026-11-26 by
+  D022-278: the no-op is the overdue pass's `enforce_run_deadline`, not `stop_run(TimedOut)`, whose meaning is
+  unchanged.)*
 - **D022-263 — Continue-as-new under a handler or test tree is refused at admission (ruling 4; correctness Major 4;
   refines D022-249).** Delegate (OD-2026-11-24-4). Refused with typed codes where the run would be created: a dispatch
   fails with `last_error_code` `CONTINUE_AS_NEW_REFUSED`; a child admission under a handler or test tree fails its child
@@ -2828,7 +2830,9 @@ delegate (OD-2026-11-24-4).
   `RECOVERY_ROLE_MAY_NOT_REDRIVE`); a migration widens `memberships_role_valid` with a `down` that refuses while such
   memberships exist; the role cannot be assigned until `failure-handler-v1` is activated; the OpenAPI role enum is
   widened in the same change. Evidence: a tenant-battery case (bound to namespace A, cannot touch namespace B); a fault
-  test (a handler that reruns and then tries to redrive produces exactly one handler run).
+  test (a handler that reruns and then tries to redrive produces exactly one handler run). *(Refined 2026-11-26 by
+  D022-272 to D022-277: the binding is enforced by the principal, not "first on every route"; the one battery case is a
+  battery of every route.)*
 - **D022-267 — The fitness rules land in the slices that make them pass (ruling 8; architecture Major 4).** Delegate
   (OD-2026-11-24-4). The finish-path rule (task T022-226) lands in slice 3, its pull request's first commit showing it
   red; the dispatch-insert rule (T022-225) in slice 10; the evidence of T022-245 and of T022-207's handler cases in
@@ -2853,6 +2857,158 @@ delegate (OD-2026-11-24-4).
   (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
   specs/022-flow-control-step-policies/reviews/2026-11-25/)`. Task T022-200 records it as an evidence line and is not
   ticked by this change.
+
+### Decisions of the re-reads of 2026-11-26
+
+The security and architecture reviewers re-read the third-read fixes (commit `1276d5b7`) alone:
+[reviews/2026-11-26/design-fixes-rereview-security-reviewer.md](reviews/2026-11-26/design-fixes-rereview-security-reviewer.md)
+and
+[reviews/2026-11-26/design-fixes-rereview-architecture-reviewer.md](reviews/2026-11-26/design-fixes-rereview-architecture-reviewer.md).
+Where each finding now lives is in
+[reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md). Every security finding is
+fixed in the design; none is accepted or deferred (OD-2026-11-24-4 does not let a delegate accept a security finding).
+Each decision is delegate (OD-2026-11-24-4). The code facts below were checked on this branch at `1b21a101`.
+
+- **D022-272 — The namespace binding of a `RunRecovery` subject is enforced by the principal, in one place (security
+  Major 1 of the re-read; refines D022-266).** Delegate (OD-2026-11-24-4). The reviewer's facts hold: a `Principal`
+  carries a tenant, a subject and a role and nothing else (`crates/domain/src/identity.rs:742-785`); `admit` checks the
+  permissions before it resolves the namespace (`crates/application/src/api_admission.rs:274-324`) and
+  `admit_resolved_namespace` takes no principal (`:332`); 44 sites of `crates/application/src` call
+  `authorize(Permission::RunRead | RunStart | RunOperate | DefinitionRead)` with no namespace; `input_blob_access` checks
+  `run:start` and the tenant only (`crates/application/src/runs.rs:973-984`) and the upload route admits what it returns
+  (`crates/api-http/src/blobs.rs:118-122`). A rule written per route therefore fails open wherever a route forgets it.
+  Options: (a) the reviewer's: the bound set loaded into `Principal` with the membership, `authorize` refusing every
+  namespace-scoped permission of the role, `authorize_in(namespace, permission)` called by the resolvers and the use
+  cases; (b) a typed grant (`NamespaceGrant`) that every use case takes as an argument; (c) a check per route, as the
+  third rulings wrote. Chosen (a), made a property of the principal rather than of one role: `Principal` gains a
+  `NamespaceScope`, `Tenant` (every namespace of the tenant: every role today) or `Bound(set)` (a role declared
+  namespace-bound by `Role::is_namespace_bound`, true for `RunRecovery` only). The set is built only by
+  `Membership::principal()` from the binding rows read in the membership statement, so no row means no namespace, and
+  `Principal::new` with a namespace-bound role yields an empty set. `Permission` gains a scope class (namespace or
+  tenant) by an exhaustive `match` with no wildcard arm, so a new permission cannot be added without one.
+  `Principal::authorize(permission)` refuses a namespace-scoped permission for a `Bound` principal
+  (`IdentityError::NamespaceScopeRequired`, a `403` no correct route reaches); `Principal::authorize_in(namespace,
+  permission)` checks the scope first (outside it, `IdentityError::OutsideNamespaceScope`, answered as the opaque `404`
+  and audited, D022-275) and the role second (`403`). The resolvers (`require_namespace` in
+  `crates/application/src/authz.rs`, `resolve_run`, `resolve_workflow`, `resolve_request` and `resolve_approval_request`
+  of `api_admission.rs`, the slug target of `admit`, and a new `require_namespace_slug` that `RunService::namespace`
+  (`runs.rs:3421`) and every other slug lookup call) take the permissions of the operation and keep today's order: the
+  role first (`403` before any lookup, as now), then the lookup (`404`), then `authorize_in`; they are the only callers
+  of the role-only check. A use case that keeps `authorize(permission)` and acts without a resolver refuses a bound
+  principal: forgetting fails closed, and the battery's positive cases find the site. Every principal rebuilt from a
+  stored member goes through `Membership::principal()` (the reset completion builds it with `Principal::new` today,
+  `crates/application/src/reset_completion.rs:361`). (b) was rejected because it rewrites every use case's signature for
+  the guarantee (a) and the battery already give; (c) is the failure the reviewer found. On the order of the redrive's
+  refusals (security nit 5): the scope comes first, so a subject outside its binding gets the `404` before
+  `RECOVERY_ROLE_MAY_NOT_REDRIVE`. Evidence: the domain tests of the scope (task T022-256), the battery of every route as
+  a `RunRecovery` subject against an unbound namespace (task T022-257), the fitness rule (task T022-258).
+- **D022-273 — `run_recovery_namespaces` follows worker bindings (security minor 2, architecture minor 6).** Delegate
+  (OD-2026-11-24-4). The administrator's route runs as `sagat_app`, so SELECT alone could not work. The table: PK
+  `(tenant_id, subject, namespace_id)` (read by subject on every request) and an index `(tenant_id, namespace_id)`; a composite foreign key `(tenant_id, namespace_id)` to `namespaces` and one
+  `(tenant_id, subject)` to `memberships`, both `ON DELETE CASCADE`, so a binding never outlives its namespace or its
+  membership; the subject CHECK of `worker_bindings` (1 to 255 characters, no control character); `created_by`,
+  `created_at`; grants SELECT, INSERT and DELETE to `sagat_app` (no UPDATE: a binding has no column to change); the
+  quota delta and flush triggers of `worker_bindings`, `ENABLE ALWAYS` (`20261010000100_worker_bindings.up.sql:4-27`,
+  `20261024000000_durable_quotas.up.sql:532-535`). A security-definer function was rejected: the route's own grants are
+  what every other governance table uses.
+- **D022-274 — The grant surface of the binding (security minor 3).** Delegate (OD-2026-11-24-4). Three operations under
+  `membership:manage` (the administrator only), shaped as feature 016's reveal grants:
+  `GET /namespaces/{namespaceId}/run-recovery-bindings` (`listRunRecoveryBindings`),
+  `PUT /namespaces/{namespaceId}/run-recovery-bindings/{subject}` (`bindRunRecovery`, idempotent, with a `reason`) and
+  `DELETE` on the same path (`unbindRunRecovery`, `404` when there is no binding). The subject must be a member of the
+  tenant whose role is `run-recovery` (`422 VALIDATION_FAILED`, `NOT_A_RECOVERY_SUBJECT`); a namespace of another tenant
+  is the opaque `404`; before `failure-handler-v1` is activated the bind is `422 FLOW_CONTROL_ACTIVATION_PENDING`. Audit
+  actions `run_recovery.bound` and `run_recovery.unbound` (resource type `run_recovery_binding`), in the transaction of
+  the change. The fragment and `contracts/errors.md` carry the operations and the rows.
+- **D022-275 — An attempt outside the binding is audited and counted (security minor 4).** Delegate (OD-2026-11-24-4).
+  `OutsideNamespaceScope` writes the audit action `run_recovery.namespace_denied` (resource type `namespace`, the
+  namespace id, the permission, never a payload) through the restricted denial path `record_cross_tenant` uses
+  (`crates/application/src/api_admission.rs:457-480`: best effort, collapsed when repeated), and increments
+  `run_recovery_namespace_denials_total` with the closed label `permission` (`run:read`, `run:start`, `run:operate`,
+  `definition:read`, the role's four). The answer stays the opaque `404`.
+- **D022-276 — The activation gate of the role, and switching it off (security nit 6; completes D022-266).** Delegate
+  (OD-2026-11-24-4). Memberships are written only by provisioning, outside the tenant API
+  (`crates/infra-postgres/src/identity.rs:146-156`), so the gate is in the database: a `BEFORE INSERT OR UPDATE OF role`
+  trigger on `memberships`, `ENABLE ALWAYS`, refuses the role `run-recovery` while `platform_requirements` does not hold
+  `failure-handler-v1` (a typed refusal the provisioning command reports as `FLOW_CONTROL_ACTIVATION_PENDING`), and the
+  bind route refuses as D022-274 says. Switching off (`platform_requirement_remove`, then the switch) keeps the
+  memberships and the binding rows, and the membership statement then loads an empty bound set, so every `RunRecovery`
+  subject is bound to no namespace until the capability is active again; nothing is deleted, and a re-activation
+  restores the bindings as they were.
+- **D022-277 — The binding is read on every request, a replay is checked again, and a write locks it (the security
+  suspicion, architecture minor 5).** Delegate (OD-2026-11-24-4). Checked in the code: every request is authenticated
+  again (`authenticate_bearer`, `crates/api-http/src/extract.rs:52`, called by the `Caller` extractor at `:88`), which
+  reads the membership in one statement with no cache (`crates/infra-postgres/src/identity.rs:362-377`), so the bound
+  set loaded with it is read on every request. A start's idempotent replay is checked again: the route admits first
+  (`crates/api-http/src/routes/execution.rs:474-480`), and in `start_with` the permission (`runs.rs:1360`) and the
+  namespace (`runs.rs:1391`) precede every receipt lookup (`replay_start_authorized` at `runs.rs:1424`, `:1699`,
+  `:1768`); an operation admits before its use case (`execution.rs:1488`). With D022-272 those resolutions are the scope
+  check, so a replay after a revocation answers the opaque `404`. What a request-level check cannot see is a revocation
+  that commits between authentication and the write: an admission (start, reset, rerun) or a command on an existing run
+  whose actor's role is namespace-bound therefore reads the actor's binding row `FOR SHARE` in slot 4a, right after the
+  memberships, and refuses with the opaque `404` when it is gone; the revocation deletes the row and takes only its audit
+  and usage rows after it, so no cycle. A replay found at the receipt (slot 2) creates nothing and needs no lock. An event
+  stream opened before a revocation ends at its token's expiry or its maximum lifetime (`stream_deadline`,
+  `crates/api-http/src/routes/execution.rs:1276`), as a stream of a removed membership does today. Evidence: a
+  `slot_order.rs` case of a `RunRecovery` admission against a revocation of its binding, both orders; an integration test
+  of a replay after a revocation (`404`, nothing created).
+- **D022-278 — The overdue no-op belongs to the pass, not to a stop reason (architecture Major 1; restates D022-262).**
+  Delegate (OD-2026-11-24-4). The deadline and the handler's own timer share the one stop reason `TimedOut`
+  (`StopReason`, `crates/domain/src/execution/event.rs:369`; the reviewer cited `command.rs:2521-2529`, which is
+  `stop_run`, and listed three variants where there are six, but the conclusion holds), and the handler timer is a
+  timeout that must drain (ADR-0136 decision 2): a no-op of `stop_run(TimedOut)` would leave the phase unbounded.
+  D022-262 now reads: the run deadline is a deadline source, not a stop reason. The overdue pass (`deadlines` in
+  `crates/scheduler/src/passes.rs`, which today applies `stop_run(def, state, StopReason::TimedOut, None, now)` to every
+  picked run, `:6684`) calls a new domain command, `enforce_run_deadline`, which under the run's lock is a typed no-op
+  (no event) for a run whose handler phase is open and `stop_run(TimedOut)` otherwise; the pass counts the no-op as
+  skipped, and in `run_deadline_outcomes_total` with the closed label `outcome` (`enforced`, `skipped_handler_phase`;
+  architecture minor 11). `stop_run(TimedOut)` keeps its meaning: during the phase the handler's timer maps to
+  `failure_handler.draining {TIMEOUT}`. Evidence (task T022-243): a domain case in which, during the phase,
+  `enforce_run_deadline` emits nothing while the handler timer drains with cause `TIMEOUT`; the barrier test of D022-262
+  stays.
+- **D022-279 — A reset or rerun under a handler tree is refused at admission when its definition continues as new, and
+  the runtime defence has a code and a status (architecture Major 2; extends D022-263).** Delegate (OD-2026-11-24-4).
+  "Whose initiator is a handler-tree run" (the data model's `runs.handler_tree`) is restated as what an admission can
+  see: a reset or rerun is a handler-tree run when its source is one, or when the request's principal holds the role
+  `RunRecovery`, the only way a handler acts on the public API (ADR-0136 decision 4). Such a reset or rerun of a
+  definition that continues as new is refused at admission, `422 VALIDATION_FAILED` (`CONTINUE_AS_NEW_REFUSED`), and a
+  batch rerun item of one fails with that code; nothing is created. The runtime defence: `refuse_gated_successor`
+  (`crates/infra-postgres/src/chain_progress.rs:229`, today a `StoreError::Internal` the pass would meet again) gains a
+  typed tree refusal, and the continuation pass ends the run `FAILED` with the durable failure code
+  `CONTINUE_AS_NEW_REFUSED` through `stop_run(Failed, code)`, as it ends a chain with `CHAIN_LIMIT`
+  (`crates/scheduler/src/passes.rs:1505-1529`), so no run stays non-terminal. Evidence (task T022-244): a case per creator
+  (dispatch, child, draft test, reset, rerun, batch rerun) and a seeded successor ended `FAILED`
+  (`CONTINUE_AS_NEW_REFUSED`) by the pass.
+- **D022-280 — What follows the dispatch statements, and invariant 22 (architecture minors 3 and 4).** Delegate
+  (OD-2026-11-24-4). The two dispatch statements are followed in the run's commit only by the `run.finished` row of the
+  run's own journal, then usage rows; "last" is replaced in ADR-0136 decision 7, ADR-0050 decision 7, the plan's order of
+  a commit and the data model. Invariant 22 reads: `run.finished.namespace_dispatch` is present exactly when a dispatch
+  row for this source run exists, and is `PENDING` exactly when that row's `lineage_first` is true
+  (`SUPPRESSED_LINEAGE` otherwise); a later redrive does not change it.
+- **D022-281 — The slot table of ADR-0050 carries every amendment (architecture minor 7).** Delegate (OD-2026-11-24-4).
+  Slot 4a gains the draft-executions advisory key (D022-269) and the `RunRecovery` binding row (D022-277); slot 5 the
+  unlocked pre-read of the producer and its membership lock (D022-265); slot 7 the re-check of the producer on the entry.
+- **D022-282 — Task T022-255 narrowed, and T022-254 and T022-255 placed (architecture minor 8).** Delegate
+  (OD-2026-11-24-4). The rule reads: no deciding path locks a `steps` row in `LEASED` or `RUNNING`, or a
+  `worker_sessions` row, before its lookup round. The scoped event finish
+  (`crates/infra-postgres/src/execution/scoped_events.rs:164`, a waiting step `FOR UPDATE`) stays legal, because a
+  binding replacement updates only leased or running rows (`crates/infra-postgres/src/bindings.rs:245-246`). Both tasks
+  land in slice 7 with T022-210.
+- **D022-283 — Leftovers of the re-reads (architecture minors 9 and 10, security nit 7).** Delegate (OD-2026-11-24-4).
+  Struck: the slice bullets that placed T022-225 and T022-226 in slice 2 and T022-245 in slice 3; "the revision read with
+  the run's definition" and "read with the run's definition" in the data model's dispatch and configuration notes; the
+  terminal commit's "plain read of the policy row" and "the revision read with the definition" in T022-214; "the run
+  deadline during the phase" in T022-227; "a handler that reruns its failed run through a machine identity" in T022-228.
+- **D022-284 — The ADR index is checked against the status lines (architecture minor 12).** Delegate
+  (OD-2026-11-24-4). `scripts/check-agent-config.py` checks only that a Status line exists (`:13`, `:215`); task
+  T022-260 adds a check that each ADR's first Status word equals the first word of the status cell of its row in
+  `docs/adr/README.md`, with its tests.
+- **D022-285 — Wording (the architecture nits).** Delegate (OD-2026-11-24-4). ADR-0136 decision 8 checks the budget
+  before it counts an attempt, as T9 does; ADR-0094 no longer calls ADR-0146 proposed; ADR-0056 decision 2 loses its
+  nested parentheses; the plan's failure matrix says one cause, not "the first cause wins"; the plan's `RunRecovery`
+  table is named a table of its own; the stored value of the role is `run-recovery` (the stored spellings are lowercase
+  with hyphens, `crates/domain/src/identity.rs:731`, migration `20261124000000_database_executor.up.sql:4`); the
+  "Decided by" lines of ADR-0135, ADR-0136, ADR-0137 and ADR-0146 say they were accepted (D022-271).
 
 ## Gaps
 

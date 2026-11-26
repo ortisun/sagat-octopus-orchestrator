@@ -43,6 +43,11 @@ written below as lines marked "after the re-reviews", which win over the earlier
 D022-260 to D022-270, written below as lines marked "after the third reads"; ADR-0135, ADR-0136, ADR-0137 and ADR-0146
 and the amendments of ADR-0050, ADR-0056 and ADR-0094 are Accepted (D022-271, delegate OD-2026-11-24-4).
 
+**Revision of 2026-11-26 after the re-reads**: the security and architecture reviewers re-read the third-read fixes
+(`1276d5b7`); their findings are decisions D022-272 to D022-285
+([reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md)), written below as lines
+marked "after the re-reads", which win over the earlier lines.
+
 **Input**: Bring Windmill/Temporal flow control to the platform without changing its execution model: a
 declared **step result cache** (key = canonical input digest + pinned identity + scope, TTL, retained and
 classified entries, journaled hits, explicit invalidation); **early return** of a workflow's declared
@@ -562,6 +567,9 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decisions D022-261, D022-262):* there is one cause: while the run drains a further
   stop request is refused `409`, and region step failures settle into the drain; an overdue pass that picked a run
   which then opened its phase is a typed no-op.
+  *Amended 2026-11-26 after the re-reads, delegate (OD-2026-11-24-4; decision D022-278; restates D022-262):* the no-op
+  is the overdue pass's: the run deadline is a deadline source, not a stop reason, so a stop with the reason `TimedOut`
+  keeps its meaning and the handler's own timer still drains the phase with cause `TIMEOUT`.
 - **FR-022-014 — Handler outcome**: A handler MUST NOT change the outcome: when it ends (succeeded, failed,
   timed out, cancelled) the engine MUST journal `failure_handler.finished` and finish the run with the
   pending status in the same transaction. A handler's failure MUST NOT re-invoke it. Cancellation during the
@@ -582,6 +590,14 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-266):* a `RunRecovery` subject is bound to named namespaces (an
   audited administrator's setting) and answers `404` outside them, holds `definition:read`, may not redrive a dispatch
   (`RECOVERY_ROLE_MAY_NOT_REDRIVE`), and cannot be assigned until `failure-handler-v1` is activated.
+  *Amended 2026-11-26 after the re-reads, delegate (OD-2026-11-24-4; decisions D022-272 to D022-277):* the binding is
+  part of the authenticated principal, read with the membership on every request (no binding: no namespace), so a route
+  cannot forget it: a namespace-scoped permission is granted to a bound subject only for a namespace of its binding,
+  and outside it the answer is the opaque `404`, audited and counted, before any other refusal. A write by a bound
+  subject reads its binding again in its transaction, and a replay is checked again. An administrator binds and
+  unbinds with `membership:manage`, audited; the role (stored as `run-recovery`) cannot be given before
+  `failure-handler-v1` is active, and switching the capability off binds every such subject to no namespace, the rows
+  kept.
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose
@@ -622,6 +638,11 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decisions D022-260, D022-263, D022-264):* `run.finished` is journaled after the
   dispatch statements with its `namespace_dispatch` outcome; a deferral by the budget is not an attempt; a dispatch or
   a child admission under a handler or test tree whose definition continues as new fails `CONTINUE_AS_NEW_REFUSED`.
+  *Amended 2026-11-26 after the re-reads, delegate (OD-2026-11-24-4; decisions D022-279, D022-280):* a reset or rerun is
+  under a handler tree when its source is a handler-tree run or its request's principal holds `RunRecovery`; such a reset
+  or rerun of a definition that continues as new is refused `422` (`CONTINUE_AS_NEW_REFUSED`), and a run that reaches
+  the boundary anyway ends `FAILED` with that code. The dispatch statements are followed in the commit only by the
+  run's own `run.finished` row; `namespace_dispatch` is present exactly when a dispatch row for the run exists.
 
 #### Concurrency limits by key (US02)
 
@@ -1012,6 +1033,10 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* the catalog holds 53 permissions today
   (`crates/domain/src/identity.rs`); the three new ones make 56; machine roles hold none.
   *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-244):* the built-in roles gain `RunRecovery`.
+  *Amended 2026-11-26 after the re-reads, delegate (OD-2026-11-24-4; decisions D022-272, D022-277):* a principal carries
+  its namespace scope; a namespace-bound role is authorized only for a namespace of its scope, by one check of the
+  principal that every namespace resolver ends with, so authorization fails closed where a route forgets it; replays
+  reauthorize through the same resolvers.
 - **FR-022-033 — Observability and audit**: Each capability MUST emit the plan's spans and fixed-label
   metrics, journal events in the run transaction, and audit in the decision transaction (invalidation,
   handler configuration and redrive, standalone and test admission, pin disclosure). Metric labels MUST

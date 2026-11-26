@@ -931,8 +931,9 @@ built:
       decision 7).
 3. **`persist`**: the active-run counter row when the commit ends the run, then the give-backs (sorted, under the same
    key order), then the rest: the `runs` row, journal, steps, tasks, timers, outbox, projections, hit provenance rows,
-   the early result's columns, the handler phase's columns, and last the namespace dispatch insert (a recorded deviation
-   of ADR-0050 decision 7); the task-ready hint only for a step `READY` when the commit ends.
+   the early result's columns, the handler phase's columns, then the namespace dispatch insert (a recorded deviation
+   of ADR-0050 decision 7), followed only by the run's own `run.finished` row (corrected 2026-11-26, D022-280: the
+   insert is not last); the task-ready hint only for a step `READY` when the commit ends.
 4. **Usage**: quota, rate and usage rows and the deferred content flush (slot 8b).
 
 The counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive taker of a cache
@@ -1017,14 +1018,19 @@ approval). Test runs need `definition:write` and `run:start`. A handler that rec
 roles receive none of the new permissions. Declaring a namespace-scope cache name and the workflows that may write it is
 an administrator's setting of the namespace (D022-254).
 
-*Added 2026-11-25 (decision D022-266): the `RunRecovery` column of the authorization table.*
+*Added 2026-11-25 (decision D022-266): what the `RunRecovery` role may do, in a table of its own beside the
+authorization table above (the ruling said "a column"; the rows differ, so it is a separate table: corrected
+2026-11-26, D022-285). Revised 2026-11-26 (decisions D022-272, D022-274): the "bound namespaces only" of each row is
+enforced by the principal (see "Revision of 2026-11-26 after the re-reads" below), and the binding's own routes are
+added.*
 
 | Operation | `RunRecovery` |
 |---|---|
-| Read runs and the definitions they run (`run:read`, `definition:read`) | ✓ in its bound namespaces only; elsewhere the opaque `404` |
-| Start a run, a reset, a rerun (`run:start`, `run:operate`) | ✓ in its bound namespaces only |
-| Redrive a dispatch | – (`403`, `RECOVERY_ROLE_MAY_NOT_REDRIVE`) |
+| Read runs and the definitions they run (`run:read`, `definition:read`) | ✓ in its bound namespaces only; elsewhere the opaque `404`, audited and counted |
+| Start a run, a reset, a rerun (`run:start`, `run:operate`) | ✓ in its bound namespaces only; a reset or rerun of a definition that continues as new refused `422` (D022-279) |
+| Redrive a dispatch | – (`403`, `RECOVERY_ROLE_MAY_NOT_REDRIVE`, inside its binding; outside it the `404` first) |
 | Approve a publication, decide an approval, publish, change a version, use a secret | – (`403`, `RECOVERY_ROLE_MAY_NOT_APPROVE` for the two approvals) |
+| List, bind and unbind `RunRecovery` subjects of a namespace (`membership:manage`: the administrator only) | – |
 
 The role's namespaces are an administrator's audited setting, as worker bindings are; the role cannot be assigned until
 `failure-handler-v1` is activated; a migration widens `memberships_role_valid` (its `down` refuses while such a
@@ -1034,6 +1040,51 @@ recovers calls the public API with a machine identity given to it as a secret, a
 2026-11-25, decision D022-270: superseded by D022-242 and D022-244; the paragraph above, reworded, governs.)* Enabling draft
 executions in a namespace that requires approvals is a publication-policy change, under that route's permission and
 audited.
+
+### Revision of 2026-11-26 after the re-reads
+
+The security and architecture reviewers re-read the third-read fixes (`1276d5b7`); decisions D022-272 to D022-285 in
+[research.md](./research.md), and where each finding lives in
+[reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md). The rows above that
+changed say so.
+
+**The namespace scope of a principal (D022-272).** Code facts, checked at `1b21a101`: `Principal` holds a tenant, a
+subject and a role (`crates/domain/src/identity.rs:742-785`); `admit` checks permissions before it resolves the
+namespace (`crates/application/src/api_admission.rs:274-324`); 44 sites of `crates/application/src` authorize
+`run:read`, `run:start`, `run:operate` or `definition:read` with no namespace; the upload of a run input authorizes
+`run:start` and the tenant only (`crates/application/src/runs.rs:973-984`, `crates/api-http/src/blobs.rs:118-122`).
+The design:
+
+| Part | Rule |
+|---|---|
+| `NamespaceScope` on `Principal` | `Tenant` for every role but a namespace-bound one; `Bound(set)` for `RunRecovery` (`Role::is_namespace_bound`); the set built only by `Membership::principal()` from the rows read in the membership statement; no row, or `failure-handler-v1` not active: an empty set |
+| `Permission` scope class | namespace or tenant, by an exhaustive `match` without a wildcard arm |
+| `Principal::authorize(permission)` | unchanged for a `Tenant` principal; refuses every namespace-scoped permission to a `Bound` one (`NamespaceScopeRequired`, `403`) |
+| `Principal::authorize_in(namespace, permission)` | the scope first (outside: `OutsideNamespaceScope`, the opaque `404`, audited and counted), then the role (`403`) |
+| The resolvers | `require_namespace`, a new `require_namespace_slug` (called by `RunService::namespace` and every slug lookup), `resolve_run`, `resolve_workflow`, `resolve_request`, `resolve_approval_request` and the slug target of `admit` take the operation's permissions: the role first (`403`, before any lookup, as today), the lookup (`404`), then `authorize_in` |
+| A principal rebuilt from a stored member | through `Membership::principal()`, so it carries the scope (the reset completion, `crates/application/src/reset_completion.rs:361`) |
+| A write by a bound subject | its binding row `FOR SHARE` in slot 4a after the memberships (ADR-0050 decision 7 as written 2026-11-26), so a revocation that commits first refuses it |
+| Evidence | domain tests of the scope (T022-256); the battery of every route as a `RunRecovery` subject (T022-257); the fitness rule (T022-258); the slot-4a lock and the replay after a revocation (T022-259) |
+
+The binding is read on every request: the `Caller` extractor authenticates each request
+(`crates/api-http/src/extract.rs:52`, `:88`) and the membership is read in one statement with no cache
+(`crates/infra-postgres/src/identity.rs:362-377`). A replay is checked again: the start route admits before the use
+case (`crates/api-http/src/routes/execution.rs:474-480`) and `start_with` resolves its namespace (`runs.rs:1391`)
+before every receipt lookup (`:1424`, `:1699`, `:1768`).
+
+**The binding's table and routes (D022-273, D022-274, D022-276).** `run_recovery_namespaces` follows `worker_bindings`
+(grants SELECT, INSERT and DELETE; composite foreign keys to `namespaces` and to `memberships`, `ON DELETE CASCADE`; the
+subject CHECK; the quota triggers). `listRunRecoveryBindings`, `bindRunRecovery` and `unbindRunRecovery` need
+`membership:manage`. A trigger on `memberships` refuses the role `run-recovery` until `failure-handler-v1` is active.
+
+**The overdue pass (D022-278).** The pass (`deadlines`, `crates/scheduler/src/passes.rs`, `stop_run(.., TimedOut, ..)`
+at `:6684` today) calls `enforce_run_deadline`, a no-op for a run in its handler phase; `stop_run(TimedOut)` is
+unchanged.
+
+**Continue-as-new under a handler tree (D022-279).** A reset or rerun whose source is a handler-tree run or whose
+principal holds `RunRecovery` is a handler-tree run; of a definition that continues as new it is refused `422`. The
+defence in `refuse_gated_successor` (`crates/infra-postgres/src/chain_progress.rs:229`) ends a run that reaches the
+boundary `FAILED` with `CONTINUE_AS_NEW_REFUSED`, as `CHAIN_LIMIT` is ended (`crates/scheduler/src/passes.rs:1505-1529`).
 
 ### Hot-path budget lines to record
 
@@ -1046,13 +1097,14 @@ below is recorded, with its reason, by the change that adds it, before its call 
 | A completion whose next step declares `cache`, miss | task T022-016 |
 | A completion whose next step declares `cache` and `concurrency`, miss then granted | task T022-016 |
 | A completion that reaches `earlyReturn` | task T022-035 |
-| A completion that ends a run `FAILED` in a namespace with a default handler (the dispatch row; the revision is read with the definition, revised 2026-11-25) | task T022-031 |
+| A completion that ends a run `FAILED` in a namespace with a default handler (the dispatch row; ~~the revision is read with the definition~~, the configuration read by the left join of the run's locking statement: struck 2026-11-26, D022-283, as D022-255 corrected) | task T022-031 |
 | A completion that enters a handler phase | task T022-031 |
 | A collection finish and a loop finish routed through the reducer, against today's lines | task T022-207 |
 | A standalone admission, a draft test admission with two upstream pins | tasks T022-039, T022-042 |
 | A cache hit's content read (the payload read for the outputs path), and the lookup round's secret locks and binding check | task T022-016 (added 2026-11-25, D022-231, D022-225) |
 | A failing run in a namespace without a handler: unchanged; the handler configuration is a left join in the statement that locks the run, which adds no statement (corrected 2026-11-25, D022-255: no statement loads the definition) | task T022-031 |
 | A child admission's `test_tree` and `handler_tree` check against its parent's | task T022-217 (added 2026-11-25, D022-258) |
+| A request of a member: the membership statement with its bound set (an empty array for every role but `RunRecovery`), against today's | task T022-256 (added 2026-11-26, D022-272) |
 | A qualifying failing run's dispatch insert, and its suppressed second statement | task T022-031 (added 2026-11-25, D022-242) |
 | An update of a run that does not touch `test_tree`: unchanged (the guard is `BEFORE UPDATE OF test_tree`) | task T022-217 (added 2026-11-25, D022-237) |
 
@@ -1069,6 +1121,16 @@ The metrics and spans of "Observability" above stand, with: `step_cache_lookups_
 the audit action `test_run.secret_resolved` (D022-202, the secret's name and version, never a value); alerts
 `failure_handler_dead` and `cache_store_backlog` in `docs/runbooks/flow-control.md`.
 
+*Added 2026-11-26 (decisions D022-274, D022-275, D022-278):*
+
+| Metric | Labels |
+|---|---|
+| `run_deadline_outcomes_total` | `outcome` ∈ enforced, skipped_handler_phase |
+| `run_recovery_namespace_denials_total` | `permission` ∈ `run:read`, `run:start`, `run:operate`, `definition:read` |
+
+Audit actions: `run_recovery.bound` and `run_recovery.unbound` (resource type `run_recovery_binding`, in the transaction
+of the change), and `run_recovery.namespace_denied` (resource type `namespace`, through the restricted denial path).
+
 ### Failure and recovery, added
 
 | Failure | Expected state | Handling and test |
@@ -1083,14 +1145,18 @@ the audit action `test_run.secret_resolved` (D022-202, the secret's name and ver
 | ~~A person reruns a failed run, which fails again~~ | ~~Dispatched again: a member's rerun begins a new lineage~~ | ~~Integration test (D022-241, O1176 (b))~~ *(struck 2026-11-25, D022-270: D022-242 reversed it; such a rerun extends the lineage and its dispatch is written `SUPPRESSED_LINEAGE`)* |
 | A handler with a `RunRecovery` credential reruns its failed run, then tries to redrive (added 2026-11-25, D022-266) | Exactly one handler run; the redrive refused `403` | Fault test |
 | A stop request while the phase drains (added 2026-11-25, D022-261) | Refused `409`; one cause | Domain and integration cases, both orders |
-| The overdue pass picks a run that then opens its phase (added 2026-11-25, D022-262) | A typed no-op, counted as skipped | Barrier test between pick and apply |
+| The overdue pass picks a run that then opens its phase (added 2026-11-25, D022-262; restated 2026-11-26, D022-278) | The pass's `enforce_run_deadline` is a typed no-op, counted `skipped_handler_phase`; a stop with the reason `TimedOut` (the handler's timer) still drains the phase | Barrier test between pick and apply; a domain case of both in one phase |
 | A dispatch deferred by the budget more than 12 times (added 2026-11-25, D022-264) | Still `PENDING`; admitted once | Integration test |
-| A handler or test-tree run whose definition continues as new (added 2026-11-25, D022-263) | Refused at admission with `CONTINUE_AS_NEW_REFUSED`; never non-terminal | One test per creator |
+| A handler or test-tree run whose definition continues as new (added 2026-11-25, D022-263; resets and reruns added 2026-11-26, D022-279) | Refused at admission with `CONTINUE_AS_NEW_REFUSED` (a reset or rerun under a handler tree `422`); a run that reaches the boundary anyway ends `FAILED` with `CONTINUE_AS_NEW_REFUSED`; never non-terminal | One test per creator: dispatch, child, draft test, reset, rerun, batch rerun; a seeded successor ended by the pass |
+| A `RunRecovery` subject calls a route of a namespace outside its binding (added 2026-11-26, D022-272, D022-275) | The opaque `404`, audited `run_recovery.namespace_denied`, counted; nothing changed | The battery of every route (T022-257) |
+| A binding is revoked between a request's authentication and its write (added 2026-11-26, D022-277) | The write's slot-4a read finds no row: the opaque `404`, rolled back | `slot_order.rs` case, both orders (T022-259) |
+| A start is replayed after its subject's binding was revoked (added 2026-11-26, D022-277) | The opaque `404`; nothing created | Integration test (T022-259) |
+| `failure-handler-v1` switched off while `RunRecovery` subjects are bound (added 2026-11-26, D022-276) | Every such subject bound to no namespace; the rows kept and in force again on re-activation | Integration test (T022-253) |
 | Publication of a workflow with a database node against a test admission of its draft | No cycle (the draft row is not locked) | `slot_order.rs` case (D022-222) |
 | The dispatcher crashes inside an admission | The attempt is already counted; `DEAD` after 12 | Fault test (D022-223) |
 | Two failing runs of one lineage commit at once | Both reach their terminal status; one live dispatch row and one suppressed row | Fault test with a held commit (D022-242) |
 | A handler starts fresh runs that fail | Dispatches beyond the namespace budget deferred and alerted, never dropped | Integration test (D022-243) |
-| A stop source during the handler phase | `failure_handler.draining {cause}`, the first cause wins; never the run's stop | Domain cases (D022-246) |
+| A stop source during the handler phase | `failure_handler.draining {cause}`, one cause: a further stop request is refused `409` (D022-261; "the first cause wins" corrected 2026-11-26, D022-285); never the run's stop | Domain cases (D022-246) |
 | The run deadline passes during the phase | Nothing: only the handler's timer bounds the phase | Overdue pass test (D022-247) |
 | A continue-as-new successor of a test-tree or handler-tree run, or of a definition with a new policy | Refused | Codec and `refuse_gated_successor` tests (D022-249) |
 | A failing chain head | Dispatched through `persist`'s terminal path | Integration test (D022-250) |
@@ -1133,6 +1199,9 @@ documents; foundations; the finish-path routing; US04 in two slices; US01 in fou
 four; the surfaces (decision D022-221).
 
 ### Size
+
+*Revised 2026-11-26:* 61 new tasks (T022-200 to T022-260; the re-reads added T022-256 to T022-260), riding in the slices
+they serve; the estimate of pull requests stands.
 
 *Revised 2026-11-25:* 38 new tasks (T022-200 to T022-237; the rulings added T022-224 to T022-237) beside the 43 open
 existing tasks the rest closes; the estimate of pull requests stands, the new tasks riding in the slices they serve.

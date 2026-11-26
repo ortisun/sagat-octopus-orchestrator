@@ -41,6 +41,14 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | A publication approval or an approval decision by a subject whose only role is `RunRecovery` (added 2026-11-25, decision D022-244) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_APPROVE` | no |
 | A redrive of a dispatch by a `RunRecovery` subject (added 2026-11-25, decision D022-266) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_REDRIVE` | no |
 | Any route called by a `RunRecovery` subject outside the namespaces it is bound to (added 2026-11-25, decision D022-266) | 404 | `NOT_FOUND` | — (opaque) | no |
+| *Revised 2026-11-26 (decisions D022-272, D022-275):* the row above is answered by the principal's scope check, before any other refusal of the route (`RECOVERY_ROLE_MAY_NOT_REDRIVE` included), and audited `run_recovery.namespace_denied` and counted; a subject with no binding row is bound to no namespace | 404 | `NOT_FOUND` | — (opaque) | no |
+| A write (start, reset, rerun, a command on a run) by a `RunRecovery` subject whose binding was revoked after the request was authenticated (added 2026-11-26, decision D022-277; the slot-4a read finds no row) | 404 | `NOT_FOUND` | — (opaque) | no |
+| A route of a namespace-scoped permission that a `RunRecovery` principal reaches without a namespace (added 2026-11-26, decision D022-272: a defect the battery catches, never a contract; fail closed) | 403 | `FORBIDDEN` | — | no |
+| `bindRunRecovery` for a subject that is not a member of the tenant with the role `run-recovery` (added 2026-11-26, decision D022-274) | 422 | `VALIDATION_FAILED` | `NOT_A_RECOVERY_SUBJECT` | no |
+| `bindRunRecovery` before `failure-handler-v1` is activated (added 2026-11-26, decisions D022-274, D022-276) | 422 | `VALIDATION_FAILED` | `FLOW_CONTROL_ACTIVATION_PENDING` | no |
+| `unbindRunRecovery` with no binding; any of the three binding operations on a namespace of another tenant (added 2026-11-26, decision D022-274) | 404 | `NOT_FOUND` | — (opaque) | no |
+| A binding operation without `membership:manage` (added 2026-11-26, decision D022-274) | 403 | `FORBIDDEN` | — | no |
+| A reset or rerun under a handler tree (its source a handler-tree run, or its principal `RunRecovery`) of a definition that continues as new (added 2026-11-26, decision D022-279) | 422 | `VALIDATION_FAILED` | `CONTINUE_AS_NEW_REFUSED` | no |
 | A stop request (cancellation) of a run whose handler phase is draining (added 2026-11-25, decision D022-261; as a second stop today) | 409 | `CONFLICT` | `STATE_CONFLICT` | no |
 | A draft test run of a definition that continues as new (added 2026-11-25, decision D022-263) | 422 | `VALIDATION_FAILED` | `CONTINUE_AS_NEW_REFUSED` | no |
 | An invalidation whose target names no scope a published version of the namespace can derive (added 2026-11-25, decision D022-252) | 404 | `NOT_FOUND` | — (opaque) | no |
@@ -50,6 +58,12 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | Capability disabled for a start of an existing version (rollback) | 422 | `VALIDATION_FAILED` | `CAPABILITY_DISABLED` | no |
 | Publication, start or request using `cache`, `earlyReturn`, `onFailure`, a standalone step or a draft test run before the operator activated its registry capability (`step-cache-v1`, `early-return-v1`, `failure-handler-v1`, `step-executions-v1`, `draft-test-runs-v1`; added 2026-11-24, decision D022-206) | 422 | `VALIDATION_FAILED` | `FLOW_CONTROL_ACTIVATION_PENDING` | no |
 | Standalone step whose `businessId` is held by an open execution, or reused against its policy (018's reasons, reused; added 2026-11-24, decision D022-209) | 409 | `CONFLICT` | `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED` | no |
+
+*Added 2026-11-26 (decision D022-276): provisioning, outside the tenant API.* A membership given the role
+`run-recovery` (inserted, or a role changed to it) while `platform_requirements` does not hold `failure-handler-v1` is
+refused by a trigger on `memberships`; the provisioning command reports `FLOW_CONTROL_ACTIVATION_PENDING` and writes
+nothing. Switching the capability off refuses nothing: every `RunRecovery` subject is then bound to no namespace (the
+`404` row above), and its rows are kept.
 
 *Added 2026-11-25 (decision D022-233):* the checks of a test-run request run in this order: the namespace from the
 authenticated context, `404` for the workflow, the `prod` or review `403`, then a `fromRun` `404` before
@@ -105,6 +119,8 @@ run is charged the output's logical bytes like any completion, so the two rows a
 cache-hit copy" and "the copy of a hit".
 | `FAILURE_HANDLER_TIMEOUT` | handler outcome only | the handler exceeded `onFailure.timeoutMs`; the run keeps its pending status. *2026-11-25 (decision D022-224):* the journal's outcome; the column `runs.failure_handler_state` reads `TIMED_OUT` |
 | `CONTINUE_AS_NEW_REFUSED` | child step | added 2026-11-25 (decision D022-263): a child admission under a handler tree or a test tree whose definition continues as new; through the node's failure route, no child run created |
+| `CONTINUE_AS_NEW_REFUSED` | run (`FAILED`) | added 2026-11-26 (decision D022-279): the runtime defence; a handler-tree or test-tree run that reaches a continue-as-new boundary anyway is ended `FAILED` with this code by the continuation pass, as `CHAIN_LIMIT` is; never left non-terminal |
+| `CONTINUE_AS_NEW_REFUSED` | batch item | added 2026-11-26 (decision D022-279): a batch rerun item whose source is a handler-tree run of a definition that continues as new; nothing created |
 | `RUN_DATA_LIMIT` | step | added 2026-11-25 (decision D022-231): a cache hit whose payload would exceed the run's retained bytes; decided in the lookup round, through the step's failure route |
 
 ## Handler draining causes (`failure_handler.draining`, closed; added 2026-11-25, decision D022-246)

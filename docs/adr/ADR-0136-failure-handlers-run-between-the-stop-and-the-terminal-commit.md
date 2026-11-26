@@ -1,9 +1,9 @@
 # ADR-0136: A failure handler runs in a phase between the stop and the terminal commit, the namespace handler is an obligation admitted once, and an early result is set once before the run is terminal
 
-**Status:** Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/); revised after the reviews of `14b9e40b`, the re-reviews of `6d02632e` and the third reads of `c910345b` (decisions D022-222 to D022-271)
-**Decided by:** agent proposal (feature 022, design of the rest of release 0.3.0, 2026-11-24) under the owner's delegation (OD-2026-11-24-4, "Tomem a melhor decisão"), revised with the coordinating session's rulings of 2026-11-25 (decisions D022-222 to D022-240, then D022-242 to D022-259); accepted once the three reviewers find no Blocker in a re-review (task T022-200)
+**Status:** Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/); revised after the reviews of `14b9e40b`, the re-reviews of `6d02632e` and the third reads of `c910345b` (decisions D022-222 to D022-271); revised 2026-11-26 after the re-reads of `1276d5b7` (decisions D022-272 to D022-285)
+**Decided by:** agent proposal (feature 022, design of the rest of release 0.3.0, 2026-11-24) under the owner's delegation (OD-2026-11-24-4, "Tomem a melhor decisão"), revised with the coordinating session's rulings of 2026-11-25 (decisions D022-222 to D022-240, then D022-242 to D022-259); accepted on 2026-11-25 by the coordinating session, delegate (OD-2026-11-24-4), after three review rounds (decision D022-271); revised with the re-reads of 2026-11-26 (decisions D022-272 to D022-285)
 **Refines / supersedes:** refines ADR-0056 decision 2 (the namespace failure-handler policy row is not locked; amended 2026-11-24 and 2026-11-25) and ADR-0050 decision 7 (the dispatch row's slot and the recorded deviation of the terminal commit's insert, amended 2026-11-25); depends on ADR-0146 (every end of a run goes through the reducer); builds on ADR-0010 (compensation first, derived `~` nodes), ADR-0012 and ADR-0025 (obligations), ADR-0039 (source identity guard), ADR-0094 (evaluation rounds before `persist`) and ADR-0050 decision 9 (fleet activation). Supersedes none.
-**Enforced by:** proposed checks, built by the slices of US03 and US04 in `specs/022-flow-control-step-policies/tasks.md`: `crates/domain/tests/failure_handler.rs` (one test per case: a gated region step, a region step failing without `onError`, a cancellation, ~~the run deadline~~ (struck 2026-11-25, decision D022-270: the run deadline does not apply during the phase; the overdue pass's no-op is tested instead), the timeout with a leased attempt, a stop request during the phase, a further stop refused `409` while draining, no second phase; the status after the phase equals the pending status for every outcome) and `crates/domain/tests/early_return.rs` (a result set at most once and never after it is set); `verify_run` (invariants 3, 4, 5 and 16 of `data-model.md`); `integration_flow_control_step_policies::{failure_handlers, early_return, handler_dispatch}`; `fault_flow_control_step_policies::handlers` (a crash at each commit of the phase and of the dispatch, a duplicate dispatcher, a crash inside the admission still reaching `DEAD`, exactly one handler run per failure and per lineage, two failing runs of one lineage committing at once with one live and one suppressed row); the unique indexes on `runs (tenant_id, handler_for_run_id)` and on the dispatch rows' lineage; the rule of `scripts/check-architecture.py` that only the terminal path of `persist` inserts a dispatch row and only the dispatcher and the redrive lock one (task T022-225); the slot-order references of `tests/fault/schedules-bulk-operations/slot_order.rs` extended to the dispatch (task T022-224).
+**Enforced by:** proposed checks, built by the slices of US03 and US04 in `specs/022-flow-control-step-policies/tasks.md`: `crates/domain/tests/failure_handler.rs` (one test per case: a gated region step, a region step failing without `onError`, a cancellation, ~~the run deadline~~ (struck 2026-11-25, decision D022-270: the run deadline does not apply during the phase; the overdue pass's no-op is tested instead), the timeout with a leased attempt, a stop request during the phase, a further stop refused `409` while draining, no second phase; the status after the phase equals the pending status for every outcome) and `crates/domain/tests/early_return.rs` (a result set at most once and never after it is set); `verify_run` (invariants 3, 4, 5 and 16 of `data-model.md`); `integration_flow_control_step_policies::{failure_handlers, early_return, handler_dispatch}`; `fault_flow_control_step_policies::handlers` (a crash at each commit of the phase and of the dispatch, a duplicate dispatcher, a crash inside the admission still reaching `DEAD`, exactly one handler run per failure and per lineage, two failing runs of one lineage committing at once with one live and one suppressed row); the unique indexes on `runs (tenant_id, handler_for_run_id)` and on the dispatch rows' lineage; the rule of `scripts/check-architecture.py` that only the terminal path of `persist` inserts a dispatch row and only the dispatcher and the redrive lock one (task T022-225); the slot-order references of `tests/fault/schedules-bulk-operations/slot_order.rs` extended to the dispatch (task T022-224). *Added 2026-11-26 (decisions D022-272, D022-277, D022-278, D022-279):* the domain tests of the principal's namespace scope (task T022-256); the battery of every route as a `RunRecovery` subject against an unbound namespace (task T022-257); the rule of `scripts/check-architecture.py` on role-only checks and the scope classification (task T022-258); the `slot_order.rs` case of a `RunRecovery` admission against a revocation of its binding; the domain case that the overdue pass is a no-op during the phase while the handler timer drains (task T022-243); a case per creator of a continue-as-new refusal under a handler tree, resets and reruns included (task T022-244).
 
 ## Context
 
@@ -51,7 +51,10 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
    phase never opens a second phase. **The run deadline does not apply during the phase**: only the handler's own timer
    bounds it (`timeoutMs`, created by the commit that opens the phase, cancelled by `failure_handler.finished`, at most
    3,600,000 ms), and the overdue pass excludes runs with `failure_handler_state IS NOT NULL`; a run that opens its phase
-   between the pass's pick and its lock is a typed no-op the pass counts as skipped (decision D022-262); a deadline that fires
+   between the pass's pick and its lock is skipped by the pass: the run deadline is a deadline source, not a stop
+   reason, and the pass calls `enforce_run_deadline`, a typed no-op under the run's lock for a run in its phase, counted
+   `skipped_handler_phase`, while `stop_run(TimedOut)` keeps its meaning, so the handler's own timer still drains the
+   phase with cause `TIMEOUT` (decision D022-278, which restates D022-262); a deadline that fires
    before the phase opens is the run's stop, and the phase then opens normally. *(Revised 2026-11-25, decisions D022-246
    and D022-247: the first text treated the run deadline as a cancellation of the phase, which would cancel a handler
    of a `TIMED_OUT` run at the next pass; the ruling's cause `RUN_DEADLINE` is therefore unreachable and is not in the
@@ -70,15 +73,27 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
    done again calls the public API with a credential of the built-in role `RunRecovery` (`run:read`, `run:start`,
    `run:operate`, and no publication, approval, version or secret permission) given to it as a secret, audited as that
    subject; a subject whose only role is `RunRecovery` is refused as a publication approver and as an approval decider.
-   A `RunRecovery` subject is bound to named namespaces (an administrator's audited setting, as worker bindings are);
-   every route that authorizes it checks the binding first and answers the opaque `404` outside it; the role also holds
-   `definition:read`; it may not redrive a dispatch (`403`, `RECOVERY_ROLE_MAY_NOT_REDRIVE`); it cannot be assigned
-   until `failure-handler-v1` is activated (decision D022-266).
+   A `RunRecovery` subject (stored role `run-recovery`) is bound to named namespaces (an administrator's audited
+   setting, as worker bindings are); the role also holds `definition:read`; it may not redrive a dispatch (`403`,
+   `RECOVERY_ROLE_MAY_NOT_REDRIVE`); it cannot be assigned until `failure-handler-v1` is activated (decision D022-266).
+   *Revised 2026-11-26 (decisions D022-272 to D022-277):* the binding is enforced by the principal, never per route.
+   `Principal` carries a namespace scope, built only by `Membership::principal()` from the binding rows read with the
+   membership on every request (no row: no namespace; the capability switched off: no namespace, the rows kept);
+   `Principal::authorize` refuses every namespace-scoped permission to a namespace-bound principal, and
+   `Principal::authorize_in(namespace, permission)` checks the scope first (outside it, the opaque `404`, audited
+   `run_recovery.namespace_denied` and counted) and the role second, so the `404` comes before
+   `RECOVERY_ROLE_MAY_NOT_REDRIVE`. The namespace resolvers take the operation's permissions and end with
+   `authorize_in`; a route that forgets them refuses the role. An admission or a command by a namespace-bound subject
+   reads its binding row `FOR SHARE` in slot 4a after the memberships, so a revocation that commits first refuses it;
+   an idempotent replay is checked again by the same resolvers. The binding is changed under `membership:manage` by
+   `bindRunRecovery` and `unbindRunRecovery`, audited `run_recovery.bound` and `run_recovery.unbound`; a database
+   trigger refuses the role on `memberships` until `failure-handler-v1` is active.
    No run is granted its publisher's rights. *(Revised 2026-11-25, decision D022-244: "a machine identity" is not a
    principal kind of the platform, and an Operator or Developer credential could approve publications.)*
 5. **Handler runs are a tree of their own.** A run carries `handler_tree`, set for a dispatched handler run, an
-   `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a
-   handler-tree run; `handler_kind` (`DISPATCHED`, `REGION_CHILD`) says which kind of handler run it is. Both columns, and
+   `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source is a handler-tree run
+   or whose request's principal holds `RunRecovery` (what "whose initiator is a handler-tree run" means at an admission,
+   decision D022-279); `handler_kind` (`DISPATCHED`, `REGION_CHILD`) says which kind of handler run it is. Both columns, and
    `lineage_run_id`, are guarded by the database (a `BEFORE UPDATE OF` trigger, `ENABLE ALWAYS`; a child's
    `handler_tree` checked against its parent's at insert). A handler-tree
    run MUST NOT be dispatched to the namespace handler. `handler_for_run_id` and its unique index apply to dispatched
@@ -100,16 +115,17 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
    the unique index is `(tenant_id, namespace_id, lineage_run_id) WHERE lineage_first`, the terminal commit inserts its
    row with `lineage_first = true ... ON CONFLICT ... WHERE lineage_first DO NOTHING`, and only when that inserted
    nothing a second statement inserts the row as `SUPPRESSED_LINEAGE` (`lineage_first = false`), counted, journaled on
-   the run, listed and redrivable. The two statements are the last of the run's commit before usage rows, so the first
+   the run, listed and redrivable. The two statements are followed in the run's commit only by the `run.finished` row of
+   the run's own journal, then usage rows (decision D022-280), so the first
    one's wait for another run's uncommitted first row of the lineage is a leaf wait (the deviation extends to the
    lineage key). The `run.finished` journal row is appended after the two dispatch statements, its
    `namespace_dispatch` detail taken from what they did (a row of the run's own commit, so the leaf argument holds; the
    reducer ignores the field), and the terminal path updates no `run_events` row (decision D022-260). *(Revised
    2026-11-25, decision D022-242, which reverses D022-241 and answers O1176 (a).)*
-8. **The dispatcher counts first, then admits, within a budget.** A shard-fenced pass counts each attempt (attempts,
-   `next_attempt_at`) and checks the namespace dispatch budget (dispatches a namespace may admit per window, with a
-   per-workflow share; beyond it the dispatch is deferred, never dropped, and an alert is raised) in its own committed
-   transaction, then admits the handler run through `Engine::start` (initiator `system:engine`; its steps run under the
+8. **The dispatcher counts first, then admits, within a budget.** A shard-fenced pass checks the namespace dispatch
+   budget (dispatches a namespace may admit per window, with a per-workflow share; beyond it the dispatch is deferred,
+   never dropped, and an alert is raised) and, within it, counts the attempt (attempts, `next_attempt_at`) in its own
+   committed transaction (the order of plan row T9, decision D022-285), then admits the handler run through `Engine::start` (initiator `system:engine`; its steps run under the
    handler version's publisher as a triggered run's do, D1177, with no operator right; provenance `handlerFor`) and marks the row
    `ADMITTED` in that transaction, locking the row inside `RunStore::create` through a `NewRun` field (the
    `pending_reset` precedent), in ADR-0050's slots: the dispatch row (slot 3), the source run's identity guard
@@ -123,7 +139,10 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
    through `persist`'s terminal path for the dispatch, so a failing chain head is dispatched); publication refuses
    `continueAsNew` with `onFailure` or `earlyReturn`, and a continue-as-new successor of a handler-tree run is refused
    at admission with a typed code (a child step under a handler tree fails `CONTINUE_AS_NEW_REFUSED`), the runtime check
-   staying as a defence that ends the run through a typed finalization (decision D022-263);
+   staying as a defence that ends the run through a typed finalization (decision D022-263); a reset or rerun under a
+   handler tree (decision 5) of a definition that continues as new is refused at admission, `422 VALIDATION_FAILED`
+   (`CONTINUE_AS_NEW_REFUSED`), and the defence ends a run that reaches the boundary anyway `FAILED` with the durable
+   code `CONTINUE_AS_NEW_REFUSED`, as the continuation pass ends a chain with `CHAIN_LIMIT` (decision D022-279);
    the capabilities `failure-handler-v1` and `early-return-v1`
    are listed by a binary only once ADR-0146's routing and every artefact of their manifest are in it (decision
    D022-256). Until the routing
@@ -182,7 +201,7 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
 ## Evidence
 
 None yet: the tests named under **Enforced by** are built by tasks T022-030 to T022-038, T022-207, T022-208, T022-213 to
-T022-215, T022-224, T022-225, T022-227 and T022-228. Spec: FR-022-008 to FR-022-016 and their amendments of 2026-11-24
+T022-215, T022-224, T022-225, T022-227 and T022-228, and since 2026-11-26 T022-243, T022-244 and T022-256 to T022-259. Spec: FR-022-008 to FR-022-016 and their amendments of 2026-11-24
 and 2026-11-25; research: D1169 to D1177, D1195, D1197, D022-201, D022-207, D022-208, D022-210, D022-215, D022-216,
-D022-222 to D022-224, D022-228, D022-237, D022-242 to D022-250, D022-255; data model: the handler tables, the `runs` columns and invariants 3 to 5 and
+D022-222 to D022-224, D022-228, D022-237, D022-242 to D022-250, D022-255, D022-272 to D022-280; data model: the handler tables, the `runs` columns and invariants 3 to 5 and
 16.

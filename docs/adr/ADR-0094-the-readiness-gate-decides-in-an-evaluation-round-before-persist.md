@@ -41,7 +41,8 @@ each gated step. Building it (T022-096) showed two things that decision does not
    other commit, which closes G1197. Until that routing lands, publication refuses `cache`, `earlyReturn` and
    `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency
    `COLLECTION_FINISH_ROUTING`), so no run reaches a path that cannot serve them. *Revised 2026-11-25 (decision D022-232):*
-   the routing is [ADR-0146](ADR-0146-every-end-of-a-run-goes-through-the-reducer.md) (proposed), which lists every
+   the routing is [ADR-0146](ADR-0146-every-end-of-a-run-goes-through-the-reducer.md) (accepted 2026-11-25, decision
+   D022-271; "proposed" corrected 2026-11-26, decision D022-285), which lists every
    finish path outside the reducer and the fitness rule that keeps them routed. *Accepted 2026-11-25, delegate
    OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/
    (decision D022-271):* this amendment, with its revisions of 2026-11-24 and 2026-11-25.

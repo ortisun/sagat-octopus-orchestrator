@@ -663,7 +663,7 @@ ceiling skips the insert (counted `skipped_backlog`).
 
 | Column | Type | Notes |
 |---|---|---|
-| `handler_tree` | boolean | NOT NULL DEFAULT false; true for a dispatched handler run, an `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a handler-tree run; never dispatched |
+| `handler_tree` | boolean | NOT NULL DEFAULT false; true for a dispatched handler run, an `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a handler-tree run (*2026-11-26, decision D022-279:* "initiator" reads "whose request's principal holds `RunRecovery`"); never dispatched |
 | `handler_kind` | text null | CHECK `IN ('DISPATCHED','REGION_CHILD')`; `REGION_CHILD` is the `onFailure~h` child form |
 | `handler_for_run_id` | uuid null | only when `handler_kind = 'DISPATCHED'` (CHECK); FK `(tenant_id, namespace_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null; never inherited by a reset or rerun |
 | `lineage_run_id` | uuid | ~~NOT NULL; the source's `lineage_run_id` (read under the source's identity guard) for a reset or a rerun whose initiator is a machine identity or a handler-tree run; otherwise the run's own id, so a reset or rerun a member starts begins a lineage of its own (decision D022-241, O1176 (b)); the initiator's principal kind is recorded with the reset or rerun provenance~~ *(struck 2026-11-25, decision D022-270: superseded by D022-242 and D022-245; see "Revision of 2026-11-25 after the re-reviews")* |
@@ -681,12 +681,14 @@ per lineage, a lineage linking only through machine identities and handler-tree 
 decision D022-242).* `attempts` is incremented and committed before each admission is tried. Inserted only by the terminal path
 of `persist` (a recorded deviation of ADR-0050 decision 7), locked only by the dispatcher and the redrive. The
 pending-dispatch ceiling refuses a new or re-enabled handler configuration, never an insert. `config_revision` is the
-revision read with the run's definition.
+~~revision read with the run's definition~~ revision read by the left join of the statement that locks the run (struck
+and replaced 2026-11-26, decision D022-283; D022-255).
 
 ### `namespace_failure_handlers` and `publication_policies`
 
-`namespace_failure_handlers` is never locked by a deciding transaction; its `revision` and `enabled` are read with the
-run's definition. `publication_policies` gains `draft_executions_enabled boolean NOT NULL DEFAULT false` (decision
+`namespace_failure_handlers` is never locked by a deciding transaction; its `revision` and `enabled` are read ~~with the
+run's definition~~ by the left join of the statement that locks the run (struck and replaced 2026-11-26, decision
+D022-283; D022-255). `publication_policies` gains `draft_executions_enabled boolean NOT NULL DEFAULT false` (decision
 D022-227): with `required_approvals > 0`, draft test runs and standalone activity and script steps are refused unless it
 is true; changed through the publication-policy route and audited.
 
@@ -774,7 +776,8 @@ D022-253).
 A transition on an existing run: entity locks (chain → run, the run's statement reading the handler configuration by a
 left join, `FOR UPDATE OF runs`) → the rounds (lookup: secret-access and membership locks, binding advisory lock,
 shared, then cache scope, tombstones, entry `FOR SHARE`; then gates: semaphores, then windows, sorted) → `persist` (the
-active-run counter row when the commit ends the run, the give-backs, the rest, the dispatch insert last) → usage rows. The
+active-run counter row when the commit ends the run, the give-backs, the rest, the dispatch insert followed only by the
+run's own `run.finished` row, corrected 2026-11-26, decision D022-280) → usage rows. The
 counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive taker of a cache row
 takes the counter row (decision D022-255).
 
@@ -790,9 +793,49 @@ takes the counter row (decision D022-255).
   re-checked on the entry read `FOR SHARE` (D022-265).
 - `run_recovery_namespaces` (new): PK `(tenant_id, subject, namespace_id)`; `created_by`, `created_at`; an
   administrator's audited setting binding a `RunRecovery` subject to a namespace, as worker bindings are; grants
-  SELECT to `sagat_app`, written only through the administrator's route. `memberships_role_valid` gains `RunRecovery`
+  SELECT to `sagat_app`, written only through the administrator's route *(the grants superseded 2026-11-26 by the
+  section "Revision of 2026-11-26 after the re-reads", decision D022-273)*. `memberships_role_valid` gains `RunRecovery`
   (its `down` refuses while such a membership exists) (D022-266).
 - The draft-executions setting is guarded by an advisory key per namespace, shared by admissions, exclusive in
   `set_policy` (D022-269).
 - Invariant 22: every `run.finished` whose commit inserted a dispatch row carries `namespace_dispatch` equal to that
-  row's state at the commit.
+  row's state at the commit. *(Restated 2026-11-26, decision D022-280; see the next section.)*
+
+## Revision of 2026-11-26 after the re-reads (decisions D022-272 to D022-285)
+
+The re-reads of the third-read fixes ([reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md)).
+Where this section and any above disagree, this section wins.
+
+### `run_recovery_namespaces`, revised (decisions D022-273, D022-276, D022-277)
+
+Replaces the line of the section above, whose SELECT-only grant could not serve a route that runs as `sagat_app`.
+
+| Column or rule | Notes |
+|---|---|
+| `tenant_id`, `subject`, `namespace_id` | PK `(tenant_id, subject, namespace_id)` (the membership statement reads by subject on every request); index `(tenant_id, namespace_id)` for the listing and the namespace's foreign key; FK `(tenant_id, namespace_id)` → `namespaces (tenant_id, id)` `ON DELETE CASCADE`; FK `(tenant_id, subject)` → `memberships (tenant_id, subject)` `ON DELETE CASCADE`; `subject` CHECK as `worker_bindings_subject_valid` (1 to 255 characters, no control character) |
+| `created_by`, `created_at` | the administrator's subject (bounded) and `clock_timestamp()` |
+| Grants | SELECT, INSERT, DELETE to `sagat_app`; no UPDATE (nothing to change) |
+| Usage | the quota delta and flush triggers of `worker_bindings` (`sagat_quota_row_delta` over `subject`; `sagat_quota_flush_deltas`), `ENABLE ALWAYS` |
+| Readers | the membership statement (the bound set of a `run-recovery` member, as an array, on every request; empty while `platform_requirements` does not hold `failure-handler-v1`); an admission or a command by such a member (its row `FOR SHARE`, slot 4a after the memberships) |
+| Writers | `bindRunRecovery` (INSERT, idempotent) and `unbindRunRecovery` (DELETE), each with its audit row; nothing else |
+| Classification | the subject is an identifier, protected as `worker_bindings.subject` is |
+
+`memberships_role_valid` gains `run-recovery` (the stored spelling, lowercase with a hyphen as `database-runner`). A
+`BEFORE INSERT OR UPDATE OF role` trigger on `memberships`, `ENABLE ALWAYS`, refuses `run-recovery` while
+`platform_requirements` does not hold `failure-handler-v1` (decision D022-276). The `down` refuses while a
+`run-recovery` membership or a binding row exists.
+
+### `runs.handler_tree`, restated (decision D022-279)
+
+A reset or rerun is a handler-tree run when its source run is one or when the request's principal holds `RunRecovery`;
+such a reset or rerun of a definition that continues as new is refused at admission (`CONTINUE_AS_NEW_REFUSED`), so
+invariant 21 holds for it.
+
+### The dispatch statements and invariant 22 (decision D022-280)
+
+The two dispatch statements are followed in the run's commit only by the `run.finished` row of the run's own journal,
+then usage rows.
+
+- Invariant 22 (restated): `run.finished.namespace_dispatch` is present exactly when a dispatch row for this source run
+  exists, and is `PENDING` exactly when that row's `lineage_first` is true (`SUPPRESSED_LINEAGE` otherwise); a later
+  redrive does not change it.

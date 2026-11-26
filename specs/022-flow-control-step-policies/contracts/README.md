@@ -41,3 +41,9 @@ and the child-node outcomes; the journal event `rate_limit.returned` and step-sc
 `attempt`; in the OpenAPI fragment, `keyLabel` may be `null` (FR-022-057), position and estimate are
 computed by the single-run read only, and the `group` filter accepts derived group names. The worker
 protocol stays unchanged: a step waiting for either gate is not `READY`.
+
+**Revision of 2026-11-26 after the re-reads (decisions D022-272 to D022-285).** The OpenAPI fragment gains the three
+operations of the `RunRecovery` binding (`listRunRecoveryBindings`, `bindRunRecovery`, `unbindRunRecovery`) and the role
+value `run-recovery`; `errors.md` gains their rows, the opaque `404` of a bound subject outside its binding as the first
+refusal of every route, the continue-as-new refusal of a reset or rerun under a handler tree and the runtime defence's
+durable code.

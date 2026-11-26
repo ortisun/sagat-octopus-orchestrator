@@ -320,7 +320,7 @@ paths:
       summary: Try a dead handler dispatch again
       tags: [Governance]
       x-proposed: '022'
-      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch, or since 2026-11-25 a SUPPRESSED_LINEAGE one (decision D022-242), which becomes PENDING and stays outside its lineage's unique first row; resets attempts. Subject to the namespace dispatch budget (decision D022-243). Refused 403 RECOVERY_ROLE_MAY_NOT_REDRIVE for a subject whose role is RunRecovery (decision D022-266). Audited with `reason`.
+      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch, or since 2026-11-25 a SUPPRESSED_LINEAGE one (decision D022-242), which becomes PENDING and stays outside its lineage's unique first row; resets attempts. Subject to the namespace dispatch budget (decision D022-243). Refused 403 RECOVERY_ROLE_MAY_NOT_REDRIVE for a subject whose role is RunRecovery (decision D022-266); since 2026-11-26 (decision D022-272) such a subject outside its namespace binding gets the opaque 404 first, before that 403. Audited with `reason`.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: sourceRunId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -341,6 +341,75 @@ paths:
         '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
         '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
         '409': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/run-recovery-bindings:
+    get:
+      operationId: listRunRecoveryBindings
+      summary: The RunRecovery subjects bound to a namespace
+      tags: [Governance]
+      x-proposed: '022'
+      description: Added 2026-11-26 (decision D022-274). Needs `membership:manage`. A subject of the role `run-recovery` is authorized only in the namespaces it is bound to; one with no binding is bound to none.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
+      responses:
+        '200':
+          description: A page of bindings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RunRecoveryBindingPage'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/run-recovery-bindings/{subject}:
+    put:
+      operationId: bindRunRecovery
+      summary: Bind a RunRecovery subject to a namespace
+      tags: [Governance]
+      x-proposed: '022'
+      description: Added 2026-11-26 (decisions D022-274, D022-276). Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with the role `run-recovery` (422 NOT_A_RECOVERY_SUBJECT otherwise); refused 422 FLOW_CONTROL_ACTIVATION_PENDING before `failure-handler-v1` is activated. The binding and its `run_recovery.bound` audit record commit together; the subject's next request is authorized in this namespace.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: subject, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 8, maxLength: 2000}
+      responses:
+        '200':
+          description: The binding now in force
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RunRecoveryBinding'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '422': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+    delete:
+      operationId: unbindRunRecovery
+      summary: Remove the binding of a RunRecovery subject in a namespace
+      tags: [Governance]
+      x-proposed: '022'
+      description: Added 2026-11-26 (decisions D022-274, D022-277). Needs `membership:manage`. 404 when the subject has no binding there. The removal and its `run_recovery.unbound` audit record commit together; a write of the subject that has not yet reached its binding's lock in slot 4a is refused 404 after it.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: subject, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
+      responses:
+        '200':
+          description: The binding was removed
+          content: {application/json: {schema: {type: object, additionalProperties: false, maxProperties: 0}}}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
         default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
 components:
   schemas:
@@ -617,6 +686,25 @@ components:
             queueDeadline: {type: [string, 'null'], format: date-time}
             position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
             estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), or when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2).'}
+    RunRecoveryBinding:
+      description: Added 2026-11-26 (decision D022-274).
+      type: object
+      additionalProperties: false
+      required: [subject, createdBy, createdAt]
+      properties:
+        subject: {type: string, minLength: 1, maxLength: 255}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+    RunRecoveryBindingPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/RunRecoveryBinding'}}
+        nextCursor: {type: [string, 'null']}
+    MembershipRoleAdditions:
+      description: Value added to the canonical `AuthContext.role` enumeration (and the stored `memberships.role`), decisions D022-244, D022-266 and D022-285 (the stored spelling).
+      type: string
+      enum: [run-recovery]
     RunOriginAdditions:
       description: Values added to the canonical `DatabaseExecutionOrigin` enumeration (name kept for compatibility) used by `Run.origin` and `listRuns?origin=`.
       type: string
