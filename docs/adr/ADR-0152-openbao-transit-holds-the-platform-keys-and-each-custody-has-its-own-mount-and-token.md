@@ -22,13 +22,15 @@ values of feature 017's `openbao` custody (design 015, The Problem).
 1. A deployment MUST choose a key authority, `local` or `transit`; both are supported. Under `transit` no platform key
    MAY exist outside OpenBao, and a process MUST refuse to start if a local key is also configured, except in the
    `migrating` mode.
-2. Under `transit` a secret version of `transit` custody MUST be sealed with a fresh data key from Transit key
+2. Under `transit` a secret version of `transit` custody, which carries no key id so that older readers fail closed,
+   MUST be sealed with a fresh data key from Transit key
    `sagat-secrets`, derived with the tenant's context, and stored with its wrapped data key and the key's version in
    PostgreSQL. The value MUST NOT be sent to OpenBao. The associated data MUST name the custody and never the Transit
    key's version. Feature 017's KV custody stays as it is.
-3. Rotation MUST need no restart: new seals use the newest key version; a bounded, resumable pass rewraps stored data
-   keys with `transit/rewrap` and reports every row it could not rewrap; raising `min_decryption_version` is a command
-   that refuses while a row, a failure or a seal in flight remains below it. A re-key command issues new data keys after
+3. Rotation MUST need no restart and MUST NOT outrun the backups: new seals use the sealing version recorded in
+   PostgreSQL, advanced only once a snapshot holds it; a bounded, resumable pass rewraps stored data
+   keys with `transit/rewrap` and reports every row it could not rewrap; raising `min_decryption_version` first raises a
+   sealing floor that the database enforces, then counts. A re-key command issues new data keys after
    a compromise of a token.
 4. Scripts MUST be signed with Transit key `sagat-scripts` over the message that binds the tenant, the digest and the
    language; runners MUST get the public keys from the control plane, never from OpenBao. Feature 017's intents MUST be
@@ -52,12 +54,12 @@ values of feature 017's `openbao` custody (design 015, The Problem).
 
 ## Consequences
 
-OpenBao becomes a dependency of every secret seal and every cold open under `openbao`; its availability is the
+OpenBao becomes a dependency of every secret seal and every cold open under `transit`; its availability is the
 platform's for those paths (a three-node Raft cluster in the runbook). A binary older than 0.3.0 cannot open a
-Transit-sealed row, so `openbao` is gated by the instance registry. Rolling back is a documented re-seal.
+Transit-sealed row, so `transit` is gated by the instance registry. Rolling back is a documented re-seal.
 
 ## Evidence
 
 Design 015 (`docs/designs/015-opentelemetry-and-openbao.md`); `crates/infra-secrets/src/lib.rs` (`KeyRing`),
-`crates/infra-secrets/src/openbao.rs` (the bounded client reused), `crates/domain/src/secrets.rs` (`SecretCipher`),
+`crates/infra-secrets/src/openbao.rs` (the bounded client's practices, applied to a client per mount), `crates/domain/src/secrets.rs` (`SecretCipher`),
 `infra/openbao/` and `infra/helm/templates/openbao-agent.yaml`.
