@@ -145,6 +145,17 @@ approved.
   pending evidence. The version tolerance is one helper kept by a source rule; the public `expectedRunVersion` keeps its meaning,
   bounded by the inbox's fill. Delegate (Owner decision 2026-11-24-4).
 
+- **Decision 054-017 — Answers of the security review** (its Majors 1 to 7, Nits 8 and 9; every one fixed, none accepted). A
+  pending payload's digest and size are withheld (the journal read's `payloadRef`, inspection and disclosure by sequence, the
+  list's `bytes` without `run:payload:inspect`); the list is a lock-free read; a namespace resource of Architecture decision 0027,
+  `pending_signal_bytes` (provisional default 64 MiB), bounds what senders can store through inboxes; a signal crosses at most 100
+  continuations, so each accepted signal writes at most 101 events; the hold takes the epoch `FOR SHARE` first and answers only for
+  a capability with a floor row; the floor's functions are revoked from `PUBLIC`, its trigger is `SECURITY INVOKER` and enabled
+  `ALWAYS`, and a registered function is checked; refusals are traceable through spans and authorized logs. Options weighed for
+  the chain's amplification: a summary event in the successor (its list of signals grows the journal by the same bytes), charging
+  moves to a quota (no resource counts journal rows), and the move limit (chosen: a bound per accepted signal). Delegate (Owner
+  decision 2026-11-24-4).
+
 ## Gaps
 
 - **Gap 054-001** Payloads are never deleted today (`payloads` has no collector); a discarded or consumed signal's payload stays as
@@ -163,9 +174,14 @@ approved.
   consumption, `consume_pending_signals` all or nothing, each row's `version_id` for its classification) and defers code runs' undeclared names to it (Requirement 054-003); design
   044's owner is to cite that contract in its next revision, and to drop from Architecture decision 0108 the statement that a code
   version's consumer is its function, which Architecture decision 0111 decision 1 owns (architecture review, Nit 10).
+- **Gap 054-011** The journal read returns `payload_digest` as `payloadRef` to every `run:read` caller for events that carry one,
+  step outputs included (`crates/infra-postgres/src/execution.rs`, `crates/api-http/src/dto_exec.rs`): a low-entropy output can be
+  confirmed by hashing guesses. Design 054 withholds it for `signal.buffered`; the same exposure for step outputs is feature 016's
+  to settle (security review of design 054, Major 1).
 - **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
   them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
-  dependency in their next revisions (stage 5 zoom-out, its Major 4).
+  dependency in their next revisions (stage 5 zoom-out, its Major 4). Design 044's Decision 044-206 body is replaced by the one of
+  design 054's Technical Plan 15 (Architecture decision 0112), which follows the registry's lock order (security review, Major 7).
 
 - **Gap 054-008** Design 044 refuses a code run's signals from 3 MiB of retained bytes, at a visible count of 50,176 and while a
   closing window is open (`HISTORY_HEADROOM`, `RUN_CLOSING`); Requirement 054-007's bound is stated for graph runs, and the 2 MiB
