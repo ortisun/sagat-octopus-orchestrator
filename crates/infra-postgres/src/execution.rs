@@ -5789,6 +5789,16 @@ impl RunTx for PgRunTx {
                 }
                 continue;
             }
+            // a withdrawn lease of a rate-gated step leaves the step granted and not leased: its slot counts as unleased
+            // again until the attempt's next lease is recorded (decisions D022-138 and D022-139; ADR-0096 decision 6)
+            if let RunEvent::StepLeaseWithdrawn { node, attempt, .. } = event
+                && self
+                    .def
+                    .node(node)
+                    .is_some_and(|declared| declared.flow_control().rate_limit().is_some())
+            {
+                self.clear_withdrawn_lease(node, *attempt).await?;
+            }
             self.signals.extend(of_event(event));
             match event {
                 RunEvent::SagaEntered { node, .. }

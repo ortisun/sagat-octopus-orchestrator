@@ -1273,10 +1273,12 @@ impl PgRunTx {
                     "SELECT key_digest FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 \
                      AND permit_scope = $5 AND node = $3 AND attempt = $4",
                 ),
+                // the domain gives back only a slot of an attempt that is not leased; a lease instant on its row can only be a
+                // withdrawn lease's that this commit clears after the returns (decision D022-138, ADR-0096 decision 6)
                 GateChange::RateReturned => (
                     KeyTable::Windows,
                     "SELECT key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
-                     AND limit_scope = $5 AND node = $3 AND attempt = $4 AND leased_at IS NULL",
+                     AND limit_scope = $5 AND node = $3 AND attempt = $4",
                 ),
                 GateChange::RateDequeued | GateChange::RateWaitTimedOut => (
                     KeyTable::Windows,
@@ -1339,7 +1341,7 @@ impl PgRunTx {
                 }
                 GateChange::RateReturned => {
                     "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 \
-                     AND node = $3 AND attempt = $4 AND leased_at IS NULL"
+                     AND node = $3 AND attempt = $4"
                 }
                 GateChange::RateDequeued | GateChange::RateWaitTimedOut => {
                     "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 \
@@ -1612,6 +1614,31 @@ impl PgRunTx {
                 .await
                 .map_err(store_error)?;
         }
+        Ok(())
+    }
+
+    /// Clears the lease instant of the grant of `node`'s attempt `attempt` after its lease was withdrawn (decisions D022-138
+    /// and D022-139): the slot counts as unleased again, without end, until the lease pass records the attempt's next lease.
+    /// It runs after this commit's gate returns (`persist`, step 0), so a window row is never locked after this grant row,
+    /// as everywhere else (D022-038), and it finds no row when this commit gave the slot back. The write always makes a new
+    /// row version, the instant recorded or not, so that a lease pass that read the row before this commit does not write
+    /// the withdrawn lease on its recheck.
+    pub(super) async fn clear_withdrawn_lease(
+        &mut self,
+        node: &NodeId,
+        attempt: u32,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE rate_limit_grants SET leased_at = NULL WHERE tenant_id = $1 AND run_id = $2 \
+               AND limit_scope = 'STEP' AND node = $3 AND attempt = $4",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(i32::try_from(attempt).map_err(|_| corrupt("attempt"))?)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
         Ok(())
     }
 

@@ -354,6 +354,40 @@ async fn the_counters_follow_the_rows_and_the_runtime_role_cannot_write_them() {
     .await
     .map_err(db_error);
     assert_eq!(again.map(drop).unwrap_err().0, "23001", "and never again");
+    // a withdrawal of the lease clears it, and the attempt's next lease is recorded once again (decision D022-139,
+    // migration `20270217000000_flow_control_withdrawn_lease`)
+    for (statement, what) in [
+        (
+            "UPDATE rate_limit_grants SET leased_at = NULL WHERE tenant_id = $1",
+            "a withdrawal clears the lease instant",
+        ),
+        (
+            "UPDATE rate_limit_grants SET leased_at = NULL WHERE tenant_id = $1",
+            "and writes a new row version when nothing is recorded",
+        ),
+        (
+            "UPDATE rate_limit_grants SET leased_at = clock_timestamp() WHERE tenant_id = $1",
+            "the next lease is recorded",
+        ),
+    ] {
+        sqlx::query(statement)
+            .bind(run.0)
+            .execute(&runtime)
+            .await
+            .expect(what);
+    }
+    let cleared_and_moved = sqlx::query(
+        "UPDATE rate_limit_grants SET leased_at = NULL, declared_limit = declared_limit + 1 WHERE tenant_id = $1",
+    )
+    .bind(run.0)
+    .execute(&w.db.pool)
+    .await
+    .map_err(db_error);
+    assert_eq!(
+        cleared_and_moved.map(drop).unwrap_err().0,
+        "23001",
+        "a clear changes nothing else, not even as the owner"
+    );
     let moved = sqlx::query(
         "UPDATE rate_limit_grants SET granted_at = clock_timestamp() WHERE tenant_id = $1",
     )

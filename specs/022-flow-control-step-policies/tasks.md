@@ -866,3 +866,18 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   `flow-control-activate` is removed; `docs/runbooks/flow-control.md` (sections 1 and 7), `docs/releases/unreleased.md`
   and every test that runs the old command follow. Blocks release 0.3.0. Evidence: the activation tests of both
   capabilities pass through `capability-activate`; the old command is refused as unknown.
+  *Evidence 2026-11-26, not ticked (the coordinator ticks it):* built on `feature/022-slice-activation` (decisions
+  D022-137 to D022-139). Seen failing first, on the code before the fold: `sagat-control-plane --test
+  cli::the_flow_control_capabilities_are_activated_by_capability_activate_and_the_old_command_is_unknown` (the token
+  refused as not activatable) and the five tests of `integration_flow_control_step_policies::activation` and
+  `admission::the_activation_is_refused_while_a_live_process_lacks_the_capability`. After it:
+  `cargo test -p sagat-control-plane --locked` all passed (35 unit tests, among them
+  `capability_activation::tests::the_flow_control_gates_are_entries_with_every_check_of_the_removed_command`);
+  `integration_flow_control_step_policies::{activation, admission, withdrawn_leases, migrations, rate_gate, returns}`
+  83 passed; the whole target 251 passed and 4 failed as the owner and 251 passed and 4 failed with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`: the two batch-rerun tests (`rate_creators::a_batch_rerun_of_a_rate_limited_run_admits_through_the_key`,
+  `run_creators::a_batch_rerun_admits_through_the_key`) fail the same way with this slice's code changes stashed (the
+  batch item stays `PENDING`), and the other failures (`rate_limit_locks::the_timeout_of_a_buffered_start_takes_the_run_then_its_counter_row_then_the_window`,
+  `queue::a_dual_gated_head_is_not_starved_by_a_younger_waiter`,
+  `run_admission::a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_one_pass_grants_both_in_order`)
+  passed when rerun alone. `integration_platform_foundation -- runtime_privileges migrations` 70 passed.
