@@ -291,15 +291,16 @@ graph declares, and the versioning rules that keep code and history together.
   schema MUST complete the update as failed (`RESULT_SCHEMA_VIOLATION`) and leave the run alone. A request that sets
   `acceptPending: true` MUST be answered `202` with the status when the update has not completed within `waitMs` (at
   most 60,000 ms); a request without it MUST wait up to 60,000 ms and answer `200` with the result or
-  `409 UPDATE_PENDING`. An `updateKey` MUST be scoped by the run and the admitting principal, so that another
-  principal's identical key is another update; `GET /runs/{runId}/update-receipts/{updateKey}` and a repeated `POST`
+  `409 UPDATE_PENDING`. An `updateKey` MUST be scoped by the address the client used (the run or the chain, section 8.2)
+  and the admitting principal, so that another principal's identical key is another update;
+  `GET /runs/{runId}/update-receipts/{updateKey}`, `GET /chains/{chainId}/update-receipts/{updateKey}` and a repeated `POST`
   MUST answer only within that scope (a principal with `run:operate` reads the list of every principal's update under
   that key, each with its admitting principal), after authorization is checked again, and an unknown key MUST answer the
   same `404` as a missing one. An update that has not completed when the run ends or continues as new MUST be finished
   by the engine in that transaction, `REJECTED` if it was admitted and `FAILED` if it was accepted, with the reason
   `RUN_ENDED` or `RUN_CONTINUED`; an update to a run that is stopping or has ended MUST be refused
-  `409 RUN_NOT_MUTABLE`, as for a graph run. At most 64 updates per run may be admitted or accepted and not completed (`429 UPDATE_BACKLOG`); of them, at most 64 may await
-  acceptance (`429 UPDATE_BACKLOG`), and updates are refused at the history headroom. Update-with-Start (feature 018)
+  `409 RUN_NOT_MUTABLE`, as for a graph run. At most 64 updates per run may be admitted or accepted and not completed, one principal at most a quarter of them
+  (`429 UPDATE_BACKLOG`), and updates are refused at the history headroom. Update-with-Start (feature 018)
   MUST work for a code version. *Acceptance:* the conformance scenarios `code-updates` and `code-update-with-start`, and
   the tests of Task 044-21.
 - **Requirement 044-016** A code version MAY declare state and queries in the IR's `state` form (feature 014). The
@@ -502,9 +503,11 @@ graph declares, and the versioning rules that keep code and history together.
   ⌈E / 1,024⌉ + ⌈B / 3 MiB⌉ pages, at least 58,368 / 1,024 = 57 for the largest; a lease's first page at most 256 KiB;
   a run transaction reads at most 771 KiB of overlay rows (the addressed step's three rows, and the rows of at most 256
   newer work commands, 256 × 3 × 1 KiB = 768 KiB), and at most 4 MiB of blob-carried values to validate (each distinct
-  blob once, by its SHA-256, under a per-process semaphore a tenant holds at most a quarter of; beyond it the completion
-  is `COMMAND_INVALID`; the semaphore holds 64 MiB per process and is acquired with a deadline of at most the lease's
-  remaining time, and a full one answers `UNAVAILABLE` with `retry-after-ms`, the lease's expiry after it not counted), except the stop drain and the planning of a saga scope, which read the rows they act on
+  blob once, by its SHA-256; a completion over 4 MiB of them is `COMMAND_INVALID`, the only refusal of this bound that
+  reviews; the values are read under a per-process semaphore of 64 MiB, of which a tenant holds at most a quarter and
+  every tenant is guaranteed 4 MiB, acquired with a deadline of at most the lease's remaining time; a full semaphore,
+  or a tenant at its quarter, answers `UNAVAILABLE` with `retry-after-ms`, and the lease's expiry after it is not
+  counted; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
   (at most 6 MiB) once; a `PollTasks` answer at most 3.5 MiB in all, leaving room for framing below the clients' 4 MiB (it carries fewer
   tasks when they do not fit); a replay-check task at most 16 runs, each
   read by pages under its own capability; a registration at most 64 workflow types; a worker query's arguments at most
@@ -1220,7 +1223,9 @@ version (Requirement 044-026).
      whose carrier schema classifies any field `secret` is never delivered to a workflow, query or replay-check token:
      its `HistoryEvent` payload is the placeholder `EXTERNAL_CONTENT_NOT_INSPECTED`, `ReadBlob` refuses it and no
      command may name it, because the server cannot redact a blob (feature 016, FR-016-015). A blob written under a
-     lease that ends without a committed command naming it is released, with its charge, by the blob pass.
+     lease that ends without a committed command naming it is released, with its charge, by the blob pass, and at the
+     latest by the transaction that leases the run's next workflow task, so a crashed lease's uploads never count
+     against the next attempt's 16.
   4. The lease journals only `workflow_task.started` (no `step.leased`) with its time (section 1.8), the window start
      `S(k − 1)` and the two
      flags `continue_as_new_suggested` and `history_limit_reached` as they stand at the lease; the SDK answers
@@ -1694,7 +1699,7 @@ on a running run only through a verified move (section 7.3), which proves per ru
   an item whose lease expired is offered alone in a task of its own, and after three expiries it ends `FAILED` with
   `REPLAY_CHECK_ABANDONED`; `NO_TARGET_WORKER` counts 3,600 s from `created_at` whatever the claims; recording a verdict
   sets the item's `next_attempt_at` to now; a verdict is applied only if the verifying identity's binding still lists
-  the type. While its check is
+  the type, which `sagat_move_code_run` re-reads inside the move's transaction. While its check is
   outstanding an item is deferred with the new defer cause `REPLAY_PENDING`, which is not a refusal (it moves neither
   `attempts` nor the first refusal's time, so feature 018's exhaustion does not end it); a check-creation step creates the
   checks of up to 64 upcoming items of the job ahead of their rate slots; `code_replay_checks.created_at` measures the
@@ -1756,11 +1761,14 @@ the 5.0.0 text says so).
 `GET /runs/{runId}/history` (which answers `404` for a graph run in 0.3.0) returns a code run's visible history, with its seed and the payloads of its commands (their
 inputs and literals, never their digests), as JSON lines of `HistoryEvent` under a first line `{"exportFormat": 1, ...}`, under `run:read` and `history:export`, which only
 the admin role holds by default. Every payload goes through the read path of feature 016: an activity input and a
-business literal are classified by the schema that declares them (or as `pii`), an output by its entry's `outputSchema`, a
-signal by its declared schema; a classified field is replaced by a typed placeholder unless the reader may see it there
+business literal are classified by the schema that declares them (or as `pii`), an output by its entry's `outputSchema`
+in the version that issued the step (the `accepted_version_id` of its overlay row, so an activity or child still running
+when the run moves keeps its issuing version's classification; a children entry whose `outputSchema` drops a `secret`
+annotation of its listed child version is refused at publication), a signal by its declared schema; a classified field is replaced by a typed placeholder unless the reader may see it there
 (each stored payload classified by the carrier of the version that accepted it: a buffered signal by the run's
 current version when it was buffered, recorded in its `server_detail` and inbox row; the run input and the carried
-state by the run's start version; `payload:read-internal` for an internal field; `payload:reveal-pii` and a reveal grant for a personal one), and a field
+state by the run's start version, and a signal carried across a continue-as-new handoff keeps the classification of
+the version that buffered it; `payload:read-internal` for an internal field; `payload:reveal-pii` and a reveal grant for a personal one), and a field
 classified `secret` is never exported; a payload encoded by a client codec (feature 031) stays encoded. The format has a
 baseline file and a compatibility test; an SDK replayer refuses an unknown format version, and a replay that reads a
 placeholder stops with the verdict `INCONCLUSIVE_REDACTED` at that command, never with a false mismatch. Feature 016's
@@ -1839,7 +1847,8 @@ answers the same `404` as a missing one. The stop drain and continue-as-new's ha
 every update that has not completed: an `ADMITTED` one becomes `REJECTED` and an `ACCEPTED` one `FAILED`, with the reason
 `RUN_ENDED` or `RUN_CONTINUED`, journaled with origin `engine`, so no receipt stays open on a finished run; an update to a
 run that is stopping or has ended is refused `409 RUN_NOT_MUTABLE`, as for a graph run. Update-with-Start admits the update
-in the creating transaction. A chain-addressed update resolves the head run and then behaves as for a run. A graph run's
+in the creating transaction. A chain-addressed update resolves the head run and then behaves as for a run, except that
+its key keeps the chain's scope. A graph run's
 update keeps its synchronous expression form.
 
 #### 8.3 Queries
@@ -2098,6 +2107,7 @@ tree builds while the server lane fills them in.
 | `GET /runs/{runId}/history` | `run:read`, `history:export` | `200`, `application/x-ndjson`, paged by `from_seq` | `404` |
 | `POST /runs/{runId}/updates/{operationName}` | `run:update` | `200` or `202` | `409 UPDATE_PENDING`, `409 IDEMPOTENCY_KEY_REUSED`, `429 UPDATE_BACKLOG`, `409 HISTORY_HEADROOM`, `409 RUN_CLOSING`, `409 RUN_NOT_MUTABLE` |
 | `GET /runs/{runId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update; for `run:operate`, the list of every principal's update under the key | `404` (also for another principal's key) |
+| `GET /chains/{chainId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update under the chain's scope, across its segments; for `run:operate`, the list of every principal's update under the key | the same `404` for an unknown key, an unknown chain, another tenant's chain or another principal's key |
 | `POST /runs/{runId}/signals/{signalName}` (code runs) | `run:signal` | `202` | `409 SIGNAL_NOT_DECLARED`, `409 SIGNAL_INBOX_FULL`, `409 HISTORY_HEADROOM`, `409 RUN_CLOSING` |
 | `POST /runs/{runId}/worker-queries/{queryName}` (Task 044-29) | `run:read`, `run:query` | `200` | `504 QUERY_TIMEOUT`, `422 QUERY_COMMAND`, `409 QUERY_UNAVAILABLE`, `429`; `404` for a graph run or an undeclared query |
 | `PUT /namespaces/{namespaceId}/code-workflows/pause` and `DELETE` it | `run:operate`, `worker:manage` | `204` | `404` |
@@ -2740,6 +2750,7 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_over_4_mib_of_blob_values_is_command_invalid`, `...::a_cold_re_emission_names_the_held_blob_by_descriptor`,
   `...::sixty_four_held_deferrals_do_not_block_an_activity_output_upload`,
   `...::a_history_blob_passed_to_a_command_is_uploaded_again_canonically`,
+  `...::a_crashed_leases_blobs_are_released_when_the_next_task_is_leased`, `...::a_tenant_at_its_semaphore_quarter_gets_unavailable`,
   `...::a_cold_replay_of_a_blob_carried_input_keeps_the_chain`, `...::a_deferred_blob_output_re_emitted_by_another_worker_is_accepted`,
   `...::a_deferred_inline_output_re_emitted_as_a_blob_is_accepted`,
   `...::a_completion_naming_one_large_blob_256_times_reads_it_once_within_the_budget`,
@@ -2844,7 +2855,8 @@ a replaying worker derives from `ReadHistory`.
   `...::a_move_item_waits_for_its_verdict_past_the_batch_retry_window`,
   `...::a_large_move_keeps_replay_checks_in_flight_in_parallel`,
   `...::a_replay_check_of_a_58368_event_run_fits_the_ceiling`, `...::a_replay_check_abandoned_three_times_ends_the_item`,
-  `...::a_verdict_recorded_wakes_its_item_at_once`, `...::a_verdict_of_a_revoked_session_is_not_applied`, and the contract
+  `...::a_verdict_recorded_wakes_its_item_at_once`, `...::a_verdict_of_a_revoked_session_is_not_applied` (a revocation at a
+  barrier inside the move's transaction), and the contract
   test `contract_workflow_as_code::a_move_items_first_difference_is_in_the_batch_item`.
   Files: modify `crates/api-http/src/routes/batch.rs` and `routes/operations.rs` (the move routes),
   `crates/application/src/runs/batch_items.rs`, `crates/domain/src/batch.rs` (the action, skip reasons and defer causes),
@@ -2957,7 +2969,8 @@ a replaying worker derives from `ReadHistory`.
   `...::a_receipt_key_used_by_two_principals_lists_both_for_run_operate`,
   `...::three_unhandled_refusals_close_the_run_to_new_updates`,
   `...::a_chain_addressed_update_retried_after_continue_as_new_returns_its_receipt`,
-  `...::a_chain_signal_retried_across_a_handoff_is_buffered_once`, `...::a_sixty_fifth_open_update_is_refused_429`.
+  `...::a_chain_signal_retried_across_a_handoff_is_buffered_once`, `...::a_sixty_fifth_open_update_is_refused_429`,
+  `...::one_principal_holds_at_most_a_quarter_of_a_runs_open_updates`.
   Files: modify `crates/api-http/src/routes/declared_operations.rs` and `routes/primitives.rs` (signals, updates,
   receipts), `crates/application/src/declared_operations.rs`, `crates/infra-postgres/src/declared_operations.rs`, the
   inbox files of Architecture decision 0111's own task.
@@ -3070,6 +3083,10 @@ a replaying worker derives from `ReadHistory`.
   `...::sixteen_replay_check_tasks_in_flight_bound_the_seventeenth`,
   `...::a_stored_graph_version_naming_sagat_still_restores`, `...::a_move_never_declassifies_a_buffered_signals_secret_field`,
   `...::a_query_token_gets_the_secret_placeholder`, `...::a_run_uses_at_most_64_literal_keys`,
+  `...::a_move_never_declassifies_an_in_flight_activity_output`, `...::a_move_never_declassifies_an_in_flight_child_output`,
+  `...::a_handoff_never_declassifies_a_carried_signals_secret_field`,
+  `...::a_children_entry_dropping_a_childs_secret_annotation_is_refused`,
+  `...::the_chain_receipt_route_answers_404_for_another_tenants_chain_or_another_principals_key`,
   `...::no_read_returns_a_body_digest_risk_metadata_or_the_seed`, `...::a_workflow_failure_message_never_reaches_a_viewer`,
   `...::a_signal_over_its_max_bytes_is_refused`, `...::a_classification_annotation_in_state_or_update_schemas_is_refused`,
   `...::no_history_event_carries_an_actor_subject`, and in `apps/execution-engine/tests/code_workflow_sites.rs` the

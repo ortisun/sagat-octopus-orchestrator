@@ -51,7 +51,9 @@ queries from committed state with no worker. Some answers exist only in the func
    repairing a run and a replayer need those values; and it extends ADR-0036 decision 6's closed carrier set. A field
    classified `secret` MUST reach a workflow lease as the export's typed placeholder, never its value: a code run cannot
    route a secret through the function, and an activity receives a secret only through its own entry's `secrets`. Each
-   stored payload MUST be classified by the carrier of the version that accepted it, so a move never declassifies it. A
+   stored payload MUST be classified by the carrier of the version that accepted it, a step's outcome by the version
+   that issued the step, so a move or a handoff never declassifies it; a children entry that drops a `secret`
+   annotation of its listed child version MUST be refused at publication. A
    blob whose carrier schema has a `secret` field MUST NOT be delivered to a workflow, query or replay-check token, and
    the export MUST emit every blob as a reference only. The classification governs raw reads; the answers of declared
    queries and updates follow ADR-0031's declared disclosure.
