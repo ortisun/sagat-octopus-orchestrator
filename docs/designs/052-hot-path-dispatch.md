@@ -93,25 +93,29 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   sample of them falls in the window); in place
   of design 038's rule that a poll walks every candidate of its window (FR-038-004, refined: the order stays a
   preference, and no candidate is dropped, only deferred). A poll so stopped with untried eligible candidates fetches its
-  window once more, starting past the candidates its first walk tried (its first start plus the number tried) and
-  excluding the runs it already probed, and walks it under the same bound; it then walks the
+  window once more, from its turn's position, excluding the runs it already probed, and walks it under the same
+  bound; it then walks the
   ineligible sample that ADR-0075's activation condition (d) puts behind every eligible candidate (`INELIGIBLE_SAMPLE`, 4,
   passed to `claim()` with the eligible window's length), uncounted; and if it leased nothing while candidates remain
   untried, a stream claims again after 50 ms instead of parking, once, before it may park, and a unary poll answers
   `retry_after_ms = 50`, unless the same session received that answer less than `idle_retry` ago, in which case it
   answers `idle_retry` (the last such answer kept per session in memory for `idle_retry`, at most one entry per session
-  with a poll in that interval). The bound counts only when untried eligible candidates remain and no other ending applies (the
+  with a poll in that interval; the bound is per process, so a session whose polls a load balancer spreads gets one fast
+  retry per process). The bound counts only when untried eligible candidates remain and no other ending applies (the
   session full, the consumer gone, the byte budget, `MAX_CLAIM_FAILURES`); errors count towards `MAX_CLAIM_FAILURES`
   only.
 - **Requirement 052-042 A spread start under contention, per process.** The polls of a namespace in a process MUST
-  start as design 038's turn says, plus, while the namespace is *contended* in the process, an offset of `r mod len`
-  positions, `len` being the window's length and `r` the process's registry instance identifier (Architecture decision
-  0082, a random version 4 identifier) read as an integer (its first eight bytes, little-endian), the rotation applied within one priority when
-  feature 019 adds priorities (FR-019-013). A namespace is contended in a process from a probe there that met contention
-  until a poll of the namespace there ends having met none, or 1 s after its last contended probe, whichever is first
-  (a map of the namespaces contended in the last second, at most 10,000 entries, the oldest dropped first). The turn
-  stays a permutation inside a process; processes differ by `r`; a poll of a namespace that is not contended keeps the
-  scan's order. The offset is the server's, never the client's.
+  start as design 038's turn says, plus, while the namespace is *contended* in the process, an offset of
+  `⌊rank × len / n⌋` positions, `len` being the window's length, `n` the number of live execution engines in the
+  registry and `rank` this process's position among them by instance identifier (Architecture decision 0082), both
+  read from `serving_instances` (whose identifiers the runtime role may read) at each heartbeat, the rotation applied
+  within one priority when feature 019 adds priorities (FR-019-013). A namespace is contended in a process from a probe
+  there that met contention until a poll of the namespace there ends having met none, or 1 s after its last contended
+  probe, whichever is first (a map of the namespaces contended in the last second, at most 10,000 entries, the oldest
+  dropped first); the decision is taken once per round, when the first poll of a round enters design 038's in-flight
+  entry, and holds for every poll of that round, so the turn stays a permutation inside a process; processes differ by
+  rank; a round of a namespace that is not contended keeps the scan's order. The offset is the server's, never the
+  client's.
 - **Requirement 052-043 Counted.** The poll MUST count, beside design 038's counters, the polls stopped by the bound,
   the windows fetched again and the polls started spread (`worker_poll_bounded_total`, `worker_poll_refetched_total`,
   `worker_poll_spread_total`, no label), and the statements of a poll (`stage="poll"` in design 038's
@@ -166,7 +170,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   baseline check: subject (NATS) or channel (Redis) `sagat.wake.v1.<tenant>.<namespace>.<activity token>`, the tenant and
   namespace as their identifiers and the activity as the hexadecimal of the first 16 bytes of its name's SHA-256, outside
   the platform stream's filter `sagat.v1.>` so that JetStream never stores it; the payload is the publishing instance's
-  identifier (16 bytes), read only to drop a process's own messages; the key is read from the subject alone, a
+  identifier (16 bytes), read only to drop a process's own messages; the key is read from the subject alone (the registry is indexed by tenant, namespace and activity token as well as by activity name), a
   malformed message dropped and counted. The cross-process wake is on only when the broker authenticates the
   platform with a wake user of its own, on a connection and credentials of its own (`nats.wakeCredentialsSecret`, or a
   Redis wake URL secret, `redis.wakeUrlSecret`; the outbox keeps its own user, which needs the JetStream API), whose
@@ -199,8 +203,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   complete and sleep the SDK's `receive_delay(retry_after_ms)` on an empty poll), its metric the completed transitions
   per second written to a JSON file, for the merge base and the head in the order A B B A A B B A A B B A (six pairs of
   adjacent runs), each on a fresh database, both driven by the merge base's scenario and configuration (a pull request
-  that changes the scenario gets the gate's verdict "not comparable", which fails the job until the scenario's change
-  merges on its own). `scripts/throughput-gate.py` (with tests in `scripts/tests/`), read with the
+  that changes the scenario passes the gate with the notice "not comparable", and carries a pilot re-run on its own
+  branch, dispatched through the pilot workflow, and the new threshold constant, so that the next comparison uses an sd
+  of the scenario it runs). `scripts/throughput-gate.py` (with tests in `scripts/tests/`), read with the
   threshold from the merge base's tree, fails the job when the head is slower in all six pairs and the median of the six
   paired differences exceeds the threshold T = 1.425 × sd, sd being the standard deviation of the paired differences of
   a pilot of 30 A/A′ pairs (two builds of the merge base differing by a no-op commit) on that runner; 1.425 is
@@ -398,7 +403,10 @@ subject it cannot parse).
 - **Jumping to another offset after k empty probes, without fetching again.** The window is a snapshot shared with the
   polls in flight; its later candidates are as likely leased as its first.
 - **A session's hash for the spread** (this design's second draft). Two sessions of one process collide one time in
-  four, which breaks design 038's turn inside a process; the process's identity keeps the turn a permutation.
+  four, which breaks design 038's turn inside a process.
+- **A hash of the process's identifier** (this design's third draft). A random draw fixed for the process's life: two
+  instances start within an eighth of a window of each other about 23% of the time; the rank among live engines divides
+  the window evenly.
 - **`LISTEN` and `NOTIFY` for the wake.** Its commit-time lock serializes the commits of every notifying transaction.
 - **The outbox's `task.ready` hint for the wake.** An acknowledged JetStream publish at the scheduler's pace.
 - **A shared turn across processes.** A hot counter per namespace.
@@ -407,7 +415,8 @@ subject it cannot parse).
 
 - **Non-functional requirement 052-001 Hot path.** A lease and a completion stay within design 038's budget unchanged:
   the bound and the spread change only which candidates a poll tries; the wake's publish is after the commit, outside
-  the database and never awaited.
+  the database and never awaited; the spread adds one read of the live engines' identifiers per heartbeat (every 10 s),
+  on the registry's connection.
 - **Non-functional requirement 052-002 Security.** No new database grant; a wake carries identifiers and an opaque
   activity token only, on the `sagat.wake.v1.` channels, through the platform's own broker user; a forged wake, if the
   broker's permissions were bypassed, costs at most 20 claims per second per key and process, each re-checked by the
@@ -421,9 +430,9 @@ subject it cannot parse).
   Refs: Requirement 052-041, Requirement 052-042, Requirement 052-053
 - [ ] T052-2 Add the missing path filter to the two branches of the candidate scan and count `probed` only with a transaction begun, with the test `a_minor_four_session_reaches_its_forward_work_behind_nine_scoped_compensations` and the counters' test `probed_counts_only_a_begun_claim_transaction`, beside `a_poll_counts_each_stage_once_with_the_stage_as_its_only_label`.
   Refs: Requirement 052-040
-- [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the suite of the ChildRoot capacity guard, `tests/integration/workflow-primitives/`, since only that guard produces ADR-0075's ineligible sample and it is off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `the_second_fetch_starts_past_what_the_first_tried` (with an instance identifier of offset 0, set by the test constructor, and the namespace marked contended by a test hook), `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry`, `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
+- [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the suite of the ChildRoot capacity guard, `tests/integration/workflow-primitives/`, since only that guard produces ADR-0075's ineligible sample and it is off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `the_second_fetch_skips_the_runs_the_first_probed` (with rank 0, set by the test constructor, and the namespace marked contended by a test hook), `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry`, `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
   Refs: Requirement 052-041, Requirement 052-043
-- [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed identifiers, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database with identifiers set by a test constructor to offsets at least K apart modulo the window's length, round 2 started while round 1's locks are still held so that the namespace stays contended, a contended first round, then K pollers per instance asserting K probes for K leases), `one_poller_per_instance_stays_spread_within_a_second_of_contention` and `the_contended_map_drops_its_oldest_entry_past_ten_thousand`; the report of Task 052-9 records the instances' offsets.
+- [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed ranks, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database with ranks set by a test constructor (two of two, offsets half a window apart, at least K), round 2 started while round 1's locks are still held so that the namespace stays contended, a contended first round, then K pollers per instance asserting K probes for K leases), `one_poller_per_instance_stays_spread_within_a_second_of_contention` and `the_contended_map_drops_its_oldest_entry_past_ten_thousand`; the report of Task 052-9 records the instances' offsets.
   Refs: Requirement 052-042, Requirement 052-043
 - [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with, in the target `integration_hot_path_wake` of Task 052-6 (created here), the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_registered_stream`.
   Refs: Requirement 052-050, Requirement 052-051, Requirement 052-055

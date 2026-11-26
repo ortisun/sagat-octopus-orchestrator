@@ -3,7 +3,7 @@
 **Status:** Proposed (2026-11-24; revised 2026-11-26 after design 052's full review round)
 **Decided by:** agent proposal (design 052, first drafted as part B of design 051), to be accepted under Owner decision 2026-11-24-4 once design 052's review is complete
 **Refines / supersedes:** refines design 038's FR-038-004 (`docs/designs/038-claim-transition-efficiency.md`), within Owner decision 2026-11-12-3 as Owner decision 2026-11-24-526 records: a poll's order stays a preference and no candidate is dropped, only deferred, but its walk is bounded and its start may be spread across processes; follows feature 019's FR-019-013's rotation within one priority, and its lone poller is served strictly in order only while its namespace is uncontended in the process (gap 052-G2, handed to feature 019); leaves ADR-0030, ADR-0050, ADR-0056 and ADR-0078's lock order unchanged; supersedes nothing
-**Enforced by (pending until built):** `a_minor_four_session_reaches_its_forward_work_behind_nine_scoped_compensations` (Task 052-2); `a_poll_stops_after_eight_probes_that_met_contention`, `unreadable_runs_ahead_do_not_end_the_poll`, `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds`, `the_ineligible_sample_is_walked_after_the_bound`, `the_second_fetch_starts_past_what_the_first_tried`, `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry` (Task 052-3); the offset's unit test, `a_poll_alone_keeps_the_order_of_the_scan`, `k_polls_in_flight_together_probe_once_per_lease` unmodified, `a_lone_poll_is_served_oldest_first`, `the_contended_map_drops_its_oldest_entry_past_ten_thousand`, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances`, `one_poller_per_instance_stays_spread_within_a_second_of_contention` (Task 052-4); design 038's guards unmodified
+**Enforced by (pending until built):** `a_minor_four_session_reaches_its_forward_work_behind_nine_scoped_compensations` (Task 052-2); `a_poll_stops_after_eight_probes_that_met_contention`, `unreadable_runs_ahead_do_not_end_the_poll`, `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds`, `the_ineligible_sample_is_walked_after_the_bound`, `the_second_fetch_skips_the_runs_the_first_probed`, `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry` (Task 052-3); the offset's unit test, `a_poll_alone_keeps_the_order_of_the_scan`, `k_polls_in_flight_together_probe_once_per_lease` unmodified, `a_lone_poll_is_served_oldest_first`, `the_contended_map_drops_its_oldest_entry_past_ten_thousand`, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances`, `one_poller_per_instance_stays_spread_within_a_second_of_contention` (Task 052-4); design 038's guards unmodified
 
 ## Context
 
@@ -19,13 +19,13 @@ rules).
 
 1. A poll MUST stop walking its eligible window after 8 consecutive probes that met contention (a run lock skipped, no
    ready step left, a step leased meanwhile); a lease resets the count, and a refusal of this build or session (an
-   unreadable definition, the protocol minor, a pool refusal) neither counts nor resets it. A poll so stopped with candidates untried fetches its window once more, past
-   what it tried and without the runs it probed, then walks the ineligible sample uncounted, and if it leased nothing with work left asks again
+   unreadable definition, the protocol minor, a pool refusal) neither counts nor resets it. A poll so stopped with candidates untried fetches its window once more, from
+   its turn's position and without the runs it probed, then walks the ineligible sample uncounted, and if it leased nothing with work left asks again
    after 50 ms instead of reporting empty.
 2. While a namespace is contended in a process (from a contended probe until a poll ends having met none, or 1 s
-   after the last), the polls of that namespace in that process MUST start at an offset of the process's registry
-   identifier modulo the window's length, added to design 038's turn, within one priority; an uncontended poll keeps the
-   scan's order.
+   after the last), the polls of that namespace in that process MUST start at an offset of the process's rank among the live
+   execution engines times the window's length over their number, decided once per round of polls in flight, added to
+   design 038's turn, within one priority; an uncontended round keeps the scan's order.
 3. A queue of ready steps is not built until design 052's Success criterion 052-005 (at most 4 probes per lease, two
    instances, an open loop) is missed; then it is a design of its own.
 
@@ -42,6 +42,8 @@ rules).
 6. **Jumping to another offset after k empty probes, without fetching again.** The window is a snapshot shared with the
    polls in flight; its later candidates are as likely leased as its first.
 7. **A session's hash for the spread** (the second draft). Two sessions of one process collide one time in four.
+8. **A hash of the process's identifier** (the third draft). Two instances start within an eighth of a window about 23%
+   of the time, for the processes' lives.
 
 ## Consequences
 
