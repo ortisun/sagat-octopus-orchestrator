@@ -108,18 +108,20 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   start as design 038's turn says, plus, while the namespace is *contended* in the process, an offset of
   `⌊rank × len / n⌋` positions, `len` being the window's length, `n` the number of live execution engines in the
   registry and `rank` this process's position among them by instance identifier (Architecture decision 0082), both
-  read from `serving_instances` (whose identifiers the runtime role may read) at each heartbeat, the rotation applied
-  within one priority when feature 019 adds priorities (FR-019-013). A namespace is contended in a process from a probe
-  there that met contention until a poll of the namespace there ends having met none, or 1 s after its last contended
-  probe, whichever is first (a map of the namespaces contended in the last second, at most 10,000 entries, the oldest
-  dropped first); the decision is taken once per round, when the first poll of a round enters design 038's in-flight
-  entry, and holds for every poll of that round, so the turn stays a permutation inside a process; processes differ by
-  rank; a round of a namespace that is not contended keeps the scan's order. The offset is the server's, never the
+  read from `serving_instances` (whose identifiers the runtime role may read) at each heartbeat, the offset 0 while the
+  process is not among them (before its first heartbeat, or once its row has lapsed), the rotation applied within one
+  priority when feature 019 adds priorities (FR-019-013). A namespace is contended in a process until 1 s after the
+  last probe there that met contention (a map of the namespaces contended in the last second, at most 10,000 entries,
+  the oldest dropped first), so a spread round that meets no contention leaves the next round spread. The decision is
+  taken when the first poll of a round enters design 038's in-flight entry, and again by the first poll that enters more
+  than 1 s after the round's last decision, and holds for the polls that enter until then, so the turn stays a
+  permutation inside a process but for one switch-over overlap each time the decision changes; processes differ by
+  rank; a round of a namespace that is not contended keeps the scan's order. The spread acts while a process's polls in
+  flight ask for less than `len / n` together; above it design 038's turn already covers the window. The offset is the server's, never the
   client's.
 - **Requirement 052-043 Counted.** The poll MUST count, beside design 038's counters, the polls stopped by the bound,
   the windows fetched again and the polls started spread (`worker_poll_bounded_total`, `worker_poll_refetched_total`,
-  `worker_poll_spread_total`, no label), and the statements of a poll (`stage="poll"` in design 038's
-  `worker_claim_candidates_total`, for the authentication, the session read and each scan), so that statements per lease
+  `worker_poll_spread_total`, no label), and the statements of a poll (`worker_poll_statements_total`, no label, for the authentication, the session read and each scan), so that statements per lease
   are measured, not only probes; and the wake counts its claims by outcome (`worker_wake_claims_total{outcome}`,
   `leased` or `empty`), its messages by outcome (`worker_wake_messages_total{outcome}`: `published`, `dropped`, `received`,
   `rate_limited`, `absent_key`, `own`, `malformed`), and its local-only starts and broker checks
@@ -135,7 +137,8 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   so the registry holds at most the maximum number of open streams times `MAX_ACTIVITIES` entries, and goes with the last registration.
   Parking and its timer are in `crates/api-grpc`, which already parks with `tokio::time`.
 - **Requirement 052-051 Permits, not versions.** A commit that makes `k` steps of a key ready MUST add `k` permits to
-  the key's registered entry (none when no stream is registered), the permits of a key never more than the streams
+  the key's registered entry (none when no stream is registered), each handed under the registry's mutex straight to a
+  parked stream waiting on the key if one is, so that a lease's debit removes only permits no stream holds, the permits of a key never more than the streams
   registered for it, and a claim that leases `n` tasks of a key removes up to `n` of its permits, so that a fan-out
   leased by one stream leaves no permit behind; a stream about to park MUST take a permit if one is
   there and claim again, or park, and a claim on a permit validates the session in its transaction as every claim does
@@ -199,10 +202,10 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   replica and 16 workers, `SAGAT_PERF_TRANSITION_RUNS=1000`, whose workers end when every run's three transitions are
   complete and sleep the SDK's `receive_delay(retry_after_ms)` on an empty poll), its metric the completed transitions
   per second written to a JSON file, for the merge base and the head in the order A B B A A B B A A B B A (six pairs of
-  adjacent runs), each on a fresh database, both driven by the merge base's scenario and configuration (a pull request
-  that changes the scenario passes the gate with the notice "not comparable", and carries a pilot re-run on its own
-  branch, dispatched through the pilot workflow, and the new threshold constant, so that the next comparison uses an sd
-  of the scenario it runs). `scripts/throughput-gate.py` (with tests in `scripts/tests/`), read with the
+  adjacent runs), each on a fresh database, both driven by the merge base's scenario and configuration (a pull request that changes
+  the scenario is compared as usual, with the merge base's scenario; only when that scenario cannot build or run
+  against the head does the gate pass with the notice "not comparable", and then the pull request carries a pilot re-run
+  on its own branch, dispatched through the pilot workflow, with the new threshold constant). `scripts/throughput-gate.py` (with tests in `scripts/tests/`), read with the
   threshold from the merge base's tree, fails the job when the head is slower in all six pairs and the median of the six
   paired differences exceeds the threshold T = 1.425 × sd, sd being the standard deviation of the paired differences of
   a pilot of 30 A/A′ pairs (two builds of the merge base differing by a no-op commit) on that runner; 1.425 is
@@ -219,6 +222,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
 ### Success criteria
 
 - **Success criterion 052-005** With two application instances and eight pollers each on one activity (`wanted` 16),
+  and again with two pollers each (where the spread acts, Requirement 052-042),
   in an open-loop benchmark run at 80% of the maximum sustained rate (the highest start rate at which completions keep
   pace for three minutes), statements per lease and probes per lease fall from today's values, measured first in the
   same benchmark run, probes per lease to at most 4, and leases per second do not fall; above 4, Open Question 2's queue
@@ -341,6 +345,8 @@ publish-only sink.
 |---|---|---|
 | The scan's filter and the counter | `crates/infra-postgres/src/workers.rs`, `crates/application/src/worker/claim_counters.rs`, `crates/application/src/worker/scoped_claims.rs` | 052-040 |
 | The bounded and spread poll and its counters | `crates/application/src/worker.rs`, `crates/application/src/worker/poll_order.rs`, `tests/integration/claim-transition-efficiency/` | 052-041, 052-042, 052-043 |
+| The rank: the live engines' identifiers read at each heartbeat | `crates/application/src/instances.rs` (the registry port), `crates/infra-postgres/src/instances.rs`, the engine's heartbeat loop | 052-042, Non-functional requirement 052-001 |
+| The chart's checks | `scripts/check-chart-wake.py`, `scripts/tests/` | 052-054 |
 | The registry, the permits and the parking | `crates/application/src/worker/wake.rs`, `crates/api-grpc/src/service.rs` | 052-050, 052-051, 052-055 |
 | The sink in every writer of `task.ready` | `crates/infra-postgres/src/execution.rs`, `execution/path.rs`, `chain_progress.rs`, `loop_progress.rs`, `primitives.rs` | 052-052 |
 | The transports, the processes and their configuration | `crates/infra-nats/src/lib.rs`, `apps/execution-engine/src/{lib,settings,cli}.rs`, `apps/control-plane/src/{config,lib}.rs`, `infra/helm/templates/` (both components, the wake's credentials secrets, the control plane's egress rule), `infra/helm/values.yaml`, `infra/docker/compose.yaml`, the chart's contract test, `docs/runbooks/execution-engine.md`, `docs/runbooks/events.md` | 052-053, 052-054 |
@@ -365,7 +371,7 @@ subject it cannot parse).
 | Wakes spin streams | Permits, capped by the registered streams and debited by leases; no permit for a stream whose permitted claim leased nothing; full streams unregistered; own messages dropped |
 | A forged or flooded wake | The platform's own broker user and channel permissions; one permit per message, 20 per second per key |
 | The broker stalls a request | A bounded queue drained by one task; drops counted |
-| A lost wake | `idle_retry` stays the upper bound; the claim suite runs a wake-off case and the lost-wake test |
+| A lost wake | `idle_retry` stays the upper bound; the claim suite runs the lost-wake test and a wake-off case |
 | The gate flakes or is gamed | A pilot of 30 A/A′ pairs, six of six pairs and the threshold, read from the merge base |
 | The cheap remedies are not enough | Success criterion 052-005's threshold writes the queue's design |
 
@@ -429,11 +435,11 @@ subject it cannot parse).
   Refs: Requirement 052-040
 - [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the suite of the ChildRoot capacity guard, `tests/integration/workflow-primitives/`, since only that guard produces ADR-0075's ineligible sample and it is off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `the_second_fetch_skips_the_runs_the_first_probed` (with rank 0, set by the test constructor, and the namespace marked contended by a test hook), `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry`, `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
   Refs: Requirement 052-041, Requirement 052-043
-- [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed ranks, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database with ranks set by a test constructor (two of two, offsets half a window apart, at least K), round 2 started while round 1's locks are still held so that the namespace stays contended, a contended first round, then K pollers per instance asserting K probes for K leases), `one_poller_per_instance_stays_spread_within_a_second_of_contention` and `the_contended_map_drops_its_oldest_entry_past_ten_thousand`; the report of Task 052-9 records the instances' offsets.
+- [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed ranks, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, `a_third_round_after_a_spread_one_stays_spread`, `polls_that_never_drain_decide_again_within_a_second`, `a_process_missing_from_the_registry_starts_at_offset_zero`, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database with ranks set by a test constructor (two of two, offsets half a window apart, at least K), round 2 started while round 1's locks are still held so that the namespace stays contended, a contended first round, then K pollers per instance asserting K probes for K leases), `one_poller_per_instance_stays_spread_within_a_second_of_contention` and `the_contended_map_drops_its_oldest_entry_past_ten_thousand`; the report of Task 052-9 records the instances' offsets.
   Refs: Requirement 052-042, Requirement 052-043
-- [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with, in the target `integration_hot_path_wake` of Task 052-6 (created here), the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_registered_stream`.
+- [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with, in the target `integration_hot_path_wake` of Task 052-6 (created here, run when it changes and at every full run), the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_second_step_after_a_fan_out_is_woken_at_once`, `a_permit_added_while_a_stream_is_parked_is_handed_to_it`, `the_permits_of_a_key_never_exceed_its_registered_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_registered_stream`.
   Refs: Requirement 052-050, Requirement 052-051, Requirement 052-055
-- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS transport with its bounded queue and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and, in `integration_claim_transition_efficiency` (which the constitution already runs for a change of lease or completion code), the wake-off case `the_claim_suite_passes_with_the_wake_off`, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `a_short_wake_payload_is_dropped_as_malformed`,  `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; these tests, and Task 052-5's, in a new target `integration_hot_path_wake` of `tests/Cargo.toml`, which a new rule of `scripts/select-test-targets.py` (with its selector test) selects for changes of `crates/application/src/worker/wake.rs`, `crates/api-grpc/src/service.rs`, `crates/infra-nats/`; and, in the chart's contract test (`contract_scalability_ha`), `the_control_plane_opens_no_broker_egress_without_the_nats_wake` and `the_chart_refuses_the_wake_without_its_credentials_secret`, with a rule of `scripts/select-test-targets.py` (and its selector test) that selects `contract_scalability_ha` for changes of `infra/helm/templates/networkpolicy-egress.yaml`, `infra/helm/templates/_networkpolicy.tpl` and the wake's values in `infra/helm/values.yaml`.
+- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS transport with its bounded queue and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and, in `integration_claim_transition_efficiency` (which the constitution already runs for a change of lease or completion code), the wake-off case `the_claim_suite_passes_with_the_wake_off`, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `a_short_wake_payload_is_dropped_as_malformed`,  `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; these tests, and Task 052-5's, in a new target `integration_hot_path_wake` of `tests/Cargo.toml`, run when it changes and at every full run and release, while `a_lost_wake_is_bounded_by_idle_retry` and `the_claim_suite_passes_with_the_wake_off` are in `integration_claim_transition_efficiency`, which the constitution's existing rule selects for changes of `wake.rs` and `service.rs`; and the chart's two checks, `the_control_plane_opens_no_broker_egress_without_the_nats_wake` and `the_chart_refuses_the_wake_without_its_credentials_secret`, in a checker `scripts/check-chart-wake.py` (with its tests in `scripts/tests/`) that renders the chart with `helm template` with the wake off, on NATS and on Redis and asserts the rule and the refusal, run on every pull request beside the repository's other checkers, so that a change of the chart alone is checked without a new suite selection.
   Refs: Requirement 052-052, Requirement 052-053, Requirement 052-054
 - [ ] T052-7 Give the in-process transitions scenario its gate configuration (workers end on completions and sleep the SDK's `receive_delay`), a JSON output, and an open-loop mode (runs started at a fixed rate, the maximum sustained rate found by stepping it) in `tests/performance/scalability-ha/`.
   Refs: Requirement 052-030, Success criterion 052-005, Success criterion 052-006
