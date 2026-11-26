@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the `cli-refresh`
-string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, and that module and its submodules expose, in any non-private form, only the allowlisted operations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
+string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -1443,35 +1443,46 @@ activate|remove`, which records or removes the `identity-federation-v1` requirem
 `SAGAT_SECRETS_KEYS`, which every execution engine also holds (Requirement 013-025, Architecture decision 0140 decision
 11). Its stored document, which the attempt ring shares, holds each key's id (a positive integer, the highest id ever
 written plus one, never reused, the highest also kept in the document), material, state (`PENDING`, `ACTIVE`,
-`RETAINED`; `PENDING` verifies or opens and never mints or seals), time added and time activated. One loader builds
-`IdentityKeyRing<P>` (its own module of `crates/infra-secrets`, holding its key bytes by id itself and not wrapping
-`KeyRing`, whose code does not change; typed by its purpose, `CliRefresh` or `SigninAttempt`, with no public
-constructor) from it, so the two-step code is written once; the document's path in the identity mount and the
-purpose's label are associated constants of the purpose marker (`P::PATH`, `P::LABEL`), and the loader,
-`load::<P>()`, reads only `P::PATH`, so a wiring mistake cannot load one ring's document as the other
-(`a_ring_loads_only_from_its_own_path`); the
-refresh MAC code takes `IdentityKeyRing<CliRefresh>` through the port `RefreshTokenMac`, so passing the secrets ring or
-the attempt ring fails to compile. The key bytes and `derive_purpose_key(key_id, salt)` (none for an unknown id;
-HKDF-SHA256 with `P::LABEL` as `info` and the salt as HKDF's own salt input, of the purpose's type `P::Salt`: `()` for
-`CliRefresh`, `[u8; 16]` for `SigninAttempt`, so an attempt key derived without a salt does not compile) are private
-to that module, so `SecretCipher`'s code cannot reach them. Its public operations return no key material:
-`IdentityKeyRing<CliRefresh>::mint(sid, generation, random) -> Option<(KeyId, Tag)>` under the active key, and
-`verify(key_id, sid, generation, random, tag) -> Verdict` in constant time; `IdentityKeyRing<SigninAttempt>::seal(aad,
-plaintext) -> Option<Sealed>`, which draws the salt and the nonce itself, and `open(key_id, salt, nonce, ciphertext,
-aad) -> Option<Vec<u8>>`. The `RefreshTokenMac` handles (`MacVerifier`, `MacMinter`) and the `AttemptSealer` adapter
-call only these. Key bytes and derived keys live in module-private newtypes (`RingKey`, `PurposeKey`) held as
-`Zeroizing`, with no `Clone`, `Serialize`, `AsRef`, `Deref` or derived `Debug` (a hand-written one prints
-`[REDACTED]`); the loader decodes each stored `material` straight into a `RingKey`, so no document type holds it as
-text, and a refused document's error names only the key id and the rule broken. The ring has a hand-written `Debug`
-that shows only key ids and states, as `KeyRing`'s does, and the two adapters' `Debug` show only the ring's
-(`an_identity_key_ring_never_prints_key_material` formats the ring, both adapters, a `RingKey` and the error and log
-line of a refused document, two `ACTIVE` keys, with `{:?}`). The `rotate` and `revoke` commands rewrite the document
-from their own read of OpenBao, never from a loaded ring. An architecture rule keeps the label literals there and is an
-allowlist: the module and its submodules expose, in any form other than private (`pub`, `pub(crate)`, `pub(super)`,
-`pub(in …)`), only `load`, `mint`, `verify`, `seal`, `open`, the key-id and state accessors, `Debug` and the purpose
-markers (Technical Plan 2). Task 013-8 adds them with the `hmac` and `hkdf`
-crates. Every write of the document is a KV version 2
-check-and-set on the version the command read.
+`RETAINED`; `PENDING` verifies or opens and never mints or seals), time added and time activated. One module of `crates/infra-secrets`,
+`identity_ring`, owns everything that touches the material of either ring, so the two-step code is written once and
+`KeyRing`, `SecretCipher` and every other module never see it:
+- *Types.* `IdentityKeyRing<P>` holds its key bytes by id itself (it does not wrap `KeyRing`, whose code does not
+  change) and is typed by its purpose, `CliRefresh` or `SigninAttempt`, through the trait `RingPurpose`, whose
+  associated items are the document's path in the identity mount (`P::PATH`), the label (`P::LABEL`) and the salt type
+  (`P::Salt`: `()` for `CliRefresh`, `[u8; 16]` for `SigninAttempt`, so an attempt key derived without a salt does not
+  compile). Key bytes and derived keys live in the module-private newtypes `RingKey` and `PurposeKey`, held as
+  `Zeroizing`, with no `Clone`, `Serialize`, `Deserialize`, `Display`, `AsRef`, `Borrow`, `Deref`, `Index` or derived
+  `Debug` (a hand-written one prints `[REDACTED]`).
+- *Operations.* `load::<P>()` reads only `P::PATH` (`a_ring_loads_only_from_its_own_path`). The serving operations
+  return no key material: `IdentityKeyRing<CliRefresh>::mint(sid, generation, random) -> Option<(KeyId, Tag)>` under the
+  active key and `verify(key_id, sid, generation, random, tag) -> Verdict` in constant time (`Mac::verify_slice`);
+  `IdentityKeyRing<SigninAttempt>::seal(aad, plaintext) -> Option<Sealed>`, which draws the salt and the nonce itself,
+  and `open(key_id, salt, nonce, ciphertext, aad) -> Option<Vec<u8>>`. The derivation, `derive_purpose_key(key_id,
+  salt)` (HKDF-SHA256 with `P::LABEL` as `info` and `P::Salt` as HKDF's salt input; none for an unknown id), is private.
+  The command operations are in the module too, `rotate_begin`, `rotate_finish`, `revoke` and `drop_retained`, each
+  taking the OpenBao client: they read the document, draw new material from the operating system's random source,
+  carry the other keys' material forward as `RingKey` values, and write by KV version 2 check-and-set on the version
+  they read, returning only a `RingChange` (key ids, states and the document version). `apps/control-plane`'s
+  commands call these and never hold a document, so the commands rewrite from their own read and never from a loaded
+  ring. The `RefreshTokenMac` handles (`MacVerifier`, `MacMinter`) take `IdentityKeyRing<CliRefresh>`, so passing the
+  secrets ring or the attempt ring fails to compile, and they and the `AttemptSealer` adapter call only the serving
+  operations.
+- *Errors and printing.* The module reads the document through the existing OpenBao client, which never propagates a
+  response body (`crates/infra-secrets/src/openbao.rs`), and parses it with its own code, not a `Deserialize` on
+  `RingKey`; every failure is a `RingError` of fixed text that never contains input: `Unreadable`, `Malformed { key_id,
+  rule }` (a material that is not base64 or not 32 bytes is `Malformed` with the rule `material`), `Conflict {
+  version }` and `Cancelled { version }`. The audited "rotation cancelled" and the conflict failure of `revoke` record
+  only a `RingChange` or a `RingError`. `IdentityKeyRing`, `RingChange` and `RingError` have hand-written `Debug`
+  showing only key ids, states, versions and rules, as `KeyRing`'s does, and the adapters' `Debug` show only the ring's
+  (`an_identity_key_ring_never_prints_key_material` formats with `{:?}` the ring, both adapters, a `RingKey`, and the
+  errors, audit rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of
+  31 bytes, and of a cancelled rotation and a `revoke` that loses five check-and-sets).
+- *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
+  in the module as `P::LABEL`, and is an allowlist over the module and its submodules: in any form other than private
+  (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose`, the two
+  purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange` and `RingError`; the operations above
+  and the key-id and state accessors; and the trait implementations `Debug` (hand-written), `Drop` and `Zeroize`. Task
+  013-8 adds them with the `hmac` and `hkdf` crates.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
   refresh intervals, then by check-and-set on the version its first step wrote makes it `ACTIVE` and the previous key
   `RETAINED`; if the version moved, it stops with an audited "rotation cancelled" and writes nothing. A `rotate` that
@@ -1763,8 +1774,10 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
   `IdentityKeyRing<P>` read by the one loader from its purpose's path, `a_ring_loads_only_from_its_own_path`);
-  the module-private key bytes and `derive_purpose_key(key_id, salt)` of `IdentityKeyRing<P>` with its public
-  operations `mint`, `verify`, `seal` and `open` and the purpose's `P::Salt` (`KeyRing` unchanged);
+  the module `identity_ring` of Technical Plan 12 (`IdentityKeyRing<P>`, `RingPurpose`, the private `RingKey`,
+  `PurposeKey` and `derive_purpose_key`, the serving operations, the command operations `rotate_begin`,
+  `rotate_finish`, `revoke` and `drop_retained`, `RingChange` and `RingError`; `KeyRing` unchanged), which the commands
+  call;
   the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
   `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
   `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>` and an `AsRef<[u8]>` on `RingKey`; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
