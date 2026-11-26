@@ -87,11 +87,14 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   the execution records (Requirement 051-008), and every ceiling with its reasoning, all committed before any pilot runs.
 - **Requirement 051-002 Products, versions, deployments and profiles.** The three products MUST run self-hosted from
   images pinned by digest, at the latest stable release of each on the day of Task 051-1's commit, frozen for the method
-  version: this platform at the commit under test, its images built once per campaign (Requirement 051-015); Temporal
+  version: this platform at the commit under test, its images built once per campaign from the release Dockerfile in release
+  profile (Requirement 051-015); Temporal
   server with PostgreSQL persistence and SQL visibility; Windmill community edition. Each product runs its documented
   production profile: no development token issuer, audit on, telemetry exported to a collector inside its set, logs at
   information level, and TLS off on every client-to-server hop of all three alike (stated; a pilot may not turn off a
-  product's telemetry or audit). Throughput and timer-burst jobs run each product's documented single-node deployment
+  product's telemetry or audit; the start probe of each turn reads each product's effective issuer, audit sink, log level and
+  telemetry exporter and fails the turn otherwise, and `check_competitive_benchmark` refuses a compose file that sets a
+  development issuer). Throughput and timer-burst jobs run each product's documented single-node deployment
   (its server processes as its documentation starts them on one host, one worker process); crash jobs run two server
   processes and two worker processes (Temporal's services each in their own process, its frontend behind the load
   balancer). The concurrency of one worker process (Temporal's activity slots, Windmill's workers per container, this
@@ -163,8 +166,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   page cache) of the product's processes and of its database server, its background processes included, over the same
   300 s; the WAL bytes of the turn (`pg_wal_lsn_diff` over the window, the server being the product's alone) and its
   commits per transition; the database connections used; the run table's rows and bytes at the rung's start; the CPU
-  model, steal time, send lag and free disk space. For this platform's runs, also the time from a step's end record to
-  the next step's start record (the *transition latency* design 053 uses) and the statement latency per table from
+  model, steal time, send lag and free disk space. For this platform's runs, also the time from a step's completion to
+  the next step's lease (the *transition latency* design 053 uses, from this platform's journal) and the statement latency per table from
   `pg_stat_statements` (what design 049 uses). Every percentile carries its sample count; one from fewer than 2,000
   samples is marked.
 - **Requirement 051-008 One unit of work, counted by the driver.** A *transition* is one step of the shape that reached
@@ -227,7 +230,10 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
 
 ### The report and the rules around it
 
-- **Requirement 051-012 Report format and reproduction.** Each campaign MUST publish, through a pull request, a dated
+- **Requirement 051-012 Report format and reproduction.** Every job records the SHA-256s of `shapes.md`,
+  `campaign.json`, `images.lock` and the driver's lock; the aggregation command refuses jobs whose digests differ from
+  their method version's, unless its number changed, tested with a fixture, and refuses committed raw data above 50 MB
+  per campaign. Each campaign MUST publish, through a pull request, a dated
   section of `tests/performance/reports/competitive-benchmark.md` in the format of Technical Plan, "The report", built by
   the driver's aggregation command from the jobs' artifacts, its charts as SVG files beside it; the per-job summaries
   (HdrHistogram logs, per-second counters, configurations with placeholders) are committed under
@@ -247,12 +253,16 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `sdks/rust`, the competitor adapters behind Cargo features so that this platform's adapter builds alone, without Go)
   offers its consumers the subcommands `capacity` (a bounded probe of the maximum sustained rate of the chain of three
   against an endpoint) and `load --rate --duration --endpoint` (open-loop load against any deployment), with a JSON
-  output carrying the transition latency and the statement latency per table. Its consumers are design 049 (its Tasks
+  output (a `schema_version` field, changed only by adding fields, pinned by a golden test) carrying the per-second
+  completions, refused starts, terminal counts by outcome and run identifiers, the transition latency and the statement
+  latency per table. A consumer deploys this design's Go worker for the chain of three with its record directory
+  mounted where the driver reads it; `capacity` runs at most 11 rungs of 7 minutes, checked by the plan check. Its consumers are design 049 (its Tasks
   049-2, 049-8 and 049-14: the shapes, the driver, this platform's adapter and its history loader; its dated histories
   are design 049's own fixture) and design 053 (its Task 053-6, driving N-1 with the SDK of N-1's tree and N with N's);
   designs 048 and 052 use their own tools (the drill of `tests/performance/scalability-ha/dr.rs` and the open-loop mode
   of the same directory, whose figures never enter this report). The driver's lock and the Temporal sidecar's modules
-  are audited in CI (`cargo audit`, and `govulncheck` at a pinned version), bumped by hand per method version; no
+  are audited in CI (`cargo audit`, and `govulncheck` at a pinned version), the driver's lock moving with `sdks/rust` when the CI step requires it, its digest part of the method
+  version; no
   production crate depends on any of it.
 - **Requirement 051-015 Histories and images, made once per campaign.** After the pilots, a campaign's first job MUST
   build this platform's images at the commit under test and load each product's history through the product itself, at
@@ -276,12 +286,16 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
 - **Requirement 051-017 No claim beyond a comparable run.** A report, a release note or any other document MUST state that
   this platform leads, ties or trails a product only for the machine, shapes and rates a published campaign measured,
   citing its dated section, which counts only when run from `develop`, `main`, a `release/` branch or a `v` tag (its ref
-  and commit recorded), and a release note only a campaign run at that release's release-candidate commit; it MUST NOT
+  and commit recorded), and a release note only a campaign whose commit is an ancestor of the release's commit with only `docs/` and
+  `tests/performance/reports/` changed between them (`git diff --name-only`); it MUST NOT
   claim to surpass Temporal or Windmill on throughput, latency or recovery time otherwise (Owner decision 2026-11-25-1).
   A free runner's figure is a figure of that runner, never a product's limit. `scripts/check-competitor-claims.py`, with
-  negative fixtures, refuses a line in `docs/`, `README.md` or `docs/releases/` that names Temporal or Windmill with a
-  comparative word and cites no dated section, or, in a release note, cites a section recorded at another commit; it
-  runs where the repository's other checkers run and as a step of the release procedure (`docs/runbooks/release.md`).
+  a fixture for each refusal and each exemption, refuses a statement of fact (leads, ties, trails, surpasses, faster,
+  slower) in `docs/`, `README.md` or `docs/releases/` that names Temporal or Windmill and cites no dated section, or, in
+  a release note, cites a section whose commit fails the ancestry rule above; goals and quotes in `docs/designs/` and
+  their reviews, and `docs/roadmap-assessment-2026-11-11.md`'s vendor figures, are exempt; it runs where the
+  repository's other checkers run and in `release.yml`'s `version` job beside its notes check, so that no release
+  publishes past it.
 - **Requirement 051-018 Fair accounting.** This platform's per-run script containers MUST run under its set: during its
   turn the container daemon's default control-group parent (`/etc/docker/daemon.json`) is a slice whose CPU set is the
   product's, the daemon restarted between turns, and the processor time of the daemon and its shims during the turn is
@@ -314,7 +328,9 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of files (no
   environment dumps, `docker inspect`, `docker compose config` or logs with statements; `log_statement` stays `none`).
   The release workflow (`.github/workflows/release.yml`) downloads its artifacts by name and refuses a duplicate file
-  name, and its `recovery` job restores no cache, a change of its own pull request before the first dispatch (Task
+  name, and no job of it restores a cache (`recovery`'s `rust-cache` removed, `cache: false` on every setup action such
+  as the `sdks` job's `setup-go`), checked by `scripts/tests/test_ci_workflow.py` and by the competitive rule `run.sh`
+  runs first, a change of its own pull request before the first dispatch (Task
   051-0), since code with root on a runner of the default branch could otherwise plant a cache entry a tag's build
   restores.
 
@@ -416,14 +432,16 @@ lists what a later release would ask the owner for.
 | `driver/` | The driver's own workspace (`sagat-competitive-driver`): the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan`, `turn`, `crash`, `burst`, `capacity`, `load`, `report` |
 | `sagat/`, `temporal/`, `windmill/` | For each product: the compose files (single-node, and two of each for crashes), its load balancer, the configuration with placeholders, the code of each variant, the history loader |
 | `postgres/` | The PostgreSQL configuration of the fixed constraints, `pg_hba.conf`, and the server's compose service |
-| `run.sh` | Prepares the machine (tool caches freed, the daemon's control-group parent, the sets), runs the competitive rule first, starts and stops containers, and calls the driver's subcommands; its arguments (job kind, variant, repetition, seed) are the matrix fields |
+| `run.sh` | Prepares the machine (tool caches freed, the daemon's control-group parent, the sets), runs `check-architecture.py --only competitive` first, starts and stops containers, and calls the driver's subcommands; its arguments (job kind, variant, repetition, seed) are the matrix fields |
 | `campaign.json` | The campaign's stages and matrices, read by the workflow with `fromJSON`, so that tuning never edits the workflow |
 | `.github/workflows/competitive-benchmark.yml` | `workflow_dispatch` only; Requirement 051-020's rules; `ubuntu-24.04`; `timeout-minutes` 355 per job and 340 for the `run.sh` step, so that the upload of partial raw data still runs; a `concurrency` group `competitive-benchmark` without cancellation; stages in order by `needs:` (pilots, the history job, throughput, one matrix of common-rate and timer-burst jobs, the crash confirmation, crashes), each a matrix with `max-parallel` at most 12 and never two at once, so that the free plan's 20 concurrent jobs keep room for CI |
 
 `check_competitive_benchmark` in `scripts/check-architecture.py`, with a flag `--competitive-root DIR` for its fixtures
 in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key by key with a line match (no YAML
-library), the compose files' rules, the image manifest, and that no workspace member depends on
-`sagat-competitive-driver`; while the workflow does not exist (until Task 051-8) it passes, and afterwards its absence
+library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
+(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules, the image
+manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
+`run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; while the workflow does not exist (until Task 051-8) it passes, and afterwards its absence
 fails. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
 tests/performance/competitive/driver/Cargo.toml`, the default features and all of them) and builds the Go modules, on a
 `competitive_driver` output of `scripts/select-test-targets.py` set for changes of `tests/performance/competitive/`,
@@ -478,7 +496,9 @@ matrix of 45 jobs; the crash confirmation job (173); 3 faults × 6 repetitions =
 campaign is at most 200 + 13,480 + 3,080 + 550 + 173 + 3,114 = 20,597 runner minutes, at no cost; in order, at 12 jobs
 at once, its wall time is at most 200 + ⌈40 / 12⌉ × 337 + ⌈45 / 12⌉ × 110 + 173 + ⌈18 / 12⌉ × 173 = 200 + 1,348 + 440 +
 173 + 346 = 2,507 minutes, about 41.8 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
-and a campaign is not dispatched while the release-candidate CI run is pending.
+and a campaign is not dispatched while the release-candidate CI run is pending, a manual step of the release
+procedure (`docs/runbooks/release.md`); one campaign is dispatched at a time, since a third dispatch would cancel a
+pending one under the `concurrency` group.
 
 **Faults per product** (Requirement 051-009).
 
@@ -583,7 +603,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 
 ## Detailed Implementation Plan
 
-- [ ] T051-0 In a pull request of its own, make `.github/workflows/release.yml`'s `publish` download its artifacts by name (`pattern`, `merge-multiple: false`) and refuse a duplicate file name, and its `recovery` job restore no cache, with the workflow test of `scripts/tests/test_ci_workflow.py` extended to check both.
+- [ ] T051-0 In a pull request of its own, make `.github/workflows/release.yml`'s `publish` download its artifacts by name (`pattern`, `merge-multiple: false`) and refuse a duplicate file name, and no job of it restore a cache (`recovery`'s `rust-cache` removed, `cache: false` on every setup action), with the workflow test of `scripts/tests/test_ci_workflow.py` extended to check both.
   Refs: Requirement 051-020
 - [ ] T051-1 Write `tests/performance/competitive/shapes.md` (the method version, the shapes, the activity body, outcomes, transitions, completion records, the execution records' grammar, the ceilings with their reasoning, timeouts and retry budgets, idempotency, early arrivals, the timer mechanisms), committed before any pilot; check the licences of the pinned competitor versions; write `images.lock` by the version rule with the vendors' signatures checked; and record GitHub's page of the standard runner's specification and its date.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-006, Requirement 051-009, Requirement 051-020
