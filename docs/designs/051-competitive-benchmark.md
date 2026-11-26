@@ -82,7 +82,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   body is the same: it echoes its input and sleeps 20 ms. On this platform the signal shape waits with a correlated
   event wait with a lookback (`WaitEvent`), its own idiom for an event that may arrive before the wait, so the driver
   sends once; Temporal and Windmill wait for a signal and a resume as they document it, and `shapes.md` states each
-  product's behaviour for an early arrival. Temporal has no native script step: its two script variants are reported as
+  product's behaviour for an early arrival; where a product refuses one, the driver retries every 100 ms for at most 10 s
+  and the refused sends per workflow are published. Temporal has no native script step: its two script variants are reported as
   "not run natively" (Requirement 051-013) and are not built. `shapes.md` carries the method version and the grammar of
   the execution records (Requirement 051-008), and every ceiling with its reasoning, all committed before any pilot runs.
 - **Requirement 051-002 Products, versions, deployments and profiles.** The three products MUST run self-hosted from
@@ -110,7 +111,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   and the processor steal time (`/proc/stat`). If the pilot shows that steal moves under contention, steal is recorded;
   otherwise a fixed calibration loop on a thread of the product's set between rungs (the product idle), measured
   against the job's first calibration, replaces it. A throughput rung whose steal (or calibration deviation) exceeds 5%
-  is run once more, at most twice per job, and is marked if it exceeds it again; other job kinds mark such a rung and do
+  is run once more, at most once per job, and is marked if it exceeds it again; other job kinds mark such a rung and do
   not re-run it. The four vCPUs are two cores
   with two hardware threads each, so the sets are not by physical core: the driver and metrics collection get one
   thread, and the product with its database server the other three and 12 GB, split between them as the pilot chooses
@@ -123,7 +124,10 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   the report publishes each product's tuning budget (the configurations tried and the runner minutes spent). Durability
   is never changed: at the start of each turn `pg_settings` shows the fixed constraints' values and
   `pg_db_role_setting` holds no setting for the product's roles and database; each product's connection options are
-  published; and after every rung a scan of `pg_stat_statements` for `SET` or `set_config` of `synchronous_commit` or
+  published; the start probe refuses any connection startup parameter outside an allowlist (`application_name`, `search_path`,
+  `client_encoding`, `TimeZone`, `DateStyle`, from `pg_stat_activity` and each product's published options); the
+  products' roles are not superusers and hold no `SET` grant on `synchronous_commit` or `commit_delay`, checked through
+  SQL; and after every rung a scan of `pg_stat_statements` for `SET` or `set_config` of `synchronous_commit` or
   `commit_delay` fails the rung (`pg_stat_statements_reset()` runs after each restore and at each rung's start, so
   the scan and the statement latency of Requirement 051-007 cover that rung alone). This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's
   task that adds the setting is in the commit, as a single node requires, stated.
@@ -140,10 +144,10 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   failed arrival, and a workflow it may have created is an *orphan*, counted apart. The driver records every arrival's
   send lag (actual send minus scheduled time); a rung whose 99th percentile send lag exceeds 5 ms is marked.
 - **Requirement 051-006 Rungs and the maximum sustained rate.** Each product's ladder for a variant MUST start at the
-  rate the pilots chose for that product and variant and double at most six times, then bisect three times at the
+  rate the pilots chose for that product and variant and double at most five times, then bisect three times at the
   geometric midpoint between the last sustained and the first unsustained rung; if the first rung is not sustained the
   rate halves, at most three times, in place of doubling rungs; then comes the rung at half the maximum: at most
-  1 + 6 + 3 + 1 = 11 rungs. A rung is *sustained* when the backlog of its own arrivals (acknowledged, not yet ended,
+  1 + 5 + 3 + 1 = 10 rungs. A rung is *sustained* when the backlog of its own arrivals (acknowledged, not yet ended,
   counted by the driver) at the end of its window is not larger than at its start by more than 1% of the window's
   arrivals, at least 99% of the window's arrivals ended with the shape's expected outcome by the end of the drain, the
   99th percentile latency (censored values counted as infinite) is under the variant's ceiling, and the rung is not
@@ -186,7 +190,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   rung, so their drain runs its full 60 s and their backlog is computed afterwards. A workflow's end, for latency, is
   the commit time of the database transaction that recorded it (`track_commit_timestamp` on for all three,
   `pg_xact_commit_timestamp(xmin)` of the product's end row: this platform's run row, Temporal's execution row in its
-  persistence, Windmill's completed job row), read after the drain and again at the end of the turn (a changed `xmin` fails
+  persistence, Windmill's completed job row), read after the drain and again at the end of the turn (a changed `xmin`, the pilot first confirming per product that it never rewrites its end row or naming another end
+  record, fails
   the rung), one clock for all three; the report gives the
   distribution of that end minus the completion record, and a negative value fails the rung as a defect of the reader.
   Product internal units MUST NOT be compared.
@@ -244,7 +249,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `tests/performance/reports/raw/competitive-benchmark/<date>-<commit>/` with a manifest of SHA-256s, only the
   regenerable archives staying as expiring artifacts. One command, `tests/performance/competitive/run.sh`, reproduces a
   job on a fork. The method and the configurations MUST be published in the repository before the first campaign runs.
-  A reproduction agrees when each maximum sustained rate falls within the published range widened by one bisection step (a
+  A reproduction agrees when the median of its repetitions of each maximum sustained rate falls within the published range widened by one bisection step (a
   factor of 2^(1/8), about 1.09)
   on the same CPU model (on every CPU model when fewer than three repetitions share one), or each pair's within-job
   ratios fall within the published ratio range. Every later campaign of 0.3.0 states the ranking of Success criterion
@@ -261,7 +266,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   output (a `schema_version` field, changed only by adding fields, pinned by a golden test) carrying the per-second
   completions, refused starts, terminal counts by outcome and run identifiers, the transition latency and the statement
   latency per table. A consumer deploys this design's Go worker for the chain of three with its record directory
-  mounted where the driver reads it; `capacity` runs at most 11 rungs of 7 minutes, checked by the plan check. Its consumers are design 049 (its Tasks
+  mounted where the driver reads it; `capacity` runs at most 10 rungs of 7 minutes, checked by the plan check. Its consumers are design 049 (its Tasks
   049-2, 049-8 and 049-14: the shapes, the driver, this platform's adapter and its history loader; its dated histories
   are design 049's own fixture) and design 053 (its Task 053-6, driving N-1 with the SDK of N-1's tree and N with N's);
   designs 048 and 052 use their own tools (the drill of `tests/performance/scalability-ha/dr.rs` and the open-loop mode
@@ -280,7 +285,9 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   directory and any symbolic link, and overwriting `postgresql.conf`, `postgresql.auto.conf` and `pg_hba.conf` from the
   repository before the server starts; then a `VACUUM (ANALYZE)` and a `CHECKPOINT` run. Every credential a product or
   its database uses is generated per campaign, never a development default; the archives are public, and the report
-  says so. Such a history may fit in the database's memory, which the report states.
+  says so. Such a history may fit in the database's memory, which the report states; and the ladder's own runs grow each
+  product's tables with its own throughput, faster products more, which the report states as a deviation beside the run
+  table's rows at each product's maximum.
 - **Requirement 051-016 The timer-burst procedure.** For each product, 10,000 workflows are started over 5 minutes at a
   steady rate, each sleeping until one absolute instant 10 minutes after the first start; the procedure measures, from
   that instant, both the product's resume record and the next activity's start record of each workflow, their lateness
@@ -308,7 +315,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   processor seconds of the product and its database server per thousand transitions beside each maximum.
 - **Requirement 051-019 The disk is budgeted.** The pilot MUST measure the bytes each product writes per workflow of each
   variant; `run.sh` frees the runner's preinstalled tool caches at start and records the free space at every rung, and
-  the driver's plan check refuses a plan whose projected disk use exceeds the free space less 2 GB, as it refuses one
+  the driver's plan check refuses a plan whose projected disk use (the downloaded and decompressed archives and the
+  loaded images included) exceeds the free space less 2 GB, as it refuses one
   whose worst-case minutes exceed 340.
 - **Requirement 051-020 Nothing on the runner can reach the repository.** The benchmark workflow MUST have exactly the
   top-level block `permissions: contents: read` and no job-level `permissions:`, no `secrets: inherit`, no
@@ -325,7 +333,9 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `docker inspect` of every run container; every third-party program, the Temporal sidecar and `omes`
   included, runs as a compose service under these rules, and the rule refuses a third-party binary started from
   `run.sh` on the host; the driver, built at the commit under test, runs its load as a container on each product's
-  internal network, started by `run.sh` once per turn in the order `driver plan` prints, while its fault injector runs
+  internal network, started by `run.sh` once per turn in the order `driver plan` prints, it and the metrics containers
+  with an explicit `cgroup_parent` pinned to the driver's thread (their effective CPU sets confirmed from `docker
+  inspect` at each turn's start, so that this platform's turn's default parent does not capture them), while its fault injector runs
   on the host in `run.sh`'s process (it needs the engine to kill and start containers), writing each fault's time as
   `CLOCK_REALTIME` into the shared record directory; the start probe checks that no container resolves an external name or reaches a public IPv4 or IPv6
   address, the pilots included (a Windmill step language that needs packages at run time is pre-resolved into an image
@@ -481,20 +491,23 @@ turn; the others are stopped.
   client retry; Windmill's zombie-job timeout); this platform's activities declare their "not applied" reconciler.
 
 **Turns and timing.** A rung is 60 s of warm-up, a 300 s window and up to 60 s of drain: 7 minutes. A throughput turn is
-the archive's restore (at most 10 minutes), a ladder of at most 11 rungs (77 minutes), the waits between rungs for
-earlier runs (at most 4 unsustained rungs × 3 = 12 minutes) and a final `CHECKPOINT` and stop (2): at most 101 minutes.
-A throughput job runs one variant: 3 × 101 + 20 of preparation + 14 for at most two re-run rungs = 337 minutes. A
-common-rate job runs one variant's common-rate rung first after each restore: 3 × (10 + 7 + 2) + 20 = 77 minutes. A
+the archive's restore (at most 10 minutes), a ladder of at most 10 rungs (70 minutes), the waits between rungs (capped
+at 12 minutes), a per-rung overhead of at most 0.5 minutes (the calibration loop, the `pg_stat_statements` scan and the
+reads of commit times: 5), a per-turn overhead of at most 4 (the start probe, the image and `docker inspect` checks, and
+the container daemon's restarts around this platform's turn) and a final `CHECKPOINT` and stop (2): at most 103 minutes.
+A throughput job runs one variant: 3 × 103 + 20 of preparation + 7 for at most one re-run rung = 336 minutes. A
+common-rate job runs one variant's common-rate rung first after each restore: 3 × (10 + 7 + 0.5 + 4 + 2) + 20, at most
+92 minutes (23.5 rounded up to 24 per product). A
 crash job is, per product, a restore (10), a warm-up (1), the baseline (at most 20 windows of 20 s, 7 minutes), the
 null fault's recovery (at most 10), the in-flight trigger (at most 0.5), the fault's recovery (at most 10), the drain
-(10) and the stop (2), at most 51 minutes (50.5 rounded up), so 3 × 51 + 20 = 173 minutes; the crash confirmation job is
+(10), the stop (2) and the per-turn overhead (4), at most 55 minutes (54.5 rounded up), so 3 × 55 + 20 = 185 minutes; the crash confirmation job is
 one such job. A
 timer-burst job is, per product, a restore (10), the 10 minutes in which the starts fall and the sleep runs, at most 10
-of firing and the stop (2), so 3 × 32 + 20 = 116 minutes. Before starting, the driver's plan check computes the worst case of the
+of firing, the stop (2) and the per-turn overhead (4), so 3 × 36 + 20 = 128 minutes. Before starting, the driver's plan check computes the worst case of the
 job's plan and refuses one above 340 minutes (the `run.sh` step's timeout is 345, the job's 355 and GitHub's limit for a
 hosted job 360) or beyond the disk budget, and at
 each throughput job's start the no-op adapter's ceiling, delayed like each product's start latency, must reach ten
-times the highest rate the job's plan can reach (its starting rate × 2⁶), or the job stops.
+times the highest rate the job's plan can reach (its starting rate × 2⁵), or the job stops.
 
 **A campaign.** The pilots are a job kind of their own, dispatched by hand once per method version (6 jobs of at most
 340 minutes, at most 2,040 runner minutes and about 340 of wall time, before the first campaign: on a small history,
@@ -503,11 +516,11 @@ the steal counter's check; each pilot job builds this platform's images itself).
 (this platform's images built once, at most 30 minutes, measured in the pilot, the archive within the disk budget; per
 product at most 5 of start, 45 of loading and checking, and 10 of `VACUUM (ANALYZE)`, `CHECKPOINT`, archiving and a
 short confirmation of its configuration: 30 + 3 × 60 + 20 = 230 minutes); 8 variants × 5 repetitions = 40 throughput
-jobs (40 × 337 = 13,480); 8 × 5 = 40 common-rate jobs (40 × 77 = 3,080) and 5 timer-burst jobs (5 × 116 = 580), one
-matrix of 45 jobs; the crash confirmation job (173); 3 faults × 6 repetitions = 18 crash jobs (18 × 173 = 3,114). A
-campaign is at most 230 + 13,480 + 3,080 + 580 + 173 + 3,114 = 20,657 runner minutes, at no cost; in order, at 12 jobs
-at once, its wall time is at most 230 + ⌈40 / 12⌉ × 337 + ⌈45 / 12⌉ × 116 + 173 + ⌈18 / 12⌉ × 173 = 230 + 1,348 + 464 +
-173 + 346 = 2,561 minutes, about 42.7 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
+jobs (40 × 336 = 13,440); 8 × 5 = 40 common-rate jobs (40 × 92 = 3,680) and 5 timer-burst jobs (5 × 128 = 640), one
+matrix of 45 jobs; the crash confirmation job (185); 3 faults × 6 repetitions = 18 crash jobs (18 × 185 = 3,330). A
+campaign is at most 230 + 13,440 + 3,680 + 640 + 185 + 3,330 = 21,505 runner minutes, at no cost; in order, at 12 jobs
+at once, its wall time is at most 230 + ⌈40 / 12⌉ × 336 + ⌈45 / 12⌉ × 128 + 185 + ⌈18 / 12⌉ × 185 = 230 + 1,344 + 512 +
+185 + 370 = 2,641 minutes, about 44 hours (the matrix of common-rate and timer-burst jobs counted at its longer job),
 and a campaign is not dispatched while the release-candidate CI run is pending, a manual step of the release
 procedure (`docs/runbooks/release.md`); one campaign is dispatched at a time, since a third dispatch would cancel a
 pending one under the `concurrency` group.
@@ -594,7 +607,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   commit time is one clock for all three.
 - **Polling the products for completions during a rung.** It loads each product's database differently; the workers'
   own records count them.
-- **Interleaving the products rung by rung.** Thirty-two switches per job do not fit its time; contiguous turns rotated
+- **Interleaving the products rung by rung.** Twenty-nine switches per job do not fit its time; contiguous turns rotated
   by repetition keep the order visible.
 - **One shared database server.** A data directory restores a whole server, and one server's settings cannot differ by
   product; a server per product, each stopped with it.
@@ -608,7 +621,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 - **Non-functional requirement 051-001 Reproducibility.** A new campaign at the same commit on the same runner class
   agrees with the published one as Requirement 051-012 defines it, or the report explains the difference.
 - **Non-functional requirement 051-002 Cost.** The campaign costs no money; each job stays within the plan check's 340
-  minutes and its disk budget, and a campaign within 20,657 runner minutes.
+  minutes and its disk budget, and a campaign within 21,505 runner minutes.
 - **Non-functional requirement 051-003 Security.** Requirement 051-020.
 
 --------------------------------------------------------------------------------
