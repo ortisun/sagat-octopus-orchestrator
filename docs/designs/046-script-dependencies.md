@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. The one decision still to take is the acceptance of Architecture decisions 0120 and 0121, which falls under
 Owner decision 2026-11-24-4 when the review completes. Every other choice, including the read-only mount that relaxes
 Architecture decision 0013 (Decision 046-009, a partial supersession), is recorded in research.md as Decisions 046-001 to
-046-064 with the register's literal marker "delegate (OD-2026-11-24-4)".
+046-070 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -429,7 +429,10 @@ only in the last three, whose locks the control plane has validated; in a `Build
 
 The gateway applies three fixed rules to what it serves, none of them policy. Versions published after the job grant's
 quarantine cut are left out: for npm it reads each version's time from the full document with a streaming parse capped at
-64 MiB and drops a version without a time; for PyPI it drops a file without `upload-time`. For Python, source
+64 MiB and drops a version without a time. Because `versions` usually comes before `time` in that document, the parse
+keeps only a compact index (each version's offsets and time), at most 8 parses run at once per gateway (others wait,
+then answer `503` after 10 s), and the index is cached per name for 5 minutes, so the filter for any cut is a lookup; a
+document over 64 MiB is refused with `502` and the job fails `RESOLUTION_FAILED`, never served partly filtered; for PyPI it drops a file without `upload-time`. For Python, source
 distributions and wheels that none of the grant's targets and interpreter can use are left out. Yanked versions are marked
 as the registries mark them. Allow and deny rules, waivers and advisories are not the gateway's: the control plane's evaluation
 applies them.
@@ -454,9 +457,13 @@ and deletes, after 7 days, those still unreferenced and unpinned at deletion tim
 a running resolve, install, test run or materialization pins its files until it ends; an imported offline bundle pins its
 files until an operator removes it.
 
-**Fetch budget.** The resolve-completion transaction charges `package_fetch_usage` with the bytes the runner reports it
-forwarded during the resolve and the sizes of the locked files the metadata marks as not yet stored; over the daily budget
-(20 GiB per tenant by default) the version is refused with `PACKAGE_FETCH_BUDGET_EXCEEDED`.
+**Fetch budget.** Every completion of a resolve job, a failed one and each retry included, charges `package_fetch_usage`
+with the bytes the runner reports it forwarded during that attempt, and a successful completion also charges the sizes of
+the locked files the metadata marks as not yet stored; over the daily budget (20 GiB per tenant by default) the version
+is refused with `PACKAGE_FETCH_BUDGET_EXCEEDED`. The claim checks the budget first: a tenant already at or over it is
+not given a resolve job (the job stays queued until the next day, and its version shows why), so an over-budget tenant
+cannot start another 1 GiB of forwarding. A job whose lease expires without a completion is charged its 1 GiB ceiling
+when the lease is reclaimed, since what it forwarded is unknown.
 
 ### 4. The resolve job
 
@@ -469,8 +476,9 @@ The resolver shim serves HTTP on the container's loopback interface and turns ea
 supervisor channel, the op scripts use today. For a resolve job the runner's host calls allow only the routes that
 runner-protocol.md lists, each with how its package name is read: the package document (the name is the path; an npm
 scope's `%2f` is decoded once into the canonical `@scope/name`, and nothing else may be encoded), the core-metadata file
-and the file (the name is read from the wheel or tarball file name and must match the name its index answer gave), with
-no `..`, no `//` and no query. A request whose name, normalised, is reserved goes to the control plane's private routes
+and the file (for npm the name is the path's `{name}` segment, scope included and decoded as for the document, and the file
+name must equal `{unscoped name}-{version}.tgz`; for PyPI the name is read from the wheel file name; either must match
+the name its index answer gave), with no `..`, no `//` and no query. A request whose name, normalised, is reserved goes to the control plane's private routes
 for the same three kinds; every other goes to the gateway; a path that does not parse is refused. The runner adds the
 grant and forwards. Responses come back in chunks of at most 160 KiB decoded per line. A resolve job has its own
 budgets: 4,000 requests, 30,000 channel lines, 32 MiB per response, 1 GiB in all.
@@ -513,6 +521,7 @@ design creates the table; feature 023 adds the `languages` section, its Decision
 | `allow` rules | none (everything not denied) | 500 rows |
 | `deny` rules | none | 500 rows |
 | `quarantineHours` | 72 | 0 to 720 |
+| `private.quarantineHours` | 24 | 0 to 720; the hold of a private upload, Technical Plan 10 |
 | `vulnerabilities.blockAtOrAbove` | `HIGH` | `CRITICAL`, `HIGH`, `MODERATE`, `LOW`, `NONE` |
 | `vulnerabilities.blockUnrated` | false | |
 | `vulnerabilities.blockNewAtLease` | false | |
@@ -551,13 +560,17 @@ Non-functional requirement 046-004. A record is malicious when its identifier or
 database-specific type says malware; severity is the GitHub advisory label, else the CVSS (Common Vulnerability Scoring
 System) base score mapped to the same labels, else unrated.
 
-An import stages its records under a new snapshot identifier in paged transactions, outside any lock, and while staging
-computes, for each new malicious record, the exact (name, version) pairs it matches among the versions that
-`script_locked_packages` holds at that time. The switch is one transaction that takes the snapshot row `FOR UPDATE` and
-then: refuses the import if it is older than the current snapshot of that ecosystem or holds at least 1 percent fewer
-records (checked again under the lock); makes it current; inserts a block for every artifact that locks a precomputed pair;
-evaluates the ranges, through `PackageRules`, only for `script_locked_packages` rows inserted after staging began; and
-inserts one re-evaluation row per tenant concerned. An import that would newly block more than 50 artifacts is held for an
+An import begins with a barrier: one short transaction takes the snapshot row `FOR UPDATE`, which waits for every
+writer of `script_locked_packages` (each takes that row `FOR SHARE` before its first insert and holds it to its commit),
+records the highest `locked_seq` of the table (an identity column) as the import's mark, and commits. Every row at or
+below the mark was committed before the barrier; every row inserted later gets a higher value. The import then stages
+its records under a new snapshot identifier in paged transactions, outside any lock, and computes, for each new
+malicious record, the exact (name, version) pairs it matches among the rows at or below the mark. The switch is one
+transaction that takes the snapshot row `FOR UPDATE` and then: refuses the import if it is older than the current
+snapshot of that ecosystem or holds at least 1 percent fewer records (checked again under the lock); makes it current;
+inserts a block for every artifact that locks a precomputed pair, whatever its `locked_seq`; evaluates the ranges,
+through `PackageRules`, for every row above the mark; and inserts one re-evaluation row per tenant that either of the
+two found. An import that would newly block more than 50 artifacts is held for an
 operator's confirmation (`advisory:import`) and an alert fires; while it is held, finishes and materializations refuse
 artifacts that lock a package its malicious records match, so a wide compromise is not delayed. Refusals and holds are
 audited. The old snapshot's rows are deleted afterwards. A malware block is released only through
@@ -635,7 +648,12 @@ limit). The control plane reads the archive's own name and version (at most 1 Mi
 checks them against the reservation, stores it in the tenant's
 payload store (Architecture decision 0023's blob keys, under the uploading namespace), then inserts the `private_packages`
 row; uploads are visible to every namespace of the tenant. The same file again answers `200`; another file for an
-uploaded version answers `409 PACKAGE_VERSION_EXISTS`. Uploads count against the tenant's content bytes (Architecture
+uploaded version answers `409 PACKAGE_VERSION_EXISTS`. A private version is held out of the private index for the
+resolving namespace's `private.quarantineHours` (default 24, 0 to 720) after its `uploaded_at`, unless a holder of
+`package:manage` other than the uploader releases it earlier (`POST /v1/packages/{ecosystem}/{name}/{version}/release`,
+audited; the uploader is refused with `PACKAGE_RELEASE_BY_UPLOADER`). So a stolen `package:upload` credential cannot
+put a version into a build at once: someone else sees it first, or it waits out the hold, during which an administrator
+can delete it. Uploads count against the tenant's content bytes (Architecture
 decision 0027).
 
 The control plane serves the private index and files to runners (`/script-runner/private-index/...`,
@@ -655,16 +673,19 @@ it lacks; the runner materializes those (the three containers of Technical Plan 
 which must hash to the bundle's lock digest), and advertises an activity only once its volume is marked. So the engine's
 attempt timeout never includes a materialization. Materializations run at most two at a time per runner and one at a
 time per (tenant, digest), within a deadline of 120 s plus 20 s per 100 MiB of layer (about 16 minutes at the 4 GiB
-ceiling; the install job and the grant use the same deadline). A runner reports a failed materialization
-(`POST /script-runner/materializations/{id}/failed`); when three runners have failed one, or no registered target has a
-layer record for 10 minutes, the control plane fails the ready steps of that artifact through `reject_input` with
+ceiling; the install job and the grant use the same deadline). The materialization route takes the ready activity, not a namespace: the control plane reads the tenant, namespace and
+artifact from it, checks the blocks for that namespace, and answers an `id`. A runner reports a failed materialization
+(`POST /script-runner/materializations/{id}/failed`); when three distinct runner identities (the authenticated runner
+principals of the route, never the self-configured `SAGAT_RUNNER_INSTANCE_ID`) have failed one, or no registered target
+has a layer record for 10 minutes, the control plane fails the ready steps of that artifact through `reject_input` with
 `SCRIPT_SANDBOX_UNAVAILABLE` and `LAYER_UNAVAILABLE`, so no step waits silently, and the gauge
 `script_steps_waiting_for_layer` shows the rest.
 
 Before starting a run container the runner asks once whether the attempt may start (`GET /script-runner/attempts/{attempt}/runnable`
 for a step, `GET /script-runner/test-runs/{run}/runnable` with the lock digest for a test run); the tenant and namespace come
-from the attempt or the test run, never from the runner. A block found there, at materialization or at lease refuses the
-start with `SCRIPT_DENIED` and `PACKAGE_BLOCKED`; an unknown attempt answers `404`.
+from the attempt or the test run, never from the runner, and a test run's lock digest must equal the one stored for it.
+A block found there, at materialization or at lease refuses the start with `SCRIPT_DENIED` and `PACKAGE_BLOCKED`; an
+unknown attempt and another tenant's attempt or test run answer the same `404`.
 
 Volumes are named by tenant, layer digest and the runner's configured instance identifier (`SAGAT_RUNNER_INSTANCE_ID`,
 required with this feature; at start the runner refuses to run if another live runner on the engine carries the same
@@ -894,7 +915,9 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   transaction with malware blocks, matching, severity, the release route and its trigger. Files:
   `crates/infra-packages/src/advisories.rs`, `crates/application/src/scripts/packages.rs`, migrations. Tests:
   `matcher_agrees_with_the_version_order_*`, `an_older_snapshot_is_refused`, `a_large_import_is_held`,
-  `the_switch_rechecks_age_under_the_lock`, `a_finish_between_staging_and_switch_is_matched` (held-lock tests),
+  `the_switch_rechecks_age_under_the_lock`, `a_finish_between_staging_and_switch_is_matched`,
+  `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched` (held-lock tests, the writer's transaction held
+  open with its `FOR SHARE` while the import starts),
   `a_held_import_refuses_matching_finishes`.
   Refs: Requirement 046-008, Requirement 046-009
 - [ ] T046-6 Gateway skeleton and npm side: listeners, tokens, abbreviated documents filtered by the cut, tarballs, the
@@ -902,6 +925,7 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `crates/infra-egress/src/lib.rs`, `crates/infra-blobstore/src/config.rs`. Tests against recorded responses
   (`apps/package-gateway/tests/fixtures/npm/`, refreshed by `scripts/record-registry-fixtures.sh`):
   `filters_versions_after_the_cut`, `drops_versions_without_a_time`, `refuses_a_redirect_to_another_host`,
+  `a_document_over_the_cap_is_refused_not_partly_served`, `full_document_parses_are_bounded_and_cached`,
   `validates_names_before_upstream`,
   `egress_is_get_only`.
   Refs: Requirement 046-004, Requirement 046-018
@@ -909,13 +933,14 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   metadata endpoint, the advisory archive route. Tests: recorded PyPI fixtures; `never_serves_a_source_distribution`.
   Refs: Requirement 046-005, Requirement 046-007
 - [ ] T046-8 Runner side of private packages: rewriting reserved names to the private routes. Test:
-  `a_reserved_name_never_reaches_the_public_registry` (runner part: index, metadata, file and scoped requests, with
-  the gateway receiving none).
+  `a_reserved_name_never_reaches_the_public_registry` (runner part: index, metadata, file and scoped requests, a scoped
+  tarball whose file name carries no scope among them, with the gateway receiving none).
   Refs: Requirement 046-017
 - [ ] T046-9 Control-plane side of private packages: reservations and their revision, uploads into the tenant's payload
   store, the private index and file routes, re-evaluation on reservation and deletion, audit (`sagat package push` is
   Task 046-19's). Tests: `an_identical_upload_is_accepted_again`, `a_different_file_for_an_uploaded_version_is_a_conflict`,
-  `a_reservation_blocks_a_lock_that_took_the_name_from_public`, `another_tenants_private_file_is_not_found`.
+  `a_reservation_blocks_a_lock_that_took_the_name_from_public`, `another_tenants_private_file_is_not_found`,
+  `a_private_upload_is_held_for_the_private_quarantine`, `the_uploader_cannot_release_their_own_upload`.
   Refs: Requirement 046-017
 - [ ] T046-10 Publication flow: `content_digest` with the manifest, `:resolve-again`, dependency jobs and their
   transitions, the build key version 2 at claim, the author-lock path, `Expected` and `BuildAssignment`. Files:
@@ -946,7 +971,9 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   check, test-run dependencies, target-aware pending activities. Files: `crates/api-http/src/routes/runner.rs`,
   `crates/application/src/scripts/packages.rs`. Tests: `an_old_runner_claim_gets_no_dependency_work`,
   `a_runner_of_another_target_is_not_offered_the_step`, `a_test_run_with_packages_runs_and_is_refused_for_malware`,
-  `a_step_no_runner_can_materialize_fails_typed`, `the_runnable_check_takes_the_namespace_from_the_attempt`.
+  `a_step_no_runner_can_materialize_fails_typed`, `the_runnable_check_takes_the_namespace_from_the_attempt`,
+  `a_materialization_takes_the_namespace_from_the_activity`, `one_runner_failing_three_times_does_not_fail_the_step`,
+  `another_tenants_attempt_answers_the_unknown_404`, `a_test_run_lock_digest_must_match`.
   Refs: Requirement 046-016, Requirement 046-020
 - [ ] T046-15 Bundle version 5, layer records, the finishing steps on both build paths, the SBOM, the provenance (the
   module feature 023 reuses). Files: `crates/infra-schema/src/bundle.rs`, `crates/infra-packages/src/{sbom,provenance}.rs`,
@@ -969,7 +996,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   Refs: Requirement 046-009, Requirement 046-020
 - [ ] T046-18 Store collection with marks, pins and the grace period; the fetch budget. Tests:
   `a_pinned_file_is_never_collected`, `a_reference_gained_after_the_mark_keeps_the_file`,
-  `a_collected_file_is_fetched_again_by_name`, `the_fetch_budget_counts_forwarded_bytes`.
+  `a_collected_file_is_fetched_again_by_name`, `the_fetch_budget_counts_forwarded_bytes`,
+  `a_failed_resolve_is_charged_its_forwarded_bytes`, `an_over_budget_tenant_is_not_given_a_resolve`.
   Refs: Requirement 046-018
 - [ ] T046-19 Studio panel and CLI (`sagat script packages`, `sagat package push`). Files:
   `frontend/apps/studio/src/features/scripts/`, `apps/cli`. Tests: the Studio journey test, the CLI contract tests.

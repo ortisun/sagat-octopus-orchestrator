@@ -18,6 +18,7 @@ Runner routes are in `runner-protocol.md`.
 | `GET /namespaces/{ns}/supply-chain/blocks` | `script:read` | blocks touching the namespace |
 | `GET`, `POST /package-reservations`, `DELETE .../{id}` | `script:read`, `package:manage` | `{ecosystem, kind: "name" \| "npm-scope", name}` |
 | `PUT /namespaces/{ns}/packages/{ecosystem}` | `package:upload` | the archive (at most 64 MiB, its own router); `201`, `200` for the same file, `409 PACKAGE_VERSION_EXISTS` |
-| `GET /packages/{ecosystem}`, `DELETE /packages/{ecosystem}/{name}/{version}` | `script:read`, `package:manage` | the tenant's uploads |
+| `GET /packages/{ecosystem}`, `DELETE /packages/{ecosystem}/{name}/{version}` | `script:read`, `package:manage` | the tenant's uploads, each with `uploadedAt`, `uploadedBy` and, once released early, `releasedAt` and `releasedBy` (the hold itself depends on the resolving namespace's `private.quarantineHours`) |
+| `POST /packages/{ecosystem}/{name}/{version}/release` | `package:manage` | releases a held upload before its private quarantine ends; `409 PACKAGE_RELEASE_BY_UPLOADER` when the caller uploaded it; audited |
 | `POST /admin/advisories:import`, `POST /admin/advisories/{import}:confirm` | `advisory:import` (platform operator) | an archive upload, or the confirmation of a held import |
 | `DELETE /admin/script-blocks/{id}` | `script:block:release` (platform operator) | releases a malware block once its advisory is withdrawn |

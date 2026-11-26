@@ -18,6 +18,18 @@
       "maximum": 720,
       "default": 72
     },
+    "private": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "quarantineHours": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 720,
+          "default": 24
+        }
+      }
+    },
     "vulnerabilities": {
       "type": "object",
       "additionalProperties": false,

@@ -28,7 +28,7 @@ A token never appears in a URL, a log line or a container: the runner adds it to
 
 | Route | Meaning |
 |---|---|
-| `GET /npm/{name}` | the npm version document in the abbreviated form (`application/vnd.npm.install-v1+json`), built by the gateway from the full upstream document read with a streaming parse capped at 64 MiB; every version published after `cut`, or without a time, is left out |
+| `GET /npm/{name}` | the npm version document in the abbreviated form (`application/vnd.npm.install-v1+json`), built by the gateway from the full upstream document read with a streaming parse capped at 64 MiB that keeps a compact index (version offsets and times), cached per name for 5 minutes; at most 8 parses at once per gateway, others wait and answer `503` after 10 s; a document over the cap answers `502`, never a partly filtered document; every version published after `cut`, or without a time, is left out |
 | `GET /npm/{name}/-/{file}` | a tarball |
 | `GET /pypi/simple/{project}/` | the project page of the simple API in its JSON form (PEP 691), with files after `cut` or without `upload-time`, every source distribution and every wheel no grant target can use left out |
 | `GET /pypi/files/{sha256}/{filename}` | a wheel |

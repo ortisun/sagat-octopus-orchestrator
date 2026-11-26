@@ -11,12 +11,12 @@ limit; nothing large passes through the control plane except private package fil
 |---|---|---|
 | `POST /script-runner/dependency-jobs/claim` | `{capabilities, target, languages}` | `204`, or `{jobId, attempt, leaseToken, phase: "resolve" \| "install", version, language, runtime, targets, manifest, cut, maxLayerBytes, reservedNames, lock (install), files (install: hash, size, install path, source "public" \| "private"), grant}` |
 | `POST /script-runner/dependency-jobs/{jobId}/heartbeat` | `{leaseToken}` | `204`, or `409` when the lease is lost |
-| `POST /script-runner/dependency-jobs/{jobId}/complete` | resolve: `{leaseToken, outcome, lock}`; install: `{leaseToken, outcome, target, layer: {digest, size, files}, installScripts: [{name, version, scripts}], compileFailures}`; failure: `{leaseToken, outcome: "failed", kind, code, retryable, log}` | `204`; a finished job answers `204` and changes nothing |
+| `POST /script-runner/dependency-jobs/{jobId}/complete` | resolve: `{leaseToken, outcome, lock, forwardedBytes}` (also on a failed resolve); install: `{leaseToken, outcome, target, layer: {digest, size, files}, installScripts: [{name, version, scripts}], compileFailures}`; failure: `{leaseToken, outcome: "failed", kind, code, retryable, log}` | `204`; a finished job answers `204` and changes nothing |
 | `GET /script-runner/namespaces/{namespace}/pending-activities` (feature 005's, extended) | query `target` | each ready activity with its artifact digest and whether a layer for the target is needed |
-| `POST /script-runner/materializations` | `{artifactDigest, target, namespace}` | `{lock, files, layerRecord, maxLayerBytes, grant}`; `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED` if blocked; `404` for another tenant's artifact or one without a record for the target (the attempt is audited) |
-| `POST /script-runner/materializations/{id}/failed` | `{code}` | `204` |
-| `GET /script-runner/attempts/{attempt}/runnable` | | `204`, `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED`, or `404` for an unknown attempt; the tenant and namespace come from the attempt |
-| `GET /script-runner/test-runs/{run}/runnable` | query `lockDigest` | the same, for a test run |
+| `POST /script-runner/materializations` | `{activity, target}` (a ready activity from the pending-activities answer) | `{id, artifactDigest, lock, files, layerRecord, maxLayerBytes, grant}`; the tenant, namespace and artifact come from the activity, never from the runner; `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED` if blocked for that namespace; `404` for another tenant's activity, one that is not ready, or an artifact without a record for the target (the attempt is audited) |
+| `POST /script-runner/materializations/{id}/failed` | `{code}` | `204`; the failure is recorded against the authenticated runner principal, and only three distinct principals fail the ready steps |
+| `GET /script-runner/attempts/{attempt}/runnable` | | `204`, `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED`, or `404` for an unknown attempt and, alike, for another tenant's; the tenant and namespace come from the attempt |
+| `GET /script-runner/test-runs/{run}/runnable` | query `lockDigest` | the same, for a test run; `404` also when `lockDigest` differs from the test run's stored lock digest |
 | `POST /script-runner/test-runs/claim` (feature 005's, extended) | as today | for a draft with a manifest, also `{manifest, cut, reservedNames, targets: [the runner's], grant}` |
 | `POST /script-runner/test-runs/{runId}/dependencies` | `{leaseToken, lock}` | `{verdict, findings, files, maxLayerBytes, grant}` or `422` with the refusal reason |
 | `GET /script-runner/private-index/npm/{name}`, `GET /script-runner/private-index/pypi/{project}/` | | the tenant's uploads of that name, in the npm and PEP 691 shapes; `404` otherwise |
@@ -29,8 +29,9 @@ On the supervisor channel of feature 005 (`op` messages, at most 240 KiB per lin
 
 - Container to runner: the existing `fetch` op with `method: "GET"` and a URL on the loopback base the shim uses. The
   runner parses the path as one of the package document, core-metadata or file routes, reads the package name (from the
-  path for a document, decoding an npm scope's `%2f` once into `@scope/name`; from the file name otherwise, which must
-  match the name of the index answer that listed it), and sends it to the gateway, or to the control plane's private
+  path for a document, decoding an npm scope's `%2f` once into `@scope/name`; for an npm tarball from the path's
+  `{name}` segment, decoded the same way, with the file name required to equal `{unscoped name}-{version}.tgz`; for a
+  Python file from the wheel file name; in every case equal to the name of the index answer that listed it), and sends it to the gateway, or to the control plane's private
   index, metadata or file route when the normalised name is reserved. Any other path, or one that does not parse, is
   refused with status `403`.
 - Runner to container: `{"op":"fetchHead","id":N,"status":200,"contentType":"...","length":L}`, then

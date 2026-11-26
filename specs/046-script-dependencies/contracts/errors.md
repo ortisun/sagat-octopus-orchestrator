@@ -55,12 +55,13 @@ attempt the version is `FAILED`.
 |---|---|---|---|
 | `SCRIPT_DENIED` | `PACKAGE_BLOCKED` | no | a block matches the artifact and the namespace, at lease, at materialization or before start |
 | `SCRIPT_UNTRUSTED_ARTIFACT` | `LAYER_DIGEST_MISMATCH`, `LOCK_DIGEST_MISMATCH`, `LAYER_RECORD_INVALID` | no | the layer, the served lock or the record does not match |
-| `SCRIPT_SANDBOX_UNAVAILABLE` | `LAYER_UNAVAILABLE` | no | three runners failed to materialize the layer, or no registered target has a layer record for 10 minutes (the control plane fails the ready steps) |
+| `SCRIPT_SANDBOX_UNAVAILABLE` | `LAYER_UNAVAILABLE` | no | three distinct runner principals failed to materialize the layer, or no registered target has a layer record for 10 minutes (the control plane fails the ready steps) |
 | `SCRIPT_SANDBOX_UNAVAILABLE` | an old runner's unknown bundle version | yes | a rolled-back runner |
 
 ## Other
 
 `404` answers alike for another tenant's artifact, file, reservation or upload and for a missing one, and the attempt is
 audited. `409 PACKAGE_VERSION_EXISTS` answers an upload of a different file for an uploaded version. `409
+PACKAGE_RELEASE_BY_UPLOADER` answers an early release asked by the upload's own uploader. `409
 POLICY_REVISION_CONFLICT` answers a policy write with a stale expected revision. `409 ADVISORY_IMPORT_HELD` answers an
 import that waits for an operator's confirmation.
