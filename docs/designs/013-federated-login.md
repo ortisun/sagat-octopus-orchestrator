@@ -973,12 +973,20 @@ session id, the generation and a random value kept on the session. The server re
 it stores no per-generation secret. A successor is always minted under the ring's active key, with the highest
 generation issued plus one; a number is never reused.
 
+*Before the transaction.* The key id is in the clear in the token, so it is checked against the replica's in-memory
+ring before `BEGIN`; an unknown id causes at most one single-flight re-read of the ring per replica per refresh
+interval, outside any transaction (`a_random_key_id_flood_reads_the_ring_at_most_once_per_interval`); if the id is
+still unknown after a successful re-read the token is `invalid_grant` with no effect, and if the ring cannot be read,
+or is stale or empty, the answer is `503 IDENTITY_SIGNING_UNAVAILABLE` with the token unspent, decided before any
+session lookup so that it does not depend on whether the session exists. Inside the transaction the MAC check is
+in-memory only (`signing_inside_a_transaction_does_no_io` covers this path too).
+
 *Verification order and locking.* Every path, redemption's refresh grant and logout included, first verifies the MAC
 in constant time (`Mac::verify_slice`) against the random value of the session row, which the refresh's transaction
 locks `FOR UPDATE`; the successor is minted from that same row, so a refresh racing a random-value rotation never
 promotes a token of the old value (`a_refresh_racing_a_random_value_rotation_mints_nothing_old`, a barrier test). A
-token whose MAC fails, whose key id the replica does not know after one re-read of the ring, or whose generation is
-above the current one, is `invalid_grant` with no effect and the same answer whether or not the session exists
+token whose MAC fails, or whose generation is above the current one, is `invalid_grant` with no effect and the same
+answer whether or not the session exists (a missing session computes a dummy MAC, so the timing is the same)
 (`a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
 `a_token_under_an_unknown_key_id_is_invalid_grant_with_no_effect`, `a_mac_valid_generation_above_the_current_one_is_invalid_grant`,
 `a_forged_refresh_token_cannot_sign_out`). Then the generation's class decides; then the rate limit.
@@ -997,7 +1005,8 @@ refresh and reads the key store again under it, so a second CLI process uses the
 other is refused).
 
 *Rate limit and answers.* A session rotates at most six times a minute in its current generation, counted by a window
-start and a count on `signin_sessions` (a fixed window); grace rotations are exempt, the grace bounding them. A refusal
+start and a count on `signin_sessions` (a fixed window); grace rotations are exempt from it, are capped at three per generation (the design needs two, a lost response twice
+in a row), counted on the grace row, and write no `signin_refresh_generations` row of their own. A refusal
 by the limit answers `429` with `Retry-After`, and a key that cannot be read answers `503`; both use the RFC 6749 form
 with `error=temporarily_unavailable` and the platform's reason in `error_reason` (`REFRESH_RATE_LIMITED`,
 `IDENTITY_SIGNING_UNAVAILABLE`), and both leave the token unspent, so a client never discards a usable token
@@ -1394,7 +1403,7 @@ check-and-set on the version the command read.
   refresh intervals, then by check-and-set on the version its first step wrote makes it `ACTIVE` and the previous key
   `RETAINED`; if the version moved, it stops with an audited "rotation cancelled" and writes nothing. A `rotate` that
   finds a `PENDING` key it did not write finishes that rotation from its second step once the key is two intervals
-  old. Every `rotate` drops `RETAINED` keys activated over 7 days and one refresh interval ago, so no live CLI token
+  old. Every `rotate` drops a `RETAINED` key once its successor has been active for 7 days and one refresh interval, so no live CLI token
   loses its key (`a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, with a session kept alive by
   refreshes on both sides; `a_second_rotate_finishes_an_interrupted_rotation`).
 - `revoke` (audited) activates a new key at once, drops every key it did not create (`ACTIVE`, `RETAINED`, `PENDING`),

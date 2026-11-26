@@ -199,3 +199,11 @@ The security re-read of round 10 (`approval/reread-10-security.md`, at `9a760bd7
 | 4 | Nit | Fixed by removal: there is no ring check | Technical Plan 6 |
 | 5 | Nit | Fixed: AES-256-GCM (`aes-gcm`) and HKDF-SHA256 (`hkdf`), both already in the lock file, so no new crate; a Complexity Tracking row for the sealed cursor | Technical Plan 6, Complexity Tracking |
 | 6 | Nit | Fixed: the requirement's sentence restored; a `400` ends the refresh, shows what it collected, and the next starts from the first page; the cursor text split into "Cursor sealing" and "Cursor refusals" | Requirement 050-010, Technical Plan 6 |
+
+## Security re-read, round 11 (`approval/reread-11-security.md`, at `e28824eb`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: `control-plane migrate` creates the first key and `inbox-cursor-key rotate` replaces it, both with the schema-owning role; the runtime role has `SELECT` only | Technical Plan 6, Task 050-4, Architecture decision 0144 |
+| 2 | Nit | Fixed: the arithmetic (2^32 cursors at 100 a second is about 1.36 years) and a yearly rotation in the runbook | Technical Plans 6 and 9 |
+| 3 | Nit | Fixed: the bytes are redacted in `Debug`, never logged or printed (`rotate` prints only the id), the table never exported; the test renamed `the_cursor_key_is_created_by_migrate_and_never_printed` | Technical Plan 6, Task 050-4 |

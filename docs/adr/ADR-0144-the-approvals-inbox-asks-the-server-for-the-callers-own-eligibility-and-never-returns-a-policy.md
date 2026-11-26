@@ -76,8 +76,8 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 ## Consequences
 
-- The cursors are sealed under a deployment-wide cursor key kept in PostgreSQL (`inbox_cursor_keys`), created at the
-  control plane's first start: it hides only row keys from callers, which whoever reads the table can read anyway, so
+- The cursors are sealed under a deployment-wide cursor key kept in PostgreSQL (`inbox_cursor_keys`), created by
+  `control-plane migrate` with the schema-owning role (the runtime role reads it only) and rotated yearly: it hides only row keys from callers, which whoever reads the table can read anyway, so
   the inbox needs neither OpenBao nor the secrets key ring and works on every deployment.
 - Two migrations add partial indexes, on pending approvals by namespace and deadline and on open publication requests by
   namespace and request time. The decision path keeps its rule and its

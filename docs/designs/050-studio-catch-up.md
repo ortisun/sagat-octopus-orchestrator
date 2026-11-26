@@ -833,15 +833,18 @@ no row remains (Architecture decision 0144, decision 5). Because a cursor can th
 not see, the cursor is sealed.
 
 *Cursor sealing.* The key is a deployment-wide cursor key kept in the table `inbox_cursor_keys` (key id, 32 random
-bytes, created at; `protected_system`; the runtime role reads it), which the control plane creates at its first start
-from the operating system's random source (`INSERT ... ON CONFLICT DO NOTHING`) and which `control-plane
-inbox-cursor-key rotate` replaces, keeping the previous key until the next rotation. It is not a secret of the
+bytes, created at; `protected_system`; the runtime role has `SELECT` only), whose first key `control-plane migrate`
+creates with the schema-owning role from the operating system's random source, and which `control-plane
+inbox-cursor-key rotate` (schema-owning role, audited, printing only the key id) replaces, keeping the previous key
+until the next rotation; the runbook asks for a rotation every year. The key bytes are redacted in `Debug`, never
+logged or printed, and the table is never exported. It is not a secret of the
 platform: a cursor hides only the key of a row from a caller, and whoever can read the table can read the rows
 themselves, so it needs neither OpenBao nor `SAGAT_SECRETS_KEYS` and the inbox works on every deployment. Each cursor
 is sealed with AES-256-GCM (the `aes-gcm` crate the workspace already uses) under a key derived by HKDF-SHA256 (the
 `hkdf` crate already in the lock file) from the cursor key, with the label `approval-inbox-cursor` or
-`publication-inbox-cursor` and the tenant as `info`, so each tenant's random-nonce budget is bounded by its own rate
-limit. The associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and opens only
+`publication-inbox-cursor` and the tenant as `info`, so each tenant has its own key: at the default 100 requests a second, a tenant reaches 2^32 cursors, the
+random-nonce limit, after about 1.36 years, beyond the yearly rotation, and a collision would expose at most one hidden
+row's key. The associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and opens only
 for its caller. Its wire form is `<key id>.<nonce>.<ciphertext>` in base64url, and `open` derives the key from the
 cursor's own key id. The use cases seal and open cursors through a port, `InboxCursorSealer` (`seal(scope, key) ->
 String`, `open(scope, &str) -> Option<key>`) in `crates/application/src/approval_inbox.rs`, shared by both inbox use
@@ -989,7 +992,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 - `docs/engineering/architecture-principles.md`: four rows with their checks (the registry against the schema; the
   capability names against `AdvertisedCapability`; `may_decide` against `decide` for approvals
   and publication requests; `AuditAction::ALL` against the Studio's list).
-- `docs/runbooks/studio.md`: the inbox (its cursor key and `control-plane inbox-cursor-key rotate`), the audit page, the capability list and how an operator reads it.
+- `docs/runbooks/studio.md`: the inbox (its cursor key and the yearly `control-plane inbox-cursor-key rotate`), the audit page, the capability list and how an operator reads it.
 - `specs/007-workflow-studio/design/README.md`: the new screens.
 
 ## Risks and Mitigations
@@ -1097,7 +1100,8 @@ primitive goes in a new file of `src/ui/`.
 - [ ] T050-4 Server builder: first the probe `every_run_end_cancels_its_pending_approvals`; then
   `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`); the port
   `InboxCursorSealer`, its adapter `crates/infra-postgres/src/inbox_cursor.rs`, the table `inbox_cursor_keys` in the
-  migration, its creation at first start and `control-plane inbox-cursor-key rotate`; `ApprovalInboxStore`, its use case and adapter, the migration with the
+  migration, its first key created by `control-plane migrate` and `control-plane inbox-cursor-key rotate`, both with the
+  schema-owning role, the runtime role granted `SELECT` only; `ApprovalInboxStore`, its use case and adapter, the migration with the
   partial index and its `down`; the route, its metrics and `x-implemented`; `youMayDecide` on the per-run list through
   `list_for_run`; the adapter's ended-run guard moved after authorization; the route removed from `not_built`; the new
   target `integration_studio_catch_up` (`tests/integration/studio-catch-up/main.rs` and its `[[test]]` entry in
@@ -1110,7 +1114,7 @@ primitive goes in a new file of `src/ui/`.
   `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders` (2,000 pending rows of ended runs, seeded, ahead of
   one live row: the first page is empty with a cursor, the second returns the live row),
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller`,
-  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_replaced_key_is_a_malformed_cursor`, `the_cursor_key_is_created_at_first_start`,
+  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_replaced_key_is_a_malformed_cursor`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
   `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.

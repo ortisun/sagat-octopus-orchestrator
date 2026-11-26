@@ -264,3 +264,14 @@ session idle for a day expires (the reviewer's note for correctness).
 | 4 | Nit | Fixed: guarded rows are exempt and updated in place | Technical Plan 6 |
 | 5 | Nit | Fixed: the columns of `identity_role_recompute` and the row of `identity_connection_health` | Technical Plan 3 |
 | 6 | Nit | Fixed: design 050 no longer uses the function; it is `pub(crate)` in `crates/infra-secrets` for `IdentityKeyRing`, added by Task 013-8 | Technical Plan 12, Task 013-8 |
+
+## Security re-read, round 13 (`approval/reread-13-security.md`, at `e28824eb`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the key id is checked against the in-memory ring before `BEGIN`; an unknown id causes at most one single-flight re-read per replica per interval, outside any transaction; still unknown after a successful re-read is `invalid_grant`, a failed or stale ring is `503` with the token unspent; the MAC check in the transaction is in-memory only; `a_random_key_id_flood_reads_the_ring_at_most_once_per_interval`, and the no-I/O test covers the path | Technical Plan 4 ("Before the transaction") |
+| 2 | Nit | Fixed: a dummy MAC for a missing session; the `503` decided before the session lookup | Technical Plan 4 |
+| 3 | Nit | Fixed: grace rotations capped at three per generation, counted on the grace row, writing no row of their own | Technical Plan 4 |
+
+The note outside the security scope is fixed too: a `RETAINED` key is dropped once its successor has been active for
+7 days and one refresh interval.
