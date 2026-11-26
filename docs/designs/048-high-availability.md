@@ -239,9 +239,10 @@ From the code and documents on `develop` at `546d5aa5`:
   only reads, so it runs on the read-only sessions of every connection. The token is written only inside the
   confirmation's `WriteTx`, by `instance_confirm_durability()` (below), a definer function that inserts it (`INSERT ...
   ON CONFLICT (id) DO NOTHING`, then a read); the runtime role has no privilege on the table. A null token means "unconfirmed", never an
-  identity; the registry's connection, and the one connection a command of `control-plane` uses to wait for a
-  confirmed identity (below), are admitted on a new or null identity, never on a superseded one; every other
-  connection but the passive observer's is admitted only on the confirmed identity.
+  identity; the registry's connection, the one connection a command of `control-plane` uses to wait for a confirmed
+  identity, and the connections of a command (`migrate` and `seed-dev` included) on a fresh database while it stays
+  fresh (below) are admitted on a new or null identity, never on a superseded one; every other connection but the
+  passive observer's is admitted only on the confirmed identity.
   The process keeps one `DatabaseIdentity` (application-owned, in `crates/application/src/instances.rs`, implementing
   `DatabaseHealth`; the statements that read the identity and confirm are the identity reader of
   `crates/infra-postgres/src/instances.rs`): the confirmed identity (or none), the set of identities seen
@@ -252,7 +253,7 @@ From the code and documents on `develop` at `546d5aa5`:
   still seen by later reads), so that a stale null never supersedes a fresh confirmation. Otherwise: an identity in the superseded set
   is refused; one equal to the confirmed identity is accepted; any other identity, or a null token, moves the confirmed
   identity (if any) into the superseded set, sets the confirmed identity to none, sets the reason
-  `DATABASE_UNCONFIRMED` and the time, refuses the connection (unless it is the registry's or a waiting command's) and
+  `DATABASE_UNCONFIRMED` and the time, refuses the connection (unless it is the registry's, a waiting command's or a fresh database's command's) and
   signals the confirmation task. An unknown commit outcome (Requirement 048-012) and an unavailable `25006`
   (Requirement 048-011) set the reason and the time only, superseding nothing. Setting a reason, one already set
   included, records the counter's current value; a ticket is the counter's value after its increment, and a reason is
@@ -291,8 +292,10 @@ From the code and documents on `develop` at `546d5aa5`:
   one connection admitted for that purpose, through `command_await_durability(capabilities)`, a definer function, until
   a live registry row carries the server's current identity as
   confirmed, and otherwise exits with code 1 ("retry later"); it then adopts that identity as its own confirmed one. It
-  proceeds without waiting only on a database where `registry_first_confirmation` is empty, and then all its connections are admitted on a null token (the fresh check
-  having passed on its waiting connection), as are those of `migrate` and `seed-dev`: a fresh one, which no process has ever confirmed, not on one whose processes are merely down or deregistered. `migrate` waits in the same
+  proceeds without waiting only on a database where `registry_first_confirmation` is empty, a fresh one which no
+  process has ever confirmed, not on one whose processes are merely down or deregistered; then its connections, and
+  those of `migrate` and `seed-dev`, are admitted on a null token only while that table stays empty, each new
+  connection checking it, and once a process has confirmed, the command adopts that confirmed identity as its own. `migrate` waits in the same
   way before a migration that is not its first (design 053's Task 053-4). `script-key`, `healthcheck`, `help` and
   `version` open no database connection. Feature 032 adds its region check to `instance_confirm_durability()` and
   `command_await_durability()` (a process or a command without `region-v1` is refused once a cell is initialized, its
