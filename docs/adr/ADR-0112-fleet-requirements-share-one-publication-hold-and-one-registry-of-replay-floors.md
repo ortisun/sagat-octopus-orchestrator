@@ -1,7 +1,7 @@
 # ADR-0112: Fleet requirements share one publication hold and one registry of replay floors
 
-**Status:** Proposed
-**Decided by:** agent, proposing, under the owner's delegation (Owner decision 2026-11-20-6, widened by Owner decision 2026-11-24-4), for designs 044, 045 and 054 of release 0.3.0 (Owner decision 2026-11-24-1); to be accepted with design 054 if it is approved
+**Status:** Accepted (2026-11-26), by delegate (OD-2026-11-24-4), on the approval of design 054 that day; implementation and its evidence pending (Enforced by)
+**Decided by:** delegate (OD-2026-11-24-4), accepting the agent's proposal made under the owner's delegation (Owner decision 2026-11-20-6, widened by Owner decision 2026-11-24-4), for designs 044, 045 and 054 of release 0.3.0 (Owner decision 2026-11-24-1); to be accepted with design 054 if it is approved
 **Refines / supersedes:** refines Architecture decision 0082 (the instance registry: who records and removes a requirement) and, on the branch of pull request #260, Architecture decision 0098 decision 8 (a requirement as a replay floor), whose floor becomes one row of the registry below; supersedes none.
 **Enforced by:** the tests of design 054's Task 054-18 in `integration_platform_foundation` (the function's privileges and configuration, a publication's hold against a concurrent removal, a removal refused by a registered floor and allowed once the floor clears, two capabilities registered at once); each design's own floor test. Until they exist the rules are review-only.
 

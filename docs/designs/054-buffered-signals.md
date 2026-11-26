@@ -1,8 +1,14 @@
 # Buffered signals
 
 *   **Author:** Claude Code, for the owner (under Owner decision 2026-11-20-6 and Owner decision 2026-11-24-4)
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-26
+*   **Reviewed-commit:** b83781f7c0dfea6d880837aa2c439d4a384a0e5a
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/054-buffered-signals.reviews/2026-11-26/final/egm-review.md sha256:c30a1e0dcce345963efdb75a9a6f05dfd4309fb53b6d999dbc1e4cfd20a1c7c7; docs/designs/054-buffered-signals.reviews/2026-11-26/final/architecture.md sha256:533456a025619d08d0fe5313b4ad77adeae59e85e1960c3b9a41c603e7a51f3d; docs/designs/054-buffered-signals.reviews/2026-11-26/final/security.md sha256:55370b3b7892d7f9fc072aaf251309ef334b988567fc62ba05ba3d1a6bf6afa9; docs/designs/054-buffered-signals.reviews/2026-11-26/final/correctness.md sha256:ba79992739483bdde4e95631493b47494f12675c40b5e30b962565c203bb4286
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 0
 
 --------------------------------------------------------------------------------
 
@@ -1195,7 +1201,15 @@ caller of a signature it changes, so the workspace builds after each.
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T054-19 Before the tasks they touch are built, apply the settlements of the approval's last re-reads (Owner decisions
+  2026-11-26-541 to 2026-11-26-548): the reducer subtracts each settling event's count and checks an empty pending set at the
+  handoff event or `run.finished`, `move_limit` before `not_declared` (Task 054-3); `SIGNAL_PENDING_BYTES_FULL` checked for every
+  code run, with the case of a continuation under another version followed by one under the same (Task 054-9); the invariant's
+  test trigger on `steps` and `run_signal_inbox` with a fixture that fails at commit (Task 054-6); slice 2 after slice 1, slice 4's
+  folders `scripts/` and `tests/integration/buffered-signals/`; the quota usage writes stated as Architecture decision 0027's
+  existing deferred flush, not an aggregate edge of Architecture decision 0050; the resolution of `tenant_pending_signal_bytes` and
+  its default, tested at both sides of the boundary (Task 054-4); Open Questions read as citing Gaps 054-001 to 054-012.
+  Refs: Requirement 054-005, Requirement 054-007, Requirement 054-010, Requirement 054-015, Requirement 054-020
 
 ### Verification Plan
 
