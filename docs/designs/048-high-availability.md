@@ -194,8 +194,8 @@ From the code and documents on `develop` at `546d5aa5`:
   only reads, so it runs on the read-only sessions of every connection. The token is written only inside the
   confirmation's `WriteTx`, by `instance_confirm_durability()` (below), a definer function that inserts it (`INSERT ...
   ON CONFLICT (id) DO NOTHING`, then a read); the runtime role has no privilege on the table. A null token means "unconfirmed", never an
-  identity; the registry's connection is admitted while the identity is unconfirmed, so that it can confirm, and every
-  other connection is refused.
+  identity; the registry's connection, and the one connection a command of `control-plane` uses to wait for a
+  confirmed identity (below), are admitted while the identity is unconfirmed, and every other connection is refused.
   The process keeps one `DatabaseIdentity` (application-owned, in `crates/application/src/instances.rs`, behind a port
   implemented in `crates/infra-postgres/src/instances.rs`): the confirmed identity, the set of identities seen
   superseded, and `identity_changed_at`. `after_connect` reports what it read; under the gate's lock, an identity equal
@@ -210,7 +210,8 @@ From the code and documents on `develop` at `546d5aa5`:
   definer function that checks the process's registry credential against its `token_hash` as every registry function
   does, inserts the token when it is absent, reads the identity itself (never from its arguments) and writes it into the
   process's row of the registry (`serving_instances`) and, the first time any process confirms, into the one-row
-  `registry_first_confirmation`, committed
+  `registry_first_confirmation`, and returns the identity it wrote, which the process compares as the one its
+  confirmation read; it is committed
   through `commit_safely` with no deadline (the keepalive bounds a dead peer, and an answer that comes late is still
   used). When it is applied, the process clears the reason, under the gate's lock, only if no identity different from
   the one it read has been observed since that read; the confirmation's own read counts as an observation. Since a
@@ -230,10 +231,12 @@ From the code and documents on `develop` at `546d5aa5`:
   `DATABASE_NOT_SYNCHRONOUS`; design 053 adds two); it is open only when the registry's state allows it and the set is
   empty. Each owner clears only its own reason; a re-registration does not reopen a gate another reason holds. Readiness
   checks the gate before it pings storage. The reasons are added to `specs/001-platform-foundation/contracts/openapi.yaml`,
-  the gRPC error metadata and `sdks/SPEC.md`; a request refused before authentication shows only `UNAVAILABLE` with
-  `Retry-After` of 10 s, never the reason or a value that depends on it (the pre-authentication refusal of
-  `crates/api-http/src/limits.rs`, which shows `BINARY_CAPABILITY_MISSING` today, keeps the new reasons out); after authentication, while a reason holds,
-  `Retry-After` is 2 s, over the gate's 10 s. The registry's
+  the gRPC error metadata and `sdks/SPEC.md`. The router-wide refusal of a closed gate (`require_serving` in
+  `crates/api-http/src/limits.rs`, which runs before authentication) shows only `UNAVAILABLE` with `Retry-After` of 10 s
+  and no reason at all, `BINARY_CAPABILITY_MISSING` included, so that an anonymous caller learns nothing of the cause;
+  the reasons, with `Retry-After` of 2 s while one of them holds, are given by the readiness endpoint's admin listener
+  and by a second check of the gate after authentication, in the request's own handler path (`Caller` extraction),
+  which Task 048-9 adds. The registry's
   `registry_error` classifies `CommitOutcomeUnknown` and an `after_connect` refusal as a failed connection (Architecture
   decision 0082, decision 5).
 - **Requirement 048-015 Reports survive a failover.** The six SDKs MUST keep retrying a `CompleteStep` or `FailStep` that
@@ -295,9 +298,10 @@ From the code and documents on `develop` at `546d5aa5`:
   and content. A negative control proves the check: the drill blocks replication to both standbys, commits a ledger row
   through its own connection to the primary with `synchronous_commit=local`, stops the primary, and the check must find
   that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
-  and checks that every request with that principal that starts 27 s or more after the isolation is refused or answered
-  `UNAVAILABLE`
-  (Technical Plan, "Why one waited write protects what came before it"). Reports go to
+  and checks that every request with that principal that starts after both 22 s from the isolation and the
+  revocation's commit is refused or answered `UNAVAILABLE` (Technical Plan, "Why one waited write protects what came
+  before it"). On Compose this fault gives one platform container a direct route to the isolated node's port on
+  `db-access`, so that the check exercises the bound; the Kubernetes drill asserts it too. Reports go to
   `tests/performance/reports/high-availability.md` with the runner (Owner decision 2026-11-25-1), the environment and
   every failure.
 - **Requirement 048-043 The drills gate the release.** A drill MUST exit non-zero when any repetition breaks the
@@ -428,10 +432,14 @@ Each was decided under the delegation of Owner decision 2026-11-20-6, with its r
 | The report window, heartbeat retries | `sdks/SPEC.md`, the six SDKs, `tests/contract/sdk-conformance/scenarios/report-through-failover.json`, the fault engines | 048-015, 048-016 |
 
 **New in the database**, each by a migration of design 053's rules with its grants and storage classification:
-`server_incarnation` (unlogged; runtime role: none, written and read only through `sagat_server_identity()`);
-`sagat_server_identity()`; `serving_instances.confirmed_server_start timestamptz` and `confirmed_server_token uuid`, and the one-row
-`registry_first_confirmation (only_row boolean primary key, at timestamptz)`, written only through
-`instance_confirm_durability()`.
+`server_incarnation` (unlogged; runtime role: none; read through `sagat_server_identity()`, written only through
+`instance_confirm_durability()`); `sagat_server_identity()` and `instance_confirm_durability()` (both `SECURITY
+DEFINER`, `search_path` pinned to `pg_catalog, pg_temp` with every name qualified, `REVOKE ALL ... FROM PUBLIC`,
+`EXECUTE` to `sagat_app`, and the first also to the owner); `serving_instances.confirmed_server_start timestamptz` and
+`confirmed_server_token uuid`, with `GRANT SELECT (confirmed_server_start, confirmed_server_token)` to `sagat_app` and no
+table-level grant (the registry grants by column and leaves out `token_hash`); and the one-row
+`registry_first_confirmation (only_row boolean primary key, at timestamptz)`, `GRANT SELECT` to `sagat_app`. The last
+two are written only through `instance_confirm_durability()`.
 
 **Why one waited write protects what came before it.** A standby receives WAL in order; a commit returns only after a
 standby has flushed WAL up to its position, which lies after every earlier commit's record. So once a process's
@@ -443,8 +451,9 @@ platform's processes hold such sessions only until their next commit's outcome i
 the new identity, and close their gate then. A process that still reaches an isolated former primary serves reads from
 it for at most 27 s after the isolation with the default settings: its registry heartbeat, a write, comes within 12 s
 (10 s jittered) and waits for a standby the isolated server cannot reach, so its commit deadline of 10 s makes the
-outcome unknown and closes the gate, and a request that acquired a connection just before runs for at most its
-statement timeout of 5 s (12 + 10 + 5 = 27 s; raising the commit deadline lengthens it by as much). `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
+outcome unknown and closes the gate (12 + 10 = 22 s; raising the commit deadline lengthens it by as much). A request
+that starts after that is refused; one already running keeps its connection until it ends, each of its statements
+bounded by the statement timeout of 5 s. `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
 apply, and the isolation drill asserts the bound.
 
 ### The drills
