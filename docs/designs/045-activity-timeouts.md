@@ -1097,7 +1097,14 @@ changes every caller of a signature it changes, so the workspace builds after ea
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T045-21 Before Task 045-6, align this design's publication hold and rollback floor with Architecture decision 0112, accepted
+  with design 054 after this design's approval: the hold's body is design 054's (Technical Plan 15 of 054: the requirement epoch
+  `FOR SHARE`, the row read without a lock), the floor is a row of `platform_requirement_floors` with a `SECURITY DEFINER` function
+  on `workflow_versions.activity_timeouts_level` instead of a rule of Architecture decision 0098's trigger, the drift guard follows
+  ADR-0112 decision 3, and Task 054-18 lands first; revise Technical Plan 13 and Tasks 045-5 and 045-6 in a re-approved revision,
+  and confirm with the security reviewer that the epoch `FOR SHARE` does not let publications starve the operator (this design's
+  second security review, Major 2).
+  Refs: Requirement 045-017
 
 ### Verification Plan
 
