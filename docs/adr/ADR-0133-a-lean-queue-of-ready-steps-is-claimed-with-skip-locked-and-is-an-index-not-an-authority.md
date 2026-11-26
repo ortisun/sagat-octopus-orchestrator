@@ -3,7 +3,7 @@
 **Status:** Proposed (2026-11-24)
 **Decided by:** agent proposal (design 052, first drafted as part B of design 051), to be accepted under Owner decision 2026-11-24-4 once design 052's review is complete; design 051's first review found it not ready, and design 052 answers those findings
 **Refines / supersedes:** refines [ADR-0030](ADR-0030-structured-instances-and-continuation-chains.md), ADR-0050, ADR-0056 and [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md), which state parts of the claim's lock order (it gains the queue row first, before the chain row); supersedes nothing
-**Enforced by:** the barrier tests of the claim's lock chain with a queue row held (Task 051-22), design 038's guards passing unmodified, the reconciliation check that fails the suites on a repaired queue (Task 051-23), and design 038's barrier test of K pollers with probes per lease at most 1.1
+**Enforced by:** the barrier tests of the claim's lock chain with a queue row held (Task 052-4), design 038's guards passing unmodified, the reconciliation check that fails the suites on a repaired queue (Task 052-5), the switch and rollback tests (Task 052-6), and design 038's barrier test of K pollers with probes per lease at most 1.1
 
 ## Context
 

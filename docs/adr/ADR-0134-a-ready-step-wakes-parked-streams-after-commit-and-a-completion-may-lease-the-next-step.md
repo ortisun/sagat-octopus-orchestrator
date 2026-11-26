@@ -3,7 +3,7 @@
 **Status:** Proposed (2026-11-24)
 **Decided by:** agent proposal (design 052, first drafted as part B of design 051), to be accepted under Owner decision 2026-11-24-4 once design 052's review is complete; design 051's first review found it not ready, and design 052 answers those findings
 **Refines / supersedes:** refines [ADR-0029](ADR-0029-worker-task-streams-spend-finite-receive-credit.md) (a stream also claims on a wake, not only after its idle interval) and [ADR-0015](ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md) (the protocol minor after delivery acknowledgement's, which holds 1.8, adds `want_next`, `session_token`, `next_task` and `next_declined`); supersedes nothing
-**Enforced by:** the wake tests and the lost-wake test (Task 051-24), the cross-process wake test (Task 051-25), the conformance scenario `next-task-in-completion` in six SDKs (Tasks 051-26 and 051-27), design 038's guards unmodified
+**Enforced by:** the wake tests and the lost-wake test (Task 052-7), the cross-process wake test (Task 052-8), the conformance scenario `next-task-in-completion` in six SDKs (Tasks 052-9 and 052-10), design 038's guards unmodified
 
 ## Context
 

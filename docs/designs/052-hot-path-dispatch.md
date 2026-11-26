@@ -84,9 +84,20 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   alert. The queue has no foreign key; a run's purge leaves its rows to the sweeper. In the integration suites a forced
   pass in each suite's teardown MUST find nothing to repair, and `verify_run` MUST assert that every leasable `READY`
   step has a row.
-- **Requirement 052-005 Upgrade and switch.** An owner command MUST backfill the rows of the steps already `READY` when
-  the table is created; the queue claim is switched on only after the backfill, by a setting; with the setting off, the
-  claim uses today's scan, and the trigger and the sweeper keep running, so switching on again is consistent.
+- **Requirement 052-005 Upgrade, switch and rollback.** The switch is a one-row owner table, `ready_queue_switch
+  (only_row boolean primary key, filling boolean, claiming boolean, backfilled_at timestamptz)`, read by the runtime
+  role and written by owner commands of `control-plane` only. `ready-queue fill` sets `filling`, from which the
+  trigger inserts (it reads the row, so with `filling` off it inserts nothing), and backfills the rows of the steps
+  already `READY`, recording `backfilled_at`; `ready-queue claim on` sets `claiming`, refused before the backfill, and
+  the claims of the processes that read it at their next heartbeat use the queue; `ready-queue claim off` returns them
+  to today's scan, the trigger and the sweeper running on, so switching on again is consistent; `ready-queue fill off`
+  also stops the trigger and empties the table, so a later `fill` backfills again. The queue needs no registry
+  capability (design 053, Requirement 053-006): it is an index of candidates, filled by a database trigger whatever
+  the binary; a release before this design claims by today's scan and ignores the queue; a row it leaves for a step it
+  leased is deleted by a claim of this design that finds the step no longer `READY`, or by the sweeper. A rollback below
+  this design's release turns `fill` off first (the runbook's step, `docs/runbooks/execution-engine.md`), since the
+  older release has no sweeper and the trigger would otherwise grow the table; the queue's size alert catches a
+  rollback that skipped it.
 - **Requirement 052-006 Budgeted.** Design 038's budget MUST also count the rows inserted into and deleted from
   `ready_steps` by a lease and a completion (`pg_stat_xact_user_tables`), recorded in the change that adds the table.
 
@@ -137,7 +148,7 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   closed-loop scenario fall from 58 to at most 2, and in the fan-out shape to at most 2, measured by design 038's
   counters.
 - **Success criterion 052-002** With wake on commit and one worker per activity, the 99th percentile of the time from a
-  step becoming ready to its lease, in the chain of three at 10% of its maximum sustained rate on design 051's machine,
+  step becoming ready to its lease, in the chain of three at 10% of its maximum sustained rate on the free standard runner,
   is under 50 ms, against up to 500 ms today; the median is reported.
 - **Success criterion 052-003** The gate fails on a hand mutation that adds 15% to the completion's measured time and
   passes on its revert, both seen in CI.
@@ -165,18 +176,21 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
    2026-11-24-513): the owner wants to surpass both products on performance, and design 051's benchmark is meaningless
    without these remedies.
 2. **Does the CI gate need a constitution amendment?** Yes: the constitution enumerates the suites a pull request runs
-   ("and only those"); adding the gate widens them, as design 038's selector rule needed version 4.4.0. Decided by the
-   coordinating session: it goes in the constitution 5.1.0 amendment, pending (Owner decision 2026-11-24-512). Task
-   052-15 writes this design's part of it. Gates Task 052-14.
+   ("and only those"); adding the gate widens them, as design 038's selector rule needed version 4.4.0. The owner
+   approved it for constitution 5.1.0 (Owner decision 2026-11-25-3, point 3: a throughput regression gate joins the CI
+   gates), which the coordinating session is drafting (the placement in 5.1.0 was Owner decision 2026-11-24-512).
+   Task 052-14 waits for its merge; Task 052-15 checks that its text admits the gate as Requirement 052-030 writes it.
 3. **What when a refused head blocks the queue?** The poll's exclusion set walks past refused rows, at most today's
    window of 64, so the refused case costs no more than today and the common case costs one probe. Parking refused rows
    until a re-arming event is a follow-up if design 051 shows the refused case matters.
 
 ## Owner decisions needed
 
-- The constitution 5.1.0 amendment of Open Question 2, pending (Owner decision 2026-11-24-512). Gates Task 052-14.
-- The runner budget for Task 052-12's measurement (US$ 208.01, design 051's "Cost of the campaigns"), with the owner
-  through the coordinating session; no paid run is planned until it is confirmed (Owner decision 2026-11-24-515).
+None open. The constitution's amendment is approved (Owner decision 2026-11-25-3, point 3) and only its merge is
+awaited (Task 052-14). The owner pays for no runner in 0.3.0 (Owner decision 2026-11-25-1, "Nada pago"): the on and off
+measurement of Task 052-12 runs on the free standard runner, where an on and off pair on one machine is still a fair
+comparison, and its run on design 051's larger runner (US$ 208.01 in design 051's "Cost of the campaigns") is
+unscheduled; this design claims no number measured on a machine it was not run on.
 
 ## Critical User Journeys (CUJs)
 
@@ -273,7 +287,7 @@ of 2026-11-24). How this draft answers each finding that concerned them:
 | VI. Observability and audit are part of the feature | Pass | Repairs, sweeps, size, wakes, next-step grants and declines, all with closed labels |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | The wake uses the outbox hint as a hint |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Barrier tests per lock, a lost wake, a lost answer, a refused head, each seen failing first |
-| Delivery Constraints | Pass with conditions | The CI gate needs the constitution's CI gates amended in 5.1.0, pending (Owner decision 2026-11-24-512) |
+| Delivery Constraints | Pass with conditions | Constitution 5.0.0 as merged; the CI gate needs the CI gates of constitution 5.1.0, approved by the owner (Owner decision 2026-11-25-3, point 3) and being drafted, so Task 052-14 waits for its merge |
 
 ## Complexity Tracking
 
@@ -313,7 +327,7 @@ of 2026-11-24). How this draft answers each finding that concerned them:
   Refs: Requirement 052-002, Requirement 052-003, Success criterion 052-001
 - [ ] T052-5 Add the sweeper and reconciliation pass, its metrics and alert, the teardown pass and the `verify_run` assertion.
   Refs: Requirement 052-004
-- [ ] T052-6 Add the backfill command and the setting that switches the queue claim on.
+- [ ] T052-6 Add `ready_queue_switch`, the commands `ready-queue fill`, `fill off`, `claim on` and `claim off` with the backfill, the rollback step of `docs/runbooks/execution-engine.md`, and the tests `a_claim_of_this_design_deletes_the_row_of_a_step_an_older_release_leased` and `fill_off_stops_the_trigger_and_empties_the_queue`.
   Refs: Requirement 052-005
 - [ ] T052-7 Wake parked streams by key with counters read before the claim, coalescing, and return to parking on refusal, with the barrier test of a commit between claim and park.
   Refs: Requirement 052-010, Requirement 052-012, Success criterion 052-002
@@ -325,15 +339,14 @@ of 2026-11-24). How this draft answers each finding that concerned them:
   Refs: Requirement 052-020
 - [ ] T052-11 Amend feature 019's plan and data model so that its priority and fairness keys go into the queue's row and order.
   Refs: Requirement 052-002
-- [ ] T052-12 Measure each remedy on and off with design 051's harness and record the gain or the removal.
-  Refs: Success criterion 052-004
-  Owner-gate: pending, the owner's row approving the runner budget (Owner decision 2026-11-24-515)
+- [ ] T052-12 Measure each remedy on and off with design 051's harness on the free standard runner, record the gain or the removal in `tests/performance/reports/hot-path-dispatch.md` with the runner named, and leave the larger runner's run unscheduled (Owner decision 2026-11-25-1).
+  Refs: Success criterion 052-002, Success criterion 052-004
 - [ ] T052-13 Pilot thirty runs of the gate on the standard runner to measure its minimum detectable effect.
   Refs: Requirement 052-030
 - [ ] T052-14 Add the `throughput-gate` job and prove it fails on the hand mutation and passes on its revert.
   Refs: Requirement 052-030, Success criterion 052-003
-  Owner-gate: pending, the constitution 5.1.0 amendment (Owner decision 2026-11-24-512)
-- [ ] T052-15 Draft this design's part of the constitution 5.1.0 amendment (the throughput gate among the CI gates), for its own review.
+  Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 3)
+- [ ] T052-15 When constitution 5.1.0 merges, check that its CI gates admit the throughput gate as Requirement 052-030 writes it, and record the merge commit here.
   Refs: Requirement 052-030
 
 #### Follow-up tasks
