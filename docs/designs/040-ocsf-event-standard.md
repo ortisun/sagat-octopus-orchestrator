@@ -43,7 +43,8 @@ This revision answers the first security and correctness reviews of 2026-11-26
   API, one tenant's records) or the operator sink (configured by the deployment, every tenant's records, one tenant per
   message).
 - **Authorizing subject.** The administrator whose authority a tenant sink runs under: its creator, or the last person
-  who changed its destination, credentials or ceiling, or resumed it.
+  who changed its URL, credential, home namespace or ceiling, rotated its signing key, or resumed it (Requirement
+  040-013).
 - **Export cursor.** The position of a sink in the audit trail: the pair (transaction id, record id) of the last record
   it has passed. It is internal and never shown (it would reveal the cluster's transaction rate).
 
@@ -133,8 +134,8 @@ stream is a reason for a regulated customer to choose this platform.
 - **Requirement 040-010** The uniform rule of Owner question 1081 (decided 2026-11-24, delegate Owner decision
   2026-11-24-4, Decision 1617 of feature 020) MUST govern what leaves through a tenant sink: the ceiling defaults to
   `internal`; a `pii` ceiling is set only by an authorizing subject who holds the effective reveal grant in every
-  namespace of the tenant (`has_effective_payload_reveal_grant`, as the step-log quota rule reads it for data that spans
-  the tenant), checked when it is set, before each batch and again in the transaction that advances the cursor; when it
+  namespace of the tenant (`holds_reveal_grant_in_every_namespace`, one snapshot, as the step-log quota rule reads it
+  for data that spans the tenant), checked when it is set, before each batch and again in the transaction that advances the cursor; when it
   fails the sink is `PAUSED_GRANT_REVOKED` and at most the batch already in flight has left; every batch is counted in
   metrics and every pause audited; `secret` never leaves. The operator sink's ceiling is `internal`, fixed.
 - **Requirement 040-011** The operator of the deployment MAY configure one operator sink through the execution
@@ -416,7 +417,8 @@ empty: the sink also receives some records created slightly before `t`. A record
 `docs/runbooks/control-plane.md`) or a move by logical replication copies `tx_id` and the cursors as data, while the new
 cluster's counter starts lower: new records would sort below every cursor. Every cursor therefore records the cluster it
 was read on (`cursor_cluster`, the cluster's `system_identifier`, read through a `SECURITY DEFINER` function of the
-owner role that returns only that number, so that the runtime role needs no grant on `pg_control_system()`). When the pass finds a cursor of another
+owner role, with `SET search_path = pg_catalog`, that returns only that number, so that the runtime role needs no grant
+on `pg_control_system()`). When the pass finds a cursor of another
 cluster, the sink becomes `CURSOR_INVALID` (audited, alerted; for the operator sink, logged), and stays so, whatever the
 counter does, until the operator runs `control-plane audit-export rebase`. A logical restore MUST advance the new
 cluster's transaction-id epoch above the largest `tx_id` before loading (`pg_resetwal --epoch`, on the stopped, empty
@@ -510,7 +512,9 @@ any, has expired. For each due sink:
    - `401`, `403`, `404`, `405`, `410` and an egress refusal are failures of the destination, not of a record: the sink
      becomes `PAUSED_DESTINATION_REFUSED`, audited and alerted, and no record is passed.
    - `400`, `413` and `422` are failures of the batch: the pass splits it, left half first, depth first, and commits the
-     cursor only over a contiguous accepted prefix. When the leftmost unresolved part is one record that the receiver
+     cursor only over a contiguous accepted prefix. After a lone left record is refused, its right sibling part is sent
+     next; when that part (or, if it is split in turn, its first accepted piece) is accepted, the refusal record and the
+     cursor's move past both commit in one transaction. When the leftmost unresolved part is one record that the receiver
      refuses alone, it is passed as refused only if a sibling part of the same split was accepted (Requirement 040-009):
      `audit.sink_record_refused` (the record id) commits in the transaction that moves the cursor past it, and
      `GET /audit/sinks/{sinkId}/refused` lists it; the pass then goes on with the rest. When no part of a split is
@@ -532,8 +536,9 @@ discovery cursor; for a tenant that has no row yet it creates one whose cursor s
 so no record of a new tenant (a newly provisioned attacker's probes included) is skipped, and the writers of audit
 records gain nothing. The operator's configuration carries a revision number the operator raises with each change. At
 start, under a lock of the configuration row, an engine whose configured revision is higher than the stored one stores
-its fingerprint, revision and `start`, keeps the cursors, lets every stream paused for its destination resume, and
-applies `start` (`now`, or a time) once; an engine whose configured revision is lower, or equal with another
+its fingerprint and revision, keeps the cursors and lets every stream paused for its destination resume; it applies the
+configured `start` (`now`, or a time) only when that value differs from the stored `start_at`, then stores it, so that
+raising the revision to rotate a credential never skips a backlog; an engine whose configured revision is lower, or equal with another
 fingerprint, does not serve the operator sink (logged and alerted), so that a rolling deploy cannot flip the destination
 back. Every write of an operator stream also compares the stored configuration revision with the one its engine read,
 so a replica on an older configuration commits nothing.
@@ -578,9 +583,31 @@ CREATE TABLE audit_sinks (
 
 Each sealed column holds the nonce and the ciphertext of `SealedSecret`, framed as `nonce || ciphertext`. The ports:
 `AuditSinkStore` (`create`, `change`, `set_state`, `list`, `get`, `refused`) for the API and `AuditExportStore`
-(`look`, `claim`, `renew`, `read_batch`, `commit_cursor`, `record_refused`, `pause`, `release`) for the loop, in
-`crates/application/src/audit_export.rs`, implemented in `crates/infra-postgres/src/audit_sinks.rs`; the loop is
-`crates/scheduler/src/audit_export.rs`, run by `apps/execution-engine/src/loops.rs`.
+for the loop, and `OperatorExportStore` for the operator sink, in `crates/application/src/audit_export.rs`,
+implemented in `crates/infra-postgres/src/audit_sinks.rs`; the loop is `crates/scheduler/src/audit_export.rs`, run by
+`apps/execution-engine/src/loops.rs`. Every write below carries the claim, revision and state predicate of section 5:
+
+```rust
+pub trait AuditExportStore: Send + Sync {
+    fn look(&self, sink: SinkRef) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn claim(&self, sink: SinkRef, ttl: Duration) -> impl Future<Output = Result<Option<Claim>, StoreError>> + Send;
+    fn renew(&self, claim: &Claim) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn read_batch(&self, claim: &Claim, limit: u32) -> impl Future<Output = Result<Vec<AuditRow>, StoreError>> + Send;
+    fn commit_cursor(&self, claim: &Claim, to: Cursor, pii_subject: Option<&Subject>)
+        -> impl Future<Output = Result<Committed, StoreError>> + Send;      // Committed::{Advanced, AdvancedAndPaused, Lost}
+    fn record_refused(&self, claim: &Claim, record: AuditId, to: Cursor) -> impl Future<Output = Result<Committed, StoreError>> + Send;
+    fn record_failure(&self, claim: &Claim, next_attempt: OffsetDateTime) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn set_state(&self, claim: &Claim, state: SinkState, reason: &'static str) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn release(&self, claim: &Claim) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+pub trait OperatorExportStore: Send + Sync {
+    fn adopt_config(&self, fingerprint: [u8; 32], revision: u64, start: Option<OffsetDateTime>)
+        -> impl Future<Output = Result<ConfigOutcome, StoreError>> + Send;  // ConfigOutcome::{Adopted, Current, Stale}
+    fn discover(&self, limit: u32) -> impl Future<Output = Result<Vec<TenantId>, StoreError>> + Send;
+    // the per-tenant streams use AuditExportStore with SinkRef::Operator(tenant), each write also comparing the
+    // configuration revision the engine adopted
+}
+```
 
 **After a failover that lost work.** Every event carries the region epoch in force when it is sent
 (`unmapped.sagat.region_epoch`; feature 032's epoch, 1 until feature 032 is built). After an activation whose failover
@@ -631,7 +658,8 @@ as lost.
   records.
 - Runbook: `docs/runbooks/audit-export.md` (create a sink, rotate its key and credential, read the oldest undelivered
   record, what each state means, `startFrom`, the epoch step of a restore into another cluster, the operator sink's
-  configuration, the grant of `pg_read_all_stats`).
+  configuration, the monitoring role that owns the oldest-holder function and holds `pg_read_all_stats`, never
+  `sagat_app`).
 
 ### 7. Rollout
 
@@ -713,7 +741,7 @@ Three slices, each a pull request, in this order.
   `signing.rs`), `crates/api-http` (the sink resource), `crates/domain` (`Permission::AuditSinkManage`,
   `ResourceType::AuditSink`), `crates/scheduler` and `apps/execution-engine` (the export loop),
   `infra/observability`, `.github/workflows/ci.yml` (the rule-test step) and the wire contract. Tasks 040-25 and 040-20
-  first (the contracts), then 040-9, 040-10, 040-11, 040-23, 040-24, 040-26 and 040-12 to 040-17. It needs nothing of design
+  first (the contracts), then 040-9, 040-10, 040-11, 040-23, 040-24, 040-26, 040-27 and 040-12 to 040-17. It needs nothing of design
   015 (the credentials use today's `SecretCipher`).
 - **Slice 3, the surfaces and the documents:** the Studio and the documents. Tasks 040-18 and 040-19. The follow-up
   tasks wait for feature 032 (Task 040-21) and for design 015's Task 015-11 (Task 040-22).
@@ -729,7 +757,8 @@ Three slices, each a pull request, in this order.
   `crates/application/src/audit_ocsf.rs`.
   Refs: Requirement 040-001, Requirement 040-007
 - [ ] T040-4 Add the projection with the disclosure rules (scrubbed reason; reason left out below `pii`; caps and the
-  truncation marker; required objects from structured fields only; `unmapped` keys closed per action; the region epoch)
+  truncation marker; required objects from structured fields only; `unmapped` as Requirement 040-006 fixes it; the region
+  epoch)
   and unit tests per class.
   Refs: Requirement 040-003, Requirement 040-005, Requirement 040-006
 - [ ] T040-5 Serialize `OcsfEvent` and validate (with `jsonschema` as a dev-dependency of `sagat-application`) the events
@@ -748,7 +777,8 @@ Three slices, each a pull request, in this order.
 - [ ] T040-8 Generate `docs/reference/ocsf-mapping.md` from the table, blessed as `contract_developer_experience` blesses
   the reference (`SAGAT_DOCS_BLESS=1`), and a test that fails when it is behind.
   Refs: Requirement 040-012, Success criterion 040-005
-- [ ] T040-9 Write the two migrations: `audit_records.tx_id` (nullable, then the default, no rewrite, `lock_timeout`
+- [ ] T040-9 Write the migrations of section 4 (the column and its grant, then three no-transaction files for the two
+  indexes and their check) and the tables: `audit_records.tx_id` (nullable, then the default, no rewrite, `lock_timeout`
   set) with the column grant that leaves it out; the two partial indexes built concurrently outside a transaction with
   the `indisvalid` check (verify the migrator's `-- no-transaction` support first; otherwise the owner's command of
   section 7); `audit_sinks` with `tenant_id NOT NULL` and the slot, `audit_operator_config`, `audit_operator_export`, grants, entries in
@@ -769,12 +799,20 @@ Three slices, each a pull request, in this order.
   request, the three failure classes with halving and refused records, the states of section 5, the in-memory idle
   back-off; Task 040-20 merged first.
   Refs: Requirement 040-009, Requirement 040-013
-- [ ] T040-24 The operator sink's grouping by tenant with the longest acknowledged prefix, its row in
-  `audit_operator_export`, and the port `AuditExportSender` with its egress policy from the allowed hosts.
+- [ ] T040-24 The operator sink: `OperatorExportStore` (the configuration row with its fingerprint, revision, `start_at`
+  and discovery cursor; `adopt_config`; `discover`), the per-tenant rows of `audit_operator_export` with their
+  refused-window columns, the streams over `AuditExportStore`, and the port `AuditExportSender` with its egress policy
+  from the allowed hosts; a refusal on an operator stream goes to logs and metrics only, never to a tenant's trail; a
+  test raises the revision to rotate a credential with `start: now` configured and sees no backlog skipped.
   Refs: Requirement 040-011
-- [ ] T040-12 Add the operator sink from the engine's configuration (or the KV path under `transit`), its allowed hosts,
-  its cursor row and its evidence in logs and metrics, and document its configuration.
+- [ ] T040-12 Read the operator sink's configuration (destination, credential, signing key, allowed hosts, revision,
+  `start`; the KV path under design 015's `transit` is Task 040-22), with its evidence in logs and metrics, and document
+  it.
   Refs: Requirement 040-011
+- [ ] T040-27 The restore guard, before Task 040-13: the `SECURITY DEFINER` function that returns `system_identifier`,
+  the check of `cursor_cluster` in the pass for sinks, operator streams and the discovery cursor, and
+  `control-plane audit-export rebase` with its refusal under `max(tx_id) >= pg_snapshot_xmax(pg_current_snapshot())`.
+  Refs: Requirement 040-009
 - [ ] T040-13 Fault and race tests: the forced commit order and the crash hook of Success criterion 040-003; the state
   races, the claim held past its expiry and the `401` case of Success criterion 040-006; the restore of Success
   criterion 040-007.
@@ -806,12 +844,14 @@ Three slices, each a pull request, in this order.
   path fingerprint, state, last delivered record, oldest undelivered age), the refused-records page, and the error codes
   `AUDIT_SINK_LIMIT` (`409`), `EGRESS_NOT_ALLOWED` (`422`), `PII_CEILING_NOT_PERMITTED` (`403`),
   `START_FROM_TOO_OLD` (`422`), `START_FROM_TIMEOUT` (`503`, retryable), `SINK_TEST_RATE_LIMITED` (`429`) and
-  `AUDIT_EXPORT_NOT_ACTIVATED` (`422`), with the contract baseline.
+  `AUDIT_EXPORT_NOT_ACTIVATED` (`422`) and `AUDIT_EXPORT_REBASE_REQUIRED` (`409`, for a `startFrom` creation under
+  `rebase`'s guard and for `/resume` of a `CURSOR_INVALID` sink; `PATCH` stays allowed), with the contract baseline.
   Refs: Requirement 040-008
 
 - [ ] T040-26 Extend `control-plane reseal-secrets` to the sealed columns of `audit_sinks` (each with its key id),
-  updating `WHERE` the old key id still holds, as `replace_sealed` does, so it cannot overwrite a concurrent change; a
-  test rotates the key ring, re-seals, removes the old key and still delivers.
+  updating a column only `WHERE` its key id, its sealed value and the sink's revision are still those read, so that a
+  concurrent `PATCH` or rotation is never overwritten; a test rotates the key ring, re-seals, removes the old key and
+  still delivers, and a test races a re-seal with a `PATCH` of the URL and keeps the new URL.
   Refs: Requirement 040-008
 
 #### Follow-up tasks
