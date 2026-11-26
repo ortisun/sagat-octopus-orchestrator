@@ -87,8 +87,8 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
 
 ## Consequences
 
-- Limit: a gated activity's input and an approval's subject travel inline, so they are at most 192 KiB less the
-  declared state's reserve (at least 64 KiB).
+- Limit: a gated activity's input and an approval's subject travel inline, so the sum of an activation's gated inputs
+  and subjects is at most 192 KiB less the declared state's reserve (at least 64 KiB in all).
 - Good: no blind repeat of an effect; compensation, review, secret disclosure and risk metadata identical in both modes.
 - Bad: the code profile of each node kind is a second schema to keep in step with the first; eager dispatch waits for
   feature 006's acknowledgement.

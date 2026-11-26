@@ -753,6 +753,11 @@ finding was answered.
 - **D044-209** (2026-11-25, later state) The per-transaction overlay bound is 771 KiB (Decision 044-213's round counted
   the addressed step's rows).
 
+- **D044-224** (2026-11-26, later state) The 16 uncommitted command-value blobs are counted per lease (attempt and
+  generation), not per run; a later attempt may name an earlier lease's unreleased blob by descriptor.
+- **D044-226** (2026-11-26, later state) The chain lock run transactions take is `lock_chain_for_run` (`PgRunStore`),
+  which reads the chain's columns; `lock_member_chain_sql` reads none.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap

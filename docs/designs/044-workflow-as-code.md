@@ -492,7 +492,8 @@ graph declares, and the versioning rules that keep code and history together.
   of 320 KiB (`MAX_PAYLOAD_BYTES` + 64 KiB, `crates/api-grpc/src/server.rs`), which does not change: a completion carries
   at most 403 commands (256 from the function's calls and 147 the SDK issues, Requirement 044-012), at most 64 KiB of
   command metadata (fragments without their literal values) and at most 192 KiB of inline values (the declared state and
-  a continue-as-new input always inline, together at most 192 KiB, the SDK throwing the typed `InlineValuesExceeded`
+  a continue-as-new input and carried state always inline, together at most 192 KiB, the carried state at most the
+  successor's `state.maxBytes` and validated against its `state.schema`, the SDK throwing the typed `InlineValuesExceeded`
   at the call that would cross it, live and in replay; any other value, a work command's input, an update result, a
   side-effect value, a terminal output, written by the SDK as a blob, largest first, whenever the message would not
   fit, at most 16 per completion, the SDK throwing `InlineValuesExceeded` at the call after which the activation's
@@ -508,11 +509,14 @@ graph declares, and the versioning rules that keep code and history together.
   blob once, by its SHA-256; a completion over 4 MiB of them is `COMMAND_INVALID`, the only refusal of this bound that
   reviews; the values are read under a per-process semaphore of 64 MiB, of which a tenant holds at most a quarter, a
   tenant above 4 MiB acquiring only while 16 MiB stays free, so a tenant under 4 MiB waits only behind other tenants
-  under 4 MiB; it is acquired with a deadline of at most the lease's remaining time; a full semaphore, or a tenant at
+  under 4 MiB; it is acquired with a deadline of the smaller of 2 s and half the lease's remaining time, so the worker
+  can retry within its lease; a full semaphore, or a tenant at
   its quarter, answers `UNAVAILABLE` with `retry-after-ms`, recorded durably on the workflow-task step
   (`steps.unavailable_at`, a one-row update fenced by the lease's attempt, generation and token hash, cleared when the
   next lease is taken), so the expiry pass of any process records that lease's expiry, and only that lease's, as not
-  counted, and `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share}` counts the refusals; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
+  counted, setting `next_attempt_at` to `unavailable_at` plus the advised delay; five consecutive uncounted expiries
+  count as one failure; the next attempt may name, by descriptor, an uncommitted command-value blob of an earlier lease
+  of the run that is not yet released, so nothing is uploaded or charged again, and `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share}` counts the refusals; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
   (at most 6 MiB) once; a `PollTasks` answer at most 3.5 MiB in all, leaving room for framing below the clients' 4 MiB (it carries fewer
   tasks when they do not fit); a replay-check task at most 16 runs, each
   read by pages under its own capability; a registration at most 64 workflow types; a worker query's arguments at most
@@ -1573,7 +1577,7 @@ The bytes of `d(k)`: `seq` a number; `body` 64 lowercase hexadecimal characters;
 | `saga_open`, `saga_close`, `saga_abort` | `s-<n>` |
 | `marker_patch`, `marker_side_effect` | the marker identifier |
 | `update_accept`, `update_reject`, `update_complete` | the decimal journal sequence of the update's `update.admitted` |
-| `consume_signals` | `""` (one command whose body lists each signal name with its sequences) |
+| `consume_signals` | `""` (one command whose body lists each signal name with its sequences; the list counts against the inline values, at most 1,000 sequences as the inbox holds) |
 | `set_state`, `complete`, `fail`, `continue_as_new`, `acknowledge_cancellation` | `""` |
 
 A command on a step that is already terminal keeps its own kind and target. A deferral record holds its blob until the command is accepted or the run ends, and a re-emission may name
@@ -1704,8 +1708,9 @@ on a running run only through a verified move (section 7.3), which proves per ru
   runs.
 - **The check.** For each item the server creates a replay-check lease (`code_replay_checks`: the job, the item's
   ordinal, the read token's hash, the expiry) claimed through `PollTasks` as a `REPLAY_CHECK` task by a session of the
-  target digest, at most 16 items per task, leased for 300 s, each history page read and each answer range extending
-  the item's lease up to 3,600 s; the reconciler re-announces leases whose hint was lost;
+  target digest, at most 16 items per task, each item leased for 300 s from its first page read (so an item queued
+  behind a sibling loses no expiry), each history page read and each answer range extending the item's lease up to
+  3,600 s, an expiry incrementing `expiries` and resetting `created_at`; the reconciler re-announces leases whose hint was lost;
   an item whose lease expired is offered alone in a task of its own, and after three expiries it ends `FAILED` with
   `REPLAY_CHECK_ABANDONED`; `NO_TARGET_WORKER` counts 3,600 s from the creation of the item's latest check while that
   check is unclaimed, an item whose check is leased or has a recorded verdict exempt; recording a verdict
@@ -1770,7 +1775,8 @@ policy moves runs by itself. The start version is the run's identity origin, not
 #### 7.4 Replay in continuous integration
 
 `GET /runs/{runId}/history` (which answers `404` for a graph run in 0.3.0) returns a code run's visible history, with its seed and the payloads of its commands (their
-inputs and literals, never their digests), as JSON lines of `HistoryEvent` under a first line `{"exportFormat": 1, ...}`, under `run:read` and `history:export`, which only
+inputs and literals, never their digests), as JSON lines of `HistoryEvent` under a first line `{"exportFormat": 1, "gatedEntries": [...], "stateMaxBytes": n, ...}` (the values every replay of
+an activation that caught an inline throw needs), under `run:read` and `history:export`, which only
 the admin role holds by default. Every payload goes through the read path of feature 016: an activity input and a
 business literal are classified by the schema that declares them (or as `pii`), an output by its entry's `outputSchema`
 in the version that issued the step (the `accepted_version_id` of its overlay row, so an activity or child still running
@@ -1896,8 +1902,9 @@ pass for a parent's `propagate` cancel policy (`crates/scheduler/src/passes.rs`)
 (`crates/application/src/runs/pending_reset.rs`, whose entry already waits for its source to end); a source-text check
 holds, counting every `stop_run(` call site with whitespace removed against a short allowlist, that `stop_run` with a
 cancellation has no other caller than this function and the deadline pass. The function takes a closed `CancelOrigin`:
-`Request { grace }`, `WithoutGrace`, `FunctionAcknowledged`, `ContinuedAfterRequest` and `LatchedHandoff`; the last
-three stop the run at once and clear the deadline. A
+`Request { grace }`, `WithoutGrace`, `FunctionAcknowledged`, `ContinuedAfterRequest` and `LatchedHandoff`; all but
+`Request` stop the run at once and clear the deadline; `Request` and `WithoutGrace` journal `run.cancel_requested`
+with their origin, and the other three journal `run.stop_requested` (`Cancelled`) with theirs. A
 chain-addressed cancellation without grace passes a latched chain head to it as well. The command that
 cancels one of the function's own children goes through it too, so a code child gets its grace. The code arm, in one
 transaction, appends `run.cancel_requested` (visible and waking, the first cooperative request journaled once per run,
@@ -2020,9 +2027,11 @@ The output of a `c-<n>` step is retained and charged to the run's 4 MiB as a gra
 business literals, side-effect values, update arguments and results, and the declared state, each also charged to the
 tenant's content quota (Architecture decision 0027); a completion over either is judged by the causes
 `RETAINED_BYTES_LIMIT` or `STORAGE_QUOTA_EXCEEDED` of section 6.3 (a terminal output and a continue-as-new input leave the
-run and meet only the tenant's quota; when the completion's values together cross the run's bound, each update result
-that does not fit fails its update first, and only what still crosses reviews the run; a terminal output over the 4 MiB
-validation bound makes the SDK throw `InlineValuesExceeded` at `complete`), and the batched path never calls
+run and meet only the tenant's quota; when the completion's values together cross the run's bound, the update results
+that do not fit fail their updates first, in ascending command number, and only what still crosses reviews the run;
+the SDK tracks the activation's blob-carried bytes against the 4 MiB validation bound, failing an update locally
+(`RETAINED_BYTES_LIMIT`) when its result would cross it and throwing `InlineValuesExceeded` at any other call that would,
+`complete` included), and the batched path never calls
 `stop_for_storage_quota` for a code completion, so the engine does not end the run. A successful
 report whose output cannot be retained is recorded as the engine records it today, `STORAGE_QUOTA_EXCEEDED`
 (`crates/application/src/worker/output.rs`): the effect happened and its result is unknown, so feature 037's
@@ -2097,14 +2106,14 @@ that SDK. Field numbers are the next free ones of each message, fixed by `worker
 | `WorkerCapabilities` | `workflow_types` (repeated `WorkflowTypeOffer{workflow_type string, code_digest string}`, at most 64), `offers_workflow_as_code bool` |
 | `TaskLease.task_kind` | new values `WORKFLOW`, `QUERY`, `REPLAY_CHECK` |
 | Placement | `WorkflowTaskLease`, `QueryTask` and `ReplayCheckTask` are a `oneof` of `TaskLease` beside today's fields, selected by `task_kind`, so `PollTasksResponse` and the stream frames carry them unchanged; each new RPC has its own `...Request` and `...Response` messages |
-| `WorkflowTaskLease` | `run_id`, `attempt`, `generation`, `lease_token`, `expires_at_epoch_ms`, `seed bytes`, `started_at_us int64`, `window_start_seq int64`, `gated_entries repeated string` (the gated activity names of the run's current version), `first_page repeated HistoryEvent`, `visible_count int64`, `continue_as_new_suggested bool`, `history_limit_reached bool`, `traceparent` |
+| `WorkflowTaskLease` | `run_id`, `attempt`, `generation`, `lease_token`, `expires_at_epoch_ms`, `seed bytes`, `started_at_us int64`, `window_start_seq int64`, `gated_entries repeated string` (the gated activity names of the run's current version), `state_max_bytes int64`, `first_page repeated HistoryEvent`, `visible_count int64`, `continue_as_new_suggested bool`, `history_limit_reached bool`, `traceparent` |
 | `HistoryEvent` | `seq int64`, `kind HistoryEventKind` (an enumeration of the visible kinds), `origin HistoryEventOrigin`, `command_number int64`, `at_us int64`, `oneof body` (one typed message per kind: activity outcome, timer fired, wait outcome, child finished, approval decided, saga outcome, signal, update admitted, cancellation requested, marker, command record, run started with the input and the carried state, workflow task started with its two flags, workflow task completed with a deferral's kind and target), payloads as `bytes` (at most 256 KiB) or a blob reference |
 | `Command` | `command_number int64`, `kind CommandKind`, `fragment_json bytes` for work commands, `oneof typed` (cancel, saga open, close, abort, marker, set state, update decision, update result, consume signals, complete, fail, continue as new, acknowledge cancellation) |
 | `CompleteWorkflowTask` | request: fence fields, `idempotency_key`, `applied_through_seq`, `replayed_chain bytes`, `commands` (the consumption of signals is one of them), `deferred_command` (a `Command` without a number: the terminal or continue-as-new command the SDK re-emits), `eager_activity_slots`, reserved `behaviour_flags`; answer: outcome (`ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, `REVIEW` with its cause), eager provisional activity leases |
 | `FailWorkflowTask` | fence fields, `idempotency_key`, `cause WorkflowTaskFailureCause`, `command_number`, `actual_kind`, `actual_target`, `exception_type` |
 | `ReadHistory` | request: lease or read token, `from_seq`; server stream of pages of `HistoryEvent` |
-| `QueryTask`, `RespondWorkerQuery` | the query's name, its arguments inline (`args bytes`, at most 64 KiB), the deadline; the answer inline (`answer bytes`, at most 256 KiB) and `committed_through_seq` |
-| `ReplayCheckTask`, `RespondReplayCheck` | the task: up to 16 items with run and read token; each answer: one item, `from_command`, at most 8,192 `body_digests`, and with the last range `s_k`, `chain` and `deferred_body_digest` (when the last completion recorded a deferral); the server compares each range as it arrives and the verdict is its own |
+| `QueryTask`, `RespondWorkerQuery` | the query's name, its arguments inline (`args bytes`, at most 64 KiB), the deadline, `gated_entries` and `state_max_bytes` of the run's current version; the answer inline (`answer bytes`, at most 256 KiB) and `committed_through_seq` |
+| `ReplayCheckTask`, `RespondReplayCheck` | the task: up to 16 items with run and read token, and the target version's `gated_entries` and `state_max_bytes`; each answer: one item, `from_command`, at most 8,192 `body_digests`, and with the last range `s_k`, `chain` and `deferred_body_digest` (when the last completion recorded a deferral); the server compares each range as it arrives and the verdict is its own |
 | `ReleaseSticky` | `run_ids` (Task 044-14) |
 | `CompleteStepRequest` | `accept_workflow_task bool`; answer: optional `WorkflowTaskLease` (Task 044-14) |
 
@@ -2149,7 +2158,7 @@ tree builds while the server lane fills them in.
 | `REPLAY_MISMATCH`, `ENVELOPE_MISMATCH`, `MATCHED` | none (batch item skip reasons, and the reason of a dry-run success) | none | moves and dry runs |
 | `REPLAY_CHECK_ABANDONED` | none (a batch item error code) | none | a replay check whose lease expired three times |
 | `CommandBatchLimitExceeded`, `InlineValuesExceeded` | none (SDK errors thrown into the function) | none | an activation over the function's share of commands or metadata; a declared state and continue-as-new input over 192 KiB; values beyond 16 blobs; a gated input crossing 192 KiB less the state's reserve; a terminal output over the 4 MiB validation bound |
-| `COMMAND_VALUE_LIMIT` | none (a counted workflow-task failure cause) | none | an upload beyond a run's 16 uncommitted command-value blobs |
+| `COMMAND_VALUE_LIMIT` | none (a counted workflow-task failure cause) | none | an upload beyond a lease's 16 uncommitted command-value blobs |
 | `WORKFLOW_FAILED` | none (a run's failure code) | none | a workflow failure whose code is outside its pattern |
 | `QUERY_UNAVAILABLE` | `409` | none | a worker query to a paused run, one under review or one whose workflow task is closed |
 | `EXTERNAL_CONTENT_NOT_INSPECTED` | none (a placeholder) | none | a blob with a `secret` field, and every blob in the export |
@@ -2189,7 +2198,7 @@ New tables, each with tenant scope and foreign keys within the tenant:
 | `code_step_nodes (tenant_id, run_id, node, command_number, accepted_version_id, scope, root_scope, issued_seq, spec bytea)`, primary key `(tenant_id, run_id, node)`, indexes on `(tenant_id, run_id, command_number)` and `(tenant_id, run_id, root_scope) WHERE root_scope IS NOT NULL` | The node overlay, a projection of the command records (at most 1 KiB per spec), append-only | `SELECT`, `INSERT` | `protected_system` (names, numbers, options; no payload) |
 | `code_update_transitions (tenant_id, namespace_id, address_scope, target_id, run_id, admitted_by, update_key, state, reason, args_digest, result_digest, at)`, unique `(tenant_id, address_scope, target_id, admitted_by, update_key, state)`, `address_scope` closed by a check as `operation_update_receipts_scope` is, `run_id` the resolved run | The code update lifecycle, append-only, one row per state, keys scoped by the address the client used and the admitting principal | `SELECT`, `INSERT` | `protected_system` (references only) |
 | `code_query_requests (tenant_id, namespace_id, run_id, id, query_name, args bytea, answer bytea, committed_through_seq, status, lease_token_hash, expires_at)`, arguments at most 64 KiB and answer at most 256 KiB inline | Worker queries (Task 044-29) | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `args` and `answer` `content`, measured by `octet_length` as `payloads.content` is; the other columns `protected_system` |
-| `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, read_token_hash, lease_token_hash, created_at, expires_at, busy_checks, first_difference integer)`, primary key `(tenant_id, job_id, ordinal)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
+| `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, verifying_subject, read_token_hash, lease_token_hash, created_at, expires_at, expiries, busy_checks, first_difference integer)`, primary key `(tenant_id, job_id, ordinal)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
 | `worker_binding_workflow_types (tenant_id, namespace_id, subject, workflow_type, profile, bound_by)`, primary key `(tenant_id, namespace_id, subject, workflow_type)` | The workflow types of a binding, modelled on `worker_binding_pools`, with the binding's profile constrained to the ordinary one | today's grants of `worker_binding_pools` | `protected_system` |
 
 Other changes:
@@ -2770,10 +2779,10 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_over_4_mib_of_blob_values_is_command_invalid`, `...::a_cold_re_emission_names_the_held_blob_by_descriptor`,
   `...::sixty_four_held_deferrals_do_not_block_an_activity_output_upload`,
   `...::a_history_blob_passed_to_a_command_is_uploaded_again_canonically`,
-  `...::a_crashed_leases_blobs_are_released_when_the_next_task_is_leased`, `...::a_tenant_at_its_semaphore_quarter_gets_unavailable`,
+  `...::a_crashed_leases_blobs_do_not_count_against_the_next_attempt`, `...::a_tenant_at_its_semaphore_quarter_gets_unavailable`,
   `...::a_tenant_under_4_mib_passes_three_tenants_at_their_quarter`, `...::an_unavailable_of_one_lease_does_not_exempt_the_next_leases_expiry`,
   `...::every_step_writer_sets_code_step`, `...::an_unavailable_answer_survives_an_expiry_in_another_scheduler`,
-  `...::a_changed_branch_after_a_deferral_uploads_sixteen_values`, `...::parallel_uploads_cannot_pass_the_runs_sixteen`,
+  `...::a_changed_branch_after_a_deferral_uploads_sixteen_values`, `...::parallel_uploads_cannot_pass_the_leases_sixteen`,
   `...::a_republished_envelope_that_gates_an_activity_reaches_a_running_worker`,
   `...::a_cold_replay_of_a_blob_carried_input_keeps_the_chain`, `...::a_deferred_blob_output_re_emitted_by_another_worker_is_accepted`,
   `...::a_deferred_inline_output_re_emitted_as_a_blob_is_accepted`,
@@ -2781,7 +2790,10 @@ a replaying worker derives from `ReadHistory`.
   `integration_claim_transition_efficiency::work_budget::a_workflow_task_claim_stays_within_42_statements_and_2_transactions`
   (a new entry beside `LEASE`: its 38 statements plus the binder's row, the pause lock, the window check and the started
   event's wake),
-  `...::outcome_seq_is_set_by_every_writer_of_an_outcome`, `crates/domain/tests`
+  `...::outcome_seq_is_set_by_every_writer_of_an_outcome`, `...::replay_paths_receive_the_gated_entries_and_the_state_reserve`
+  (the lease, a replay check, a worker query and an export, each replaying an activation that caught a gated throw),
+  `...::update_results_over_the_validation_bound_fail_locally_in_command_order`,
+  `...::five_uncounted_expiries_after_unavailable_count_as_one_failure`, `crates/domain/tests`
   `the_reconcilers_waking_kinds_equal_is_waking`,
   `integration_workflow_as_code::completion::every_journal_writer_wakes_a_code_run_in_its_transaction`, `...::no_waking_event_or_reconciler_pass_releases_a_review`,
   `...::the_reconciler_repairs_a_pending_run_from_the_journal`, `...::a_signal_committed_during_a_workflow_task_is_delivered_next`
