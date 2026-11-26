@@ -73,7 +73,7 @@ The reviews found four more facts:
    queue (a reset, a pending reset) is decided by the reservation rule: granted when its key's counted holders or
    grants plus the eligible waiters are below its limit, refused otherwise. Every limit is the lower of the waiter's
    declaration and the namespace's current ceiling.
-   *Amended 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-088, D022-090 and D022-091):* a waiter
+   *Amended 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-088, D022-121 and D022-122):* a waiter
    the grant routine cannot decide now ends its key's pass, and every younger waiter of the key waits for the next
    pass, so that no younger waiter is granted before an older one the window may have room for. Two cases are "cannot
    decide now": its run is held by another transaction (`SKIP LOCKED` found it locked), and its grant failed for a

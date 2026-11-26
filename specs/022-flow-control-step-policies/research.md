@@ -1944,8 +1944,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
   restatement had left it): `20270215000000_flow_control_waiting_kind_validate` validates it under `SHARE UPDATE
   EXCLUSIVE` (every restatement only added kinds, so every stored row satisfies it).
 
-- **D022-090 — Only a busy run and a failure that clears on its own end a key's grant pass (2026-11-25; batch 5
-  correctness Major 1, security suspicion 2; amends D022-088).** Delegate (OD-2026-11-24-4). D022-088 ended a key's pass
+- **D022-121 — Only a busy run and a failure that clears on its own end a key's grant pass (2026-11-25; batch 5
+  correctness Major 1, security suspicion 2; amends D022-088) (numbered D022-090 until 2026-11-26, when the merge with the SDK-builders branch renumbered it).** Delegate (OD-2026-11-24-4). D022-088 ended a key's pass
   at a waiter whose grant failed, whatever the failure: a waiter whose grant always fails (a version this build cannot
   load, an execution error, a row a constraint refuses, a held signal whose delivery fails) then held back every younger
   waiter of its key until its own deadline. Options: (a) end the pass on every failure (as built; a poisoned waiter
@@ -1964,8 +1964,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
   trigger refuses the older waiter's holder row; the younger is granted in the same pass) and
   `run_creators::a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted`.
 
-- **D022-091 — Every waiter's transaction that does not commit is rolled back and the rollback awaited (2026-11-25; batch
-  5 correctness Major 2).** Delegate (OD-2026-11-24-4). `grant_waiter` returned a refusal by dropping its transaction:
+- **D022-122 — Every waiter's transaction that does not commit is rolled back and the rollback awaited (2026-11-25; batch
+  5 correctness Major 2) (numbered D022-091 until 2026-11-26, when the merge with the SDK-builders branch renumbered it).** Delegate (OD-2026-11-24-4). `grant_waiter` returned a refusal by dropping its transaction:
   the pool rolls a dropped transaction back later, in a task of its own, so for a moment the run stayed locked and a
   second waiter of the same run (two root nodes of one run on one key, or a start gated on two keys) found it busy,
   which since D022-088 ends the key's pass. `RunTx` gains `rollback`, and every return of `grant_waiter` that does not
@@ -1978,7 +1978,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   locked; a transaction an earlier pass of the same tick drops on that run could, and is now named by the report
   (`skipped` counts a busy run). It is not closed by this change: when it fails again, the report says which cause.
 
-- **D022-092 — The batch-5 minors and nits built on 2026-11-25 (batch 5 rulings).** Delegate (OD-2026-11-24-4).
+- **D022-123 — The batch-5 minors and nits built on 2026-11-25 (batch 5 rulings) (numbered D022-092 until 2026-11-26, when the merge with the SDK-builders branch renumbered it).** Delegate (OD-2026-11-24-4).
   1. *A held row exists only while its run's start waits* (correctness minor 3, security suspicion 1). `verify_run`
      refuses a held signal kept for a run whose start does not wait
      (`run_creators::verify_run_refuses_a_held_signal_kept_for_a_run_whose_start_does_not_wait`). The drop of
@@ -1991,7 +1991,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   3. *`effective_sql` guarded `iteration_concurrency` with a debug assertion only* (correctness nit): it returns a
      `Result` and refuses it in every build (`quotas::effective_sql_tests`).
   4. *A grant from the buffer is not re-authorized, for signals too* (security minor 1): FR-022-060 is amended in words.
-  Correctness minor 4 is the dated amendment of ADR-0089 decision 4 (D022-090); security minor 2 is in D022-090.
+  Correctness minor 4 is the dated amendment of ADR-0089 decision 4 (D022-121); security minor 2 is in D022-121.
   Batch 4, built the same day: the release-upgrade tests read the migration head from the migrator (correctness minor
   1, `support::migration_head`); the pinned-limit rollback test rolls the later migrations back first, so that its
   refused rollback is measured from its own schema (minor 4); the label test asserts the group view and its empty key
@@ -2008,8 +2008,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
 
 - **D022-099 — A test that asserts what one grant pass decides about a waiter of two keys runs one key at a time
   (2026-11-25; CI runs 45637128106 at `f30d4ffd` and 45649612535 at `484c6047`, integration shard 2; decisions D022-088,
-  D022-073 item 4).** Delegate (OD-2026-11-24-4). (The numbers D022-093 to D022-098 are taken by the SDK-builders branch,
-  `feature/022-sdk-builders`, whose own D022-090 to D022-092 also clash with this branch's: the merge renumbers one side.)
+  D022-073 item 4).** Delegate (OD-2026-11-24-4). (The numbers D022-090 to D022-098 are taken by the SDK-builders branch,
+  `feature/022-sdk-builders`, which wrote them first, on 2026-11-20; the three decisions of this branch that took D022-090
+  to D022-092 on 2026-11-25 are renumbered D022-121 to D022-123.)
   `rate_gate::a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_and_the_next_pass_grants_it` failed
   on both runs, and passed locally, with "the window rests until the holder's slot ages out": after the first pass, the
   window's hint of the dual-gated waiter `w2` was still the instant of its queueing. Cause: `w2` waits on the window and

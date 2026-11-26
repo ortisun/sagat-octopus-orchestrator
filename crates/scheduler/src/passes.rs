@@ -568,11 +568,11 @@ enum Granted {
     Orphan,
     Fenced,
     /// Its grant failed for a reason that clears on its own (the store unavailable: a pool or statement timeout, a
-    /// serialization failure, a deadlock): like [`Self::Busy`], it ends its key's pass (decision D022-090).
+    /// serialization failure, a deadlock): like [`Self::Busy`], it ends its key's pass (decision D022-121).
     Transient,
     /// Its grant failed for any other reason (a version this build cannot load, an execution error, a row a constraint
     /// refuses): it is skipped and the pass goes on, so that a waiter whose grant always fails does not hold back the
-    /// younger waiters of its key until its deadline (decision D022-090).
+    /// younger waiters of its key until its deadline (decision D022-121).
     Failed,
     /// This process has no digest key ring (G1198): it grants nothing.
     Unsupported,
@@ -590,7 +590,7 @@ impl Granted {
         }
     }
 
-    /// What a failed grant means for its key's pass (decision D022-090).
+    /// What a failed grant means for its key's pass (decision D022-121).
     fn of_failure(error: &EngineError) -> Self {
         match error {
             EngineError::Store(StoreError::FlowControl(
@@ -604,7 +604,7 @@ impl Granted {
     }
 }
 
-/// A grant of one waiter that did not end in a decision: where it failed (decision D022-090).
+/// A grant of one waiter that did not end in a decision: where it failed (decision D022-121).
 enum GrantFailure {
     /// The delivery of the signal held with a queued start.
     Delivery(EngineError),
@@ -619,7 +619,7 @@ impl GrantFailure {
     }
 }
 
-/// What the grant of a queued start does with the signal held with it (decision D022-090).
+/// What the grant of a queued start does with the signal held with it (decision D022-121).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeldSignal {
     Deliver,
@@ -6056,7 +6056,7 @@ where
                 // a waiter whose run another transaction holds, or whose grant failed for a reason that clears on its
                 // own, is decided by a later pass, and every younger waiter of the key waits for it: granting one of
                 // them now would put it before an older waiter the window may have room for (strict admission order,
-                // decision D022-073; batch 3 work item 2; decision D022-090)
+                // decision D022-073; batch 3 work item 2; decision D022-121)
                 Granted::Busy => {
                     pass.skipped += 1;
                     undecided = true;
@@ -6074,7 +6074,7 @@ where
                 }
                 // any other failure would recur on every pass: the waiter is skipped, counted and logged (by
                 // `grant_waiter`), and stays queued until its deadline; the key keeps its hint, so it is tried again
-                // (decision D022-090)
+                // (decision D022-121)
                 Granted::Failed => {
                     pass.failed += 1;
                     undecided = true;
@@ -6103,7 +6103,7 @@ where
             .try_grant_waiter(view, hold, waiter, order, HeldSignal::Deliver)
             .await;
         // a held signal whose delivery fails for a reason that does not clear on its own would fail the grant on every
-        // pass: the grant is tried once more, in a new transaction, without it (decision D022-090)
+        // pass: the grant is tried once more, in a new transaction, without it (decision D022-121)
         if let Err(GrantFailure::Delivery(error)) = &outcome
             && Granted::of_failure(error) == Granted::Failed
         {
@@ -6138,7 +6138,7 @@ where
     }
 
     /// One try of [`Self::grant_waiter`], in one transaction of the waiter's run: committed when it grants, and otherwise
-    /// rolled back, the rollback awaited, so that the next waiter of the same run finds the run free (decision D022-091).
+    /// rolled back, the rollback awaited, so that the next waiter of the same run finds the run free (decision D022-122).
     async fn try_grant_waiter(
         &self,
         view: &View,
@@ -6272,7 +6272,7 @@ where
             .map_err(other)?;
         // the signal a Signal-with-Start held with this queued start, delivered in the grant's transaction as
         // `signalRun` would, or dropped with an audit record when no step waits for it (feature 022, T022-109,
-        // decision D022-087 item 3); when its delivery failed in an earlier try, dropped (decision D022-090)
+        // decision D022-087 item 3); when its delivery failed in an earlier try, dropped (decision D022-121)
         if start {
             match held {
                 HeldSignal::Deliver => {

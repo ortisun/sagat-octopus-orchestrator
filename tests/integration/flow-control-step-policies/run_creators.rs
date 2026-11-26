@@ -2614,7 +2614,7 @@ async fn a_cancel_source_reset_retried_while_the_first_is_in_flight_answers_its_
     let again = again.expect("the retry answers the first request's entry, not the full window");
     assert_eq!(again.reset.id, first.reset.id);
 }
-/// Batch 5 correctness Major 1 and security suspicion 2 (decision D022-090): a held signal whose delivery fails (here a
+/// Batch 5 correctness Major 1 and security suspicion 2 (decision D022-121): a held signal whose delivery fails (here a
 /// trigger refuses its `run.signalled` audit record, as any failure of the delivery would) no longer fails the grant of
 /// its start, which would end the key's pass on every pass: the grant is tried again without it, the signal dropped with
 /// its audit record (`DELIVERY_FAILED`, naming the caller who sent it), and the start granted.

@@ -1482,7 +1482,7 @@ async fn a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-/// Batch 4 correctness nit 1 (decision D022-092): a cursor of the key view, read again by its caller once the caller's
+/// Batch 4 correctness nit 1 (decision D022-123): a cursor of the key view, read again by its caller once the caller's
 /// reveal grant is gone (the caller now gets the group view), is refused `400` with a message of its own, so the caller
 /// learns to read the listing again from its start rather than that its cursor was altered.
 #[tokio::test]

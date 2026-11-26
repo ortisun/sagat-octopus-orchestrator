@@ -61,7 +61,7 @@ pub const HELD_SIGNAL_OUTPUT_BOUND: &str = "OUTPUT_BOUND";
 /// Why a held signal was dropped with its queued run: the run ended before its start was granted (item 4).
 pub const HELD_SIGNAL_RUN_ENDED: &str = "RUN_ENDED";
 /// Why a held signal was dropped at the grant: its delivery failed for a reason that does not clear on its own, so the
-/// start was granted without it (decision D022-090).
+/// start was granted without it (decision D022-121).
 pub const HELD_SIGNAL_DELIVERY_FAILED: &str = "DELIVERY_FAILED";
 
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
@@ -1828,7 +1828,7 @@ pub trait RunTx: Send {
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Rolls everything back and waits until it is done, so that the run's lock is released when this returns (decision
-    /// D022-091): a dropped transaction is rolled back later, by the pool, in a task of its own.
+    /// D022-122): a dropped transaction is rolled back later, by the pool, in a task of its own.
     fn rollback(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
@@ -2293,7 +2293,7 @@ impl<E: ExpressionEvaluator> Engine<E> {
     }
 
     /// Drops the signal held with the run of `tx`, with its audit record for `reason`, without delivering it: the grant
-    /// of a queued start whose delivery failed in an earlier transaction (decision D022-090). Whether a signal was held.
+    /// of a queued start whose delivery failed in an earlier transaction (decision D022-121). Whether a signal was held.
     ///
     /// # Errors
     /// The store's failures.

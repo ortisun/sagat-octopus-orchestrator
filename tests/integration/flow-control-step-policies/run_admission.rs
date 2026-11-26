@@ -852,7 +852,7 @@ async fn a_waiter_whose_run_is_busy_holds_back_the_younger_waiters_of_its_key() 
         "the older waiter first: {first:?} {second:?}"
     );
 }
-/// Batch 5 correctness Major 1 (decision D022-090): a waiter whose grant always fails (here a trigger refuses its holder
+/// Batch 5 correctness Major 1 (decision D022-121): a waiter whose grant always fails (here a trigger refuses its holder
 /// row, as a constraint would) no longer ends its key's pass: it is skipped, counted `failed`, and stays queued, and the
 /// younger waiter behind it is granted in the same pass. `limit: 2`, so that the older waiter's reservation leaves the
 /// younger room once both holders end.
@@ -923,7 +923,7 @@ async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiter
     }
 }
 
-/// Batch 5 correctness Major 2 (decision D022-091): two waiters of one run on one key, adjacent, the first refused by its
+/// Batch 5 correctness Major 2 (decision D022-122): two waiters of one run on one key, adjacent, the first refused by its
 /// other gate (a rate-limit window with no slot left). The refusal's transaction is rolled back, and the rollback awaited,
 /// before the second waiter is tried, so the second finds its run free and is granted, and the younger waiter of another
 /// run behind them is granted in the same pass. Before, the dropped transaction kept the run locked until the pool rolled
