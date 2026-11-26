@@ -30,8 +30,8 @@ namespaces with different policies.
    than 50 artifacts, and then switches in one short transaction that inserts a block for every artifact locking a
    package a new malicious record matches. A policy change, a waiver's change or expiry, a snapshot switch, a reservation
    and an upload's deletion each insert a durable re-evaluation job in the causing transaction; the jobs of a
-   tenant are worked in creation order, in pages with a cursor, holding the policy, snapshot and reservation-revision rows
-   `FOR SHARE`, and write or remove only their own kinds of block, never one evaluated at fresher revisions. The switch
+   tenant are worked in creation order, in pages with a cursor, holding the ecosystem's snapshot lock shared and the
+   policy and reservation-revision rows `FOR SHARE`, and write or remove only their own kinds of block, never one evaluated at fresher revisions. The switch
    rechecks age and size under the ecosystem's snapshot lock (an advisory lock that decisions take shared and the switch exclusively), and a held import still refuses the finishes and materializations
    it would block.
 5. The engine MUST NOT lease a script step whose artifact has a block for its namespace or for all: the check is in the
@@ -41,9 +41,10 @@ namespaces with different policies.
    record. The same check refuses a materialization and the start of a run container, and a block pass fails the ready steps
    of a blocked artifact that no runner advertises. An attempt already started
    finishes. Feature 023 joins its language check into the same statement.
-6. The finishing transaction of a version, on both the new-build and the cache-hit paths, reads the snapshot, the
-   namespace's policy and the tenant's reservation revision `FOR SHARE` and re-evaluates if any changed since the
-   evaluation; their writers take them `FOR UPDATE`. A malware block is released only by a platform operator, audited,
+6. The finishing transaction of a version, on both the new-build and the cache-hit paths, takes the ecosystem's snapshot
+   lock shared and the namespace's policy and the tenant's reservation revision `FOR SHARE`, and answers `StaleInputs`
+   when any differs from what the application evaluated against (the application evaluates again); the switch takes the
+   snapshot lock exclusively, and the policy and reservation writers take their rows `FOR UPDATE`. A malware block is released only by a platform operator, audited,
    once its advisory is withdrawn (a database trigger refuses otherwise).
 
 ## Considered options

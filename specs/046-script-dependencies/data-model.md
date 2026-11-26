@@ -72,8 +72,8 @@ row it would drop exists.
   granted to `sagat_advisory_import` only.
 - **Shared locks of the runtime role:** `sagat_app` takes the snapshot lock only through the `SECURITY DEFINER` function
   `sagat_lock_advisory_snapshot_share(ecosystem)` (fixed `search_path`, trusted owner, `EXECUTE` revoked from `PUBLIC` in
-  the migration, as PostgreSQL grants it by default, and granted to `sagat_app` only), so that the key space of the
-  lock is the function's alone and the runtime role needs no privilege on `package_advisory_snapshots` beyond SELECT;
+  the migration, as PostgreSQL grants it by default, and granted to `sagat_app` only), so that one function names the key (advisory lock functions are executable by every role, so the key is a convention
+  of trusted code, not a privilege) and the runtime role needs no privilege on `package_advisory_snapshots` beyond SELECT;
   tested as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`).
 - **Collection:** in one transaction per object, re-read that no lock, upload or unexpired pin references the hash and
   that its mark is at least 7 days old, delete the mark, commit; then delete the object through the gateway. A reference
