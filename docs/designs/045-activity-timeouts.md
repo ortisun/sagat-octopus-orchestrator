@@ -772,7 +772,26 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
   approved requests use. No operator function is replaced, and the registry's lock order (the epoch, then the requirement's row) is
   unchanged. Only a publication that needs the requirement holds it, and a removal is refused while a version of its level exists, so
   publications cannot starve a removal that could succeed. This refines Architecture decision 0082 decision 1 in the way 0098's build
-  already does. Features 020, 029 and 031 may use the same function.
+  already does. Features 020, 029 and 031 may use the same function. Its body, identical in designs 044 and 054:
+
+  ```sql
+  CREATE FUNCTION public.platform_requirement_hold(capability text) RETURNS boolean
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  DECLARE
+      v_kinds text[];
+  BEGIN
+      SELECT r.kinds INTO v_kinds FROM public.platform_requirements r
+       WHERE r.capability = platform_requirement_hold.capability FOR SHARE;
+      RETURN FOUND AND v_kinds @> ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']::text[];
+  END;
+  $$;
+  ```
+
+  The first of Task 044-6, Task 045-6 and Task 054-18 to merge creates it; the others compare and fail on a difference. Every
+  publication calls it through one shared store helper that sets `lock_timeout` to 1 s for its transaction, so no feature can forget
+  it. Because the parameter is generic, the runtime role can hold any requirement's row `FOR SHARE` for the length of one
+  transaction, which delays an operator's removal of that requirement by at most that transaction (the removal's own `lock_timeout`
+  then refuses it, and the operator retries); `docs/architecture/security-and-sandbox.md` records this power (Task 045-1).
 - **The floor for a rollback.** A rule of Architecture decision 0098's replay-floor trigger on `platform_requirements` (with its check
   that it runs under `READ COMMITTED`) refuses removing either requirement while any workflow version of the level that needs it
   exists, retired included: an older build cannot replay those runs' journals or honour those versions. The removal's row lock waits
@@ -808,6 +827,9 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 
 Each rule below is stated once, here.
 
+- **The server's bound on renewals.** A renewal of a lease of a level-1 or level-2 node within 500 ms of its previous renewal (the
+  lease's expiry less its time-to-live) is refused `RESOURCE_EXHAUSTED` with the reason `HEARTBEAT_TOO_FREQUENT` and a retry hint, in
+  the renewal's own statement; a lease of a level-0 node is renewed as today. Tested by Task 045-16.
 - **Design 044's workflow-task step** (`WORKFLOW_TASK`) is not a leased step of this design: it gets no deadline, the lost-lease
   pass records no `deadline` cause for it, `step_deadlines` never reads it, and the static check does not cover it; a named test
   asserts it (Gap 044-020).
@@ -818,9 +840,11 @@ Each rule below is stated once, here.
 - **Counting.** A `SCHEDULE_TO_CLOSE_TIMEOUT` decided at row 6 after a worker's delay is counted under `step_retry_decisions_total` only;
   an `ATTEMPT_TIMEOUT` with `deadline: scheduleToClose` counts as `kind="schedule_to_close"`; the rules counted are those of rows 3
   to 7; a claim's skip reuses `worker_claim_skipped_total{reason}` and a pass's no-op `scheduler_actions_total{outcome="skipped"}`.
-- **Reserved codes** are the codes decided before row 3 or reported only by the platform: the seven outcome-unknown codes, `CANCELLED`,
-  `TASK_NOT_STARTED`, `SECRET_IN_OUTPUT`, `WORKER_ERROR`, `WAIT_TIMED_OUT`, `CONCURRENCY_WAIT_TIMEOUT`, `RATE_LIMIT_WAIT_TIMEOUT`, the
-  `CHILD_*` codes and the two schedule timeouts; a domain test asserts the set contains `outcome_unknown_codes()`. One fixture of every
+- **Reserved codes** are the codes decided before row 3 or reported only by the platform: every code the domain builds with `FailureCode::system` (the seven outcome-unknown codes, `CANCELLED`,
+  `TASK_NOT_STARTED`, `SECRET_IN_OUTPUT`, `WORKER_ERROR`, `WAIT_TIMED_OUT`, `EXPRESSION_ERROR`, `RUN_DATA_LIMIT`, `BLOB_UNAVAILABLE`,
+  `BLOB_CORRUPT`, `COMPENSATION_FAILED`, `MARKED_FOR_REVIEW`, the `CHILD_*` codes, feature 022's wait timeouts and the two schedule
+  timeouts among them); the reserved set is built from that one list, and a domain test lists every system code and asserts each is
+  reserved. One fixture of every
   refusal and its reason, `tests/contract/sdk-conformance/fixtures/activity-timeouts-refusals.json`, is read by the domain tests, the six SDKs and the Studio.
 - **The overlay** is the domain's (`RetryRules`), not `retry_at`'s, which would default an absent `strategy` to exponential; `RetryRules`
   replaces the `RetryPolicy` fields of `NodeKind::Activity` and of the effect policy, and `Node::retry_rules()` returns it by reference.
@@ -845,7 +869,7 @@ Each rule below is stated once, here.
 | Once a version uses these fields, rollback below this release is refused | Stated in the release notes and the runbook; the operator records the requirement only when the fleet is upgraded and a rollback is no longer planned |
 | Security: a worker asks for a short delay to retry faster than the author's policy allows | The delay is the longer of the worker's and the policy's, and the journal says it came from the worker |
 | Security: a worker reports a platform timeout code to claim that nothing ran | The server records it as `WORKER_ERROR`; timeouts are counted where the platform decides them |
-| Security: one tenant floods deadlines or short heartbeats | The pass is fair across tenants with its own window; the minimum heartbeat timeout bounds a lease to five thirds of today's beat rate; an older host is never given a timeout below 30 s |
+| Security: one tenant floods deadlines or short heartbeats | The pass is fair across tenants with its own window; the server refuses a renewal of a lease of a level-1 or level-2 node that arrives less than 500 ms after its previous renewal (`RESOURCE_EXHAUSTED`, reason `HEARTBEAT_TOO_FREQUENT`, with a retry hint), so the server carries at most two beats per second per such lease whatever the host does; an SDK host at the minimum heartbeat timeout beats every 6,000 ms; an older host is never given a timeout below 30 s |
 | Security: a requirement is removed while a publication that needs it commits, or publications starve the operator | The publication reads the requirement's row `FOR SHARE` inside its own transaction until it commits; only a publication that needs the requirement holds it, and a removal is refused while a version of its level exists |
 | A host clock far from the database's distorts an older host's interval | An older host is served only nodes whose time-to-live is at least today's 30 s |
 | The deadline pass falls behind under load | Its lag is a histogram with an alert in the runbook, and its criterion includes a one-tenant flood |
@@ -942,7 +966,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   `bodyScript`, `retry` and `bodyRetry` (`workflow.schema.json`); `specs/045-activity-timeouts/contracts/errors.md` (the reasons and
   the two codes) and `journal-events.md` (the event fields and the new transitions); protocol 1.9 (`worker.proto`,
   `worker.baseline.json` re-pinned after reading its diff); `openapi.yaml` (`RuntimeNode`, `RuntimeGraph.serverTime`, the reasons);
-  `sdks/SPEC.md` (§6.4 the heartbeat source, the interval and the fixed-interval rule, §6.5 `nextRetryDelay`, the exception map and
+  `docs/architecture/security-and-sandbox.md` (the shared hold's power); `sdks/SPEC.md` (§6.4 the heartbeat source, the interval and the fixed-interval rule, §6.5 `nextRetryDelay`, the exception map and
   the two codes a worker cannot send, §9 the register row for 1.9 and the field register); `docs/architecture/execution-semantics.md`
   (the deadlines and the retry table); the "Refined by" pointers in Architecture decisions 0082, 0029 and, on their branches, 0098 (decisions 3 and 8) and 0099;
   and the rows of `docs/engineering/architecture-principles.md` for the checks of Task 045-20. The contract suites fail on the new
@@ -965,10 +989,11 @@ changes every caller of a signature it changes, so the workspace builds after ea
   `step.failed` from `READY` and `RETRY_WAIT` in both reducers; the pause and the resume; replay equals projection with and without the
   fields (a corpus of journals written before this design), and the new run of a reset with fresh deadlines.
   Refs: Requirement 045-003, Requirement 045-004, Requirement 045-005, Requirement 045-013, Requirement 045-021
-- [ ] T045-5 The publication gate, after Task 045-6: `infra-ir` parses the fields (with `retry_at` for the entries) and maps the domain's
-  refusals to pointers; the application's publication (`publish` in `crates/application/src/definitions.rs`) computes the version's
-  level, refuses `ACTIVITY_TIMEOUTS_NOT_ACTIVE` through the store's `hold_requirement(capability) -> bool` and writes the level with
-  the version; a version of level 0 is read without the fields. An IR fixture per reason, a stored document of level 0 that
+- [ ] T045-5 The publication gate, after Task 045-6: `infra-ir` parses the fields and maps the domain's refusals to pointers; the
+  application's publication (`publish_through` and `prepare` in `crates/application/src/definitions.rs`) computes the version's level
+  and passes the capabilities it needs to the store's `publish`, which calls `platform_requirement_hold` inside its own transaction
+  just before its commit, through the shared store helper that sets the `lock_timeout`, and writes the level with the version (no
+  separate port method holds anything); a version of level 0 is read without the fields. An IR fixture per reason, a stored document of level 0 that
   carries the keys, and a republication of the same bytes refused `DOCUMENT_NEEDS_REPUBLISH`.
   Refs: Requirement 045-001, Requirement 045-002, Requirement 045-017
 - [ ] T045-6 The two migrations of Technical Plan 2 (the columns, the checks and their validation, the indexes with their validity
