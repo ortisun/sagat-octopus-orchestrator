@@ -795,7 +795,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | The OIDC client (its connection key sets are `JwksCache` instances over a fetcher through the identity egress guard); the SAML parser, canonicalization and signature check | `crates/infra-federation` (new adapter crate) |
 | Tables, stores (the `FederationStore` adapter, `signing_keys()` included), the redefined `sagat_lock_memberships`, the session join of the membership read | `crates/infra-postgres` (migration `<ts>_federated_login`, `src/federation.rs`, `src/identity.rs`) |
 | Routes `/v1/auth/*`, `/scim/v2/*`, `/identity/*`, `/members*`; the multi-issuer verifier; `Core::authenticate` widened to take the issuer kind, `sid` and `jti` | `crates/api-http/src/routes/{signin,scim,identity_admin,members}.rs`, `crates/api-http/src/auth/issuers.rs`, `crates/api-http/src/core.rs` |
-| Configuration, the `identity-federation-v1` capability, the operator commands of Technical Plan 12, the start-up refusals (a deployment issuer equal to the platform issuer; origins that break Architecture decision 0062 decision 8) | `apps/control-plane` |
+| Configuration, the `identity-federation-v1` capability, the operator commands of Technical Plan 12, the start-up refusals (a deployment issuer equal to the platform issuer; origins that break Architecture decision 0062 decision 8; federation on outside `SAGAT_ENV=dev` with neither native TLS nor `SAGAT_API_ALLOW_PLAINTEXT_SECRETS`, the condition of `apps/control-plane/src/config.rs` gaining the federation case beside secret storage, `federation_without_tls_or_an_explicit_plaintext_statement_is_refused`) | `apps/control-plane` |
 | The leased maintenance passes (Technical Plan 6) | `crates/scheduler/src/identity.rs`, run by the execution engine under the engine lease `identity-maintenance`, only once `identity-federation-v1` is recorded |
 | The development OIDC provider on its own paths (SAML runs against the pinned Keycloak) | `apps/dev-idp` |
 | `sagat login`, key store | `apps/cli` |
@@ -1299,9 +1299,10 @@ whether or not `openbao.enabled` is set: the agent image, the CA secret and volu
 control plane's service account and its egress rule to OpenBao are rendered when `openbao.enabled` or
 `identity.federation.enabled` is true, and so are the chart's checks that go with them: when `networkPolicy.enabled`,
 `openbao.network.port` and `openbao.network.to` (`validatePort`, `validatePeers`, so an empty peer list, which would
-allow every destination, refuses the render), and the secret-transport check of `_helpers.tpl` (native TLS or an
-explicit `allowPlaintextSecrets`), whose condition gains `identity.federation.enabled`, since the API then carries
-connection secrets and refresh tokens. `sagat.openbao.env`, the intent key and the three existing roles stay on
+allow every destination, refuses the render), and the control-plane clause of the secret-transport check of `_helpers.tpl` (native TLS or an explicit
+`allowPlaintextSecrets`), whose condition gains `identity.federation.enabled`, since the API then carries connection
+secrets and refresh tokens, as the control plane's own start-up refusal does (Technical Plan 2); the engine's gRPC
+clause stays on `secrets.existingSecret` or `openbao.enabled`, since federation hands nothing to workers. `sagat.openbao.env`, the intent key and the three existing roles stay on
 `openbao.enabled` alone, so federation never turns on feature 015's secrets provider. The identity agent has its own
 container (`openbao-identity-agent`), its own config volume projecting the ConfigMap entry `control-plane-identity.hcl`
 (role `openbao.roles.identity`), its own in-memory sink volume `openbao-identity-mount` at
@@ -1313,7 +1314,8 @@ the address, CA secret, auth mount, audience, image and `openbao.roles.identity`
 `tests/contract/scalability-ha/identity_chart.rs`: with `openbao.enabled` both agents, distinct container names, roles
 and sinks; with federation on and `openbao.enabled=false` the identity agent alone, no `SAGAT_OPENBAO_*` variable, the
 CA variable and the egress rule present with its configured peers; the same with `openbao.network.to: []`, or with
-neither native TLS nor `allowPlaintextSecrets`, fails the render). The policy name
+neither native TLS nor `allowPlaintextSecrets` for the control plane, fails the render, and the federation-only case
+that renders sets nothing on `engine.grpc`). The policy name
 `sagat-identity` is fixed, not a setting, since both clients check it; `docs/runbooks/federated-login.md` and
 `infra/openbao/policies/README.md` say so; `infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
 `SAGAT_ENV=dev`, and the new production image check (Task 013-3) keeps it out.
@@ -1955,7 +1957,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_callback_of_one_connection_with_the_attempt_of_another_is_refused` (`contract_federated_login`),
   `unknown_and_unconfigured_authorize_answers_are_identical` (`contract_federated_login`),
   `a_crash_after_the_membership_insert_leaves_nothing` (`fault_federated_login`), `renewal_needs_the_origin_and_the_header`,
-  `a_second_use_of_a_code_revokes_its_session`, `a_public_origin_unequal_to_the_studio_refuses_start_up`, the slot order
+  `a_second_use_of_a_code_revokes_its_session`, `a_public_origin_unequal_to_the_studio_refuses_start_up`,
+  `federation_without_tls_or_an_explicit_plaintext_statement_is_refused`, the slot order
   tests, `two_redemptions_of_one_code_produce_one_session` (barrier), `a_sign_in_racing_a_disable_ends_without_a_live_session`
   (barrier), `two_sign_ins_of_one_person_do_not_deadlock` (barrier), `two_connections_with_one_email_make_two_members`,
   `a_second_organization_needs_the_person_to_replace_the_session`, `authorize_writes_nothing_to_the_database`,
