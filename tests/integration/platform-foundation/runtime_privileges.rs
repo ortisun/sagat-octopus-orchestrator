@@ -100,7 +100,7 @@ const ALLOWED: &[Allowed] = &[
     Allowed {
         file: INSTANCES,
         need: "ROW LOCK flow_control_key_versions",
-        reason: "feature 022 (decision D022-149 item 1): the activation of a flow-control gate (control-plane capability-activate, schema-owning role) reads the active digest key version FOR SHARE, so a command that changes the version row waits for it; operator only, like the activation it is part of (see the entry for platform_requirement_activate); activation::the_runtime_role_is_told_to_use_the_owner_role proves the runtime role is refused",
+        reason: "feature 022 (decision D022-149 item 1): the activation of a flow-control gate (control-plane capability-activate, schema-owning role) reads the active digest key version FOR SHARE (`ActivationPrerequisite::holds`, crates/infra-postgres/src/instances.rs), so a command that changes the version row waits for it; operator only, like the activation it is part of (see the entry for platform_requirement_activate); activation::the_runtime_role_is_told_to_use_the_owner_role proves the runtime role is refused",
     },
     Allowed {
         file: INSTANCES,

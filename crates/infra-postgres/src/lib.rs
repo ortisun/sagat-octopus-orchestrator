@@ -39,6 +39,40 @@ macro_rules! purgeable_grant {
     };
 }
 
+/// The rate grant (alias `$g`) of a withdrawn lease whose slot may not count again (decision D022-157): its lease instant
+/// is recorded and another grant of its key was decided at an instant for which this one no longer counted under that
+/// grant's own window (a grant counts for a decision at `t` over `p` while its lease instant is after `t - p`). Every decision
+/// that counts the key holds its window row, and the callers hold it too, so no such grant appears before their commit. One
+/// text for the decision before a withdrawal and the commit's defence.
+macro_rules! spent_rate_slot {
+    ($g:literal) => {
+        concat!(
+            $g,
+            ".leased_at IS NOT NULL AND EXISTS (SELECT 1 FROM rate_limit_grants other WHERE other.tenant_id = ",
+            $g,
+            ".tenant_id AND other.namespace_id = ",
+            $g,
+            ".namespace_id AND other.pool = ",
+            $g,
+            ".pool AND other.limit_scope = ",
+            $g,
+            ".limit_scope AND other.group_name = ",
+            $g,
+            ".group_name AND other.key_digest = ",
+            $g,
+            ".key_digest AND NOT (other.run_id = ",
+            $g,
+            ".run_id AND other.node = ",
+            $g,
+            ".node AND other.attempt = ",
+            $g,
+            ".attempt) AND other.granted_at >= ",
+            $g,
+            ".leased_at + make_interval(secs => other.period_ms / 1000.0))"
+        )
+    };
+}
+
 /// The run of a waiter (alias `$r`) that the grant pass serves: running or waiting, and not paused (ADR-0089 decision 4).
 /// One text for the pass's eligibility and for the place estimate's "skipped" (task T022-112, decision D022-068 item 6).
 macro_rules! live_gate_run {

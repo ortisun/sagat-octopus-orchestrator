@@ -282,28 +282,48 @@ async fn the_operator_is_required_and_must_be_a_subject() {
     assert_eq!(recorded(&r, "flow-control-rate-v1").await, None);
 }
 
-/// Decision D022-149 item 1 (security nit 4 of 2026-11-26): the activation reads the digest key version under a share lock,
-/// so it waits for a transaction that is changing the version row, and judges what that transaction committed: here no
-/// version is left `ACTIVE` (a fixture: no command of this build does that), and the activation is refused. A plain read
-/// would neither wait nor see it.
+/// Decision D022-149 item 1 (security nit 4 of 2026-11-26; security re-read nit 2): the activation reads the digest key
+/// version under a share lock at its second read, under the epoch lock, so it waits there for the operator's key command
+/// (`flow_control_key_activate`, which locks the versions) and judges what it committed. The epoch is held first so that
+/// the activation is past its first read when the key command starts; then the key command activates version 2 and holds
+/// its transaction; the epoch is released; the activation, now under the epoch lock, is blocked by the key command; once
+/// that commits, version 2 is active and the activation records the requirement.
 #[tokio::test]
-async fn the_activation_waits_for_a_change_of_the_digest_key_version_and_judges_what_it_committed()
-{
+async fn the_activation_waits_at_its_read_under_the_epoch_lock_for_the_key_command() {
     let r = registry().await;
     key_version_active(&r).await;
     for kind in InstanceKind::ALL {
         r.serving(kind, &[Capability::FlowControlConcurrencyV1])
             .await;
     }
-    let mut holder = r.db.pool.begin().await.expect("a transaction");
-    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut *holder)
+    let blocked_by = |holder: i32, stage: &'static str| {
+        let pool = r.db.pool.clone();
+        crate::support::bounded::within(stage, Duration::from_secs(120), async move {
+            loop {
+                let blocked: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                                    AND $1 = ANY (pg_blocking_pids(pid)))",
+                )
+                .bind(holder)
+                .fetch_one(&pool)
+                .await
+                .expect("activity");
+                if blocked {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    let mut epoch = r.db.pool.begin().await.expect("a transaction");
+    let epoch_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *epoch)
         .await
-        .expect("the holder's backend");
-    sqlx::query("UPDATE flow_control_key_versions SET state = 'RETIRING' WHERE state = 'ACTIVE'")
-        .execute(&mut *holder)
+        .expect("a backend");
+    sqlx::query("SELECT platform_requirement_lock()")
+        .execute(&mut *epoch)
         .await
-        .expect("the version row is being changed");
+        .expect("the epoch is held");
     let url = r.db.url.clone();
     let activation = tokio::spawn(async move {
         capability_activate(
@@ -312,32 +332,41 @@ async fn the_activation_waits_for_a_change_of_the_digest_key_version_and_judges_
         )
         .await
     });
-    crate::support::bounded::within(
-        "the activation waits for the version row",
-        Duration::from_secs(120),
-        async {
-            loop {
-                let blocked: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
-                                    AND $1 = ANY (pg_blocking_pids(pid)))",
-                )
-                .bind(holder_pid)
-                .fetch_one(&r.db.pool)
-                .await
-                .expect("activity");
-                if blocked {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        },
+    blocked_by(
+        epoch_pid,
+        "the activation waits for the epoch, past its first read",
     )
     .await;
-    holder.commit().await.expect("committed");
-    let message = declined(activation.await.expect("the activation ended"));
+    let mut key = r.db.pool.begin().await.expect("a transaction");
+    let key_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *key)
+        .await
+        .expect("a backend");
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM flow_control_key_activate(2::smallint, 'operator')",
+    )
+    .fetch_one(&mut *key)
+    .await
+    .expect("version 2, not committed");
+    assert_eq!(outcome, "ACTIVATED");
+    epoch.commit().await.expect("the epoch is free");
+    blocked_by(
+        key_pid,
+        "the activation waits for the key command under the epoch lock",
+    )
+    .await;
+    key.commit().await.expect("the key command commits");
     assert!(
-        message.contains("needs a digest key version in force"),
-        "{message}"
+        matches!(
+            activation.await.expect("the activation ended"),
+            Ok(ActivationOutcome::Activated { .. })
+        ),
+        "version 2 is active"
     );
-    assert_eq!(recorded(&r, "flow-control-concurrency-v1").await, None);
+    let active: i16 =
+        sqlx::query_scalar("SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'")
+            .fetch_one(&r.db.pool)
+            .await
+            .expect("one active version");
+    assert_eq!(active, 2);
 }

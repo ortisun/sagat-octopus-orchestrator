@@ -381,7 +381,13 @@ async fn a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass
     let scheduler =
         crate::support::scale::scheduler(&w, sagat_scheduler::SchedulerSettings::default(), None);
     let pass = tokio::spawn(async move { scheduler.record_rate_leases().await });
-    blocked_by(&w, holder_pid, "the pass waits for the grant row").await;
+    blocked(
+        &w,
+        holder_pid,
+        "UPDATE rate_limit_grants g SET leased_at = greatest%",
+        "the pass waits for the grant row",
+    )
+    .await;
     withdrawal.commit().await.expect("committed");
     let report = pass.await.expect("the pass ended");
     assert_eq!(
@@ -401,28 +407,6 @@ async fn a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass
     w.assert_consistent(holder).await;
 }
 
-/// Waits until a backend of this database is blocked by the backend `holder` (`pg_blocking_pids`), for at most two minutes:
-/// the barrier of a held-lock race, which another waiter cannot release.
-async fn blocked_by(w: &World, holder: i32, stage: &'static str) {
-    crate::support::bounded::within(stage, std::time::Duration::from_secs(120), async {
-        loop {
-            let blocked: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
-                                AND $1 = ANY (pg_blocking_pids(pid)))",
-            )
-            .bind(holder)
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("activity");
-            if blocked {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
-}
-
 /// The grant row of step `g` of `run`: (rows, granted_at, leased_at) in microseconds.
 async fn grant_row(w: &World, run: RunId) -> (i64, Option<i64>, Option<i64>) {
     let (rows, granted, leased): (i64, Option<OffsetDateTime>, Option<OffsetDateTime>) = sqlx::query_as(
@@ -433,25 +417,6 @@ async fn grant_row(w: &World, run: RunId) -> (i64, Option<i64>, Option<i64>) {
     .await
     .expect("the grant");
     (rows, granted.map(us), leased.map(us))
-}
-
-/// Moves the grant of step `g` of `run` (its grant and lease instants) two hours back, as the owner with the row guard off
-/// for this transaction: its window has passed, as if its lease had been held that long.
-async fn age_grant(w: &World, run: RunId) {
-    let mut tx = w.db.pool.begin().await.expect("a transaction");
-    for statement in [
-        "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
-        "UPDATE rate_limit_grants SET granted_at = granted_at - interval '2 hours', \
-                leased_at = leased_at - interval '2 hours' WHERE run_id = $1 AND node = 'g'",
-        "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
-    ] {
-        sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
-            .bind(run.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .expect(statement);
-    }
-    tx.commit().await.expect("aged");
 }
 
 /// Decision D022-146 (correctness review of 2026-11-26, Major 1): the purge keeps the grant of a step still leased at its
@@ -537,7 +502,10 @@ async fn a_give_back_of_a_recorded_grant_whose_lease_was_not_withdrawn_is_refuse
         .await
         .expect("a lease instant recorded by hand");
     let refused = w.operate(held, RunOperation::Pause).await;
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        matches!(refused, Err(sagat_application::error::AppError::Internal)),
+        "a corrupt projection, refused: {refused:?}"
+    );
     assert_eq!(count(&w, held, "rate_limit.returned").await, 0);
     assert_eq!(
         rows(&w, held, "g").await,
@@ -546,37 +514,146 @@ async fn a_give_back_of_a_recorded_grant_whose_lease_was_not_withdrawn_is_refuse
     );
 }
 
-/// Decision D022-148 (security minor 2 of 2026-11-26; closes gap G022-041): a withdrawal of a rate-gated lease whose
-/// recorded slot has stopped counting is refused. A lease that was not sent lapses (`capped`), with nothing changed; a
-/// host's hand-back of protocol 1.8 is the ordinary failure, so the attempt is spent and no withdrawal is journaled.
+/// Waits until the backend running a statement like `query` is blocked by the backend `holder` (`pg_blocking_pids` of
+/// that very backend), for at most two minutes.
+async fn blocked(w: &World, holder: i32, query: &'static str, stage: &'static str) {
+    crate::support::bounded::within(stage, std::time::Duration::from_secs(120), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                                AND query LIKE $2 AND $1 = ANY (pg_blocking_pids(pid)))",
+            )
+            .bind(holder)
+            .bind(query)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("activity");
+            if blocked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+/// How many backends of this database are blocked by the backend `holder`.
+async fn blocked_count(w: &World, holder: i32) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY (pg_blocking_pids(pid))",
+    )
+    .bind(holder)
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("activity")
+}
+
+/// A step `g` of group `shared` on `input.accountId`, `limit` per `per`, with two attempts.
+fn shared(name: &str, limit: u32, per: &str) -> Value {
+    document(
+        name,
+        "g",
+        vec![with(
+            with(
+                activity("g"),
+                "rateLimit",
+                json!({"group": "shared", "key": "input.accountId", "limit": limit, "per": per}),
+            ),
+            "retry",
+            json!({"maxAttempts": 2, "strategy": "fixed", "initialDelayMs": 1, "maxDelayMs": 1, "jitter": false}),
+        )],
+    )
+}
+
+/// The `rate_limit.granted` events of step `g` of `run` for `attempt`.
+async fn grants_of_attempt(w: &World, run: RunId, attempt: i32) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id = $1 AND node = 'g' AND event_type = 'rate_limit.granted' \
+            AND (detail ->> 'attempt')::int = $2",
+    )
+    .bind(run.as_uuid())
+    .bind(attempt)
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("grants")
+}
+
+/// Decision D022-157: a withdrawn slot whose window has passed counts again when no other grant of the key was made since
+/// it stopped counting: the withdrawal is honoured and the attempt kept. Here a per-second key, nothing else on it.
 #[tokio::test]
-async fn a_withdrawal_whose_slot_has_stopped_counting_is_refused() {
+async fn a_withdrawn_slot_counts_again_when_no_other_grant_used_the_room_it_left() {
     let w = gated_world().await;
     require_lease_withdrawal(&w).await;
-    let workflow = publish(
-        &w,
-        document("withdrawn-spent", "g", vec![slot(activity("g"))]),
-    )
-    .await;
+    let workflow = publish(&w, shared("withdrawn-alone", 1, "second")).await;
     let session = w.session(&["act.g"]).await;
     let held = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let first = lease(&w, &session, held, 1).await;
+    assert_eq!(
+        w.scheduler.record_rate_leases().await.rate_leases_recorded,
+        1
+    );
+    let leased = leased_at(&w, held).await.expect("recorded");
+    crate::support::flow_control::until_past(&w.db.pool, leased + 1_000_000).await;
+    withdraw(&w, &first).await;
+    assert_eq!(leased_at(&w, held).await, None, "it counts again");
+    let second = lease(&w, &session, held, 2).await;
+    assert_eq!(
+        w.scheduler.record_rate_leases().await.rate_leases_recorded,
+        1
+    );
+    assert_eq!(
+        leased_at(&w, held).await,
+        leases(&w, held).await.last().copied()
+    );
+    w.complete(&session, &second, &json!({}))
+        .await
+        .expect("done");
+    assert_eq!(grants_of_attempt(&w, held, 1).await, 1, "one slot");
+    w.assert_consistent(held).await;
+}
+
+/// Decisions D022-157 and D022-158 (security re-read Medium 1): one key, two definitions, per hour and per second. An
+/// hourly slot leased and recorded at `L` stops counting for the per-second waiter at `L + 1 s`, which is then granted.
+/// The hourly lease, still within its own hour, may no longer be withdrawn: not sent, it is refused `slot_spent` with
+/// nothing changed; handed back by a host of protocol 1.8, it is the ordinary failure; its retry, attempt 2, is granted
+/// exactly one slot. The key rows agree with the journals throughout.
+#[tokio::test]
+async fn a_withdrawal_is_refused_when_a_grant_of_another_period_used_the_room() {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let hourly = publish(&w, shared("withdrawn-hourly", 3, "hour")).await;
+    let secondly = publish(&w, shared("withdrawn-secondly", 1, "second")).await;
+    let session = w.session(&["act.g"]).await;
+    let account = json!({"accountId": "acct-1"});
+    let held = w.start(hourly, &account).await;
     let task = lease(&w, &session, held, 1).await;
     assert_eq!(
         w.scheduler.record_rate_leases().await.rate_leases_recorded,
         1
     );
-    age_grant(&w, held).await;
-    let before = grant_row(&w, held).await;
+    let leased = leased_at(&w, held).await.expect("recorded");
+    let other = w.start(secondly, &account).await;
+    crate::support::flow_control::until_past(&w.db.pool, leased + 1_000_000).await;
+    crate::support::flow_control::keys_due(&w.db.pool).await;
+    for _ in 0..8 {
+        if rows(&w, other, "g").await.2 == 1 {
+            break;
+        }
+        w.scheduler.tick().await;
+    }
+    granted(&w, other, "g", (false, true)).await;
+    let before = rows(&w, held, "g").await;
     let outcomes = withdrawing(&w)
         .withdraw_undelivered(
             vec![UndeliveredLease::of(w.admin.tenant_id(), &task)],
             WithdrawalCause::NotSent,
         )
         .await;
-    assert_eq!(outcomes, [WithdrawalOutcome::Capped]);
+    assert_eq!(outcomes, [WithdrawalOutcome::SlotSpent]);
     assert_eq!(step(&w, held, "g").await.0, "LEASED");
-    assert_eq!(grant_row(&w, held).await, before, "nothing changed");
-    // the host of the lease says it did not start it: an ordinary failure, not a withdrawal
+    assert_eq!(rows(&w, held, "g").await, before, "nothing changed");
+    assert_eq!(leased_at(&w, held).await, Some(leased));
+    w.assert_consistent(held).await;
     sqlx::query("UPDATE worker_sessions SET accepted_protocol_minor = 8 WHERE id = $1")
         .bind(session.worker_id)
         .execute(&w.db.pool)
@@ -593,80 +670,198 @@ async fn a_withdrawal_whose_slot_has_stopped_counting_is_refused() {
         .await
         .expect("an ordinary failure");
     assert_eq!(count(&w, held, "step.lease_withdrawn").await, 0);
-    assert_ne!(step(&w, held, "g").await.0, "LEASED", "the attempt ended");
-    // the journal replays; the key rows are not compared, because the grant's instants were moved by hand above
-    w.store
-        .verify_run(w.admin.tenant_id(), held)
-        .await
-        .expect("the journal replays");
+    for _ in 0..16 {
+        if grants_of_attempt(&w, held, 2).await > 0 {
+            break;
+        }
+        crate::support::flow_control::keys_due(&w.db.pool).await;
+        w.scheduler.tick().await;
+    }
+    assert_eq!(grants_of_attempt(&w, held, 1).await, 1);
+    assert_eq!(
+        grants_of_attempt(&w, held, 2).await,
+        1,
+        "the retry asks for a new slot, once"
+    );
+    for run in [held, other] {
+        w.assert_consistent(run).await;
+    }
 }
 
-/// Decision D022-148, under the lock: the check before the command found the slot counting (its lease instant not yet
-/// recorded), but the commit waits for the window's lock while the scheduler records the lease and its window passes; the
-/// commit's own check, under the lock, refuses: the withdrawal fails and the lease lapses (`error`), nothing changed.
+/// Decision D022-156 (correctness re-read, minor 2): the refusal is decided before the command, under the window's lock.
+/// The per-second waiter's grant pass waits for the window a test transaction holds, and the withdrawal of the hourly
+/// lease queues behind it; once the window is free the pass grants the waiter (the room the hourly slot left), and the
+/// withdrawal, deciding after it, sees that grant and is refused `slot_spent`, with nothing changed.
 #[tokio::test]
-async fn a_withdrawal_whose_slot_stops_counting_while_it_waits_for_the_window_is_refused_under_the_lock()
- {
+async fn a_grant_made_while_the_withdrawal_waits_for_the_window_refuses_it() {
     let w = gated_world().await;
     require_lease_withdrawal(&w).await;
-    let workflow = publish(
-        &w,
-        document(
-            "withdrawn-lock",
-            "g",
-            vec![with(
-                activity("g"),
-                "rateLimit",
-                json!({"key": "input.accountId", "limit": 1, "per": "second"}),
-            )],
-        ),
-    )
-    .await;
+    let hourly = publish(&w, shared("withdrawn-race-h", 3, "hour")).await;
+    let secondly = publish(&w, shared("withdrawn-race-s", 1, "second")).await;
     let session = w.session(&["act.g"]).await;
-    let held = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let account = json!({"accountId": "acct-1"});
+    let held = w.start(hourly, &account).await;
     let task = lease(&w, &session, held, 1).await;
+    assert_eq!(
+        w.scheduler.record_rate_leases().await.rate_leases_recorded,
+        1
+    );
+    let leased = leased_at(&w, held).await.expect("recorded");
+    let other = w.start(secondly, &account).await;
+    queued(&w, other, "g", (false, true)).await;
+    crate::support::flow_control::until_past(&w.db.pool, leased + 1_000_000).await;
+    crate::support::flow_control::keys_due(&w.db.pool).await;
     let mut holder = w.db.pool.begin().await.expect("a transaction");
     let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *holder)
         .await
         .expect("the holder's backend");
-    sqlx::query("SELECT 1 FROM rate_limit_windows WHERE group_name LIKE '=%' FOR UPDATE")
+    sqlx::query("SELECT 1 FROM rate_limit_windows WHERE group_name = 'shared' FOR UPDATE")
         .execute(&mut *holder)
         .await
         .expect("the window is held");
-    let service = withdrawing(&w);
-    let tenant = w.admin.tenant_id();
-    let lease_of = UndeliveredLease::of(tenant, &task);
-    let withdrawal = tokio::spawn(async move {
-        service
-            .withdraw_undelivered(vec![lease_of], WithdrawalCause::NotSent)
-            .await
-    });
-    blocked_by(&w, holder_pid, "the withdrawal waits for the window").await;
-    // the scheduler records the lease meanwhile (its hint update waits for the window too, after its own commit)
-    let recorder =
+    let pass_scheduler =
         crate::support::scale::scheduler(&w, sagat_scheduler::SchedulerSettings::default(), None);
-    let recording = tokio::spawn(async move { recorder.record_rate_leases().await });
+    let pass = tokio::spawn(async move { pass_scheduler.grant_gates().await });
     crate::support::bounded::within(
-        "the lease instant is recorded",
+        "the pass waits",
         std::time::Duration::from_secs(120),
         async {
-            while leased_at(&w, held).await.is_none() {
+            while blocked_count(&w, holder_pid).await < 1 {
                 tokio::task::yield_now().await;
             }
         },
     )
     .await;
-    let leased = leased_at(&w, held).await.expect("recorded");
-    crate::support::flow_control::until_past(&w.db.pool, leased + 1_000_000).await;
-    let before = grant_row(&w, held).await;
+    let service = withdrawing(&w);
+    let lease_of = UndeliveredLease::of(w.admin.tenant_id(), &task);
+    let withdrawal = tokio::spawn(async move {
+        service
+            .withdraw_undelivered(vec![lease_of], WithdrawalCause::NotSent)
+            .await
+    });
+    crate::support::bounded::within(
+        "the withdrawal waits",
+        std::time::Duration::from_secs(120),
+        async {
+            // queued behind the pass: a second waiter for a row is blocked by the first waiter, not by the holder
+            while blocked_count(&w, holder_pid).await + blocked_behind_waiters(&w, holder_pid).await
+                < 2
+            {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
     holder.commit().await.expect("the window is free");
+    assert_eq!(pass.await.expect("the pass ended").gates_granted, 1);
     assert_eq!(
         withdrawal.await.expect("the withdrawal ended"),
-        [WithdrawalOutcome::Error]
+        [WithdrawalOutcome::SlotSpent]
     );
-    recording.await.expect("the pass ended");
     assert_eq!(step(&w, held, "g").await.0, "LEASED");
-    assert_eq!(count(&w, held, "step.lease_withdrawn").await, 0);
-    assert_eq!(grant_row(&w, held).await, before, "nothing changed");
+    assert_eq!(leased_at(&w, held).await, Some(leased), "nothing changed");
+    granted(&w, other, "g", (false, true)).await;
+    for run in [held, other] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Decision D022-156 (correctness re-read, Major 1): one run's two rate-gated steps on keys X1 < X2 (groups `alpha` and
+/// `beta`), both leased and not sent, are handed to the withdrawal as (X2, X1) while another transaction holds X1 and then
+/// asks for X2, in the sorted order. The withdrawal locks both windows in one sorted pass, so it waits for X1 holding
+/// nothing; the other transaction takes X2 and ends; no deadlock, and both leases are withdrawn.
+#[tokio::test]
+async fn two_leases_of_one_run_lock_their_windows_in_the_sorted_order() {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let slot_of = |id: &str, group: &str| {
+        with(
+            activity(id),
+            "rateLimit",
+            json!({"group": group, "key": "input.accountId", "limit": 1, "per": "hour"}),
+        )
+    };
+    let workflow = publish(
+        &w,
+        document(
+            "withdrawn-order",
+            "p",
+            vec![
+                crate::support::engine::parallel_node("p", &["a", "b"], "all"),
+                slot_of("a", "alpha"),
+                slot_of("b", "beta"),
+            ],
+        ),
+    )
+    .await;
+    let session = w.session(&["act.a", "act.b"]).await;
+    let run = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let tasks = w.poll(&session, 8).await;
+    assert_eq!(tasks.len(), 2);
+    let alpha = tasks
+        .iter()
+        .find(|t| t.activity.as_str() == "act.a")
+        .expect("a");
+    let beta = tasks
+        .iter()
+        .find(|t| t.activity.as_str() == "act.b")
+        .expect("b");
+    let mut holder = w.db.pool.begin().await.expect("a transaction");
+    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *holder)
+        .await
+        .expect("the holder's backend");
+    sqlx::query("SELECT 1 FROM rate_limit_windows WHERE group_name = 'alpha' FOR UPDATE")
+        .execute(&mut *holder)
+        .await
+        .expect("X1 is held");
+    let service = withdrawing(&w);
+    let leases = vec![
+        UndeliveredLease::of(w.admin.tenant_id(), beta),
+        UndeliveredLease::of(w.admin.tenant_id(), alpha),
+    ];
+    let withdrawal = tokio::spawn(async move {
+        service
+            .withdraw_undelivered(leases, WithdrawalCause::NotSent)
+            .await
+    });
+    crate::support::bounded::within(
+        "the withdrawal waits for X1",
+        std::time::Duration::from_secs(120),
+        async {
+            while blocked_count(&w, holder_pid).await < 1 {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    sqlx::query("SET LOCAL lock_timeout = '10s'")
+        .execute(&mut *holder)
+        .await
+        .expect("a bound");
+    sqlx::query("SELECT 1 FROM rate_limit_windows WHERE group_name = 'beta' FOR UPDATE")
+        .execute(&mut *holder)
+        .await
+        .expect("X2, in the sorted order, without a deadlock");
+    holder.commit().await.expect("committed");
+    assert_eq!(
+        withdrawal.await.expect("the withdrawal ended"),
+        [WithdrawalOutcome::Withdrawn, WithdrawalOutcome::Withdrawn]
+    );
+    w.assert_consistent(run).await;
+}
+
+/// How many backends of this database are blocked by a backend that is itself blocked by `holder` (a queue for one row).
+async fn blocked_behind_waiters(w: &World, holder: i32) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity second WHERE second.datname = current_database() \
+            AND EXISTS (SELECT 1 FROM pg_stat_activity first WHERE $1 = ANY (pg_blocking_pids(first.pid)) \
+                        AND first.pid = ANY (pg_blocking_pids(second.pid))) \
+            AND NOT ($1 = ANY (pg_blocking_pids(second.pid)))",
+    )
+    .bind(holder)
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("activity")
 }

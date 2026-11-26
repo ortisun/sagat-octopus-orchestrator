@@ -5525,12 +5525,11 @@ impl RunTx for PgRunTx {
         lease_withdrawal_required(&mut self.tx).await
     }
 
-    async fn withdrawal_slot_spent(
+    async fn lock_withdrawn_gates(
         &mut self,
-        node: &NodeId,
-        attempt: u32,
-    ) -> Result<bool, StoreError> {
-        self.rate_slot_spent(node, attempt).await
+        leases: &[(NodeId, u32)],
+    ) -> Result<Vec<bool>, StoreError> {
+        PgRunTx::lock_withdrawn_gates(self, leases).await
     }
 
     async fn reported_by(

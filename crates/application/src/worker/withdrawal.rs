@@ -79,9 +79,13 @@ pub enum WithdrawalOutcome {
     /// The platform does not require `lease-withdrawal-v1` yet, or the host's session is older than
     /// [`HAND_BACK_PROTOCOL_MINOR`]: the lease lapses as before, or the hand-back is an ordinary failure.
     Lapsed,
-    /// The attempt was withdrawn [`MAX_WITHDRAWALS_PER_ATTEMPT`] times already (decision D006-031), or its rate slot has
-    /// stopped counting (feature 022, decision D022-148): a lease not sent lapses, a hand-back is an ordinary failure.
+    /// The attempt was withdrawn [`MAX_WITHDRAWALS_PER_ATTEMPT`] times already (decision D006-031): a lease not sent lapses,
+    /// a hand-back is an ordinary failure.
     Capped,
+    /// Feature 022 (decisions D022-157 and D022-158): the step's rate slot had stopped counting and another grant of its
+    /// key used the room meanwhile, so withdrawing would let it run in that grant's window: a lease not sent lapses, a
+    /// hand-back is an ordinary failure (the attempt is spent, gap G022-042).
+    SlotSpent,
     /// This engine runs with `SAGAT_LEASE_WITHDRAWAL=off` (decision D006-032): the lease lapses.
     Disabled,
     /// The store failed: the lease lapses.
@@ -96,6 +100,7 @@ impl WithdrawalOutcome {
             Self::FenceMissed => "fence_missed",
             Self::Lapsed => "lapsed",
             Self::Capped => "capped",
+            Self::SlotSpent => "slot_spent",
             Self::Disabled => "disabled",
             Self::Error => "error",
         }
@@ -301,19 +306,20 @@ where
             return Ok(cheap);
         }
         let required = tx.lease_withdrawal_required().await?;
-        // a rate slot that has stopped counting is not made to count again: the hand-back is the ordinary failure, as for
-        // an attempt withdrawn as often as it may be (feature 022, decision D022-148)
-        let before = if tx
-            .withdrawal_slot_spent(task.instance.node(), task.fence.attempt)
-            .await?
-        {
-            MAX_WITHDRAWALS_PER_ATTEMPT
-        } else {
-            tx.lease_withdrawals(step_id, task.fence.attempt).await?
-        };
-        Ok(hand_back_verdict(
-            gate, leased, minor, ceiling, required, before,
-        ))
+        let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
+        let verdict = hand_back_verdict(gate, leased, minor, ceiling, required, before);
+        if !matches!(verdict, HandBackVerdict::Withdraw(_)) {
+            return Ok(verdict);
+        }
+        // the step's keys locked and its slot judged before the command (feature 022, decisions D022-156 and D022-157): a
+        // slot whose room another grant used makes the hand-back the ordinary failure, counted `slot_spent`
+        let spent = tx
+            .lock_withdrawn_gates(&[(task.instance.node().clone(), task.fence.attempt)])
+            .await?;
+        if spent.first().copied().unwrap_or(false) {
+            return Ok(HandBackVerdict::Fail(WithdrawalOutcome::SlotSpent));
+        }
+        Ok(verdict)
     }
 
     /// Whether the session that holds the lease of `task` negotiated a minor that reserves `TASK_NOT_STARTED`, judged at this
@@ -434,6 +440,7 @@ where
             WithdrawalOutcome::FenceMissed,
             WithdrawalOutcome::Lapsed,
             WithdrawalOutcome::Capped,
+            WithdrawalOutcome::SlotSpent,
             WithdrawalOutcome::Error,
         ] {
             count(
@@ -461,9 +468,16 @@ where
         if !tx.lease_withdrawal_required().await? {
             return Ok(vec![WithdrawalOutcome::Lapsed; leases.len()]);
         }
+        // every key the commands below may touch, locked once and sorted, and each slot judged there (feature 022,
+        // decisions D022-156 and D022-157)
+        let gated: Vec<(sagat_domain::workflow::NodeId, u32)> = leases
+            .iter()
+            .map(|lease| (lease.instance.node().clone(), lease.fence.attempt))
+            .collect();
+        let spent = tx.lock_withdrawn_gates(&gated).await?;
         let mut outcomes = Vec::with_capacity(leases.len());
         let mut withdrawn = false;
-        for lease in leases {
+        for (lease, spent) in leases.iter().zip(spent) {
             let info = tx.info();
             let fenced = lease.step_id
                 == instance_step_id(info.version_id, info.run_id, &lease.instance)
@@ -474,12 +488,9 @@ where
                 outcomes.push(WithdrawalOutcome::FenceMissed);
                 continue;
             }
-            // a rate slot that has stopped counting is not made to count again (feature 022, decision D022-148)
-            if tx
-                .withdrawal_slot_spent(lease.instance.node(), lease.fence.attempt)
-                .await?
-            {
-                outcomes.push(WithdrawalOutcome::Capped);
+            // a rate slot whose room another grant used is not made to count again (feature 022, decision D022-157)
+            if spent {
+                outcomes.push(WithdrawalOutcome::SlotSpent);
                 continue;
             }
             let before = tx
@@ -717,6 +728,7 @@ mod tests {
             WithdrawalOutcome::FenceMissed,
             WithdrawalOutcome::Lapsed,
             WithdrawalOutcome::Capped,
+            WithdrawalOutcome::SlotSpent,
             WithdrawalOutcome::Disabled,
             WithdrawalOutcome::Error,
         ]
@@ -730,6 +742,7 @@ mod tests {
                 "fence_missed",
                 "lapsed",
                 "capped",
+                "slot_spent",
                 "disabled",
                 "error"
             ]
