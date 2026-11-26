@@ -1,6 +1,9 @@
 //! A fake OpenTelemetry Collector: receives OTLP/HTTP JSON, keeps what it receives, and can be told
 //! to answer with a given status, so the suites can see which spans left the platform and what the
-//! platform does when the collector is down.
+//! platform does when the collector is down. It takes the three endpoints of OTLP/HTTP: the traces
+//! (`/v1/traces`, which the statuses, [`Collector::spans`], [`Collector::bodies`] and
+//! [`Collector::requests`] are about) and the logs and metrics (`/v1/logs`, `/v1/metrics`, always
+//! answered 200 and kept apart, so that a suite that reads the traces sees what it saw before).
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 use std::collections::{HashMap, VecDeque};
@@ -59,6 +62,15 @@ impl Received {
     }
 }
 
+/// What one of the endpoints of the logs and metrics received.
+#[derive(Default)]
+struct Signal {
+    /// Every request, kept bodies or not.
+    requests: u32,
+    /// The bodies, as text, once [`Collector::keep_bodies`] was asked.
+    bodies: Vec<String>,
+}
+
 #[derive(Default)]
 struct Inner {
     /// The status of each request in order; 200 once the list is empty.
@@ -69,7 +81,10 @@ struct Inner {
     /// the wire does not pay for every body it receives.
     bodies: Mutex<Vec<String>>,
     keep_bodies: std::sync::atomic::AtomicBool,
+    /// The requests of `/v1/traces` (the other two endpoints count theirs apart).
     requests: Mutex<u32>,
+    logs: Mutex<Signal>,
+    metrics: Mutex<Signal>,
 }
 
 #[derive(Clone)]
@@ -170,11 +185,32 @@ async fn receive(State(inner): State<Arc<Inner>>, body: axum::body::Bytes) -> St
     StatusCode::OK
 }
 
+fn keep_signal(inner: &Inner, signal: &Mutex<Signal>, body: &[u8]) -> StatusCode {
+    let mut signal = signal.lock().expect("signal");
+    signal.requests += 1;
+    if inner.keep_bodies.load(std::sync::atomic::Ordering::Relaxed) {
+        signal
+            .bodies
+            .push(String::from_utf8_lossy(body).into_owned());
+    }
+    StatusCode::OK
+}
+
+async fn receive_logs(State(inner): State<Arc<Inner>>, body: axum::body::Bytes) -> StatusCode {
+    keep_signal(&inner, &inner.logs, &body)
+}
+
+async fn receive_metrics(State(inner): State<Arc<Inner>>, body: axum::body::Bytes) -> StatusCode {
+    keep_signal(&inner, &inner.metrics, &body)
+}
+
 impl Collector {
     pub async fn start() -> Self {
         let inner = Arc::new(Inner::default());
         let app = Router::new()
             .route("/v1/traces", post(receive))
+            .route("/v1/logs", post(receive_logs))
+            .route("/v1/metrics", post(receive_metrics))
             .with_state(Arc::clone(&inner));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -219,6 +255,26 @@ impl Collector {
         self.inner.bodies.lock().expect("bodies").clone()
     }
 
+    /// The requests `/v1/logs` received, kept bodies or not.
+    pub fn log_requests(&self) -> u32 {
+        self.inner.logs.lock().expect("logs").requests
+    }
+
+    /// The requests `/v1/metrics` received, kept bodies or not.
+    pub fn metric_requests(&self) -> u32 {
+        self.inner.metrics.lock().expect("metrics").requests
+    }
+
+    /// The bodies `/v1/logs` received since [`Self::keep_bodies`], as [`Self::bodies`] keeps those of the traces.
+    pub fn log_bodies(&self) -> Vec<String> {
+        self.inner.logs.lock().expect("logs").bodies.clone()
+    }
+
+    /// The bodies `/v1/metrics` received since [`Self::keep_bodies`], as [`Self::bodies`] keeps those of the traces.
+    pub fn metric_bodies(&self) -> Vec<String> {
+        self.inner.metrics.lock().expect("metrics").bodies.clone()
+    }
+
     pub fn spans(&self) -> Vec<Received> {
         self.inner.spans.lock().expect("spans").clone()
     }
@@ -253,6 +309,25 @@ impl Collector {
         );
     }
 
+    /// The exporter's settings an operator gets by pointing `OTEL_EXPORTER_OTLP_ENDPOINT` at this collector: the
+    /// traces, the logs and the metrics endpoints all set (`OtlpConfig::from_lookup`), with the short timeout of the
+    /// other clients of this file.
+    pub fn signals_config(&self) -> OtlpConfig {
+        let base = self
+            .url
+            .strip_suffix("/v1/traces")
+            .expect("the url of the traces")
+            .to_owned();
+        let mut config = OtlpConfig::from_lookup(
+            &|name: &str| (name == "OTEL_EXPORTER_OTLP_ENDPOINT").then(|| base.clone()),
+            "sagat-test",
+        )
+        .expect("the settings of the common endpoint")
+        .expect("an exporter is configured");
+        config.timeout = Duration::from_secs(2);
+        config
+    }
+
     /// The client of this collector, for a test that exports by itself.
     pub fn client(&self) -> OtlpClient {
         let mut config = OtlpConfig::new(&self.url, "sagat-test");
@@ -264,7 +339,7 @@ impl Collector {
     /// served on the test's own runtime, so everything it does is seen by this subscriber until the
     /// guard drops. Flush with [`SpanSink::shutdown`].
     pub fn install(&self, ratio: f64) -> (CollectorGuard, SpanSink) {
-        let (guard, sink, _) = self.install_inner(ratio, None);
+        let (guard, sink, _) = self.install_inner(ratio, None, false);
         (guard, sink)
     }
 
@@ -275,14 +350,34 @@ impl Collector {
         ratio: f64,
     ) -> (CollectorGuard, SpanSink, super::logs::Captured) {
         let captured = super::logs::Captured::default();
-        let (guard, sink, _) = self.install_inner(ratio, Some(captured.clone()));
+        let (guard, sink, _) = self.install_inner(ratio, Some(captured.clone()), false);
         (guard, sink, captured)
+    }
+
+    /// [`Self::install_with_logs`] whose exporter has the three endpoints of this collector set, as
+    /// [`Self::signals_config`] gives them, and the client of those settings, for whatever exports
+    /// logs or gauges (`OtlpClient::export_log`, `OtlpClient::export_gauge`) or runs a projector.
+    pub fn install_with_signals(
+        &self,
+        ratio: f64,
+    ) -> (CollectorGuard, SpanSink, super::logs::Captured, OtlpClient) {
+        let captured = super::logs::Captured::default();
+        let (guard, sink, _) = self.install_inner(ratio, Some(captured.clone()), true);
+        let mut config = self.signals_config();
+        config.sample_ratio = ratio;
+        (
+            guard,
+            sink,
+            captured,
+            OtlpClient::new(config).expect("client"),
+        )
     }
 
     fn install_inner(
         &self,
         ratio: f64,
         logs: Option<super::logs::Captured>,
+        signals: bool,
     ) -> (CollectorGuard, SpanSink, Option<super::logs::Captured>) {
         // `tracing-core` optimizes its first dispatcher through the default of whichever thread
         // registers a new callsite. A concurrent test with no subscriber can otherwise cache that
@@ -295,7 +390,11 @@ impl Collector {
         let exclusive = COLLECTOR_SUBSCRIBER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut config = OtlpConfig::new(&self.url, "sagat-test");
+        let mut config = if signals {
+            self.signals_config()
+        } else {
+            OtlpConfig::new(&self.url, "sagat-test")
+        };
         config.timeout = Duration::from_secs(2);
         config.flush_interval = Duration::from_millis(100);
         config.sample_ratio = ratio;

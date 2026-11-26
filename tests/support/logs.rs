@@ -39,20 +39,71 @@ impl MakeWriter<'_> for Captured {
     }
 }
 
+/// Keeps two subscribers that are interested in nothing registered for the life of the process, so that
+/// `tracing-core` never sees a single registered subscriber: with one, it computes the interest of a
+/// call site from the default subscriber of whichever thread reaches the call site first (its
+/// `has_just_one` shortcut), which on another test's thread is no subscriber at all, and the call site
+/// is then silent for a capture that is listening on this thread (D2341). With two or more, every live
+/// subscriber is asked, under the lock of the registry. Every subscriber a test installs on its
+/// thread calls this first; it is idempotent.
+pub fn keep_interest_shared() {
+    static KEPT: std::sync::OnceLock<[tracing::Dispatch; 2]> = std::sync::OnceLock::new();
+    KEPT.get_or_init(|| [tracing::Dispatch::new(Deaf), tracing::Dispatch::new(Deaf)]);
+}
+
+/// A subscriber interested in nothing, at no level: it changes neither the interest of a call site
+/// nor the most verbose level the process records.
+struct Deaf;
+
+impl tracing::Subscriber for Deaf {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::never()
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::OFF)
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, _: &tracing::Event<'_>) {}
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 /// Starts capturing warnings and errors; keep the guard alive for the duration of the test.
 ///
 /// Call it as late as the test allows (after the slow set-up, right before the action whose log is
-/// asserted). `tracing` caches, per call site, whether any subscriber is interested; a call site
-/// that other tests register at the very moment this subscriber is installed can be cached as
-/// "nobody is interested" and then never reaches it. Installing late and rebuilding the cache
-/// makes that race practically impossible; it cannot be excluded in a test binary that runs many
-/// tests at once, which is why the assertions that use this fail loudly instead of passing quietly.
+/// asserted). `tracing` caches, per call site, whether any subscriber is interested, and the cache
+/// is computed when a call site is first reached, on whatever thread reaches it. While one scoped
+/// subscriber alone is registered in the process, `tracing-core` 0.1 takes a shortcut and asks only
+/// the default subscriber *of the thread that reaches the call site*: another test's thread, with
+/// none, caches the call site as "nobody is interested", and this capture never hears it again
+/// (`the_prefix_and_the_reason_of_a_purged_job_reach_no_log_span_metric_or_audit_record_and_are_gone_afterwards`
+/// missed the purge's own line under the whole suite, D2341). [`keep_interest_shared`] closes that
+/// shortcut for the life of the process, and the capture rebuilds the cache once it is installed.
 pub fn capture() -> (DefaultGuard, Captured) {
     capture_at(tracing::Level::WARN)
 }
 
 /// Like [`capture`], for everything at `level` and above (`TRACE` captures every line).
 pub fn capture_at(level: tracing::Level) -> (DefaultGuard, Captured) {
+    keep_interest_shared();
     let captured = Captured::default();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(captured.clone())
@@ -68,6 +119,7 @@ pub fn capture_at(level: tracing::Level) -> (DefaultGuard, Captured) {
 /// closes, whether or not an event happens inside it: what a span carries is what a trace exporter
 /// would send, so a test can search the spans of a flow for a value that must not be in them.
 pub fn capture_with_spans(level: tracing::Level) -> (DefaultGuard, Captured) {
+    keep_interest_shared();
     let captured = Captured::default();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(captured.clone())

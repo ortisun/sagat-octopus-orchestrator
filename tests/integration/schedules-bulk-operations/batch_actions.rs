@@ -35,7 +35,7 @@ fn over(runs: &[RunId]) -> Selector {
 async fn run_job(f: &Fixture, exec: &Executor, write: BatchWrite, key: &str) -> JobRecord {
     live(f);
     let job = create(f, write, key).await;
-    select(exec, &job).await;
+    select(f, exec, &job).await;
     for _ in 0..300 {
         let now = service(f).get(&f.w.admin, job.id).await.expect("job");
         if matches!(

@@ -299,7 +299,9 @@ impl Triggers {
         sqlx::query(
             "UPDATE schedule_trigger_handover SET state = $1, changed_by = $2, \
                  changed_at = CASE WHEN $2::text IS NULL THEN NULL ELSE now() - interval '1 minute' END, \
-                 changed_db_role = CASE WHEN $2::text IS NULL THEN NULL ELSE 'test' END",
+                 changed_db_role = CASE WHEN $2::text IS NULL THEN NULL ELSE 'test' END, \
+                 changed_mode = CASE WHEN $2::text IS NULL THEN NULL ELSE 'OPERATOR' END, \
+                 changed_epoch = CASE WHEN $2::text IS NULL THEN NULL ELSE 0 END",
         )
         .bind(state)
         .bind(changed_by)

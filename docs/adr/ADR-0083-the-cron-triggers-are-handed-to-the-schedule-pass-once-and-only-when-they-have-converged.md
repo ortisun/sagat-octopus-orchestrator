@@ -53,3 +53,7 @@ Accepted limits, each written in the runbook (`docs/runbooks/schedules.md` 6.2 a
 ## Evidence
 
 The tests named above; `tasks.md` of feature 018 (T018-060, T018-061), with the mutation batteries of each round.
+
+## Amendments
+
+- **2026-11-14 (ADR-0091, proposed; OD-2026-11-14-4 to OD-2026-11-14-7).** The owner decided that the handover happens without an operator's command after a deployment, made by a one-shot job that runs this command with `--auto` (a compose service; in Helm a plain Job of the release, named by its revision), with the narrow role `sagat_handover` (O1957). ADR-0091 amends decision 4 (the command is run by the operator or by that job on the operator's behalf; `--auto` waits, bounded and with no transaction open, for stable rounds over a horizon in which every engine seen lists `schedules-v1`, no unregistered scheduler membership and no recent work of the reconciliation is seen, a control plane is live and the view is empty, and never before one horizon after its first round), extends decision 5 (typed, retried refusals; a SIGTERM starts no activation), and replaces the accepted limit "the handover has no tenant audit entry of its own" (D2042) with one audit record per tenant the handover affected, recorded in its transaction and written after the commit. The decisions above are not rewritten; until ADR-0091 is accepted and built, they describe what runs. ADR-0082 decision 1 is widened for this command's role only.

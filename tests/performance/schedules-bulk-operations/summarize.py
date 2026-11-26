@@ -282,6 +282,69 @@ def section_triggers(found):
     return out
 
 
+def first_number(name):
+    match = re.search(r"\d+", name)
+    return int(match.group()) if match else 0
+
+
+def section_idle(found):
+    """The schedule passes on a deployment with no schedule (idle.rs): what each window added over the windows in which nothing ran."""
+    idle = {name: records for name, records in group(found, "idle-").items() if not name.startswith("idle-throughput")}
+    if not idle and not group(found, "idle-throughput"):
+        return []
+    out = ["### The schedule passes without schedules (idle)", ""]
+    rows = []
+    for name, records in sorted(idle.items(), key=lambda item: first_number(item[0])):
+        labels = [w["loops"] for w in (records[0]["numbers"].get("windows") or [])]
+        for index, label in enumerate(labels):
+            base = f"numbers.windows.{index}"
+            rows.append([name, len(records), label,
+                         spread(records, f"{base}.rounds.schedules", 0), spread(records, f"{base}.rounds.triggers", 0),
+                         spread(records, f"{base}.rounds.convergence_counts", 0),
+                         spread(records, f"{base}.excess.statements_per_s"),
+                         spread(records, f"{base}.excess_statements_per_round"),
+                         spread(records, f"{base}.excess.exec_ms_per_s", 3),
+                         spread(records, f"{base}.excess.engine_cpu_ms_per_s"),
+                         spread(records, f"{base}.excess.database_cpu_ms_per_s"),
+                         spread(records, f"{base}.excess.transactions_per_s")])
+    if rows:
+        out.append(table(["scenario", "N", "loops", "schedule rounds", "trigger rounds", "convergence counts",
+                          "statements/s", "statements/round", "exec ms/s", "engine CPU ms/s", "database CPU ms/s",
+                          "transactions/s"], rows))
+        out.append("")
+        rows = []
+        for name, records in sorted(idle.items(), key=lambda item: first_number(item[0])):
+            for index in range(2):
+                base = f"numbers.baseline.{index}.rates"
+                rows.append([name, len(records), "before" if index == 0 else "after",
+                             spread(records, f"{base}.statements_per_s"), spread(records, f"{base}.exec_ms_per_s", 3),
+                             spread(records, f"{base}.engine_cpu_ms_per_s"), spread(records, f"{base}.database_cpu_ms_per_s"),
+                             spread(records, f"{base}.transactions_per_s")])
+        out.append(table(["scenario", "N", "window with nothing running", "statements/s", "exec ms/s", "engine CPU ms/s",
+                          "database CPU ms/s", "transactions/s"], rows))
+        out.append("")
+        name, records = sorted(idle.items(), key=lambda item: first_number(item[0]))[0]
+        both = (records[0]["numbers"].get("windows") or [{}])[-1]
+        out += [f"Statements of one repetition of {name}, both loops ({both.get('seconds', 0):.0f} s):", ""]
+        out.append(table(["calls", "exec ms", "statement"],
+                         [[s["calls"], f"{s['exec_ms']:.2f}", "`" + s["query"].replace("|", "\\|")[:150] + "`"]
+                          for s in both.get("statements", [])]))
+        out.append("")
+    rows = []
+    for name, records in sorted(group(found, "idle-throughput").items(), key=lambda item: by_size(item[0])):
+        ratios = [r for record in records for r in (dig(record, "numbers.pair_ratio_on_over_off") or [])]
+        rows.append([name, len(records), f"{len(ratios)} pairs",
+                     spread(records, "numbers.off_runs_per_s.p50"), spread(records, "numbers.on_runs_per_s.p50"),
+                     spread(records, "numbers.ratio.p50", 3),
+                     f"{fmt(min(ratios), 3)} - {fmt(max(ratios), 3)}" if ratios else "n/a",
+                     fmt(statistics.median(ratios), 3) if ratios else "n/a"])
+    if rows:
+        out.append(table(["scenario", "N", "pairs", "off runs/s (median of a repetition)", "on runs/s",
+                          "ratio on/off, median of a repetition", "every pair: lowest - highest", "every pair: median"], rows))
+        out.append("")
+    return out
+
+
 def section_verdicts(found):
     out = ["### Bounds asserted and whether they held", ""]
     rows = []
@@ -322,7 +385,8 @@ def main():
     out_dir = sys.argv[1]
     found = fragments(out_dir)
     lines = []
-    for section in (section_firing, section_batch, section_claim, section_reset, section_triggers, section_verdicts):
+    for section in (section_firing, section_batch, section_claim, section_reset, section_triggers, section_idle,
+                    section_verdicts):
         lines += section(found)
     lines += section_load(found, out_dir)
     print("\n".join(lines))

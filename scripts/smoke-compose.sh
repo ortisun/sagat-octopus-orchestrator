@@ -5,7 +5,8 @@
 # API accepts, that the Studio is served and, when SAGAT_BIN names a built `sagat`, that the first day
 # works: doctor, a workflow published, served by `worker dev` and run to the end. With
 # SAGAT_SMOKE_BROWSER=1 it then runs the TypeScript SDK example and proves in a real browser that
-# the resulting run's graph, table and journal are visible in Studio. Then it tears everything down.
+# the resulting run's graph, table and journal are visible in Studio. Last it runs the job of the automatic handover of the cron
+# triggers (exit 2 without its password, 0 once it hands over, 0 when switched off). Then it tears everything down.
 #
 #   scripts/smoke-compose.sh                 # uses infra/docker/.env.example
 #   ENV_FILE=infra/docker/.env scripts/smoke-compose.sh
@@ -208,5 +209,56 @@ elif [ "${SAGAT_SMOKE_BROWSER:-0}" != "0" ]; then
   echo "SAGAT_SMOKE_BROWSER must be 0 or 1" >&2
   exit 1
 fi
+
+echo "--- the automatic handover job (feature 018, ADR-0091): exit 2 without its password, 0 once it hands over, 0 when off"
+owner_sql() {  # owner_sql <statement>: run as the database owner
+  "${COMPOSE[@]}" exec -T postgres psql -U "$DB_OWNER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "$1"
+}
+handover_exited() {  # the job's container has exited
+  [ "$("${COMPOSE[@]}" ps -a schedule-trigger-handover --format '{{.State}}')" = "exited" ]
+}
+handover_exit_code() {
+  "${COMPOSE[@]}" ps -a schedule-trigger-handover --format '{{.ExitCode}}'
+}
+HANDOVER_PASSWORD=$(env_value SAGAT_HANDOVER_PASSWORD)
+if [ -z "$HANDOVER_PASSWORD" ]; then
+  # the env file gives the role no password: the job started with the stack, after the control plane and the engine were
+  # healthy, and exited 2 at once, naming the variable
+  wait_for "the handover job ends without its password" handover_exited
+  CODE=$(handover_exit_code)
+  [ "$CODE" = "2" ] || { echo "the handover job without a password exited $CODE, expected 2" >&2; exit 1; }
+  "${COMPOSE[@]}" logs schedule-trigger-handover 2>&1 | grep -q "SAGAT_HANDOVER_PASSWORD" \
+    || { echo "the handover job did not name SAGAT_HANDOVER_PASSWORD" >&2; exit 1; }
+  echo "ok: without SAGAT_HANDOVER_PASSWORD the job exits 2 and names the variable"
+  # a password for this stack only, never printed: migrate sets the role's login from it, then the job runs again with it
+  SAGAT_HANDOVER_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+  export SAGAT_HANDOVER_PASSWORD
+  "${COMPOSE[@]}" run --rm migrate >/dev/null
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate schedule-trigger-handover
+fi
+STATE=$(owner_sql "SELECT state FROM schedule_trigger_handover")
+[ "$STATE" = "LEGACY" ] || { echo "the handover is $STATE before the job ran, expected LEGACY" >&2; exit 1; }
+attempted() {  # the job has written its first round
+  [ -n "$(owner_sql "SELECT run_id FROM schedule_trigger_handover_attempts WHERE last_reason IS NOT NULL LIMIT 1")" ]
+}
+wait_for "the handover job writes its first round" attempted
+REASON=$(owner_sql "SELECT last_reason FROM schedule_trigger_handover_attempts ORDER BY first_round_at DESC LIMIT 1")
+[ "$REASON" = "FIRST_HORIZON" ] || { echo "the job's first round says $REASON, expected FIRST_HORIZON" >&2; exit 1; }
+# A horizon is ten minutes: the run's first round is moved back by it, as the owner (the tests do the same), so the job counts
+# its next three rounds, 15 s apart, and hands over. Nothing else of the run is touched.
+owner_sql "UPDATE schedule_trigger_handover_attempts SET first_round_at = first_round_at - horizon - interval '1 minute'" >/dev/null
+for _ in $(seq 1 240); do handover_exited && break; sleep 1; done
+handover_exited || { echo "the handover job did not end within four minutes of its first horizon" >&2; exit 1; }
+CODE=$(handover_exit_code)
+[ "$CODE" = "0" ] || { echo "the handover job exited $CODE, expected 0" >&2; "${COMPOSE[@]}" logs schedule-trigger-handover >&2; exit 1; }
+HANDED=$(owner_sql "SELECT state || ' ' || changed_mode FROM schedule_trigger_handover")
+[ "$HANDED" = "HANDED_OVER AUTOMATIC" ] || { echo "after the job the handover is '$HANDED'" >&2; exit 1; }
+echo "ok: the job handed the cron triggers over as AUTOMATIC and exited 0"
+AGAIN=$("${COMPOSE[@]}" run --rm schedule-trigger-handover 2>/dev/null)
+echo "$AGAIN" | grep -q "already handed over" || { echo "a second run said: $AGAIN" >&2; exit 1; }
+OFF=$(SAGAT_SCHEDULES_AUTO_HANDOVER=false "${COMPOSE[@]}" run --rm schedule-trigger-handover 2>/dev/null)
+echo "$OFF" | grep -q "switched off" || { echo "the switched-off job said: $OFF" >&2; exit 1; }
+echo "ok: a second run exits 0 already handed over, and switched off it exits 0 doing nothing"
+unset SAGAT_HANDOVER_PASSWORD HANDOVER_PASSWORD
 
 echo "--- smoke test passed"
