@@ -13,6 +13,11 @@
     "./opentelemetry": {
       "types": "./dist/src/opentelemetry.d.ts",
       "import": "./dist/src/opentelemetry.js"
+    },
+    "./workflows": {
+      "sagat-workflow": "./dist/src/workflows/context.js",
+      "types": "./dist/src/workflows/index.d.ts",
+      "import": "./dist/src/workflows/index.js"
     }
   },
   "engines": {
@@ -27,7 +32,7 @@
   "scripts": {
     "sync": "node scripts/sync-shared.mjs",
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test \"dist/test/**/*.js\"",
+    "test": "npm run build && node --test \"dist/test/*.test.js\" && TZ=UTC node --test \"dist/test/workflows/*.test.js\"",
     "conformance": "node dist/conformance/runner.js"
   },
   "dependencies": {
@@ -48,7 +53,7 @@
     "@opentelemetry/core": "^2.12.0",
     "@opentelemetry/sdk-metrics": "^2.12.0",
     "@opentelemetry/sdk-trace-base": "^2.12.0",
-    "@types/node": "^20.17.0",
+    "@types/node": "^22.8.0",
     "typescript": "^5.6.3"
   },
   "license": "MIT",
