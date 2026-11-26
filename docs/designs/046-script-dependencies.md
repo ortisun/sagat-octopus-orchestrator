@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
 2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2 (pull request 284). Every other choice,
 including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
-recorded in research.md as Decisions 046-001 to 046-076 with the register's literal marker "delegate (OD-2026-11-24-4)".
+recorded in research.md as Decisions 046-001 to 046-077 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -391,8 +391,10 @@ expired `RUNNING` `RESOLVE` or `INSTALL` job of a version that is no longer `BUI
 `BACKFILL` lease is retried as any job's). The unique key of `RESOLVE` and `INSTALL` jobs is
   `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`; `BACKFILL` jobs have their own key (Technical Plan 9).
 - **The build** waits until every install job of the version succeeded. The build claim, the dependency-job claim and the
-  `script_jobs` quota count only `RESOLVE` and `INSTALL` jobs and build jobs of versions that are `BUILDING` (the quota
-  query joins the version state for both tables), so the jobs of a refused version stop counting at once. `BACKFILL` jobs are the exception: the dependency-job claim offers them on `READY`
+  `script_jobs` quota count `QUEUED` `RESOLVE`, `INSTALL` and build jobs only of versions that are `BUILDING` (the quota
+  query joins the version state for both tables), and every `RUNNING` job until it ends, so a refused version's queued
+  jobs stop counting at once and its running ones count while they use a runner. The heartbeat of a `RESOLVE` or
+  `INSTALL` job answers `409` once its version is no longer `BUILDING`, and the runner stops that job's container. `BACKFILL` jobs are the exception: the dependency-job claim offers them on `READY`
   versions (phase `backfill`, only to runners that declare `script-dependencies-v1`), they count in the backfill pass's
   own bound of 4 running per target instead of a tenant's `script_jobs`, and their completion requires the version
   `READY` and writes only the layer record (Technical Plan 9).
@@ -572,7 +574,8 @@ still blocked (or still without a layer, for `LAYER_UNAVAILABLE`), then write th
 record with the system actor `system:engine`; a step leased meanwhile is left to the lease-time admission. The pass then
 sets `steps_failed_at`. A step of that artifact that becomes ready after the pass is failed when a runner asks to
 materialize it: the materialization route, finding a block for the activity's namespace, fails that activity through
-`fail_ready_step` before it answers `403`. With `blockNewAtLease`, a finding at or above the threshold without a waiver
+`fail_ready_step` before it answers `403`; the audit record names `system:engine` as the actor and the runner principal
+whose request caused it. With `blockNewAtLease`, a finding at or above the threshold without a waiver
 blocks that namespace.
 
 ### 7. The advisory snapshot
@@ -584,25 +587,25 @@ Non-functional requirement 046-004. A record is malicious when its identifier or
 database-specific type says malware; severity is the GitHub advisory label, else the CVSS (Common Vulnerability Scoring
 System) base score mapped to the same labels, else unrated.
 
-An import begins with a barrier: one short transaction takes the snapshot row `FOR UPDATE` (with a `lock_timeout` of
-5 s, retried with backoff; the barrier and the switch alert when they have not had the lock for 10 minutes, so steady
-shared lockers cannot delay malware blocking unseen), which waits for every
-writer of `script_locked_packages` (each takes that row `FOR SHARE` before its first insert and holds it to its commit),
-records the highest `locked_seq` of the table (an identity column declared with `CACHE 1`, so values are handed out in
-order across sessions) as the import's mark, and commits. The migration seeds one snapshot row per ecosystem, so the row
-every writer and the barrier lock always exists. Every row at or
-below the mark was committed before the barrier; every row inserted later gets a higher value. The import then stages
-its records under a new snapshot identifier in paged transactions, outside any lock, and computes, for each new
-malicious record, the exact (name, version) pairs it matches among the rows at or below the mark. The switch is one
-transaction that takes the snapshot row `FOR UPDATE` and then: refuses the import if it is older than the current
-snapshot of that ecosystem or holds at least 1 percent fewer records (checked again under the lock); makes it current;
-inserts a block for every artifact that locks a precomputed pair, whatever its `locked_seq`; and inserts one
-re-evaluation row per tenant concerned. Range evaluation never runs under that lock: as `StaleInputs` does for the
-finish, the application (`crates/application/src/scripts/packages.rs`, through the `PackageRules` port) reads the rows
-above the mark, evaluates them outside any lock, and passes the switch the pairs it found together with the set of
-`locked_seq` values it evaluated; the store's switch (`crates/infra-postgres`) refuses with `StaleInputs` when any row
-above the mark is not in that set (a writer that took a lower value and committed late included), and the application
-evaluates the missing rows and calls again, at most 5 times in a row, then the import is held for an operator. An import that would newly block more than 50 artifacts is held for an
+An import begins with a barrier: one short transaction takes `script_locked_packages` in `SHARE` mode through the
+`SECURITY DEFINER` function `sagat_advisory_barrier()` (executable by the import role only). A table lock waits in
+PostgreSQL's queue in order, so it waits for every writer in flight (each holds the table's `ROW EXCLUSIVE` lock from its
+insert to its commit) and holds back new ones only while it waits; it runs with a `lock_timeout` of 30 s, retried with
+backoff, and an alert fires when the barrier has not had the lock for 10 minutes. Under it the transaction records the
+highest `locked_seq` of the table (an identity column declared with `CACHE 1`, so values are handed out in order across
+sessions) as the import's mark, and commits. Every row at or below the mark was committed before the barrier; every row
+inserted later gets a higher value. The import then stages its records under a new snapshot identifier in paged
+transactions, outside any lock, and computes, for each new malicious record, the exact (name, version) pairs it matches
+among the rows at or below the mark. Just before the switch, the application (`crates/application/src/scripts/packages.rs`,
+through the `PackageRules` port) reads the rows above the mark and range-evaluates them outside any lock. The switch is
+one transaction that takes the snapshot row `FOR UPDATE` (the seeded row of its ecosystem; the same timeout, retry and
+alert) and then: refuses the import if it is older than the current snapshot of that ecosystem or holds at least 1
+percent fewer records (checked again under the lock); makes it current; inserts a block for every artifact that locks a
+precomputed pair, whatever its `locked_seq`, and for every artifact the range evaluation matched; inserts a `SNAPSHOT`
+re-evaluation row for the tenant of every row above the mark that the application did not evaluate (a writer that
+committed after the application read, a lower value committed late included), so those rows are evaluated against the
+new snapshot by the re-evaluation pass; and inserts one re-evaluation row per other tenant concerned. Staleness never
+refuses or holds a switch, so no stream of publications can keep a malware snapshot from becoming current. An import that would newly block more than 50 artifacts is held for an
 operator's confirmation (`advisory:import`) and an alert fires; while it is held, finishes and materializations refuse
 artifacts that lock a package its malicious records match, so a wide compromise is not delayed. Refusals and holds are
 audited. The old snapshot's rows are deleted afterwards. A malware block is released only through
@@ -962,7 +965,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `matcher_agrees_with_the_version_order_*`, `an_older_snapshot_is_refused`, `a_large_import_is_held`,
   `the_switch_rechecks_age_under_the_lock`, `a_finish_between_staging_and_switch_is_matched`,
   `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched`,
-  `a_late_writer_with_a_lower_sequence_is_evaluated_before_the_switch` (held-lock tests, the writer's transaction held
+  `a_late_writer_with_a_lower_sequence_gets_a_reevaluation_row`, `publications_during_the_switch_never_hold_it`,
+  `the_barrier_is_not_starved_by_overlapping_writers` (held-lock tests, the writer's transaction held
   open with its `FOR SHARE` while the import starts),
   `a_held_import_refuses_matching_finishes`.
   Refs: Requirement 046-008, Requirement 046-009
