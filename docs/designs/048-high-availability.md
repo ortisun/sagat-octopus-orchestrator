@@ -97,8 +97,8 @@ From the code and documents on `develop` at `546d5aa5`:
   run (`app.kubernetes.io/component`), and admits besides only the instances to each other and the operator; and
   `database-runner`'s `denyCidrs` covering the cluster's pod range (or an address pool reserved for the database) and
   its Service range, checked by Task 048-4.
-  `reserved_connections` serve the operator's and monitoring's roles, and `sagat_app` has a `CONNECTION LIMIT` equal to
-  the chart's connection budget (Task 048-4). Every version and image is pinned by digest. The reference is built and
+  `reserved_connections` serve the operator's and monitoring's roles, and `sagat_app` has a `CONNECTION LIMIT` of at least the
+  connection budget that Task 048-4 checks. Every version and image is pinned by digest. The reference is built and
   smoke-tested, and is not offered for production until the Kubernetes drill of Requirement 048-041 has passed; backups
   are the subject of `docs/runbooks/disaster-recovery.md`, not of this reference.
 - **Requirement 048-002 Development reference.** `infra/docker/compose.ha.yaml`, a file of its own (not an overlay of
@@ -201,7 +201,8 @@ From the code and documents on `develop` at `546d5aa5`:
   `crates/infra-postgres` and `apps/`, `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()`
   outside `pool.rs`, a raw `BEGIN`, `START TRANSACTION`, `COMMIT`, `END`, `ABORT`, `ROLLBACK`, `READ WRITE`, `SESSION
   CHARACTERISTICS` or `transaction_read_only` outside `pool.rs` and `migrate`'s loop (design 053's Task 053-4), and
-  `fetch()` on a statement that writes.
+  `fetch()` on a statement that writes (one whose text begins with `INSERT`, `UPDATE`, `DELETE` or `MERGE`, or
+  calls a function that the migrations create without `STABLE` or `IMMUTABLE`).
 - **Requirement 048-013 After a change of server, nothing is served until a write reaches a standby.** A server's
   identity is the pair (`pg_postmaster_start_time()`, the token of `server_incarnation`). `server_incarnation` is an
   unlogged table of one row (`id smallint primary key check (id = 1)`, `token uuid not null`): PostgreSQL empties an
@@ -261,7 +262,7 @@ From the code and documents on `develop` at `546d5aa5`:
   that writes (`cleanup-secrets`, `provision-tenant`, `reseal-secrets`, `quota-ceiling`, `scheduling-weight`,
   `schedule-trigger-handover`, `capability-activate`) uses the serving profile and `WriteTx`; it waits, up to 60 s, on
   one connection admitted for that purpose, through `command_await_durability(capabilities)`, a definer function that
-  refuses a binary without `region-v1` once a cell of feature 032 is initialized (the check the confirmation makes, so
+  refuses a binary without `region-v1` once a cell of feature 032 is initialized (its `region-init` has run) (the check the confirmation makes, so
   that a command cannot write where a process could not), until a live registry row carries the server's current
   identity as
   confirmed, and otherwise exits with code 1 ("retry later"); it then adopts that identity as its own confirmed one. It
@@ -313,7 +314,7 @@ From the code and documents on `develop` at `546d5aa5`:
   1 + 3 + 5 + 10 + 5 + 3 = 27 s, and 30 s leaves 3 s of margin. A claim whose commit outcome was unknown may have leased an attempt that no
   worker received; that lease expires and, without a `reconcileWith` lookup (feature 037), becomes a review item; the
   drills count these apart, and the delivery acknowledgement of protocol 1.8 (reserved by Owner decision 2026-11-21-6,
-  pull request 264) is what lets such a lease be retried without a person. The SDK releases that carry Tasks 048-11 are
+  pull request 264) is what lets such a lease be retried without a person. The SDK releases that carry Task 048-11 are
   recorded in `sdks/SPEC.md`'s register; older SDKs keep today's retries.
 - **Requirement 048-020 Standbys serve nothing.** No statement that serves work runs on a standby. The one exception is
   the third connection profile, the passive observer, for feature 032's role watcher and replication monitor on a
@@ -326,7 +327,8 @@ From the code and documents on `develop` at `546d5aa5`:
   until every shard is held again and the time until every process is ready. The release gate is the owner's 300 s. The
   median's target, a benchmark criterion, is 60 s. Its terms, each measured: P, from the fault until the new primary
   accepts writes (the HA manager's own detection is inside it); R, from the promotion until the surviving standby is
-  synchronous to the new primary; E, from a pod's readiness until the load balancer routes to it. The platform's own
+  synchronous to the new primary; E, from a pod's readiness until the load balancer routes to it (on Compose, where workers reach the control plane
+  directly and readiness routes nothing, E is 0 and a process serves as soon as its gate opens). The platform's own
   detection (at most 10 s, 3 s through HAProxy) runs from the fault, inside P. After P + R, a process confirms within the
   3 s connect timeout after its confirmation's retry, which comes within 1 s (its write waits for R, already counted),
   sends its heartbeat at once and turns ready at the next probe, within 5 s; a worker's next retry comes within its 5 s
@@ -335,9 +337,11 @@ From the code and documents on `develop` at `546d5aa5`:
   engine holds its shards again within P + R + 1 + 3 = P + R + 4 s plus one keeper wait of 3.6 s and its round; a dead engine's shards are
   free once their 15 s lease, renewed last before the fault, has expired on the database's clock.
 - **Requirement 048-041 The drills.** The Compose drill (`infra/dr/ha-drill.sh`) MUST inject, three times each: (1) the
-  primary's container stopped; (2) the primary's container and the platform's containers that share its host label
+  primary's container stopped; (2) the primary's container and the platform's containers that share its value of the
+  label `sagat.host` (`a`, `b` or `c`, which `compose.ha.yaml` gives each database node and each platform container)
   stopped together (a node lost); (3) both standbys stopped, then started again after 60 s; (4) a standby's replication
-  throttled (`tc` on its `db-control` interface) and then the primary stopped; (5) a backend of the primary killed
+  throttled (`tc ... netem delay 200ms rate 1mbit` on its `db-control` interface) and then the primary
+  stopped; (5) a backend of the primary killed
   (`kill -9`, a crash restart in place; the drill asserts that the start time stayed the same and the token changed);
   (6) the primary disconnected from `db-access` and `db-control` (`docker network disconnect`), a dead peer with
   acknowledged data. The free Kubernetes smoke (`tests/e2e/high-availability/smoke.sh`) runs on three kind nodes, one per
@@ -354,15 +358,17 @@ From the code and documents on `develop` at `546d5aa5`:
   results; acknowledged work lost; leases expired, delivered or not; activities run more than once; review items, those
   of claims with an unknown outcome apart. The workload's ledger records each acknowledgment with its run, step sequence,
   attempt, generation, lease token and a digest of its result, and `dr_verify` looks each up on the new primary, by key
-  and content. A negative control proves the check: the drill blocks replication to both standbys, commits a ledger row
-  through its own connection to the primary with `synchronous_commit=local`, stops the primary, and the check must find
+  and content. A negative control proves the check, once per run in a repetition of its own after fault (1)'s: the drill blocks
+  replication to both standbys, commits a ledger row through its own connection to the primary (`docker exec` into its
+  container and the local socket, which `pg_hba` admits for the superuser) with `synchronous_commit=local`, stops the primary, and the check must find
   that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
   and checks that every request with that principal that starts after both 22 s from the isolation and the
   revocation's commit is refused or answered `UNAVAILABLE` (Technical Plan, "Why one waited write protects what came
   before it"). On Compose this fault runs one extra control plane, the probe, on a network `db-probe` (`internal: true`)
   shared only with the primary's node, through which it reaches that node's client port; the network and its one
-  `pg_hba` line (`sagat_app`, `scram-sha-256`, that subnet only) live in a file of the drill
-  (`infra/dr/compose.ha-probe.yaml`), never in the development reference, and `ha-drill.sh` attaches the current primary
+  `pg_hba` line (`sagat_app`, `scram-sha-256`, that subnet only) are declared by a file of the drill
+  (`infra/dr/compose.ha-probe.yaml`), never by the development reference, which the drill writes to the node-local file
+  that the reference's `pg_hba` includes (Task 048-14), and `ha-drill.sh` attaches the current primary
   to it at the fault's start, so that the check exercises the bound when
   the fault disconnects the node from `db-access` and `db-control` but not from `db-probe`; the probe is started for
   this fault only, stopped after the check, and not counted among the processes that must be ready again. The
@@ -383,16 +389,18 @@ From the code and documents on `develop` at `546d5aa5`:
 ### Success criteria
 
 - **Success criterion 048-001** In every repetition of every Compose fault, the integrity oracle passes, acknowledged
-  work lost is 0, every process is ready again within 300 s, and the negative control is found.
+  work lost is 0, every process is ready again within 300 s (for fault (3), counted from the standbys' return), and the
+  negative control is found.
 - **Success criterion 048-002** The median time to the first committed transition is reported for each fault; for the
   primary's container stopped and a node lost on Compose, it is within 60 s.
 - **Success criterion 048-003** In the Compose drill, run with the HA examples' lease time to live of 90 s, no delivered
   lease expires whose own longest gap between successful heartbeats (for an expired lease, the open gap ending at its
   expiry) is under the time to live less 5 s (85 s: the 1 s the SDK keeps back and 4 s for a request's latency and the
   clocks), no completed activity is repeated, and no review item is created except for a claim whose commit outcome was
-  unknown, for workers on SDKs that carry Task 048-11. A repetition qualifies when every delivered lease's longest gap
-  is under 85 s; every repetition of faults (1), (2), (4), (5) and (6) is expected to (a lease's gap is the outage, P + R
-  + E + 17 s, plus at most one jittered heartbeat interval, 12 s: under the target, 60 + 12 = 72 s, below 85 s); a
+  unknown or for a lease whose gap reached 85 s, for workers on SDKs that carry Task 048-11; these hold in every
+  repetition. A repetition qualifies when every delivered lease's longest gap is under 85 s; every repetition of faults
+  (1), (2), (4), (5) and (6) is expected to (a lease's gap is the outage, P + R + E + 17 s, plus at most one worker
+  heartbeat interval, 10 s: under the target, 60 + 10 = 70 s, below 85 s); a
   fault with no qualifying repetition fails the drill. Longer gaps are reported. This gates the release from the first
   release that ships those SDKs.
 
@@ -549,8 +557,8 @@ per manager; the contract test of observability (`tests/contract/observability-o
 of the exporters' metrics.
 
 **Order of the build.** Task 048-2 (the fixture) first; Task 048-9 (the gate's reasons) before Task 048-10 (the
-identity); design 053's Task 053-2 (the lint) before the first migration of Task 048-10; Task 048-11 before Task 048-14
-gates Success criterion 048-003.
+identity); design 053's Task 053-2 (the lint of migrations, `scripts/check-migrations.py`) before the first migration of Task 048-10; Task 048-11 before Task 048-14 starts
+to gate Success criterion 048-003.
 
 ## Risks and Mitigations
 
