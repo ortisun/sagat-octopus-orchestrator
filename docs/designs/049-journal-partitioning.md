@@ -2,7 +2,7 @@
 
 *   **Author:** Claude Code, for the owner
 *   **Status:** Draft
-*   **Date:** 2026-11-24
+*   **Date:** 2026-11-26
 
 --------------------------------------------------------------------------------
 
@@ -11,44 +11,53 @@
 `run_events`, `payloads`, `runs` and `steps` grow without bound: nothing deletes a run, an event or a payload
 (Architecture decision 0054: "Nothing is ever deleted today"). Feature 020 designs retention as a verified archive of
 each run followed by a purge of that run in bounded chunks. This design gives that retention a cheap path where it can
-have one, and makes the per-run path cheap for every run created after it:
+have one, and makes the per-run path cheap for every run tree created after it:
 
-1. **A journal bucket per run.** Every run is given, when it is created, the UTC month of its `created_at`, its
-   *journal bucket*, stored on the run row and never changed. Runs created before the switch keep the *legacy* bucket.
-2. **`run_events` is partitioned by bucket**, online: the existing table becomes the legacy partition by
-   `ATTACH PARTITION`, with no copy and no index build under a lock that blocks the hot path.
+1. **A journal bucket per run tree.** Every root run is given, when it is created, the UTC month of its `created_at`,
+   its *journal bucket*, stored on the run row and never changed; every child run takes its root's bucket, so a tree is
+   in one bucket. Runs created before the switch, and roots created by a process that has not yet learned of it, keep the
+   *legacy* bucket.
+2. **`run_events` is partitioned by bucket** during the stopped upgrade from 0.2.x to 0.3.0 (Architecture decision 0131,
+   decision 8): the existing table becomes the legacy partition by `ATTACH PARTITION`, with no row copied, so the upgrade's
+   stop is not lengthened by the table's size beyond one index build.
 3. **Run trees created after the switch own their payloads** in a new `run_payloads`, partitioned by bucket and keyed by
-   the tree's root (a child run takes its root's bucket): purging a tree deletes rows selected by its key, with no check
-   of references from other trees. Legacy runs keep their payloads in `payloads` as today, so nothing is copied; their
-   purge keeps feature 020's reference check, served by partial indexes of legacy rows delivered with that purge.
+   the tree's root: a tree's payloads are deleted by their key when the tree's last run is purged, with no check of
+   references from other trees. Legacy runs keep their payloads in `payloads` as today, so nothing is copied; their
+   purge keeps feature 020's reference check.
 4. **No foreign key points into or out of a partitioned journal table.** The integrity those keys gave is kept by
-   triggers that check the same facts on every write, raise the same SQLSTATE, and take no lock when a partition is
-   detached or dropped. A registry lists every reference to run content, foreign key or not.
-5. **Feature 020's per-run purge is the main path; dropping a month is the fast path** when every run of that month is
-   purgeable: one `DETACH PARTITION CONCURRENTLY` and one `DROP TABLE` per partitioned table instead of deleting the
-   month's journal and payload rows, with the tenants' content quota released from the bytes counted in the detached
-   tables.
+   triggers that check the same facts on every write and raise the same SQLSTATE, so that a partition can be detached
+   and dropped without scanning or locking the referencing tables. A registry lists every reference to run content,
+   foreign key or not.
+5. **Feature 020's per-run purge is the main path; retiring a month is the fast path** when every run of that month has
+   been purged: one transaction detaches and drops the month's partitions and releases the tenants' content quota,
+   instead of deleting the month's journal and payload rows one by one.
 6. **`runs`, `steps` and the audit trail are not partitioned in release 0.3.0**, for the reasons in the Technical Plan.
 
-Deleting journal rows, by month or by run, changes an obligation of principle I (the journal is append-only); that
-amendment is constitution 5.1.0, approved by the owner (Owner decision 2026-11-25-3, point 1: the retirement of a whole
-month partition once every run in it is purged, after a verified archive) and drafted by the coordinating session. The
-partitioning needs none and is built first; only the deleting tasks wait for 5.1.0 to merge.
+Why release 0.3.0: its upgrade from 0.2.x stops the writers anyway, so converting `run_events` then needs none of the
+online machinery a later release would; and the owner approved the deletion this design serves. Deleting journal rows,
+by month or by run, changes an obligation of principle I (the journal is append-only); that amendment is constitution
+5.1.0, approved by the owner (Owner decision 2026-11-25-3, point 1: the retirement of a whole month partition once every
+run in it is purged, after a verified archive) and drafted by the coordinating session. The partitioning needs none and
+is built first; only the deleting tasks wait for 5.1.0 to merge.
 
 The cost on the hot path is measured by design 038's statement budget, which gains a count of the relations each lease
 and completion locks and of its round trips.
 
 **Terms used below.** The *journal* is the append-only record of what happened in each run: `run_events` holds one row
 per event with a per-run sequence (`seq`), and *payloads* hold the values (inputs, outputs, event bodies) the events and
-the state rows refer to by digest. A *partition* is one physical table of a table partitioned by PostgreSQL; *pruning*
-is the planner's choice of the partitions a statement must open. *Feature 020* designs retention: a namespace's policy
-says how long a finished run stays (*hot retention*), its archive is written to an object store and read back to check
-it (*verified*), and only then is the run *purged*, leaving a small *stub* row whose digests point to a per-tenant
-*tombstone* payload. The *run lock* is the row lock on the run that every transaction that appends to it takes first.
-*Design 038's budget* is the test that counts the statements, transactions and rows of a worker's lease and of a
-completion and fails when they change. The *instance registry* (Architecture decision 0082) records which processes are
-live and what they support; its *activation* switches a capability on only when no live process lacks it, and refuses
-such a process afterwards.
+the state rows refer to by digest. A *run tree* is a root run (`root_run_id = id`) and every run whose `root_run_id` is
+that root; a *chain* is a sequence of segments, each a run: a root chain's next segment is a new root, a child chain's
+next segment stays in its parent's tree (`chain_progress.rs`). A *partition* is one physical table of a table
+partitioned by PostgreSQL; *pruning* is the planner's choice of the partitions a statement must open. *Feature 020*
+designs retention: a namespace's policy says how long a finished run stays (*hot retention*), its archive is written to
+an object store and read back to check it (*verified*), and only then is the run *purged*, leaving a small *stub* row
+(`runs.purged_at` set, feature 020's data model) whose digests point to a per-tenant *tombstone* payload; *erasure* is
+feature 020's purge on a subject's request, which must leave no copy. The *run lock* is the row lock on the run that
+every transaction that appends to it takes first. *Design 038's budget* is the test that counts the statements,
+transactions and rows of a worker's lease and of a completion and fails when they change. The *instance registry*
+(Architecture decision 0082) records which processes are live and what they support; its *activation* switches a
+capability on only when no live process lacks it, and every process learns of it within one heartbeat (10 s, jittered to
+12 s). The *chain shape* is design 051's chain of three activities, driven by design 051's driver.
 
 ## The Problem
 
@@ -61,9 +70,12 @@ From the code on `develop` at `546d5aa5`:
   (`tests/performance/reports/durable-execution.md`, `scalability-ha.md`) and a collection at about 2,335 journal bytes
   per item (`workflow-primitives.md`).
 - **Feature 020's purge is expensive where the data is.** Payloads are content-addressed per tenant, `(tenant_id,
-  digest)`, and shared by every row that holds the same bytes: 22 foreign-key columns in 14 tables reference them (20
-  in 12 run-owned tables, 2 in shared ones), and three run-owned columns reference them with no foreign key
-  (`collection_scope_items.item_digest`, migration `20261029000000`; the two result digests of
+  digest)`, and shared by every row that holds the same bytes: 22 foreign keys reference them. Twenty are in 12
+  run-owned tables: `runs` (input and result), `run_events`, `steps`, `iteration_scopes` (2), `collection_iterations`
+  (2), `iteration_checkpoints`, `loop_scopes` (2), `loop_iterations` (2), `loop_checkpoints` (2), `chain_segments` (2),
+  `workflow_operation_states` and `operation_update_receipts` (2). Two are in shared tables:
+  `schedule_revisions.input_digest` and `batch_items.payload_digest`. Three run-owned columns reference payloads with no
+  foreign key (`collection_scope_items.item_digest`, migration `20261029000000`; the two result digests of
   `leaf_collection_success_certifications`, migration `20261211000000`). Deleting a run's payloads needs a check that no
   other row references them and an index on each referencing column (gap 1099 of feature 020), which adds write cost to
   the hottest tables. Architecture decision 0054 rejected partition drop because "partitions do not align with run
@@ -71,9 +83,12 @@ From the code on `develop` at `546d5aa5`:
   before dropping".
 - **What a partition key must survive.** A child run's identifier is derived from a SHA-256 of its parent and node
   (`child_run_id`, `crates/application/src/execution.rs`), so a range of run identifiers is not a range of time. An
-  event's own time would split a long run across partitions. Every read of `run_events` is by `(tenant_id, run_id)`;
-  none reads by time; no foreign key points to `run_events`. A run's input payload is written before its run row
-  (`crates/infra-postgres/src/execution.rs`), and `runs.created_at` is set by the application.
+  event's own time would split a long run across partitions. Every read of `run_events` for one run is by `(tenant_id,
+  run_id)`; none reads by time; no foreign key points to `run_events`. A run's input payload is written before its run
+  row (`crates/infra-postgres/src/execution.rs`). A run's `created_at` is the database clock for a run started through
+  the API and for a child (`clock_timestamp()`, `execution.rs`), and the command's time for a chain's next segment
+  (`chain_progress.rs`); a child may be created months after its root (pending children, `maintenance.rs`). A rerun
+  takes its source's input blob, from another tree (`runs_input_blob_same_scope_fk`).
 - **Foreign keys and partitions do not mix cheaply.** A detach of a partition of a referenced table checks every
   referencing table under a `SHARE` lock, which blocks writes to `runs` and `steps` while it scans; dropping a table that
   has a foreign key to `runs` locks `runs`; before PostgreSQL 18 a foreign key on a partitioned referencing table cannot
@@ -90,149 +105,195 @@ From the code on `develop` at `546d5aa5`:
 
 ## Requirements
 
-- **Requirement 049-001 The journal bucket.** Every run MUST have a `journal_bucket`: the first day of the UTC month of
-  its `created_at`, or `1970-01-01` (legacy); a child run MUST take its root's bucket, so that a run tree is in one
-  bucket (feature 020 already makes a tree eligible only as a whole). The creating transaction MUST compute it once from
-  the `created_at` it binds (or read it from the root it holds) and pass it explicitly to every row it writes, the input
-  payload written before the run row included. A check on
-  `runs` MUST refuse a bucket that is neither legacy nor the month of `created_at`; a trigger MUST refuse a change of
-  either, and MUST refuse a legacy bucket for a run whose `created_at` is later than the switch time plus the instance
-  registry's liveness window of 30 s (Requirement 049-010), so that a process that has not yet learned of the switch is
-  not refused while it is still live.
-- **Requirement 049-002 One partition per run, enforced.** Every row of a partitioned journal table MUST carry its run's
-  bucket. A trigger on each partitioned table MUST refuse a row whose `(tenant_id, run_id, journal_bucket)` is not a
-  run's, or whose run is purged (has a stub), raising SQLSTATE 23503 as the foreign key it replaces did; on `run_payloads` it is a constraint trigger checked
-  at commit, because the input payload precedes the run row. A suite that runs after the switch, with at least two dated
-  partitions and a clock the test moves across a month boundary, MUST cover every insert site.
+### The bucket
+
+- **Requirement 049-001 The journal bucket.** Every run MUST have a `journal_bucket`: the first day of a UTC month, or
+  `1970-01-01` (legacy). A root run's bucket MUST be legacy or the month of its own `created_at`; a child run's bucket,
+  whatever its `created_at`, MUST equal its root's, so that a run tree is in one bucket. A child chain's next segment is
+  a child and takes its root's bucket; a root chain's next segment is a new root. The creating transaction MUST compute
+  the bucket once, before its first write, and pass it explicitly to every row it writes, the input payload written
+  before the run row included: a root's from the `created_at` it binds and whether the process has learned of the switch
+  (Requirement 049-010), a child's from the parent run row it already holds under the run lock. A trigger on `runs`
+  (before insert) MUST refuse a root whose bucket is neither legacy nor its month, and a child whose bucket is not its
+  root's (one lookup of the root by key, which the existing self-referencing foreign key guarantees exists); a trigger
+  MUST refuse a change of `journal_bucket`, `created_at` or `root_run_id`. A legacy root is always accepted: one created by
+  a process in the 12 s before it learns of the switch is processed by every release and purged run by run like any
+  legacy run.
+- **Requirement 049-002 One partition per run, enforced.** Every row of a partitioned journal table MUST carry its
+  run's bucket. A trigger on `run_events` MUST refuse a row whose run, `(tenant_id, run_id)`, does not exist, has another
+  bucket, or is purged (`purged_at` set), raising SQLSTATE 23503 as the foreign key it replaces did. A constraint trigger
+  on `run_payloads`, checked at commit because the input payload precedes the run row, MUST refuse a row whose
+  `root_run_id` is not a root of the same tenant and bucket, or whose root is purged. Both are `SECURITY DEFINER`
+  functions (Requirement 049-016). Their messages carry the SQLSTATE and the constraint name only, never a digest, a
+  tenant or a run identifier.
+
+### The tables
+
 - **Requirement 049-003 `run_events` partitioned.** `run_events` MUST be partitioned by range of `journal_bucket`, one
   partition per month and one legacy partition. Its primary key becomes `(tenant_id, run_id, seq, journal_bucket)`, so
   that lookups by run keep their index prefix. Its checks (`run_events_seq_positive`, `run_events_trace_id_format`,
-  `run_events_instance_identity_consistent`) and `run_events_instance_idx` are on the parent. The append-only and
-  no-truncate triggers stay enabled always on every partition (the statement-level truncate trigger is created on each,
-  since it is not inherited). The runtime role has `SELECT` and `INSERT` on the parent only, and no privilege on a
-  partition.
-- **Requirement 049-004 Online.** The partitioning of `run_events` MUST NOT copy its rows and MUST NOT build an index or
-  scan the table while it holds a lock that blocks inserts. A statement that takes such a lock MUST wait for it under a
-  `lock_timeout` of 2 s (design 053) and be retried, and run only catalog work while it holds it. The concurrent
-  operations (`CREATE INDEX CONCURRENTLY`, `DETACH ... CONCURRENTLY`) run with no `lock_timeout`, because they wait for
-  older snapshots through lock waits by design.
-- **Requirement 049-005 Run payloads for new runs, owned by the run tree.** For a run with a dated bucket, every payload
-  a row of that run references MUST be stored in `run_payloads`, keyed `(tenant_id, root_run_id, digest, journal_bucket)`
-  and partitioned like `run_events`. The runs of one tree (a root and its children) MAY share payloads; a run MUST NOT
-  reference a payload of another tree: a reset, a rerun, a chain's next segment (a new root) or a cross-namespace
-  operation that starts from another tree's value writes its own copy. Every read of a run's content MUST go through
-  one adapter function that branches on the run's bucket (`run_payloads` for a dated run, `payloads` for a legacy run or a
-  tombstone); the static check of Requirement 049-011 refuses any other statement that reads `payloads` or
-  `run_payloads` with a run's digest, and the suite after the switch asserts content on every read path. A legacy run keeps writing and reading its payloads in `payloads`. Payloads of rows that belong to no run (the
-  two shared columns, the tombstones) stay in `payloads`. `run_payloads` is content for the quota and has its delta and
-  flush triggers from its creation.
-- **Requirement 049-006 References are checked without foreign keys.** Every column that references run content MUST
-  be listed, with the run that owns the row, in the migration that creates the reference triggers, foreign key or not
-  (when feature 020 builds its registry, `crates/infra-postgres/run-content-references.json`, which it owns, a test
-  asserts that the two lists agree);
-  each listed column MUST be checked on insert and on update of that column by a trigger, enabled always: a legacy run's
-  reference must exist in `payloads`, a dated run's in `run_payloads` for the same tenant, run and bucket, a purged
-  run's stub may reference the tenant's tombstone. The trigger's lookup MUST take `FOR KEY SHARE` on the row it finds,
-  as the built-in key check does, so that a concurrent delete of that payload waits for it and its own re-check fails;
-  and it MUST refuse a row whose `journal_bucket` differs from its run's. The trigger raises SQLSTATE 23503. Its table gains `journal_bucket`
-  (`NOT NULL`, constant default the legacy value, so no rewrite). A migration test MUST fail when a digest column of a
-  run-owned table is in neither the registry nor its exclusion list, or when a run-owned table has a foreign key to
-  `payloads` other than the two shared columns. A second test over `pg_constraint` MUST fail when any foreign key has
-  a relation of `pg_partition_tree('run_events')` or `pg_partition_tree('run_payloads')` on either side.
-- **Requirement 049-007 Legacy purge.** For feature 020's purge of a legacy run, the reference check of gap 1099 MUST
-  be served by partial indexes whose predicate is `journal_bucket = '1970-01-01'`, built concurrently, and delivered with
-  the purge they serve (gated as it is). Their cost on new writes is not nil (every index of a table is opened on an
-  insert, and an indexed column updated defeats a heap-only update), so Task 049-3 measures it, including the heap-only
-  update ratio of `steps` and `runs`, before they are built. The purge deletes a candidate payload and then re-checks its
-  references in a later statement under a savepoint, as the built-in key check does.
-- **Requirement 049-008 Partitions exist ahead.** A definer function, `ensure_journal_buckets()`, owned by the owner
-  role, executable by the runtime role, with no argument, a pinned `search_path` and a transaction-level advisory lock,
-  MUST create the partitions of the current month and the next three for every partitioned table (each a standalone table
-  with only its statement-level truncate trigger, checked by a constraint, then attached, which clones the row triggers,
-  under the 2 s `lock_timeout`), retried hourly after a failure. The engine's housekeeping calls it at start and daily.
-  The gauge `journal_partition_months_ahead` MUST give the months that exist ahead, and the alert
-  `SagatJournalPartitionsLow` MUST fire below two. Requirement 049-013's audit fails on a duplicated trigger. A row for a bucket with no
-  partition fails with SQLSTATE 23514, no constraint name and the partitioned table as the error's table (which
-  distinguishes it from the PL/pgSQL guards that also raise 23514); the adapter maps it to code `UNAVAILABLE` with reason
-  `JOURNAL_BUCKET_MISSING` (retryable) for a bucket at or after the current month, and to code `NOT_FOUND` with reason
-  `RUN_PURGED` (the existing reason) for a retired one; a legacy run refused after the switch is `UNAVAILABLE` with reason
-  `JOURNAL_SWITCHED` (retryable on another process). The reasons are added to the error contracts and OpenAPI in the same
+  `run_events_instance_identity_consistent`), `run_events_instance_idx` and the column default `'1970-01-01'` of
+  `journal_bucket` are on the parent. The append-only and no-truncate triggers stay enabled always on every partition (the
+  statement-level truncate trigger is created on each, since it is not inherited). The runtime role has `SELECT` and
+  `INSERT` on the parent only, and no privilege on a partition.
+- **Requirement 049-004 The conversion copies nothing.** The conversion of `run_events` runs in the stopped upgrade from
+  0.2.x to 0.3.0, with every writer stopped, and MUST NOT copy a row: the old table becomes the legacy partition, and the
+  only work proportional to its size is one build of its new unique index and one validation of a check. Its time is
+  measured and published (Success criterion 049-003). If this design does not ship in 0.3.0, its migrations MUST be
+  rewritten under design 053's online rules before they ship; this design does not plan that.
+- **Requirement 049-005 Run payloads for new trees, owned by the tree.** For a run with a dated bucket, every payload a
+  row of that run references MUST be stored in `run_payloads`, keyed `(tenant_id, root_run_id, digest, journal_bucket)`
+  and partitioned like `run_events`. The runs of one tree MAY share payloads; a run MUST NOT reference a payload of
+  another tree: a reset, a rerun, a root chain's next segment or a cross-namespace operation that starts from another
+  tree's value writes its own copy in its own tree. A row that belongs to no run and holds a dated run's value (feature
+  022's step cache and `test_run_pins`, the two shared columns) copies it into `payloads`. Every read of a run's content
+  MUST go through `read_run_content` in `crates/infra-postgres/src/payloads.rs`, which branches on the run's bucket
+  (`run_payloads` by its key for a dated run, `payloads` for a legacy run or a tombstone); the static check of
+  Requirement 049-011 refuses a statement naming `payloads` or `run_payloads` in any other file of
+  `crates/infra-postgres/src`. A legacy run keeps writing and reading its payloads in `payloads`. `run_payloads` is
+  content for the quota and has its delta and flush triggers from its creation.
+- **Requirement 049-006 References are checked without foreign keys.** `crates/infra-postgres/run-content-references.json`,
+  created by this design and read by feature 020, MUST list every column that references run content, foreign key or
+  not, with the way the trigger reaches the run that owns the row (a column of the row, or one parent row named in the
+  file), and the columns that hold run content but are not references (its exclusion list: digests kept as evidence of a
+  value, never read back as content); the reference-trigger migration is generated from it and a test asserts that the
+  two agree. Each listed column MUST be checked on insert, and on an update that changes it, its tenant or its owning
+  run (`UPDATE OF` those columns `WHEN` one of them `IS DISTINCT FROM` its old value), by a trigger enabled always: the
+  trigger reads the owning run's `root_run_id`, `journal_bucket` and `purged_at` by key, and then a legacy run's
+  reference must exist in `payloads`, a dated run's in `run_payloads` under the run's root and bucket, and a purged run's
+  stub may reference the tenant's tombstone. The trigger's lookup MUST take `FOR KEY SHARE` on the payload row it finds,
+  as the built-in key check does, so that a concurrent delete of that payload waits for it and its own re-check fails.
+  The trigger raises SQLSTATE 23503. A migration test MUST fail when a digest column of a run-owned table is in neither
+  the registry nor its exclusion list, when a run-owned table has a foreign key to `payloads` other than the two shared
+  columns, or when a column that belongs to no run references `run_payloads`. A second test over `pg_constraint` MUST fail
+  when any foreign key has a relation of `pg_partition_tree('run_events')` or `pg_partition_tree('run_payloads')` on
+  either side.
+- **Requirement 049-007 Legacy purge.** For feature 020's purge of a legacy run, the reference check of gap 1099 MUST be
+  served by partial indexes whose predicate selects the rows of legacy runs, delivered with the purge they serve (gated
+  as it is). Every index of a table is opened on an insert, and an indexed column updated defeats a heap-only update, so
+  their cost on new writes is not nil: Task 049-3 measures it, including the heap-only update ratio of `steps` and `runs`,
+  before they are built. They are built in a migration of their own: in 0.3.0's stopped upgrade if Task 049-11 lands
+  before the release is cut, or after it as design 053's concurrent migrations, one index per file. The purge deletes a
+  candidate payload and then re-checks its references in a later statement under a savepoint, as the built-in key check
+  does.
+- **Requirement 049-008 Partitions exist ahead.** A definer function, `ensure_journal_buckets()`, MUST create the
+  partitions of the current month and the next three for every partitioned table, each a standalone table created `LIKE`
+  its parent (so that a column added later is present) with only its statement-level truncate trigger, checked by a
+  constraint, then attached under a `lock_timeout` of 2 s; it sets the cloned row triggers enabled always and asserts it.
+  It takes a transaction-level advisory lock, and the engine's housekeeping calls it at start and daily, and hourly after
+  a failure. The gauge `journal_partition_months_ahead` MUST give the months that exist ahead, and the alert
+  `SagatJournalPartitionsLow` MUST fire below two. A row for a bucket with no partition fails with SQLSTATE 23514 and the
+  partitioned table as the error's table (which distinguishes it from the PL/pgSQL guards that also raise 23514); the
+  adapter maps it to code `UNAVAILABLE` with reason `JOURNAL_BUCKET_MISSING` (retryable) for a bucket at or after the
+  current month, and to code `NOT_FOUND` with reason `RUN_PURGED` (the existing reason) for an earlier one, which can only
+  be a retired month (Requirement 049-009 detaches and drops in one transaction). The new reason is added to
+  `specs/001-platform-foundation/contracts/openapi.yaml`, the error contracts and the Studio's generated types in the same
   delivery. There is no default partition.
+
+### Retention
+
 - **Requirement 049-009 A month is dropped only when every run in it is purged.** A bucket MAY be retired only when every
   run of it is purgeable under feature 020 (terminal, its tree terminal and, for a chain, the chain final, past its
   namespace's hot retention, every sink applied or held past its hold, not `PARTIAL`, not `COMPENSATION_FAILED`, no
-  unresolved outcome or review, and no leaf-success certificate, whose sources decision D298 keeps without expiry) and
-  its archive is `VERIFIED` (or its policy is `archive: NONE`). The legacy bucket is never retired: its payloads are
-  shared in `payloads`, so its runs leave only by feature 020's per-run purge. Retirement MUST take a global retirement
-  lock (one detach may be pending per table), then the bucket's lock, which feature 020's per-run purge takes with a
-  try-lock before its run lock (so that the order is bucket, then run, and neither waits for the other), and MUST, in
-  order: purge each run in the mark-only
-  form of Requirement 049-014; detach the bucket's partitions concurrently (finishing a detach left pending with
-  `DETACH ... FINALIZE`); check that the detached tables hold no row of a run that is not purged, reattaching and
-  restarting from the first step if one does; count the bytes of the detached `run_payloads` table per tenant; release
-  them and drop the detached tables in one transaction, with the retirement's audit record and one audit record per
-  tenant, through `sagat_quota_release_bytes`, an owner-only definer function that locks each tenant's usage row in UUID
-  order (Architecture decision 0027) and refuses an underflow, summing `octet_length(content)` as the delta trigger
-  does. On resume, each table's state (attached, detach pending, detached, dropped) is read from the catalog, not only from
-  the last record, and each table is finished from its own state. A retirement abandoned after its purges leaves its runs
-  in the state `CONTENT_PENDING_DROP`, recorded per run; a per-run purge of feature 020 finishes such a run by its key
-  whenever no retirement of its bucket is active, and refuses with a retryable error while one is (a detach pending
-  included). Erasure never uses the mark-only form. Each step is
-  recorded in `journal_retirements`, so a crash at any point resumes from the last recorded step.
-- **Requirement 049-010 The switch.** New runs get a dated bucket only after the registry's activation of the
-  capability `journal-buckets-v1`, which updates the one row of `journal_bucket_switch` (it always exists, empty before
-  the switch). The creating transaction of a run reads that row `FOR SHARE` (folded into the run insert, so no statement
-  is added), so a creation and the switch serialize and no creation in flight is refused. The bucket, switch, reference
-  and late-legacy triggers are all enabled always; the late-legacy refusal raises its own SQLSTATE and constraint name.
-  Before the switch, every run is legacy.
-- **Requirement 049-011 Every statement names its bucket.** Every statement that reads or writes a partitioned journal
-  table MUST compare `journal_bucket` by equality with a bind parameter or a literal. The writer takes the bucket from
-  the run row it holds; a reader that does not hold the run row reads it (one statement, counted where it is on the hot
-  path). A static check, `scripts/check-journal-buckets.py`, over the SQL literals of `crates/infra-postgres/src` and the
-  function bodies of the migrations after this design's first one, MUST fail on a statement that touches a partitioned
-  journal table without it, and on SQL built at run time (`format!` and the like) that names one. A migration test applies
-  the same rule to the bodies of every function in `pg_proc`. The suite after the switch MUST assert that no statement for
-  a dated run reads `payloads` except for a tombstone.
-- **Requirement 049-012 The hot path is budgeted.** Design 038's budget test MUST record, besides statements,
-  transactions and rows written, the distinct relations locked during a lease and a completion and the round trips, in
-  the change that partitions each table. Partitioning MUST NOT change the statement count of a lease or a completion, and
-  MUST NOT raise the relations locked by more than one partition and its indexes per partitioned table the operation
-  writes, besides the relations the design adds on the run-creating path (`journal_bucket_switch`), each counted and
-  named in the budget's line.
-- **Requirement 049-013 The catalog checks know partitions.** The storage-classification test MUST map a partition to its
-  parent; the startup privilege check and the runtime-privilege audit MUST list partitions through `pg_inherits` and
-  fail on a partition with any grant to the runtime role, or with a required trigger missing or not enabled always.
+  unresolved outcome or review, and no leaf-success certificate, whose sources feature 020's decision D298 keeps without
+  expiry) and its archive is `VERIFIED` (or its policy is `archive: NONE`). The legacy bucket is never retired: its
+  payloads are shared in `payloads`, so its runs leave only by feature 020's per-run purge. Retirement MUST, in order:
+  (1) record the retirement as active in `journal_retirements` in a transaction that takes the bucket's advisory lock in
+  exclusive mode, so that it waits for the per-run purges in flight, which hold it in shared mode (Requirement 049-014);
+  (2) purge each run of the bucket in the mark-only form of Requirement 049-014, finishing first any run a per-run purge
+  left in `PURGING`; (3) check that no row of the bucket's partitions belongs to a run that is not purged, and compute
+  each tenant's bytes in the bucket's `run_payloads` partition (summing `octet_length(content)` as the delta trigger
+  does), recorded in `journal_retirements`: the partitions are frozen by then, since a purged run refuses every append and
+  a past month gains rows only from the trees of its own roots, all purged; (4) in one transaction, under a `lock_timeout`
+  of 2 s, detach both partitions (without `CONCURRENTLY`: with no foreign key and no default partition a detach is catalog
+  work only), drop them, then release each tenant's recorded bytes through `sagat_quota_release_bytes` in tenant UUID
+  order (Architecture decision 0027), write the audit records and mark the retirement done. A lock timeout rolls the
+  transaction back whole and it is retried after 1 s, doubling to at most 30 s, at most 10 attempts, then the command
+  stops and reports; nothing is ever detached and not dropped. An operator may abandon an active retirement
+  (`--abandon`), which marks it so in `journal_retirements`; its runs, left purged in the mark-only form, are then
+  finished by feature 020's per-run purge by their key. A retirement is active only by its row, never by a lock alone.
 - **Requirement 049-014 Feature 020's purge, by key, and its mark-only form.** Feature 020's purge of a dated run MUST
-  delete that run's rows of the partitioned tables by `(tenant_id, run_id, journal_bucket)`, with no reference check, and
-  its run-purpose blobs as feature 020 designs; the purge of a legacy run keeps feature 020's reference check
-  (Requirement 049-007). The *mark-only form*, used by retirement, does the same under the run lock except that it leaves
-  the run's partitioned rows for the drop: it re-checks eligibility, writes the stub (tombstone digests, the `NOT NULL`
-  columns kept, so an older reader reads a stub as feature 020 designed), deletes the run's rows of the unpartitioned
-  run-owned tables, its run-purpose blobs and its step-log streams (Architecture decision 0084, decision 4). A purged run refuses any later append. The rows that refer to content
-  across runs belong to the run that holds the row: a chain's operation receipt to its `resolved_run_id`, a segment's
-  `transfer_input_digest` to the segment's run (the next run holds its own copy).
+  delete that run's rows of `run_events` by `(tenant_id, run_id, journal_bucket)` with no reference check, and the purge
+  of the tree's last unpurged run also deletes the tree's `run_payloads` rows by `(tenant_id, root_run_id,
+  journal_bucket)`; erasure of a dated run therefore erases its whole tree, and its report names every run erased
+  (feature 020's requirement 020-037). The purge of a legacy run keeps feature 020's reference check (Requirement
+  049-007). Every purge of a dated run takes the bucket's advisory lock in shared mode for its transaction and refuses,
+  with a retryable error, while a retirement of the bucket is active (Requirement 049-009). The *mark-only form*, used by
+  retirement, runs through feature 020's own purge function (its authorization row and its `run.purged` audit record
+  per run) under the run lock, and differs only in leaving the run's partitioned rows for the drop: it re-checks
+  eligibility, writes the stub (tombstone digests, the `NOT NULL` columns kept, so an older reader reads a stub as
+  feature 020 designed), deletes the run's rows of the unpartitioned run-owned tables, its run-purpose blobs that no
+  other run references (feature 020's blob check, since a rerun shares its source's input blob) and its step-log
+  streams (Architecture decision 0084, decision 4). No purge disables a trigger: a delete passes the append-only
+  triggers only through feature 020's authorization row (`retention_purge_authorizations`, keyed by the transaction,
+  with no runtime grant), which the triggers of `run_payloads` and of every partition consult as those of `run_events`
+  and `payloads` do. A purged run refuses any later append,
+  and every read of its journal or content answers `RUN_PURGED` without reading a partition, so that rows awaiting the
+  drop are never served. The rows that refer to content across runs belong to the run that holds the row: a chain's
+  operation receipt to its `resolved_run_id`, a segment's `transfer_input_digest` to the segment's run.
 - **Requirement 049-015 Features that will reference run content follow the rule.** The approved designs that plan new
   references to run content (feature 022: `test_run_pins.payload_digest` and the step cache's obligations; feature 026:
   `approval_requests.summary_digest`, `approval_decision_receipts.input_digest`; feature 030: the inputs and results of
-  `service_operations`, each run tree with its own copy; feature 025: transcript bodies) MUST follow Requirements 049-005 and
-  049-006; their data models are amended with this design's delivery, and so is feature 020's (the mark-only form, the
-  registry's owner column, the key of the purge).
+  `service_operations`, each run tree with its own copy; feature 025: transcript bodies) MUST follow Requirements 049-005
+  and 049-006; their data models are amended with this design's delivery, and so is feature 020's (the mark-only form,
+  the tree as the unit of payload deletion and of erasure, the key of the purge, the registry).
+
+### The switch, statements and the hot path
+
+- **Requirement 049-010 The switch.** New roots get a dated bucket only once the process has learned, from the instance
+  registry, that the capability `journal-buckets-v1` is active; the activation is `control-plane journal switch`, which
+  first calls `ensure_journal_buckets()`. A process that has not learned of it yet creates legacy roots, which are valid
+  (Requirement 049-001), so no row lock, statement or clock comparison serializes a creation with the switch. Before the
+  switch, every run is legacy. The capability is never deactivated in 0.3.0: design 053's drain check for it would be "no
+  run of a dated bucket exists", which holds only on a database that never used it.
+- **Requirement 049-011 Every statement names its bucket.** Every statement for one run that reads or writes a
+  partitioned journal table MUST compare `journal_bucket` by equality with a bind parameter or a literal; the bucket
+  comes from the run row the transaction holds or has read, and every lease and completion already reads the run row.
+  A statement that spans runs (a scheduler pass such as `collection_candidates` or `run_result` in `maintenance.rs`) MAY
+  compare it with a joined column, opens every partition, and is allowed only off the lease and completion paths, by
+  name in the check's allow-list with the pass that runs it; Task 049-3 counts its locks. A static check,
+  `scripts/check-journal-buckets.py`, over the SQL literals of `crates/infra-postgres/src` and the function bodies of the
+  migrations after this design's first one, MUST fail on a statement that touches a partitioned journal table without
+  the comparison and is not allowed, on SQL built at run time (`format!` and the like) that names one, and on a statement
+  naming `payloads` or `run_payloads` outside `payloads.rs` (Requirement 049-005). A migration test applies the same rule
+  to the bodies of the functions in `pg_proc` that name a partitioned journal table.
+- **Requirement 049-012 The hot path is budgeted.** Design 038's budget test MUST record, besides statements,
+  transactions and rows written, the distinct relations locked during a lease and a completion (read or written) and the
+  round trips, in the change that partitions each table. Partitioning MUST NOT change the statement count of a lease or a
+  completion, and MUST NOT raise the relations locked by more than one partition and its indexes per partitioned table
+  the operation reads or writes, plus the `runs` lookup of each reference trigger, each counted and named in the
+  budget's line.
+- **Requirement 049-013 The catalog checks know partitions.** The storage-classification test MUST map a partition to its
+  parent; the startup privilege check and the runtime-privilege audit MUST list partitions through `pg_inherits` and
+  fail on a partition with any grant to the runtime role, with a required trigger missing, duplicated or not enabled
+  always, and on a function of this design whose `proacl` grants `PUBLIC` or whose `prosecdef` differs from this design's
+  list.
+- **Requirement 049-016 Privileges.** The runtime role keeps `SELECT, INSERT` on `run_events`, `run_payloads` and
+  `payloads` and gains no `UPDATE`: the reference and bucket triggers, which lock rows `FOR KEY SHARE`, are `SECURITY
+  DEFINER` functions owned by the owner role with `search_path` set to `pg_catalog, pg_temp` and every name qualified,
+  revoked from `PUBLIC`. `journal_retirements` has no grant to the runtime role; a purge learns whether a retirement is
+  active through the definer function `journal_bucket_retiring(bucket)`. Retirement runs as `sagat_retirer`, a login role
+  with no table privilege, which may only execute the definer functions of retirement (`journal_retire_start`,
+  `journal_retire_check`, `journal_retire_drop`, `journal_retire_abandon`), owned by the owner; the platform's processes
+  and the chart hold no credential of either role. `sagat_quota_release_bytes` is executable by those functions' owner
+  only. The retirement command parses `--bucket` as a month and refuses the legacy bucket and any month that ended less
+  than 24 hours ago by the database clock (a root's `created_at` is the database clock or the application's time of the
+  command it is processing, which differ by the clocks' skew of seconds, so no root can be created in a month that ended
+  a day before); the functions build partition names from the date with `%I` quoting.
 
 ### Success criteria
 
 - **Success criterion 049-001** After the switch, the budget test's statement counts for a lease and both completions
-  equal the counts before partitioning, and the relations locked rise by at most one partition and its indexes per
-  partitioned table written.
-- **Success criterion 049-002** On a database holding 12 monthly buckets of 1,000,000 runs of the chain shape each, the
-  retirement of one bucket is measured end to end (the mark-only purge of its runs included) and from the start of the
-  detach to the end of the drop, each at the median and the maximum of five repetitions, and the chain shape's 99th
-  percentile latency, measured by design 051's driver during the retirement, rises by less than 10%. The target for the
-  detach-to-drop part is at most 120 s when no transaction older than 60 s is open: a concurrent detach waits twice for
-  the transactions older than it, so 2 × 60 s = 120 s. Before each detach the retirement command lists the transactions
-  older than 60 s and waits for them, or stops and reports them, so the bound is checked, not assumed.
-- **Success criterion 049-003** The partitioning of a `run_events` of 100 GiB, under the chain shape at half its maximum
-  sustained rate, blocks no insert for more than 2 s of wait plus the measured hold of its catalog statements, as shown by
-  the driver's per-second counter and the migration's timing of each lock.
+  (with and without a following step) equal the counts before partitioning, and the relations locked rise by at most what
+  Requirement 049-012 allows.
+- **Success criterion 049-002** On a free standard runner of GitHub (Owner decision 2026-11-25-1), on a database holding
+  12 monthly buckets of 20,000 runs of the chain shape each, the retirement of one bucket is measured end to end (the
+  mark-only purge of its runs included) and its last transaction alone, each at the median and the maximum of five
+  repetitions; during the last transaction no insert into `run_events` waits more than the 2 s lock timeout plus that
+  transaction's measured catalog time, as the driver's per-second counter shows. The report names the runner.
+- **Success criterion 049-003** The conversion of a `run_events` of 5 GiB on the same runner copies no row (the legacy
+  partition keeps the old table's `relfilenode`, and the relation sizes before and after are equal), and its time and the
+  time of its index build are published with the runner named.
 - **Success criterion 049-004** After a retirement, every affected tenant's content usage equals a fresh reconciliation of
   its rows.
 
@@ -240,16 +301,16 @@ From the code on `develop` at `546d5aa5`:
 
 - **User story 049-01** An operator whose namespaces all keep 90 days of history sees the journal stop growing after 90
   days plus one month, without a nightly purge that fights the workload.
-- **User story 049-02** A tenant whose data must be erased has its runs purged one by one, at a cost proportional to its
-  runs, not to everyone's.
+- **User story 049-02** A tenant whose data must be erased has its run trees purged one by one, at a cost proportional to
+  its runs, not to everyone's.
 - **User story 049-03** A developer adding a statement on the journal learns at once, from a check, that it must name
   its bucket.
 
 ## Goals
 
-- A per-run purge of every run created after the switch whose cost is the run's own rows.
-- Retention that costs a drop per month where every namespace in the database has a policy no longer than the month's
-  age; elsewhere, the per-run purge.
+- A per-run purge of every run created after the switch whose cost is the run's own rows, and the tree's payloads once.
+- Retention that costs one short transaction per month where every namespace with runs in that month has a policy no
+  longer than the month's age; elsewhere, the per-run purge.
 - No change in what a transition costs in statements, and a measured, bounded change in what it locks.
 
 ## Non-Goals
@@ -262,44 +323,54 @@ From the code on `develop` at `546d5aa5`:
 - **Partitioning the outbox, the inbox, the command deduplication and the webhook deliveries.** They already delete by
   age in small, indexed batches.
 - **Changing feature 041's step logs** (Architecture decision 0084).
+- **Converting `run_events` online.** Requirement 049-004.
+- **A scheduled retirement job.** Retirement is an operator's command (Requirement 049-016).
 
 ## Open Questions
 
 Each was decided under the delegation of Owner decision 2026-11-20-6, with its reasoning; the acceptance of the decision
 record is under Owner decision 2026-11-24-4 (pull request 274).
 
-1. **What is the partition key?** The UTC month of the run's `created_at`, stored on the run and computed once by the
-   creating transaction. The run identifier is not time-ordered for child runs; the event's time splits runs. Delegate.
-2. **Which width?** One calendar month. With hot retention R days, the database holds about `ceil(R / 30) + 3` buckets
-   (the retained months, the current one, two ahead); 90 days gives 3 + 3 = 6 and 365 days gives 13 + 3 = 16. A week
-   would multiply the partitions, and so the planning and locking of a statement that is not pruned, by four. Delegate.
+1. **What is the partition key?** The UTC month of the root run's `created_at`, stored on every run of the tree and
+   computed once by the creating transaction. The run identifier is not time-ordered for child runs; the event's time
+   splits runs. Delegate.
+2. **Which width?** One calendar month. With hot retention R days and runs that end within the month they start, the
+   database holds about `ceil(R / 30) + 1 + 3` buckets (the retained months, the current one, three ahead); 90 days gives
+   3 + 1 + 3 = 7 and 365 days gives 13 + 1 + 3 = 17; a run that lives longer holds its month longer. A week would multiply
+   the partitions, and so the planning and locking of a statement that is not pruned, by about four. Delegate.
 3. **Deduplicate payloads within a run, a run tree, a bucket, or a tenant?** Within a run tree, for new runs: a tree is
    eligible for retention only as a whole (feature 020), so its runs may share payloads without a cross-run check, and a
-   fan-out's children need no copies of their inputs, so runs in flight do not grow in quota use after the switch. Within a bucket would bring
-   the reference check back for a single run's purge. The cost is a copy where two runs hold the same bytes, which the
-   content quota counts; Task 049-2 measures how often that happens. Delegate.
+   fan-out's children need no copies of their inputs, so runs in flight do not grow in quota use after the switch. Within
+   a bucket would bring the reference check back for a single tree's purge. The cost is a copy where two trees hold the
+   same bytes, which the content quota counts; Task 049-2 measures how often that happens. Delegate.
 4. **Copy the legacy payloads, or leave them?** Leave them. A copy would double-charge the quota until a cleanup that
    deletes journal rows, and needs the census twice; leaving them costs feature 020's reference check for legacy runs
-   only, on partial indexes new writes never touch (Requirement 049-007). Delegate.
+   only, on partial indexes whose cost on new writes Task 049-3 measures (Requirement 049-007). Delegate.
 5. **Foreign keys or triggers?** Triggers that raise the same SQLSTATE. A foreign key into a partitioned table makes
    every detach scan the referencing tables under a lock that blocks their writes; one out of a partition makes its drop
-   lock `runs`. The cost is a trigger call per write instead of the built-in check, which Task 049-3 measures. Delegate.
+   lock `runs`. The cost is a trigger call and a `runs` lookup per write instead of the built-in check, which Task 049-3
+   measures. Delegate.
 6. **Partition `steps`?** Not in 0.3.0. The scheduler's passes read its partial indexes without a run identifier, so
-   every partition would be opened, and its rows are few per run. Task 049-16 measures it after design 052's queue removes
-   the claim's scan. Delegate.
+   every partition would be opened, and its rows are few per run. Delegate; a measurement after design 052's queue is a
+   follow-up task.
 7. **A default partition as a safety net?** No: it makes every later attach scan it, and rows that should fail would
    land there silently. Delegate.
-8. **How are statements planned so that only one partition is locked?** Decided by Task 049-3, among three: statements
-   on partitioned tables sent unnamed (planned with their parameters, one more round trip each); the runtime role's
-   `plan_cache_mode` set to `force_custom_plan`; or the triggers' and statements' plans as they are, if the measured
-   locks stay within Requirement 049-012. The decision rule: the choice with the lowest median completion latency among
-   those that meet Requirement 049-012 on PostgreSQL 16 and 18. This design is amended with the choice before Task 049-8
-   starts. Delegate.
-9. **The decision record.**
-   [Architecture decision 0132](../adr/ADR-0132-the-journal-is-partitioned-by-the-month-a-run-was-created-and-a-run-owns-its-payloads.md)
-   records the key, the run-owned payloads of new runs, the triggers in place of foreign keys and the rule for dropping a
-   month; it refines Architecture decision 0054 in part (its decisions 4 and 6, and its rejected option 3 for whole
-   months only).
+8. **How are statements planned so that only one partition is locked?** Decided by Task 049-3, among four: statements on
+   partitioned tables sent unnamed (planned with their parameters, one more round trip each); the runtime role's
+   `plan_cache_mode` set to `force_custom_plan`; the same setting on the trigger functions only (`ALTER FUNCTION ... SET
+   plan_cache_mode`), which reaches their cached plans without a role-wide planning cost; or the plans as they are, if
+   the measured locks stay within Requirement 049-012. The decision rule: the choice with the lowest median completion
+   latency among those that meet Requirement 049-012 on PostgreSQL 16 and 18. This design is amended with the choice
+   before Task 049-8 starts. Delegate.
+9. **Concurrent or plain detach?** Plain, in the transaction that drops: with no foreign key and no default partition it
+   is catalog work, it waits at most the lock timeout, and no table is ever left detached and not dropped, so no state
+   between the two needs a recovery path. A concurrent detach cannot run in a transaction or a function, so it would need
+   the owner's credential in the command and a resumable state between detach and drop. Delegate.
+10. **The decision record.**
+    [Architecture decision 0132](../adr/ADR-0132-the-journal-is-partitioned-by-the-month-a-run-was-created-and-a-run-owns-its-payloads.md)
+    records the key, the run-owned payloads of new trees, the triggers in place of foreign keys and the rule for dropping
+    a month; it refines Architecture decision 0054 in part (its decisions 4 and 6, and its rejected option 3 for whole
+    months only).
 
 ## Owner decisions needed
 
@@ -310,34 +381,35 @@ record is under Owner decision 2026-11-24-4 (pull request 274).
   design once every run in it is purged. The coordinating session drafts the text and three reviewers read it; nothing is
   left for the owner. Its merge gates Tasks 049-11 and 049-14; Task 049-18 checks the merged text against this design.
 - **Scope.** Owner decision 2026-11-24-1 (pull request 273) names "partitioning of the journal tables" among the new
-  designs of release 0.3.0; the delegation covers its open questions. The rows of Owner decisions 2026-11-24-1, -2 and -4
-  are in pull requests 273 and 274, which merge before this design.
+  designs of release 0.3.0; the delegation covers its open questions.
 
 ## Critical User Journeys (CUJs)
 
 ### CUJ 1: A month is retired
 
-*   **Given**: every namespace with 90 days of hot retention and archives required; bucket 2026-12, whose runs all ended
-    before 2027-01-01 and were archived and verified.
-*   **When**: the operator's retirement job runs after 2027-04-01.
-*   **Then**: it purges each run of the bucket in the mark-only form, detaches the December partitions of `run_events` and
-    `run_payloads` concurrently, checks them, counts and releases their bytes, and drops them; the hot path never waits
-    more than a lock timeout.
+*   **Given**: every namespace with runs in bucket 2026-12 has 90 days of hot retention and archives required; the
+    bucket's runs all ended before 2027-01-01 and were archived and verified.
+*   **When**: the operator runs `control-plane journal retire --bucket 2026-12` after 2027-04-01.
+*   **Then**: it records the retirement, purges each run of the bucket in the mark-only form, checks the partitions and
+    counts their bytes, then in one transaction detaches and drops the December partitions of `run_events` and
+    `run_payloads` and releases the bytes; the hot path never waits more than a lock timeout plus that transaction's
+    catalog time.
 
 ### CUJ 2: A run that lives a year
 
 *   **Given**: one run of bucket 2026-12 still waiting for an approval in 2027-06.
-*   **When**: the retirement job reaches December's bucket.
-*   **Then**: the bucket stays; feature 020 purges every other run of it one by one, by its key;
-    `journal_bucket_held_runs{reason="LIVE"}` shows one; when the run ends and becomes purgeable, the bucket is retired.
+*   **When**: the operator's retirement reaches December's bucket.
+*   **Then**: it stops before recording anything and reports `journal_bucket_held_runs{reason="LIVE"}` as one; feature
+    020 purges every other run of the bucket one by one, by its key; when the run ends and becomes purgeable, the bucket
+    can be retired.
 
 ### CUJ 3: The upgrade
 
-*   **Given**: a database of the previous release with 100 GiB of `run_events`.
-*   **When**: the release's expand migrations run while it serves.
-*   **Then**: `run_events` becomes a partitioned table whose legacy partition is the old table, without a copy or an index
-    build under a blocking lock; the foreign keys become triggers that raise the same SQLSTATE; new runs stay legacy until
-    the operator activates `journal-buckets-v1`.
+*   **Given**: a database of release 0.2.x with 100 GiB of `run_events`.
+*   **When**: the operator stops the writers and runs 0.3.0's migrations, as the stopped upgrade requires.
+*   **Then**: `run_events` becomes a partitioned table whose legacy partition is the old table, after one index build and
+    with no row copied; the foreign keys become triggers that raise the same SQLSTATE; new runs stay legacy until the
+    operator runs `control-plane journal switch`.
 
 ### CUJ 4: A statement without its bucket
 
@@ -351,102 +423,88 @@ record is under Owner decision 2026-11-24-4 (pull request 274).
 
 | Table | Partitioned | Key | Primary key |
 |---|---|---|---|
-| `run_events` | yes, by range of `journal_bucket` | the run's month | `(tenant_id, run_id, seq, journal_bucket)` |
+| `run_events` | yes, by range of `journal_bucket` | the run tree's month | `(tenant_id, run_id, seq, journal_bucket)` |
 | `run_payloads` (new) | yes, by range of `journal_bucket` | the run tree's month | `(tenant_id, root_run_id, digest, journal_bucket)` |
-| `payloads` | no | | `(tenant_id, digest)`: legacy runs' payloads, the two shared columns, the tombstones |
-| `runs` | no | | `id`, with `journal_bucket` and feature 020's stub columns |
-| `steps` and the other run-owned tables | no | | unchanged, each with `journal_bucket` for its reference check |
+| `payloads` | no | | `(tenant_id, digest)`: legacy runs' payloads, the two shared columns, values copied by rows of no run, the tombstones |
+| `runs` | no | | `id`, with `journal_bucket` (and feature 020's stub columns) |
+| `steps` and the other run-owned tables | no | | unchanged; their reference triggers read the bucket from `runs` |
 | `audit_records` | no | | unchanged |
+| `journal_retirements` (new) | no | | `(bucket)`: state, per-tenant bytes, actor (database user and command identity), times |
 
-Partition names are `<table>_b<YYYYMM>` and `<table>_legacy`.
+Partition names are `<table>_b<YYYYMM>` and `<table>_legacy`. Bucket code lives in a new
+`crates/infra-postgres/src/journal_buckets.rs`, not in `partitioning.rs`, which holds the scheduler's shards.
 
-### `run_events`, online
+### The migrations of the stopped upgrade
 
-The migrations, marked `expand` (design 053). Each statement that takes a lock blocking inserts runs in a transaction
-of its own (files run without a transaction, `-- no-transaction` first, retried statement by statement), so that no
-transaction accumulates exclusive locks on several tables, and waits under `lock_timeout` 2 s. Each step has a `down`
-that restores the previous schema (the foreign keys recreated `NOT VALID` and validated), refused once a dated row
-exists:
+Every migration of this design that runs in 0.3.0's stopped upgrade is transactional and carries the waiver
+`-- lint-allow: stopped-upgrade <reason>` of design 053 (Architecture decision 0131, decision 2) for each rule it
+breaks: the constraint drops, the rename, the replaced primary key and the dropped triggers, all of which break design
+053's rules only because they assume writers that are running. Design 053's lint (its Task 053-2) is a prerequisite of
+Task 049-8, so that each waiver is checked. Each migration has a `down` that restores the previous schema (the foreign
+keys recreated `NOT VALID` and validated), refused once a dated row exists. In order:
 
-1. Add `journal_bucket date NOT NULL DEFAULT '1970-01-01'` to `runs`, `run_events` and the run-owned referencing
-   tables (`steps`, `iteration_scopes`, `collection_iterations`, `iteration_checkpoints`, `collection_scope_items`,
-   `workflow_operation_states`, `operation_update_receipts`, `loop_scopes`, `loop_iterations`, `loop_checkpoints`,
-   `chain_segments`, `leaf_collection_success_certifications`) (a constant default: no rewrite); `journal_bucket_switch` (one row, empty); the check and the immutability and
-   switch trigger of Requirement 049-001 on `runs` (the check `NOT VALID`); the bucket trigger of Requirement 049-002 on
-   `run_events`; the reference triggers of Requirement 049-006 (`UPDATE OF` their columns, enabled always); then drop,
-   one per statement, the foreign keys they replace (the 20 to `payloads` and `run_events`' to `runs`). The triggers
-   raise SQLSTATE 23503, so the previous release sees the same error as before. Dropping a constraint in an expand
-   migration is an exception to design 053's lint (Architecture decision 0131, decision 2), recorded in the migration's
-   header in the allow-list form of design 053's Task 053-2, which Architecture decision 0132 names as a refinement of
-   0131.
-2. Without a transaction: `DROP INDEX CONCURRENTLY IF EXISTS run_events_bucket_key`, then `CREATE UNIQUE INDEX
-   CONCURRENTLY run_events_bucket_key ON run_events (tenant_id, run_id, seq, journal_bucket)`, with no `lock_timeout`;
-   likewise the partial legacy indexes of Requirement 049-007 and `runs (journal_bucket)`.
-3. Replace the primary key: `ALTER TABLE run_events DROP CONSTRAINT run_events_pkey, ADD CONSTRAINT
-   run_events_legacy_pkey PRIMARY KEY USING INDEX run_events_bucket_key` (no scan: `journal_bucket` is `NOT NULL`); add
-   `CHECK (journal_bucket = '1970-01-01') NOT VALID`.
-4. Validate the two checks (`SHARE UPDATE EXCLUSIVE`, which blocks no insert or read).
-5. One short transaction: rename `run_events` to `run_events_legacy`, its triggers to `*_legacy` and its indexes
-   (`run_events_instance_idx` to `run_events_legacy_instance_idx`; an attach matches indexes by definition, not name); create the
-   partitioned `run_events` with the same columns, the primary key of Requirement 049-003, its three checks,
+1. **Task 049-8, `run_events`.** Add `journal_bucket date NOT NULL DEFAULT '1970-01-01'` to `runs` and `run_events` (a
+   constant default: no rewrite), and an index on `runs (journal_bucket)`; build `CREATE UNIQUE INDEX
+   run_events_bucket_key ON run_events (tenant_id, run_id, seq, journal_bucket)`; replace the primary key with `ALTER
+   TABLE run_events DROP CONSTRAINT run_events_pkey, ADD CONSTRAINT run_events_legacy_pkey PRIMARY KEY USING INDEX
+   run_events_bucket_key` (no scan: `journal_bucket` is `NOT NULL`); add `run_events_legacy_bucket CHECK (journal_bucket =
+   '1970-01-01')` and validate it; drop `run_events`' foreign keys to `runs` and to `payloads`, replaced in the same migration by the bucket trigger of
+   Requirement 049-002 and the reference trigger of `run_events.payload_digest`, the registry's first entry; rename `run_events` to
+   `run_events_legacy`, its triggers to `*_legacy` and its indexes (`run_events_instance_idx` to
+   `run_events_legacy_instance_idx`; an attach matches indexes by definition, not name); create the partitioned
+   `run_events` with the same columns, the default, the primary key of Requirement 049-003, its three checks,
    `run_events_instance_idx` and its triggers; attach `run_events_legacy` `FOR VALUES FROM (MINVALUE) TO ('1970-01-02')`
-   (no scan: the validated check proves the range; no index build: the primary key and the instance index already exist
-   on it with matching definitions); drop the legacy table's renamed row triggers, now duplicated by the cloned ones
-   (its statement-level truncate trigger is kept, since it is not cloned), and set the cloned triggers enabled always; revoke
-   the runtime role's grants on `run_events_legacy` and grant `SELECT, INSERT` on the parent; create the partitions of
-   the current month and the next two. Only catalog statements run under the `ACCESS EXCLUSIVE` lock of the rename.
+   (no scan: the validated check proves the range; no index build: the indexes exist with matching definitions); drop
+   the legacy table's renamed row triggers, now duplicated by the cloned ones (its statement-level truncate trigger is
+   kept, since it is not cloned), and set the cloned triggers enabled always; revoke the runtime role's grants on
+   `run_events_legacy` and grant `SELECT, INSERT` on the parent; create the partitions of the current month and the next three.
+2. **Task 049-5, `runs`.** The bucket and immutability triggers of Requirement 049-001.
+3. **Task 049-10, `run_payloads` and the references.** Create `run_payloads`, partitioned like `run_events`, with the
+   append-only, no-truncate, quota delta and flush triggers, the constraint trigger of Requirement 049-002, grants `SELECT,
+   INSERT` on the parent only, and its storage classification as content; create the reference triggers of Requirement
+   049-006 from the registry; then drop the 19 remaining foreign keys to `payloads` of run-owned tables that they replace
+   (the twentieth, `run_events`', went in step 1).
+4. **Task 049-13.** Add `journal-buckets-v1` to the registry's closed capability lists, as design 053 adds a capability.
 
-A step 2 index stopped by a timeout or a crash is invalid; step 2 drops and rebuilds it. A failed step 5 rolls back
-whole. The rename is the second recorded exception to design 053's lint. The upgrade from 0.2.x to 0.3.0 is a stopped
-upgrade (Architecture decision 0131, decision 8), so in it these steps run with writers stopped and Requirement 049-004
-protects nothing but the time they take, which is reported; from 0.3.x on they run while the platform serves. While the
-previous release still runs, its statements carry no bucket and lock every partition; Task 049-3 records that cost for
-the upgrade window.
-
-### `run_payloads`
-
-Created in step 1 of the next migration: partitioned like `run_events`, the append-only, no-truncate, quota delta and
-flush triggers, the deferred bucket trigger, grants `SELECT, INSERT` on the parent only, its storage classification as
-content. Before the switch nothing writes it; after it, dated runs write it and only it.
+Before the switch nothing writes `run_payloads`; after it, dated trees write it and only it.
 
 ### The switch
 
-`control-plane journal switch`, as the owner role, after the release is everywhere: the registry's activation of
-`journal-buckets-v1` (which refuses while a live process lacks it), and in the same transaction the switch time in
-`journal_bucket_switch`. From then the creating transaction of a run computes a dated bucket, and the trigger on `runs`
-refuses a legacy bucket for a run created later than the switch time plus 30 s, so a stale process cannot keep creating legacy
-runs once it would have learned of the switch; the refusals are counted, and a barrier test holds the activation against a
-run creation.
+`control-plane journal switch`, as the operator: `ensure_journal_buckets()`, then the registry's activation of
+`journal-buckets-v1` (which refuses while a live process lacks it). Each process learns of it at its next heartbeat and
+from then creates dated roots. The activation is recorded in the registry's history; no table of this design records it.
 
 ### Locks and plans
 
 A statement planned with the bucket's value prunes to one partition and locks it and its indexes. How plans are made is
 Open Question 8, decided by Task 049-3 with the rule stated there, before Task 049-8. The relations a transaction locks,
-the triggers' statements included, are counted by the budget (Requirement 049-012).
+the triggers' statements included, are counted by the budget (Requirement 049-012), through a probe that the test
+support adds behind the `test-probes` feature of `crates/infra-postgres`: before `COMMIT`, after `SET CONSTRAINTS ALL
+IMMEDIATE`, the store's transaction reads `pg_locks` for its own backend and counts the round trips it sent; the feature
+is off in every build but the budget's.
 
 ### Retirement
 
-`control-plane journal retire --bucket YYYY-MM`, as the owner role, run by the operator, never by the platform's
-processes; the chart offers it as an opt-in scheduled job with its own service account and an owner credential in a
-Secret that only that job mounts. It takes
-an advisory lock that feature 020's per-run purge also takes for the bucket, reads feature 020's job state, sets
-`statement_timeout = 0` and lifts `transaction_timeout` for its session, and records every step in
-`journal_retirements` (a platform-level table with its audit, as `platform_requirement_history` is for the registry):
+`control-plane journal retire --bucket YYYY-MM [--abandon]`, run by an operator as `sagat_retirer` (Requirement
+049-016), never by the platform's processes. Each step is a definer function, so the command holds no privilege beyond
+calling them:
 
-1. Check every run of the bucket (on `runs (journal_bucket)`); stop if any is not purgeable, counting the held runs by
-   reason (`NO_POLICY`, `NOT_ELIGIBLE`, `NOT_VERIFIED`, `LIVE`) in `journal_bucket_held_runs`.
-2. Purge each run in the mark-only form, in chunks, each under its run lock.
-3. `ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY` for each partitioned table's partition of the bucket; on resume, a
-   detach left pending is finished with `DETACH PARTITION ... FINALIZE`.
-4. Check that no row of the detached tables belongs to a run that is not purged; if one does, attach the partitions
-   again and restart at step 1.
-5. Count the bytes of the detached `run_payloads` table per tenant, which nothing can change any more, and record them.
-6. In one transaction: release them through `sagat_quota_release_bytes` in tenant UUID order, write the retirement's
-   audit record and one per tenant, `DROP TABLE` the detached partitions (they have no foreign key, so the drop locks
-   nothing of the platform's), and mark the step done.
+1. `journal_retire_start(bucket)`: check every run of the bucket (on `runs (journal_bucket)`), and stop if any is not
+   purgeable, counting the held runs by reason (`NO_POLICY`, `NOT_ELIGIBLE`, `NOT_VERIFIED`, `LIVE`) in
+   `journal_bucket_held_runs{reason}`; otherwise take the bucket's advisory lock in exclusive mode, insert the active row
+   and commit.
+2. Purge each run in the mark-only form, in chunks, each under its run lock, through feature 020's purge function.
+3. `journal_retire_check(bucket)`: verify that no row of the bucket's partitions belongs to a run that is not purged,
+   and record each tenant's bytes of the bucket's `run_payloads` partition.
+4. `journal_retire_drop(bucket)`: the one transaction of Requirement 049-009 step 4: `SET LOCAL lock_timeout = '2s'`,
+   detach and drop the bucket's partitions of `run_events` and `run_payloads`, release each tenant's recorded bytes in
+   tenant UUID order, write one audit record per tenant with that tenant's counts only and the actor, record the
+   retirement's own audit in `journal_retirements` (an audit record needs a tenant), and mark it done. Taking the table
+   locks first and the tenants' usage rows last keeps the usage rows locked only for the release itself.
 
-The legacy partition is never retired by this command: its runs leave by feature 020's per-run purge, with the reference
-check that shared payloads need, and the partition is detached and dropped once no legacy run remains.
+Before step 4 the command lists the sessions that hold a lock on either parent and are older than 60 s, printing their
+process identifier, user, application name and transaction start only, never their query. Waits on the bucket's advisory
+lock are counted (`journal_bucket_lock_waits_total`) and the holder is logged, since any role can take an advisory lock.
 
 ### What is not partitioned, and why
 
@@ -459,124 +517,133 @@ check that shared payloads need, and the partition is detached and dropped once 
 
 ### Interactions
 
-- **Feature 020** builds the purge, the archive and the purge authorization; this design defines the registry file, the
-  key of the purge of a dated run and the mark-only form, and amends feature 020's data model and tasks (Task 049-15).
-  Its Task 049-14 runs after feature 020's Tasks T020-045 and T020-046.
+- **Feature 020** builds the purge, the archive, erasure and the purge authorization; this design defines the registry
+  file, the key of the purge of a dated run, the tree as the unit of payload deletion, and the mark-only form, and amends
+  feature 020's data model and tasks (Task 049-15), which lands before Task 049-10, so that feature 020's Task T020-046
+  finds references in the registry rather than in catalog foreign keys. Until feature 020's Task T020-045 adds
+  `runs.purged_at`, the triggers have no purged branch; Task T020-045 adds it to them. Tasks 049-11 and 049-14 run after
+  feature 020's Tasks T020-045 and T020-046. Feature 020's own task for the amendment of principle I (T020-061) is
+  answered by constitution 5.1.0.
 - **Feature 032** adds `run_events.region_epoch` (Architecture decision 0067, decision 9). A column added to the
   partitioned parent is added to every partition; whichever design lands second writes its migration against the
   other's schema; `ensure_journal_buckets()` runs only in the active region.
-- **Design 053**'s rules apply to every migration here, with the two recorded exceptions (the constraint drops of step
-  1, the rename of step 5). The lint (design 053's Task 053-2) and the retrying `migrate` (its Task 053-4) are prerequisites of Task
-  049-8; until they exist, Task 049-8 retries by hand and the exceptions are written in the migrations' headers.
-- **Designs 051 and 052.** Design 051's driver measures Tasks 049-8 and 049-14; design 052's queue is not partitioned.
+- **Design 053.** Its lint checks the waivers here; after 0.3.0 every migration of this design (the legacy indexes of
+  Task 049-11 among them) follows its online rules.
+- **Designs 051 and 052.** Design 051's shapes (its Task 051-1), driver (Task 051-2) and history loader (Task 051-3) are
+  used by Tasks 049-2, 049-8 and 049-14; design 052's queue is not partitioned.
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
 | A statement forgets the bucket and opens every partition | The static check; the lock count in the budget |
-| A run's rows land in two buckets | The bucket is computed once and bound; the bucket triggers refuse a mismatch; the switch trigger refuses late legacy runs; the suite after the switch with a controlled clock |
-| A reference points to a payload that is not there | The reference triggers on every registered column; the registry test |
+| A run's rows land in two buckets | The bucket is computed once and bound; the trigger on `runs` makes a child take its root's bucket; the bucket triggers refuse a mismatch; the suite after the switch drives both clocks across a month boundary |
+| A reference points to a payload that is not there | The reference triggers on every registered column; the registry tests |
 | No partition for next month | Created three months ahead daily; an alert below two; a missing one fails loudly and retryably |
-| A trigger per write costs more than the key check it replaces | Task 049-3 measures both; the budget records latency and round trips |
-| The rename queues behind a long transaction | `lock_timeout` 2 s and a retry; only catalog statements under the lock |
+| A trigger per write costs more than the key check it replaces | Task 049-3 measures both; the budget records locks and round trips |
 | A long run holds a month | The rest of the month is purged by run; held runs are a metric with a reason |
-| Retirement races an append or a per-run purge | Runs are purged under their run lock before the detach; a purged run refuses appends; the bucket lock excludes per-run purges; the check after the detach reattaches on any surprise |
-| A drop does not release the tenant's quota | Bytes counted from the detached table and released through the definer function in an audited transaction; Success criterion 049-004 |
+| Retirement races an append or a per-run purge | Runs are purged under their run lock before the drop; a purged run refuses appends; the bucket's advisory lock and the active row exclude per-run purges; the check before the drop |
+| A drop does not release the tenant's quota | Bytes counted from the frozen partition by an owner-only function and released in the drop's transaction; Success criterion 049-004 |
+| A credential for retirement is stolen | `sagat_retirer` can only call the retirement functions; no platform pod or chart holds it |
 
 ## Constitution Check
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass with conditions | The partitioning keeps the journal append-only with a monotonic per-run sequence and a run's rows together; retirement deletes journal rows and waits for the merge of constitution 5.1.0, whose principle I admits it (Owner decision 2026-11-25-3) |
+| I. State and retry semantics are explicit and durable | Pass with conditions | The partitioning keeps the journal append-only with a monotonic per-run sequence and a tree's rows together; retirement deletes journal rows and waits for the merge of constitution 5.1.0, whose principle I admits it (Owner decision 2026-11-25-3) |
 | II. Modular domain, ports and adapters | Pass | `journal_bucket` stays in `infra-postgres`'s row types and never enters the domain's run type; the application, scheduler and control-plane changes (Tasks 049-9 and 049-13) only call the store |
 | III. External effects are at-least-once; sagas compensate | n/a | No effect changes |
-| IV. Compatibility is versioned and pinned | Pass | Expand migrations whose triggers raise the same SQLSTATE as the keys they replace; old binaries write the legacy bucket; the switch is a registry activation |
-| V. Code, tenant boundary and secrets are isolated | Pass | Every key starts with `tenant_id`; no privilege on a partition; the definer functions take no caller-supplied scope beyond the tenant they release; retirement's owner credential is in no platform pod |
-| VI. Observability and audit are part of the feature | Pass | Months ahead, held runs by reason, legacy refusals after the switch, retirement steps; each retirement audited |
+| IV. Compatibility is versioned and pinned | Pass | The conversion in the stopped upgrade; triggers that raise the same SQLSTATE as the keys they replace; late legacy roots valid; the switch is a registry activation |
+| V. Code, tenant boundary and secrets are isolated | Pass | Every key starts with `tenant_id`; no privilege on a partition; definer functions with a pinned path and no `PUBLIC` grant; retirement's role can only call its functions; messages carry no value |
+| VI. Observability and audit are part of the feature | Pass | Months ahead, held runs by reason, lock waits, retirement steps; each retirement audited per tenant |
 | VII. Events are redeliverable; inbox and outbox are the contract | n/a | Not touched |
-| VIII. Failure is tested and contracts are verified, honestly | Pass | Crash at each retirement step and inside the detach, a missing partition, an append and a per-run purge racing a retirement, a suite after the switch across a month boundary |
+| VIII. Failure is tested and contracts are verified, honestly | Pass | Crash at each retirement step, a lock timeout in the drop, a missing partition, an append and a per-run purge racing a retirement, a suite after the switch across a month boundary; every measurement names its runner |
 | Delivery Constraints | Pass | PostgreSQL stays the only authority; nothing is dropped that feature 020 has not archived and verified |
 
 ## Complexity Tracking
 
 | Addition | Why it is needed | Simpler alternative rejected |
 |---|---|---|
-| `journal_bucket` on runs and the run-owned tables | The key must be on the run, known to every writer, and the same for all of a run's rows | The run identifier: child identifiers are hashes; the event's time: splits runs |
-| `run_payloads` for new runs | A run must own its payloads for its purge, or a month's drop, to need no reference check | Keeping `payloads` shared for every run: feature 020's 22 reference indexes on the hottest tables |
+| `journal_bucket` on `runs` and the partitioned tables | The key must be on the run, known to every writer, and the same for a whole tree | The run identifier: child identifiers are hashes; the event's time: splits runs |
+| `run_payloads` for new trees | A tree must own its payloads for its purge, or a month's drop, to need no reference check | Keeping `payloads` shared for every run: feature 020's 22 reference indexes on the hottest tables |
 | Triggers in place of foreign keys | Foreign keys make detaches scan and lock the referencing tables, and drops lock `runs` | Foreign keys: the drop path would block the hot path |
 | A deletion of journal rows by month | Retention at the size of a month's data | Waiting for the amendment before the partitioning: only retirement waits |
 
 ## Alternatives Considered
 
-- **Delete per run only** (feature 020 as drafted). Correct, and the main path here; at scale the drop path avoids
-  millions of deletes and their bloat.
+- **Delete per run only** (feature 020 as drafted). Correct, and the main path here. A month's drop removes the rows of
+  its two largest tables, `run_events` and `run_payloads`, in one transaction, while the mark-only form still deletes
+  each run's rows of the unpartitioned tables; it applies only to months whose every namespace has a policy, which the
+  default (no policy) never is. Task 049-2 measures the share of a run's bytes in the two tables, which is what the drop
+  saves.
 - **Copy the legacy payloads into `run_payloads`.** One regime instead of two, at the price of a double charge until a
   cleanup that deletes journal rows, a move job and two censuses.
 - **Partition by event time.** Splits a long run's events and cannot drop a month while any run that wrote to it lives.
-- **Partition by hash of the tenant.** Drops nothing and does not follow retention, which is per namespace.
+- **Partition by hash of the tenant, or by retention class.** The first drops nothing and does not follow retention,
+  which is per namespace; the second moves a namespace's runs when its policy changes.
 - **Foreign keys to `run_payloads`.** Integrity by the database's own mechanism, at the price of a `SHARE` scan of every
   referencing table at each detach.
 - **The `pg_partman` extension.** An extension the managed PostgreSQL targets may not offer, for a creation rule of a
   few statements.
+- **A lock on a switch row in every creation** (this design's earlier draft). Every creation would share-lock one row,
+  making a multixact each time, and the bucket is needed before the first write; learning the switch from the registry
+  and accepting late legacy roots needs neither.
 
 ## Non-Functional Requirements
 
 - **Non-functional requirement 049-001 Hot path.** As Requirement 049-012 and Success criterion 049-001.
-- **Non-functional requirement 049-002 Online.** As Requirement 049-004 and Success criterion 049-003.
-- **Non-functional requirement 049-003 Security.** The definer functions pin their `search_path` and are executable only
-  by the roles named in their migration; `sagat_quota_release_bytes` is the owner's only; the retirement command's owner
-  credential lives in an operator Secret that no platform pod mounts.
+- **Non-functional requirement 049-002 Upgrade time.** As Requirement 049-004 and Success criterion 049-003.
+- **Non-functional requirement 049-003 Security.** As Requirement 049-016.
 
 --------------------------------------------------------------------------------
 
 ## Detailed Implementation Plan
 
-Tasks 049-1 to 049-13 and 049-15 to 049-17 are release 0.3.0; Task 049-14 waits for the amendment. Each task's files
-are named; the test suites are those of the Verification Plan.
+Tasks 049-11 and 049-14 wait for constitution 5.1.0 to merge (their Owner-gate lines); the others are release 0.3.0 and
+wait for nothing but their order. Task 049-8 merges first among the schema tasks, then 049-5, 049-15, 049-10 and 049-13.
+Each task's files are named; the test suites are those of the Verification Plan.
 
-- [ ] T049-1 Write Architecture decision 0132, the refinement notes in Architecture decisions 0027, 0054 and 0131, a dated section of `specs/020-visibility-analytics-archival/research.md`, the layout in `docs/architecture/storage-and-events.md`, and the new checks' rows in `docs/engineering/architecture-principles.md`.
+- [ ] T049-1 Revise and accept Architecture decision 0132 to this text, with its checks in "Enforced by"; write the refinement notes in Architecture decisions 0027, 0054 and 0131, a dated section of `specs/020-visibility-analytics-archival/research.md`, the layout in `docs/architecture/storage-and-events.md`, and the new checks' rows in `docs/engineering/architecture-principles.md`.
   Refs: Requirement 049-001, Requirement 049-005, Requirement 049-014
-- [ ] T049-2 Measure, with design 051's history loader, the share of payload bytes referenced by more than one run in the nine shapes, and record it in `tests/performance/reports/journal-partitioning.md`.
+- [ ] T049-2 Measure, with design 051's shapes and history loader (its Tasks 051-1 and 051-3), the share of payload bytes referenced by more than one tree and the share of a run's bytes in `run_events` and payloads, and record them in `tests/performance/reports/journal-partitioning.md`.
   Refs: Requirement 049-005
-- [ ] T049-3 Measure, in a new `perf_journal_partitioning` target, locks, round trips, planning time and completion latency with 1, 6, 16 and 60 partitions for the three planning choices and for triggers against key checks, and the locks of attach and detach, on PostgreSQL 16 and 18; choose by Open Question 8's rule and amend this design.
+- [ ] T049-3 Add the parameter `SAGAT_TEST_POSTGRES_TAG` to the database image of `tests/support/mod.rs` and `tests/support/bounded.rs` (default `16-alpine`); then measure, in a new `perf_journal_partitioning` target, locks, round trips, planning time and completion latency with 1, 6, 16 and 60 partitions for the four planning choices, for triggers against key checks, and for the statements that span runs, on PostgreSQL 16 and 18; choose by Open Question 8's rule and amend this design.
   Refs: Requirement 049-006, Requirement 049-011, Requirement 049-012
-- [ ] T049-4 Add to `tests/integration/claim-transition-efficiency/work_budget.rs` the relations locked (read from `pg_locks` for the test's backend by a hook of the test support after `SET CONSTRAINTS ALL IMMEDIATE`, so that deferred triggers are counted) and the round trips (counted by the test's connection wrapper), at today's values.
+- [ ] T049-4 Add the `test-probes` feature of `crates/infra-postgres` with the probe of "Locks and plans", and to `tests/integration/claim-transition-efficiency/work_budget.rs` the relations locked and the round trips, at today's values.
   Refs: Requirement 049-012
-- [ ] T049-5 Compute the bucket once in the creating transaction of a run from a clock the tests control (`crates/infra-postgres/src/execution.rs` near the run insert, `chain_progress.rs` at its two run inserts) and bind it to every row it writes, with the switch trigger and the late-legacy refusal metric.
+- [ ] T049-5 Write the `runs` triggers of Requirement 049-001; compute the bucket before the first write of each creating transaction (`crates/infra-postgres/src/execution.rs` for roots and children, `chain_progress.rs` for both kinds of next segment, `maintenance.rs` for pending children) and bind it to every row; with the tests `a_child_created_in_a_later_month_takes_its_roots_bucket` and `a_child_chains_next_segment_stays_in_its_tree`, driving the database clock and the command time across a month boundary.
   Refs: Requirement 049-001, Requirement 049-010
-- [ ] T049-6 Write `scripts/check-journal-buckets.py`, its negative fixtures under `scripts/tests/`, and its CI step beside the architecture check.
+- [ ] T049-6 Write `scripts/check-journal-buckets.py`, its negative fixtures under `scripts/tests/`, its allow-list of statements that span runs, and its CI step in `.github/workflows/ci.yml` beside the architecture check, with a baseline of today's unbucketed statements that Task 049-8 empties (the `format!` of `crates/infra-postgres/src/telemetry.rs` among them).
   Refs: Requirement 049-011
-- [ ] T049-7 Map partitions to their parent in the classification test (`tests/integration/security-multitenancy/durable_quotas.rs`), and list partitions through `pg_inherits` in `crates/infra-postgres/src/privilege.rs` and `tests/integration/platform-foundation/runtime_privileges.rs`, adding `run_payloads` to the append-only set.
-  Refs: Requirement 049-013
-- [ ] T049-8 Write the five migrations of "`run_events`, online", rewrite the 43 references to `run_events` in the 18 files of `crates/infra-postgres/src` to name the bucket from the run row, add the error mapping of the two typed errors, and run the migration tests and a measurement under load.
+- [ ] T049-7 Map partitions to their parent in the classification test (`tests/integration/security-multitenancy/durable_quotas.rs`), and list partitions through `pg_inherits` in `crates/infra-postgres/src/privilege.rs` and `tests/integration/platform-foundation/runtime_privileges.rs`, with the trigger and function checks of Requirement 049-013, adding `run_payloads` to the append-only set.
+  Refs: Requirement 049-013, Requirement 049-016
+- [ ] T049-8 Write step 1 of "The migrations of the stopped upgrade" with its waivers (after design 053's Task 053-2), rewrite the references to `run_events` in `crates/infra-postgres/src` to name the bucket from the run row, add the mapping of `JOURNAL_BUCKET_MISSING` and `RUN_PURGED` with the reason in the contracts, and run the migration tests and the measurement of Success criterion 049-003.
   Refs: Requirement 049-002, Requirement 049-003, Requirement 049-004, Requirement 049-008, Success criterion 049-003
-- [ ] T049-9 Add `ensure_journal_buckets()`, its call from `crates/scheduler/src/passes.rs` (housekeeping), the gauge and the alert in `infra/observability/alerts.yaml` with its rule test added to CI's `promtool` list.
+- [ ] T049-9 Add `ensure_journal_buckets()` in `crates/infra-postgres/src/journal_buckets.rs` and its migration, enumerating the partitioned tables through `pg_partitioned_table`; its call from the engine's housekeeping in `crates/scheduler/src/passes.rs`, at start, daily and hourly after a failure; the gauge and the alert in `infra/observability/alerts.yaml` with its rule test added to CI's `promtool` list.
   Refs: Requirement 049-008
-- [ ] T049-10 Write the list of run-content columns with their owning run in the reference-trigger migration, the two catalog tests, the barrier tests of a reference racing a delete in both orders, `run_payloads` and its triggers, and make dated runs' payload writes and reads (the payload insert sites of `execution.rs`, `chain_progress.rs`, `declared_operations.rs`, `loop_progress.rs`, `primitives.rs`, `execution/path.rs`, `approval_progress.rs`, `batch.rs`, `schedules.rs`) use it.
-  Refs: Requirement 049-005, Requirement 049-006
-- [ ] T049-11 After Task 049-3's measurement, build the partial legacy reference indexes concurrently and give feature 020's legacy purge its reference check on them, with the re-check after the delete.
+- [ ] T049-10 Write `crates/infra-postgres/run-content-references.json` and the reference-trigger migration generated from it, the three registry tests, the barrier tests of a reference racing a delete in both orders, `run_payloads` and its triggers (step 3), `read_run_content` in `crates/infra-postgres/src/payloads.rs`, and make dated trees' payload writes (`execution.rs`, `chain_progress.rs`, `declared_operations.rs`, `loop_progress.rs`, `primitives.rs`, `execution/path.rs`, `batch.rs`, `schedules.rs`) and reads (`path_read.rs`, `resets.rs`, `scope_frontier.rs`, `payload_inspection.rs`, `payload_disclosure.rs`, `collection_outputs.rs`, `database_results.rs`, `ad_hoc.rs`, `maintenance.rs` and the others the static check finds) use them.
+  Refs: Requirement 049-005, Requirement 049-006, Requirement 049-016
+- [ ] T049-11 After Task 049-3's measurement and feature 020's Task T020-046, build the partial legacy reference indexes (Requirement 049-007) and give feature 020's legacy purge its reference check on them, with the re-check after the delete.
   Refs: Requirement 049-007
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
-- [ ] T049-12 Write the per-run copy rules for children, resets, reruns, the chain's next segment and cross-namespace operations, with a test per path that the new run references only its own payloads.
+- [ ] T049-12 Write the per-tree copy rules for resets, reruns, root chains' next segments, cross-namespace operations and rows of no run, with a test per path that the new tree references only its own payloads and a child chain's next segment shares its tree's.
   Refs: Requirement 049-005, Requirement 049-014
-- [ ] T049-13 Write `control-plane journal switch` in `apps/control-plane/src/cli.rs` on the registry's activation (`crates/application/src/instances.rs`), with a suite that runs after it across a month boundary with two dated partitions.
+- [ ] T049-13 Add `journal-buckets-v1` to the `Capability` enum of `crates/application/src/instances.rs` and the schema's closed lists (step 4), and write `control-plane journal switch` in `apps/control-plane/src/cli.rs` on the registry's activation, with a suite that runs after it across a month boundary with two dated partitions; tests before the command exists activate the capability through the registry's test fixture.
   Refs: Requirement 049-002, Requirement 049-010
-- [ ] T049-14 Write `control-plane journal retire`, `journal_retirements`, `sagat_quota_release_bytes`, the mark-only form and the chart's scheduled job, with the crash test at every step and inside a detach cancelled while it waits, the races with an append and with a per-run purge, and the quota reconciliation test.
-  Refs: Requirement 049-009, Requirement 049-014, Success criterion 049-002, Success criterion 049-004
+- [ ] T049-14 Write `control-plane journal retire`, `sagat_retirer`, `journal_retirements`, the four retirement functions, `journal_bucket_retiring`, `sagat_quota_release_bytes`, the mark-only form in feature 020's purge function and the bucket lock in its purge, with the crash test at every step, a lock timeout in the drop's transaction, the races with an append and with a per-run purge, the abandon path, and the quota reconciliation test.
+  Refs: Requirement 049-009, Requirement 049-014, Requirement 049-016, Success criterion 049-002, Success criterion 049-004
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
-- [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge has the key and the mark-only form of Requirement 049-014.
+- [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge and erasure have the key, the tree as unit and the mark-only form of Requirement 049-014, and its Task T020-046 reads the registry.
   Refs: Requirement 049-014, Requirement 049-015
-- [ ] T049-16 Measure the scheduler's passes with `steps` partitioned by bucket after design 052's queue, and record the decision.
-  Refs: Requirement 049-012
-- [ ] T049-17 Write the retention section of `docs/runbooks/database-recovery.md` and the bucket runbook.
+- [ ] T049-17 Write the retention section of `docs/runbooks/database-recovery.md` and the bucket runbook `docs/runbooks/journal-buckets.md` (the switch, which 0.3.0 leaves off until an operator runs it, and retirement), and the release-notes line.
   Refs: User story 049-01
 - [ ] T049-18 When constitution 5.1.0 merges, check that its principle I admits the retirement of Requirement 049-009 and the purge key of Requirement 049-014 as written, record the merge commit here, and raise any difference with the coordinating session before Tasks 049-11 and 049-14 start.
   Refs: Requirement 049-009, Requirement 049-014
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T049-16 Measure the scheduler's passes with `steps` partitioned by bucket after design 052's queue, and record the decision in `tests/performance/reports/journal-partitioning.md`.
+  Refs: Requirement 049-012
 
 ### Verification Plan
 
@@ -585,11 +652,13 @@ migration destroys data, up again; and its `runtime_privileges` module), `integr
 classification test), the suites rerun with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, design 038's budget target, the static check
 of Task 049-6, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and the documentation and architecture
 checkers of `scripts/`. These are added and seen failing first: the suite after the switch across a month boundary
-(Task 049-13); a migration test asserting, by the identity (`relfilenode`) of every index of the legacy table before and after,
-that step 5 builds none and
-that the parent carries the three checks and the instance index (Task 049-8); the registry test with an unregistered
-digest column (Task 049-10), and the confirmation of what the two certificate digests of
-`leaf_collection_success_certifications` hold before they are registered; the per-run copy tests (Task 049-12); fault tests at every retirement step and inside a
-concurrent detach cancelled while it waits, the race tests, and the quota reconciliation after a retirement (Task
-049-14). Task 049-8 is also run under design 051's driver at half the maximum sustained rate, and its per-second counter
-is the evidence of Success criterion 049-003.
+(Task 049-13); the child-bucket tests (Task 049-5); a migration test asserting, by the identity (`relfilenode`) of the
+legacy table and of each of its indexes before and after, that step 1 copies no row and builds only the new unique
+index, and that the parent carries the three checks, the default and the instance index (Task 049-8); the registry tests
+with an unregistered digest column and with a column of no run referencing `run_payloads` (Task 049-10), and the
+confirmation of what the two certificate digests of `leaf_collection_success_certifications` hold before they are
+registered; the per-tree copy tests (Task 049-12); a runtime-role test that `DETACH`, `DROP` and the retirement functions
+fail for `sagat_app` (Task 049-14); fault tests at every retirement step and on a lock timeout in the drop's transaction,
+the race tests, the read of a purged run before the drop, and the quota reconciliation after a retirement (Task 049-14).
+Tasks 049-8 and 049-14 are run under design 051's driver on a free standard runner, whose per-second counter is the
+evidence of Success criteria 049-002 and 049-003.

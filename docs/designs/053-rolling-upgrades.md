@@ -126,8 +126,8 @@ From the code and documents on `develop` at `546d5aa5`:
   live at the activation (silent for 30 s) can reconnect and serve until its next heartbeat, about 12 s, before the
   registry refuses it; so each capability's design MUST state either why a write of release N-1 after the activation is
   harmless, or the database-side fence (a trigger, a constraint or a default) that refuses it. In release 0.3.0 these are
-  design 049's dated journal buckets (fenced by its trigger that refuses a legacy bucket for a run created 30 s after the
-  switch) and design 052's ready queue (which states its own rule).
+  design 049's dated journal buckets (harmless: a legacy root created by a process that has not yet learned of the
+  activation is valid and processed by every release) and design 052's ready queue (which states its own rule).
 - **Requirement 053-008 A deactivation drains first.** `platform_requirement_deactivate_v2` MUST work in two phases. The
   first moves the capability to `draining` and records `draining_since`; processes stop starting new uses of it at their
   next heartbeat. The second removes it and is refused until every live process has heartbeated after `draining_since`

@@ -211,7 +211,8 @@ From the code and documents on `develop` at `546d5aa5`:
   lease, and for workers on SDKs with the report window it repeats no completed activity and creates no review item for
   one. A claim whose commit outcome was unknown may have leased an attempt that no worker received; that lease expires
   and, without a `reconcileWith` lookup, becomes a review item (feature 037). The drills count these apart; the delivery
-  acknowledgement of a later protocol minor (reserved, design 052) is what lets such a lease be retried without a person.
+  acknowledgement (protocol 1.8, pull request 264, ordered by decision D041-139 of feature 041) is what lets such a
+  lease be retried without a person.
   For longer failovers, the runbook's rule is a time to live of at least the expected outage plus two heartbeat intervals
   (`SAGAT_LEASE_TTL_SECS`); the drills report the leases expired, the activities repeated and the review items created.
   Carrying leases across a longer failover is a follow-up design (Non-Goals).
