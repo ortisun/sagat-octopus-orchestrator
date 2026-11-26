@@ -132,6 +132,32 @@ describe('the flow-control keys of a namespace', () => {
     expect(cells(within(rate).getAllByRole('row')[1] as HTMLElement).slice(3, 6)).toEqual(['10', '2', '7']);
   });
 
+  it('says on a group row whose sums were read across pages that its totals may be above the limit (D022-101)', async () => {
+    const { user } = await mount({
+      'GET /namespaces/ns-1/concurrency-keys': (_init, url) => {
+        const query = new URL(url, 'http://studio.test').searchParams;
+        if (query.get('cursor') === 'sealed-groups') {
+          return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'STEP', group: 'regions', holders: 7, waiters: 0, oldestWaitSince: null, oldestHolderSince: '2026-11-24T09:58:00Z', spansPages: true }], nextCursor: null };
+        }
+        return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'RUN', group: 'accounts', holders: 2, waiters: 3, oldestWaitSince: '2026-11-24T10:00:05.123Z', oldestHolderSince: '2026-11-24T09:59:00Z', spansPages: false }], nextCursor: 'sealed-groups' };
+      },
+      'GET /namespaces/ns-1/rate-limit-keys': () => ({ view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'STEP', group: '=provider-sync/fetch', grantsInWindow: 12, unleasedGrants: 0, waiters: 1, oldestWaitSince: '2026-11-24T10:01:00Z', spansPages: true }], nextCursor: null }),
+    });
+    const table = await screen.findByRole('table', { name: /Concurrency keys of payments, one row per group/ });
+    const first = within(within(table).getAllByRole('row')[1] as HTMLElement).getByRole('rowheader');
+    expect(first).toHaveTextContent(/^accounts$/);
+    await user.click(screen.getByRole('button', { name: 'Load more concurrency keys' }));
+    await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
+    const spanning = within(within(table).getAllByRole('row')[2] as HTMLElement).getByRole('rowheader');
+    expect(spanning).toHaveTextContent('regions');
+    expect(spanning).toHaveTextContent('Totals read across pages; may be above the limit');
+    // the words are part of the row header, so assistive technology reads them with every cell of the row
+    expect(spanning).toHaveAccessibleName(/^regions.*totals read across pages; may be above the limit/i);
+    const rate = await screen.findByRole('table', { name: /Rate-limit keys of payments, one row per group/ });
+    const rateRow = within(within(rate).getAllByRole('row')[1] as HTMLElement).getByRole('rowheader');
+    expect(rateRow).toHaveAccessibleName(/^=provider-sync\/fetch.*totals read across pages; may be above the limit/i);
+  });
+
   it('filters by group with the keyboard and shows the platform refusal of a group that is no group', async () => {
     const { platform, user } = await mount();
     await screen.findByRole('table', { name: /Concurrency keys of payments/ });
