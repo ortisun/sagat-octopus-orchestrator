@@ -721,7 +721,7 @@ Image, audio and file modalities; provider-side server tools, MCP connectors and
 memory across runs; user-delegated OAuth for external MCP servers; the client side of the MCP tasks
 extension and `input_required`; MCP resources, prompts, sampling and roots; fine-tuning, embeddings
 and batch inference; billing reconciliation; a connector or tool marketplace (constitution, Delivery
-Constraints); agents in loop or collection bodies or with continue-as-new; publishing by the assistant.
+Constraints; since 5.0.0 an open marketplace stays out and only the curated hub of 021, 028 and 047 is admitted); agents in loop or collection bodies or with continue-as-new; publishing by the assistant.
 
 ## Owner questions
 

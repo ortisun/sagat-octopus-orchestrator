@@ -38,6 +38,34 @@ class LakeConditionalCreate(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     LAKE_CONDITIONAL_CREATE_UNKNOWN: _ClassVar[LakeConditionalCreate]
     LAKE_CONDITIONAL_CREATE_SUPPORTED: _ClassVar[LakeConditionalCreate]
     LAKE_CONDITIONAL_CREATE_UNSUPPORTED: _ClassVar[LakeConditionalCreate]
+
+class StepLogLevel(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    STEP_LOG_LEVEL_UNSPECIFIED: _ClassVar[StepLogLevel]
+    STEP_LOG_LEVEL_TRACE: _ClassVar[StepLogLevel]
+    STEP_LOG_LEVEL_DEBUG: _ClassVar[StepLogLevel]
+    STEP_LOG_LEVEL_INFO: _ClassVar[StepLogLevel]
+    STEP_LOG_LEVEL_WARN: _ClassVar[StepLogLevel]
+    STEP_LOG_LEVEL_ERROR: _ClassVar[StepLogLevel]
+
+class StepLogVerdict(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    STEP_LOG_VERDICT_UNSPECIFIED: _ClassVar[StepLogVerdict]
+    STEP_LOG_VERDICT_CONTINUE: _ClassVar[StepLogVerdict]
+    STEP_LOG_VERDICT_FINAL_ONLY: _ClassVar[StepLogVerdict]
+    STEP_LOG_VERDICT_STOP_ATTEMPT: _ClassVar[StepLogVerdict]
+    STEP_LOG_VERDICT_STOP_CAPTURE: _ClassVar[StepLogVerdict]
+    STEP_LOG_VERDICT_RETRY_LATER: _ClassVar[StepLogVerdict]
+
+class StepLogStopReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    STEP_LOG_STOP_REASON_UNSPECIFIED: _ClassVar[StepLogStopReason]
+    STEP_LOG_STOP_REASON_FINAL_RECORDED: _ClassVar[StepLogStopReason]
+    STEP_LOG_STOP_REASON_LEASE: _ClassVar[StepLogStopReason]
+    STEP_LOG_STOP_REASON_AUTHORITY: _ClassVar[StepLogStopReason]
+    STEP_LOG_STOP_REASON_REMOVED: _ClassVar[StepLogStopReason]
+    STEP_LOG_STOP_REASON_CAPTURE_OFF: _ClassVar[StepLogStopReason]
+    STEP_LOG_STOP_REASON_SESSION: _ClassVar[StepLogStopReason]
 DATABASE_OPERATION_UNSPECIFIED: DatabaseOperationKind
 DATABASE_QUERY: DatabaseOperationKind
 DATABASE_EXECUTE: DatabaseOperationKind
@@ -55,6 +83,25 @@ LAKE_REST_AUTH_SIGV4: LakeRestAuth
 LAKE_CONDITIONAL_CREATE_UNKNOWN: LakeConditionalCreate
 LAKE_CONDITIONAL_CREATE_SUPPORTED: LakeConditionalCreate
 LAKE_CONDITIONAL_CREATE_UNSUPPORTED: LakeConditionalCreate
+STEP_LOG_LEVEL_UNSPECIFIED: StepLogLevel
+STEP_LOG_LEVEL_TRACE: StepLogLevel
+STEP_LOG_LEVEL_DEBUG: StepLogLevel
+STEP_LOG_LEVEL_INFO: StepLogLevel
+STEP_LOG_LEVEL_WARN: StepLogLevel
+STEP_LOG_LEVEL_ERROR: StepLogLevel
+STEP_LOG_VERDICT_UNSPECIFIED: StepLogVerdict
+STEP_LOG_VERDICT_CONTINUE: StepLogVerdict
+STEP_LOG_VERDICT_FINAL_ONLY: StepLogVerdict
+STEP_LOG_VERDICT_STOP_ATTEMPT: StepLogVerdict
+STEP_LOG_VERDICT_STOP_CAPTURE: StepLogVerdict
+STEP_LOG_VERDICT_RETRY_LATER: StepLogVerdict
+STEP_LOG_STOP_REASON_UNSPECIFIED: StepLogStopReason
+STEP_LOG_STOP_REASON_FINAL_RECORDED: StepLogStopReason
+STEP_LOG_STOP_REASON_LEASE: StepLogStopReason
+STEP_LOG_STOP_REASON_AUTHORITY: StepLogStopReason
+STEP_LOG_STOP_REASON_REMOVED: StepLogStopReason
+STEP_LOG_STOP_REASON_CAPTURE_OFF: StepLogStopReason
+STEP_LOG_STOP_REASON_SESSION: StepLogStopReason
 
 class WorkerCapabilities(_message.Message):
     __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version")
@@ -81,14 +128,16 @@ class RegisterWorkerRequest(_message.Message):
     def __init__(self, worker_name: _Optional[str] = ..., namespace: _Optional[str] = ..., capabilities: _Optional[_Union[WorkerCapabilities, _Mapping]] = ...) -> None: ...
 
 class RegisterWorkerResponse(_message.Message):
-    __slots__ = ("worker_id", "session_token", "accepted_protocol_version")
+    __slots__ = ("worker_id", "session_token", "accepted_protocol_version", "step_logs")
     WORKER_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_TOKEN_FIELD_NUMBER: _ClassVar[int]
     ACCEPTED_PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
+    STEP_LOGS_FIELD_NUMBER: _ClassVar[int]
     worker_id: str
     session_token: str
     accepted_protocol_version: str
-    def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., accepted_protocol_version: _Optional[str] = ...) -> None: ...
+    step_logs: StepLogPolicy
+    def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., accepted_protocol_version: _Optional[str] = ..., step_logs: _Optional[_Union[StepLogPolicy, _Mapping]] = ...) -> None: ...
 
 class PollTasksRequest(_message.Message):
     __slots__ = ("worker_id", "session_token", "max_tasks")
@@ -664,3 +713,81 @@ class ResolvedDatabase(_message.Message):
     object_storage: ObjectStorageConnection
     clickhouse: ClickHouseConnection
     def __init__(self, connection_id: _Optional[str] = ..., connection_revision: _Optional[int] = ..., postgres: _Optional[_Union[PostgresConnection, _Mapping]] = ..., operation: _Optional[_Union[DatabaseOperationKind, str]] = ..., statement: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[DatabaseValue, _Mapping]]] = ..., limits: _Optional[_Union[DatabaseLimits, _Mapping]] = ..., credential: _Optional[_Union[ResolvedSecret, _Mapping]] = ..., lease_expires_at_epoch_ms: _Optional[int] = ..., namespace_id: _Optional[str] = ..., connection_name: _Optional[str] = ..., tenant_id: _Optional[str] = ..., iceberg: _Optional[_Union[IcebergConnection, _Mapping]] = ..., object_storage: _Optional[_Union[ObjectStorageConnection, _Mapping]] = ..., clickhouse: _Optional[_Union[ClickHouseConnection, _Mapping]] = ...) -> None: ...
+
+class AppendStepLogsRequest(_message.Message):
+    __slots__ = ("worker_id", "session_token", "task_id", "generation", "lease_token", "run_id", "step_id", "attempt", "instance", "records", "final_batch", "highest_sequence")
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    RECORDS_FIELD_NUMBER: _ClassVar[int]
+    FINAL_BATCH_FIELD_NUMBER: _ClassVar[int]
+    HIGHEST_SEQUENCE_FIELD_NUMBER: _ClassVar[int]
+    worker_id: str
+    session_token: str
+    task_id: str
+    generation: int
+    lease_token: str
+    run_id: str
+    step_id: str
+    attempt: int
+    instance: ExecutionInstanceIdentity
+    records: _containers.RepeatedCompositeFieldContainer[StepLogRecord]
+    final_batch: bool
+    highest_sequence: int
+    def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., task_id: _Optional[str] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., records: _Optional[_Iterable[_Union[StepLogRecord, _Mapping]]] = ..., final_batch: _Optional[bool] = ..., highest_sequence: _Optional[int] = ...) -> None: ...
+
+class StepLogRecord(_message.Message):
+    __slots__ = ("sequence", "worker_time_epoch_ms", "level", "message", "fields", "exception", "truncated")
+    SEQUENCE_FIELD_NUMBER: _ClassVar[int]
+    WORKER_TIME_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
+    LEVEL_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    FIELDS_FIELD_NUMBER: _ClassVar[int]
+    EXCEPTION_FIELD_NUMBER: _ClassVar[int]
+    TRUNCATED_FIELD_NUMBER: _ClassVar[int]
+    sequence: int
+    worker_time_epoch_ms: int
+    level: StepLogLevel
+    message: str
+    fields: _containers.RepeatedCompositeFieldContainer[StepLogField]
+    exception: str
+    truncated: bool
+    def __init__(self, sequence: _Optional[int] = ..., worker_time_epoch_ms: _Optional[int] = ..., level: _Optional[_Union[StepLogLevel, str]] = ..., message: _Optional[str] = ..., fields: _Optional[_Iterable[_Union[StepLogField, _Mapping]]] = ..., exception: _Optional[str] = ..., truncated: _Optional[bool] = ...) -> None: ...
+
+class StepLogField(_message.Message):
+    __slots__ = ("key", "string_value", "int_value", "double_value", "bool_value")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    STRING_VALUE_FIELD_NUMBER: _ClassVar[int]
+    INT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    DOUBLE_VALUE_FIELD_NUMBER: _ClassVar[int]
+    BOOL_VALUE_FIELD_NUMBER: _ClassVar[int]
+    key: str
+    string_value: str
+    int_value: int
+    double_value: float
+    bool_value: bool
+    def __init__(self, key: _Optional[str] = ..., string_value: _Optional[str] = ..., int_value: _Optional[int] = ..., double_value: _Optional[float] = ..., bool_value: _Optional[bool] = ...) -> None: ...
+
+class AppendStepLogsResponse(_message.Message):
+    __slots__ = ("verdict", "stop_reason", "stored_through_sequence", "retry_after_ms")
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    STOP_REASON_FIELD_NUMBER: _ClassVar[int]
+    STORED_THROUGH_SEQUENCE_FIELD_NUMBER: _ClassVar[int]
+    RETRY_AFTER_MS_FIELD_NUMBER: _ClassVar[int]
+    verdict: StepLogVerdict
+    stop_reason: StepLogStopReason
+    stored_through_sequence: int
+    retry_after_ms: int
+    def __init__(self, verdict: _Optional[_Union[StepLogVerdict, str]] = ..., stop_reason: _Optional[_Union[StepLogStopReason, str]] = ..., stored_through_sequence: _Optional[int] = ..., retry_after_ms: _Optional[int] = ...) -> None: ...
+
+class StepLogPolicy(_message.Message):
+    __slots__ = ("enabled",)
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    def __init__(self, enabled: _Optional[bool] = ...) -> None: ...

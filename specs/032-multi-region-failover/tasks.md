@@ -16,6 +16,9 @@ files and no dependency on an unfinished task.
   O1562 in `docs/owner-decisions.md`. ADR-0067 stays `Proposed (direction accepted)`; its `Accepted`
   status, ADR-0009's line and the constitution amendment are T032-063, after the evidence exists. No
   implementation task starts before this. — FR-032-031 — evidence: the owner's recorded decision.
+  *Note (2026-11-24):* O1560 is answered by Owner decision 2026-11-24-2 and the constitution amendment
+  is applied in 5.0.0, so it leaves T032-063 (which keeps ADR-0067's `Accepted` and ADR-0009's line).
+  O1561 and O1562 are still open, so this task stays unticked.
 
 IDs T032-058 to T032-064 were added in the review round of 2026-10-27 and keep their numbers (IDs are never
 renumbered); they sit in the phase where they run.
@@ -336,7 +339,9 @@ renumbered); they sit in the phase where they run.
   their environment and failures, the owner decides acceptance; then set ADR-0067 `Accepted`, add
   "Superseded in part by ADR-0067" to ADR-0009, and open the constitution amendment pull request with the
   text kept in ADR-0067 and its Sync Impact Report (D1583). — FR-032-031 — evidence: the owner's decision
-  referencing both reports.
+  referencing both reports. *Note (2026-11-24):* the amendment part is done by constitution 5.0.0 (Owner
+  decision 2026-11-24-2); what remains here is the acceptance of ADR-0067, ADR-0009's line and the
+  production statement of the "Regions" bullet, all on those two reports.
 - [ ] T032-057 Traceability: `specs/032-multi-region-failover/traceability.md` mapping every FR/NFR/SC to
   tasks and tests with their state; the coordinator updates `docs/traceability.md`. — all — evidence:
   every FR has at least one passing test or an explicit open gap.
