@@ -2248,6 +2248,91 @@ taken after `git grep D022-04` on every `origin/*` branch.
      does not apply to a lookup by key. The test spares exactly the text `s.expires_at > clock_timestamp()` and says
      why; any other comparison with the volatile clock in those files is still refused.
 
+### Decisions of the restart slice (2026-11-26)
+
+- **D022-112 — The restart test kills the shipped executables inside a decision, behind a row lock the test holds
+  (2026-11-26; task T022-059, narrowed for the 0.3.0 slice to queued runs and waiting steps; NFR-022-001, D022-073).**
+  Delegate (OD-2026-11-24-4). NFR-022-001 asks every acquisition and grant to survive a crash at any commit, with no
+  second permit for one holder. Options for the crash: (a) the engine in a runtime of its own inside the test process,
+  dropped where it stands (`tests/e2e/scalability-ha/isolated.rs`); (b) the test executable started again as a child
+  process that calls `serve` (as `calendar_processes`); (c) the `control-plane` and `execution-engine` executables an
+  operator runs, started with the deployment's variables (both flow-control switches and the digest key file,
+  D022-057, as `infra/docker/compose.flow-control.yaml` gives them) and killed with `SIGKILL`. Chosen (c): it is
+  `kill -9` of what is deployed, its reading of the environment included; (a) keeps the process and its sockets alive,
+  and (b) runs a copy of `main` that nothing ships. The cost is that the executables must be built beside the test:
+  the test finds them as the database runner's process tests find theirs (`built_binary`, or `SAGAT_CONTROL_PLANE_BIN`
+  and `SAGAT_EXECUTION_ENGINE_BIN`), and CI builds them in a step of the shard that runs `e2e_flow_control_step_policies`.
+  A kill lands inside a decision, not between two: the test takes, in a transaction of its own, the row the decision
+  needs (a concurrency key's row, a rate window's row or a run's row), waits until a backend of the process waits for
+  it (`pg_locks`, the process found by the instance id that names its connections, design 041), kills the process,
+  lets the row go and reads the database only once every backend of the killed process has ended. Observed while
+  building it: PostgreSQL does not end a backend whose client was killed while the backend waited for a lock; it ends
+  it, rolling back, when it is granted the lock and next writes to or reads from the closed connection. Until then the
+  backend keeps the locks it took before it waited (a grant's waiter's run row and its active-run counter slot); by the
+  grant pass's rule a restarted engine that meets it counts that run busy and leaves the key due for its next pass
+  (D022-121), and the locks a grant waits for are held for one transaction, so the delay is bounded by that
+  transaction (read from the code; the test itself waits until the backends have ended). The scenarios (`restart::*`, each with its own
+  database and processes):
+  1. *Queued runs, the engine killed twice.* Runs queued at their start on a concurrency key (`limit: 1`) and on a rate
+     key (`limit: 1` per second), and one waiter on each kind of key that cannot be granted; the holder is cancelled.
+     The first engine is killed inside its grant pass, behind both keys' rows: nothing was granted. The deadlines of the
+     two other waiters pass while no engine runs. The second engine is killed inside its timeout pass (which comes
+     before the grants), behind the rows of those two runs: nothing timed out. The third times each of them out once
+     (`CONCURRENCY_WAIT_TIMEOUT`, `RATE_LIMIT_WAIT_TIMEOUT`) and grants the queues in admission order, each run once,
+     the rate key's grants at least a second apart.
+  2. *Waiting steps, the engine killed while the holders' handlers run.* Steps waiting for a step permit and for a step
+     rate slot; the first engine is killed inside the grant of the oldest waiting step, behind the window's row, while
+     its worker API has leased the steps that hold the permit and the slot. The worker completes those leases through
+     the restarted engine, which gives the permit back once and grants the waiting steps in admission order, each slot a
+     window after the lease of the one before it; a waiting step whose deadline passed during the outage times out once.
+  3. *The control plane killed inside its decisions.* A start that queues on a concurrency key, a start buffered on a
+     rate key and the cancellation (dequeue) of a waiter, each killed behind the key's row: the request has no answer
+     and nothing of it exists. The same request with the same idempotency key to the restarted control plane is decided
+     once and replays the same run; the engine, which ran throughout, grants the start decided after the restart once
+     its holder ends.
+  Every scenario ends with `support::flow_control::key_consistency` (invariants 1, 2, 8, 9 and 12 of `data-model.md`)
+  and `verify_run` of every run. Seen red for the right reason by four hand mutations, each built into the executables
+  and reverted: the queue served newest first (the waiter listing and the count of waiters ahead reversed) fails
+  scenarios 1 and 2 on the admission order; a key selected only while its hint is less than two seconds old (a wake-up
+  only a running process keeps) loses the waiters across the outage in scenarios 1 and 2; a gate deadline selected only
+  within a second of passing (a timer only a running process keeps) leaves the waiters of scenarios 1 and 2 untimed;
+  and a run's row committed before its admission leaves a run behind the killed start of scenario 3. Not covered by the
+  slice's narrowing: pending obligations and dispatches and the other stories' states of T022-059's full text.
+
+- **D022-113 — The intermittent `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit`: no
+  cause in the test or the product was found, and the test is left as it is (2026-11-26; D022-121, D022-122).**
+  Delegate (OD-2026-11-24-4). The two failures were on 2026-11-25, in the owner's gate runs of 03:13 and 06:20, both
+  before the commit that made the assertion print the tick's report (`42cef743`, 07:49) and before D022-121 and
+  D022-122; neither log holds a report. In the 03:13 run five other tests failed with it: the two batch reruns that
+  `c6cf8200` then made hold on a loaded machine, a tick of the switched-off drain that granted nothing, and two
+  rate-window cases (a tick that granted where none was expected, a hint that was not cleared), so that run was loaded
+  or on a defect of its own revision; in the 06:20 run it failed alone, after the fault suite's flood case had failed
+  for the cause of D022-088. Reproduction under load, on this branch at `9bc2f486`, with the shared four-processor
+  Docker machine also serving another agent's builds and tests: the runs of the test below, none failed its assertion.
+  Phase 1: `run_admission::` 30 times with two threads while the whole file (246 tests) ran twice beside it in another
+  process (the test passed in the 30 and in one whole-file run; in the other it could not create its database,
+  `53100`). Phase 2: three processes at once, 15 times each, `run_admission::` with eight threads, with two threads as
+  the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`) and with two threads as the owner: 45 of 45 passed. Phase 3, on a
+  fresh build in a target directory of its own (the shared one had been overwritten by another tree's build
+  meanwhile): two processes at once, 10 times each as the owner and as the runtime role: 20 of 20 passed. In all, 96
+  runs, none failed. What the code rules out, read for the test's one tick: (1) *a busy run* (`skipped`): from the
+  start of the waiting run to the tick no operation of the test takes that run's row, nor writes a row whose foreign
+  key would share-lock it (the two cancellations lock their own runs; the reads take no lock), and no pass of the tick
+  before the grants selects it (no timer, retry, wait deadline or gate deadline of it is due); since D022-122 a
+  refused waiter's rollback is awaited as well. (2) *A key not selected* (all counts zero): the holder's release
+  writes the key's hint `clock_timestamp()` in a transaction that commits before the tick starts, and the selection
+  compares it with `now()` of a later statement on the same server; only a database clock stepped back between the two
+  leaves the key unselected for that tick (gap G1183, accepted). (3) *The waiter timed out instead*
+  (`gate_waits_timed_out`): its queue deadline is the default ten minutes after its start; only a clock stepped
+  forward by that much. (4) *Fenced*: the world's scheduler has no placement, so every key is `Hold::Nothing`. (5)
+  *Not listed by the fair selection*: one key is a short first page, returned as read. (6) *The registry*: no grant
+  reads the instance registry or its heartbeats. What remains is a failure of the database that clears on its own
+  (`failed`, decision D022-121: a pool or statement timeout, a lost connection, a serialization failure, or class 53,
+  which the shared Docker machine's disk produced in these runs: `53100` on database creation and on migration, twelve
+  times in other tests of phase 1), or a clock step; the tick's report, which the assertion prints since `42cef743`,
+  says which. Neither is a property of the test that a held lock or a barrier can remove, and a retry would hide the
+  next one: the test is left as it is, and its next failure's report is to be recorded here.
+
 ## Gaps
 
 | ID | Gap | Status |
