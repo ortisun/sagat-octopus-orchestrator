@@ -14,7 +14,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 1 |
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Draft | 0 of 19 |
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
-| 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
+| 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 55 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |
 

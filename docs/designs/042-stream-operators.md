@@ -2,7 +2,7 @@
 
 *   **Author:** Claude Code, for the owner
 *   **Status:** Draft
-*   **Date:** 2026-11-13
+*   **Date:** 2026-11-26
 
 --------------------------------------------------------------------------------
 
@@ -14,7 +14,8 @@ distinct, take) as declared data in the workflow IR, on two surfaces:
 - **on a `forEach`**, between the `items` expression and the membership snapshot: the operators shape the captured
   list (keep some, project, flatten, drop duplicates, group N elements per iteration). **Release 0.3.0.**
 - **on a trigger**, between the inbox and the start of a run: an *operator chain* decides which events become a run and
-  with what input ("one run per 30-second burst of webhook events for the same order"). **A later release.**
+  with what input ("one run per 30-second burst of webhook events for the same order"). **Release 0.3.0 too**, since
+  Owner decision 2026-11-24-1.
 
 Every predicate, key and projection is an expression of the existing bounded language, evaluated by the engine. No user
 code runs. Every piece of state is a PostgreSQL row; a debounce or a time window is a durable deadline closed by a fenced
@@ -26,12 +27,12 @@ The sentence names operators and no surface. The first draft stated a reading an
 each with a recommendation; the owner answered them the same day with "Aceitar todas" (OD-2026-11-13-15), so every
 recommendation is the decision, and accepted ADR-0086 and ADR-0087 with "Aceito tudo" (OD-2026-11-13-17). In particular:
 
-- **Release 0.3.0 carries the collection operators only**: slice S0 (the collection half of the foundation) and slice
-  S1. No migration, no table, no new pass or loop. S1 changes the collection entry of the existing scheduler pass
-  (section 3). S1 starts from `develop`, where feature 014's root collections have merged (pull request 218).
-- **The trigger operators are a later release**: slices S2 to S5 (`debounce`, `window`, `ignoreElements` and the rest
-  on triggers, their state, the pass, the surfaces). They are designed here so that the vocabulary is one; none of
-  their fields is in the 0.3.0 schema.
+- **The collection operators** were planned for release 0.3.0 from the start: slice 0 (the collection half of the
+  foundation) and slice 1. No migration, no table, no new pass or loop. Slice 1 changes the collection entry of the
+  existing scheduler pass (section 3).
+- **The trigger operators** were first left for a later release (O042-002) and then put in release 0.3.0 by the owner
+  on 2026-11-24 ("Inclua tudo na 0.3.0", Owner decision 2026-11-24-1): slices 2 to 5 (`debounce`, `window`, `ignoreElements` and the rest
+  on triggers, their state, the pass, the surfaces). Their fields enter the IR schema with slice 2 (Task 042-43).
 
 This is the second draft. The architecture, security and correctness reviewers read the first at `540154c8` on
 2026-11-13 (between them 6 Blocker and 29 Major findings, on the text; nothing was built). Their findings and how this
@@ -41,7 +42,21 @@ a manifest of its own for a chained scope; the capability is checked at publicat
 at entry fails the run; the stage variables are `element` and `position`; held trigger values live in a deletable column
 of the chain, keyed by HMAC, never in the append-only payload table.
 
-Nothing is built. The registers are in `specs/042-stream-operators/research.md`.
+This is the third revision (2026-11-26). It brings slices 2 to 5 to build after the re-read of Task 042-44 against
+`develop`, under the owner's delegation for release 0.3.0 (Owner decision 2026-11-24-4). What changed: a window is sealed
+only past the transaction horizon of its deadline instead of after a fixed admission grace, which on PostgreSQL 16 no
+timeout bounds
+([Architecture decision 0153](../adr/ADR-0153-a-window-is-sealed-only-past-the-transaction-horizon-of-its-deadline.md),
+refining ADR-0086); both switches become capabilities of the instance registry, which now exists (ADR-0082), so the
+fleet rule is enforced instead of written; the seal and the start stay two transactions (Gap 042-002 closed); the
+refinements of O042-008 and O042-009 and the numbers the owner had not answered (`maxMarks`, the held-bytes quota,
+`maxHoldMs`) are decided as delegate rows (Owner decisions 2026-11-26-130 to 2026-11-26-136); and the start of a
+window's run depends on feature 022's admission point, which is built on the branch `feature/022-throughput-control`
+and not yet merged, so slice 3's start waits for it (section 8).
+
+Slice 0 and the server half of slice 1 are built (research Decisions 042-100 to 042-160); the SDK half of slice 1 is
+open (Gaps 042-113 and 042-131); slices 2 to 5 are not built. Tasks stay unticked until the design is approved, as the
+rules of `docs/designs/README.md` require. The registers are in `specs/042-stream-operators/research.md`.
 
 A word on names: "Streams" already means the workflow Streams of feature 026 (ADR-0068). To keep the two apart, the
 tables and types of this design say *operator chain*, never *stream*.
@@ -110,7 +125,8 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
 - **FR-042-003** The declarations are additive fields of IR `sagat-octopus-orchestrator.io/v1`. The codec always decodes
   them; whether a deployment may publish them is checked by the definition service at publication, as `lake.enabled`
   is (`crates/application/src/definitions.rs`, `with_lake_enabled` and `refused_lake_node`), under two switches,
-  `collection-operators` (release 0.3.0) and `trigger-operators` (later; its fields enter the schema with slice S2).
+  `collection-operators` (slice 1) and `trigger-operators` (its fields enter the schema with slice 2), each also a
+  capability of the instance registry that the definition service requires before it publishes (ADR-0153).
   A switch that is off MUST refuse publication and MUST NOT make a stored definition unreadable. A binary that predates
   a field refuses the stored document on read; the fleet rule of section 10 keeps such a binary out of a deployment
   that has published one.
@@ -160,7 +176,7 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
 - **FR-042-012** A `forEach` without `operators` MUST behave and cost as it does today (same statements, same
   snapshot bytes), held by `collection_entry_without_operators_is_unchanged` in `integration_workflow_primitives`.
 
-**Triggers (later release)**
+**Triggers (release 0.3.0, slices 2 to 5)**
 
 - **FR-042-013** A trigger of kind `event`, `webhook` or `message` MAY declare `key` (an expression that yields a scalar
   of at most 512 bytes; absent means one key for the whole trigger) and `operators`, one to eight stages in canonical
@@ -189,9 +205,11 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   element in that order). `debounce {quietMs, maxWaitMs}` is `window session` with `emit: last`. `ignoreElements`
   after either makes the emission carry only the summary, and then no element value is stored.
 - **FR-042-017** Time is the database clock; an element's time is its `received_at`; `occurred_at` drives no timer. A
-  window whose deadline `D` has passed MUST NOT be sealed before `D + admissionGraceMs`, where `admissionGraceMs` is at
-  least the statement timeout of the admission transaction (an event's `received_at` is taken at insert and becomes
-  visible at commit). After that it MUST NOT be sealed while the tenant and namespace hold a pending event with
+  window whose deadline `D` has passed MUST NOT be sealed before every transaction that was running when the pass first
+  saw `D` passed has ended: the pass records `seal_horizon = pg_snapshot_xmax(pg_current_snapshot())` on the window and
+  seals only once `pg_snapshot_xmin(pg_current_snapshot()) >= seal_horizon`, and the admission statement takes its
+  transaction id before it evaluates `received_at` (an event's `received_at` is taken at insert and becomes visible at
+  commit; ADR-0153, which replaces the first draft's `admissionGraceMs`). After that it MUST NOT be sealed while the tenant and namespace hold a pending event with
   `attempts = 0` that the trigger could match and that was received at or before `D`, unless `D + maxHoldMs` has
   passed (`maxHoldMs` 60 s by default, at most 10 minutes), because claiming does not increase `attempts`. An element
   applied after the window that covered it was sealed is *late*: it joins an open window or opens one, flagged and
@@ -218,9 +236,11 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   event's delivery to that trigger at once with outcome `FAILED` and code `KEY_LIMIT`: it is not retried by the
   dispatcher, it does not hold the event pending, it is audited once per chain and minute with a count, and it can be
   applied again by an operator through the delivery's retry action. `distinct` marks are bounded per chain by
-  `maxMarks`; a mark that would pass the ceiling fails the element with `KEY_LIMIT` as well. Held bytes are bounded per
-  tenant by a quota of their own. The sum of `maxKeys` and the number of chains are tenant quotas checked at
-  publication. Window durations are 1 second to 24 hours; a `distinct` horizon is at most 7 days.
+  `maxMarks` (100,000 by default and at most; the sum over a tenant's chains at most 1,000,000); a mark that would pass
+  the ceiling fails the element with `KEY_LIMIT` as well. Held bytes are bounded per tenant by a quota of their own,
+  `operator_held_bytes`, 1 GiB (1,073,741,824 bytes) by default, which an operator may change like any quota: an element
+  that would pass it fails with `QUOTA_EXCEEDED` and holds nothing. The sum of `maxKeys`, the sum of `maxMarks` and the
+  number of chains are tenant quotas checked at publication. Window durations are 1 second to 24 hours; a `distinct` horizon is at most 7 days.
 - **FR-042-022** Chain state is purged by a bounded pass that locks the chain row first: a key row with no open window
   whose epoch has ended; a mark at its horizon; a started, refused or discarded window after the tenant's event
   retention. When a workflow is republished with a different chain, the old chain takes no new element and its open
@@ -246,7 +266,7 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   `events.asyncapi.yaml` and `docs/sdk-compatibility.md`. For triggers: an event's delivery says `STARTED`, `BUFFERED`,
   `SUPPRESSED` or `FAILED` with a code, the pass has a lag metric, and every label is a closed enumeration.
 - **FR-042-026** The management API lists a namespace's chains and a chain's windows (state, key id, count, deadline,
-  the events it holds by reference), and flushes, discards or retries one window. (Later release.)
+  the events it holds by reference), and flushes, discards or retries one window.
 - **FR-042-027** The Studio edits a trigger's key and chain as an ordered list of typed stages with the publication
   rules applied as the author types, shows open windows with their deadline and the pass's lag, and shows on an event's
   page where it is held. Collection operators are shown on a `forEach` node once the Studio knows that node (G042-004).
@@ -262,9 +282,9 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
 
 - **SC-042-001** 500 events for one key inside one quiet period start exactly one run whose input is the event with the
   greatest `(received_at, source, event_id)`, when every event is dispatched twice and the process is killed once at
-  each write of the apply, seal and start paths. (Later release.)
+  each write of the apply, seal and start paths.
 - **SC-042-002** The seal and an arriving element are forced in both orders with a held lock, and each order ends in the
-  state FR-042-018 states, with no element lost or in two windows. (Later release.)
+  state FR-042-018 states, with no element lost or in two windows.
 - **SC-042-003** One collection chain per operator, and one of eight stages, produce the same snapshot digest from the
   six SDKs. After the entry has committed, the engine's evaluator is replaced by one that panics on the chain call and
   the scheduler is restarted: the run completes on the recorded membership with zero chain evaluations, for an inline
@@ -276,9 +296,9 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   and the stale entry records nothing.
 - **SC-042-006** 50,000 events with 50,000 distinct keys against a chain of `maxKeys` 1,000: 1,000 keys are served, the
   rest end `FAILED`/`KEY_LIMIT` at once, no event stays pending for it, another tenant's dispatch latency stays within
-  the stated bound, and no table grows beyond its ceiling. (Later release.)
+  the stated bound, and no table grows beyond its ceiling.
 - **SC-042-007** A restart with 1,000 open windows, some past their deadline and some with pending events behind them,
-  ends with every window started once and every event in exactly one window. (Later release.)
+  ends with every window started once and every event in exactly one window.
 - **SC-042-008** The budgets of NFR-042-001 hold on the stated environment.
 
 ## Goals
@@ -311,13 +331,14 @@ The owner questions are answered (next section). Technical questions, registered
 - **G042-001** `map` cannot build an object, only select or compute. A stated limit: the owner kept the language
   (O042-005).
 - **G042-002** Whether the seal and the run start can share one transaction through the admission port, or must be two
-  with the window `SEALED` between them. Correct either way (the key is the window's); T042-2 decides.
+  with the window `SEALED` between them. Closed 2026-11-26: two transactions (Decision 042-162, section 8).
 - **G042-003** `published_collection_definition` refuses `triggers` on a workflow with a `forEach`, so a window cannot
-  yet feed a collection; that gate belongs to feature 014 or 039.
+  yet feed a collection; that gate belongs to design 039, which takes it over (Gap 039-006 there).
 - **G042-004** The Studio's node registry does not know `forEach`, so collection operators have no canvas yet.
 - **G042-005** The dispatcher is one queue for all tenants (G88 of feature 004); a key flood is bounded per event, not
   isolated. SC-042-006 measures it.
-- **G042-006** Nothing enforces the fleet rules of section 10 until the instance registry (ADR-0082) can.
+- **G042-006** Nothing enforces the fleet rules of section 10 until the instance registry (ADR-0082) can. Closed
+  2026-11-26: the registry exists and carries both capabilities (ADR-0153, Task 042-54).
 - **G042-007** One hot key is serial by construction (one row lock per element). The rate one key sustains is reported.
 - **G042-008** A collection that fails at entry stops the run; its `onError` is not taken, as for a failing `items`
   today. Routing entry failures to `onError` is a follow-up of its own for feature 014's collections, with or without
@@ -347,7 +368,7 @@ this branch. Tasks that depend on an answer carry `Owner-gate: OD-2026-11-13-15`
 | Question | Decision (OD-2026-11-13-15) | Options not taken |
 |---|---|---|
 | O042-001 Which surface the sentence means | (c) Both: triggers and `forEach`, one vocabulary, two switches | (a) events only; (b) collections only |
-| O042-002 What goes in release 0.3.0 | (b) The collection operators only: S0 and S1. S2 to S5 are a later release | (a) nothing; (c) collections and trigger debounce; (d) all |
+| O042-002 What goes in release 0.3.0 | (b) The collection operators only: slices 0 and 1; slices 2 to 5 a later release. Widened by the owner on 2026-11-24 to (d), all of them (Owner decision 2026-11-24-1) | (a) nothing; (c) collections and trigger debounce |
 | O042-003 Operators on `waitEvent` | (a) Not in the first delivery; `filter` on a wait as a follow-up | (b) `filter` now; (c) the whole chain |
 | O042-004 The time base | (a) Arrival time on the database clock only | (b) also event time with an allowed lateness |
 | O042-005 Object construction in `map` | (a) The language stays as it is; `map` selects or computes | (b) an object literal |
@@ -356,19 +377,20 @@ this branch. Tasks that depend on an answer carry `Owner-gate: OD-2026-11-13-15`
 | O042-008 Showing a key | (a) Not the key, unless the caller may reveal personal data | (b) the key to any `event:read` holder |
 | O042-009 A new key beyond `maxKeys` | (a) Fail the delivery, visible and replayable | (b) a run per event; (c) drop |
 
-**Refined by the review, for the owner to confirm** (none blocks release 0.3.0; all are in the later release):
+**Decided on 2026-11-26 under the owner's delegation** (Owner decision 2026-11-24-4), after the re-read of Task 042-44;
+each is a delegate row of `docs/owner-decisions.md` with its reason:
 
-- O042-009 said "fail the delivery, retry, then dead-letter". Retrying would keep the event pending for up to the
-  dispatcher's whole retry schedule, holding every window of the namespace behind the backlog rule (FR-042-017), and a
-  dead letter would take the event from its other triggers too. This draft fails that event's delivery to that trigger
-  at once with `KEY_LIMIT`, keeps it visible and lets an operator retry it (FR-042-021). Still option (a) in spirit.
-- O042-008 said "its digest only". A digest of a low-entropy key (an order number) can be reversed by trying values, so
-  the API shows a random surrogate id and the key text only with the reveal right (FR-042-024).
-- New numbers without an owner answer yet: `maxMarks` per chain, the per-tenant held-bytes quota, `maxHoldMs` (60 s by
-  default, at most 10 minutes) and `admissionGraceMs`. They are put to the owner with T042-44, before S2.
+| Item | Decision | Why |
+|---|---|---|
+| The refinement of O042-009 (Owner decision 2026-11-26-130) | A new key beyond `maxKeys` ends that event's delivery to that trigger at once with `FAILED`/`KEY_LIMIT`, visible, retryable by an operator; no dispatcher retry, no dead letter | A retry would hold the event pending for the dispatcher's whole schedule and every window of the namespace behind the backlog rule; a dead letter would take the event from its other triggers |
+| The refinement of O042-008 (Owner decision 2026-11-26-131) | The API names a key by a random surrogate id and shows its text only to a caller who may reveal personal data; no digest is shown | A digest of a low-entropy key (an order number) is reversed by trying values |
+| `maxMarks` (Owner decision 2026-11-26-132) | 100,000 per chain by default and at most; at most 1,000,000 over a tenant's chains | Ten marks per key at the key ceiling of 10,000; a mark row takes about 250 bytes with its index, so a full tenant holds about 250 MB of marks |
+| The held-bytes quota (Owner decision 2026-11-26-133) | `operator_held_bytes`, 1 GiB per tenant by default | 256 windows at their 4 MiB ceiling; an operator raises it like any quota |
+| `maxHoldMs` (Owner decision 2026-11-26-134) | 60 seconds by default, at most 10 minutes, per chain | Long enough for a dispatcher restart, short enough that a stuck event delays a burst's run by a minute |
+| `admissionGraceMs` (Owner decision 2026-11-26-135) | Withdrawn: a window is sealed past the transaction horizon of its deadline (ADR-0153, Owner decision 2026-11-26-136) | On PostgreSQL 16 no timeout bounds an admission transaction, so no fixed grace is a proof; the horizon is exact and needs no tuning |
 
-**Still needed.** The release that carries S2 to S5. This design is `Approved` by review (constitution, Approval), not
-by an owner decision.
+**Nothing is still needed from the owner.** This design is `Approved` by review (constitution, Approval), not by an
+owner decision.
 
 ## Critical User Journeys (CUJs)
 
@@ -389,17 +411,17 @@ by an owner decision.
 *   **Then**: the twenty-first element brings the stage past 4 MiB; the chain stops there, the run fails with
     `COLLECTION_OPERATOR_BUDGET`, the failure detail says stage 0, `map`, position 20, and no value appears anywhere.
 
-### CUJ 3: One run per burst per order (later release)
+### CUJ 3: One run per burst per order (slices 2 to 5)
 
 *   **Given**: a trigger `{kind: webhook, endpoint: shop, eventType: order.updated, key: "data.orderId", operators:
     [{debounce: {quietMs: 30000, maxWaitMs: 300000}}]}` and a provider that sends twelve updates for order 81 in three
     seconds, two of them twice.
 *   **When**: the events are admitted, and one scheduler replica is killed while applying the seventh.
 *   **Then**: the inbox absorbs the two duplicates; ten deliveries say `BUFFERED`; thirty seconds after the last arrival,
-    plus the admission grace, the pass seals the window and one run starts with the update of the greatest receipt as
+    once the transactions running at the deadline have ended, the pass seals the window and one run starts with the update of the greatest receipt as
     input and `window.count` 10. Each update's event page names the window by its id, and the window names the run.
 
-### CUJ 4: A batch every five minutes (later release)
+### CUJ 4: A batch every five minutes (slices 2 to 5)
 
 *   **Given**: a `message` trigger with `operators: [{filter: {where: "data.kind == 'reading'"}}, {map: {select:
     "data.value"}}, {window: {kind: tumbling, sizeMs: 300000, maxCount: 1000, emit: all}}]` and no key.
@@ -407,7 +429,7 @@ by an owner decision.
 *   **Then**: three runs start, two with 1,000 values (sealed by `onFull: emit`, `window.overflow` true) and one with
     400 at the boundary. Each is admitted by feature 022's rules like any other start.
 
-### CUJ 5: A flood of keys (later release)
+### CUJ 5: A flood of keys (slices 2 to 5)
 
 *   **Given**: a chain with `maxKeys` 1,000 and a caller that sends events with a random key each.
 *   **When**: the thousand-and-first key arrives.
@@ -420,7 +442,7 @@ by an owner decision.
 ### 1. Declaration and validation
 
 Two optional fields are added to `specs/001-platform-foundation/contracts/workflow.schema.json`: `operators` on the
-`forEach` node in 0.3.0, and `key` and `operators` on a trigger item with S2. A stage is an object with exactly one
+`forEach` node in 0.3.0, and `key` and `operators` on a trigger item with slice 2. A stage is an object with exactly one
 property, the operator name, whose value is that operator's closed parameter object with its ranges. The domain gains
 `OperatorChain` and `Operator` (in `crates/domain`, beside `workflow.rs` and `triggers.rs`): pure types and the rules
 that need no I/O (surface, ranges, chain length, canonical order on triggers, "can emit"). `crates/infra-ir` decodes them
@@ -428,11 +450,11 @@ on every path and checks each expression against the present limits and the vari
 canonical encoding and a `chain_digest`.
 
 **The switches are checked at publication only.** `DefinitionService` gains `with_collection_operators_enabled` and
-(with S2) `with_trigger_operators_enabled`, beside `with_lake_enabled`, and refuses a definition that uses a switched-off
+(with slice 2) `with_trigger_operators_enabled`, beside `with_lake_enabled`, and refuses a definition that uses a switched-off
 field with `IrError::CollectionOperatorsDisabled { node }` (and its trigger twin), in the same place `refused_lake_node`
 is checked. Nothing in `convert::*` looks at a switch, because `parse_stored` goes through it: switching a capability off
 stops new publications and never makes a stored definition unreadable (tested through `parse_stored` with the switch
-off). Amended after the S0 review (D042-105, D042-106): only a new publication reads a switch. A publication asked again
+off). Amended after the slice 0 review (D042-105, D042-106): only a new publication reads a switch. A publication asked again
 with its own idempotency key is answered by the store's replay before the switch is read, and activating, rolling back
 or promoting to a namespace that already runs the document move a pointer to an existing version and never read it.
 Until T042-8 applies a chain at entry, the control plane refuses to start with `collection-operators` on, and the
@@ -558,7 +580,7 @@ carried by the collection options, built from an operator factory, without break
 
 The builders only assemble the list; the server validates.
 
-### 4. Trigger chains: rows (later release)
+### 4. Trigger chains: rows (slice 2)
 
 One additive migration. All tables carry `tenant_id` and `namespace_id` first in their primary key.
 
@@ -568,7 +590,7 @@ One additive migration. All tables carry `tenant_id` and `namespace_id` first in
 | `operator_chains` | `chain_id` | workflow, trigger, version, `chain_digest`, state `ACTIVE` or `DRAINING`, `key_count`, `mark_count`, shard | drained and empty |
 | `operator_keys` | `chain_id, key_hmac` | `key_id` (random), key text (content), epoch start, counters, last element time, next sequence | idle past its epoch |
 | `operator_marks` | `chain_id, key_hmac, value_hmac` | `expires_at` | at `expires_at` |
-| `operator_windows` | `chain_id, key_hmac, opened_at, sequence` | `window_id` (random), state, `closes_at`, `max_close_at`, count, bytes, first and last `received_at`, late and overflow flags, `version_id`, `run_id`, attempts, last error code, shard | after event retention |
+| `operator_windows` | `chain_id, key_hmac, opened_at, sequence` | `window_id` (random), state, `closes_at`, `max_close_at`, `seal_horizon` (`xid8`, ADR-0153), count, bytes, first and last `received_at`, late and overflow flags, `version_id`, `run_id`, attempts, last error code, shard | after event retention |
 | `operator_window_members` | `window_id, source, event_id` | `received_at`, late flag, `value` (bytea, the projected element; content) | `value` deleted at start; the row with the window |
 
 The HMAC key is per tenant, generated by the migration's function for new tenants and held in a table the runtime role
@@ -587,7 +609,7 @@ Grants to `sagat_app` in the migration's grant block; the down migration refuses
 content tables the quota-delta triggers (`.claude/skills/migration`). Held bytes count against the tenant's retained
 bytes and against a quota of their own.
 
-### 5. Trigger chains: applying an event (later release)
+### 5. Trigger chains: applying an event (slices 2 and 3)
 
 In `EventDispatcher`, for a trigger with a chain, one transaction:
 
@@ -605,13 +627,14 @@ The lock order is chain row, key row, window rows, then (for a start) the admiss
 quota and usage rows (ADR-0088, decision 4). A failure here leaves the event pending and the dispatcher's existing
 retry applies, except `KEY_LIMIT`, which is an outcome and not a failure.
 
-### 6. Trigger chains: the pass (later release)
+### 6. Trigger chains: the pass (slice 3)
 
 A pass `operator_windows` in `crates/scheduler/src/passes.rs`, on the shards the replica holds. Each tick, in bounded
 batches per tenant:
 
-- **seal**: for `OPEN` windows whose deadline `D` (`closes_at` or `max_close_at`) satisfies `D + admissionGraceMs <=`
-  the database clock; for each (tenant, namespace, trigger match) compute once the oldest pending inbox event with
+- **seal**: for `OPEN` windows whose deadline `D` (`closes_at` or `max_close_at`) has passed on the database clock:
+  record `seal_horizon` when it is still null, and go on only once `pg_snapshot_xmin(pg_current_snapshot())` has
+  reached it (ADR-0153); for each (tenant, namespace, trigger match) compute once the oldest pending inbox event with
   `attempts = 0`, scoped by tenant and namespace; skip the windows that event is not past unless `D + maxHoldMs` has
   passed (counted `held_by_backlog`); for the others, in one transaction each: read the shard row `FOR SHARE`, lock the
   chain row, the key row and the window, and seal it if it is still due (a moved deadline is counted `lost_race`);
@@ -635,7 +658,7 @@ Nothing is held in memory between ticks. The lag is `scheduler_lag_seconds{pass=
 | Events out of order | Each joins the window covering its `received_at`; `emit` order is `(received_at, source, event_id)` |
 | An event applied after its window sealed | Late: an open window or a new one, flagged, counted |
 | Deadline and element at the same instant | The key lock orders them; both orders are valid and tested |
-| An event committed just after the deadline with an earlier `received_at` | Covered by `admissionGraceMs` |
+| An event committed just after the deadline with an earlier `received_at` | Covered by the transaction horizon (ADR-0153); were it applied after the seal, it is late, never lost |
 | An event that stays claimed and never attempted | Holds sealing for at most `maxHoldMs` |
 | Scheduler down past many deadlines | On return the backlog rule lets pending events in, within `maxHoldMs` |
 | The run a window started fails, or times out in 022's buffer | A run like any other; the window stays `STARTED` |
@@ -663,10 +686,18 @@ buffered as `WAITING` runs and granted by a fenced pass). This design is upstrea
 | Run admission | 022 | a run, per concurrency or rate key | runs that exist and wait | when a requested run starts |
 
 1. **One creator port.** The window start uses the one admission port (FR-022-018, FR-022-041) and joins 022's
-   run-creator test (T022-086) when S3 is built.
+   run-creator test (T022-086) when slice 3 is built. On 2026-11-26 that port is built on the branch
+   `feature/022-throughput-control` (the run gates decided by `decide_run_gates` in `crates/application/src/execution.rs`
+   of that branch, with the creators of `tests/integration/flow-control-step-policies/rate_creators.rs`) and is not on
+   `develop`. Slice 2 does not need it; the start of slice 3 (Task 042-22) and the composition test (Task 042-3) start
+   only after that branch merges, and are written against the port as merged. Should 022 slip, slice 3 does not start
+   a run through any other path (a second creator would bypass 022's limits).
 2. **A created run is started.** A run 022 buffers exists, has its journal and counts against 022's ceilings, so the
    window is `STARTED`. 022's D022-018 says the window "stays sealed" in that case; both texts agree that a repeated
    request finds the run, and 022's wording is to be aligned (G042-011, T042-3).
+   The seal and the start are two transactions (Gap 042-002, decided 2026-11-26, Decision 042-162): the seal is short
+   and fenced; the start takes 022's gate rows and may wait on a buffer; a crash between them leaves the window `SEALED`,
+   which the next pass starts under the same key.
 3. **A full buffer is a retry**, as 022 leaves an event start pending (FR-022-042, O1165): the window stays `SEALED`.
 4. **No operator paces.** `throttle` is `rateLimit`. The chain's key sees the event; 022's key sees the run input.
 5. **Two things named window.** 022's window is an interval of grants; this design's is a set of gathered elements.
@@ -674,7 +705,7 @@ buffered as `WAITING` runs and granted by a fenced pass). This design is upstrea
 7. **Collections (0.3.0).** A chain changes how many iterations a `forEach` has and nothing about their admission; 022
    refuses `rateLimit` on a body node in 0.3.0 (`SCOPED_RATE_LIMIT`).
 
-### 9. Surfaces (later release, except the collection telemetry of section 3)
+### 9. Surfaces (slice 5, except the collection telemetry of section 3)
 
 - **REST** (additive): `GET /v1/namespaces/{ns}/operator-chains`, `GET …/operator-chains/{chainId}/windows`,
   `GET …/windows/{windowId}`, `POST …/windows/{windowId}:flush`, `:discard`, `:retry`, and a retry of one delivery;
@@ -699,10 +730,14 @@ Capabilities are compiled into a binary and switched per deployment. **Release 0
 (`docs/runbooks/scaling.md`: mixed old and new writers are unsupported; publication and starts of a new capability wait
 until its engines are available). An old replica that met such a definition would fail `parse_stored` with a schema
 error and leave the run alone; one that met a chained blob scope would fail its restore with an invalid-storage error.
-Neither misreads; both are covered by an old-reader test (T042-50) and the rule is written in the runbook. **Later
-release:** `trigger-operators` is enabled only when every scheduler replica knows it, because an older dispatcher reads
-the trigger row without the chain and would start a run per event; that over-delivers and loses nothing. Rollback
-switches publication off; stored definitions stay readable (section 1) and open windows drain.
+Neither misreads; both are covered by an old-reader test (T042-50). **The fleet rule is enforced** (ADR-0153): the
+switches are also capabilities of the instance registry (ADR-0082), `collection-operators-v1` and
+`trigger-operators-v1`. Every control plane and engine of 0.3.0 lists them; the operator records the requirement for
+both kinds (`platform_requirement_activate`), which the registry refuses while a live process lacks the capability; the
+definition service refuses to publish a chained `forEach` or a trigger chain while its requirement is not recorded
+(Task 042-54). An older dispatcher would read the trigger row without the chain and start a run per event; the
+requirement keeps such a process from serving. Rollback switches publication off; stored definitions stay readable
+(section 1) and open windows drain.
 
 ### 11. Decisions recorded
 
@@ -712,7 +747,12 @@ switches publication off; stored definitions stay readable (section 1) and open 
   applied by the engine; its state is rows per chain and key keyed by HMAC; time is the database clock at admission; a
   fenced pass seals a window, and a sealed window starts one run by its identity through the one admission port.
 
-Each ADR states what the review changed in a section of its own; the owner accepted the earlier text.
+- **ADR-0153 (accepted, delegate, Owner decision 2026-11-26-136)**: a window is sealed only past the transaction
+  horizon of its deadline, replacing ADR-0086's admission grace; both switches are capabilities of the instance
+  registry. Slices 2 to 5.
+
+Each ADR states what the review changed in a section of its own; the owner accepted the earlier text of ADR-0086 and
+ADR-0087.
 
 ## Risks and Mitigations
 
@@ -729,7 +769,9 @@ Each ADR states what the review changed in a section of its own; the owner accep
 | Held personal data outlives its use | A deletable column, deleted at start; HMAC keys; surrogate ids; a held-bytes quota |
 | A key flood stalls a namespace | `KEY_LIMIT` is terminal at once and leaves the backlog; audit collapsed |
 | Two rate limiters appear | No operator paces; section 8 |
-| The trigger half drifts before it is built | Its fields stay out of the 0.3.0 schema; T042-44 re-reads this design before S2 |
+| The trigger half drifts before it is built | Re-read against `develop` on 2026-11-26 (Task 042-44); its fields enter the schema only with slice 2 |
+| Feature 022's admission point is not merged when slice 3 starts | Slice 3's start waits for it and no other creator path is used (section 8); slices 2, 4's fault tests of the apply path and 5's read surfaces proceed |
+| A long transaction delays every window | It delays, never loses (ADR-0153); the pass's lag metric and alert show it |
 
 ## Constitution Check
 
@@ -738,12 +780,12 @@ Each ADR states what the review changed in a section of its own; the owner accep
 | I. State and retry semantics are explicit and durable | Pass | Collections: the output is recorded once by the entry transaction and never recomputed (FR-042-009). Triggers: all state is rows; an application commits with its delivery row; seal and start are idempotent by the window's identity (FR-042-014, 018, 019) |
 | II. Modular domain, ports and adapters | Pass | `OperatorChain` is a domain type without serde_json, SQL or a clock; one evaluator port method; statements in `infra-postgres`; the switch in the definition service |
 | III. External effects are at-least-once; sagas compensate | Pass | No external effect; runs start through the ordinary path |
-| IV. Compatibility is versioned and pinned | Pass with conditions | Additive v1 fields; switches never make a stored definition unreadable; six SDKs without breaking a caller. Condition: a mixed fleet is unsupported (section 10, G042-006) |
+| IV. Compatibility is versioned and pinned | Pass with conditions | Additive v1 fields; switches never make a stored definition unreadable; six SDKs without breaking a caller. Condition: a mixed fleet is kept from publishing by the instance registry's requirements (section 10, ADR-0153) |
 | V. Code, tenant boundary and secrets are isolated | Pass | Bounded expressions evaluated by the engine, off the async runtime under ceilings; tenant and namespace in every key; held data classified and deletable; HMAC keys and surrogate ids (FR-042-002, 007, 023, 024) |
 | VI. Observability and audit are part of the feature | Pass | Typed codes in the closed sets, counters with closed labels, a no-value-leak test, audit of every manual act (FR-042-025) |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | The chain sits after the inbox and applies once per admission; `KEY_LIMIT` is an outcome, not a held event |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | SC-042-003 to 005 in 0.3.0 (panicking evaluator, a test per ceiling, races with barriers); SC-042-001, 002, 006, 007 later |
-| Delivery Constraints | Pass | Single region, PostgreSQL as authority, no new component; budgets are targets on a stated environment |
+| Delivery Constraints | Pass | One writable region per cell, PostgreSQL as authority, no new component; budgets are targets on a stated environment |
 
 ## Complexity Tracking
 
@@ -757,7 +799,7 @@ Each ADR states what the review changed in a section of its own; the owner accep
 | A fenced pass with grace and hold rules (later) | A deadline must fire with no event, and a commit can land after it | Sealing on the clock alone: a burst split by commit latency |
 | HMAC keys and surrogate ids (later) | A digest of a short key can be reversed | Plain SHA-256 digests shown in the API |
 | A canonical stage order on triggers (later) | Arbitrary orders give each pair its own stateful semantics | Any order |
-| A mixed fleet unsupported | Readers refuse unknown fields by design | A registry check at publication: it does not exist yet (ADR-0082) |
+| A capability requirement before publication | Readers refuse unknown fields by design, so an old replica must not serve once a chain is published | A runbook rule alone: nothing enforces it (Gaps 042-006 and 042-140) |
 
 ## Alternatives Considered
 
@@ -785,7 +827,7 @@ Each ADR states what the review changed in a section of its own; the owner accep
 - **NFR-042-002 Security**: no `SECURITY DEFINER`, no new role; the runtime role gets only the grants the statements
   need, checked by the privilege audit; the cross-tenant battery covers every new endpoint and table.
 - **NFR-042-003 Operability**: the runbooks say what each metric and code means, the 0.3.0 upgrade rule, what a held
-  window is and how to flush or discard one; an alert rule on the pass's lag ships with S3.
+  window is and how to flush or discard one; an alert rule on the pass's lag ships with slice 3.
 - **NFR-042-004 Compatibility**: every existing definition, trigger and run behaves as before; the OpenAPI and IR schema
   changes are additive and pass the contract baselines.
 - **NFR-042-005 Storage**: with the default quotas a tenant's chain state is bounded, and the bound is stated in bytes
@@ -795,27 +837,43 @@ Each ADR states what the review changed in a section of its own; the owner accep
 
 ## Detailed Implementation Plan
 
-**Release 0.3.0 (OD-2026-11-13-15): S0 and S1**, from `develop` after pull request 218. **S0** foundation, collection
-half: T042-1, 4, 5, 6, 47. **S1** collection operators: T042-7 to 12, 45, 46, 48 to 52. No migration, table, pass or
+**Release 0.3.0 (OD-2026-11-13-15): slices 0 and 1**, from `develop` after pull request 218. **Slice 0** foundation, collection
+half: T042-1, 4, 5, 6, 47. **Slice 1** collection operators: T042-7 to 12, 45, 46, 48 to 52. No migration, table, pass or
 loop; the collection entry of the scheduler pass changes.
 
-**A later release, not yet named: S2 to S5.** **S2** chain state and the operators without time (T042-2, 3, 13 to 19,
-43, 44, 53); **S3** windows and the pass (20 to 26); **S4** failure and capacity (27 to 33); **S5** surfaces and close (34
-to 42). ADR-0086 is accepted; T042-44 re-reads this design against `develop` before S2 starts.
+**Release 0.3.0 since Owner decision 2026-11-24-1: slices 2 to 5.** **Slice 2** chain state and the operators without
+time (Tasks 042-2, 3, 13 to 19, 43, 44, 53, 54); **slice 3** windows and the pass (Tasks 042-20 to 26 and 55); **slice
+4** failure and capacity (Tasks 042-27 to 33); **slice 5** surfaces and close (Tasks 042-34 to 42). ADR-0086 and
+ADR-0153 are accepted; Task 042-44's re-read is the third revision of this design.
+
+**Two lanes for two builders, with no crate in common:**
+
+- **Lane A, declarations and surfaces:** `crates/domain` (the trigger rules), `crates/infra-ir` (the schema and the
+  codec), `crates/api-http` (the REST resources), the six SDKs and the Studio. Tasks 042-43 (first), then 042-10 and
+  042-11 (the SDK half of slice 1 still open, Gaps 042-113 and 042-131), 042-36, 042-37, 042-34, 042-17's response
+  shape, 042-38, 042-39.
+- **Lane B, state and execution:** `crates/application` (the definition service's switch and capability, the
+  dispatcher's apply, the window start), `crates/infra-postgres` (the one migration and every statement),
+  `crates/scheduler` (the dispatcher and the pass) and the test targets. Tasks 042-2, 13, 14, 54, 15, 16, 18, 19, 53,
+  55, 20, 21, 23 to 26, 3, 22, 27 to 33, 35.
+- **Order points between the lanes:** Task 042-43 (lane A) merges before Task 042-15 (lane B) applies an event; the
+  migration of Task 042-13 (lane B) merges before lane A's REST resources (Task 042-34) are wired to lane B's services,
+  which lane B exposes as application methods first; Tasks 042-3 and 042-22 (lane B) start after feature 022's
+  throughput branch merges (section 8); Tasks 042-40 to 042-42 close both lanes.
 
 - [ ] T042-1 Confirm that OD-2026-11-13-15 and OD-2026-11-13-17 are rows of `docs/owner-decisions.md` on `develop` and
   that the `Covers` of OD-2026-11-13-15 names every task gated on it here, before any of them is ticked.
   Refs: FR-042-001
-- [ ] T042-2 Spike, in `specs/042-stream-operators/research.md`: whether seal and start can share a transaction through
-  the admission port (G042-002), the input-blob path for a window above the inline ceiling, and the statement count of
-  today's dispatch. (Later release.)
+- [ ] T042-2 Spike, in `specs/042-stream-operators/research.md`: the statement count of today's dispatch (the baseline
+  of FR-042-030) and the input-blob path for a window above the inline ceiling. Seal and start are two transactions
+  (Decision 042-162; Gap 042-002 closed).
   Refs: FR-042-019, FR-042-030
 - [ ] T042-3 Prove the composition with feature 022 as built: the window start goes through the one admission port and
   is in the run-creator test; a window whose run 022 buffers is `STARTED`; a full buffer leaves it `SEALED`; chain rows
   are locked before the semaphore and rate rows, with a barrier test of the reversed order; align D022-018's wording
-  (G042-011). (Later release.)
+  (G042-011).
   Refs: FR-042-019, FR-042-029
-- [ ] T042-4 Have ADR-0087 accepted before S1 merges and ADR-0086 before S2 starts; amend the design if either changes.
+- [ ] T042-4 Have ADR-0087 accepted before slice 1 merges and ADR-0086 before slice 2 starts; amend the design if either changes.
   Note (2026-11-13): done, not ticked. Both ADRs were set to Accepted in commit 540154c8 on the owner's "Aceito tudo"
   (OD-2026-11-13-17, the row added on develop by the owner's session), and revised after the reviews of the same day
   before any code (each ADR's Revision section). Rule 9 of `scripts/check-design-docs.py` refuses a tick in a doc that
@@ -853,39 +911,42 @@ to 42). ADR-0086 is accepted; T042-44 re-reads this design against `develop` bef
   upgrade rule in the workflow-primitives runbook, the reference and the traceability map.
   Refs: FR-042-005, FR-042-007, NFR-042-003
 - [ ] T042-13 Write the migration (tables, columns, indexes, grants, classification entries, quota triggers, the
-  held-bytes quota, a down that refuses data loss) with the migration checklist. (Later release.)
+  held-bytes quota, a down that refuses data loss) with the migration checklist.
   Refs: FR-042-021, FR-042-023, FR-042-024, NFR-042-002
+  Owner-gate: OD-2026-11-26-133
 - [ ] T042-14 Register a chain when a version is published, drain the old one, discard on removal, and check the tenant
-  quotas at publication. (Later release.)
+  quotas at publication.
   Refs: FR-042-021, FR-042-022
 - [ ] T042-15 Apply an event in one transaction: stateless prefix without locks, chain row, key row when needed, the
-  delivery row inserted once with its outcome. (Later release.)
+  delivery row inserted once with its outcome.
   Refs: FR-042-014
-- [ ] T042-16 Add `distinct`, `skip` and `take` with epochs, marks and `maxMarks`. (Later release.)
+- [ ] T042-16 Add `distinct`, `skip` and `take` with epochs, marks and `maxMarks`.
   Refs: FR-042-015, FR-042-021
-- [ ] T042-17 Expose the delivery outcome on the event resource. (Later release.)
+  Owner-gate: OD-2026-11-26-132
+- [ ] T042-17 Expose the delivery outcome on the event resource.
   Refs: FR-042-025
 - [ ] T042-18 Enforce `maxKeys` at key creation with the terminal `KEY_LIMIT` outcome, the collapsed audit and the
-  delivery retry action. (Later release.)
+  delivery retry action.
   Refs: FR-042-021, FR-042-023
-  Owner-gate: OD-2026-11-13-15
-- [ ] T042-19 Hold FR-042-030 with a budget test: a trigger without a chain adds no statement. (Later release.)
+  Owner-gate: OD-2026-11-13-15, OD-2026-11-26-130
+- [ ] T042-19 Hold FR-042-030 with a budget test: a trigger without a chain adds no statement.
   Refs: FR-042-030, NFR-042-001
 - [ ] T042-20 Open, extend and seal-on-count windows in the apply transaction (tumbling, session, count; several open
   per key; all, first, last by `(received_at, source, event_id)`; `onFull`), with the numbers of O042-007.
   Refs: FR-042-016, FR-042-021
   Owner-gate: OD-2026-11-13-15
 - [ ] T042-21 Add the `operator_windows` pass: fenced seal with the admission grace, the scoped backlog rule and
-  `maxHoldMs`. (Later release.)
+  `maxHoldMs`.
   Refs: FR-042-017, FR-042-018
+  Owner-gate: OD-2026-11-26-134, OD-2026-11-26-136
 - [ ] T042-22 Start a sealed window's run by its identity, on its version, through the one admission port, with the
   three input shapes; held values deleted at start; `SEALED` with a back-off on a full buffer, `REFUSED` and retry.
   Refs: FR-042-019, FR-042-024, FR-042-029
-- [ ] T042-23 Add `debounce` and `ignoreElements` over the window machinery. (Later release.)
+- [ ] T042-23 Add `debounce` and `ignoreElements` over the window machinery.
   Refs: FR-042-016
-- [ ] T042-24 Add `flatMap` fan-out on a trigger with its ceiling and all-or-nothing start. (Later release.)
+- [ ] T042-24 Add `flatMap` fan-out on a trigger with its ceiling and all-or-nothing start.
   Refs: FR-042-020
-- [ ] T042-25 Mark and count late elements; test an event retried after its window sealed. (Later release.)
+- [ ] T042-25 Mark and count late elements; test an event retried after its window sealed.
   Refs: FR-042-017
 - [ ] T042-26 Purge keys, marks, finished windows and drained chains in bounded batches, chain row first.
   Refs: FR-042-022, NFR-042-005
@@ -904,34 +965,36 @@ to 42). ADR-0086 is accepted; T042-44 re-reads this design against `develop` bef
 - [ ] T042-33 Measure NFR-042-001 for triggers on a stated environment and write the dated validation report.
   Refs: SC-042-008, NFR-042-001
 - [ ] T042-34 Add the REST endpoints with the permissions of FR-042-023 and the audit actions, with the contract
-  baseline. (Later release.)
+  baseline.
   Refs: FR-042-026, FR-042-023
 - [ ] T042-35 Add the trigger metrics, spans, the journal note on a window-started run and the lag alert rule.
   Refs: FR-042-025, NFR-042-003
-- [ ] T042-36 Add the trigger builders to the six SDKs over the operator factory. (Later release.)
+- [ ] T042-36 Add the trigger builders to the six SDKs over the operator factory.
   Refs: FR-042-028
 - [ ] T042-37 Add the scenarios `trigger-operators`, `trigger-debounce-runtime` and `trigger-window-runtime`.
   Refs: FR-042-028
-- [ ] T042-38 Studio: the key and stage editor on a trigger with the publication rules. (Later release.)
+- [ ] T042-38 Studio: the key and stage editor on a trigger with the publication rules.
   Refs: FR-042-027
 - [ ] T042-39 Studio: the window list, the lag, the event page's outcome, flush and discard; keys and windows named by
-  their ids, the key text only with the reveal right (O042-008). (Later release.)
+  their ids, the key text only with the reveal right (O042-008).
   Refs: FR-042-027, FR-042-024
-  Owner-gate: OD-2026-11-13-15
+  Owner-gate: OD-2026-11-13-15, OD-2026-11-26-131
 - [ ] T042-40 Write the events runbook section, the quickstart of CUJ 3 with its failure scenario, and the reference.
   Refs: NFR-042-003
 - [ ] T042-41 Update `docs/traceability.md`, the roadmap row and the release notes; register the remaining gaps.
   Refs: NFR-042-004
 - [ ] T042-42 Write the trigger rollout procedure (readers first, fleet-wide before `trigger-operators`, drain on
-  rollback) and rehearse it on the compose stack. (Later release.)
+  rollback) and rehearse it on the compose stack.
   Refs: FR-042-003
 - [ ] T042-43 Extend the domain rules, the IR schema and the codec with a trigger's `key` and `operators` (canonical
-  order, "can emit", ceilings) and the `trigger-operators` switch. (Later release, first task of S2.)
+  order, "can emit", ceilings) and the `trigger-operators` switch. (First task of slice 2.)
   Refs: FR-042-003, FR-042-013
   Owner-gate: OD-2026-11-13-15
-- [ ] T042-44 Before S2 starts, re-read sections 4 to 10 against `develop` (the dispatcher, the start path, feature 022
-  as merged, the instance registry), put the refinements of O042-008 and O042-009 and the new numbers (`maxMarks`,
-  held-bytes quota, `maxHoldMs`, `admissionGraceMs`) to the owner, and amend the design.
+- [ ] T042-44 Before slice 2 starts, re-read sections 4 to 10 against `develop` (the dispatcher, the start path, feature 022
+  as merged, the instance registry), decide the refinements of O042-008 and O042-009 and the new numbers (`maxMarks`,
+  held-bytes quota, `maxHoldMs`, the admission grace), and amend the design.
+  Note (2026-11-26): done by the third revision under Owner decision 2026-11-24-4 (Owner decisions 2026-11-26-130 to
+  2026-11-26-136); not ticked, because the doc is not Approved.
   Refs: FR-042-014, FR-042-017, FR-042-021
 - [ ] T042-45 Record a blob source's chained manifest: `materialize` bounded by the chain input ceiling, the variant
   read by `enter_collection` and the restore, and tests of a blob with a chain at entry and at restore with `verify_run`.
@@ -961,8 +1024,20 @@ to 42). ADR-0086 is accepted; T042-44 re-reads this design against `develop` bef
 - [ ] T042-52 Back off the re-entry of a collection that waits for storage quota and count re-entries by reason.
   Refs: FR-042-009
 - [ ] T042-53 The per-tenant HMAC key of trigger chains: creation, the statements that use it, no read path for the
-  runtime role, and a test that no digest of a key leaves the database. (Later release.)
+  runtime role, and a test that no digest of a key leaves the database.
   Refs: FR-042-024, NFR-042-002
+- [ ] T042-54 Add the capabilities `collection-operators-v1` and `trigger-operators-v1` to the instance registry (the
+  closed checks of the registry's tables and `Capability::ALL`, in the migration of Task 042-13), list them in every
+  0.3.0 control plane and engine, and refuse publication of a chained `forEach` or a trigger chain while the requirement
+  is not recorded; tests of both refusals and of an activation refused while a live process lacks the capability.
+  Refs: FR-042-003
+  Owner-gate: OD-2026-11-26-136
+- [ ] T042-55 Seal past the transaction horizon: `operator_windows.seal_horizon`, recorded at the first pass after the
+  deadline; the admission statement takes `pg_current_xact_id()` before `received_at` in one statement; a race test that
+  holds an admission transaction open past the deadline with a held lock and sees the window stay open until it commits,
+  and a budget test that the admission issues the same statements as before.
+  Refs: FR-042-017, FR-042-030
+  Owner-gate: OD-2026-11-26-136
 
 #### Follow-up tasks
 
@@ -975,21 +1050,22 @@ checkers, the unit tests of the crates it changes and the suites it touches, als
 where it adds a statement. A test is seen failing for the right reason before the code that passes it; races use held
 locks, barriers or failpoints, never sleeps.
 
-- **S0** (0.3.0): the IR contract tests with the earlier fixture corpus unchanged; domain property tests; the
+- **Slice 0** (0.3.0): the IR contract tests with the earlier fixture corpus unchanged; domain property tests; the
   `parse_stored` test with the switch off (T042-47).
-- **S1** (0.3.0): `integration_workflow_primitives` with unmodified tests still passing and the new tests by name
+- **Slice 1** (0.3.0): `integration_workflow_primitives` with unmodified tests still passing and the new tests by name
   (T042-8, 45, 46, 48, 51); the property test of T042-7; `sdk_conformance` for the three collection scenarios in six
   languages; the no-value-leak test (T042-49); the old-reader test (T042-50); a hand mutation per operator (invert the
   predicate, drop the last chunk, flatten two levels, compare `distinct` by raw bytes) to prove the tests can fail.
-- **S2 and S3** (later): a new target `integration_stream_operators` on real PostgreSQL; the events suites of feature 004
-  unmodified; the budget test of T042-19; the migration's up, down and privilege audit.
-- **S4** (later): the fault and race tests of T042-27 to T042-32 by name; the capacity and performance runs state the
+- **Slices 2 and 3** (0.3.0): a new target `integration_stream_operators` on real PostgreSQL; the events suites of
+  feature 004 unmodified; the budget tests of Tasks 042-19 and 042-55; the horizon race test of Task 042-55; the
+  capability tests of Task 042-54; the migration's up, down and privilege audit.
+- **Slice 4** (0.3.0): the fault and race tests of T042-27 to T042-32 by name; the capacity and performance runs state the
   machine, its load, the PostgreSQL version and configuration, and what was skipped.
-- **S5** (later): the OpenAPI baseline (additive, never blessed blind), `npm run api && npm run check:api` in the Studio,
+- **Slice 5** (0.3.0): the OpenAPI baseline (additive, never blessed blind), `npm run api && npm run check:api` in the Studio,
   the trigger conformance scenarios, and the quickstart run end to end including its failure scenario.
 
-Size, stated plainly: 53 tasks. Release 0.3.0 takes seventeen (T042-1, 4 to 12, 45 to 52), one of them done and waiting for approval to be ticked (T042-4),
-about seven pull requests; they touch no table and add no loop, and change the collection entry of the scheduler pass,
-the evaluator port, the codec, the definition service and six SDKs. S2 to S4 are the bulk (a migration, a change in the
-dispatcher's hot path, a new pass and its fault battery), comparable to the first delivery of feature 018, and belong to
-the later release.
+Size, stated plainly: 55 tasks, all in release 0.3.0. Slices 0 and 1 are eighteen (Tasks 042-1, 4 to 12, 45 to 52),
+most of the server half built and waiting for approval to be ticked, the SDK half open; they touch no table and add no
+loop. Slices 2 to 5 are thirty-seven (Tasks 042-2, 3, 13 to 44, 53 to 55): one migration, a change in the dispatcher's
+hot path, a new pass and its fault battery, the surfaces in six SDKs and the Studio; comparable to the first delivery of
+feature 018, in two lanes.
