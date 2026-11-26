@@ -49,11 +49,16 @@ line below disagree, this section is right.
 7. **More replay paths.** About 25 store modules answer from a receipt or a duplicate (among them `business_ids.rs`,
    `batch.rs`, `execution/resets.rs`, the `capacity_*` modules, `scoped_leaf_finish.rs`, `approval_progress.rs`,
    `trigger_schedules.rs`, `declared_operations.rs`, `database_results.rs`, `managed_secrets.rs`,
-   `execution/scoped_events.rs`). Design 048 does not add a write per replay: it never lets a commit's wait be cancelled
-   (Requirement 048-012) and makes every new connection commit a waited beacon before its first use (Requirement 048-013,
-   Task T048-7, table `durability_beacons`). Task T032-058 builds the cross-region quorum and ADR-0067's durability lease
-   (a beacon renewed on a schedule) on that table, which replaces the `region_beacons` of `data-model.md`; a transaction
-   must write a row for its commit to wait, so D1590's `pg_current_xact_id()` alone would not wait.
+   `execution/scoped_events.rs`). Design 048 does not add a write per replay (Architecture decision 0130 supersedes
+   ADR-0067's decision 6(b) and (d) in part): it never lets a commit's wait be cancelled (Requirement 048-012), and after
+   a change of server identity, an unknown commit outcome or a read-only refusal a process serves nothing until its
+   registry confirmation, a waited write, has reached a standby (Requirement 048-013, Task T048-10). Task T032-058 builds
+   the cross-region quorum and ADR-0067's durability lease on that confirmation (the registry row's confirmed identity,
+   renewed on a schedule), which replaces the `region_beacons` of `data-model.md`; a transaction must write a row for its
+   commit to wait, so D1590's `pg_current_xact_id()` alone would not wait. This feature uses design 048's reason
+   `DATABASE_UNCONFIRMED` (for its `DURABILITY_UNCONFIRMED`), its `SAGAT_DB_COMMIT_DEADLINE_MS` (for
+   `SAGAT_COMMIT_DEADLINE_MS`) and its commit (Task T048-7, for T032-024's guard); T032-009's contract test allows the
+   unlogged `server_incarnation` by name, which holds no state of record.
 8. **In-region high availability is now design 048's reference topology.** The HA manager (CloudNativePG or Patroni)
    owns `synchronous_standby_names`; this feature MUST NOT set it by hand (D1591's manual setting is replaced). Gap
    G1585: CloudNativePG replica clusters and Patroni standby clusters stream asynchronously, so `sync_quorum` across

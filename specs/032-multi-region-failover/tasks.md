@@ -379,8 +379,10 @@ These run in the phase named in each; their reasons are in `plan.md`, "Readiness
 
 ## Dependencies and order
 
-- Readiness of 2026-11-24: design 048 (the in-region topology, the commit rule and the waited beacon of its Task T048-7)
-  comes before slice 3; T032-058 builds the durability lease on T048-7's `durability_beacons`. With design 049, whichever lands second writes its migration against the other's
+- Readiness of 2026-11-24, revised 2026-11-26: design 048 (the in-region topology, its commit, Task T048-7, and its
+  confirmation, Task T048-10) comes before slice 3; T032-058 builds the durability lease on the registry's confirmed
+  identity of T048-10; T032-024 uses T048-7's commit; T032-009 allows `server_incarnation` by name; the error reason is
+  design 048's `DATABASE_UNCONFIRMED` and the deadline its `SAGAT_DB_COMMIT_DEADLINE_MS` (plan, readiness item 7). With design 049, whichever lands second writes its migration against the other's
   `run_events`. T032-065 to T032-067 come before US02.
 
 - T032-001 blocks everything. Phase 2 blocks every story.
