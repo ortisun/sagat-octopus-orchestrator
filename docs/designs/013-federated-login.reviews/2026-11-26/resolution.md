@@ -275,3 +275,10 @@ session idle for a day expires (the reviewer's note for correctness).
 
 The note outside the security scope is fixed too: a `RETAINED` key is dropped once its successor has been active for
 7 days and one refresh interval.
+
+## Architecture re-read, round 3 (`approval/reread-3-architecture.md`, at `d8a16e9a`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: `RefreshTokenMac::handle(key_id)` is called before `BEGIN` and does the single-flight re-read; `MacHandle::verify` and `mint` run in memory inside the transaction | Technical Plan 2, Task 013-9 |
+| 2 to 7 | Nit | Fixed: a background task re-reads both rings every interval; logout verifies against the ring in memory, the staleness gate applying to minting paths only, with a test; the `grace_rotations` column; the two tests placed in Tasks 013-8 and 013-9; HKDF-SHA256 with no salt and the label as `info` named in Technical Plan 12 and Architecture decision 0140 decision 11, with the crates and `the_secrets_ring_cannot_reach_the_derivation`; Requirement 013-025's clause limited to the connections' secrets | Technical Plans 2 to 4 and 12, Requirement 013-025, Tasks 013-8, 013-9, Architecture decision 0140 |

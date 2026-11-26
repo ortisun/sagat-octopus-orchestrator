@@ -405,8 +405,9 @@ already has.
 - **Requirement 013-025** Identity secrets (connections' client secrets, the platform's token-signing keys, the
   attempt-sealing ring, the `cli-refresh` ring, the connections' `private_key_jwt` keys, the service provider's request-signing keys) MUST live in a separate OpenBao
   mount and policy that no feature 017 secret reference and no execution capability can name, readable by the control
-  plane's identity only, written through the connection API by the intent, write, verify, activate protocol of
-  Architecture decision 0035 decision 7, and never returned. The signing keys MUST follow the lifecycle of Architecture
+  plane's identity only, and never returned; the connections' secrets and keys are written through the connection API
+  by the intent, write, verify, activate protocol of Architecture decision 0035 decision 7, and the rings and the
+  signing keys only by their operator commands (Technical Plan 12). The signing keys MUST follow the lifecycle of Architecture
   decision 0140 decision 7: created and rotated by an audited operator command, the active key version recorded in
   PostgreSQL, a new public key published in every replica's key set for two key-set refresh intervals (Technical Plan
   4, "Signing keys") before any replica signs with it, and an audited `identity signing-key revoke` marks a leaked key `REVOKED`, which
@@ -787,7 +788,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 |---|---|
 | Connection, mapping rules, owning connection, provisioning policy, session policy, SCIM patch semantics; the OIDC claim rules (`iss`, `aud`, `azp`, `nonce`, the tenant restriction, the subject claim) and the SAML profile's rules over parsed values (pure) | `crates/domain/src/federation.rs`, `crates/domain/src/federation/{oidc,saml}.rs` |
 | The identity egress policy (any name, global addresses only, allowlisted hosts never to loopback, link-local or metadata, port 443 unless listed) | `crates/domain/src/egress.rs`, beside `EgressPolicy`, with unit tests |
-| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (`mint(sid, generation, random) -> (key_id, mac)`, `verify(key_id, sid, generation, random, mac) -> verdict`) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
+| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (`handle(key_id) -> Result<MacHandle, Unavailable | UnknownKey>`, asynchronous and called before `BEGIN`, which does the single-flight re-read of an unknown id; `MacHandle::verify(sid, generation, random, mac)` and `MacHandle::mint(sid, generation, random)` run in memory only, inside the transaction, as `TokenSigner`'s handle does) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
 | The platform key set's fetcher: maps `FederationStore::signing_keys()` to a `JwkSet` for the verifier's `JwksCache` | `crates/api-http/src/auth/issuers.rs` |
 | `EgressClient` with no redirects under the identity policy; `JwksCache` and its `JwksFetcher` trait, moved here from `crates/api-http/src/auth/jwks.rs` so that `api-http` and `infra-federation` share them without `api-http` depending on the federation crate | `crates/infra-egress` |
 | `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client; the adapters of `RefreshTokenMac` (holding the `IdentityKeyRing`) and `AttemptSealer` (holding the attempt ring) | `crates/infra-secrets` |
@@ -831,7 +832,7 @@ stays one row |
 | `signin_codes` | tenant, code hash, attempt id (unique per tenant, so a second callback of one attempt is refused), the verified identity, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
 | `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or, for the CLI, the refresh MAC's random value, the current and the highest issued generation,
 and the refresh rate window's start and count, and for the CLI's grace the rows of
-`signin_refresh_generations` (session, generation, rotated at, used at; for the grace's bookkeeping only, since any generation's MAC can be
+`signin_refresh_generations` (session, generation, rotated at, used at, grace rotations (a small integer, 0 by default); for the grace's bookkeeping only, since any generation's MAC can be
 recomputed; the grace is decided by `rotated_at` plus 30 seconds, never by whether a row exists, and a generation below the
 current one with no row is outside the grace, so its reuse revokes; each refresh deletes,
 under the session row, the session's rows older than 30 seconds, and the maintenance loop purges those of ended
@@ -977,7 +978,9 @@ generation issued plus one; a number is never reused.
 ring before `BEGIN`; an unknown id causes at most one single-flight re-read of the ring per replica per refresh
 interval, outside any transaction (`a_random_key_id_flood_reads_the_ring_at_most_once_per_interval`); if the id is
 still unknown after a successful re-read the token is `invalid_grant` with no effect, and if the ring cannot be read,
-or is stale or empty, the answer is `503 IDENTITY_SIGNING_UNAVAILABLE` with the token unspent, decided before any
+or is stale or empty, a minting path (redemption and refresh) answers `503 IDENTITY_SIGNING_UNAVAILABLE` with the
+token unspent, while logout verifies against the ring in memory, since revoking is always safe
+(`a_logout_with_a_stale_ring_still_revokes`), decided before any
 session lookup so that it does not depend on whether the session exists. Inside the transaction the MAC check is
 in-memory only (`signing_inside_a_transaction_does_no_io` covers this path too).
 
@@ -1397,7 +1400,9 @@ activated; the loader of `IdentityKeyRing` (in `crates/infra-secrets`, wrapping 
 no public constructor and no `From<KeyRing>`) builds the ring from it, and the refresh MAC code takes that type
 through the port `RefreshTokenMac`, so passing the secrets ring fails to compile; an architecture rule keeps the
 `cli-refresh` label in that module, and `KeyRing::derive_purpose_key(key_id, label, info)` (key bytes kept by id, none
-for an unknown id) is `pub(crate)` for it, added by Task 013-8. Every write of the document is a KV version 2
+for an unknown id; HKDF-SHA256 with no salt, the label as the first part of `info` and then the caller's `info`, here
+empty) is `pub(crate)` for it, added by Task 013-8 with the `hmac` and `hkdf` crates and a change of `KeyRing` to keep
+its bytes by id, which `SecretCipher`'s use of the ring does not see. Every write of the document is a KV version 2
 check-and-set on the version the command read.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
   refresh intervals, then by check-and-set on the version its first step wrote makes it `ACTIVE` and the previous key
@@ -1413,7 +1418,9 @@ check-and-set on the version the command read.
   dropped keys no longer verify, and running `revoke` again finishes the rotation
   (`a_cli_refresh_key_revoke_rotates_every_random_value` starting mid-rotation,
   `a_rotation_resumed_after_a_revoke_writes_nothing`, `a_revoke_racing_a_rotation_promotion_still_replaces_every_key`).
-- The ring is read at start and on the key set's refresh and kept on a failed read, so an OpenBao outage stops no
+- A background task of the control plane reads both identity rings (`cli-refresh` and the attempt ring) at start and
+  every refresh interval, single-flight with the unknown-id re-read, and keeps them on a failed read; a request that
+  finds the ring stale reads it again once before answering `503`. The ring is kept on a failed read, so an OpenBao outage stops no
   verification; a replica whose last successful read is older than two intervals refuses CLI redemption and refresh
   with `IDENTITY_SIGNING_UNAVAILABLE`, the token unspent, so after a `revoke` no replica mints under a dropped key for
   longer than two intervals (`a_replica_with_a_stale_cli_refresh_ring_stops_minting`). With an empty ring the control
@@ -1691,7 +1698,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
-  `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_cli_refresh_key_revoke_rotates_every_random_value` (starting from a ring in the middle of a rotation),
+  `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_second_rotate_finishes_an_interrupted_rotation`,
+  `the_secrets_ring_cannot_reach_the_derivation`, `a_cli_refresh_key_revoke_rotates_every_random_value` (starting from a ring in the middle of a rotation),
   `a_rotation_resumed_after_a_revoke_writes_nothing` (a barrier holds `rotate` between its steps while `revoke`
   commits), `a_revoke_racing_a_rotation_promotion_still_replaces_every_key` (a barrier holds `revoke` between its
   read and its write while `rotate`'s second step commits),
@@ -1728,8 +1736,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `cargo test -p sagat-application --test identity_service`; `cargo test -p sagat-tests --test fault_platform_foundation
   limits`.
   Refs: Requirement 013-016, Requirement 013-019, Requirement 013-032
-- [ ] T013-9 Server builder, milestone A, after Tasks 013-8 and 013-10. Sign-in: authorize with the attempt sealed by
-  the `KeyRing`, the OIDC callback, redemption, the refresh grant (rotation, the grace, revocation on reuse), renewal,
+- [ ] T013-9 Server builder, milestone A, after Tasks 013-8 and 013-10. Sign-in: authorize with the attempt sealed
+  through the port `AttemptSealer`, the OIDC callback, redemption, the refresh grant (rotation, the grace, revocation on reuse), renewal,
   logout, the refresh grant over the port `RefreshTokenMac` (its adapter holding the `IdentityKeyRing`), the link and test flow, just-in-time provisioning, sessions, origins and the start-up refusals, the blob
   upload bounded by the session (`crates/api-http/src/blobs.rs`), the lock order of Technical Plan 4.
   Red tests (`integration_federated_login` unless named): `a_response_injected_into_another_browser_is_refused`,
@@ -1747,7 +1755,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_reuse_an_hour_after_rotation_revokes_the_session` (with an intermediate refresh that deletes the row),
   `a_stolen_refresh_token_used_first_revokes_the_session_when_the_owner_returns`,
   `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
-  `a_replica_with_a_stale_cli_refresh_ring_stops_minting`, `a_refresh_racing_a_random_value_rotation_mints_nothing_old`
+  `a_replica_with_a_stale_cli_refresh_ring_stops_minting`, `a_random_key_id_flood_reads_the_ring_at_most_once_per_interval`,
+  `a_logout_with_a_stale_ring_still_revokes`, `a_refresh_racing_a_random_value_rotation_mints_nothing_old`
   (barrier), `a_retired_generation_revokes_the_session`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
   `a_week_of_refreshes_keeps_storage_bounded` (at most 12 grace rows for the session, with a burst across a window

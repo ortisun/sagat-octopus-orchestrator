@@ -207,3 +207,10 @@ The security re-read of round 10 (`approval/reread-10-security.md`, at `9a760bd7
 | 1 | Nit | Fixed: `control-plane migrate` creates the first key and `inbox-cursor-key rotate` replaces it, both with the schema-owning role; the runtime role has `SELECT` only | Technical Plan 6, Task 050-4, Architecture decision 0144 |
 | 2 | Nit | Fixed: the arithmetic (2^32 cursors at 100 a second is about 1.36 years) and a yearly rotation in the runbook | Technical Plans 6 and 9 |
 | 3 | Nit | Fixed: the bytes are redacted in `Debug`, never logged or printed (`rotate` prints only the id), the table never exported; the test renamed `the_cursor_key_is_created_by_migrate_and_never_printed` | Technical Plan 6, Task 050-4 |
+
+## Architecture re-read, round 3 (`approval/reread-3-architecture.md`, at `d8a16e9a`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a fallible port (`SealerError::Unavailable` answers `503`); the adapter loads at start, re-reads every minute and once on an unknown id, outside any transaction, keeping cached keys on a failed read; an empty table answers `503`; a cross-replica test | Technical Plan 6, Task 050-4 |
+| 2 to 5 | Nit | Fixed: the first key created by `sagat_infra_postgres::migrate` under a singleton guard; `rotate --operator` recorded in the operator history; `aes-gcm` in the workspace dependencies and `hkdf` 0.13 in `infra-postgres`; Architecture decision 0144 option 5 and two tests in "Enforced by"; the test renamed for a dropped key; the Risks row reworded | Technical Plan 6, Task 050-4, Risks, Architecture decision 0144 |

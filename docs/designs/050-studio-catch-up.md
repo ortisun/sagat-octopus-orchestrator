@@ -833,23 +833,31 @@ no row remains (Architecture decision 0144, decision 5). Because a cursor can th
 not see, the cursor is sealed.
 
 *Cursor sealing.* The key is a deployment-wide cursor key kept in the table `inbox_cursor_keys` (key id, 32 random
-bytes, created at; `protected_system`; the runtime role has `SELECT` only), whose first key `control-plane migrate`
-creates with the schema-owning role from the operating system's random source, and which `control-plane
-inbox-cursor-key rotate` (schema-owning role, audited, printing only the key id) replaces, keeping the previous key
+bytes, created at; `protected_system`; the runtime role has `SELECT` only), whose first key
+`sagat_infra_postgres::migrate` creates with the schema-owning role from the operating system's random source (an
+insert guarded by a singleton constraint on the first key, so concurrent migrations create one; the test harness,
+which calls the same function, gets it too), and which `control-plane
+inbox-cursor-key rotate --operator <name>` (schema-owning role, printing only the key id, recorded in the deployment's
+operator history as the other deployment-wide commands are) replaces, keeping the previous key
 until the next rotation; the runbook asks for a rotation every year. The key bytes are redacted in `Debug`, never
 logged or printed, and the table is never exported. It is not a secret of the
 platform: a cursor hides only the key of a row from a caller, and whoever can read the table can read the rows
 themselves, so it needs neither OpenBao nor `SAGAT_SECRETS_KEYS` and the inbox works on every deployment. Each cursor
-is sealed with AES-256-GCM (the `aes-gcm` crate the workspace already uses) under a key derived by HKDF-SHA256 (the
-`hkdf` crate already in the lock file) from the cursor key, with the label `approval-inbox-cursor` or
+is sealed with AES-256-GCM (the `aes-gcm` crate that `infra-secrets` already uses, moved to `[workspace.dependencies]`) under a key derived by
+HKDF-SHA256 (`hkdf` 0.13, matching the workspace's `sha2`; both become direct dependencies of `infra-postgres`, Task
+050-4) from the cursor key, with the label `approval-inbox-cursor` or
 `publication-inbox-cursor` and the tenant as `info`, so each tenant has its own key: at the default 100 requests a second, a tenant reaches 2^32 cursors, the
 random-nonce limit, after about 1.36 years, beyond the yearly rotation, and a collision would expose at most one hidden
 row's key. The associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and opens only
 for its caller. Its wire form is `<key id>.<nonce>.<ciphertext>` in base64url, and `open` derives the key from the
 cursor's own key id. The use cases seal and open cursors through a port, `InboxCursorSealer` (`seal(scope, key) ->
-String`, `open(scope, &str) -> Option<key>`) in `crates/application/src/approval_inbox.rs`, shared by both inbox use
-cases; its adapter is `crates/infra-postgres/src/inbox_cursor.rs`, wired by `apps/control-plane` and
-`tests/support/api.rs`, so no dependency edge is added.
+Result<String, SealerError>`, `open(scope, &str) -> Result<Option<key>, SealerError>`, where `SealerError::Unavailable`
+answers `503` with the metric outcome `unavailable`) in `crates/application/src/approval_inbox.rs`, shared by both inbox
+use cases; its adapter is `crates/infra-postgres/src/inbox_cursor.rs`, wired by `apps/control-plane` and
+`tests/support/api.rs`, so no dependency edge is added. The adapter loads the keys at start and seals with the newest;
+it reads the table again on a timer (every minute) and once, single-flight and at most once a minute, on a cursor
+whose key id it does not know, outside any transaction, keeping its cached keys when a read fails; with an empty table
+the inbox routes answer `503` and start-up still succeeds (`a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`).
 
 *Cursor refusals.* A `cursor` parameter over 512 bytes is refused before decoding, and every cursor that does not open
 (another caller's, a replaced key, tampered) gets the same `400` as a malformed one; the Studio then starts again from
@@ -1000,7 +1008,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 | Risk | Mitigation |
 |---|---|
 | The inbox adds a disclosure | It adds none beyond what the caller can already read: an approval's policy is in the workflow version (`definition:read`), and the initiator and deciders are actors of the journal (`run:read`); the inbox returns only the caller's own eligibility, and a contract test holds its item to its field list (Architecture decision 0144) |
-| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a cursor sealed under a purpose key; the performance journey includes a caller who sees one folder of many; the count of hidden rows per window is the one aggregate disclosed (Requirement 029-017) |
+| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a cursor sealed under a per-tenant key derived from the cursor key; the performance journey includes a caller who sees one folder of many; the count of hidden rows per window is the one aggregate disclosed (Requirement 029-017) |
 | A legacy node is lost on save | The canonical form keeps unknown members; a test saves and reloads one |
 | A capability shown by one replica is refused by another | The server's validation decides; the problem appears at validation (Gap 050-001) |
 | Parallel Studio branches rewrite the same files | The order of Technical Plan 1; new primitives in new files |
@@ -1100,8 +1108,9 @@ primitive goes in a new file of `src/ui/`.
 - [ ] T050-4 Server builder: first the probe `every_run_end_cancels_its_pending_approvals`; then
   `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`); the port
   `InboxCursorSealer`, its adapter `crates/infra-postgres/src/inbox_cursor.rs`, the table `inbox_cursor_keys` in the
-  migration, its first key created by `control-plane migrate` and `control-plane inbox-cursor-key rotate`, both with the
-  schema-owning role, the runtime role granted `SELECT` only; `ApprovalInboxStore`, its use case and adapter, the migration with the
+  migration, its first key created by `sagat_infra_postgres::migrate` and `control-plane inbox-cursor-key rotate --operator`,
+  both with the schema-owning role, the runtime role granted `SELECT` only; `aes-gcm` moved to the workspace's
+  dependencies and `hkdf` 0.13 added to `infra-postgres`; `ApprovalInboxStore`, its use case and adapter, the migration with the
   partial index and its `down`; the route, its metrics and `x-implemented`; `youMayDecide` on the per-run list through
   `list_for_run`; the adapter's ended-run guard moved after authorization; the route removed from `not_built`; the new
   target `integration_studio_catch_up` (`tests/integration/studio-catch-up/main.rs` and its `[[test]]` entry in
@@ -1114,7 +1123,8 @@ primitive goes in a new file of `src/ui/`.
   `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders` (2,000 pending rows of ended runs, seeded, ahead of
   one live row: the first page is empty with a cursor, the second returns the live row),
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller`,
-  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_replaced_key_is_a_malformed_cursor`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
+  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_dropped_key_is_a_malformed_cursor` (two rotations back),
+  `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `the_runtime_role_cannot_write_the_cursor_key`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
   `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.

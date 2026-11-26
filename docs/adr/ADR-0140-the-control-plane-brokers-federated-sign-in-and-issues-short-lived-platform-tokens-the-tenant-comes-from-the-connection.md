@@ -77,7 +77,8 @@ Owner decision 2026-11-24-1 asks for "Studio sign-in through each organization's
    execution engine keeps verifying the deployment issuer only, so workers stay machine identities.
 11. The CLI's refresh token MUST be `<sid>.<generation>.<key id>.<mac>`, an HMAC-SHA256 under a `cli-refresh` purpose
    key of a dedicated ring in the identity mount, never `SAGAT_SECRETS_KEYS` (held by every execution engine) and never
-   the access-token key, over the session id, the generation and a random value kept on the session; the ring has its
+   the access-token key, over the session id, the generation and a random value kept on the session, the purpose key derived by HKDF-SHA256
+   (no salt, the label `cli-refresh` as `info`) from the ring key the token names; the ring has its
    own type, rotates in two steps keeping the old key for the CLI session's life, writes by check-and-set, and has a
    `revoke` that replaces every key and rotates every random value. Rejected: a token signed with the access-token key;
    an opaque token with a hash per generation (unbounded storage); a key from the secrets ring. Consequences: a revoke
