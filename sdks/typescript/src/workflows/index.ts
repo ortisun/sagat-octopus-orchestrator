@@ -27,6 +27,9 @@ export type {
 export { DEFAULT_CACHE_SIZE, WorkflowRunCache } from './cache.js';
 export { bodyDigest, descriptorOf, extendChain, EMPTY_CHAIN, hex } from './chain.js';
 export { ActivationCutter } from './history.js';
+export { MANIFEST_FORMAT, ManifestMismatch, SDK_NAME, WORKFLOW_TYPE, codeDigest, contentOf, manifestOf, runtimeOf, verifyManifest } from './manifest.js';
+export type { ManifestWorkflow, WorkflowManifest } from './manifest.js';
+export { SDK_VERSION } from '../config.js';
 export type { OpenWindow, ReplayActivation } from './history.js';
 export { checkWorkflowRuntime, WorkflowRuntimeUnavailable } from './preconditions.js';
 export { MalformedHistory, Replayer, UnsupportedExportFormat, readExport, replayEvents } from './replayer.js';
