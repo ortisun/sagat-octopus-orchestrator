@@ -791,7 +791,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (two handles, both asynchronous and obtained before `BEGIN`: `verifier(key_id) -> Result<MacVerifier, UnknownKey | Unavailable>`, the named key in memory, never refused because the ring is stale, which does the single-flight re-read of an unknown id and is `Unavailable` only when that re-read fails or cannot run, Technical Plan 4; `minter() -> Result<MacMinter, Unavailable>`, the active key, refused when the ring is stale or empty; `MacVerifier::verify(sid, generation, random, mac)` and `MacMinter::mint(sid, generation, random) -> (key id, mac)` run in memory only, inside the transaction, as `TokenSigner`'s handle does; redemption takes the minter, the refresh grant both, logout the verifier only) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
 | The platform key set's fetcher: maps `FederationStore::signing_keys()` to a `JwkSet` for the verifier's `JwksCache` | `crates/api-http/src/auth/issuers.rs` |
 | `EgressClient` with no redirects under the identity policy; `JwksCache` and its `JwksFetcher` trait, moved here from `crates/api-http/src/auth/jwks.rs` so that `api-http` and `infra-federation` share them without `api-http` depending on the federation crate | `crates/infra-egress` |
-| `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client; the adapters of `RefreshTokenMac` (holding the `IdentityKeyRing`) and `AttemptSealer` (holding the attempt ring) | `crates/infra-secrets` |
+| `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client; the adapters of `RefreshTokenMac` (holding the `IdentityKeyRing<CliRefresh>`) and `AttemptSealer` (holding the attempt ring), which call only the rings' public operations (Technical Plan 12), none of which returns key material | `crates/infra-secrets` |
 | The OIDC client (its connection key sets are `JwksCache` instances over a fetcher through the identity egress guard); the SAML parser, canonicalization and signature check | `crates/infra-federation` (new adapter crate) |
 | Tables, stores (the `FederationStore` adapter, `signing_keys()` included), the redefined `sagat_lock_memberships`, the session join of the membership read | `crates/infra-postgres` (migration `<ts>_federated_login`, `src/federation.rs`, `src/identity.rs`) |
 | Routes `/v1/auth/*`, `/scim/v2/*`, `/identity/*`, `/members*`; the multi-issuer verifier; `Core::authenticate` widened to take the issuer kind, `sid` and `jti` | `crates/api-http/src/routes/{signin,scim,identity_admin,members}.rs`, `crates/api-http/src/auth/issuers.rs`, `crates/api-http/src/core.rs` |
@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the `cli-refresh`
-string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, and nothing outside that module calls `derive_purpose_key` (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
+string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, and no public function of that module returns a key or a derived key (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -869,7 +869,7 @@ start and on the key set's refresh. Each attempt is sealed under a key of its ow
 key with a random 16-byte salt carried in the cookie and the label `signin-attempt` as `info`, so no key ever reaches
 the random-nonce limit whatever the rate of anonymous requests; the associated data is the tenant and the connection.
 The cookie's value is `<key id>.<salt>.<nonce>.<ciphertext>`, at most 1 KiB, the key id in decimal
-(`[1-9][0-9]{0,18}`, at most `i64::MAX`), the rest in base64url without padding, the salt exactly 16 bytes, the nonce
+(`[1-9][0-9]{0,18}`, at most `i64::MAX`), the rest in base64url without padding and with zero trailing bits, the salt exactly 16 bytes, the nonce
 exactly 12 and the ciphertext at least 16; anything else is refused as an unknown attempt is, before any ring lookup or
 re-read (`a_malformed_attempt_cookie_is_refused_before_any_lookup`).
 A replica whose last successful read of the attempt ring is older than two intervals seals nothing and answers `503
@@ -984,7 +984,7 @@ session id, the generation and a random value kept on the session. The server re
 it stores no per-generation secret. A successor is always minted under the ring's active key, with the highest
 generation issued plus one; a number is never reused. Every field has one spelling: `<sid>` the lowercase hyphenated
 UUID, `<generation>` and `<key id>` decimal without sign or leading zero (`[1-9][0-9]{0,18}`, at most `i64::MAX`),
-`<mac>` 43 base64url characters without padding. A token longer than 256 bytes, or with any field not in that form, is `invalid_grant` with no effect before any ring or session lookup
+`<mac>` 43 base64url characters without padding and with zero trailing bits. A token longer than 256 bytes, or with any field not in that form, is `invalid_grant` with no effect before any ring or session lookup
 (`a_malformed_refresh_token_is_invalid_grant_before_any_lookup`).
 
 *Before the transaction.* The key id is in the clear in the token, so the use case takes its handles before `BEGIN`:
@@ -1011,7 +1011,8 @@ do not depend on whether the session exists. Inside the transaction the MAC chec
 (`signing_inside_a_transaction_does_no_io` covers these paths too).
 
 *Verification order and locking.* Every path, redemption's refresh grant and logout included, first reads the
-session row's random value without a lock and verifies the MAC in constant time (`Mac::verify_slice`); only a token
+session row's random value without a lock and verifies the MAC in constant time (`Mac::verify_slice`, inside
+`IdentityKeyRing<CliRefresh>::verify`); only a token
 that verifies takes the row `FOR UPDATE` and checks that the random value has not changed since (if it has, the token
 is `invalid_grant` with no effect), so a forged token never takes the row lock and cannot queue the owner's refresh,
 logout or a `revoke` batch behind it (`a_forged_refresh_token_takes_no_row_lock`); the successor is minted from the
@@ -1451,9 +1452,15 @@ purpose's label are associated constants of the purpose marker (`P::PATH`, `P::L
 (`a_ring_loads_only_from_its_own_path`); the
 refresh MAC code takes `IdentityKeyRing<CliRefresh>` through the port `RefreshTokenMac`, so passing the secrets ring or
 the attempt ring fails to compile. The key bytes and `derive_purpose_key(key_id, salt)` (none for an unknown id;
-HKDF-SHA256 with `P::LABEL` as `info` and the salt as HKDF's own salt input: none for `cli-refresh`, the attempt's 16
-random bytes for `signin-attempt`) are private to that module, so `SecretCipher`'s code cannot reach them; an
-architecture rule keeps the label literals there (Technical Plan 2). Task 013-8 adds them with the `hmac` and `hkdf`
+HKDF-SHA256 with `P::LABEL` as `info` and the salt as HKDF's own salt input, of the purpose's type `P::Salt`: `()` for
+`CliRefresh`, `[u8; 16]` for `SigninAttempt`, so an attempt key derived without a salt does not compile) are private
+to that module, so `SecretCipher`'s code cannot reach them. Its public operations return no key material:
+`IdentityKeyRing<CliRefresh>::mint(sid, generation, random) -> Option<(KeyId, Tag)>` under the active key, and
+`verify(key_id, sid, generation, random, tag) -> Verdict` in constant time; `IdentityKeyRing<SigninAttempt>::seal(aad,
+plaintext) -> Option<Sealed>`, which draws the salt and the nonce itself, and `open(key_id, salt, nonce, ciphertext,
+aad) -> Option<Vec<u8>>`. The `RefreshTokenMac` handles (`MacVerifier`, `MacMinter`) and the `AttemptSealer` adapter
+call only these. An architecture rule keeps the label literals there and refuses a public function of the module whose
+return type contains a key or a derived key (Technical Plan 2). Task 013-8 adds them with the `hmac` and `hkdf`
 crates. Every write of the document is a KV version 2
 check-and-set on the version the command read.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
@@ -1747,9 +1754,11 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
   `IdentityKeyRing<P>` read by the one loader from its purpose's path, `a_ring_loads_only_from_its_own_path`);
-  the module-private key bytes and `derive_purpose_key(key_id, salt)` of `IdentityKeyRing<P>` (`KeyRing` unchanged);
+  the module-private key bytes and `derive_purpose_key(key_id, salt)` of `IdentityKeyRing<P>` with its public
+  operations `mint`, `verify`, `seal` and `open` and the purpose's `P::Salt` (`KeyRing` unchanged);
   the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
-  `"cli-refresh"` and a call outside the module; the command name `identity cli-refresh-key` passes); the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
+  `"cli-refresh"`, a call outside the module and a public function returning a key; the command name `identity
+  cli-refresh-key` passes); the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
@@ -1815,8 +1824,9 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_logout_with_a_stale_ring_still_revokes`, `a_refresh_racing_a_random_value_rotation_mints_nothing_old`
   (barrier), `a_retired_generation_revokes_the_session`, `a_fourth_grace_rotation_revokes_the_session`,
   `an_unknown_newer_key_id_without_a_fresh_read_is_unavailable`, `a_forged_refresh_token_takes_no_row_lock`,
-  `a_malformed_refresh_token_is_invalid_grant_before_any_lookup` (a sign, a leading zero, a braced or uppercase UUID),
-  `a_malformed_attempt_cookie_is_refused_before_any_lookup`,
+  `a_malformed_refresh_token_is_invalid_grant_before_any_lookup` (a sign, a leading zero, a braced or uppercase UUID,
+  a `<mac>` whose last character sets a trailing bit),
+  `a_malformed_attempt_cookie_is_refused_before_any_lookup` (the same trailing-bit case),
   `a_replica_with_a_stale_attempt_ring_seals_nothing`, `an_attempt_key_revoke_ends_every_sign_in_in_flight`,
   `a_logout_under_an_unknown_key_with_a_failed_read_is_unavailable`, `an_outage_reads_the_ring_at_most_once_per_interval`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,

@@ -873,8 +873,9 @@ own monotonic clock, which tests move instead of waiting. It seals with the newe
 succeed holds a key before any cursor uses it, and the adapter never reads on demand. A `rotate` while the newest key
 is younger than two minutes is refused, so a sealing key always remains. A cursor that is not in canonical form is the malformed-cursor `400` before any key lookup: the key
 id in decimal, `[1-9][0-9]{0,18}` and at most `i64::MAX`; the salt, the nonce and the ciphertext in base64url without
-padding, the salt exactly 16 bytes, the nonce exactly 12 and the ciphertext at least 16
-(`a_cursor_with_a_wrong_field_is_malformed`: `+1`, `01`, `0`, an overflowing id, a 15-byte salt, an 11-byte nonce); and one whose key id the replica does not hold is answered
+padding and with zero trailing bits (the decoder's strict default), the salt exactly 16 bytes, the nonce exactly 12
+and the ciphertext at least 16 (`a_cursor_with_a_wrong_field_is_malformed`: `+1`, `01`, `0`, an overflowing id, a
+15-byte salt, an 11-byte nonce, a salt whose last character sets a trailing bit); and one whose key id the replica does not hold is answered
 as a malformed cursor (`400`), which costs the Studio only a fresh first page. With no key loaded (an empty table, or
 no successful read since start), `SealerError::Unavailable` answers `503` with `Error.code` `UNAVAILABLE`,
 `details.reason` `INBOX_CURSOR_KEYS_UNAVAILABLE`, retryable, and `Retry-After` set to the seconds until the next timer
