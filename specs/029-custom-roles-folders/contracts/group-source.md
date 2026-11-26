@@ -11,7 +11,7 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 
 | Kind | Delivered by | What one delivery carries | Freshness |
 |---|---|---|---|
-| `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection, into rows of `access_groups` and `access_group_members` with source `SCIM` (design 013, Decision 013-017) | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 raises an informational alert after 7 days without any request on the connection |
+| `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection, into rows of `access_groups` and `access_group_members` with source `SCIM` (design 013, Decision 013-017) | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 marks a connection `scimFailing` after ten consecutive refused requests (a quiet directory sends nothing, so silence is not a fault) |
 | `ASSERTION` (deferred) | a sign-in through one connection whose groups claim or attribute is mapped | not built in 0.3.0 (design 013, Decision 013-007 and Gap 013-011); a later design that adds it decides how a snapshot stops conferring |
 
 ## Guarantees a source must provide
@@ -33,7 +33,7 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 
 ## What the platform side must keep
 
-- A SCIM delivery is one transaction that takes the affected memberships, then the tenant access fence (Architecture decision 0050, slot 4a), with a writer `lock_timeout`: exclusively when the change can alter authority (a member added to or removed from a group that an assignment or a folder entry names, or a built-in role or status change), shared otherwise (design 013, Technical Plan 4). An assignment or entry that would name the group takes the fence exclusively and so waits for the delivery to commit. (The assertion kind, when a later design adds it, states its own fence rule.)
+- A SCIM delivery is one transaction that takes the affected memberships, then the tenant access fence (Architecture decision 0050, slot 4a), with a writer `lock_timeout` of 2 seconds (a timeout answers a retryable `503`): exclusively when the change can alter authority (a member added to or removed from a group that an assignment or a folder entry names, or a built-in role or status change), shared otherwise (design 013, Technical Plan 4). An assignment or entry that would name the group takes the fence exclusively and so waits for the delivery to commit. (The assertion kind, when a later design adds it, states its own fence rule.)
 - External groups and their members are read-only through feature 029's REST routes (`EXTERNAL_GROUP_READ_ONLY`).
 - Membership in a fresh external group is evaluated like a local one; it never bypasses the human-role,
   reserved-permission or non-escalation rules. Linking an external group to roles or folders is an ordinary

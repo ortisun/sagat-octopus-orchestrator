@@ -56,3 +56,21 @@ command group, a capability name, an engine setting, most of the `break` switch 
 | 8 | Nit | Fixed: `break` covers `alg`, `nonce` and `acr`, and the other rules are domain unit tests | Requirement 013-007, Technical Plan 9, Tasks 013-3, 013-4 |
 | 9 | Nit | Fixed: only the sign-in path is staged. The provisioning policy and the default role apply directly, audited, with the recomputation, and `a_default_role_change_applies_without_a_test_sign_in` is added | Requirement 013-001, Task 013-12 |
 | 10 | Nit | Fixed: `IDENTITY_SCIM_FAILING` fires after ten consecutive refused requests, convergence is stated at the provider's next change of the resource, and the fixtures show which provider sends `If-Match` | Technical Plan 6, Risks, Constitution Check VII, Task 013-13 |
+
+## egm-review Stage 9, codebase details lens (`codebase_details_report.md`, at `077e1473`)
+
+All 22 findings are accepted and fixed; both Blockers are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Blocker | Fixed: `step_log_usage_if_revealed` is the third plain read, moved and routed through `sagat_active_membership`, with its own refusal test | Technical Plan 13, Task 013-5 |
+| 2 | Blocker | Fixed: the opening window polls `GET /v1/auth/links/{attempt}` (bearer, every 2 seconds), and the link page only closes. The Studio's opener policy stays, with the reason recorded against `studio.rs`. The route is in the route table | Technical Plans 4 and 11 |
+| 3 | Major | Fixed (the second option): no `AlertKind`. The administrator sees `scimFailing`, `credentialExpiresAt` and the disabled owner's member count on the connection. The operator gets five Prometheus rules over closed-label metrics, with runbook sections and the rule test. Break-glass is an audit record plus a counter | Requirement 013-001, 013-021, Technical Plans 4, 6, 11 and 13, Tasks 013-4, 013-13 |
+| 4 | Major | Fixed: `CountingStore` counts `resolve_caller`, `FakeStore` gains it, and the throttling test is in the verification | Task 013-10 |
+| 5 | Major | Fixed: `usable_key` keeps PS256, with an explicit rule for RSA keys without `alg` and a unit test. The deployment verifier's list is unchanged | Task 013-6 |
+| 6 | Major | Fixed: the manifest and the ALWAYS triggers are named, along with the two targets with the runtime role. Members are charged to `TenantContentBytes`, and `QUOTA_EXCEEDED` is the answer | Technical Plan 6, Task 013-5 |
+| 7 | Major | Fixed: after the latest migration when the task starts, with a validate migration | Task 013-5 |
+| 8 | Major | Fixed: the image test is new, built from the Dockerfile's `control-plane` target, in the images job | Task 013-3, Technical Plan 9, Requirement 013-033 |
+| 9 | Major | Fixed: `fault_platform_foundation` and `contract_platform_foundation` in the verification | Task 013-6 |
+| 10 | Major | Fixed: only `worker dev` refuses a key-store token. `doctor` uses it for the control plane | Task 013-15 |
+| 11 to 22 | Nit | Fixed: `config.json` is read per request with `scope`; `iat` is in `VerifiedCaller`; the fetcher and the re-exports are listed; the filters and the battery's target are named; `Slot::IdentityAdvisory` is added; the organization comes from `--org`, `SAGAT_ORG` or the login default; per-route body limits are set; Architecture decision 0101 is cited with #267; the reuse is named; `ON DELETE SET NULL (owning_connection_id)`; a validate migration is added; feature 029's contract is amended and the 2-second `lock_timeout` stated | Technical Plans 3 to 13, Tasks, `specs/029-custom-roles-folders/contracts/group-source.md` |

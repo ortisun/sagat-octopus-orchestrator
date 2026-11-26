@@ -639,7 +639,7 @@ expression field):
 |---|---|---|
 | Basic graph | activity, database, script, condition, parallel, timer, waitEvent, child, saga, switch, approval, end, and `icebergWrite` with lake writes on | |
 | Collection workflow | source activities (the activities before the collection that produce its items), then a chain of `forEach` nodes ending at `end`; a body of one to eight activities, conditions, switches, timers and event waits with local routes and one `return` | triggers, `chainPolicy`, an approval in a body or beside a collection, `while`, `repeatUntil`, `continueAsNew` beside a collection |
-| Loop workflow | a chain of `while` or `repeatUntil` nodes ending at `end`, recovery activities (the activities a loop's error route leads to); a body that is an activity chain | an activity after a loop's success edge, triggers, an approval in a body |
+| Loop workflow | a chain of `while` or `repeatUntil` nodes ending at `end`, recovery activities (the activities a loop's error route leads to); a body that is an activity chain | an activity after a loop's success edge, triggers, `chainPolicy`, an approval in a body |
 | Declared state | `state` with Queries and Updates; `continueAsNew` with `chainPolicy` in the continuation shape | `bodies` with `state` |
 
 The Studio writes this table nowhere as a rule: it shows each kind's note in the palette, and the editor's live
