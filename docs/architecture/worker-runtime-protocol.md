@@ -171,3 +171,71 @@ database clock sampled after acquisition. Expiry during the wait refuses owner a
 including heartbeat renewal. It preserves the current dedicated role, binding, namespace,
 protocol and lease checks; session renewal remains a separate operation. See the
 [managed executor contract](../../specs/017-database-connections/contracts/managed-executor.md).
+
+## Workflow as code (design 044)
+
+Approved in [design 044](../designs/044-workflow-as-code.md) (Technical Plan 4.1 and 13.1, Architecture decision 0109)
+and being built: Task 044-2 adds the messages, the RPCs and an `UNIMPLEMENTED` stub for each RPC; Task 044-8 serves the
+lease and `ReadHistory`, Task 044-9 the completion, Task 044-13 the replay checks, and the deferrable Tasks 044-29 and
+044-14 the worker queries and `ReleaseSticky`. Nothing below is served on `develop` before its task lands.
+
+**The minor.** Workflow tasks travel on *the workflow-as-code minor*: the next free minor of the register in
+[`sdks/SPEC.md`](../../sdks/SPEC.md) section 9 when the contract of Task 044-2 merges (Architecture decision 0109; Gap
+044-013). This page does not name its number; Task 044-2 adds the register row. **Minors are cumulative:** a session on
+the workflow-as-code minor implements the host procedures of 1.7 (step logs, design 041), 1.8 (delivery acknowledgement,
+feature 006) and 1.9 (activity timeouts, design 045, which names that minor), so the workflow tasks of each SDK depend on
+those three in that SDK. Everything is additive: `worker.baseline.json` grows and nothing changes meaning. A session
+below the minor is never offered a workflow, query or replay-check task, and an SDK offers the minor only when the
+application registers a workflow type, so an activity-only worker keeps its minor. The minor a step needs is decided per
+step (design 045's `steps.min_protocol_minor`), so a worker of an older minor still leases the activities of a code run.
+
+**Registration.** `WorkerCapabilities` gains `workflow_types`, a list of `(workflow type, code digest)` pairs (at most
+64), and `offers_workflow_as_code`. The server checks each pair against the identity's binding (its workflow types,
+exact names; an activity pattern never covers one) and the digest's form (`sha256:` and 64 lowercase hexadecimal
+characters), and adds the reserved name `sagat.workflow:<type>:<hex digest>` to the session. A registration or binding
+pattern that starts with `sagat.workflow` is refused. Replacing a binding closes the sessions whose workflow types it no
+longer lists.
+
+**Task kinds.** `TaskLease.task_kind` gains three values, each carried in a `oneof` of `TaskLease` selected by the kind,
+so `PollTasks` and the task stream carry them unchanged:
+
+| Kind | Message | What it is |
+|---|---|---|
+| `WORKFLOW` | `WorkflowTaskLease` | A lease of the run's workflow-task step: run, attempt, generation, lease token, expiry, the run's seed, the activation's time, the window start, the gated entries and `state_max_bytes` of the current version, the first history page (at most 256 KiB), the visible count, the flags `continue_as_new_suggested` and `history_limit_reached`, `traceparent` |
+| `QUERY` | `QueryTask` | A worker query of a run (Task 044-29): its name, its arguments inline (at most 64 KiB) and its deadline |
+| `REPLAY_CHECK` | `ReplayCheckTask` | Up to 16 runs of a move to replay against the target code, each with its own read token |
+
+**RPCs.** Each has its own request and response messages:
+
+| RPC | What it does |
+|---|---|
+| `CompleteWorkflowTask` | The completion: the fence, an idempotency key, `applied_through_seq`, the replayed command chain, the commands (at most 403), the deferred terminal command if any, the eager activity slots offered; the outcome is `ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, or `REVIEW` with its cause |
+| `FailWorkflowTask` | The failure: the fence, an idempotency key, a cause from the closed list of the review causes, and for a nondeterminism the command number and the actual kind and target; for an uncaught exception its type name only, never a message |
+| `ReadHistory` | A server stream of `HistoryEvent` pages from a sequence, at most 1,024 events or 3 MiB per page, under a workflow lease or the read token of a query or replay-check item; reading extends a workflow lease up to 120,000 ms |
+| `RespondWorkerQuery` | The answer to a `QUERY` task, inline (at most 256 KiB), with the journal sequence of the completion it was computed at |
+| `RespondReplayCheck` | One item's verdict material, in successive ranges (at most 8,192 body digests each), with the last range carrying `S(k)`, the computed chain and the deferred command's body digest; the server computes the verdict |
+| `ReleaseSticky` | The runs a worker evicted from its cache (at most 256), applied only to the caller's own session (Task 044-14) |
+
+`CompleteWorkflowTask`, `FailWorkflowTask`, `RespondWorkerQuery` and `RespondReplayCheck` are of class `Lease` for load
+shedding, and `ReadHistory` of class `Transfer`; `ReadHistory` streams count against their caps per process, tenant and
+subject and end at the lease's or token's expiry. Completion and failure are idempotent by their key, looked up before
+any fence check and again under the run lock; an idempotent replay answers its outcome without any eager lease.
+
+**Lease kinds per RPC.** Each RPC accepts only its own kind of lease for the same run and refuses every other kind:
+
+| RPC | Accepts |
+|---|---|
+| `Heartbeat`, `CompleteStep`, `FailStep`, `ResolveSecrets`, `ResolveDatabase`, `AppendStepLogs` | today's activity, managed and runner leases, never a workflow, query or replay-check lease |
+| `CompleteWorkflowTask`, `FailWorkflowTask` | a workflow lease |
+| `ReadHistory` | a workflow lease, or the read token of a query or replay-check item |
+| `ReadBlob` | today's leases; a workflow lease, and the read token of a query or replay-check item, for blobs referenced by that run's history, never one whose carrier schema has a `secret` field |
+| `WriteBlob` | today's leases, and a workflow lease (purpose `COMMAND_VALUE`) for the command values that do not fit the message (a work command's input, an update result, a side-effect value, a terminal output); never a query or replay-check token |
+| `RespondWorkerQuery` | a query lease |
+| `RespondReplayCheck` | a replay-check lease |
+| `ReleaseSticky` | the caller's own session |
+
+**A workflow lease is not an activity lease.** It has no heartbeat, carries no secret, journals only
+`workflow_task.started`, and its expiry is a counted workflow-task failure, never reconciliation or review; the binding
+and the tenant membership are checked again on every call made with it, idempotent replays included
+([execution-semantics.md](execution-semantics.md#workflow-as-code-design-044)). What its history discloses is in
+[security-and-sandbox.md](security-and-sandbox.md#workflow-as-code-what-a-workflow-lease-discloses-design-044).

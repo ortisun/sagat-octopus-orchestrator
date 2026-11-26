@@ -87,6 +87,95 @@ configured: it is the token's.
 - **Your activities, alone:** A handler is a lambda of `(input, ctx)`: keep the effect behind an interface and unit test the logic by calling the code the lambda calls.
 The SDK ships no fake context yet.
 
+## Workflow as code
+
+**Not offered yet.** This section shows the API that [design 044](../designs/044-workflow-as-code.md) specifies; the Java
+SDK offers it once its runtime, Task 044-18 of that design, lands. None of it runs today. The calls are those of
+[`sdks/SPEC.md`](../../sdks/SPEC.md) section 12 (the new artifact `sagat-workflows`, the same names as TypeScript,
+durations in the language's idiom); where the design leaves a name or a shape to the runtime's task (the context type,
+registering the function on the host, the replayer's entry point), the code below is a sketch that Task 044-18 settles.
+An operator also records the requirements `code-workflows-v1` and, because this workflow declares a signal,
+`signal-inbox-v1` ([instance-registry runbook](../runbooks/instance-registry.md)).
+
+Instead of a graph, the workflow is a method. It reserves the stock, charges the card, sleeps one day and sends a
+reminder unless a `paid` signal arrived meanwhile (journey 1 of the design):
+
+```java
+static OrderResult order(WorkflowContext ctx, OrderInput input) {
+    AtomicBoolean paid = new AtomicBoolean(false);
+    ctx.onSignal("paid", payload -> paid.set(true));
+    ctx.activity("inventory.reserve", input, Reservation.class);
+    ctx.activity("payments.charge", input, Charge.class);
+    ctx.sleep(Duration.ofDays(1));
+    if (!paid.get()) {
+        ctx.activity("customers.remind", input, Reminder.class);
+    }
+    return new OrderResult(input.orderId(), paid.get());
+}
+```
+
+Each `ctx` call is a command the platform records and executes; the activities run in an ordinary worker as above. The
+method is run again from the start against the run's journal whenever a worker does not hold it in memory, so it must be
+deterministic. The SDK runs each workflow on virtual threads under a single permit, and every SDK call checks that it is
+made from the thread that holds the permit (another thread fails the workflow task, `NONDETERMINISM_RISK`). Nothing
+checks the rest of your code before it runs, so keep to the SDK: no `System.currentTimeMillis`, `Random`,
+`UUID.randomUUID`, threads, executors or `CompletableFuture`'s pool, and no iteration over a `HashSet` of objects that
+hash by identity (enums included); use `ctx.now()`, `ctx.random()` and `ctx.uuid()`. The workflow artifact needs Java 21
+(the core SDK stays on Java 17) and a default time zone of UTC and default locale `Locale.ROOT` for the workflow worker.
+
+**One jar for workflow code, another for activities.** The code digest of a Java workflow hashes every jar and class
+directory of the worker's class path, so a change of an activity on that class path makes a new digest, and runs open
+on the old one move to it only by a verified move. Keep the workflow methods in their own worker jar
+(`order-workflows.jar`) and the activities in another (`order-activities.jar`).
+
+**Write the manifest and publish the version.** The workflow worker prints its manifest:
+
+```sh
+java -Duser.timezone=UTC -Duser.language= -Duser.country= -jar order-workflows.jar --sagat-manifest > manifest.json
+```
+
+```java
+String manifest = Files.readString(Path.of("manifest.json"));
+CodeEnvelope envelope = CodeEnvelope.activities("inventory.reserve", "payments.charge", "customers.remind");
+api.definitions().publishCode(manifest, envelope);
+```
+
+`publishCode` saves the code version as the workflow's draft and publishes it, making it active. The envelope lists what
+the method's commands may use; a command outside it puts the run under review. The `paid` signal is a declaration of the
+code document beside the envelope (`signals: [{name: paid, buffered: true}]`, Technical Plan 3.1 of the design).
+
+**Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
+on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). In `order-workflows.jar`, started
+with the same `-Duser.timezone=UTC -Duser.language= -Duser.country=`:
+
+```java
+WorkerHost workflows = new WorkerHost(WorkerConfig.builder()
+        .grpcUrl(grpcUrl).namespace(namespace).token(token).workerName("order-workflows").build());
+workflows.registerWorkflow("order", OrderFlow::order); // the registration's name is fixed by Task 044-18
+workflows.start();
+```
+
+Deploy a new workflow jar beside the old one: runs stay on the digest they started with, so keep the old worker running
+until the version list shows no run left on it, or move them.
+
+**Test it with the replayer.** Export the history of a run (`api.runs().exportHistory(runId)`, or
+`sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need
+`history:export`), keep it with your tests, and replay it against the current code in JUnit (run the tests with the same
+time zone and locale as the workers, through surefire's `argLine`):
+
+```java
+@Test
+void theNewCodeReplaysTheRecordedOrderRuns() throws IOException {
+    try (BufferedReader history = Files.newBufferedReader(Path.of("histories/order-1.jsonl"))) {
+        ReplayVerdict verdict = Replayer.replay(history, "order", OrderFlow::order); // named by Task 044-18
+        assertTrue(verdict.matched());
+    }
+}
+```
+
+A mismatch names the first command that differs; a history of an export format other than 1 is refused, and a replay
+that reaches a value the export redacted stops with `INCONCLUSIVE_REDACTED` instead of a false mismatch.
+
 ## Where to go next
 
 - [The SDK README](../../sdks/java/README.md): the client, the worker host, the builders of the workflow document, the errors.

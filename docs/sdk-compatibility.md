@@ -57,6 +57,32 @@ goldens. They prove authoring parity only. They do not prove that a document can
 executed. Likewise, a public approval or chain command route does not prove end-to-end usability
 until the corresponding resource can be created through the public workflow path.
 
+## Workflow as code per SDK (design 044, release 0.3.0, being built)
+
+Workflow as code ([design 044](designs/044-workflow-as-code.md), [`sdks/SPEC.md`](../sdks/SPEC.md) section 12) is
+offered from release 0.3.0 in each SDK once that SDK's runtime task lands; no SDK offers it today. Until then an SDK
+declares `offers_workflow_as_code = false` in its worker capabilities, and the conformance suite reports it as "not
+offered", never as passed; the release needs all six offered (Success criterion 044-001).
+
+The workflow runtime has a precondition of its own, checked when a worker registers workflow types (it refuses to
+register them when the precondition fails); the activity worker, the client and the builders of the same SDK keep
+their baselines:
+
+| SDK | Workflow package | Runtime precondition for workflow code | What keeps its baseline | Runtime task |
+|---|---|---|---|---|
+| TypeScript | entry point `@sagat-octopus-orchestrator/sdk/workflows`, bundler `@sagat-octopus-orchestrator/workflows-bundler` | Node 22.8 or later (checked when the entry point loads), process time zone UTC | the package's `engines` stays Node 20 | Task 044-10 |
+| Python | `sagat_octopus_orchestrator.workflows` | Python 3.11 or later (the module refuses to import below it), process time zone UTC, a fixed `PYTHONHASHSEED` (not `random`, not `0`) | the activity worker keeps Python 3.10 | Task 044-15 |
+| Go | package `workflow` and the analyzer `cmd/sagatvet` | Go 1.25 (the SDK's baseline) | unchanged | Task 044-16 |
+| C# | `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | .NET 8 (the SDK's baseline), `TimeZoneInfo.Local` of UTC | unchanged | Task 044-17 |
+| Java | artifact `sagat-workflows`, built for Java 21 | Java 21, default time zone UTC and default locale `Locale.ROOT` | the core SDK stays on Java release 17 | Task 044-18 |
+| Rust | the SDK crate's feature `workflows` | Rust 1.98 (the SDK's baseline) | the crate without the feature | Task 044-19 |
+
+Workflow tasks travel on the workflow-as-code minor of the worker protocol (the next free minor of the register in
+`sdks/SPEC.md` section 9 when the contract of Task 044-2 merges), which includes the host procedures of 1.7, 1.8 and 1.9.
+An SDK offers that minor only when the application registers a workflow type: an activity-only worker keeps the minor
+it offers today, and it still leases the activities of a code run. A session below the minor is never offered a
+workflow, query or replay-check task.
+
 ## Worker 1.4 and additive 1.5
 
 Protocol `1.5` adds `ExecutionInstanceIdentity` to task leases and lease-bound calls. Root work has

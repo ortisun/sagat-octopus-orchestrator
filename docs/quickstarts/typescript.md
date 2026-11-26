@@ -78,6 +78,99 @@ configured: it is the token's.
 - **Your activities, alone:** A handler is a function of `(input, ctx)`: keep the effect behind a small interface and unit test the logic by calling
 the function with a hand-made context (only the fields it reads). The SDK ships no fake context yet.
 
+## Workflow as code
+
+**Not offered yet.** This section shows the API that [design 044](../designs/044-workflow-as-code.md) specifies; the
+TypeScript SDK offers it once its runtime, Task 044-10 of that design, lands. None of it runs today. The calls are those of
+[`sdks/SPEC.md`](../../sdks/SPEC.md) section 12. Besides the SDK, the platform must be ready for it: an operator records
+the requirements `code-workflows-v1` and, because this workflow declares a signal, `signal-inbox-v1`
+([instance-registry runbook](../runbooks/instance-registry.md)).
+
+Instead of a graph, the workflow is a function. It reserves the stock, charges the card, sleeps one day and sends a
+reminder unless a `paid` signal arrived meanwhile (journey 1 of the design):
+
+```typescript
+export async function order(ctx, input: { orderId: string; amount: string }) {
+  let paid = false;
+  ctx.onSignal('paid', () => { paid = true; });
+  await ctx.activity('inventory.reserve', { orderId: input.orderId });
+  await ctx.activity('payments.charge', { orderId: input.orderId, amount: input.amount });
+  await ctx.sleep(24 * 60 * 60 * 1000);
+  if (!paid) {
+    await ctx.activity('customers.remind', { orderId: input.orderId });
+  }
+  return { orderId: input.orderId, paid };
+}
+```
+
+The function never touches the outside world: each `ctx` call is a command the platform records and executes (two
+activities, a durable timer of one day and, when no payment came, a third activity), and the activities run in an
+ordinary worker as above. A `paid` signal sent at any moment waits in the run's inbox and is handed to the handler in
+the function's next activation; `await ctx.signal('paid')` waits for one instead. The function is run
+again from the start against the run's journal whenever a worker does not hold it in memory, so it must be
+deterministic: no `fs`, `fetch` or `crypto`, and `ctx.now()`, `ctx.random()` and `ctx.uuid()` instead of the clock and
+`Math.random`. The SDK runs it in a `vm` context of its own where `Date`, `Math.random` and the timers are already
+replaced. Its precondition: Node 22.8 or later and a process time zone of UTC for the workflow worker (the activity worker
+keeps Node 20).
+
+**Bundle it and publish the version.** The bundler of the separate package `@sagat-octopus-orchestrator/workflows-bundler`
+writes the bundle the worker loads and its manifest, which names the code digest (a SHA-256 computed from the bundle,
+the Node version and the SDK); it refuses an import of a Node built-in:
+
+```sh
+npx sagat-workflows bundle
+```
+
+```typescript
+const manifest = JSON.parse(await readFile('dist/manifest.json', 'utf8'));
+const envelope = {
+  activities: [{ name: 'inventory.reserve' }, { name: 'payments.charge' }, { name: 'customers.remind' }],
+};
+await api.definitions.publishCode(manifest, envelope);
+```
+
+`publishCode` saves the code version as the workflow's draft and publishes it, making it active, as publishing a graph
+does. The envelope lists what the function's commands may use; a command outside it puts the run under review. The
+`paid` signal is a declaration of the code document beside the envelope (`signals: [{ name: 'paid', buffered: true }]`,
+Technical Plan 3.1 of the design).
+
+**Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
+on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). The worker host loads the bundle
+and registers the manifest's workflow type and digest:
+
+```typescript
+const workflows = new WorkerHost({
+  grpcUrl, namespace, token, workerName: 'order-workflows',
+  workflowBundlePath: 'dist/workflows.js',
+  workflowManifestPath: 'dist/manifest.json',
+});
+await workflows.start();
+```
+
+The paths are this example's. Runs started with `api.start('order', { orderId: 'o-1', amount: '19.99' })` are pinned to
+the version's digest; a new bundle is a new version, and open runs stay on theirs until a person moves them.
+
+**Test it with the replayer.** Export the history of a run (`api.runs.exportHistory(runId)`, or
+`sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need
+`history:export`), keep it with your tests, and replay it against the new bundle in `node:test`:
+
+```typescript
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { Replayer } from '@sagat-octopus-orchestrator/sdk/workflows';
+
+test('the new bundle replays the recorded order runs', async () => {
+  const history = createInterface({ input: createReadStream('histories/order-1.jsonl') });
+  const verdict = await Replayer.replay(history, { bundlePath: 'dist/workflows.js', workflowType: 'order' });
+  assert.equal(verdict.matched, true); // the field of the verdict is named by Task 044-10
+});
+```
+
+A mismatch names the first command that differs. A history of an export format other than 1 is refused, and a replay that
+reaches a value the export redacted stops with `INCONCLUSIVE_REDACTED` instead of a false mismatch.
+
 ## Where to go next
 
 - [The SDK README](../../sdks/typescript/README.md): the client, the worker host, the builders of the workflow document, the errors.

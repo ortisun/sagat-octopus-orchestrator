@@ -127,6 +127,11 @@ they print the same lines and make the same run:
 | Python | [python.md](python.md) | [`examples/hello-world/python`](../../examples/hello-world/python) |
 | C# | [dotnet.md](dotnet.md) | [`examples/hello-world/dotnet`](../../examples/hello-world/dotnet) |
 | Java | [java.md](java.md) | [`examples/hello-world/java`](../../examples/hello-world/java) |
+| Rust | [rust.md](rust.md) | none yet: the program is on the page, and the examples' end-to-end test does not run it |
+
+Each page ends with a section on workflow as code ([design 044](../designs/044-workflow-as-code.md)): the same order
+workflow written as a function in that language, its manifest, its publication, its worker and its replay test. It is
+the design's API, offered by each SDK once that SDK's runtime lands; none of it runs today.
 
 Before running one, let your identity serve the activities (the example's README has the whole sequence):
 
