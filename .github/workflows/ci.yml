@@ -185,6 +185,11 @@ jobs:
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       - name: build isolated database executor for process tests
         run: cargo build -p sagat-database-runner --bin database-runner --locked
+      # The restart test of feature 022 (T022-059) kills the shipped control plane and engine with SIGKILL and starts
+      # them again, so it needs the two executables built beside it (decision D022-112 of its research.md).
+      - name: build the control plane and engine executables for the restart test
+        if: contains(format(' {0} ', matrix.shard.targets), ' e2e_flow_control_step_policies ')
+        run: cargo build -p sagat-control-plane --bin control-plane -p sagat-execution-engine --bin execution-engine --locked
       # Fail early on the changed transaction family and its migration/index interactions, for the suites
       # that were added or modified. The last step still runs every suite of the shard in full.
       - name: capacity and migration regression preflight
