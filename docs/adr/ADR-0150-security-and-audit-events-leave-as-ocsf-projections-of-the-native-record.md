@@ -14,7 +14,7 @@ only.
 ## Context
 
 Security teams read OCSF; the platform's audit trail has a shape of its own (design 040, The Problem). The trail is
-written from more than 300 places through four store modules, and `audit_records` has no sequence: `created_at` is taken
+written from more than 300 places through six statements in four store modules, and `audit_records` has no sequence: `created_at` is taken
 before a commit that can land after a later one's.
 
 ## Decision
@@ -22,22 +22,28 @@ before a commit that can land after a later one's.
 1. The audit record in PostgreSQL MUST stay the authority. OCSF is a projection built on read or on export; nothing is
    stored in OCSF.
 2. Every `AuditAction` MUST map to exactly one OCSF class, activity, severity and status through one `match` without a
-   wildcard arm in `crates/domain`; the domain holds no serialization.
+   wildcard arm in `crates/domain`; the domain holds no serialization. A stored action string that no variant matches
+   MUST project as an unknown API Activity, never fail.
 3. The OCSF version MUST be pinned (1.10.0) and vendored with its digest; a move to another version is a new
    architecture decision.
 4. A stream MUST read the audit table by a cursor `(tx_id, id)`, where `tx_id` is the writing transaction's `xid8`
-   filled by a column default, and only below `pg_snapshot_xmin(pg_current_snapshot())`. The writers MUST NOT gain a
-   statement. Delivery is at least once with `metadata.uid` the record id; a failing sink stalls, it never skips.
-5. A tenant sink MUST carry only its tenant's records; only the deployment's configuration may create the operator sink
-   that carries every tenant's.
+   filled by a column default that the runtime role cannot set, and only below `pg_snapshot_xmin(pg_current_snapshot())`.
+   The writers MUST NOT gain a statement. Delivery is at least once with `metadata.uid` the record id; a failing sink
+   stalls, it never skips, except a single record its receiver refuses permanently, which is recorded as refused and
+   stays in the audit table. The cursor is never shown outside the platform. A cursor above the cluster's current
+   transaction id (after a restore) MUST stop the sink as `CURSOR_INVALID` and resume it from time.
+5. A tenant sink MUST carry only its tenant's records less the withheld actions, under the current authority of its
+   authorizing subject, rechecked per batch; its URL and credentials are sealed in the sink and never delivered to
+   anything else. Only the deployment's configuration may define the operator sink, which carries every tenant's records
+   one tenant per message and persists only its cursor.
 6. What leaves through a sink follows the uniform `pii`-egress rule: `internal` by default; `pii` only under the reveal
-   grant, checked per batch; `secret` never.
+   grant held in every namespace of the tenant, checked per batch and at the cursor's commit; `secret` never. The
+   operator sink is `internal`.
 
 ## Considered options
 
 1. **A projection streamed below `xmin`** — no write added, no commit-order gap, no slot on the primary.
-2. **An outbox row per audit record** — the same guarantee with a second write in every audited transaction and a change
-   at every call site.
+2. **An outbox row per audit record** — the same guarantee with a second write in every audited transaction.
 3. **Logical decoding of `audit_records`** — ordered by commit, but an unconsumed slot holds write-ahead log without
    bound.
 4. **Native OCSF storage** — ties the authority to an external schema's versions.
