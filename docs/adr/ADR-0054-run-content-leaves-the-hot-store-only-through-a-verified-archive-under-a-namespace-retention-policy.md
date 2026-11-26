@@ -34,6 +34,13 @@ rerun provenance, chains); external sinks and customer buckets are outside the p
 
 ## Required amendment of principle I (proposal, MINOR)
 
+*Note (2026-11-26):* applied as constitution 5.1.0 (Owner decision 2026-11-25-3), with three differences from the
+proposal below. The constitution names **two** audited paths, this record's per-run purge and design 049's retirement of
+a month's partitions once every run in them is purged, not "one audited privileged path". Both run **only after a
+verified archive**: `archive = NONE` is not admitted. And the purge is admitted under a namespace retention policy only,
+so erasure before the policy's retention (feature 020, Requirement 020-037) is not admitted either; both wait for the
+owner (feature 020, Gap 1101). This record stays `Proposed`; its acceptance is feature 020's.
+
 Principle I today: the journal is append-only, and no component other than PostgreSQL holds the only copy
 of a transition. Retention breaks both for some runs: it removes whole journals, and with
 `archive = REQUIRED` the verified archive in object storage becomes the only copy; with `archive = NONE`

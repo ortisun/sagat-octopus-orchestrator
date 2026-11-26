@@ -30,7 +30,7 @@ commit with the transition that sets them. Analytics never runs on the write pat
 run: it is derived from the journal after the fact, like spans (ADR-0017). A terminal run never
 returns to running; retention removes content from terminal runs and leaves a stub. Retention changes
 an obligation of constitution principle I, so it ships only after a MINOR amendment of that principle
-(proposed in ADR-0054, not made here) and the owner's answers to O1080/O1082. External sinks
+(proposed in ADR-0054, not made here) and the owner's answers to O1080/O1082. *Note (2026-11-26, constitution 5.1.0, Owner decision 2026-11-25-3):* principle I now admits this feature's per-run purge under a namespace retention policy, only after a verified archive. Two things this feature proposes are not admitted: `archive = NONE` (deletion with no copy) and erasure (Requirement 020-037) before the policy's retention or without a verified archive; each needs the owner's further amendment (Gap 1101). External sinks
 are at-least-once (ADR-0004): every record has a deterministic key and the platform never promises
 exactly-once delivery.
 

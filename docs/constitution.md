@@ -12,8 +12,32 @@ lease and fencing token; a stale attempt is rejected, never merged. A terminal r
 to running: reprocessing opens a new run or a new compensation segment and keeps the history.
 When a timeout and a signal race, the first commit wins and the other is a no-op that is audited.
 
-*Rationale:* a transition lost after the commit, or applied twice, cannot be repaired afterwards.
-Sources: ADR-0002, `docs/architecture/execution-semantics.md`, AGENTS.md rule 3.
+Journal rows are deleted on two audited paths only, and only after a verified archive:
+
+- **Per-run purge** (feature 020, ADR-0054). A run is eligible only under its namespace's explicit
+  retention policy (without a policy every run is kept), once it is past that policy's retention,
+  terminal with its whole tree terminal and, for a chain, the chain final, and its effects settled:
+  not `PARTIAL` or `COMPENSATION_FAILED`, and no unresolved unknown outcome or review (Principle
+  III). Its archive is written and read back with matching size and SHA-256 before anything is
+  deleted. One privileged database function then removes, under the run's lock, the run's whole
+  journal and content, leaves the run row as a stub that points to the archive, and commits a
+  value-free audit record with the deletion.
+- **Partition retirement** (design 049). The operator, with a credential that no platform process
+  holds, drops a month's partitions of the journal tables only when every run in them has been
+  purged on the first path, and only after checking that the detached partitions hold no row of a
+  run that is not purged. The drop commits with the retirement's audit record and one per affected
+  tenant; every step is recorded, so that a crash resumes and never leaves rows half removed.
+
+Nothing else deletes or rewrites a journal entry: never an entry of a run that can still change,
+never part of a journal, never without a verified archive (a policy that keeps no archive is not
+admitted), and the runtime role holds no `DELETE` on runs, steps, the journal or payloads. After a
+purge the verified archive is the only copy of that run's transitions, outside the database's
+transactions and backups; that is the one exception to the first sentence of this principle.
+
+*Rationale:* a transition lost after the commit, or applied twice, cannot be repaired afterwards;
+history is removed only by a deliberate, audited act once nothing can depend on it any more.
+Sources: ADR-0002, ADR-0054, design 049, `docs/architecture/execution-semantics.md`, AGENTS.md
+rule 3.
 
 ### II. Modular Domain, Ports and Adapters
 
@@ -93,8 +117,10 @@ decides:
   Principle I (valid lease, fencing token) and commits all or nothing: the journal events of the
   completion and of every command, the steps, timers, waits and subscriptions they create, the
   outbox, and the next state of the workflow task decided from the journal. A command refused by
-  the checks refuses the whole completion. A completion that ends the run is refused while an
-  accepted signal, update or cancellation is still unseen by the function.
+  the checks refuses the whole completion. The command that ends the run is not applied while an
+  accepted signal, update or cancellation is still unseen by the function: it is deferred, the
+  rest of the completion commits all or nothing, and the function sees those events in its next
+  activation.
 - **Waits resolve once.** A wait ends by the first commit of its timeout or its event, as in
   Principle I; a signal that arrives after the wait timed out is not dropped but kept in the
   journal for the next activation.
@@ -117,14 +143,17 @@ decides:
   on an explicit request per run by a person allowed to operate the run and to activate the target
   version, to a target approved for activation where the namespace requires approval. The move is
   applied in one transaction with the run locked, only while no workflow task is leased and the
-  journal has not advanced past the activation that was verified, and only when the server finds
-  that a replay of the run's own history against the target code reproduces the journaled commands
-  and every outstanding step fits the target's envelope. Each move is journaled and audited, a
-  refused move leaves the run unchanged, a completion from a session of the former pin is stale,
-  and no policy moves runs by itself; that is not an automatic migration. Version markers in the
-  code of a later version let it branch for histories written under an earlier one, so that a
-  verified move can succeed. A run continued as new is a new run under Principle I and may pin
-  another version.
+  run has not completed an activation past the one that was verified, and only when the server
+  finds that a replay of the run's own history against the target code reproduces the journaled
+  commands and every outstanding step fits the target's envelope; events committed after that
+  activation and not yet seen by the function are delivered in the next activation, on the target
+  code. Each move is journaled and audited, a refused move leaves the run unchanged, a completion
+  from a session of the former pin is stale, and no policy moves runs by itself; that is not an
+  automatic migration. The version a run started on stays its origin; its pin names the version
+  its workflow tasks run. Version markers in the code of a later version let it branch for
+  histories written under an earlier one, so that a verified move can succeed; that code reaches a
+  running run only through such a move. A run continued as new is a new run under Principle I and
+  may pin another version.
 - **The history format is a wire contract.** The history and command format that the code
   replays is versioned under the rule above.
 - **Determinism is proven per language.** The procedural model MUST NOT ship in an SDK before
@@ -153,7 +182,7 @@ tenant's resource is indistinguishable from a missing one and the attempt is aud
 Secrets in workflow definitions are logical references, resolved at execution time under current
 authorization and a current task-scoped capability. Secret values MUST NOT reach workflow state,
 the journal, logs, audit records, telemetry or ordinary management/read API responses. The
-executor-read exception is limited to two declared sets:
+executor-read exception is limited to three declared sets:
 
 - Ordinary task execution receives only the secrets declared by its immutable task definition,
   all or nothing. The authenticated caller's current membership, worker/activity binding,
@@ -163,12 +192,21 @@ executor-read exception is limited to two declared sets:
   connection revision to the lease-owning `database-runner` with `database:execute`, under the
   current publisher/initiator and secret-access rules of that capability. This disclosure
   exception does not itself authorize database execution or relax the isolation rule above.
+- A declared resource may disclose, to the executor of a step whose immutable task definition
+  declares it, the non-secret settings of its pinned revision and the values its slots bind at
+  that revision: their secrets and, for an OAuth credential, only its current access token, never
+  a refresh token, a client secret or a private or signing key. The authenticated caller's current
+  membership, worker/activity binding and pool-delivery policy, the publisher's and initiator's
+  permission to use the resource and to cause effects through it, and the secret-access rules of
+  its slots MUST authorize that disclosure. Delivery to a managed integration runner is bound like
+  managed database delivery; delivery to an ordinary worker or a sandbox runner is bound like
+  ordinary delivery. A workflow task of Principle IV is not such an executor.
 
-Both paths MUST validate current tenant/namespace scope, exact task/instance/attempt identity,
+Every path MUST validate current tenant/namespace scope, exact task/instance/attempt identity,
 generation, matching capability token and unexpired lease. Ordinary delivery uses that token as
 a bearer capability together with the current caller's authorities above; it does not additionally
-bind disclosure to the original lease-owning worker session. Managed database delivery MUST also
-verify the recorded lease-owning executor subject and live session. Revalidate those
+bind disclosure to the original lease-owning worker session. Managed delivery (database and
+integration runner) MUST also verify the recorded lease-owning executor subject and live session. Revalidate those
 authorities and the selected input/secret revision after provider I/O; stale authority or a
 selection that no longer matches its capability refuses disclosure. A value-free disclosure audit
 MUST commit before returning values. A failed required check or audit refuses disclosure.
@@ -360,7 +398,11 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
 - **CI gates:** a pull request MUST pass the unit tests of the packages it
   changes and of the packages that depend on them (and of the SDKs, the Studio and the scripts whose
   files it changes) and the integration suites that it changes, and, when it changes the code that
-  runs a lease or a completion, the suite that budgets what they cost the database, and, when it
+  runs a lease or a completion, the suite that budgets what they cost the database and, once
+  design 052 has built it, the throughput regression gate (the base and the head of the pull
+  request run the same scenarios, alternated, on the standard hosted runner, and the gate fails
+  on a slowdown larger than the minimum detectable effect that its recorded pilot measured on that
+  runner, by the rule design 052 states), and, when it
   changes the code that captures, sends, stores or serves step logs (the server's step-log modules,
   the worker-protocol contract, or an SDK's capture code), the step-log suites (`integration_step_logs`;
   with it the budget suite for the server's step-log code and the SDK conformance suite for the
@@ -402,6 +444,6 @@ it is not approval of the implementation. A violation that cannot be avoided MUS
 the design doc's Complexity Tracking table with the simpler alternative that was rejected. For a
 feature not yet converted, the Check and the table live in its `plan.md`.
 
-**Version**: 5.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-24
+**Version**: 5.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-26
 
-Amendment scope and preserved obligations: [5.0.0 Sync Impact Report](governance/constitution-5.0.0-sync-impact.md). Previous amendments: [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md), [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10). Version 5.0.0 is adopted by merging the pull request that carries it, on the owner's approval of the amendment that admits the full-parity scope of release 0.3.0 (`docs/owner-decisions.md`, Owner decisions 2026-11-24-1, 2026-11-24-2 and 2026-11-24-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment.
+Amendment scope and preserved obligations: [5.1.0 Sync Impact Report](governance/constitution-5.1.0-sync-impact.md). Previous amendments: [5.0.0 Sync Impact Report](governance/constitution-5.0.0-sync-impact.md), [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md), [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10). Version 5.0.0 is adopted by merging the pull request that carries it, on the owner's approval of the amendment that admits the full-parity scope of release 0.3.0 (`docs/owner-decisions.md`, Owner decisions 2026-11-24-1, 2026-11-24-2 and 2026-11-24-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment. Version 5.1.0 is adopted by merging the pull request that carries it, on the owner's approval of its four points (`docs/owner-decisions.md`, Owner decision 2026-11-25-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment.

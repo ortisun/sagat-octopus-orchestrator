@@ -71,10 +71,16 @@ not public management reads. Constitution V bounds ordinary delivery to the immu
 declared secret set, all or nothing, with current worker binding, pool-delivery and publisher-access
 checks. The managed database capability delivers only its pinned connection credential to the
 authorized lease-owning database-runner. Ordinary delivery is token-capability plus current caller
-authority, not an additional original-worker-session ownership check. Both paths revalidate identity/lease and selected
-input/revision after provider I/O and commit a value-free audit before returning values. These
+authority, not an additional original-worker-session ownership check. Since constitution 5.1.0 a third declared set
+exists (features 021 and 047, not built): a declared resource may disclose to the executor of a step that declares it
+the settings of its pinned revision and the values its slots bind, secrets included, and for an OAuth credential only
+the current access token, never a refresh token, a client secret or a private or signing key; a managed integration
+runner is bound like the database-runner, an ordinary worker or sandbox runner like ordinary delivery, and a workflow
+task of design 044 is never such an executor. Every path revalidates identity/lease and selected
+input/revision after provider I/O and commits a value-free audit before returning values. These
 disclosure exceptions authorize neither database execution nor general/classified-secret reads. See the
-[amendment impact record](../governance/constitution-3.0.0-sync-impact.md).
+[amendment impact record](../governance/constitution-3.0.0-sync-impact.md) and the
+[5.1.0 record](../governance/constitution-5.1.0-sync-impact.md).
 
 Feature 016 adds audited namespace grants for PII disclosure. Its owner-approved event-inbox and
 dead-letter exception allows authorized whole raw values without per-field classification carriers;

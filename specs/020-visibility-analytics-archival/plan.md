@@ -16,7 +16,10 @@ replica owning a scheduler shard plans frozen batches per sink, pure functions d
 adapters deliver at least once and the cursor moves only with the sink's acknowledgement. (3) Retention is
 opt-in: terminal runs are archived, verified, then purged by one privileged function; the run row stays as
 a stub. Retention needs a MINOR amendment of constitution principle I (proposed in ADR-0054) before any of
-it is built. Each capability ships behind its own enablement and can be rolled back by disabling new use.
+it is built. *Note (2026-11-26, constitution 5.1.0, Owner decision 2026-11-25-3):* principle I now admits this feature's
+per-run purge under a namespace retention policy, only after a verified archive. Two things this feature proposes
+are not admitted: `archive = NONE` (deletion with no copy) and erasure (Requirement 020-037) before the policy's
+retention or without a verified archive; each needs the owner's further amendment (Gap 1101). Each capability ships behind its own enablement and can be rolled back by disabling new use.
 
 ## Technical context
 

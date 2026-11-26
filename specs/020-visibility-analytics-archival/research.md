@@ -359,7 +359,13 @@ D1080–D1119 are all in use, so these take the next free numbers of the shared 
   scheduler. A release gate, not a fallback: `scheduler_shard_renewals_skipped_total` must stay zero
   under the contention test, else the separate `analytics_shards` lease table ships first.
 - **G1101** — The constitution amendment of principle I (B2) is a proposal in ADR-0054; until an
-  amendment PR is accepted, US08/US09 do not start.
+  amendment PR is accepted, US08/US09 do not start. *2026-11-26:* constitution 5.1.0 (Owner decision
+  2026-11-25-3) admits the per-run purge under a namespace retention policy after a verified archive; the gap
+  closes for that path when its pull request merges. It stays open for `archive = NONE` and for erasure
+  (Requirement 020-037), which 5.1.0 does not admit: erasure purges before the policy's retention and makes the
+  archive optional. Recommended to the owner: admit erasure as an audited request by a person holding
+  `retention:manage`, for a terminal, settled run, still only after a verified archive, whose object the erasure
+  then deletes; keep `archive = NONE` out.
 - **G1102** — A compromised runtime role can still write a retention policy and audit rows; requiring an
   audited human policy change raises the bar but is not a defense against that compromise.
 - **G1103** — 018 must let the purge function clear `runs.business_id` (its immutability trigger); this
