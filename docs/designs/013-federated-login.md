@@ -1293,12 +1293,22 @@ and its policy (`infra/openbao/policies/identity.hcl`, installed as `sagat-ident
 database runner's development token), and for the suites by `start_openbao` in `tests/support/bounded.rs`. For
 production, `infra/openbao/bootstrap-kubernetes.py` creates the `sagat-identity/` KV version 2 mount, the policy and a
 Kubernetes role `sagat-identity` bound to the control plane's service account, issued with `token_no_default_policy`;
-and the chart, when its new value `identity.federation.enabled` is true, renders a second OpenBao Agent for the control plane, because one
-agent logs in with one role: a ConfigMap entry `control-plane-identity.hcl` (role `openbao.roles.identity`, sink
-`/run/openbao-identity-mount/token`), its sidecar and sink volume, and `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE` and
-`SAGAT_IDENTITY_OPENBAO_ADDRESS` in the control plane's environment; `_openbao.tpl` validates `openbao.roles.identity`
-when federation is enabled (`the_control_plane_renders_two_openbao_agents_when_federation_is_on`, a chart-render test in
-`tests/contract/scalability-ha/identity_chart.rs`: two agents, distinct roles and sinks). The policy name
+and the chart, when its new value `identity.federation.enabled` is true, renders an OpenBao Agent for the control
+plane's identity token, separate from the management agent because one agent logs in with one role. It does so
+whether or not `openbao.enabled` is set: the agent image, the CA secret and volume, the auth mount and audience, the
+control plane's service account and its egress rule to OpenBao are rendered when `openbao.enabled` or
+`identity.federation.enabled` is true, while `sagat.openbao.env`, the intent key and the three existing roles stay on
+`openbao.enabled` alone, so federation never turns on feature 015's secrets provider. The identity agent has its own
+container (`openbao-identity-agent`), its own config volume projecting the ConfigMap entry `control-plane-identity.hcl`
+(role `openbao.roles.identity`), its own in-memory sink volume `openbao-identity-mount` at
+`/run/openbao-identity-mount` (named apart from `openbao-identity`, which holds the projected service-account token),
+and a startup probe on that sink; the control plane's environment gains `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`,
+`SAGAT_IDENTITY_OPENBAO_ADDRESS` and `SAGAT_IDENTITY_OPENBAO_CA_FILE=/etc/openbao/ca/ca.crt`. `_openbao.tpl` validates
+the address, CA secret, auth mount, audience, image and `openbao.roles.identity` whenever federation is enabled
+(`the_control_plane_renders_two_openbao_agents_when_federation_is_on`, a chart-render test in
+`tests/contract/scalability-ha/identity_chart.rs`: with `openbao.enabled` both agents, distinct container names, roles
+and sinks; with federation on and `openbao.enabled=false` the identity agent alone, no `SAGAT_OPENBAO_*` variable, the
+CA variable and the egress rule present). The policy name
 `sagat-identity` is fixed, not a setting, since both clients check it; `docs/runbooks/federated-login.md` and
 `infra/openbao/policies/README.md` say so; `infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
 `SAGAT_ENV=dev`, and the new production image check (Task 013-3) keeps it out.
@@ -1861,7 +1871,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
 - [ ] T013-8 Server builder. The OIDC client in `crates/infra-federation`, its key sets being `JwksCache` instances of
   `infra-egress` over the identity egress guard; `TokenSigner` and `IdentitySecrets` in `crates/infra-secrets`; the
   identity mount and `identity.hcl` (`sagat-identity`) in both bootstraps (`identity-mount/token` in development, the
-  Kubernetes role in production), the chart's second control-plane agent and `_openbao.tpl` validation with
+  Kubernetes role in production), the chart's identity agent for the control plane (rendered with or without `openbao.enabled`) and `_openbao.tpl`
+  validation with
   `the_control_plane_renders_two_openbao_agents_when_federation_is_on`, the `SAGAT_IDENTITY_OPENBAO_*` settings, and
   `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
