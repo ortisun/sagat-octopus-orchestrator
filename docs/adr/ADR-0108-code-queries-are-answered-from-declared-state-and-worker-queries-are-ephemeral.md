@@ -53,7 +53,8 @@ queries from committed state with no worker. Some answers exist only in the func
    route a secret through the function, and an activity receives a secret only through its own entry's `secrets`. Each
    stored payload MUST be classified by the carrier of the version that accepted it, a step's outcome by the version
    that issued the step, so a move or a handoff never declassifies it; a children entry that drops a `secret`
-   annotation of its listed child version MUST be refused at publication. A
+   annotation of its listed child version MUST be refused at publication, and a child's output MUST be classified by the
+   union of that entry and the carrier of the child's current version. A
    blob whose carrier schema has a `secret` field MUST NOT be delivered to a workflow, query or replay-check token, and
    the export MUST emit every blob as a reference only. The classification governs raw reads; the answers of declared
    queries and updates follow ADR-0031's declared disclosure.

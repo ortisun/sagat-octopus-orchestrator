@@ -45,7 +45,8 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    run's 4 MiB MUST put the run under review (`RETAINED_BYTES_LIMIT`); one refused by the tenant's content quota MUST be a
    counted failure; the engine MUST NOT end a code run for either. A terminal output and a continue-as-new input and
    carried state leave the run and MUST be judged against the tenant's content quota only; an update result over the
-   run's bound MUST fail that update only. A gated activity's input and an approval's subject MUST travel inline. A `RETAINED_BYTES_LIMIT` review has no retry, because
+   run's bound MUST fail that update only. A gated activity's input and an approval's subject MUST travel inline. A
+   command-value upload MUST be charged to the tenant's content quota only, the run's bound being judged at commit. A `RETAINED_BYTES_LIMIT` review has no retry, because
    the same activation would make the same commands.
 5. Eager activity leases MUST be provisional leases of feature 006, granted through the claim's admission function
    (quotas, breakers, pools, capacity windows, gates, approvals), released safely when unacknowledged; an idempotent
