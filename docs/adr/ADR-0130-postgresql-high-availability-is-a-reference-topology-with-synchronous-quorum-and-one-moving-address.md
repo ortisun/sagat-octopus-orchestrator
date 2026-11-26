@@ -27,8 +27,9 @@ next one; worker leases last 30 s. Design 048 has the references; rolling upgrad
 3. Every database socket MUST set keepalive (4 s idle, 2 s interval, 3 probes) and, on Linux, `TCP_USER_TIMEOUT` of
    10 s. Every connection MUST start read-only with `synchronous_commit=on`, and refuse a server in recovery, one whose
    `synchronous_commit` is weaker, or, when required, one without synchronous standby names.
-4. Every write MUST be a `WriteTx`, whose only commit has a deadline. The outcome is applied on success, not applied on a
-   rollback the server confirms (class 23, `40001`, `40P01`), and unknown otherwise, never "not applied". The platform
+4. Every write MUST be a `WriteTx`, whose only commit has a deadline. The outcome is applied on success, not applied when the
+   server answers with an error and then an idle ReadyForQuery (PostgreSQL raises a commit's errors before its commit
+   record), and unknown otherwise, never "not applied". The platform
    MUST NOT cancel or terminate a backend that waits for a standby.
 5. A server's identity is its start time and the token of an unlogged one-row table, which a crash restart and a promotion
    empty. When a process observes a new identity, an unknown commit outcome or a read-only refusal, it MUST serve nothing

@@ -158,31 +158,34 @@ From the code and documents on `develop` at `546d5aa5`:
   heartbeat (10 s, jittered to 12 s), and when the reason clears it sets `DATABASE_UNCONFIRMED`, so that what was
   committed locally in that window is served only after a confirmation.
 - **Requirement 048-012 Commits.** `WriteTx`, in `crates/infra-postgres/src/pool.rs`, owns a `PoolConnection`, sends
-  `BEGIN READ WRITE`, runs its statements on that connection, and has no way to commit but `commit_safely`. If any of its
-  statements fails, the `WriteTx` rolls back and the caller gets that error, a definite failure. `commit_safely` sends
-  `COMMIT` in a task it spawns (as `begin_safely` does for `BEGIN`) and waits for it at most the commit deadline
-  (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at least twice the statement timeout, the name feature 032 also uses).
-  The outcome is applied when `COMMIT` succeeds; not applied when the server answers it with an error of severity
-  `ERROR` on a session that stays alive, since PostgreSQL raises every error of a commit (deferred constraints, a
-  serialization failure, the deferred quota triggers' `54000`) before it writes the commit record and turns any failure
-  after it into a `PANIC`. A cancel that reaches a commit while it waits for a standby is different: PostgreSQL answers
-  success with a `WARNING`, the commit written locally only. The platform never sends one (the rules below), Task 048-6
-  establishes whether its statement timeout can (and if it can, `commit_safely` turns it off for the commit), and an
-  operator's cancel is the residual of the Technical Plan; Task 048-6 records that answer too (this generalizes `confirmed_abort` of `capacity_finish.rs` for the commit itself, and
-  keeps today's mapping of `54000` to `QuotaExceeded`); and unknown otherwise: the deadline passing, an I/O error, a
-  `FATAL` or `PANIC`, a closed pool or a task that panicked are `StoreError::CommitOutcomeUnknown`, which replaces the five module-level variants of the same
-  name (Architecture decision 0078). After an unknown outcome the task keeps the connection, and its slot, until the
+  `BEGIN READ WRITE`, and runs statements only through its own `execute` and `fetch` methods (it never hands out the
+  connection), which mark it failed on any error; a failed `WriteTx` can only roll back, and the caller gets that error,
+  a definite failure. Its only commit is `commit_safely`, which sends `COMMIT` in a task it spawns (as `begin_safely`
+  does for `BEGIN`) and waits for it at most the commit deadline (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at
+  least twice the statement timeout, the name feature 032 also uses). The outcome is applied when `COMMIT` succeeds. It
+  is not applied when the server answers `COMMIT` with an error and then, within the deadline, with ReadyForQuery whose
+  status is idle (the task waits for it, a ping if need be): PostgreSQL raises every error of a commit (deferred
+  constraints, a serialization failure, the deferred quota triggers' `54000`, which keeps today's mapping to
+  `QuotaExceeded`) before it writes the commit record, while an error after the commit record becomes a `PANIC` that
+  never reaches ReadyForQuery. This generalizes `confirmed_abort` (`capacity_finish.rs`) for the commit itself. Every
+  other result is unknown: the deadline passing, an I/O error, an error not followed by an idle ReadyForQuery, a
+  `FATAL` or `PANIC`, a closed pool or a task that panicked are `StoreError::CommitOutcomeUnknown`, which replaces the
+  five module-level variants of the same name (Architecture decision 0078). A cancel that reaches a commit while it
+  waits for a standby is different again: PostgreSQL answers success with a `WARNING`, the commit written locally
+  only; the platform never sends one (the rules below), Task 048-6 establishes whether its statement timeout can (and if
+  it can, `commit_safely` sends `SET LOCAL statement_timeout = 0` and `COMMIT` in one message), and an operator's cancel
+  is the residual of the Technical Plan. After an unknown outcome the task keeps the connection, and its slot, until the
   server answers or the socket fails, and the process closes its serving gate (Requirement 048-013), so that no new
   write starts and the slots held are those of the commits in flight. The API answers `UNAVAILABLE` with the reason
-  `COMMIT_OUTCOME_UNKNOWN`; `AppError::Unavailable` gains a reason field for it and for the reasons of Requirement
-  048-014; whether to retry is the client's, which retries only an operation that carries an idempotency key or a
-  command identifier (the SDKs always send one on reports). The platform never cancels or terminates a backend that waits
-  for a standby: the sessions set `client_connection_check_interval` to 0 and, where the server has it,
-  `transaction_timeout` to 0, and `scripts/check-architecture.py` refuses, in `crates/infra-postgres` and `apps/`,
-  `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()` outside `pool.rs`, a raw `BEGIN`,
-  `START TRANSACTION`, `COMMIT`, `END`, `ABORT`, `ROLLBACK`, `READ WRITE`, `SESSION CHARACTERISTICS` or `transaction_read_only` outside `pool.rs`,
-  and `fetch()` on a statement that writes. Whether the server's own timeouts can cancel the wait is established by Task 048-6 first; if
-  they can, `commit_safely` sends `SET LOCAL statement_timeout = 0` and `COMMIT` in one message.
+  `COMMIT_OUTCOME_UNKNOWN` (after authentication; Requirement 048-014); `AppError::Unavailable` gains a reason field
+  for it and for the reasons of Requirement 048-014; whether to retry is the client's, which retries only an operation
+  that carries an idempotency key or a command identifier (the SDKs always send one on reports). The platform never
+  cancels or terminates a backend that waits for a standby: the sessions set `client_connection_check_interval` to 0
+  and, where the server has it, `transaction_timeout` to 0, and `scripts/check-architecture.py` refuses, in
+  `crates/infra-postgres` and `apps/`, `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()`
+  outside `pool.rs`, a raw `BEGIN`, `START TRANSACTION`, `COMMIT`, `END`, `ABORT`, `ROLLBACK`, `READ WRITE`, `SESSION
+  CHARACTERISTICS` or `transaction_read_only` outside `pool.rs` and `migrate`'s loop (design 053's Task 053-4), and
+  `fetch()` on a statement that writes.
 - **Requirement 048-013 After a change of server, nothing is served until a write reaches a standby.** A server's
   identity is the pair (`pg_postmaster_start_time()`, the token of `server_incarnation`). `server_incarnation` is an
   unlogged table of one row (`id smallint primary key check (id = 1)`, `token uuid not null`): PostgreSQL empties an
@@ -196,37 +199,50 @@ From the code and documents on `develop` at `546d5aa5`:
   confirmation's `WriteTx`, by `instance_confirm_durability()` (below), a definer function that inserts it (`INSERT ...
   ON CONFLICT (id) DO NOTHING`, then a read); the runtime role has no privilege on the table. A null token means "unconfirmed", never an
   identity; the registry's connection, and the one connection a command of `control-plane` uses to wait for a
-  confirmed identity (below), are admitted while the identity is unconfirmed, and every other connection is refused.
+  confirmed identity (below), are admitted on a new or null identity, never on a superseded one; every other
+  connection is admitted only on the confirmed identity.
   The process keeps one `DatabaseIdentity` (application-owned, in `crates/application/src/instances.rs`, behind a port
-  implemented in `crates/infra-postgres/src/instances.rs`): the confirmed identity, the set of identities seen
-  superseded, and `identity_changed_at`. `after_connect` reports what it read; under the gate's lock, an identity equal
-  to the confirmed one is accepted, one in the superseded set is refused, and any other (or a null token, or none
-  confirmed) sets the reason `DATABASE_UNCONFIRMED` only if it differs from the confirmed one, records the time, adds the
-  confirmed identity to the superseded set, refuses the connection and signals the confirmation task. The pools'
-  `before_acquire` hook discards, without a statement, every connection created before `identity_changed_at` plus the
-  connect timeout of 3 s, since a connection's creation is stamped after its `after_connect` returns. An unknown commit
-  outcome (Requirement 048-012) and an unavailable `25006` (Requirement 048-011) do the same, without a new identity.
-  The confirmation task lives as long as the process and waits for signals. A confirmation is one `WriteTx` on the
-  registry's connection: `sagat_server_identity()`, then `instance_confirm_durability(instance, credential)`, a
-  definer function that checks the process's registry credential against its `token_hash` as every registry function
-  does, inserts the token when it is absent, reads the identity itself (never from its arguments) and writes it into the
-  process's row of the registry (`serving_instances`) and, the first time any process confirms, into the one-row
-  `registry_first_confirmation`, and returns the identity it wrote, which the process compares as the one its
-  confirmation read; it is committed
-  through `commit_safely` with no deadline (the keepalive bounds a dead peer, and an answer that comes late is still
-  used). When it is applied, the process clears the reason, under the gate's lock, only if no identity different from
-  the one it read has been observed since that read; the confirmation's own read counts as an observation. Since a
-  standby receives WAL in order, everything committed before that write is then on a standby. Then the process sends a
-  registry heartbeat at once, so that readiness returns. Pools are built lazily (`connect_lazy_with`); a process starts
-  by registering, a write that waits for a standby, then confirms before it serves. While `DATABASE_UNCONFIRMED` is set,
-  every path checks the gate before acquiring a connection (requests, gRPC worker calls, readiness, the passes and the
-  keeper), and only the registry's connection connects. A command of `control-plane` that writes (`migrate`, through
-  design 053's Task 053-4, `cleanup-secrets`, `provision-tenant`, `reseal-secrets`, `quota-ceiling`,
-  `scheduling-weight`, `schedule-trigger-handover`, `capability-activate`) waits, up to 60 s, until a live registry row
-  carries the server's current identity as confirmed, and otherwise exits with code 1 ("retry later"); it then adopts
-  that identity as its own confirmed one, so that its `after_connect` refuses any connection whose identity differs. It
+  implemented in `crates/infra-postgres/src/instances.rs`): the confirmed identity (or none), the set of identities seen
+  superseded, `identity_changed_at`, and an observation counter. Each `after_connect` takes a ticket from the counter
+  before its read and reports the identity with its ticket; under the gate's lock a report older than the ticket of the
+  last applied confirmation's read is discarded (the connection refused). Otherwise: an identity in the superseded set
+  is refused; one equal to the confirmed identity is accepted; any other identity, or a null token, moves the confirmed
+  identity (if any) into the superseded set, sets the confirmed identity to none, sets the reason
+  `DATABASE_UNCONFIRMED` and the time, refuses the connection (unless it is the registry's or a waiting command's) and
+  signals the confirmation task. An unknown commit outcome (Requirement 048-012) and an unavailable `25006`
+  (Requirement 048-011) set the reason and the time only, superseding nothing. The pools' `before_acquire` hook
+  discards, without a statement, every connection created before `identity_changed_at` plus the connect timeout of 3 s,
+  since a connection's creation is stamped after its `after_connect` returns.
+  The confirmation task lives as long as the process and is driven by state, not by signals alone: while the reason is
+  set and the process is registered, it confirms, and after a confirmation that fails (an acquire that times out while
+  heartbeats wait, a refused connection, a refused credential) it tries again after 1 s, the cap of its backoff. A
+  confirmation is one `WriteTx` on the registry's connection, with its own ticket: `sagat_server_identity()`, then
+  `instance_confirm_durability(instance, credential)`, a definer function that checks the process's registry
+  credential against its `token_hash` as every registry function does, inserts the token when it is absent, reads the
+  identity itself (never from its arguments), writes it into the process's row of the registry (`serving_instances`)
+  and, the first time any process confirms, into the one-row `registry_first_confirmation`, and returns it. It is
+  committed through `commit_safely` with no deadline (the keepalive bounds a dead peer, and an answer that comes late is
+  still used). When it is applied, the process clears the reason, under the gate's lock, only if its read showed the
+  server not in recovery, `synchronous_commit` on and, when required, synchronous standby names present, and no report
+  with a later ticket has shown a different identity; it then sets the returned identity as confirmed. Since a standby
+  receives WAL in order, everything committed before that write is then on a standby. Then the process sends a registry
+  heartbeat at once, so that readiness returns. Pools are built lazily (`connect_lazy_with`); a process starts by
+  registering, a write that waits for a standby, then confirms before it serves; the test support builds its pools
+  through the same path, registering a test instance and confirming once per database. While `DATABASE_UNCONFIRMED` is
+  set, every path checks the gate before acquiring a connection (requests, gRPC worker calls, readiness, the passes and
+  the keeper), and only the registry's connection connects.
+  Each command of `control-plane` has one of three connection profiles. `migrate` uses the owner's role on sessions
+  that are read-write by default, runs each migration in its own `BEGIN READ WRITE` (a concurrent index in its own
+  statement), and accepts, in its `after_connect`, a missing `sagat_server_identity()` (`42883`) only while the
+  migration that creates it is not applied. `seed-dev`, for development only, uses the same profile. Every other command
+  that writes (`cleanup-secrets`, `provision-tenant`, `reseal-secrets`, `quota-ceiling`, `scheduling-weight`,
+  `schedule-trigger-handover`, `capability-activate`) uses the serving profile and `WriteTx`; it waits, up to 60 s, on
+  one connection admitted for that purpose, until a live registry row carries the server's current identity as
+  confirmed, and otherwise exits with code 1 ("retry later"); it then adopts that identity as its own confirmed one. It
   proceeds without waiting only on a database where `registry_first_confirmation` is empty (a fresh one, which no
-  process has ever confirmed), not on one whose processes are merely down or deregistered. `seed-dev`, `script-key`, `healthcheck`, `help` and `version` are exempt.
+  process has ever confirmed), not on one whose processes are merely down or deregistered. `migrate` waits in the same
+  way before a migration that is not its first (design 053's Task 053-4). `script-key`, `healthcheck`, `help` and
+  `version` open no database connection.
 - **Requirement 048-014 The serving gate has reasons.** The registry's serving gate (`crates/application/src/instances.rs`)
   MUST keep its epoch and capability state and gain a set of closing reasons (`DATABASE_UNCONFIRMED`,
   `DATABASE_NOT_SYNCHRONOUS`; design 053 adds two); it is open only when the registry's state allows it and the set is
@@ -258,10 +274,14 @@ From the code and documents on `develop` at `546d5aa5`:
 - **Requirement 048-016 Leases and work in flight.** A failover MUST lose no acknowledged work. The SDKs retry a failed
   heartbeat until the lease's remaining time less 1 s, with the same clamped backoff, instead of waiting for the next
   heartbeat; a lease renewed at most 10 s apart then survives an outage, as the platform sees it, shorter than its time to
-  live less one heartbeat interval: 30 − 10 = 20 s by default. The HA examples set the time to live to 90 s, sized from
-  the 60 s target of Requirement 048-040 plus two heartbeat intervals and a margin of 10 s (60 + 2 × 10 + 10 = 90). After a
-  confirmation the lost-lease pass waits one heartbeat interval plus the backoff cap (10 + 5 = 15 s), so that retried
-  reports land before any lease is reclaimed. A claim whose commit outcome was unknown may have leased an attempt that no
+  live less one heartbeat interval and the 1 s kept back, less one request's latency and the difference between the
+  SDK's estimate of the expiry and the database's clock: under 30 − 10 − 1 = 19 s by default. The HA examples set the
+  time to live to 90 s: the 60 s target of Requirement 048-040 plus one heartbeat interval and the 1 s kept back is 71 s,
+  and 90 s leaves 19 s for latency and the clocks. After its confirmation, an engine's lost-lease pass waits 30 s before
+  it reclaims a lease, so that retried reports land first: a control plane confirms within about 1 s of the engine (the
+  confirmation's retry cap), turns ready within 5 s, the load balancer follows within E (at most 10 s in the reference),
+  a worker retries within its 5 s backoff and its request takes at most 3 s; 1 + 5 + 10 + 5 + 3 = 24 s, and 30 s leaves
+  6 s of margin. A claim whose commit outcome was unknown may have leased an attempt that no
   worker received; that lease expires and, without a `reconcileWith` lookup (feature 037), becomes a review item; the
   drills count these apart, and the delivery acknowledgement of protocol 1.8 (reserved by Owner decision 2026-11-21-6,
   pull request 264) is what lets such a lease be retried without a person. The SDK releases that carry Tasks 048-11 are
@@ -277,9 +297,10 @@ From the code and documents on `develop` at `546d5aa5`:
   accepts writes (the HA manager's own detection is inside it); R, from the promotion until the surviving standby is
   synchronous to the new primary; E, from a pod's readiness until the load balancer routes to it. The platform's own
   detection (at most 10 s, 3 s through HAProxy) runs from the fault, inside P. After P + R, a process confirms within the
-  3 s connect timeout (its write waits for R, already counted), sends its heartbeat at once and turns ready at the next
-  probe, within 5 s; a worker's next retry comes within its 5 s backoff cap. So a worker's report reaches a committed
-  transition within P + R + 3 + 5 + E + 5 = P + R + E + 13 s, and the target leaves P + R + E at most 60 − 13 = 47 s. An
+  3 s connect timeout after its confirmation's retry, which comes within 1 s (its write waits for R, already counted),
+  sends its heartbeat at once and turns ready at the next probe, within 5 s; a worker's next retry comes within its 5 s
+  backoff cap. So a worker's report reaches a committed transition within P + R + 1 + 3 + 5 + E + 5 = P + R + E + 14 s,
+  and the target leaves P + R + E at most 60 − 14 = 46 s. An
   engine holds its shards again within P + R + 3 s plus one keeper wait of 3.6 s and its round; a dead engine's shards are
   free once their 15 s lease, renewed last before the fault, has expired on the database's clock.
 - **Requirement 048-041 The drills.** The Compose drill (`infra/dr/ha-drill.sh`) MUST inject, three times each: (1) the
@@ -295,7 +316,8 @@ From the code and documents on `develop` at `546d5aa5`:
   a fixed open-loop rate of 20 starts per second through `dr_acked_workload` and check with `dr_verify`
   (`tests/performance/scalability-ha/dr.rs`), extended as Task 048-14 says.
 - **Requirement 048-042 Measured, not estimated.** A repetition MUST run 2 minutes before the fault and 6 after it
-  (360 s, above the 300 s gate plus the 30 s of recovery held and a margin of 30 s) and record: P, R and E; the times
+  (360 s, above the 300 s gate plus the 30 s of recovery held and a margin of 30 s), 7 after it for fault (3), whose
+  window starts at the standbys' return 60 s after the fault (60 + 300 + 30 = 390 s, under 420 s), and record: P, R and E; the times
   of Requirement 048-040; the outage, from the fault to the first transition committed after it; the time until the
   completion rate is back to 90% of its rate before the fault, held for three 10 s windows; the integrity oracle's
   results; acknowledged work lost; leases expired, delivered or not; activities run more than once; review items, those
@@ -320,7 +342,8 @@ From the code and documents on `develop` at `546d5aa5`:
   integrity oracle, loses acknowledged work, leaves a process not ready, or exceeds 300 s to the first transition or to
   the 90% recovery; for fault (3), the window is counted from the standbys' return, and the drill also fails if a commit
   made while they were down becomes visible before they return. The Compose drill runs on a free standard runner in a job
-  of its own (`ha-drill`, timeout 240 minutes: 6 faults × 3 repetitions × 8 minutes = 144 minutes plus the setup) and
+  of its own (`ha-drill`, timeout 240 minutes: 5 faults × 3 repetitions × 8 minutes plus 3 repetitions × 9 minutes for fault (3),
+  120 + 27 = 147 minutes, plus the setup) and
   gates every release; the Kubernetes smoke runs on a free runner and is reported; the Kubernetes drill needs a paid
   runner and stays unscheduled while the owner pays for none (Owner decision 2026-11-25-1). `infra/dr/drill.sh` keeps its
   single-host checks, and its 15 s constant is replaced by the measured takeover.
@@ -331,7 +354,8 @@ From the code and documents on `develop` at `546d5aa5`:
   work lost is 0, every process is ready again within 300 s, and the negative control is found.
 - **Success criterion 048-002** The median time to the first committed transition is reported for each fault; for the
   primary's container stopped and a node lost on Compose, it is within 60 s.
-- **Success criterion 048-003** In the Compose drill, a failover whose outage is under 20 s expires no delivered lease,
+- **Success criterion 048-003** In the Compose drill, a failover whose outage is under 15 s (the 19 s of Requirement 048-016 less 4 s for
+  a request's latency and the clocks) expires no delivered lease,
   repeats no completed activity, and creates no review item except for a claim whose commit outcome was unknown, for
   workers on SDKs that carry Task 048-11; this is reported, and gates the release from the first release that ships
   those SDKs.
@@ -489,7 +513,7 @@ per manager; the contract test of observability (`tests/contract/observability-o
 of the exporters' metrics.
 
 **Order of the build.** Task 048-2 (the fixture) first; Task 048-9 (the gate's reasons) before Task 048-10 (the
-identity); design 053's Task 053-2 (the lint) before the first migration of Task 048-10; Task 048-11 before Task 048-15
+identity); design 053's Task 053-2 (the lint) before the first migration of Task 048-10; Task 048-11 before Task 048-14
 gates Success criterion 048-003.
 
 ## Risks and Mitigations
