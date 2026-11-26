@@ -44,13 +44,15 @@ oidc:
 secrets:
   existingSecret: ""
 
-# Flow control (feature 022, D022-057). Off by default. With `concurrencyKeys` on, both the control plane and the engine
-# need the deployment's digest keys: a Secret (`existingSecret`) whose key `flow-control.keys` holds `version:hex[,...]`
-# (32-byte keys in hexadecimal), mounted read-only as a file, never an environment value. The processes refuse to start
-# with the switch on and no keys, or with keys that lack a version the database has in force. Then activate the key
-# version and the capability (docs/runbooks/flow-control.md). The rate gate is not served by this release.
+# Flow control (feature 022, D022-057, D022-118). Both gates off by default, one switch each, set alike on the control
+# plane and the engine. With either on, both processes need the deployment's digest keys: a Secret (`existingSecret`)
+# whose key `flow-control.keys` holds `version:hex[,...]` (32-byte keys in hexadecimal), mounted read-only as a file,
+# never an environment value. The processes refuse to start with a switch on and no keys, or with keys that lack a
+# version the database has in force. A switch only lets a process serve its gate: then activate the key version and
+# each capability for the fleet (docs/runbooks/flow-control.md, sections 1 and 7).
 flowControl:
   concurrencyKeys: false
+  rateLimits: false
   digestKeys:
     existingSecret: ""
 
