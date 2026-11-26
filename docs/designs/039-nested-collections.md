@@ -68,10 +68,12 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
 
 ### Functional
 
-- **Requirement 039-001** A `forEach` body MAY contain a `forEach`, a loop, an approval or a child workflow, to a depth
-  of 4 collection or loop levels; the codec MUST accept such a document only when the requirement
-  `nested-collections-v1` is recorded in the instance registry (ADR-0082), and MUST still refuse every shape this design
-  does not list (Technical Plan 8).
+- **Requirement 039-001** A `forEach` body MAY contain a `forEach`, a loop or a child workflow, to a depth of 4
+  collection or loop levels, and a collection MAY stand beside loops, approvals and other nodes at the top level instead
+  of only in a chain of collections ending at `end`; an approval inside a body opens only with feature 014's scoped
+  compensation of approvals (Decision 295 of feature 014). The definition service MUST accept such a document only when
+  the requirement `nested-collections-v1` is recorded in the instance registry (ADR-0082), and the codec MUST still
+  refuse every shape this design does not list (Technical Plan 8).
 - **Requirement 039-002** A root admission that may nest MUST create a group with its first member in the admission's
   transaction; a descendant MUST join the group of its ancestor and MUST NOT reach the fresh-admission check (Decision
   705). Joining is bounded by the lifetime `maxInstances` budget and by the local scope slots.
@@ -168,6 +170,8 @@ None for the owner. Technical gaps (`specs/039-nested-collections/research.md`):
   has no leased or running step, which holds for a new child, and is asserted for every other join.
 - **Gap 039-006** A workflow with a `forEach` cannot have triggers (taken over from Gap 042-003); opening it is a
   follow-up with its own test of the trigger start path against nested admission.
+- **Gap 039-007** An approval inside a collection or loop body waits for feature 014's scoped compensation of approvals
+  (Decision 295 of feature 014); if that is not built when Task 039-10 runs, the refusal stays and this gap stays open.
 
 ## Owner decisions needed
 
@@ -292,11 +296,26 @@ receipt exists stays.
 
 ### 8. The codec opening
 
-`published_collection_definition` accepts a body that contains a `forEach`, a loop, an approval or a child, to a depth
-of 4 collection or loop levels, and keeps refusing triggers on such a workflow (Gap 039-006), scoped rate limits
-(`SCOPED_RATE_LIMIT`) and every shape not listed. The definition service refuses a nested document while
-`nested-collections-v1` is not recorded (`NESTED_COLLECTIONS_DISABLED`). A stored nested document stays readable with
-the requirement removed (the switch is read at publication only, as design 042 does).
+Today `published_collection_definition` (`crates/infra-ir/src/convert.rs`) accepts only an optional prefix of plain
+source activities, then a chain of `forEach` nodes ending at `end`, each body one to eight activities, conditions,
+switches, timers or event waits with local routes and one return; it refuses `chainPolicy`, `triggers`, an approval in a
+body (pending scoped compensation, Decision 295 of feature 014), and a loop, approval, continue-as-new or return beside a
+collection. This design opens, under the registry requirement:
+
+| Shape | Today | After this design |
+|---|---|---|
+| A `forEach` inside a body | refused | accepted to a depth of 4 collection or loop levels; a scoped-path member per root iteration |
+| A loop (`while`, `repeatUntil`) inside a body | refused | accepted within the same depth |
+| A child workflow inside a body | refused (not a body node kind) | accepted; a ChildRoot member that joins the group |
+| A collection beside loops, approvals and other nodes at the top level | refused | accepted; each root collection iteration that may nest takes one group |
+| An approval inside a body | refused, pending scoped compensation | accepted only once Decision 295's dependency is met; Task 039-10 checks it and otherwise keeps the refusal (Gap 039-007) |
+| `chainPolicy` with a collection | refused | still refused (continuation of a collection is not in this design) |
+| `triggers` on a workflow with a collection | refused | still refused (Gap 039-006) |
+| Source activities with `onError`, compensation, an effect policy or a database operation | refused | still refused |
+
+The definition service refuses a nested document while `nested-collections-v1` is not recorded
+(`NESTED_COLLECTIONS_DISABLED`). The codec reads no switch: a stored nested document stays readable with the requirement
+removed (the switch is read at publication only, as design 042 does).
 
 ### 9. Activation
 

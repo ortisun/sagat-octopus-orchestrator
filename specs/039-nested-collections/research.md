@@ -17,6 +17,7 @@ there and are cited, not copied.
 | D039-007 | The worker's lock sequence is `contracts/worker-lock-sequence.json`, checked by `scripts/check-capacity-activation.py`. | 2026-11-26 |
 | D039-008 | Nesting depth at most 4 collection or loop levels in 0.3.0. | 2026-11-26 |
 | D039-009 | Activation through the registry requirement `nested-collections-v1`; a dedicated full-stack nested run before activation, repeated by the release-candidate run. | 2026-11-26 |
+| D039-010 | The codec opening is listed shape by shape (design 039, Technical Plan 8) against the gates of `published_collection_definition` read on 2026-11-26. | 2026-11-26 |
 
 ## Gaps
 
@@ -28,6 +29,7 @@ there and are cited, not copied.
 | G039-004 | `onError` at the entry of a nested collection (as Gap 042-008). | Open; follow-up |
 | G039-005 | Work leased before a join has no possession; asserted for every join other than a new child. | Open; Task 039-5 |
 | G039-006 | Triggers on a workflow with a `forEach` (taken over from Gap 042-003). | Open; follow-up |
+| G039-007 | An approval inside a body waits for scoped compensation of approvals (Decision 295 of feature 014). | Open; Task 039-10 checks it |
 
 ## Owner questions
 
