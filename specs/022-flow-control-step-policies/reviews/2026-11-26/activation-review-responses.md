@@ -40,3 +40,26 @@ owner), so it is a reasoned entry of `ALLOWED`, beside the activation functions.
   `integration_platform_foundation -- runtime_privileges migrations` 70 passed; `sagat-infra-postgres` and
   `sagat-application` tests passed; `cargo clippy --workspace --all-targets --locked -- -D warnings` exit 0;
   `cargo fmt --check` clean.
+
+## The re-reads of the fixes (`activation-fixes-rereview-*.md`)
+
+Rulings D022-156 to D022-159. Each new or changed test was seen failing on the code before the fix (the red run of the
+re-read tests: 13 passed, 4 failed, the four below).
+
+| Finding | Fix | Test |
+|---|---|---|
+| Correctness Major 1: one run's leases lock their windows outside the sorted order (deadlock with a pause of another run) | D022-156: before the first withdrawal command, `RunTx::lock_withdrawn_gates` locks the semaphores of every permit and then the windows of every rate grant the leases' attempts hold, each table sorted in one call, then the grant rows; the commits after it take no key row they do not hold | `withdrawn_leases::two_leases_of_one_run_lock_their_windows_in_the_sorted_order`: X1 (`alpha`) held, the leases handed over as (X2, X1), the holder then takes X2: no deadlock, both withdrawn. Red first: `[Error, Error]` (the deadlock) |
+| Security Medium 1, correctness minor 1: a key of several periods defeats the own-period rule; G022-041 not closed | D022-157: the exact rule, one text (`spent_rate_slot!`): refused only when another grant of the key was decided at an instant for which this grant no longer counted under that grant's own window; honoured otherwise, the slot counting again. Decided under the window's lock. G022-041 closed by it; D022-148 and the runbooks corrected | `withdrawn_leases::a_withdrawal_is_refused_when_a_grant_of_another_period_used_the_room` (per hour and per second on one key, no row edited by hand: `SlotSpent`, nothing changed, the hand-back an ordinary failure, attempt 2 granted exactly one slot, `assert_consistent`). Red first: `Withdrawn`. `withdrawn_leases::a_withdrawn_slot_counts_again_when_no_other_grant_used_the_room_it_left` (a per-second slot past its window, nobody else on the key: withdrawn, the attempt kept). Red first: `Capped` |
+| Correctness minor 2: a refusal at the commit is a `409` and rolls the group back | D022-156: the check before the command is the decision, under the window's and the grant's locks; the commit's check is a defence with the same rule | `withdrawn_leases::a_grant_made_while_the_withdrawal_waits_for_the_window_refuses_it` (through `withdraw_root`: the grant pass and then the withdrawal queue for a held window; the pass grants the per-second waiter, the withdrawal decides after it: `SlotSpent`, nothing changed, `assert_consistent`). Red first: the withdrawal did not decide under the lock |
+| Correctness minor 3: a missing grant counted `capped`; a dead branch | D022-156: a rate-gated root step `LEASED` at the attempt with no grant is `corrupt`; the branch is removed | the suites; no test reaches a missing grant without editing rows |
+| Correctness minor 4: G022-042 understated; `capped` ambiguous | D022-158: the outcome `slot_spent` (the closed vocabulary gains it, its label test with it); G022-042 rewritten with the whole cost; the rule of D022-157 shrinks the cases to a key another acquirer used meanwhile | `sagat-application` `the_outcomes_are_a_closed_set_of_labels`; the refusal tests above assert `SlotSpent` |
+| Correctness finding 6: the tests | D022-159 items 1 and 2: the refusal tests run `assert_consistent` and count attempt 2's grants; the give-back refusal asserts `AppError::Internal`; the lease-pass race barrier waits for the pass's own statement to be blocked by the holder | the tests named above; `withdrawn_leases::a_give_back_of_a_recorded_grant_whose_lease_was_not_withdrawn_is_refused`; `withdrawn_leases::a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass_read_it` |
+| Security nit 1: the allowance's reason | It names `ActivationPrerequisite::holds` | `integration_platform_foundation::runtime_privileges` |
+| Security nit 2: the share-lock test | D022-159 item 3: the activation is held at the epoch past its first read, the key command `flow_control_key_activate` runs and holds its transaction, the epoch is released, and the activation is blocked by the key command at its read under the epoch lock; after the commit it records the requirement with version 2 active | `activation::the_activation_waits_at_its_read_under_the_epoch_lock_for_the_key_command` |
+
+### Evidence of the re-read fixes (2026-11-26)
+
+`cargo test -p sagat-control-plane --locked` all passed; `sagat-application` and `sagat-infra-postgres` tests passed;
+`integration_flow_control_step_policies` whole target 262 passed, 0 failed as the owner and 262 passed, 0 failed with
+`SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation -- runtime_privileges migrations` 70 passed; clippy exit
+0; `cargo fmt --check` clean.

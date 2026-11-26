@@ -898,3 +898,4 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   *Amended 2026-11-26 (the re-reads of `343bbe406..0f04b4429`):* T022-117 also covers decisions D022-156 to D022-159
   (one sorted lock of every withdrawn lease's keys before the commands, the exact refusal rule for a key of several
   periods, the outcome `slot_spent`); evidence in `reviews/2026-11-26/activation-review-responses.md`, not ticked.
+  *Evidence 2026-11-26, not ticked:* the whole target 262 passed, 0 failed in both roles after D022-156 to D022-159.
