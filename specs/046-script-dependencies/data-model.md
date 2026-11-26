@@ -13,7 +13,7 @@ row it would drop exists.
 | `scripts`, `script_versions`, `script_test_runs` | `manifest text NULL CHECK (octet_length(manifest) <= 65536)`; `script_versions_guard` protects it |
 | `script_versions` | `bundle_version smallint NULL` (5 for a version with packages) |
 | `serving_instances`, `platform_requirements`, `platform_requirement_history` | the checks `serving_instances_capabilities_known`, `platform_requirements_capability_known` and `platform_requirement_history_capability_known` restate their full set with `script-dependencies-v1` added (`schedules-v1`, `access-narrowing-v1`, `payload-encoding-v1`, `run-input-validation-v1`, and those other features add first) |
-| the `script_jobs` quota query (`crates/infra-postgres/src/quotas.rs`) | counts `script_dependency_jobs` (phases `RESOLVE` and `INSTALL`) and `script_build_jobs` in `QUEUED` and `RUNNING` only when their version is `BUILDING`, with test runs |
+| the `script_jobs` quota query (`crates/infra-postgres/src/quotas.rs`) | counts `script_dependency_jobs` (phases `RESOLVE` and `INSTALL`) and `script_build_jobs` in `QUEUED` only when their version is `BUILDING`, and every `RUNNING` one until it ends, with test runs |
 
 `script_artifacts` is not changed: it stays immutable (`script_artifacts_immutable`).
 
@@ -31,7 +31,7 @@ row it would drop exists.
 | `script_version_sboms` | `(tenant_id, version_id)` | `sbom bytea` (at most 4 MiB, CycloneDX 1.5) | SELECT, INSERT |
 | `script_layer_records` | `(tenant_id, artifact_digest, target)` | `layer_digest`, `unpacker`, `signature`, `key_id`, `created_at` | immutable; SELECT, INSERT |
 | `script_build_provenance` | as feature 023's data model | as feature 023's data model; the envelope names the lock and SBOM digests (at most 65,536 bytes) | created here (feature 023, Decision 1628) |
-| `script_artifact_blocks` | `(tenant_id, id)`, `UNIQUE NULLS NOT DISTINCT (tenant_id, artifact_digest, namespace_id, reason, source)` | `artifact_digest`, `namespace_id` (null for every namespace; foreign key otherwise), `reason`, `source` (`ADVISORY_IMPORT`, `REEVALUATION`, `RESERVATION`, `OPERATOR`), `policy_revision`, `reservation_revision` (the revisions it was evaluated at), `steps_failed_at` (set by the block pass), `detail jsonb` (advisory identifiers, package; at most 8 KiB), `created_at` | read by the lease statement, the materialization route and the runnable route; a trigger refuses deleting an `ADVISORY_IMPORT` row unless its advisory is withdrawn; SELECT, INSERT, DELETE, and UPDATE of `steps_failed_at` only, with a trigger that refuses an update changing any other column |
+| `script_artifact_blocks` | `(tenant_id, id)`, `UNIQUE NULLS NOT DISTINCT (tenant_id, artifact_digest, namespace_id, reason, source)` | `artifact_digest`, `namespace_id` (null for every namespace; foreign key otherwise), `reason`, `source` (`ADVISORY_IMPORT`, `REEVALUATION`, `RESERVATION`, `OPERATOR`), `policy_revision`, `reservation_revision` (the revisions it was evaluated at), `steps_failed_at` (set by the block pass), `detail jsonb` (advisory identifiers, package; at most 8 KiB), `created_at` | read by the lease statement, the materialization route and the runnable route; a trigger refuses deleting a row whose reason is malware (`PACKAGE_MALICIOUS`), whatever its source (`ADVISORY_IMPORT` or `REEVALUATION`), unless its advisory is withdrawn, and a re-evaluation page never removes such a row; SELECT, INSERT, DELETE, and UPDATE of `steps_failed_at` only, with a trigger that refuses an update changing any other column |
 | `script_policy_reevaluations` | `(tenant_id, id)` | `namespace_id` (null for the tenant), `reason` (`POLICY`, `WAIVER`, `SNAPSHOT`, `RESERVATION`, `UPLOAD`), `cursor uuid`, `lease_token_hash`, `lease_expires_at`, `created_at`, `finished_at` | inserted by the causing transaction; worked per tenant in creation order (a tenant-wide row before the namespace rows created after it); SELECT, INSERT, UPDATE |
 | `package_reservations` | `(tenant_id, ecosystem, normalised_name)` | `kind` (`NAME`, `NPM_SCOPE`), `created_by`, `created_at` | 1,000 per tenant; SELECT, INSERT, DELETE |
 | `package_reservation_revisions` | `(tenant_id)` | `revision bigint` | increased under `FOR UPDATE` by every reservation change; read `FOR SHARE` by resolve completion and finish |
@@ -53,8 +53,6 @@ row it would drop exists.
 - **Install completion:** the job row, then the version row.
 - **Finish:** the version row, then the snapshot lock shared and the same two rows `FOR SHARE`, then the artifact, the
   records and the blocks.
-- **Advisory barrier:** `script_locked_packages` in `SHARE` mode (through `sagat_advisory_barrier()`), read the highest
-  `locked_seq`, commit.
 - **Advisory switch:** the snapshot lock exclusively, then `package_advisory_snapshots` `FOR UPDATE`, then block inserts
   (no version row is locked, so it cannot deadlock with a decision, which takes the snapshot lock after its own rows).
 - **Author-lock publication and any other writer of `script_locked_packages`:** the snapshot lock shared (ordering the
@@ -68,12 +66,13 @@ row it would drop exists.
 - **Install refusal:** the job row, the version row, then the build job and the `QUEUED` sibling jobs with
   `FOR UPDATE SKIP LOCKED`.
 - **Advisory barrier:** `sagat_advisory_barrier()`, `SECURITY DEFINER` (fixed `search_path`, trusted owner), takes
-  `script_locked_packages` in `SHARE` mode and returns the highest `locked_seq`; `EXECUTE` revoked from `PUBLIC` and
-  granted to `sagat_advisory_import` only.
+  `script_locked_packages` in `SHARE` mode and returns the highest `locked_seq`, then the transaction commits; `EXECUTE`
+  revoked from `PUBLIC` and granted to `sagat_advisory_import` only.
 - **Shared locks of the runtime role:** `sagat_app` takes the snapshot lock only through the `SECURITY DEFINER` function
   `sagat_lock_advisory_snapshot_share(ecosystem)` (fixed `search_path`, trusted owner, `EXECUTE` revoked from `PUBLIC` in
-  the migration, as PostgreSQL grants it by default, and granted to `sagat_app` only), so that one function names the key (advisory lock functions are executable by every role, so the key is a convention
-  of trusted code, not a privilege) and the runtime role needs no privilege on `package_advisory_snapshots` beyond SELECT;
+  the migration, as PostgreSQL grants it by default, and granted to `sagat_app` only), on the key `hashtextextended('sagat:package_advisory_snapshot:' || ecosystem, 0)`, the repository's convention for
+  advisory keys; the wrapper is a convenience that names the key in one place, not a privilege boundary (advisory lock
+  functions are executable by every role, and only trusted code connects as `sagat_app`) and the runtime role needs no privilege on `package_advisory_snapshots` beyond SELECT;
   tested as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`).
 - **Collection:** in one transaction per object, re-read that no lock, upload or unexpired pin references the hash and
   that its mark is at least 7 days old, delete the mark, commit; then delete the object through the gateway. A reference

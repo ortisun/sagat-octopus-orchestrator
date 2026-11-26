@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 046, 2026-11-24, revised after review rounds 1 to 3 and the re-reads of 2026-11-26), to be accepted or rejected under Owner decision 2026-11-24-4 when design 046 completes its review
 **Refines / supersedes:** refines ADR-0057 decision 8 (the language policy checked at lease): the package blocks join the same lease statement; supersedes the clause of ADR-0057's 2026-11-24 amendment that placed a `runnable` pair on the artifact row (corrected there; feature 023, Decision 1628)
-**Enforced by:** planned tests of design 046: `verdict_order_*`; `matcher_agrees_with_the_version_order_*`; `a_malware_import_blocks_the_next_lease`; `a_blocked_child_script_step_fails_at_lease`; `a_blocked_step_with_no_materialized_runner_fails`; `a_malware_import_during_materialization_stops_the_start`; `a_snapshot_imported_during_a_build_is_seen_before_signing`; `the_switch_rechecks_age_under_the_lock`; `a_finish_between_staging_and_switch_is_matched`; `a_held_import_refuses_matching_finishes`; `an_older_snapshot_is_refused`; `policy_change_reaches_the_lease`; `waiver_expiry_reaches_the_lease`; `a_waiver_expiring_during_a_build_is_seen_at_finish`; `reevaluation_resumes_after_a_crash`; `reevaluation_never_removes_a_malware_block`; `a_page_never_removes_a_fresher_reservation_block`; `a_waiver_cannot_cover_malware`; `an_attempt_already_started_finishes`; `activation_requires_the_block_check`. Until they exist: review only. Also `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched` and `a_large_import_is_held`.
+**Enforced by:** planned tests of design 046: `verdict_order_*`; `matcher_agrees_with_the_version_order_*`; `a_malware_import_blocks_the_next_lease`; `a_blocked_child_script_step_fails_at_lease`; `a_blocked_step_with_no_materialized_runner_fails`; `a_malware_import_during_materialization_stops_the_start`; `a_snapshot_imported_during_a_build_is_seen_before_signing`; `the_switch_rechecks_age_under_the_lock`; `a_finish_between_staging_and_switch_is_matched`; `a_held_import_refuses_matching_finishes`; `an_older_snapshot_is_refused`; `policy_change_reaches_the_lease`; `waiver_expiry_reaches_the_lease`; `a_waiver_expiring_during_a_build_is_seen_at_finish`; `reevaluation_resumes_after_a_crash`; `reevaluation_never_removes_a_malware_block`; `a_page_never_removes_a_fresher_reservation_block`; `a_waiver_cannot_cover_malware`; `an_attempt_already_started_finishes`; `activation_requires_the_block_check`. Until they exist: review only. Also `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched` and `a_large_import_is_held`. And `the_switch_is_not_starved_by_overlapping_writers`, `the_barrier_is_not_starved_by_overlapping_writers`, `publications_during_the_switch_never_hold_it`, `a_late_writer_with_a_lower_sequence_gets_a_reevaluation_row`, `a_lease_racing_the_block_pass_is_left_to_admission`, `a_step_ready_after_the_block_pass_fails_at_materialization`, and `reevaluation_never_removes_a_malware_block` for a malware block written by a re-evaluation page.
 
 ## Context
 
@@ -44,7 +44,7 @@ namespaces with different policies.
 6. The finishing transaction of a version, on both the new-build and the cache-hit paths, takes the ecosystem's snapshot
    lock shared and the namespace's policy and the tenant's reservation revision `FOR SHARE`, and answers `StaleInputs`
    when any differs from what the application evaluated against (the application evaluates again); the switch takes the
-   snapshot lock exclusively, and the policy and reservation writers take their rows `FOR UPDATE`. A malware block is released only by a platform operator, audited,
+   snapshot lock exclusively, and the policy and reservation writers take their rows `FOR UPDATE`. A malware block, whatever wrote it (the switch or a re-evaluation page), is released only by a platform operator, audited,
    once its advisory is withdrawn (a database trigger refuses otherwise).
 
 ## Considered options
@@ -60,6 +60,9 @@ namespaces with different policies.
    scope. Rejected in review.
 6. **One import transaction replacing every record.** It would hold the row every finish needs for the whole import.
    Rejected in review.
+7. **Order the switch with the snapshot row's `FOR SHARE` and `FOR UPDATE`.** New shared row lockers can pass a waiting
+   `FOR UPDATE`, so a stream of publications could starve the switch. Rejected for a per-ecosystem advisory lock, whose
+   requests queue in order (design 046, Decision 046-078).
 
 ## Consequences
 
