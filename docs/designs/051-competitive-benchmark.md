@@ -123,70 +123,33 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   constraints of Technical Plan, "Fixed constraints"; each constraint and each excluded feature is a deviation line, and
   the report publishes each product's tuning budget (the configurations tried and the runner minutes spent). Durability
   is never changed, which these checks hold:
-  - *Server and objects.* At the start and at the end of each turn `pg_settings` shows the fixed constraints' values,
-    `pg_db_role_setting` holds no setting for the product's roles and database, and no function's
-    `pg_proc.proconfig` names `synchronous_commit` or `commit_delay` (the durability settings a function or a session
-    can set; the others need a reload or a restart, which `pg_settings` shows); each product's other function
-    settings are published (`search_path` and `lock_timeout` for this platform's migrations).
-  - *Startup.* Every product reaches its database server only through the startup guard, a first-party proxy built at
-    the commit (in the driver's workspace, its allowlists compiled in with no configuration that can change them) and
-    run as a compose service in the product's set, the database server's only network peer: `pg_hba.conf` admits the
-    guard's address and, on the local socket, only the probe's role by `peer` authentication (the host's probe runs
-    through `docker exec` in the server container); at each turn's start `docker inspect` confirms that the server's
-    network has exactly one other endpoint, whose image is the guard built at the commit in this job, that no other
-    container shares a mount with the server, and that the server publishes no port. TLS is off on every hop (Requirement 051-002), so the guard reads each connection's startup message
-    whatever its source (code, a URL's `options` or `options[...]` keys, `PGOPTIONS`, a service file): it refuses the
-    connection, and fails the turn, on a parameter outside `user`, `database`, `application_name`, `client_encoding`,
-    `DateStyle`, `TimeZone`, `extra_float_digits` and `search_path` (names compared without case) or on an `options`
-    value holding anything but `-c` settings, parsed in all three forms (`-c name=value`, `-cname=value`,
-    `--name=value`), of `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, `DateStyle` and
-    `TimeZone`; it answers a TLS or GSS encryption request with "not supported", forwards a cancel request, and fails closed on its
-    own framing: only protocol 3.0 is accepted (another version is refused, not copied), and a duplicate name
-    (compared without case), an empty name before the end, a byte after the terminator, a backslash or any whitespace
-    but single spaces in `options`, and an admitted `-c` value not matching its setting's pattern (a duration for the
-    three timeouts, `ISO` and `UTC` forms for the other two) are refused, a fixture for each; it logs a refusal by parameter name only,
-    never a value, and then copies bytes both ways unchanged. It is charged to the product, and its added latency,
-    measured by the pilot, is a deviation line common to the three. Fixtures refuse a direct `synchronous_commit`
-    parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and a parameter of unknown name, and accept the
-    startup messages this platform's pool and SQLx send.
-  - *Roles.* The products' roles are not superusers, hold no row of `pg_parameter_acl` (no `SET` or `ALTER SYSTEM`
-    grant on any parameter) and no `EXECUTE` on `pg_stat_statements_reset` or `pg_reload_conf`, and no function's source
-    (`pg_proc.prosrc`, compared without case) names `pg_stat_statements_reset` or `pg_reload_conf`, so that no
-    `SECURITY DEFINER` wrapper hands them on (this platform's own `SECURITY DEFINER` functions name neither), checked
-    through SQL at the start and the end of each turn (`synchronous_commit` has user context, so any role may set it in
-    a session, which only the scan below catches).
-  - *Statements.* With `pg_stat_statements.track = all`, so that statements inside functions are seen,
-    `pg_stat_statements_reset()` runs once per turn, after the restore and before the product starts (no session
-    exists yet), and never again in the turn, so a scan after every rung and at the turn's end covers every interval
-    since then (the start-up of connection pools and the waits between rungs included). The scan fails the turn when
-    `pg_stat_statements_info.dealloc` is not 0 (an entry evicted) or its `stats_reset` is not the time of that one
-    reset, except that fault (c), whose kill empties the statistics, admits one more reset between the injector's
-    recorded fault time and the moment the server accepted connections again (which the host measures, Requirement
-    051-009), with `dealloc` at 0 from then on, and runs a scan just
-    before the kill (a statement between that scan and the kill goes unseen, a stated residual; a session setting it
-    made ends with the kill, which ends every session). The scan also fails the turn on any
-    `SET`, `SET LOCAL`, `RESET` or `ALTER ... SET` naming `synchronous_commit` or `commit_delay` (names compared
-    without case, since `pg_stat_statements` may store the value as a placeholder) and on any `set_config` statement,
-    outside a per-product list that the pilot fixes and publishes, since `pg_stat_statements` stores a `set_config`
-    call's arguments as placeholders. An entry is a normalized statement text admitted only when every call site that
-    produces it, all of them listed, passes a literal setting name (compared without case) other than `commit_delay`,
-    and for `synchronous_commit` a value from an allowlist: a literal of `on`, `local`, `remote_write` or
-    `remote_apply` (compared without case), or a `CASE` whose every branch is one of those literals or
-    `current_setting('synchronous_commit')`; anything else (`off`, `false`, `no`, `0`, a parameter, a formatted string)
-    is refused. For vendors the call sites are those of the pinned source, which no pilot can change. For this
-    platform, whose source changes between campaigns, `check_competitive_benchmark` finds every call matching
-    `(?i)\bset_config\s*\(` and every `SET` statement naming the two settings in the workspace's SQL and Rust at the
-    commit under test, refuses one that breaks the rule or whose SQL is assembled at run time, and builds this
-    platform's list from the call sites it found and passed, never by hand (feature 006's acknowledgement passes when
-    written in the allowlisted form); fixtures refuse `'false'`, `'0'`, `OFF`, a name in another case and a
-    formatted value.
-  - *Latency.* The statement latency of Requirement 051-007 for a rung is the difference of two snapshots of
+  - *At every commit.* The three database servers run one image, built at the commit from the pinned PostgreSQL image
+    with a first-party extension, `sagat_commit_check` (in `postgres/`, a few dozen lines of C), loaded through
+    `shared_preload_libraries`. Its transaction callback, at the pre-commit and pre-prepare events of every transaction
+    that holds a transaction identifier, raises an error, which aborts that commit, when the transaction's effective
+    `synchronous_commit` is below `local` or its `commit_delay` is not 0, and counts the refusal in shared memory,
+    which the host's probe reads after every rung and at the turn's end; a refusal fails the turn. The check reads the
+    value in effect where it takes effect, so it holds whatever set it: a startup option in any form, a `SET` or
+    `SET LOCAL`, a `set_config`, a role's or database's setting, under any spelling (a function's `SET` clause ends
+    with the function, before the commit). A refused commit
+    writes nothing asynchronously, so a refusal unseen (between the last read and fault (c)'s kill, which empties
+    shared memory) turns nothing off. Its tests run a disposable server and refuse a commit after each of those ways
+    of setting `off`, and of a non-zero `commit_delay`, and accept `on` and `local`; a pilot that meets a refusal
+    reports it as that product's configuration, fixed before the campaign.
+  - *Server settings.* At the start and at the end of each turn `pg_settings` shows the fixed constraints' values
+    (`fsync`, `full_page_writes` and the server's `synchronous_commit` among them); the products' roles are not
+    superusers, hold no row of `pg_parameter_acl` (no `SET` or `ALTER SYSTEM` grant on any parameter) and no `EXECUTE`
+    on `pg_reload_conf`, so no product can change a server setting between the two reads, checked through SQL.
+  - *Latency.* `pg_stat_statements` (`track = all`, so that statements inside functions are seen) is reset once per
+    turn, after the restore and before the product starts, and its `dealloc` must stay at 0 (an evicted entry fails
+    the turn, since it falsifies the differences); after fault (c)'s restart, which empties it, the differences start
+    again from the restart. The statement latency of Requirement 051-007 for a rung is the difference of two snapshots of
     `pg_stat_statements`, taken by the host at the planned start and end of the rung's 300 s window, which the driver
     posts before the rung (its schedule is precomputed), the snapshot's lag after the planned time published and a
     rung whose lag exceeds 1 s marked; the snapshots are keyed on (`userid`, `dbid`, `queryid`, `toplevel`), with
     top-level and nested time published apart (a function call's time already includes its inner statements); they
     stay in the host-only directory, and only their computed differences per table (those keys, table, `calls`,
-    `total_exec_time`, never `query`) are uploaded. 
+    `total_exec_time`, never `query`) are uploaded.
   This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's task that adds the setting is
   in the commit, as a single node requires, stated.
 
@@ -388,7 +351,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   40-character commit, no `${{ inputs. }}` or `${{ github.event. }}` inside a `run:` (inputs pass through `env:`), and
   refuse any ref but `develop`, `main`, `release/**` and `v*`. Every compose file under `tests/performance/competitive/`
   MUST have every service on networks declared `internal: true` (this platform's included), and none may be
-  `privileged`, mount the container engine's socket, use the host's network, process or IPC namespace, add
+  `privileged`, mount the container engine's socket, use the host's or another container's network, process or IPC
+  namespace (any `network_mode`, and `pid:` or `ipc:` of the `service:` or `container:` form), add
   capabilities or devices, or run unconfined (Windmill's script variants then run with `nsjail` off if it needs any of
   these, stated), with one named exception: this platform's sandbox-runner service may mount the socket, its image
   built at the commit, `read_only`, `cap_drop: [ALL]` and `no-new-privileges`, and its per-run containers run with
@@ -396,8 +360,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `docker inspect` of every run container; every third-party program, the Temporal sidecar and `omes`
   included, runs as a compose service under these rules, and the rule refuses a third-party binary started from
   `run.sh` on the host and a `docker run` or `docker create` in `run.sh` of any image not built at the commit, and
-  applies the compose rules' list as flags to the rest (no `--privileged`, engine socket mount, host network, process or IPC
-  namespace, added capability or device, or unconfined profile); the driver, built at the commit under test, runs its load as a container on each product's
+  applies the compose rules' list as flags to the rest (no `--privileged`, engine socket mount, host or container network, process or
+  IPC namespace, added capability or device, or unconfined profile); the driver, built at the commit under test, runs its load as a container on each product's
   internal network, started by `run.sh` once per turn in the order `driver plan` prints, it and the metrics containers
   with an explicit `cgroup_parent` pinned to the driver's thread (their effective CPU sets confirmed from `docker
   inspect` at each turn's start, so that this platform's turn's default parent does not capture them), while its host side runs
@@ -406,7 +370,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   mounted into a product container: the driver's own, which only it writes, where it posts each rung's window
   boundaries and the baseline's and null fault's ends in a fixed grammar (a rung index and `CLOCK_REALTIME` integers,
   anything else refused), and the host-only directory, where the `host` subcommand writes an acknowledgement the
-  driver waits for before each rung (after the scan and the calibration); on the host only the `host` subcommand
+  driver waits for before each rung (after the refusal count, the snapshot and the calibration); on the host only the `host` subcommand
   reads either directory and copies files out of them, each directory from its own root handle under the
   rule below, and `run.sh` never reads a file of them by path; the injector writes each fault's time as
   `CLOCK_REALTIME` into a host-only directory that no container can write (mounted read-only into the driver), where
@@ -526,9 +490,9 @@ lists what a later release would ask the owner for.
 |---|---|
 | `shapes.md` | The method version; each variant and the procedure (steps, payloads, the activity body, outcomes, transitions, completion records, ceilings with their reasoning, timeouts and retry budgets per product, idempotency per product, early arrivals); the execution records' grammar |
 | `images.lock` | Every image's name, digest and signature check |
-| `driver/` | The driver's own workspace (`sagat-competitive-driver`): the startup guard, the `host` subcommand, the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan --job-kind --variant --repetition --seed` (prints the turns and their order, the worst-case minutes and disk), `turn --product --variant --seed`, `crash --product --fault`, `burst --product`, `capacity`, `load`, `report <artifacts> [--common-rate <variant>]` |
+| `driver/` | The driver's own workspace (`sagat-competitive-driver`): the `host` subcommand, the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan --job-kind --variant --repetition --seed` (prints the turns and their order, the worst-case minutes and disk), `turn --product --variant --seed`, `crash --product --fault`, `burst --product`, `capacity`, `load`, `report <artifacts> [--common-rate <variant>]` |
 | `sagat/`, `temporal/`, `windmill/` | For each product: the compose files (single-node, and two of each for crashes), its load balancer, the configuration with placeholders, the code of each variant, the history loader |
-| `postgres/` | The PostgreSQL configuration of the fixed constraints, `pg_hba.conf`, and the server's compose service |
+| `postgres/` | The PostgreSQL configuration of the fixed constraints, `pg_hba.conf`, the `sagat_commit_check` extension with its tests, the server's image built at the commit from the pinned PostgreSQL image, and the server's compose service |
 | `run.sh` | Prepares the machine (tool caches freed, the daemon's control-group parent, the sets), runs `check-architecture.py --only competitive` first, starts and stops containers, and calls the driver's subcommands; its arguments (job kind, variant, repetition, seed) are the matrix fields |
 | `campaign.json` | The campaign's stages and matrices, read by the workflow with `fromJSON`, so that tuning never edits the workflow |
 | `.github/workflows/competitive-benchmark.yml` | `workflow_dispatch` only; Requirement 051-020's rules; `ubuntu-24.04`; `timeout-minutes` 355 per job and 345 for the `run.sh` step, so that the upload of partial raw data still runs; a `concurrency` group `competitive-benchmark` without cancellation; stages in order by `needs:` (the history job, throughput, one matrix of common-rate and timer-burst jobs, the crash confirmation, crashes), each a matrix with `max-parallel` at most 12 and never two at once, so that the free plan's 20 concurrent jobs keep room for CI |
@@ -536,10 +500,8 @@ lists what a later release would ask the owner for.
 `check_competitive_benchmark` in `scripts/check-architecture.py`, with a flag `--competitive-root DIR` for its fixtures
 in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key by key with a line match (no YAML
 library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
-(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (each database server's only network shared with its startup guard alone, no
-`volumes_from`, no volume shared with the database service and no `ports:` on it, no YAML anchor, merge key or
-`extends:`, and `pg_hba.conf` admitting the guard's address and the probe's role on the local socket only), every `set_config(` call of the workspace
-checked as Requirement 051-004 states, `run.sh`'s `docker run` and `docker create`
+(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (no YAML anchor, merge key or `extends:`, which a line match cannot follow; every
+database server from the image with `sagat_commit_check` and its `shared_preload_libraries`), `run.sh`'s `docker run` and `docker create`
 lines, the image manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
 `run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
 does; the workflow is required once `campaign.json` exists. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
@@ -552,7 +514,7 @@ turn; the others are stopped.
 
 | Component | Hardware threads | Memory limit |
 |---|---:|---:|
-| The product under test, its startup guard and its database server (the split the pilot chooses), the Temporal sidecar in Temporal's turn | 3 | 12 GB |
+| The product under test and its database server (the split the pilot chooses), the Temporal sidecar in Temporal's turn | 3 | 12 GB |
 | The driver and metrics collection | 1 | 2 GB |
 
 3 + 1 = 4 threads; 12 + 2 = 14 GB of 16, leaving 2 GB to the system.
@@ -575,7 +537,7 @@ turn; the others are stopped.
 
 **Turns and timing.** A rung is 60 s of warm-up, a 300 s window and up to 60 s of drain: 7 minutes. A throughput turn is
 the archive's restore (at most 10 minutes), a ladder of at most 10 rungs (70 minutes), the waits between rungs (capped
-at 12 minutes), a per-rung overhead of at most 0.5 minutes (the calibration loop, the `pg_stat_statements` scan and the
+at 12 minutes), a per-rung overhead of at most 0.5 minutes (the calibration loop, the refusal count, the snapshots and the
 reads of commit times: 5), a per-turn overhead of at most 4 (the start probe, the image and `docker inspect` checks, and
 the container daemon's restarts around this platform's turn) and a final `CHECKPOINT` and stop (2): at most 103 minutes.
 A throughput job runs one variant: 3 × 103 + 20 of preparation + 7 for at most one re-run rung = 336 minutes. A
@@ -688,9 +650,10 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 - **A doubling ladder alone.** A factor-two resolution cannot rank; bisection gives a factor of 2^(1/8), about 1.09, and ties are reported.
 - **Each product's recorded end time.** Stamped before the commit, by a different amount per product; the database's
   commit time is one clock for all three.
-- **Searching every source of startup options statically.** Options come from code, URLs (two syntaxes), the
-  environment and service files, in three forms; a search of each source missed one at every review, while the
-  startup guard reads what the client actually sends.
+- **Detecting each way a session can change durability.** Startup options (from code, URLs, the environment and
+  service files, in several forms), statements under escaped spellings, function and role settings: a static search,
+  a startup proxy and a scan of `pg_stat_statements` were each tried, and every review found another way past them;
+  the commit check enforces the value where it takes effect.
 - **Polling the products for completions during a rung.** It loads each product's database differently; the workers'
   own records count them.
 - **Interleaving the products rung by rung.** Twenty-nine switches per job do not fit its time; contiguous turns rotated
@@ -726,7 +689,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the startup guard (its compiled allowlists, the three `options` forms, the encryption refusal, the fail-closed framing with a fixture per refusal, the log by name only, the `docker inspect` check of its single peer, image, shared mounts and ports, its fixtures refusing a direct `synchronous_commit` parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and an unknown parameter and accepting this platform's pool and SQLx, the database server's network and `pg_hba.conf` admitting only it), the durability checks (`pg_settings`, `pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end, the roles' grants (`pg_parameter_acl`, `pg_stat_statements_reset`, `pg_reload_conf`, no function source naming either), the single reset before the product starts, the scan after every rung and at the turn's end with `dealloc` at 0 and `stats_reset` equal to that reset, and one reset between the fault time and the server's acceptance of connections after fault (c) with the scan before the kill, the scan of `SET` forms of the two settings, the per-product `set_config` list with its value allowlist, and this platform's list built from the call sites found with the case-insensitive pattern, with the refusal fixtures), the snapshots at the planned window boundaries keyed with `toplevel` with their lag, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the server image with `sagat_commit_check` and its tests (a commit refused after a startup option, `SET`, `SET LOCAL`, `set_config`, a role's or database's setting of `off` and a non-zero `commit_delay`, `on` and `local` accepted), the durability checks (the refusal count after every rung and at the turn's end, `pg_settings` at each turn's start and end, the roles' grants: `pg_parameter_acl` and `pg_reload_conf`), the single reset of `pg_stat_statements` before the product starts with `dealloc` at 0, the snapshots at the planned window boundaries keyed with `toplevel` with their lag, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-007, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
 - [ ] T051-7 Add the fault injector to the driver's `host` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the baseline's and null fault's ends read from the driver's posts, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath its own directory's root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
   Refs: Requirement 051-009
