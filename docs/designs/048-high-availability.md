@@ -163,8 +163,11 @@ From the code and documents on `develop` at `546d5aa5`:
   (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at least twice the statement timeout, the name feature 032 also uses).
   The outcome is applied when `COMMIT` succeeds; not applied when the server answers it with an error of severity
   `ERROR` on a session that stays alive, since PostgreSQL raises every error of a commit (deferred constraints, a
-  serialization failure, the deferred quota triggers' `54000`, a cancel) before it writes the commit record and turns any
-  failure after it into a `PANIC` (this generalizes `confirmed_abort` of `capacity_finish.rs` for the commit itself, and
+  serialization failure, the deferred quota triggers' `54000`) before it writes the commit record and turns any failure
+  after it into a `PANIC`. A cancel that reaches a commit while it waits for a standby is different: PostgreSQL answers
+  success with a `WARNING`, the commit written locally only. The platform never sends one (the rules below), Task 048-6
+  establishes whether its statement timeout can (and if it can, `commit_safely` turns it off for the commit), and an
+  operator's cancel is the residual of the Technical Plan; Task 048-6 records that answer too (this generalizes `confirmed_abort` of `capacity_finish.rs` for the commit itself, and
   keeps today's mapping of `54000` to `QuotaExceeded`); and unknown otherwise: the deadline passing, an I/O error, a
   `FATAL` or `PANIC`, a closed pool or a task that panicked are `StoreError::CommitOutcomeUnknown`, which replaces the five module-level variants of the same
   name (Architecture decision 0078). After an unknown outcome the task keeps the connection, and its slot, until the
@@ -176,7 +179,7 @@ From the code and documents on `develop` at `546d5aa5`:
   for a standby: the sessions set `client_connection_check_interval` to 0 and, where the server has it,
   `transaction_timeout` to 0, and `scripts/check-architecture.py` refuses, in `crates/infra-postgres` and `apps/`,
   `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()` outside `pool.rs`, a raw `BEGIN`,
-  `START TRANSACTION`, `COMMIT`, `READ WRITE`, `SESSION CHARACTERISTICS` or `transaction_read_only` outside `pool.rs`,
+  `START TRANSACTION`, `COMMIT`, `END`, `ABORT`, `ROLLBACK`, `READ WRITE`, `SESSION CHARACTERISTICS` or `transaction_read_only` outside `pool.rs`,
   and `fetch()` on a statement that writes. Whether the server's own timeouts can cancel the wait is established by Task 048-6 first; if
   they can, `commit_safely` sends `SET LOCAL statement_timeout = 0` and `COMMIT` in one message.
 - **Requirement 048-013 After a change of server, nothing is served until a write reaches a standby.** A server's
@@ -188,8 +191,9 @@ From the code and documents on `develop` at `546d5aa5`:
   executable by `sagat_app` and the owner) returns the start time, the token, `pg_is_in_recovery()`, `synchronous_commit`
   and whether `synchronous_standby_names` is empty. In recovery it returns a null token without reading the table (an
   unlogged table cannot be read during recovery); otherwise it reads the row, and a missing row is a null token. It
-  only reads, so it runs on the read-only sessions of every connection. The token is written only by the confirmation's
-  `WriteTx` (`INSERT ... ON CONFLICT (id) DO NOTHING`, then a read). A null token means "unconfirmed", never an
+  only reads, so it runs on the read-only sessions of every connection. The token is written only inside the
+  confirmation's `WriteTx`, by `instance_confirm_durability()` (below), a definer function that inserts it (`INSERT ...
+  ON CONFLICT (id) DO NOTHING`, then a read); the runtime role has no privilege on the table. A null token means "unconfirmed", never an
   identity; the registry's connection is admitted while the identity is unconfirmed, so that it can confirm, and every
   other connection is refused.
   The process keeps one `DatabaseIdentity` (application-owned, in `crates/application/src/instances.rs`, behind a port
@@ -202,8 +206,11 @@ From the code and documents on `develop` at `546d5aa5`:
   connect timeout of 3 s, since a connection's creation is stamped after its `after_connect` returns. An unknown commit
   outcome (Requirement 048-012) and an unavailable `25006` (Requirement 048-011) do the same, without a new identity.
   The confirmation task lives as long as the process and waits for signals. A confirmation is one `WriteTx` on the
-  registry's connection: `sagat_server_identity()`, then `instance_confirm_durability(instance, start_time, token)`, a
-  definer function that writes the identity into the process's row of the registry (`serving_instances`), committed
+  registry's connection: `sagat_server_identity()`, then `instance_confirm_durability(instance, credential)`, a
+  definer function that checks the process's registry credential against its `token_hash` as every registry function
+  does, inserts the token when it is absent, reads the identity itself (never from its arguments) and writes it into the
+  process's row of the registry (`serving_instances`) and, the first time any process confirms, into the one-row
+  `registry_first_confirmation`, committed
   through `commit_safely` with no deadline (the keepalive bounds a dead peer, and an answer that comes late is still
   used). When it is applied, the process clears the reason, under the gate's lock, only if no identity different from
   the one it read has been observed since that read; the confirmation's own read counts as an observation. Since a
@@ -214,16 +221,18 @@ From the code and documents on `develop` at `546d5aa5`:
   keeper), and only the registry's connection connects. A command of `control-plane` that writes (`migrate`, through
   design 053's Task 053-4, `cleanup-secrets`, `provision-tenant`, `reseal-secrets`, `quota-ceiling`,
   `scheduling-weight`, `schedule-trigger-handover`, `capability-activate`) waits, up to 60 s, until a live registry row
-  carries the server's current identity as confirmed, and otherwise exits with code 1 ("retry later"); it proceeds
-  without waiting only on a database whose registry has never held a row (a fresh one), not on one whose processes are
-  merely down. `seed-dev`, `script-key`, `healthcheck`, `help` and `version` are exempt.
+  carries the server's current identity as confirmed, and otherwise exits with code 1 ("retry later"); it then adopts
+  that identity as its own confirmed one, so that its `after_connect` refuses any connection whose identity differs. It
+  proceeds without waiting only on a database where `registry_first_confirmation` is empty (a fresh one, which no
+  process has ever confirmed), not on one whose processes are merely down or deregistered. `seed-dev`, `script-key`, `healthcheck`, `help` and `version` are exempt.
 - **Requirement 048-014 The serving gate has reasons.** The registry's serving gate (`crates/application/src/instances.rs`)
   MUST keep its epoch and capability state and gain a set of closing reasons (`DATABASE_UNCONFIRMED`,
   `DATABASE_NOT_SYNCHRONOUS`; design 053 adds two); it is open only when the registry's state allows it and the set is
   empty. Each owner clears only its own reason; a re-registration does not reopen a gate another reason holds. Readiness
   checks the gate before it pings storage. The reasons are added to `specs/001-platform-foundation/contracts/openapi.yaml`,
   the gRPC error metadata and `sdks/SPEC.md`; a request refused before authentication shows only `UNAVAILABLE` with
-  `Retry-After` of 10 s, never the reason or a value that depends on it; after authentication, while a reason holds,
+  `Retry-After` of 10 s, never the reason or a value that depends on it (the pre-authentication refusal of
+  `crates/api-http/src/limits.rs`, which shows `BINARY_CAPABILITY_MISSING` today, keeps the new reasons out); after authentication, while a reason holds,
   `Retry-After` is 2 s, over the gate's 10 s. The registry's
   `registry_error` classifies `CommitOutcomeUnknown` and an `after_connect` refusal as a failed connection (Architecture
   decision 0082, decision 5).
@@ -286,7 +295,8 @@ From the code and documents on `develop` at `546d5aa5`:
   and content. A negative control proves the check: the drill blocks replication to both standbys, commits a ledger row
   through its own connection to the primary with `synchronous_commit=local`, stops the primary, and the check must find
   that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
-  and checks that every process refuses that principal, or answers `UNAVAILABLE`, from 22 s after the isolation on
+  and checks that every request with that principal that starts 27 s or more after the isolation is refused or answered
+  `UNAVAILABLE`
   (Technical Plan, "Why one waited write protects what came before it"). Reports go to
   `tests/performance/reports/high-availability.md` with the runner (Owner decision 2026-11-25-1), the environment and
   every failure.
@@ -414,13 +424,14 @@ Each was decided under the delegation of Owner decision 2026-11-20-6, with its r
 | Socket keepalive and `TCP_USER_TIMEOUT` | `vendor/sqlx-core` (`src/net/socket/mod.rs` and its manifest's `socket2`), the root `Cargo.toml` (`[patch.crates-io]`), `scripts/check-vendor.py` (a list of vendored crates, each with its archive hash and its allowed diff) | 048-005 |
 | `WriteTx`, `commit_safely`, the outcome rule, `CommitOutcomeUnknown`, the reason on `AppError::Unavailable` and its HTTP and gRPC mapping | `crates/infra-postgres/src/pool.rs`, `capacity_finish.rs` (`confirmed_abort` moved to `pool.rs`); about 233 commit sites and about 55 pool-level writes in `crates/infra-postgres` and `crates/scheduler`; `crates/application/src/error.rs`; `crates/api-http/src/error.rs` and `crates/api-grpc` | 048-012 |
 | Startup options, the `after_connect` checks, `25006` | `pool.rs`, `identity.rs`, `instances.rs` (`registry_error`) | 048-011 |
-| The identity, the confirmation, the gate's reasons | `crates/application/src/instances.rs` (`DatabaseIdentity`, the gate, the confirmation task), `crates/infra-postgres/src/instances.rs` (the port), `pool.rs` (the hooks, lazy pools), `crates/api-http/src/routes/health.rs` | 048-013, 048-014 |
+| The identity, the confirmation, the gate's reasons | `crates/application/src/instances.rs` (`DatabaseIdentity`, the gate, the confirmation task), `crates/infra-postgres/src/instances.rs` (the port), `pool.rs` (the hooks, lazy pools), `crates/api-http/src/routes/health.rs`, `crates/api-http/src/limits.rs` | 048-013, 048-014 |
 | The report window, heartbeat retries | `sdks/SPEC.md`, the six SDKs, `tests/contract/sdk-conformance/scenarios/report-through-failover.json`, the fault engines | 048-015, 048-016 |
 
 **New in the database**, each by a migration of design 053's rules with its grants and storage classification:
 `server_incarnation` (unlogged; runtime role: none, written and read only through `sagat_server_identity()`);
-`sagat_server_identity()`; `serving_instances.confirmed_server_start timestamptz` and `confirmed_server_token uuid`,
-written only through `instance_confirm_durability()`.
+`sagat_server_identity()`; `serving_instances.confirmed_server_start timestamptz` and `confirmed_server_token uuid`, and the one-row
+`registry_first_confirmation (only_row boolean primary key, at timestamptz)`, written only through
+`instance_confirm_durability()`.
 
 **Why one waited write protects what came before it.** A standby receives WAL in order; a commit returns only after a
 standby has flushed WAL up to its position, which lies after every earlier commit's record. So once a process's
@@ -430,9 +441,10 @@ exposed by an operator's cancel or termination of a waiting backend (forbidden i
 manager's fast shutdown of an isolated primary, is visible for a moment to that server's sessions not yet ended; the
 platform's processes hold such sessions only until their next commit's outcome is unknown or a new connection observes
 the new identity, and close their gate then. A process that still reaches an isolated former primary serves reads from
-it for at most 22 s after the isolation: its registry heartbeat, a write, comes within 12 s (10 s jittered) and waits
-for a standby the isolated server cannot reach, so its commit deadline of 10 s makes the outcome unknown and closes the
-gate (12 + 10 = 22 s). `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
+it for at most 27 s after the isolation with the default settings: its registry heartbeat, a write, comes within 12 s
+(10 s jittered) and waits for a standby the isolated server cannot reach, so its commit deadline of 10 s makes the
+outcome unknown and closes the gate, and a request that acquired a connection just before runs for at most its
+statement timeout of 5 s (12 + 10 + 5 = 27 s; raising the commit deadline lengthens it by as much). `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
 apply, and the isolation drill asserts the bound.
 
 ### The drills
@@ -531,7 +543,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-010
 - [ ] T048-3 Add `infra/docker/compose.ha.yaml`, `infra/docker/patroni/` (Dockerfile pinned by digest, `patroni.yml`, `pg_hba.conf`, the init of `sagat_app` and the owner), `infra/docker/haproxy/haproxy.cfg`, the etcd users, the networks and the `.env.example` keys, with a smoke test in the `scale` job that stops the primary once and checks with `dr_verify`.
   Refs: Requirement 048-002, Requirement 048-003, Requirement 048-005
-- [ ] T048-4 Add `infra/kubernetes/ha/` (the operator's values for one namespace and its release pinned with the failover quorum's maturity, the `Cluster`, managed roles, reserved connections, the connection limit, the network policy) and `infra/helm/examples/ha-cloudnativepg.yaml`, the chart's `topologySpread` values, `kubeconform` and `helm template` checks in CI, a policy test of the admitted labels, a check that `database-runner`'s `denyCidrs` cover the database namespace, a check that the role's connection limit covers (the autoscaler's ceiling + the surge) × (twice the request pool + the registry pool) + the jobs + a margin of 10 (the second request pool covers the backends a pod replaced while the standbys are down leaves waiting, which hold their slots until the standbys return, as the runbook says), and a check that every image is pinned by digest.
+- [ ] T048-4 Add `infra/kubernetes/ha/` (the operator's values for one namespace and its release pinned with the failover quorum's maturity, the `Cluster`, managed roles, reserved connections, the connection limit, the network policy) and `infra/helm/examples/ha-cloudnativepg.yaml`, the chart's `topologySpread` values, `kubeconform` and `helm template` checks in CI, a policy test of the admitted labels, a check that `database-runner`'s `denyCidrs` cover the cluster's pod range (or the database's reserved address pool) and its Service range, a check that the role's connection limit covers, summed per deployment (the control plane and the engine, each with its own autoscaler's ceiling and surge), (ceiling + surge) × 2 × (its request pool + its registry pool) + the jobs + a margin of 10 (the doubling covers the backends a pod replaced while the standbys are down leaves waiting, the registry's confirmation among them, which hold their slots until the standbys return, as the runbook says), and a check that every image is pinned by digest.
   Refs: Requirement 048-001, Requirement 048-004
 - [ ] T048-5 Vendor `sqlx-core` with the keepalive and `TCP_USER_TIMEOUT` change and `socket2` in its manifest, generalize `scripts/check-vendor.py` to a list of vendored crates with their archive hashes and allowed diffs, and add `a_dead_peer_with_acknowledged_data_fails_within_ten_seconds` to `fault_high_availability` (asserted within 12 s: the 10 s bound plus one probe interval for the kernel's timer).
   Refs: Requirement 048-005, Requirement 048-010
@@ -541,7 +553,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-012
 - [ ] T048-8 Move every write of `crates/infra-postgres` and `crates/scheduler` to `WriteTx`, one pull request per module group; then the startup options (`synchronous_commit=on`, `default_transaction_read_only=on`), the `25006` classification and the architecture rules of Requirements 048-011 and 048-012, with `a_write_outside_write_tx_fails_at_once` and `a_role_setting_of_synchronous_commit_local_is_refused`.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
-- [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
+- [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, keep the new reasons out of the pre-authentication refusal of `crates/api-http/src/limits.rs`, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
   Refs: Requirement 048-014
 - [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate`, `a_connection_to_a_superseded_server_is_refused`, `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
   Refs: Requirement 048-011, Requirement 048-013, Requirement 048-014
