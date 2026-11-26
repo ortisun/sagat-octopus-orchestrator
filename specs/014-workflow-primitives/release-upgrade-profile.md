@@ -14,8 +14,9 @@ The current coordinator owns a disposable PostgreSQL server through the reposito
 The old process connects only to that server, creates/migrates its own owned database and uses
 its real REST publication/start, scheduler and gRPC1.5 worker to finish a reserve activity and
 leave charge READY/unleased. It also publishes/starts a legacy root event wait. Its witness
-contains only database/resource identities, migration boundary and immutable-prefix hashes;
-no payload bytes, tokens, session capabilities or credentials.
+contains only database/resource identities, migration boundary, immutable-prefix hashes and the
+column names of the completed `reserve` row; no payload bytes, tokens, session capabilities or
+credentials.
 
 After successful old-process exit, attach the same exact database, assert the old migration
 boundary and apply the normal current MIGRATOR. Model expiration of the stopped scheduler's
@@ -24,6 +25,17 @@ This expiry injection is not elapsed-wall-time or a live mixed-owner race proof.
 runtime-role API/worker services against that database, complete the old READY activity through
 gRPC, publish the matching legacy root event through REST and dispatch it. Both old runs must
 finish and replay, with old captured/definition/journal/completed-prefix evidence unchanged.
+
+Unchanged, for the completed `reserve` row, means that every column the release wrote holds the
+same value and that every column a later migration added is NULL on that row. The writer records
+the row's column names in the witness (`workColumns`); every reader hashes the row projected onto
+those names and fails, naming the column, when a released column is gone or an added column holds
+a value. On the release's own schema the projection is the whole row, so the recorded hash is the
+whole-row hash. A whole-row hash would fail on any added column although no released value changed:
+feature 022 adds `steps.flow_control_gates` (decision D022-140 of feature 022). The definition,
+journal and captured-item rows are still compared whole, since no migration after the release adds
+a column to their tables; the first that does extends the same projection to that table. The
+in-flight profiles use the same prefix and the same rule.
 
 Finally, another process of the exact old executable starts its real API on that already
 migrated database and verifies the terminal runs through REST and native replay. Do not run the

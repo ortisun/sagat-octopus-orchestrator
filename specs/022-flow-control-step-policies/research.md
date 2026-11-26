@@ -2355,6 +2355,16 @@ taken after `git grep D022-04` on every `origin/*` branch.
   lease-withdrawal design planned one generic command for this feature to adopt. Chosen: the two flow-control
   capabilities become entries of `capability-activate`, and `flow-control-activate` is removed before release 0.3.0
   ships (task T022-116, which blocks the release). The runbook and the release notes name only the generic command.
+- **D022-140 — The released upgrade witness compares a step row on its released columns (2026-11-26).** Migration
+  20270130000600 adds `steps.flow_control_gates`, the first column added to `steps` since release 0.2.0. The released
+  upgrade profile (`scripts/test-release-upgrade-profile.py`, scenario `active-data`) hashed the completed `reserve`
+  row whole (`to_jsonb`), so the new key, NULL on that row, changed the hash although no value the release wrote had
+  changed: the released reader failed at `phase.rs:211` (CI at efabe42d, and reproduced locally). Options: keep the
+  gates in a side table (a schema shaped by a test, and every gate read pays a join); leave the row out of the witness
+  (weaker); compare the row on the columns the release wrote. Chosen: the last. The writer records the row's column
+  names in the witness; every reader hashes the row projected onto them and fails, naming the column, when a released
+  column is gone or an added column holds a value. The in-flight scenarios use the same prefix and follow the same
+  rule. Contract: `specs/014-workflow-primitives/release-upgrade-profile.md`. No product behaviour changes.
 
 ## Gaps
 
