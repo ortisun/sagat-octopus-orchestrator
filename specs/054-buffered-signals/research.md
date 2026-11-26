@@ -83,7 +83,7 @@ approved.
   a counter on `runs`, a new method and a fitness rule; the run already has a byte ledger (`run_instance_usage.logical_output_bytes`,
   migration `20261204000000_logical_output_byte_ledger`, read by `RunTx::logical_output_bytes()`), so pending bytes are a sibling
   column of that row, under one database check of the sum, and only the three sites that sum `RunData.outputs` themselves change.
-- **Decision 054-009 — `buffered` is required and `true`.** The first draft's `buffered` meant nothing when false (zoom-out Nit 9
+- **Decision 054-009 — `buffered` is required and `true` (revised 2026-11-26: optional, and `true` when present).** The first draft's `buffered` meant nothing when false (zoom-out Nit 9
   of design 045's review of 2026-11-24). It is kept, as a constant, because design 044 declares signals in this shape and a later
   design may declare unbuffered signals (with a schema, say) beside them; a document never carries a field that says nothing
   without failing publication. Delegate (Owner decision 2026-11-24-4). *Revised 2026-11-26 after the stage 5 zoom-out (its Nit 5):*
