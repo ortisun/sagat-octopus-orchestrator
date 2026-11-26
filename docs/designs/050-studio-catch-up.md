@@ -889,7 +889,8 @@ in its first page sends one request per refresh, a fifth of these figures. Task 
 `features/audit/` at the tenant level (beside `namespaces`), shown in the navigation only with `audit:read`. Its
 filters live in component state, never in the address, so actor subjects and resource identifiers stay out of the
 browser history and of shared links; the download and the journal download are labelled as holding personal data, and the
-server records each read of the audit trail in `audit.read`. `path()` in
+server records reads of the audit trail in `audit.read`, one record per caller and filter per five minutes (the
+action collapses repeats), so a download of many pages leaves about one record. `path()` in
 `src/api/client.ts` refuses a segment equal to `.` or `..`, which percent-encoding leaves as it is, so a business
 identifier or a resource identifier can never move a request to another route. Filters:
 action (a picker that suggests the known actions, without `access.denied.cross_tenant`, which `GET /audit` never

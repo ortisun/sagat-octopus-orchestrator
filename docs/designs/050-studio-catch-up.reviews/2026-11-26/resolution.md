@@ -84,3 +84,9 @@ All 20 findings are accepted and fixed; every Blocker is fixed.
 | 10 | Major | Fixed: the real arithmetic. The new journeys run as a second job selected with `SAGAT_STUDIO_GREP` | Task 050-19 |
 | 11 | Major | Fixed: `audit-actions.json` is named, and the OpenAPI item is dropped | Requirement 050-013, Technical Plan 9 |
 | 12 to 20 | Nit | Fixed: `SAGAT_CONTRACT_BASELINE_BLESS`; the loop's drain reasons; `entryNodeId`, the entry's graph id, replaces the internal UUID; a missing drivers route means no Iceberg; `access.denied.cross_tenant` is excluded from the picker; `requires` everywhere; the activation refusals handled; `retryAfterMs` and `endpoints.journal` reused; the lint rule and the tokens test said to arrive with #267. `chainPolicy` added to the refusals of the Loop row | Technical Plans 3 to 8, Tasks |
+
+## Security re-read, round 1 (`approval/reread-1-security.md`, at `db1bea08`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: the sentence says reads collapse per caller and filter per five minutes | Technical Plan 7 |

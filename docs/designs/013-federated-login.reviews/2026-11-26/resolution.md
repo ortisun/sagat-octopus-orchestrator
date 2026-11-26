@@ -74,3 +74,20 @@ All 22 findings are accepted and fixed; both Blockers are fixed.
 | 9 | Major | Fixed: `fault_platform_foundation` and `contract_platform_foundation` in the verification | Task 013-6 |
 | 10 | Major | Fixed: only `worker dev` refuses a key-store token. `doctor` uses it for the control plane | Task 013-15 |
 | 11 to 22 | Nit | Fixed: `config.json` is read per request with `scope`; `iat` is in `VerifiedCaller`; the fetcher and the re-exports are listed; the filters and the battery's target are named; `Slot::IdentityAdvisory` is added; the organization comes from `--org`, `SAGAT_ORG` or the login default; per-route body limits are set; Architecture decision 0101 is cited with #267; the reuse is named; `ON DELETE SET NULL (owning_connection_id)`; a validate migration is added; feature 029's contract is amended and the 2-second `lock_timeout` stated | Technical Plans 3 to 13, Tasks, `specs/029-custom-roles-folders/contracts/group-source.md` |
+
+## Security re-read, round 1 (`approval/reread-1-security.md`, at `db1bea08`)
+
+All nine findings are fixed; a security finding is never accepted. The Stage 8 resolution's sentence "no security
+property is weakened" was wrong for findings 2 to 5; each is restored below.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the poll answers only the attempt's tenant and subject, otherwise `404`; state and identity only, `no-store`; in the battery; `a_link_poll_by_another_subject_is_not_found` | Technical Plans 4 and 11, Task 013-9 |
+| 2 | Major | Fixed: a raise records a context floor and its time, and the per-request check refuses sessions signed in before it without meeting it; a disable records `sessions_revoked_before`; `lowering_the_context_revives_no_refused_session`, `a_reenabled_connection_revives_no_session` | Requirements 013-010, 013-019, Technical Plans 3 and 4, Tasks 013-10, 013-20 |
+| 3 | Major | Fixed: within 10 minutes of a suspension, a request without `If-Match` that would reactivate is refused with SCIM `409` and audited; `a_late_reactivation_after_a_deactivation_is_refused` | Technical Plan 6, Task 013-11 |
+| 4 | Major | Fixed: `breakGlassLastUsedAt` and the 30-day count on `GET /identity/settings` and the identity screens; `a_break_glass_use_shows_on_the_identity_settings` | Requirement 013-021, Technical Plan 11, Task 013-20 |
+| 5 | Major | Fixed: one table-driven integration test breaks every claim rule through the callback with the development provider's `claims` override | Requirement 013-007, Technical Plan 9, Tasks 013-3, 013-9 |
+| 6 | Nit | Fixed: the poll needs the bearer and `X-Sagat-Renew`, not `Origin` | Technical Plans 4 and 11 |
+| 7 | Nit | Fixed: a trigger refuses a change of the immutable columns, checked by `runtime_privileges` | Technical Plan 13 |
+| 8 | Nit | Fixed: `config.json` is built from the process's in-memory view of the registry | Technical Plan 7 |
+| 9 | Nit | Fixed: Architecture decision 0140 decision 9 says the engine lists the capability always | Architecture decision 0140 |
