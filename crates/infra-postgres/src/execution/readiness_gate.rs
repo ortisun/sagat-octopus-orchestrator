@@ -1123,10 +1123,19 @@ impl PgRunTx {
                     0,
                 )
                 .await?;
+                // the queue's order is its admission order whatever the clock does: one microsecond after the key's
+                // youngest waiter when the clock reads earlier (a step back), read under the key row's lock this
+                // transaction holds since the keys were filed, so the key's admissions queue in their commit order
+                // (decision D022-160)
                 sqlx::query(
                     "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
                      group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard, pinned_limit) \
-                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, $10, $11, run_shard($3), $13)",
+                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, \
+                             greatest($10::timestamptz, \
+                                      (SELECT max(x.enqueued_at) + interval '1 microsecond' FROM concurrency_waiters x \
+                                        WHERE x.tenant_id = $1 AND x.namespace_id = $2 AND x.pool = $6 \
+                                          AND x.permit_scope = $12 AND x.group_name = $7 AND x.key_digest = $8)), \
+                             $11, run_shard($3), $13)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1158,10 +1167,16 @@ impl PgRunTx {
                     period_ms(gate),
                 )
                 .await?;
+                // in admission order whatever the clock does, as a concurrency waiter (decision D022-160)
                 sqlx::query(
                     "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                      group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard, pinned_limit) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, $11, $12, run_shard($3), $14)",
+                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, \
+                             greatest($11::timestamptz, \
+                                      (SELECT max(x.enqueued_at) + interval '1 microsecond' FROM rate_limit_waiters x \
+                                        WHERE x.tenant_id = $1 AND x.namespace_id = $2 AND x.pool = $6 \
+                                          AND x.limit_scope = $13 AND x.group_name = $7 AND x.key_digest = $8)), \
+                             $12, run_shard($3), $14)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())

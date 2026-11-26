@@ -138,6 +138,22 @@ async fn start_grants(w: &World, runs: &[RunId]) -> Vec<(Uuid, i64)> {
     .expect("grants")
 }
 
+/// The age of the transaction that wrote each of `runs`' start grants (`age(xmin)` of its `rate_limit.granted` row, the
+/// copies a restore wrote left out), read in one statement so that every age counts from the same transaction: a grant
+/// committed earlier is older (decision D022-162).
+async fn grant_transaction_ages(w: &World, runs: &[RunId]) -> Vec<(Uuid, i64)> {
+    let ids: Vec<Uuid> = runs.iter().map(|run| run.as_uuid()).collect();
+    sqlx::query_as(
+        "SELECT run_id, age(xmin)::bigint FROM run_events \
+          WHERE run_id = ANY($1) AND event_type = 'rate_limit.granted' AND node IS NULL \
+            AND NOT coalesce((detail->>'restored')::boolean, false)",
+    )
+    .bind(ids)
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("grant transactions")
+}
+
 /// SC-022-017: no interval `(t - period, t]` of the journals holds more than `limit` of `instants` (microseconds).
 fn at_most_per_window(instants: &[i64], limit: usize, period_us: i64) {
     for at in instants {
@@ -1153,8 +1169,9 @@ async fn restarted_processes_go_on_with_the_buffer_window_after_window() {
 /// refused, whatever the runner's speed. The ten grants' counted instants are moved ahead while the next four are
 /// admitted, so that the four find the window full however long the ten took (the run of 2026-11-24 took 3.3 s for the
 /// first ten on a loaded runner and granted the eleventh at its admission), and moved back before the window ages out
-/// (decision D022-072). No one-second interval of the journals holds more than 10 grants; grants follow admission order;
-/// each admitted run is granted once.
+/// (decision D022-072). No one-second interval of the journals holds more than 10 grants; grants follow admission order,
+/// read on the order their transactions committed in, since the database clock may step back between two grants a few
+/// milliseconds apart and their instants then disagree with it (decision D022-162); each admitted run is granted once.
 #[tokio::test]
 async fn a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window() {
     const MARGIN_US: i64 = 600 * SECOND_US;
@@ -1251,11 +1268,14 @@ async fn a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit
     let mut instants: Vec<i64> = grants.iter().map(|(_, at)| *at).collect();
     instants.sort_unstable();
     at_most_per_window(&instants, 10, SECOND_US);
+    // every grant of the flood is a transaction of its own, run one after the other (admissions, then each pass's
+    // decisions in turn), so the age of the transaction that wrote a run's grant orders the grants exactly, with no clock
+    // (decision D022-162): older transactions are older, read in one statement
+    let ages = grant_transaction_ages(&w, &admitted).await;
     let in_order: Vec<i64> = admitted
         .iter()
         .map(|run| {
-            grants
-                .iter()
+            ages.iter()
                 .find(|(id, _)| *id == run.as_uuid())
                 .expect("a grant of each run")
                 .1
@@ -1264,12 +1284,12 @@ async fn a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit
     let out_of_order: Vec<(usize, i64, i64)> = in_order
         .windows(2)
         .enumerate()
-        .filter(|(_, pair)| pair[0] > pair[1])
+        .filter(|(_, pair)| pair[0] <= pair[1])
         .map(|(i, pair)| (i, pair[0], pair[1]))
         .collect();
     assert!(
         out_of_order.is_empty(),
-        "grants follow admission order: (index, its grant, the next one's) {out_of_order:?}"
+        "grants follow admission order: (index, the age of its grant's transaction, the next one's) {out_of_order:?}"
     );
     for run in admitted {
         w.assert_consistent(run).await;

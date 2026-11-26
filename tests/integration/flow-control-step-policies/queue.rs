@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 
 use super::readiness::{granted, hints, queued, rows, serial, step};
 use crate::support::engine::{World, activity, document, parallel_node, wait_node, with};
-use crate::support::flow_control::{age_gate_deadline, gated_world, publish, publish_as};
+use crate::support::flow_control::{
+    age_gate_deadline, gated_world, publish, publish_as, until_past,
+};
 use crate::support::scale::{TTL, keeper, scheduler};
 
 /// `concurrency` of group `group` on `input.accountId` with `limit`.
@@ -55,10 +57,85 @@ async fn lock_waiters(w: &World, n: i64) {
     }
 }
 
+/// The tenant's one semaphore's next-eligible hint, in microseconds on the database clock (a release sets it to its own
+/// `clock_timestamp()`).
+async fn semaphore_hint_us(w: &World) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (extract(epoch FROM next_eligible_at) * 1000000)::bigint FROM concurrency_semaphores \
+          WHERE tenant_id = $1",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("a due semaphore")
+}
+
+/// One pass once the database clock is past the semaphore's hint: the first pass that can select the key a release
+/// made due, whatever the clock did between the release and the pass (decision D022-161; NFR-022-008).
+async fn tick_once_due(w: &World) -> sagat_scheduler::Report {
+    until_past(&w.db.pool, semaphore_hint_us(w).await).await;
+    w.scheduler.tick().await
+}
+
+/// The runs waiting in `table` (`concurrency_waiters` or `rate_limit_waiters`), in the queue's order.
+async fn queue_order(w: &World, table: &str) -> Vec<RunId> {
+    let order = match table {
+        "concurrency_waiters" | "rate_limit_waiters" => {
+            format!(
+                "SELECT run_id FROM {table} WHERE tenant_id = $1 ORDER BY enqueued_at, run_id, node"
+            )
+        }
+        other => panic!("no queue in {other}"),
+    };
+    let runs: Vec<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(order))
+        .bind(w.admin.tenant_id().as_uuid())
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("queue");
+    runs.into_iter().map(RunId::new).collect()
+}
+
+/// The database clock set back by `by_us` after `run`'s admission, as a later admission sees it: `run`'s waiter rows in
+/// `table`, and its key's oldest wait, moved `by_us` ahead, as the owner, with the table's guard off for this
+/// transaction only (the rows are immutable otherwise). A later admission's clock reading is then before them, as after
+/// a step back of the database server's clock (decision D022-160).
+async fn set_clock_back_after(w: &World, table: &str, run: RunId, by_us: i64) {
+    let (guard, keys) = match table {
+        "concurrency_waiters" => ("concurrency_waiters_immutable", "concurrency_semaphores"),
+        "rate_limit_waiters" => ("rate_limit_waiters_guard", "rate_limit_windows"),
+        other => panic!("no waiters in {other}"),
+    };
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    for statement in [
+        format!("ALTER TABLE {table} DISABLE TRIGGER {guard}"),
+        format!(
+            "UPDATE {table} SET enqueued_at = enqueued_at + $2 * interval '1 microsecond' WHERE run_id = $1 \
+               AND $2::bigint IS NOT NULL"
+        ),
+        format!(
+            "UPDATE {keys} k SET oldest_wait_at = (SELECT min(x.enqueued_at) FROM {table} x \
+                  WHERE x.tenant_id = k.tenant_id AND x.namespace_id = k.namespace_id AND x.pool = k.pool \
+                    AND x.group_name = k.group_name AND x.key_digest = k.key_digest) \
+              WHERE k.tenant_id = (SELECT tenant_id FROM runs WHERE id = $1) AND $2::bigint IS NOT NULL"
+        ),
+        format!("ALTER TABLE {table} ENABLE ALWAYS TRIGGER {guard}"),
+    ] {
+        let query = sqlx::query(sqlx::AssertSqlSafe(statement.clone()));
+        let query = if statement.contains("$1") {
+            query.bind(run.as_uuid()).bind(by_us)
+        } else {
+            query
+        };
+        query.execute(&mut *tx).await.expect("the clock set back");
+    }
+    tx.commit().await.expect("set back");
+}
+
 // ------------------------------------------------------------------------------------------------- grant (T26)
 
 /// A released permit lets the next pass grant the oldest waiter, announce it and lease it; the younger one waits, and a
-/// key with nothing grantable rests until the next release.
+/// key with nothing grantable rests until the next release. "The next pass" is the first one once the database clock is
+/// past the key's hint: a clock set back between the release and the pass delays the grant to it (decision D022-161).
 #[tokio::test]
 async fn a_released_permit_is_granted_to_the_oldest_waiter_by_the_next_pass() {
     let w = gated_world().await;
@@ -78,7 +155,7 @@ async fn a_released_permit_is_granted_to_the_oldest_waiter_by_the_next_pass() {
     let task = w.one_task(&session).await;
     assert_eq!(task.run_id, holder);
     w.complete(&session, &task, &json!({})).await.expect("done");
-    let report = w.scheduler.tick().await;
+    let report = tick_once_due(&w).await;
     assert_eq!(report.gates_granted, 1, "{report:?}");
     granted(&w, older, "g", (true, false)).await;
     assert_eq!(hints(&w, older, "g").await, 1, "the grant announces it");
@@ -96,11 +173,126 @@ async fn a_released_permit_is_granted_to_the_oldest_waiter_by_the_next_pass() {
     let task = w.one_task(&session).await;
     assert_eq!(task.run_id, older, "the worker gets the granted step");
     w.complete(&session, &task, &json!({})).await.expect("done");
-    assert_eq!(w.scheduler.tick().await.gates_granted, 1);
+    assert_eq!(tick_once_due(&w).await.gates_granted, 1);
     granted(&w, younger, "g", (true, false)).await;
     for run in [holder, older] {
         w.assert_consistent(run).await;
     }
+}
+
+/// Decision D022-161: a release whose key's hint is ahead of the database clock (the clock set back between the release
+/// and the pass, emulated by moving the hint 300 ms ahead) is not selected by a pass before the clock passes the hint,
+/// and the first pass after it grants the oldest waiter: the delay NFR-022-008 allows, nothing lost.
+#[tokio::test]
+async fn a_release_due_ahead_of_the_clock_is_granted_by_the_first_pass_once_the_clock_passes_it() {
+    const AHEAD_US: i64 = 300_000;
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document("grant-clock-back", "g", vec![serial(activity("g"))]),
+    )
+    .await;
+    let session = w.session(&["act.g"]).await;
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let older = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    queued(&w, older, "g", (true, false)).await;
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    sqlx::query(
+        "UPDATE concurrency_semaphores SET next_eligible_at = next_eligible_at + $2 * interval '1 microsecond' \
+          WHERE tenant_id = $1",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(AHEAD_US)
+    .execute(&w.db.pool)
+    .await
+    .expect("the hint ahead of the clock");
+    let hint = semaphore_hint_us(&w).await;
+    let now = crate::support::flow_control::database_now_us(&w.db.pool).await;
+    if now < hint {
+        // a pass this side of the hint does not select the key (on a slow runner the clock may already be past it)
+        assert_eq!(w.scheduler.tick().await.gates_granted, 0);
+        queued(&w, older, "g", (true, false)).await;
+    }
+    assert_eq!(tick_once_due(&w).await.gates_granted, 1);
+    granted(&w, older, "g", (true, false)).await;
+    for run in [holder, older] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// Decision D022-160: a start admitted after the database clock went back queues behind the waiters admitted before it,
+/// on both gates, and is granted after them. The step is emulated by moving the older waiter's `enqueued_at` 300 ms
+/// ahead (what a clock set back makes it relative to the next admission's reading); before the decision the younger
+/// start's reading was its place, and it was queued, and granted, first.
+#[tokio::test]
+async fn a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters() {
+    const STEP_US: i64 = 300_000;
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document("queue-clock-back", "g", vec![serial(activity("g"))]),
+    )
+    .await;
+    let session = w.session(&["act.g"]).await;
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let older = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    queued(&w, older, "g", (true, false)).await;
+    set_clock_back_after(&w, "concurrency_waiters", older, STEP_US).await;
+    let younger = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    queued(&w, younger, "g", (true, false)).await;
+    assert_eq!(
+        queue_order(&w, "concurrency_waiters").await,
+        [older, younger],
+        "admission order, whatever the clock read"
+    );
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    assert_eq!(tick_once_due(&w).await.gates_granted, 1);
+    granted(&w, older, "g", (true, false)).await;
+    queued(&w, younger, "g", (true, false)).await;
+
+    // the rate gate: one slot an hour, held; the same step back between two buffered admissions
+    let rated_workflow = publish(
+        &w,
+        document(
+            "queue-clock-back-rate",
+            "r",
+            vec![super::readiness::rated(activity("r"))],
+        ),
+    )
+    .await;
+    let slot_holder = w
+        .start(rated_workflow, &json!({"accountId": "acct-2"}))
+        .await;
+    let rate_older = w
+        .start(rated_workflow, &json!({"accountId": "acct-2"}))
+        .await;
+    queued(&w, rate_older, "r", (false, true)).await;
+    set_clock_back_after(&w, "rate_limit_waiters", rate_older, STEP_US).await;
+    let rate_younger = w
+        .start(rated_workflow, &json!({"accountId": "acct-2"}))
+        .await;
+    queued(&w, rate_younger, "r", (false, true)).await;
+    assert_eq!(
+        queue_order(&w, "rate_limit_waiters").await,
+        [rate_older, rate_younger],
+        "admission order, whatever the clock read"
+    );
+    for run in [
+        holder,
+        older,
+        younger,
+        slot_holder,
+        rate_older,
+        rate_younger,
+    ] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
 }
 
 /// A saturated second key is granted at its limit and no further, beside the first key's grant.

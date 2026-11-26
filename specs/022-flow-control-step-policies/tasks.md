@@ -494,6 +494,12 @@ T022-063 (020 erasure).
 - [ ] T022-080 [P] [US7] Fault and race suite `tests/fault/flow-control-step-policies/rate_limits.rs`: grant versus timeout and grant versus cancel (20 rounds each, barriers, no sleeps), a crash at each commit point of T19–T24, a duplicate grant across a shard takeover, a lost hint, a restart after several windows, a flood of 1,000 starts on one key, the limit lowered while runs wait, replicas with offset process clocks, the database clock set back. SC-022-017,018,022,023; NFR-022-001,008. Evidence: results recorded as ADR-0088 evidence.
   - *Amended 2026-11-13 after review* (D022-027): the set-back clock uses `libfaketime` inside the PostgreSQL test container; the grant instant is `clock_timestamp()` after the window lock.
   - *Amended 2026-11-21 (D022-072):* the set-back clock is tested by moving the counted grant instants one window ahead, not with `libfaketime`.
+  - *Amended 2026-11-26 (decisions D022-160 to D022-162):* the flood's intermittent "grants follow admission order" was the
+    database clock of the test host stepping back about 130 ms every 10 s: the queue followed the clock (a defect, fixed: a
+    waiter's `enqueued_at` is at least one microsecond after its key's youngest waiter's) and the check compared clock
+    instants (now the commit order of the grants). Evidence: `queue::a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters`
+    red before the fix, green after; the flood alone 6 of 6 and the fault suite 3 of 3 in the runtime role after it (3 of 6 and
+    2 of 3 before).
   - *Amended 2026-11-24 (decisions D022-076 and D022-078):* the answers to the re-review of this task (`reviews/2026-11-24/rate-faults-rereview-correctness-reviewer.md`) are built with it: the hint a waiter queued with room writes, the hint of a full window of mixed lengths, a reset decided by the reservation rule, the order bound within a pass, the place and the run view on the effective limit, the weak tests made to fail, and the waiter's declaration (`pinned_limit`) bounding it under the current ceiling. Each is evidence of this task; the timing-dependent cases of this suite are driven by the database clock or by moved counted instants.
   *Built 2026-11-21, not ticked:* `tests/fault/flow-control-step-policies/rate_limits.rs`, 15 cases (crashes in T19,
   T20, T21, T22, T23 at both commits and T24; grant against timeout and grant against cancel, 20 rounds each; takeover;

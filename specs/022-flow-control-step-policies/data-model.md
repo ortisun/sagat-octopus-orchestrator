@@ -141,7 +141,9 @@ SELECT, INSERT, DELETE. Protected.
 ### `concurrency_waiters`
 
 PK `(tenant_id, run_id)`; `namespace_id`, `pool`, `permit_scope` (always `RUN`), `group_name`, `key_digest`,
-`declared_limit`, `enqueued_at` (database clock in the admission transaction; ties broken by `run_id`),
+`declared_limit`, `enqueued_at` (database clock in the admission transaction, raised to one microsecond after the
+key's youngest waiter when the clock reads earlier, so that the queue is in admission order whatever the clock does,
+decision D022-160; ties broken by `run_id`),
 `deadline_at`, `shard smallint` (= `run_shard(run_id)`, ADR-0020).
 Indexes: `(tenant_id, namespace_id, group_name, key_digest, enqueued_at, run_id)` for oldest-first;
 `(shard, enqueued_at)` for the grant pass. FK to `runs` and to the semaphore. Grants: SELECT, INSERT,
@@ -306,8 +308,8 @@ SELECT, INSERT, UPDATE (`leased_at` only), DELETE.
 
 PK `(tenant_id, run_id, node)`; `node` is `''` for a buffered run; `attempt integer`; `namespace_id`,
 `pool`, `limit_scope`, `group_name`, `key_digest` (FK to `rate_limit_windows`); `declared_limit`,
-`period_ms`; `enqueued_at` (database clock of the buffering transaction; ties broken by `run_id`, then
-`node`); `deadline_at`; `shard smallint` (= `run_shard(run_id)`). Indexes: `(tenant_id, namespace_id,
+`period_ms`; `enqueued_at` (database clock of the buffering transaction, raised to one microsecond after the key's
+youngest waiter when the clock reads earlier, decision D022-160; ties broken by `run_id`, then `node`); `deadline_at`; `shard smallint` (= `run_shard(run_id)`). Indexes: `(tenant_id, namespace_id,
 pool, limit_scope, group_name, key_digest, enqueued_at, run_id, node)` for oldest first; `(shard,
 enqueued_at)` for the grant pass. FK `(tenant_id, run_id)` → `runs`. Grants: SELECT, INSERT, DELETE.
 

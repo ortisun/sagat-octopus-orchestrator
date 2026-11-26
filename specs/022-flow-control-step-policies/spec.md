@@ -886,6 +886,9 @@ Added after the review of 2026-11-13:
   after the deciding transaction has locked the key's window, and that instant is the one recorded.
   Replicas whose own clocks disagree grant the same waiters; a database clock that moves backwards delays
   grants and never adds one. The instant precedes the commit by the transaction's duration (G1184).
+  *Amended 2026-11-26 (decision D022-160):* nor does it reorder a key's queue: a waiter's place MUST follow every
+  waiter of its key admitted before it, whatever the clock read at its admission (its `enqueued_at` is at least one
+  microsecond after the key's youngest waiter's).
 
 ### Key Entities
 

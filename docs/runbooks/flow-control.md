@@ -690,7 +690,12 @@ SELECT clock_timestamp() AS now,
 ```
 
 A grant in the future means the clock went back. Fix the time source of the database server; the keys go on by
-themselves once its clock passes the recorded instants. The same clock decides the queue deadlines (`deadline_at`), so
+themselves once its clock passes the recorded instants. A step back never reorders a key's queue: a waiter admitted
+after the step is queued one microsecond after the key's youngest waiter (D022-160), so its `enqueued_at`, and the
+waits and `oldestWaitSince` measured from it, can read up to the step later than the clock did. A key a release made
+due just before the step is selected by the first pass after the clock passes its hint (D022-161). A development
+host's Docker virtual machine steps its clock every 10 seconds (the guest log's "SyncTime ... drift was"), by about
+130 ms under load: a test that compares database instants across such a step is not measuring the gate. The same clock decides the queue deadlines (`deadline_at`), so
 a clock set back also delays the timeouts. **Never** rewrite `granted_at` or `leased_at` to "catch up": a lease instant
 is written once, the consistency check compares the rows with the journals, and an instant moved back frees slots
 early, which is the one thing the gate must never do.

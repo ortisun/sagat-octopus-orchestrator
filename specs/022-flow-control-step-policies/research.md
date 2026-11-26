@@ -3006,6 +3006,78 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
   The privilege allowance names `ActivationPrerequisite::holds`. (5) The ordering test: one run's two leases on keys
   X1 < X2 handed over as (X2, X1) while X1 is held complete without a deadlock.
 
+### Decisions of the intermittent grant-pass tests (2026-11-26)
+
+Two tests failed now and then at the end of full runs on a loaded machine and passed alone:
+`fault_flow_control_step_policies` `rate_limits::a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window`
+("grants follow admission order", twice in the runtime role) and `integration_flow_control_step_policies`
+`queue::a_released_permit_is_granted_to_the_oldest_waiter_by_the_next_pass` (the pass granted nothing, once). Every
+outcome below is delegate (OD-2026-11-24-4), written before its code.
+
+- **D022-160 — A key's queue order is its admission order whatever the database clock does (2026-11-26; SC-022-017,
+  FR-022-042, NFR-022-008, D022-073).** Delegate. *The cause, measured.* The test database runs in the Docker virtual
+  machine of the development host, whose guest agent sets the clock to the host's every 10 seconds; on 2026-11-26 it set
+  it back by about 130 ms at each of those instants (the guest log reads "SyncTime: system time synchronized with host
+  (drift was 133.4ms)" every 10 s, and the wall clock minus the monotonic clock of the guest drops by 0.128 to 0.139 s
+  at each; earlier that day by 2.05 s). PostgreSQL's `clock_timestamp()` follows it. A waiter's `enqueued_at` was the
+  admission's clock reading, and a key's queue is ordered by `(enqueued_at, run_id, node)`, so a start admitted just
+  after such a step was placed before the starts admitted in the 130 ms before it. Observed in a run of the flood
+  test watched from outside (the queue read while the buffer was full, against the admission order that the age of
+  the `xmin` of each run's `rate_limit.queued` row gives): the 25th buffered start was enqueued at 20:34:15.935899 and
+  the 26th at 20:34:15.823613, at the guest's step of 17:34:15 local time; starts 26 to 31 were queued between starts
+  20 to 25, the pass granted them in that order, and the test failed with start 34 granted 1.78 s after the next one.
+  The grant pass, the hold-back of D022-078 and the failure marker of D022-124 were not involved: no grant failed or
+  was skipped, the queue itself was out of admission order. *Why it is a defect.* SC-022-017 and D022-073 require the
+  grants to follow admission order, and G1165 states the queue as first in, first out by admission commit;
+  NFR-022-008 lets a clock that moves backwards delay grants, never reorder them. A production database's clock is
+  stepped back by a time-source correction or a failover too (runbook section 12). Options: (a) a sequence number per
+  waiter (an identity column, or a counter on the key row) ordering the queue instead of `enqueued_at`: exact, but
+  every statement that reads the order (the eligibility text, the place read, the grant routine's waiters ahead, the
+  listings, three indexes) changes, and a migration rebuilds the indexes on live tables; (b) keep `enqueued_at` as the
+  order and make it monotone per key: a waiter's `enqueued_at` is the later of the admission's clock reading and one
+  microsecond after the key's youngest waiter, read under the key row's lock the admission already holds, so the
+  key's admissions, which that lock serialises in commit order, are queued in that order; (c) state the reordering as a
+  limit. Chosen (b): one subquery in each of the two `INSERT`s of a waiter, served by the key's oldest-first index (a
+  backward scan to its first row), no new statement, column, index or migration, and the order is exact for the waiters
+  that are queued together, which are the only ones whose order matters (a key with no waiter grants or queues by its
+  counts alone). The cost: after a step back, `enqueued_at` can be ahead of the clock by at most the step, so a wait
+  measured from it (`concurrency_wait_seconds`, `rate_limit_wait_seconds`, `oldestWaitSince`, `CONCURRENCY_QUEUE_STUCK`)
+  reads up to the step shorter; the deadline is still the admission's clock reading plus the wait bound, unchanged.
+  Different keys are not ordered against each other, as before. Test, red before:
+  `integration_flow_control_step_policies` `queue::a_start_admitted_after_the_clock_went_back_queues_behind_the_older_waiters`
+  (both gates; the step is emulated by moving the older waiter's `enqueued_at` ahead, which is what a clock set back
+  makes it relative to the later admission's reading, as the fault suite's set-back tests do).
+- **D022-161 — The released-permit test waits for the key's due instant on the database clock (2026-11-26;
+  NFR-022-008).** Delegate. The same steps explain the second test: a release marks its key due at its own
+  `clock_timestamp()`, and a pass selects the keys due at its selection's `now()`; when the clock is set back between
+  the two (a window of a few milliseconds in the test, against a step every 10 s), the pass after the release does not
+  yet select the key and grants nothing, and the next pass once the clock is past the hint grants it. That is the
+  delay NFR-022-008 allows (gap G1183), not a lost grant, and no text promises the very next pass. Options: (a) mark a
+  released key due at an instant before any later reading (for example the transaction's start minus a margin):
+  every margin is a guess at the size of a step, and the hint is also the start of the grant-lag measurement
+  (D022-083); (b) correct the test to the promise: the pass that runs once the database clock is past the key's hint
+  grants the oldest waiter. Chosen (b). The test reads the key's `next_eligible_at` after each release and waits for
+  the database clock to pass it (`until_past`, a bounded condition, no sleep) before the pass it counts; with a clock
+  that does not step, the wait returns at once. Shown by the emulation of D022-160: the hint moved 300 ms ahead, a pass
+  grants nothing, and the pass after the clock passes the hint grants the oldest waiter.
+- **D022-162 — The flood test checks admission order on the commit order of the grants, not on their instants
+  (2026-11-26; SC-022-017, NFR-022-008, D022-160).** Delegate. Even with the queue in admission order, the flood test
+  compared the grants' `granted_at_us`, which is the clock reading of each grant: a step back inside a pass, between
+  two grants a few milliseconds apart, makes the later grant's instant the earlier one, though it was decided and
+  committed after. The order SC-022-017 asks for is the order of the decisions. Options: (a) a tolerance on the
+  instants (a guess at the step); (b) the commit order of the grants: each grant of the flood is a transaction of its
+  own, run one after the other (admission, then the passes of one process and of a restarted one, each pass deciding
+  its key's waiters in turn), so the age of the transaction that wrote a run's `rate_limit.granted` row (`age(xmin)`,
+  read in one statement) orders them exactly, with no clock. Chosen (b): the test asserts that the grants' transaction
+  ages fall strictly in admission order, and keeps the window check on the instants (no interval of the database
+  clock holds more than the limit, which holds whatever the clock does, since every decision counts on that clock).
+  Runs on 2026-11-26 on the merged tree, before D022-160 to D022-162: the test alone under load failed 3 of 6 times
+  (pairs 1.09, 1.01 and 1.78 s apart, the queue out of order as above), and the whole fault suite in the runtime role
+  failed 1 of 3 times, on this test, with a pair 90 ms apart among the ten granted at admission (instants only, at the
+  guest's step of 17:36:35). After them, with the guest still setting the clock back by about 129 ms every 10 s: the
+  test alone under load passed 6 of 6, the whole fault suite in the runtime role 3 of 3 (36 tests each), and
+  `integration_flow_control_step_policies` 280 of 280 in the runtime role.
+
 ## Gaps
 
 | ID | Gap | Status |
