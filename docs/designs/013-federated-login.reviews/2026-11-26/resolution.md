@@ -127,3 +127,20 @@ All eight findings are fixed.
 | 6 | Nit | Fixed | Decision 013-017 |
 | 7 | Nit | Fixed: the in-transaction check has no lag; the in-memory view drives the Studio's offer and the name; the runbook's wait scoped to it | Technical Plan 13 |
 | 8 | Nit | Fixed: the addition covers SCIM `POST` and pre-provisioning, the registry epoch first, and the demotion restart rule | Architecture decision 0050 |
+
+## Correctness re-read, round 1 (`approval/reread-1-correctness.md`, at `5d451eb9`)
+
+All ten findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: `identity_role_recompute` rows and a per-connection job row with `rules_revision` and a cursor, written in the change's transaction, cleared by compare-and-set; two tests | Technical Plans 3, 4 and 6, Task 013-17 |
+| 2 | Major | Fixed: the lock strength is chosen before the first lock, never upgraded; a restart rolls back; the barrier tests assert one success and one `LOCKOUT_GUARD`; Architecture decision 0050's addition says so | Technical Plan 13, Architecture decision 0050 |
+| 3 | Major | Fixed: the cookie is read before the transaction, so a refusal leaves the code unspent; after expiry the Studio starts a new sign-in with the person's choice; the test redeems one code twice | Technical Plan 4 |
+| 4 | Major | Fixed: the group change commits, the refused demotion is skipped, audited and counted on the connection, not retried until rules or groups change; `removing_the_last_admin_from_its_group_keeps_scim_working` | Technical Plan 6, Task 013-17 |
+| 5 | Nit | Fixed: redemption, renewal and refresh check the handle's `kid` in the transaction and roll back | Technical Plan 4 |
+| 6 | Nit | Fixed: the attempt key is added as an opening key first; a test | Technical Plan 12, Task 013-9 |
+| 7 | Nit | Fixed: the grace covers a generation whose later generations are all unused; `two_lost_refresh_responses_keep_the_session` | Requirement 013-026, Task 013-9 |
+| 8 | Nit | Fixed: a tombstone of the attempt id outlives the purged code | Requirement 013-009, Technical Plan 6 |
+| 9 | Nit | Fixed: re-read under the shared fence, restart with the exclusive one; a barrier test | Technical Plan 4, Task 013-17 |
+| 10 | Nit | Fixed: the provider's path after a `409` named, the refusal does not count toward `scimFailing`, the fixtures show each provider | Technical Plan 6 |

@@ -288,7 +288,10 @@ REST API to approve a step.
 - **Non-functional requirement 050-003 (compatibility)** The REST additions are additive: new routes, and new
   optional fields that readers ignore when they do not know them (`sdks/SPEC.md`); `ApprovalListItem` (a closed
   schema today) and `PublicationRequest` gain `youMayDecide` in the OpenAPI document, and the SDK type
-  descriptions that say the per-run list carries no eligibility are corrected. No existing answer changes, and no IR,
+  descriptions that say the per-run list carries no eligibility are corrected. One existing answer changes on purpose: an
+ineligible caller deciding an approval of an ended run gets the eligibility refusal (`403` or
+`INITIATOR_CANNOT_DECIDE`, with its denial audit record) where it got a retryable `503`, because the ended-run guard
+moves after authorization (Technical Plan 6). No other answer changes, and no IR,
   worker-protocol or AsyncAPI change.
 - **Non-functional requirement 050-004 (observability)** The three new routes have spans and closed-label metrics; a
   decision from the inbox is the existing decision operation with its existing audit.
@@ -734,9 +737,10 @@ until the author deletes it (a read-only node can be deleted). The author fills 
   writes `drain_kind`, `drain_iteration` and `drain_failure_code` on `iteration_scopes` and `loop_scopes` (migrations
   `20261103000000_collection_drain` and `20261107000000_loop_drain`; the statements in
   `crates/infra-postgres/src/primitives.rs` and `loop_progress.rs`), in the transaction that appends the drain event, so
-  this design adds no column and no write. The mapping: `CHECKPOINTED` is `SUCCEEDED`; the index equal to
-  `drain_iteration` when `drain_kind` is `FAILED` is `FAILED`, with `drain_failure_code`; another `DRAINED` is
-  `DRAINED`; `ADMITTED` is `RUNNING`; not admitted is `item_count` minus `admitted_count`. The counts are one grouped query per run (grouped by scope), never one per owner, so design 039's nested
+  this design adds no column and no write. The mapping, whose first rule takes precedence over the iteration's own lifecycle
+  (the failed iteration's row stays `ADMITTED` until it is drained, then becomes `DRAINED`): the index equal to
+  `drain_iteration` when `drain_kind` is `FAILED` is `FAILED`, with `drain_failure_code`; `CHECKPOINTED` is
+  `SUCCEEDED`; another `DRAINED` is `DRAINED`; `ADMITTED` is `RUNNING`; not admitted is `item_count` minus `admitted_count`. The counts are one grouped query per run (grouped by scope), never one per owner, so design 039's nested
   owners do not multiply the reads of each `graph/changes` poll; they are added to `GraphSnapshot`
   (`crates/application/src/runs.rs`) as a field `iterations` by `RunStore::graph`'s adapter
   (`crates/infra-postgres/src/execution.rs`) and written onto owner nodes by `runtime_graph` in
@@ -813,17 +817,23 @@ predicate repeats the eligibility rule; the snapshots never leave the use case.
 *Paging and access filters.* A page returns at most 2,000 rows that pass the scan's access and data predicates
 (namespace, `PENDING`, the run not ended, and 029's `visibleFolders` when it exists); the work of a page is bounded by
 the namespace's pending rows in the partial index, and `approval_inbox_rows_scanned` counts the rows that passed the
-predicates and were read; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
-returned, so a page that drops every row it scanned still returns a cursor, and it is null only when no row remains
-(Architecture decision 0144, decision 5). Because the cursor names a scanned row, every access filter is a predicate
+predicates and were read. The use case keeps rows until it has `limit` items or the scan ends: when the page fills, the
+cursor is the key (`deadline`, `request_id`) of its last item, so the rows scanned after it are read again by the next
+page; when the page does not fill, the cursor is the key of the last row scanned, so a page that drops every row it
+scanned still returns a cursor; it is null only when no row remains (Architecture decision 0144, decision 5). The test
+`a_full_page_resumes_after_its_last_item` (300 decidable rows inside the first 2,000, `limit=200`, all 300 found in
+two requests) holds it, with a publication twin. Because the cursor names a scanned row, every access filter is a predicate
 of the scan, never a filter after it: feature 029's `visibleFolders` is added to the statement's `WHERE` (an access
 filter, not the eligibility rule, which stays in the domain), so a row the caller may not see is never scanned and
 never named by a cursor. The test `a_cursor_never_names_a_row_in_a_hidden_folder` is written by whichever of this
 design and 029's slice 0 merges second; the publication inbox follows the same rule.
 
 *Per-run list.* The run view does not use this route: the items of the existing
-`GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, computed the same way (`ApprovalListItem`, a
-closed schema, gains the property; the flag concerns only the caller and reveals no policy, initiator or decider).
+`GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, which the use case computes as
+`status == PENDING && !run_ended && may_decide(principal)`, because the per-run list returns settled requests and
+requests of an ended run too (`ApprovalListItem`, a closed schema, gains the property; the flag concerns only the
+caller and reveals no policy, initiator or decider); `may_decide` itself stays the decision's own check. Tests:
+`a_settled_approval_is_not_flagged_decidable`, `a_pending_approval_of_an_ended_run_is_not_flagged_decidable`.
 
 *Run ends.* A run-end path that the probe finds leaving approvals pending becomes a follow-up task of its own scope;
 until it is fixed, the scan's run-status predicate keeps such rows out of the inbox.
@@ -849,7 +859,8 @@ open-state clause and the three clauses of Architecture decision 0018 decision 4
 editor, not a person who already decided it), which `decide` calls; the use case adds `publication:approve`.
 
 *Paging, port and index.* Order:
-`requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; a port `PublicationInboxStore::open_page` returns raw rows in one query per page: each request with its decisions,
+`requested_at`, then `id`, with the same `limit` (1 to 200), the same 2,000-row bound and the same cursor rule (the last item when the page
+fills, the last row scanned when it does not); a port `PublicationInboxStore::open_page` returns raw rows in one query per page: each request with its decisions,
 requester and last editor (for `may_decide`, never in the item) and the namespace's stored policy. The use case
 resolves the policy once per page (it is namespace-wide) by a pure function over the stored policy and the
 environment, extracted from `PublishingService::effective_policy` (`crates/application/src/publishing.rs`) and called
@@ -1056,7 +1067,8 @@ primitive goes in a new file of `src/ui/`.
   `tests/Cargo.toml`).
   Red tests: `may_decide_equals_decide` (property, `crates/domain`); in `integration_studio_catch_up`:
   `every_run_end_cancels_its_pending_approvals` (the probe, first: a failing path opens a follow-up task),
-  `an_ended_run_is_left_out_of_the_inbox`,
+  `an_ended_run_is_left_out_of_the_inbox` (the inconsistent row seeded directly), `a_full_page_resumes_after_its_last_item`,
+  `a_settled_approval_is_not_flagged_decidable`, `a_pending_approval_of_an_ended_run_is_not_flagged_decidable`,
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
   `an_inbox_page_is_one_statement`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
@@ -1125,7 +1137,8 @@ primitive goes in a new file of `src/ui/`.
   and their drain columns; `RunStore::iteration_page`, the use
   case, the route and `x-implemented`, its metric and battery entry.
   Red tests in `integration_studio_catch_up`: `the_counts_and_the_listed_outcomes_equal_the_iteration_events`,
-  `a_failed_iteration_drains_the_others_and_counts_them_drained`,
+  `a_failed_iteration_drains_the_others_and_counts_them_drained` (also asserting the counts while the drain is held
+  open by a barrier),
   `graph_changes_across_a_retry_a_return_and_a_drain_equals_a_fresh_graph`, `the_iteration_list_pages_by_index`,
   `an_outcome_filter_keeps_the_keyset`, `an_unknown_owner_answers_an_empty_page`,
   `a_query_refusal_never_precedes_the_run_refusal`; the battery entry with the query string the route needs, the

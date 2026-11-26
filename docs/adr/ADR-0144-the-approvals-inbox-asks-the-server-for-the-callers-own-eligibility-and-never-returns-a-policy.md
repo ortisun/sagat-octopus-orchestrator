@@ -31,10 +31,12 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
    from the decision's own check and called by `decide` with the same inputs, on the caller's principal built from the
    current membership as the decision builds it; an approval whose run has ended is left out of
    the list by a run-status predicate of the scan (a run's end cancels its pending approvals, so such a row is a
-   defect the probe test finds), and the decision's answers are unchanged; the decision's adapter refuses an ended run
-   only after authorization. The flag is a point-in-time hint; the decision re-checks. The filter `decidable=true` MUST return only
+   defect the probe test finds); the decision's adapter refuses an ended run only after authorization, so the one
+   changed answer is that an ineligible caller on an ended run gets the eligibility refusal and its denial audit
+   record instead of a retryable `503`. The flag is a point-in-time hint; the decision re-checks. The filter `decidable=true` MUST return only
    such items. The items of the existing per-run list (`GET /runs/{runId}/approvals`) MUST carry the same
-   `youMayDecide`, computed the same way, so the run view needs no second route. The adapter returns bounded pages of pending rows with their policy snapshots; the use case filters;
+   `youMayDecide`, computed by the use case as `may_decide` for a `PENDING` request of a run that has not ended and
+   false otherwise (that list also returns settled requests), so the run view needs no second route. The adapter returns bounded pages of pending rows with their policy snapshots; the use case filters;
    no SQL predicate repeats the rule, and the snapshots never leave the use case.
 3. An item MUST NOT carry the policy's subjects or roles, the initiator, the decider or the reason code. It MAY carry
    what `listRunApprovals` carries, the workflow's identifier and name and the run's business identifier; feature 026
@@ -43,8 +45,9 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
    `visibleFolders`), like every other listing, as a predicate of the scan itself, so a row the caller may not see is
    never scanned and never named by a cursor (decision 5); `youMayDecide` stays the decision rule.
 5. A page MUST read a bounded number of pending rows; when the bound is reached before the page is full, the answer
-   returns what it found and a cursor to continue, never an error and never an unbounded scan; the cursor is the key of
-   the last row scanned, so it is null only when no row remains.
+   returns what it found and a cursor to continue, never an error and never an unbounded scan. When the page fills,
+   the cursor is the key of its last item; when it does not, the key of the last row scanned; it is null only when no
+   row remains.
 6. The same holds for a namespace list of the open publication requests that still need an approval under the current
    effective policy (`PENDING`, and `APPROVED` with fewer approvals than now required), ordered by request time, with
    `PublicationRequest::may_decide` (the request open, not the requester, not the last editor, not a person who already

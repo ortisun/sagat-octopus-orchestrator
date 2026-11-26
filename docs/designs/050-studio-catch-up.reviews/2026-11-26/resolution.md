@@ -105,3 +105,15 @@ All eight findings are fixed.
 | 6 | Nit | Fixed: `AppState` keeps a capability source read on each request | Technical Plan 3 |
 | 7 | Nit | Fixed: the request's principal; no second read | Technical Plan 6 |
 | 8 | Nit | Fixed: the bound counts rows that pass the predicates; the work is bounded by the namespace's pending rows; the histogram's meaning stated | Technical Plan 6 |
+
+## Correctness re-read, round 1 (`approval/reread-1-correctness.md`, at `5d451eb9`)
+
+All five findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a full page's cursor is its last item; otherwise the last row scanned; the publication list has the same `limit` and rule; `a_full_page_resumes_after_its_last_item` with a twin; Architecture decision 0144 decision 5 | Technical Plan 6, Task 050-4 |
+| 2 | Major | Fixed: the use case flags `status == PENDING && !run_ended && may_decide`; two tests; Architecture decision 0144 decision 2 | Technical Plan 6, Task 050-4 |
+| 3 | Nit | Fixed: the row is seeded | Task 050-4 |
+| 4 | Nit | Fixed: named as the one deliberate change, in the requirement and the decision record | Non-functional requirement 050-003, Architecture decision 0144 |
+| 5 | Nit | Fixed: the `drain_iteration` rule first; the counts asserted mid-drain | Technical Plan 5, Task 050-9 |

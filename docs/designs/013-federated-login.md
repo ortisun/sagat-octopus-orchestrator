@@ -225,7 +225,8 @@ already has.
   it; one cookie per attempt, at most five, the oldest evicted first). The authorization endpoint MUST write nothing to
   the database: the attempt's state is sealed in that cookie (Technical Plan 4), so no anonymous request consumes
   storage. The callback or the assertion consumer service MUST refuse an attempt of another browser (no cookie), a used
-  attempt (its code row exists) and an expired one. The callback MUST NOT create a session or set the session
+  attempt (its code row, or the attempt tombstone that outlives the purged code until the attempt itself expires,
+  exists) and an expired one. The callback MUST NOT create a session or set the session
   cookie: it records the verified identity on the attempt and redirects with a code; the session is created, and its
   cookie set, only when the client redeems the code with its PKCE verifier (Requirement 013-018). *Acceptance:*
   `a_response_injected_into_another_browser_is_refused`, `a_sign_in_started_by_another_site_establishes_no_session`.
@@ -419,8 +420,9 @@ already has.
 
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (one use, rotated on every refresh by compare-and-set on its generation, the new
-  token signed before the commit with a handle obtained before the transaction; a reuse of the immediately previous generation within 30 seconds of its rotation, while
-  its successor has never been used, issues a new successor and retires the unused one, which covers a lost response;
+  token signed before the commit with a handle obtained before the transaction; a reuse, within 30 seconds of its rotation, of a generation whose later generations
+  have all never been used issues a new successor and retires the unused ones, which covers a lost response, and a
+  second lost response in a row (`two_lost_refresh_responses_keep_the_session`);
   any other reuse revokes the session and is audited; the CLI holds a file lock around a refresh and re-reads the key
   store under it, so a second CLI process uses the new token instead of reusing the old; CLI sessions absolute 7 days, or 24 hours on a connection without SCIM, idle 24 hours), and store them in the operating system's key store, or a file
   with mode `0600` where none exists; a CLI sign-in sets no session cookie in the browser. The CLI's token sources are,
@@ -820,7 +822,8 @@ table.
 raise of the required context), `revoked_below_epoch` (set by a disable), the context floor and its epoch (set by a
 raise, cleared by the maintenance loop once its sessions are marked), `settings_revision` (a counter incremented by every change) and the revision a test sign-in verified, up to two client secret references with their entered expiry, subject claim or attribute, tenant restriction (`hd`, `tid`), provisioning policy, required authentication context, the client authentication method | a change writes a revision; delete refused while one of its external groups is named (Decision 013-017) |
 | `identity_connection_keys` | tenant, connection, SAML signing keys and certificates, at most 3 | public data |
-| `identity_mapping_rules` | tenant, connection, position, group value, role | at most 32 |
+| `identity_mapping_rules` | tenant, connection, position, group value, role | at most 32; a change increments the connection's `rules_revision` |
+| `identity_role_recompute` | tenant, connection, subject (a member to recompute) or a job row (rules revision, subject cursor) | written in the transaction of the change that needs it; cleared by the maintenance loop by compare-and-set |
 | `external_identities` | tenant, connection, provider subject, membership subject, created, last sign-in, deprovisioned at | unique (tenant, connection, provider subject); a connection's deletion keeps them, deprovisioned |
 | `member_profiles` | tenant, subject, display name, e-mail (display only), role pinned, owning connection (`ON DELETE SET NULL (owning_connection_id)`, the column-list form of PostgreSQL 15 and later, so the tenant column of the composite key stays) | `memberships` gains `status` (`ACTIVE`, `SUSPENDED`; default `ACTIVE`) and `status_changed_at`, written by
 `sagat_member_set_status` and read after the membership lock by the SCIM reactivation rule, so the per-request read
@@ -912,6 +915,12 @@ nothing (step 1 needs the bearer token) and confirm nothing (step 4 needs it aga
 `POST /v1/auth/token` with `grant_type=authorization_code`, the code and the PKCE verifier (`studio` and
 `cli`) is one transaction, in this order:
 
+Before the transaction, for `studio`, the browser's session cookie is read (no lock): a live session of another
+tenant or subject without `replace_session=true` is refused with `SESSION_CONFLICT` and the code stays unspent, so the
+Studio can resend the same code with `replace_session=true` after the person agrees; if the code has expired by then,
+the Studio starts a new sign-in and keeps the person's choice (`a_second_organization_needs_the_person_to_replace_the_session`
+redeems one code twice: refused, then accepted).
+
 1. Consume the code: `UPDATE ... SET redeemed_at = now() WHERE hash = $1 AND redeemed_at IS NULL RETURNING ...`
    (slot 2, so two redemptions of one code serialize before any other lock; when no row comes back the code was
    spent, and the session it produced is revoked in a transaction of its own). The code is marked once, here.
@@ -920,9 +929,8 @@ nothing (step 1 needs the bearer token) and confirm nothing (step 4 needs it aga
 4. Slot 4a, in order: the tenant's identity-settings row `FOR SHARE`, the connection row `FOR SHARE` (its state and
    required context re-checked), the membership (inserted just in time, or locked, through the definer functions of
    Technical Plan 13), and feature 029's access fence only when the transaction writes a role.
-5. For `studio`, check the browser's session cookie (Requirement 013-018: `SESSION_CONFLICT` unless
-   `replace_session=true`, then revoke the old session); insert the session row with its authentication context;
-   write the audit.
+5. For `studio` with `replace_session=true`, revoke the old session; insert the session row with its authentication
+   context; write the audit.
 6. Sign the access token (and for `cli` the refresh token) for the new `sid` with the signing handle obtained before
    `BEGIN`, then commit. Before the transaction starts, the use case asks the `TokenSigner` for a handle (a fresh view
    of the active key, the key in memory); if it cannot get one, the request is refused with
@@ -989,8 +997,10 @@ successor's activation plus two refresh intervals (the longest a replica may sti
 longest token lifetime) and the leeway, 390 seconds at the defaults; it never returns a `REVOKED` key, and the
 per-request statement refuses a token whose `kid` is `REVOKED` at once, on every replica.
 `control-plane identity signing-key revoke` (audited) is the emergency path for a leaked key: it activates a new key at
-once without waiting (accepting that replicas sign nothing until they read it, at most one interval), marks the leaked
-key `REVOKED`, and the runbook's emergency page lists the steps. The cache's
+once without waiting and marks the leaked key `REVOKED`; a replica whose view is still fresh may hold a handle of the
+revoked key for up to two intervals, so redemption, renewal and refresh check, inside their transaction, that the
+handle's `kid` is not `REVOKED` (a primary-key lookup) and otherwise roll back with `IDENTITY_SIGNING_UNAVAILABLE`,
+the code unspent; replicas may refuse tokens of the new key until their next refresh, at most one minimum interval; and the runbook's emergency page lists the steps. The cache's
 existing rules refresh it on an unknown `kid` (at most once per minimum interval). The serving process
 never creates a key. The rotation test drives the refreshes by a controlled clock.
 
@@ -1005,7 +1015,10 @@ exclusively only when its change can alter authority: a member added to or remov
 a folder entry names, or a built-in role or status change; otherwise it takes the fence shared, so a directory's
 initial sync does not queue the tenant's run admissions behind it (an assignment that would name the group takes the
 fence exclusively and so waits for the request to commit). A request recomputes at most 100 members' roles in its own
-transaction and leaves the rest to the leased job (Technical Plan 6); a connection's disable, activation or raised context takes the
+transaction and records the rest durably for the maintenance loop (Technical Plan 6, Role mapping). Whether the group
+is named by an assignment or a folder entry is read again after the shared fence is taken; if it now is, the request
+rolls back and restarts with the exclusive fence (`an_assignment_naming_the_group_mid_request_forces_the_exclusive_fence`,
+a barrier test); a connection's disable, activation or raised context takes the
 settings row and the connection row only (its sessions are refused by the per-request check and marked later in
 batches). No transaction of this design writes a feature 027 app-session
 row (slot 1). A writer that takes the access fence exclusively sets `lock_timeout` to 2 seconds, as feature 029's
@@ -1062,12 +1075,27 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   state, and the audit trail shows each change. One exception keeps offboarding safe: a request without `If-Match`
   that would move a member from `SUSPENDED` to `ACTIVE` within 10 minutes of the suspension is refused with SCIM `409`
   and audited, so a retried request that was overtaken by a deactivation cannot reactivate a leaver; a genuine
-  reactivation is sent again by the provider after that window. The recorded fixtures show which provider sends `If-Match`.
+  reactivation is sent again after that window, by the provider's next cycle (Entra ID) or by the administrator's push
+  (Okta), as the runbook says. The refusal does not count toward `scimFailing`. The recorded fixtures show which
+  provider sends `If-Match` and what each does after a `409`.
 - **Role mapping**: the owning connection's rules over that connection's SCIM groups only (Requirement 013-013),
   computed after each SCIM group change for the affected members and after a rule or default change for every member
-  the connection owns (a bounded, audited job in subject order). Nothing is mapped from a sign-in assertion.
+  the connection owns. Work left for later is recorded durably in the transaction of the change that needs it
+  (constitution principle I): a SCIM group change that recomputes more than 100 members writes a row per remaining
+  member in `identity_role_recompute` (tenant, connection, subject, rules revision); a rule or default change
+  increments the connection's `rules_revision` and writes one job row (tenant, connection, rules revision, subject
+  cursor). The maintenance loop works through both in subject order in bounded batches, clearing each row by
+  compare-and-set on the rules revision; a job whose revision moved restarts from the first subject under the new
+  rules. A demotion therefore applies within one maintenance interval per batch of 100, and a crash loses nothing
+  (`a_crash_after_a_large_group_change_still_demotes_everyone`, a fault test;
+  `a_rule_change_during_the_job_recomputes_everyone_under_the_new_rules`). A recomputed demotion that the
+  last-administrator guard refuses is skipped, audited and shown on the connection (the count of guarded members); the
+  group change itself commits, so the provider's request succeeds and SCIM keeps working, and the loop does not retry
+  that member until the rules or its groups change (`removing_the_last_admin_from_its_group_keeps_scim_working`).
+  Nothing is mapped from a sign-in assertion.
 - **Maintenance passes**: one leased loop (`crates/scheduler/src/identity.rs`, engine lease `identity-maintenance`,
-  running only once `identity-federation-v1` is recorded) purges expired attempts, codes, replays and ended sessions in
+  running only once `identity-federation-v1` is recorded) purges expired attempts, codes (keeping a tombstone of the attempt id until the attempt's own expiry), replays and
+  ended sessions in
   bounded batches, marks revoked in bounded batches the sessions of a disabled or deleted connection and those
   below a context floor (selected by the floor, already refused by the per-request check), clears a floor once its
   sessions are marked, runs the recomputation jobs, updates the
@@ -1272,9 +1300,11 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
 **Operator commands.** The commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
-`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount: a new key is put first, keys
-older than one rotation plus 10 minutes, an attempt's lifetime, are dropped; every control plane reads the ring at
-start and on the key set's refresh); `identity break-glass add|remove --tenant <slug> --subject <subject>`; `identity federation
+`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
+keys do: the new key is added as an opening key, and after one refresh interval it becomes the sealing key, so an
+attempt sealed on an updated replica opens on every replica; keys older than one rotation plus 10 minutes, an
+attempt's lifetime, are dropped; every control plane reads the ring at start and on the key set's refresh;
+`an_attempt_sealed_after_a_rotation_opens_on_every_replica`); `identity break-glass add|remove --tenant <slug> --subject <subject>`; `identity federation
 activate|remove`, which records or removes the `identity-federation-v1` requirement through the registry's functions
 (Architecture decision 0082 decision 1), the `remove` command refusing a removal while any tenant requires federated sign-in.
 
@@ -1321,9 +1351,13 @@ the requirement is unsupported. Federation rows stay.
   connection row `FOR UPDATE`, so a sign-in racing a disable either commits first with the old epoch and has its session
   refused, or sees the disabled state; the barrier test `a_sign_in_racing_a_disable_ends_without_a_live_session` also
   re-enables the connection and checks that the session stays refused. A write that can lower the set of active administrators (a suspension, a deletion, a
-  demotion, a change of owning connection, a recomputation) reads the target's role first; when the target is an
-  active `admin`, it takes the settings row `FOR UPDATE` before the membership; if the membership lock shows an
-  `admin` it did not lock for, it restarts with the lock.
+  demotion, a change of owning connection, a recomputation) reads the target's role first, without a lock, and chooses the settings row's lock
+  strength before taking any lock: `FOR UPDATE` when the target is an active `admin`, otherwise the `FOR SHARE` that
+  every SCIM request takes; a SCIM request never takes the settings row `FOR SHARE` and then `FOR UPDATE`. If the
+  membership lock shows an `admin` it did not lock for, the transaction rolls back and restarts with `FOR UPDATE`.
+  The barrier tests `two_scim_suspensions_of_the_last_two_admins_cannot_both_pass` and
+  `a_scim_suspension_and_a_member_demotion_cannot_remove_the_last_admin` assert that exactly one request succeeds and
+  the other gets `409 LOCKOUT_GUARD`, never a deadlock error.
   Write skew between federated-only, connection states and the last administrator is therefore excluded. Ceilings (sessions per member, SCIM tokens, connections) are
   counted under the membership or connection lock that their writer holds.
 - **SCIM group writes.** A request reads the group's `generation`, takes the affected memberships, the fence and the
@@ -1583,7 +1617,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_second_organization_needs_the_person_to_replace_the_session`, `authorize_writes_nothing_to_the_database`,
   `a_second_callback_of_one_attempt_is_refused`, `two_sign_ins_in_two_tabs_both_complete`,
   `an_upload_outlives_its_access_token_while_the_session_lives`, `two_concurrent_refreshes_keep_the_session`,
-  `a_lost_refresh_response_keeps_the_session`, `a_reuse_after_the_successor_was_used_revokes_the_session`,
+  `a_lost_refresh_response_keeps_the_session`, `two_lost_refresh_responses_keep_the_session`,
+  `a_reuse_after_the_successor_was_used_revokes_the_session`, `an_attempt_sealed_after_a_rotation_opens_on_every_replica`,
   `a_reused_refresh_token_revokes_the_session`, `a_link_poll_by_another_subject_is_not_found`, `a_link_poll_without_the_binding_cookie_is_not_found`,
   `a_reenabled_connections_old_session_cannot_renew` (renewal and the CLI's refresh) (and the poll route in
   the cross-tenant battery), `each_broken_id_token_claim_is_refused_through_the_callback` (table-driven).
@@ -1667,7 +1702,10 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_scim_group_confers_nothing_until_an_assignment_names_it`, `a_group_change_applies_on_the_next_request`,
   `the_highest_mapped_role_wins_in_any_order` (property, `sagat-domain`), `a_pinned_role_is_never_mapped`,
   `a_rule_change_recomputes_owned_members`, `a_removed_admin_rule_demotes_its_members`,
-  `a_rule_change_job_recomputes_in_bounded_batches`, the large-group fixtures of Okta and Entra ID, the ceiling tests
+  `a_rule_change_job_recomputes_in_bounded_batches`, `a_crash_after_a_large_group_change_still_demotes_everyone`
+  (`fault_federated_login`), `a_rule_change_during_the_job_recomputes_everyone_under_the_new_rules`,
+  `removing_the_last_admin_from_its_group_keeps_scim_working`,
+  `an_assignment_naming_the_group_mid_request_forces_the_exclusive_fence` (barrier), the large-group fixtures of Okta and Entra ID, the ceiling tests
   of external groups and members per group.
   Verification: `cargo test -p sagat-tests --test integration_federated_login groups`.
   Refs: Requirement 013-013, Requirement 013-014, Requirement 013-016
