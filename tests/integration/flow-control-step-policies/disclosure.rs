@@ -1,5 +1,5 @@
 //! What a caller without the reveal right reads does not tell which runs share a key (feature 022; decisions D022-151 to
-//! D022-153, D022-131, D022-133; FR-022-022 and FR-022-057 as amended 2026-11-26). The same runs are built twice: two
+//! D022-155, D022-131, D022-133; FR-022-022 and FR-022-057 as amended 2026-11-26). The same runs are built twice: two
 //! waiting runs on one key, and the same two runs on two keys, beside the same holders. For each surface the sweep of
 //! D022-151 gates (a run's rate-limit slot in `getRun`, the alerts, the quota usages, the group view), a Viewer reads the
 //! same answer in both worlds, at a key limit of 1 and of 2; a member with the reveal grant reads the true values, which
@@ -65,7 +65,7 @@ async fn read(w: &World, who: &Principal, runs: [RunId; 2]) -> Reading {
         let record = w.runs.get(who, run, &ctx()).await.expect("the run");
         let slot = record.rate_limit.expect("a rate-limit slot");
         slots.push((
-            // The variant only: the deadline is the run's own wait-timeout instant (G022-041), the same class
+            // The variant only: the deadline is the run's own wait-timeout instant (G022-043), the same class
             // whether or not the runs share a key, and two worlds started apart never agree on it.
             match slot.state {
                 RunGateState::Held => "Held",
@@ -136,6 +136,12 @@ async fn readings(shared: bool, limit: u32) -> (Reading, Reading) {
         .run_once()
         .await;
     let viewer = w.member("vera", Role::Viewer).await;
+    let dave = revealer(&w).await;
+    (read(&w, &viewer, runs).await, read(&w, &dave, runs).await)
+}
+
+/// `dave`, a Developer given the namespace's reveal grant.
+async fn revealer(w: &World) -> Principal {
     let dave = w.member("dave", Role::Developer).await;
     sqlx::query(
         "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
@@ -146,7 +152,51 @@ async fn readings(shared: bool, limit: u32) -> (Reading, Reading) {
     .execute(&w.db.pool)
     .await
     .expect("the reveal grant");
-    (read(&w, &viewer, runs).await, read(&w, &dave, runs).await)
+    dave
+}
+
+/// Decision D022-155 (security check of the sweep, item 2): `getRun` does not read the run's place for a caller to whom
+/// the key's label is hidden, since that read takes time that grows with the key's grants and waiters. Of what `getRun`
+/// reads, only the place read reads `flow_control_grant_failures` (the eligibility of the waiters ahead), so another
+/// transaction holds that table locked: the revealer's read waits out the place read's statement timeout and shows the
+/// run without a place, and the Viewer's read, which does not try it, returns at once with the slot's limit. No sleep:
+/// the lock is held, and the bound is below the place read's 2 s timeout.
+#[tokio::test]
+async fn a_caller_without_the_label_does_not_wait_for_the_runs_place_in_the_queue() {
+    let (w, [first, _]) = world(true, 1).await;
+    let viewer = w.member("vera", Role::Viewer).await;
+    let dave = revealer(&w).await;
+    let open = w.runs.get(&dave, first, &ctx()).await.expect("the run");
+    assert_eq!(
+        open.rate_limit.expect("a slot").position,
+        Some(1),
+        "the revealer reads the place while nothing holds it"
+    );
+    let mut lock = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("LOCK TABLE flow_control_grant_failures IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *lock)
+        .await
+        .expect("the place read's table, held");
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        w.runs.get(&viewer, first, &ctx()),
+    )
+    .await
+    .expect("a Viewer's read does not wait for the place read (D022-155)")
+    .expect("the run");
+    let slot = read.rate_limit.expect("a slot");
+    assert_eq!(
+        (slot.position, slot.estimated_grant_at, slot.limit),
+        (None, None, 1),
+        "no place, the effective limit"
+    );
+    let blocked = w.runs.get(&dave, first, &ctx()).await.expect("the run");
+    assert_eq!(
+        blocked.rate_limit.expect("a slot").position,
+        None,
+        "the lock holds the place read: it ran out of time and the run is shown without a place"
+    );
+    lock.rollback().await.expect("the lock released");
 }
 
 /// The matrix: at a key limit of 1 and of 2, a Viewer reads the same whether the two waiting runs share a key or not;

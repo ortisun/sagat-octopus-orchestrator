@@ -537,14 +537,19 @@ Added after the review of 2026-11-13:
   NOT page inside a group, filtered or not: each group is summed whole by one statement in the page's snapshot, a
   cursor falls only between groups, a page holds at most 5 groups whatever its `limit`, and nothing a page tells
   depends on how many keys a group has (`spansPages` is always false).
+  *Amended 2026-11-26 (decisions D022-151 to D022-155; security checks of the alerts fix and of the sweep):* to a
+  caller who may not reveal personal data in the namespace, no surface MUST show a key's label, a count of keys or of a
+  key's runs, a run's rank in a key's queue, a key's fullness or a per-key condition. `getRun`'s `rateLimit.position`
+  and `estimatedGrantAt` are null for such a caller, and the run's place in the queue is not read for it. The
+  flow-control alerts are shown only to a caller with the reveal right, filtered in the statement that pages them, so a
+  page and its cursor are the same whether such an alert fires or not; they are never sent as `ops.alert.*` events.
+  The order and times of runs' own progress (that a run waits, when it is granted, starts and ends), which any reader
+  of the runs sees, can still suggest that two runs share a key. That is a stated limit of this guarantee (gap
+  G022-043, closed as inherent), written in `docs/architecture/security-and-sandbox.md`. The refusals at a key's
+  waiter ceiling and at the live-key ceiling are gap G022-040. The sweep of every surface and its gate is D022-151.
 
 #### Standalone steps (US05)
 
-  *Amended 2026-11-26 (decisions D022-151 to D022-153; security check of the alerts fix):* no surface MUST tell a
-  caller who may not reveal personal data in the namespace which runs share a key: `getRun`'s `rateLimit.position` and
-  `estimatedGrantAt` are null for such a caller, and the flow-control alerts are shown only to a caller with the reveal
-  right and are never sent as `ops.alert.*` events. The sweep of every surface and its gate is D022-151; the timing of a
-  run's own gate events is gap G022-041.
 - **FR-022-023 — Standalone admission**: `POST /namespaces/{namespaceId}/step-executions` (idempotency key
   required) MUST accept exactly one `activity`, `script` or `database` node, input and an optional timeout;
   build a private one-node definition whose result is the node's output and whose `outputSchema` is the
@@ -691,7 +696,9 @@ Added after the review of 2026-11-13:
   alert (`CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING`, `RATE_LIMIT_QUEUE_SATURATED`, `FLOW_CONTROL_WAITER_ORPHANED`)
   MUST be shown only to a caller who may reveal personal data in the namespace, the right read with the alerts in one
   statement, and MUST NOT be sent as an `ops.alert.*` event; operators keep the deployment-wide gauge
-  `alerts_firing{kind}`.
+  `alerts_firing{kind}`. *Amended again 2026-11-26 (decision D022-154; security check of the sweep, item 1):* the rows
+  are left out by the statement that pages the alerts, before its limit, so the page size and `nextCursor` a caller
+  without the right reads do not depend on a flow-control alert.
 - **FR-022-050 — Capability, SDKs and Studio**: `rateLimits` MUST be a capability enabled separately from
   `concurrencyKeys` under the rules of FR-022-031, and both MUST be activated through the instance-capability
   registry (FR-022-053). The six SDKs (TypeScript, Go, Python, C#, Java, Rust; FR-022-035 predates the Rust
@@ -772,7 +779,8 @@ Added after the review of 2026-11-13:
   `secret`.
   *Amended 2026-11-26 (decision D022-151):* a key's label is not the only per-key value: a key's rank, count, fullness
   and the per-key conditions of an alert are shown under the same rule as its label (only to a caller who may reveal
-  personal data in the namespace), as the sweep of D022-151 lists.
+  personal data in the namespace), as the sweep of D022-151 lists. A value withheld this way is not computed for such a
+  caller either, when computing it would take time that depends on the key (D022-155).
 - **FR-022-058 — Namespace counters**: `queued_runs` and live keys per namespace MUST be usage rows of
   ADR-0050 slot 8b, sharded like `run_active_counts` (16 slots), changed in the transaction that changes
   what they count and maintained by `SECURITY DEFINER` triggers; the runtime role reads them only. A run

@@ -2445,31 +2445,27 @@ where
             Some(mut run) => {
                 self.reveal_permit_labels(principal, std::slice::from_mut(&mut run))
                     .await?;
-                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014)
+                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014), to a
+                // caller who sees the key's label only: the rank counts the runs waiting on the same key ahead of it, the
+                // estimate is another run's grant instant plus the window (D022-153, D022-067 item 8), and the read of
+                // the place takes time that grows with the key's grants and waiters, so it is not even made for another
+                // caller (D022-155). The slot's limit is already bounded by the namespace's ceiling without the key.
                 if let Some(slot) = run.rate_limit.as_mut()
                     && matches!(
                         slot.state,
                         crate::flow_control_keys::RunGateState::Waiting { .. }
                     )
+                    && slot.label().is_some()
                     && let Some(mut place) = self.rate_place(principal, id).await?
                 {
-                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014); and the
-                    // estimate is another run's grant instant plus the window, which would link the two runs for a
-                    // caller who may not see the label (D022-067 item 8)
-                    if slot.label().is_none()
-                        || matches!(
-                            run.concurrency.as_ref().map(|permit| permit.state),
-                            Some(crate::flow_control_keys::RunGateState::Waiting { .. })
-                        )
-                    {
+                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014)
+                    if matches!(
+                        run.concurrency.as_ref().map(|permit| permit.state),
+                        Some(crate::flow_control_keys::RunGateState::Waiting { .. })
+                    ) {
                         place.estimated_grant_at = None;
                     }
                     slot.place(place);
-                    // the rank counts the runs waiting on the same key ahead of it: withheld, as the estimate is, from a
-                    // caller who may not see the key's label (decision D022-153)
-                    if slot.label().is_none() {
-                        slot.position = None;
-                    }
                 }
                 Ok(run)
             }

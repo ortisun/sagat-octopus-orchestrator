@@ -594,7 +594,8 @@ components:
         RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) is listed only to a caller who
         may reveal personal data in the namespace, the right read in the same statement as the alerts: its state, count
         and ages depend on per-key conditions and so tell which runs share a key. Other callers do not see such rows at
-        all. These kinds are never sent as `ops.alert.*` events.
+        all: the statement that pages the alerts leaves them out before its limit, so a page and its `nextCursor` are
+        the same whether one fires (D022-154). These kinds are never sent as `ops.alert.*` events.
       type: object
     QuotaUsageFlowControlFields:
       description: |

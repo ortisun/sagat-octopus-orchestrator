@@ -22,7 +22,7 @@ const HOUR_US: i64 = 3_600 * SECOND_US;
 
 /// An API with flow control on, tenant `acme` (admin `alice`, who may reveal personal data in it) and its namespace
 /// `payments`, whose id is the second value.
-async fn api() -> (TestApi, String) {
+pub(crate) async fn api() -> (TestApi, String) {
     let api = start_with(Options {
         flow_control: true,
         ..Options::default()
@@ -118,7 +118,7 @@ async fn start(api: &TestApi, workflow: &str, account: &str) -> String {
 }
 
 /// The body of `path` as `subject` of `acme`, checked for the canary.
-async fn read_as(api: &TestApi, path: &str, subject: &str) -> (StatusCode, Value) {
+pub(crate) async fn read_as(api: &TestApi, path: &str, subject: &str) -> (StatusCode, Value) {
     let response = api
         .as_user(Method::GET, path, subject, "acme")
         .header("x-octopus-namespace", "payments")

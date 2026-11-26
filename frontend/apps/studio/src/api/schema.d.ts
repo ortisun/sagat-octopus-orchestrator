@@ -5727,7 +5727,7 @@ export interface components {
             /** Format: uuid */
             namespaceId: string;
             /**
-             * @description The four flow-control kinds of feature 022 (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) are listed only to a caller who may reveal personal data in the namespace, the right read with the alerts, since their state, count and ages depend on per-key conditions and tell which runs share a key; they are never delivered as an event (D022-152).
+             * @description The four flow-control kinds of feature 022 (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) are listed only to a caller who may reveal personal data in the namespace, the right read with the alerts, since their state, count and ages depend on per-key conditions and tell which runs share a key: left out before the page's limit, so a page and its nextCursor are the same whether one fires (D022-154); they are never delivered as an event (D022-152).
              * @enum {string}
              */
             kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS" | "CONCURRENCY_QUEUE_STUCK" | "RATE_LIMIT_GRANT_LAGGING" | "RATE_LIMIT_QUEUE_SATURATED" | "FLOW_CONTROL_WAITER_ORPHANED";

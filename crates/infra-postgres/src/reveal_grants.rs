@@ -205,6 +205,36 @@ fn role_can_use_reveal_grant(role: Role) -> bool {
     role.grants(Permission::PayloadReadInternal)
 }
 
+/// The stored membership roles that may use a reveal grant, for a statement that applies the rule itself, before its
+/// `LIMIT` (feature 022, decision D022-154): `<reveal_role_sql> = ANY(<these>)` is [`may_use_reveal_grant`] in SQL. The
+/// same rule, [`role_can_use_reveal_grant`], judges every role.
+pub(crate) fn reveal_grant_roles() -> Vec<&'static str> {
+    // a role added to the enum fails this match until it is judged here, and listed below
+    let judged = |role: Role| match role {
+        Role::Admin
+        | Role::Developer
+        | Role::Operator
+        | Role::Viewer
+        | Role::Worker
+        | Role::Runner
+        | Role::DatabaseRunner => role,
+    };
+    [
+        Role::Admin,
+        Role::Developer,
+        Role::Operator,
+        Role::Viewer,
+        Role::Worker,
+        Role::Runner,
+        Role::DatabaseRunner,
+    ]
+    .into_iter()
+    .map(judged)
+    .filter(|role| role_can_use_reveal_grant(*role))
+    .map(Role::as_str)
+    .collect()
+}
+
 async fn lock_namespace(
     conn: &mut PgConnection,
     tenant: TenantId,

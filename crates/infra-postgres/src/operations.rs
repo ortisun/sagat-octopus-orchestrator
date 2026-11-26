@@ -873,13 +873,20 @@ impl AlertReader for PgRunStore {
         limit: u32,
     ) -> Result<(Vec<AlertRecord>, bool), StoreError> {
         // the alerts and the reader's reveal right in one statement, so one snapshot (decision D022-135): the role of a
-        // member that holds the namespace's reveal grant, on every row
+        // member that holds the namespace's reveal grant, on every row. A flow-control alert is left out here, before
+        // the limit, for a reader who may not use the grant, so that a page's size and the cursor the route derives
+        // from it are the same whether such an alert fires or not (decision D022-154); the service drops them too.
         let reveal_role = crate::reveal_grants::reveal_role_sql("$1", "$2", "$6");
+        let flow_control: Vec<&str> = AlertKind::FLOW_CONTROL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {ALERT_COLUMNS}, {reveal_role} AS reveal_role \
                FROM operational_alerts \
               WHERE tenant_id = $1 AND namespace_id = $2 \
                 AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR id < $4) \
+                AND (kind <> ALL($7::text[]) OR {reveal_role} = ANY($8::text[])) \
               ORDER BY id DESC LIMIT $5"
         )))
         .bind(tenant.as_uuid())
@@ -888,6 +895,8 @@ impl AlertReader for PgRunStore {
         .bind(before)
         .bind(i64::from(limit))
         .bind(subject.as_str())
+        .bind(&flow_control)
+        .bind(crate::reveal_grants::reveal_grant_roles())
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?;
