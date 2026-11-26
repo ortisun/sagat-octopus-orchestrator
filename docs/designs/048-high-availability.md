@@ -231,12 +231,12 @@ From the code and documents on `develop` at `546d5aa5`:
   `DATABASE_NOT_SYNCHRONOUS`; design 053 adds two); it is open only when the registry's state allows it and the set is
   empty. Each owner clears only its own reason; a re-registration does not reopen a gate another reason holds. Readiness
   checks the gate before it pings storage. The reasons are added to `specs/001-platform-foundation/contracts/openapi.yaml`,
-  the gRPC error metadata and `sdks/SPEC.md`. The router-wide refusal of a closed gate (`require_serving` in
-  `crates/api-http/src/limits.rs`, which runs before authentication) shows only `UNAVAILABLE` with `Retry-After` of 10 s
-  and no reason at all, `BINARY_CAPABILITY_MISSING` included, so that an anonymous caller learns nothing of the cause;
-  the reasons, with `Retry-After` of 2 s while one of them holds, are given by the readiness endpoint's admin listener
-  and by a second check of the gate after authentication, in the request's own handler path (`Caller` extraction),
-  which Task 048-9 adds. The registry's
+  `sdks/SPEC.md` as reasons an operator reads. Every refusal of a closed gate that a client can reach before
+  authentication shows only `UNAVAILABLE` with `Retry-After` of 2 s, whatever the cause and with no reason at all,
+  `BINARY_CAPABILITY_MISSING` included, so that an anonymous caller learns nothing of the cause: the HTTP router's
+  `require_serving` and the public readiness `/v1/ready` (`crates/api-http/src/limits.rs`, `routes/health.rs`) and the
+  gRPC admission (`crates/api-grpc/src/limits.rs`). The reasons are given only to operators: the metric
+  `serving_gate_closed{reason}`, the log, and the engine's readiness on its admin listener (`/readyz`). The registry's
   `registry_error` classifies `CommitOutcomeUnknown` and an `after_connect` refusal as a failed connection (Architecture
   decision 0082, decision 5).
 - **Requirement 048-015 Reports survive a failover.** The six SDKs MUST keep retrying a `CompleteStep` or `FailStep` that
@@ -300,8 +300,11 @@ From the code and documents on `develop` at `546d5aa5`:
   that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
   and checks that every request with that principal that starts after both 22 s from the isolation and the
   revocation's commit is refused or answered `UNAVAILABLE` (Technical Plan, "Why one waited write protects what came
-  before it"). On Compose this fault gives one platform container a direct route to the isolated node's port on
-  `db-access`, so that the check exercises the bound; the Kubernetes drill asserts it too. Reports go to
+  before it"). On Compose this fault runs one extra control plane, the probe, on a network `db-probe` shared only with
+  the primary's node, through which it reaches that node's client port, so that the check exercises the bound when
+  the fault disconnects the node from `db-access` and `db-control` but not from `db-probe`; the probe is started for
+  this fault only, stopped after the check, and not counted among the processes that must be ready again. The
+  Kubernetes drill asserts the bound too. Reports go to
   `tests/performance/reports/high-availability.md` with the runner (Owner decision 2026-11-25-1), the environment and
   every failure.
 - **Requirement 048-043 The drills gate the release.** A drill MUST exit non-zero when any repetition breaks the
@@ -427,6 +430,7 @@ Each was decided under the delegation of Owner decision 2026-11-20-6, with its r
 |---|---|---|
 | Socket keepalive and `TCP_USER_TIMEOUT` | `vendor/sqlx-core` (`src/net/socket/mod.rs` and its manifest's `socket2`), the root `Cargo.toml` (`[patch.crates-io]`), `scripts/check-vendor.py` (a list of vendored crates, each with its archive hash and its allowed diff) | 048-005 |
 | `WriteTx`, `commit_safely`, the outcome rule, `CommitOutcomeUnknown`, the reason on `AppError::Unavailable` and its HTTP and gRPC mapping | `crates/infra-postgres/src/pool.rs`, `capacity_finish.rs` (`confirmed_abort` moved to `pool.rs`); about 233 commit sites and about 55 pool-level writes in `crates/infra-postgres` and `crates/scheduler`; `crates/application/src/error.rs`; `crates/api-http/src/error.rs` and `crates/api-grpc` | 048-012 |
+| The refusals before authentication without a reason | `crates/api-http/src/limits.rs`, `crates/api-http/src/routes/health.rs`, `crates/api-grpc/src/limits.rs` | 048-014 |
 | Startup options, the `after_connect` checks, `25006` | `pool.rs`, `identity.rs`, `instances.rs` (`registry_error`) | 048-011 |
 | The identity, the confirmation, the gate's reasons | `crates/application/src/instances.rs` (`DatabaseIdentity`, the gate, the confirmation task), `crates/infra-postgres/src/instances.rs` (the port), `pool.rs` (the hooks, lazy pools), `crates/api-http/src/routes/health.rs`, `crates/api-http/src/limits.rs` | 048-013, 048-014 |
 | The report window, heartbeat retries | `sdks/SPEC.md`, the six SDKs, `tests/contract/sdk-conformance/scenarios/report-through-failover.json`, the fault engines | 048-015, 048-016 |
@@ -448,12 +452,13 @@ restart, is on a standby. The confirmation writes a row of a logged table, so it
 exposed by an operator's cancel or termination of a waiting backend (forbidden in code and in the runbook), or by the HA
 manager's fast shutdown of an isolated primary, is visible for a moment to that server's sessions not yet ended; the
 platform's processes hold such sessions only until their next commit's outcome is unknown or a new connection observes
-the new identity, and close their gate then. A process that still reaches an isolated former primary serves reads from
-it for at most 27 s after the isolation with the default settings: its registry heartbeat, a write, comes within 12 s
-(10 s jittered) and waits for a standby the isolated server cannot reach, so its commit deadline of 10 s makes the
-outcome unknown and closes the gate (12 + 10 = 22 s; raising the commit deadline lengthens it by as much). A request
-that starts after that is refused; one already running keeps its connection until it ends, each of its statements
-bounded by the statement timeout of 5 s. `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
+the new identity, and close their gate then. A process that still reaches an isolated former primary refuses every
+request that starts more than 22 s after the isolation with the default settings: its registry heartbeat, a write,
+comes within 12 s (10 s jittered) and waits for a standby the isolated server cannot reach, so its commit deadline of
+10 s makes the outcome unknown and closes the gate (12 + 10 = 22 s; raising the commit deadline lengthens it by as
+much). A request already running keeps its connection until it ends, within the HTTP request timeout of 15 s
+(`crates/api-http/src/lib.rs`), so no HTTP request reads from that server more than 22 + 15 = 37 s after the isolation;
+a blob transfer and a gRPC call are bounded by their own timeouts, and a server-sent stream ends when the gate closes. `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
 apply, and the isolation drill asserts the bound.
 
 ### The drills
@@ -562,7 +567,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-012
 - [ ] T048-8 Move every write of `crates/infra-postgres` and `crates/scheduler` to `WriteTx`, one pull request per module group; then the startup options (`synchronous_commit=on`, `default_transaction_read_only=on`), the `25006` classification and the architecture rules of Requirements 048-011 and 048-012, with `a_write_outside_write_tx_fails_at_once` and `a_role_setting_of_synchronous_commit_local_is_refused`.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
-- [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, keep the new reasons out of the pre-authentication refusal of `crates/api-http/src/limits.rs`, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
+- [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, make every refusal before authentication (`crates/api-http/src/limits.rs`, the public readiness, `crates/api-grpc/src/limits.rs`) answer `UNAVAILABLE` with `Retry-After` of 2 s and no reason, with a test of each, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
   Refs: Requirement 048-014
 - [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate`, `a_connection_to_a_superseded_server_is_refused`, `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
   Refs: Requirement 048-011, Requirement 048-013, Requirement 048-014
