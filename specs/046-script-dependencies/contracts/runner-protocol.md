@@ -21,7 +21,7 @@ limit; nothing large passes through the control plane except private package fil
 | `POST /script-runner/test-runs/{runId}/dependencies` | `{leaseToken, lock}` | `{verdict, findings, files, maxLayerBytes, grant}` or `422` with the refusal reason |
 | `GET /script-runner/private-index/npm/{name}`, `GET /script-runner/private-index/pypi/{project}/` | | the tenant's uploads of that name, in the npm and PEP 691 shapes; `404` otherwise |
 | `GET /script-runner/private-metadata/pypi/{sha256}/{filename}.metadata` | | a private wheel's core metadata |
-| `GET /script-runner/private-files/{sha256}` | | a file of the tenant's uploads that the private quarantine no longer holds; `404` otherwise, a held file included (audited) |
+| `GET /script-runner/private-files/{sha256}` | | a file of the tenant's uploads that the private quarantine of the grant's namespace (the job's, test run's or materialization's) no longer holds; `404` otherwise, a held file included (audited) |
 
 ## Channel messages of a resolve container
 

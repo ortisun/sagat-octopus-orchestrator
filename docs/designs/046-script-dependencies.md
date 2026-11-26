@@ -432,8 +432,9 @@ quarantine cut are left out: for npm it reads each version's time from the full 
 64 MiB and drops a version without a time. Because `versions` usually comes before `time` in that document, the parse
 keeps only the extracted per-version entries of the abbreviated form with each version's time, never the raw document;
 the entries are cached per name for 5 minutes in a cache bounded to 256 MiB with least-recently-used eviction, so the
-filter for any cut is a lookup; at most 8 parses run at once per gateway and at most 2 per job grant (others wait, then
-answer `503` after 10 s), so one tenant's resolve cannot hold every slot; a
+filter for any cut is a lookup; at most 8 parses run at once per gateway, at most 4 per tenant (the grant's `tenant` claim) and at most 2 per job grant
+(others wait, then answer `503` after 10 s, which the runner treats as `PACKAGE_GATEWAY_UNAVAILABLE`, retryable), so one
+tenant's resolves cannot hold every slot; a
 document over 64 MiB is refused with `502` and the job fails `RESOLUTION_FAILED`, never served partly filtered; for PyPI it drops a file without `upload-time`. For Python, source
 distributions and wheels that none of the grant's targets and interpreter can use are left out. Yanked versions are marked
 as the registries mark them. Allow and deny rules, waivers and advisories are not the gateway's: the control plane's evaluation
@@ -462,8 +463,10 @@ files until an operator removes it.
 **Fetch budget.** The claim of a resolve job charges `package_fetch_usage` the job's 1 GiB forwarding ceiling in the
 claim transaction, under the usage row's lock, and is refused when that would pass the daily budget (20 GiB per tenant
 by default; the job stays queued until the next day, and its version shows why); so concurrent claims cannot overshoot.
-Every completion of that attempt, a failed one included, settles the charge to the bytes the runner reports it
-forwarded; a lease that expires without a completion keeps the ceiling. A successful completion also charges the sizes
+The job row records the day and the amount charged (`charged_day`, `charged_bytes`); every completion of that attempt,
+a failed one included, settles the charge on that day's row only, to the bytes the runner reports it forwarded, never
+below zero, so a claim before midnight completed after it cannot credit the new day; a lease that expires without a
+completion keeps the ceiling. A successful completion also charges the sizes
 of the locked files the metadata marks as not yet stored; over the budget the version is refused with
 `PACKAGE_FETCH_BUDGET_EXCEEDED`.
 
@@ -659,7 +662,8 @@ audited; the uploader is refused with `PACKAGE_RELEASE_BY_UPLOADER`). So a stole
 put a version into a build at once: someone else sees it first, or it waits out the hold, during which an administrator
 can delete it. The hold applies everywhere a private version enters a build: the private index leaves it out, an author
 lock that names it is refused with `PACKAGE_QUARANTINED`, and the private file route answers the unknown `404` for its
-file. Uploads count against the tenant's content bytes (Architecture
+file. The hold that applies is the one of the namespace named by the request's grant (the job's, the test run's or the
+materialization's namespace), never another namespace of the tenant. Uploads count against the tenant's content bytes (Architecture
 decision 0027).
 
 The control plane serves the private index and files to runners (`/script-runner/private-index/...`,
@@ -933,7 +937,7 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   (`apps/package-gateway/tests/fixtures/npm/`, refreshed by `scripts/record-registry-fixtures.sh`):
   `filters_versions_after_the_cut`, `drops_versions_without_a_time`, `refuses_a_redirect_to_another_host`,
   `a_document_over_the_cap_is_refused_not_partly_served`, `full_document_parses_are_bounded_and_cached`,
-  `one_grant_cannot_hold_every_parse_slot`,
+  `one_grant_cannot_hold_every_parse_slot`, `one_tenant_cannot_hold_every_parse_slot`,
   `validates_names_before_upstream`,
   `egress_is_get_only`.
   Refs: Requirement 046-004, Requirement 046-018
@@ -949,7 +953,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   Task 046-19's). Tests: `an_identical_upload_is_accepted_again`, `a_different_file_for_an_uploaded_version_is_a_conflict`,
   `a_reservation_blocks_a_lock_that_took_the_name_from_public`, `another_tenants_private_file_is_not_found`,
   `a_private_upload_is_held_for_the_private_quarantine`, `the_uploader_cannot_release_their_own_upload`,
-  `a_held_upload_is_refused_in_an_author_lock_and_on_the_file_route`.
+  `a_held_upload_is_refused_in_an_author_lock_and_on_the_file_route`,
+  `the_hold_is_the_grant_namespaces_with_two_namespaces_of_different_holds`.
   Refs: Requirement 046-017
 - [ ] T046-10 Publication flow: `content_digest` with the manifest, `:resolve-again`, dependency jobs and their
   transitions, the build key version 2 at claim, the author-lock path, `Expected` and `BuildAssignment`. Files:
@@ -1008,7 +1013,7 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `a_pinned_file_is_never_collected`, `a_reference_gained_after_the_mark_keeps_the_file`,
   `a_collected_file_is_fetched_again_by_name`, `the_fetch_budget_counts_forwarded_bytes`,
   `a_failed_resolve_is_charged_its_forwarded_bytes`, `an_over_budget_tenant_is_not_given_a_resolve`,
-  `concurrent_claims_cannot_overshoot_the_budget` (a barrier).
+  `concurrent_claims_cannot_overshoot_the_budget` (a barrier), `a_claim_before_midnight_settles_on_its_own_day`.
   Refs: Requirement 046-018
 - [ ] T046-19 Studio panel and CLI (`sagat script packages`, `sagat package push`). Files:
   `frontend/apps/studio/src/features/scripts/`, `apps/cli`. Tests: the Studio journey test, the CLI contract tests.
