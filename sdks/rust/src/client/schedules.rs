@@ -221,13 +221,15 @@ impl ScheduleWrite {
     }
 }
 
-/// The action as the server keeps it: without the input, with its digest.
+/// The action as the server keeps it: without the input and without any digest of it, which would
+/// let a reader confirm a guessed input (T016-066, G665). `has_input` says only whether it has one;
+/// its values come out only through an input disclosure.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ScheduleActionDefinition {
     pub workflow_id: Option<String>,
     pub version_policy: Option<String>,
     pub version_id: Option<String>,
-    pub input_digest: Option<String>,
+    pub has_input: bool,
     pub nominal_time_field: Option<String>,
     pub run_timeout_ms: Option<u64>,
     /// The business-id prefix of every run the schedule starts, as the server sent it; `None` when
@@ -245,7 +247,7 @@ impl std::fmt::Debug for ScheduleActionDefinition {
             .field("workflow_id", &self.workflow_id)
             .field("version_policy", &self.version_policy)
             .field("version_id", &self.version_id)
-            .field("input_digest", &self.input_digest)
+            .field("has_input", &self.has_input)
             .field("nominal_time_field", &self.nominal_time_field)
             .field("run_timeout_ms", &self.run_timeout_ms)
             .field(
@@ -299,7 +301,10 @@ impl Schedule {
                 workflow_id: part("workflowId"),
                 version_policy: part("versionPolicy"),
                 version_id: part("versionId"),
-                input_digest: part("inputDigest"),
+                // An older server sends `inputDigest` instead: it only tells that there is an input,
+                // and is not kept.
+                has_input: action.as_ref().is_some_and(|a| a.flag("hasInput"))
+                    || part("inputDigest").is_some(),
                 nominal_time_field: part("nominalTimeField"),
                 run_timeout_ms: action.as_ref().and_then(|a| a.opt_u64("runTimeoutMs")),
                 business_id_prefix: part("businessIdPrefix"),

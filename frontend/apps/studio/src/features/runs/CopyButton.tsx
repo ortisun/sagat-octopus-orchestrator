@@ -1,7 +1,7 @@
 import { useAnnounce } from '../../ui/Announcer';
 
 /**
- * Copies `text` to the clipboard and says so. Only ids and digests go through here, never a
+ * Copies `text` to the clipboard and says so. Only ids, digests of definitions and payload references go through here, never a
  * payload or a secret. Where the browser will not allow it, it says that too: the text is on the
  * page to be selected.
  */

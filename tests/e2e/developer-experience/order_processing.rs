@@ -201,11 +201,32 @@ async fn journal(p: &Platform, run: &str) -> (Value, Vec<Value>) {
     )
     .await;
     assert_eq!(event_status, 200, "{event_body}");
-    let events = event_body["items"]
+    let mut events = event_body["items"]
         .as_array()
         .unwrap_or_else(|| panic!("run {run} has no journal: {event_body}"))
         .clone();
+    // No read returns a digest of an output (FR-016-030, G665); the parity of outputs across languages is
+    // checked on the digest the server keeps, read from the database by sequence.
+    let kept: std::collections::BTreeMap<i64, Vec<u8>> = sqlx::query_as(
+        "SELECT seq, payload_digest FROM run_events \
+         WHERE run_id = $1::uuid AND payload_digest IS NOT NULL",
+    )
+    .bind(run)
+    .fetch_all(&p.api.db.pool)
+    .await
+    .expect("the digests the server keeps")
+    .into_iter()
+    .collect();
+    for event in &mut events {
+        if let Some(digest) = event["seq"].as_i64().and_then(|seq| kept.get(&seq)) {
+            event["outputDigest"] = Value::String(hex(digest));
+        }
+    }
     (run_body, events)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn event_position(events: &[Value], kind: &str, step: &str) -> usize {
@@ -329,7 +350,7 @@ fn semantic_shape(case: Case, events: &[Value]) -> Vec<String> {
                 event["stepId"].as_str().unwrap_or("-"),
                 event["attempt"],
                 event["cause"]["code"].as_str().unwrap_or("-"),
-                event["payloadRef"].as_str().unwrap_or("-")
+                event["outputDigest"].as_str().unwrap_or("-")
             )
         })
         .collect();

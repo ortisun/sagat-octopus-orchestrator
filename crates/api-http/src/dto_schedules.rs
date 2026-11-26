@@ -170,7 +170,8 @@ pub struct BackfillListBody {
     pub items: Vec<BackfillBody>,
 }
 
-/// A schedule. The input of its runs is described by its digest, never returned.
+/// A schedule. The input of its runs is never returned, nor a digest of it, which would let a reader confirm a
+/// guessed input (FR-016-030, G665): `action.hasInput` says only whether there is one.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleBody {
@@ -204,14 +205,6 @@ pub struct ScheduleBody {
     pub updated_at: OffsetDateTime,
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(64), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
-}
-
 impl ScheduleBody {
     /// Says whether the control of the schedule is open, for a schedule a cron trigger owns (and only for it).
     #[must_use]
@@ -226,8 +219,11 @@ impl ScheduleBody {
 impl From<&ScheduleRecord> for ScheduleBody {
     fn from(record: &ScheduleRecord) -> Self {
         let mut action = target_to_json(&record.target);
-        if let (Value::Object(map), Some(digest)) = (&mut action, record.input_digest) {
-            map.insert("inputDigest".to_owned(), Value::String(hex(&digest)));
+        if let Value::Object(map) = &mut action {
+            map.insert(
+                "hasInput".to_owned(),
+                Value::Bool(record.input_digest.is_some()),
+            );
         }
         Self {
             schedule_id: record.id.to_string(),

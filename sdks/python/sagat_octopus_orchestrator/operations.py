@@ -233,12 +233,16 @@ class ScheduleWrite:
 
 @dataclass(frozen=True)
 class ScheduleActionSummary:
-    """The action as the server keeps it: without the input, with its digest."""
+    """The action as the server keeps it: without the input and without any digest of it.
+
+    A digest would let a reader confirm a guessed input (T016-066, G665); ``has_input`` says only whether the action has
+    one, and its values come out only through an input disclosure.
+    """
 
     workflow_id: str | None
     version_policy: str | None
     version_id: str | None
-    input_digest: str | None
+    has_input: bool
     nominal_time_field: str | None
     run_timeout_ms: int | float | None
     business_id_prefix: str | None = field(default=None, repr=False)
@@ -336,7 +340,8 @@ def to_schedule(value: Any) -> Schedule:
             workflow_id=opt_str(action, "workflowId"),
             version_policy=opt_str(action, "versionPolicy"),
             version_id=opt_str(action, "versionId"),
-            input_digest=opt_str(action, "inputDigest"),
+            # An older server sends ``inputDigest`` instead: it only tells that there is an input, and is not kept.
+            has_input=action.get("hasInput") is True or isinstance(action.get("inputDigest"), str),
             nominal_time_field=opt_str(action, "nominalTimeField"),
             run_timeout_ms=opt_number(action, "runTimeoutMs"),
             business_id_prefix=opt_str(action, "businessIdPrefix"),

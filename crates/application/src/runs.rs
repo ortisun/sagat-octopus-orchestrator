@@ -290,8 +290,10 @@ pub struct JournalEntry {
     pub actor: String,
     pub trace_id: Option<String>,
     pub occurred_at: OffsetDateTime,
-    /// Digest of the payload the event refers to (a step output), hex.
-    pub payload_ref: Option<String>,
+    /// Where the payload the event carries is kept (a step output, a wait's or a reconciliation's result), or
+    /// `None` when it carries none. Never a digest of the payload: an unsalted digest of a guessable value lets any
+    /// reader confirm the guess (FR-016-030, G665). The type has no room for one.
+    pub payload: Option<JournalPayloadRef>,
     /// Why it happened, when it is the result of something going wrong, a person's choice or the
     /// clock (FR-008-002).
     pub cause: Option<sagat_domain::execution::Cause>,
@@ -302,6 +304,21 @@ pub struct JournalEntry {
     /// `node`; graph deltas need the complete scope path to distinguish repeated activations.
     /// `None` means this build could not decode the event and must return a full reset.
     pub touched: Option<Vec<sagat_domain::execution::ExecutionInstanceId>>,
+}
+
+/// The place of a payload in a run's journal: the run and the sequence of the event that carries it, which payload
+/// inspection and disclosure accept as the selector `{"source": "journal", "sequence": seq}` (D016-001). It is not
+/// derived from the payload, so two equal payloads have two different references, and it says nothing of the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalPayloadRef {
+    pub run: RunId,
+    pub seq: u64,
+}
+
+impl std::fmt::Display for JournalPayloadRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "journal:{}:{}", self.run, self.seq)
+    }
 }
 
 /// One step as the runtime graph shows it.

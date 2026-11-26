@@ -195,12 +195,14 @@ type ScheduleWrite struct {
 	RemainingActions *int64 `json:"remainingActions,omitempty"`
 }
 
-// ScheduleActionInfo is the action as the server keeps it: without the input, with its digest.
+// ScheduleActionInfo is the action as the server keeps it: without the input and without any digest of it,
+// which would let a reader confirm a guessed input (T016-066, G665). HasInput says only whether it has one; its
+// values come out only through an input disclosure.
 type ScheduleActionInfo struct {
 	WorkflowID       string
 	VersionPolicy    string
 	VersionID        string
-	InputDigest      string
+	HasInput         bool
 	NominalTimeField string
 	RunTimeoutMs     *int64
 	// BusinessIDPrefix, BusinessIDConflictPolicy and BusinessIDReusePolicy are all empty when the action names
@@ -710,7 +712,10 @@ func scheduleOf(raw map[string]json.RawMessage) (*Schedule, error) {
 		schedule.Action.WorkflowID, _ = jsonx.String(action, "workflowId")
 		schedule.Action.VersionPolicy, _ = jsonx.String(action, "versionPolicy")
 		schedule.Action.VersionID, _ = jsonx.String(action, "versionId")
-		schedule.Action.InputDigest, _ = jsonx.String(action, "inputDigest")
+		// An older server sends inputDigest instead: it only tells that there is an input, and is not kept.
+		hasInput, _ := jsonx.Bool(action, "hasInput")
+		_, legacyDigest := jsonx.String(action, "inputDigest")
+		schedule.Action.HasInput = hasInput || legacyDigest
 		schedule.Action.NominalTimeField, _ = jsonx.String(action, "nominalTimeField")
 		schedule.Action.RunTimeoutMs = optionalInt(action, "runTimeoutMs")
 		schedule.Action.BusinessIDPrefix, _ = jsonx.String(action, "businessIdPrefix")

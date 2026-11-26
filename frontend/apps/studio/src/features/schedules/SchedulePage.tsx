@@ -133,13 +133,20 @@ function Summary({ schedule }: { schedule: ScheduleDescription }) {
           </dd>
         </div>
       </dl>
-      {schedule.action?.inputDigest ? (
-        <p className="hint">
-          The input of its runs is not shown. Its fingerprint (SHA-256) is <code>{schedule.action.inputDigest.slice(0, 16)}…</code>
-        </p>
+      {hasInput(schedule.action) ? (
+        <p className="hint">The input of its runs is not shown here. Its values come out only through an input disclosure, under the workflow&apos;s classification.</p>
       ) : null}
     </>
   );
+}
+
+/**
+ * Whether the action has an input. The platform says so with `hasInput` and returns no digest of the input
+ * (T016-066, G665); an older platform sent `inputDigest` instead, which only tells that there is one and is never shown.
+ */
+function hasInput(action: ScheduleDescription['action']): boolean {
+  if (action === undefined) return false;
+  return action.hasInput === true || typeof (action as { inputDigest?: unknown }).inputDigest === 'string';
 }
 
 function Upcoming({ schedule }: { schedule: ScheduleDescription }) {

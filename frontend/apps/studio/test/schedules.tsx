@@ -33,7 +33,7 @@ export function schedule(changes: Partial<Schedule> = {}): Schedule {
     revision: 3,
     spec: { intervals: [{ everyMs: 7_200_000, offsetMs: 0 }], timezone: 'UTC', jitterMs: 0 },
     policies: { overlap: 'SKIP', catchupWindowMs: 31_622_400_000, catchupMode: 'ONE', pauseOnFailure: false, bufferLimit: 100 },
-    action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32) },
+    action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: true },
     authorizedBy: 'alice',
     nextActionAt: '2026-11-05T02:00:00Z',
     createdAt: '2026-11-01T00:00:00Z',

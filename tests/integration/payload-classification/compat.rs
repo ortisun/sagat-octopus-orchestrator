@@ -257,11 +257,58 @@ async fn unchanged_surfaces_match_actual_pre_classification_response_bytes() {
         assert_eq!(status, StatusCode::OK, "current surface: {label}");
         fs::write(artifacts.join(format!("{label}.after.http-body")), &wire)
             .expect("current response artifact");
+        if *label == "journal" {
+            // The one documented break of these surfaces (T016-066, FR-016-030, D016-003): `payloadRef` was the
+            // payload's SHA-256 and is now its place. Every other byte stays what it was.
+            assert_journal_changed_only_in_payload_refs(&goldens[*label], &wire, terminal);
+            continue;
+        }
         assert!(
             goldens[*label].as_bytes() == wire.as_bytes(),
             "pre-classification response changed: {label}"
         );
     }
+}
+
+/// The journal of the frozen server and of this one: the same events, the same bytes once `payloadRef` is set
+/// aside, a 64-character digest before and `journal:<runId>:<seq>` after wherever there was one, and `null`
+/// where there was none.
+fn assert_journal_changed_only_in_payload_refs(before: &str, after: &str, run: &str) {
+    let mut before: Value = serde_json::from_str(before).expect("baseline journal");
+    let mut after: Value = serde_json::from_str(after).expect("current journal");
+    let refs = |page: &mut Value| -> Vec<(u64, Value)> {
+        page["items"]
+            .as_array_mut()
+            .expect("journal items")
+            .iter_mut()
+            .map(|event| {
+                let seq = event["seq"].as_u64().expect("sequence");
+                let reference = event
+                    .as_object_mut()
+                    .and_then(|event| event.remove("payloadRef"))
+                    .unwrap_or(Value::Null);
+                (seq, reference)
+            })
+            .collect()
+    };
+    let old = refs(&mut before);
+    let new = refs(&mut after);
+    assert_eq!(old.len(), new.len(), "the same journal");
+    for ((seq, old), (new_seq, new)) in old.iter().zip(&new) {
+        assert_eq!(seq, new_seq);
+        match old.as_str() {
+            Some(digest) => {
+                assert_eq!(digest.len(), 64, "the baseline carried a digest");
+                assert_eq!(new, &json!(format!("journal:{run}:{seq}")), "event {seq}");
+            }
+            None => assert!(new.is_null(), "event {seq} carries no payload"),
+        }
+    }
+    assert_eq!(
+        serde_json::to_vec(&before).expect("baseline"),
+        serde_json::to_vec(&after).expect("current"),
+        "pre-classification response changed beyond payloadRef: journal"
+    );
 }
 
 #[tokio::test]

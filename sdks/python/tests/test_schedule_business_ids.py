@@ -33,7 +33,7 @@ def write_with(**action: Any) -> ScheduleWrite:
 
 
 def served_action(**fields: Any) -> dict[str, Any]:
-    return {"workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a" * 64, **fields}
+    return {"workflowId": WF, "versionPolicy": "ACTIVE", "hasInput": True, **fields}
 
 
 # ------------------------------------------------------------------------------------------------- the write
@@ -297,7 +297,7 @@ def test_the_prefix_does_not_appear_in_the_printed_form_of_a_write_or_of_what_is
 
 def test_the_new_fields_are_optional_and_keyword_compatible_so_no_existing_caller_breaks() -> None:
     assert ScheduleAction(WF, {}).business_id_prefix is None
-    summary = ScheduleActionSummary(WF, None, None, None, None, None)
+    summary = ScheduleActionSummary(WF, None, None, False, None, None)
     assert (summary.business_id_prefix, summary.business_id_conflict_policy, summary.business_id_reuse_policy) == (
         None,
         None,
@@ -366,7 +366,7 @@ def test_the_runner_prints_the_three_keys_of_an_action_only_when_the_schedule_ha
         "workflowId": WF,
         "versionPolicy": "ACTIVE",
         "versionId": None,
-        "inputDigest": "a" * 64,
+        "hasInput": True,
         "nominalTimeField": None,
         "runTimeoutMs": None,
         "businessIdPrefix": "order",
@@ -378,10 +378,14 @@ def test_the_runner_prints_the_three_keys_of_an_action_only_when_the_schedule_ha
         "workflowId": WF,
         "versionPolicy": "ACTIVE",
         "versionId": None,
-        "inputDigest": "a" * 64,
+        "hasInput": True,
         "nominalTimeField": None,
         "runTimeoutMs": None,
-    }, "every existing golden stays byte-identical"
+    }, "these six keys; hasInput replaced inputDigest in every golden (T016-066)"
+    legacy = to_schedule(schedule_body(action={"workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a" * 64}))
+    assert legacy.action.has_input is True, "an older server's digest only tells that there is an input"
+    assert "a" * 64 not in repr(schedule_json(legacy))
+    assert to_schedule(schedule_body(action={"workflowId": WF, "hasInput": False})).action.has_input is False
     odd = schedule_json(
         to_schedule(schedule_body(action=served_action(businessIdPrefix="p", businessIdReusePolicy="X")))
     )

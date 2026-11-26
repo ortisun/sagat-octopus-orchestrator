@@ -231,7 +231,7 @@ final class Operations {
         putText(action, "workflowId", s.action().workflowId());
         putText(action, "versionPolicy", s.action().versionPolicy());
         putText(action, "versionId", s.action().versionId());
-        putText(action, "inputDigest", s.action().inputDigest());
+        action.put("hasInput", s.action().hasInput());
         putText(action, "nominalTimeField", s.action().nominalTimeField());
         putNumber(action, "runTimeoutMs", s.action().runTimeoutMs());
         // Only when the action has them: the observation of every schedule without a prefix is what it was.

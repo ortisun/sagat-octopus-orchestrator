@@ -93,19 +93,20 @@ export function edgeKindWords(kind: RuntimeEdge['kind']): string {
   return EDGE_WORDS[kind] ?? clip(String(kind), 24);
 }
 
-const HEX = /^[0-9a-f]{16,128}$/i;
+const JOURNAL_REF = /^journal:[0-9a-f-]{36}:([1-9][0-9]*)$/i;
 const MAX_REF = 200;
 
 /**
- * How a `payloadRef` is shown: the platform keeps the payload and the journal carries only its
- * digest, so the Studio says "redacted" and shows a short form of the digest, with the whole of
- * it available to copy (G144). It never shows or fetches the payload.
+ * How a `payloadRef` is shown: the platform keeps the payload and the journal carries only where it is
+ * kept (`journal:<runId>:<seq>`), never the payload or a digest of it (T016-066, G665). The Studio says
+ * "redacted", shows the place shortly, and has the whole reference to copy. Anything else (an older
+ * server's digest) is an opaque label, clipped, and never called a digest. It never shows or fetches the payload.
  */
-export function digestView(ref: string | null | undefined): { short: string; full: string } | undefined {
+export function payloadRefView(ref: string | null | undefined): { short: string; full: string } | undefined {
   if (ref === null || ref === undefined || ref === '') return undefined;
   const full = ref.slice(0, MAX_REF);
-  const hex = full.replace(/^sha256:/i, '');
-  return { short: HEX.test(hex) ? `sha256:${hex.slice(0, 12)}…` : clip(full, 24), full };
+  const place = JOURNAL_REF.exec(full);
+  return { short: place ? `journal #${place[1]}` : clip(full, 24), full };
 }
 
 /** Every status a run can have, in the order a person reads them (a status missing here is a compile error). */

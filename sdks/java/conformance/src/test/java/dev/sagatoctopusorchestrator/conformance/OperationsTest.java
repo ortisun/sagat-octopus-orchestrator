@@ -38,7 +38,7 @@ class OperationsTest {
     private static final String WF = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
     private static final String SCHEDULE = "0190aaaa-0000-7000-8000-0000000000a1";
     private static final List<String> OLD_ACTION_KEYS =
-            List.of("workflowId", "versionPolicy", "versionId", "inputDigest", "nominalTimeField", "runTimeoutMs");
+            List.of("workflowId", "versionPolicy", "versionId", "hasInput", "nominalTimeField", "runTimeoutMs");
 
     private HttpServer server;
     private final List<JsonNode> bodies = new CopyOnWriteArrayList<>();
@@ -94,12 +94,12 @@ class OperationsTest {
     }
 
     private static String plainAction() {
-        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','inputDigest':'" + "a".repeat(64) + "'}";
+        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','hasInput':true}";
     }
 
     private static String prefixedAction() {
-        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','inputDigest':'" + "a".repeat(64)
-                + "','businessIdPrefix':'order','businessIdConflictPolicy':'USE_EXISTING','businessIdReusePolicy':'REJECT_DUPLICATE'}";
+        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','hasInput':true"
+                + ",'businessIdPrefix':'order','businessIdConflictPolicy':'USE_EXISTING','businessIdReusePolicy':'REJECT_DUPLICATE'}";
     }
 
     private static List<String> names(JsonNode object) {
@@ -132,7 +132,7 @@ class OperationsTest {
         assertEquals("order", action.path("businessIdPrefix").textValue(), "what is printed is what the server sent");
         assertEquals("USE_EXISTING", action.path("businessIdConflictPolicy").textValue());
         assertEquals("REJECT_DUPLICATE", action.path("businessIdReusePolicy").textValue());
-        assertEquals("a".repeat(64), action.path("inputDigest").textValue());
+        assertTrue(action.path("hasInput").booleanValue());
     }
 
     @Test

@@ -28,7 +28,7 @@ public sealed class ConformanceRunnerTests : IAsyncLifetime
         if (request.Method is "POST" or "PUT")
         {
             var given = ((JsonObject)request.Body!)["action"] as JsonObject;
-            var action = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["inputDigest"] = new string('a', 64) };
+            var action = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["hasInput"] = true };
             if (given?["businessIdPrefix"] is { } prefix)
             {
                 action["businessIdPrefix"] = prefix.DeepClone();
@@ -161,9 +161,9 @@ public sealed class ConformanceRunnerTests : IAsyncLifetime
             Assert.False(printed.ContainsKey("businessIdConflictPolicy"), printed.ToJsonString());
             Assert.False(printed.ContainsKey("businessIdReusePolicy"), printed.ToJsonString());
 
-            // Every other key is what it was before the three existed, so a golden written before them stays byte-identical.
+            // Every other key is what it was before the three existed; hasInput replaced the input's digest (T016-066).
             Assert.Equal(
-                ["workflowId", "versionPolicy", "versionId", "inputDigest", "nominalTimeField", "runTimeoutMs"],
+                ["workflowId", "versionPolicy", "versionId", "hasInput", "nominalTimeField", "runTimeoutMs"],
                 printed.Select(pair => pair.Key).ToArray());
         }
 

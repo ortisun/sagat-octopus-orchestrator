@@ -91,7 +91,7 @@ class OperationsTest {
         base.put("state", "'ACTIVE'");
         base.put("revision", "2");
         base.put("createdAt", "'2026-10-10T10:00:00Z'");
-        base.put("action", "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','inputDigest':'" + "a".repeat(64) + "'}");
+        base.put("action", "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','hasInput':true}");
         base.put("note", "null");
         base.put("remainingActions", "null");
         base.put("nextActionAt", "'2099-01-01T09:00:00Z'");
@@ -308,7 +308,7 @@ class OperationsTest {
                 + "'action':{'workflowId':'" + WF + "','input':{'n':1}}}"), body(request));
         assertEquals(2, created.revision());
         assertEquals(Instant.parse("2099-01-01T09:00:00Z"), created.nextActionAt());
-        assertEquals("a".repeat(64), created.action().inputDigest(), "the input is never returned, only its digest");
+        assertTrue(created.action().hasInput(), "the input is never returned, nor its digest: only that there is one");
         assertEquals(1, created.raw().get("futureField").intValue());
     }
 
@@ -482,7 +482,7 @@ class OperationsTest {
 
     /** What the server answers for an action that has a prefix: all three members, the policies with their defaults. */
     private static String prefixed(String prefix, String conflict, String reuse) {
-        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','inputDigest':'" + "a".repeat(64) + "','businessIdPrefix':'" + prefix
+        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','hasInput':true,'businessIdPrefix':'" + prefix
                 + "','businessIdConflictPolicy':'" + conflict + "','businessIdReusePolicy':'" + reuse + "'}";
     }
 
@@ -492,6 +492,21 @@ class OperationsTest {
 
     private static JsonNode sentAction(FakeRestServer.Seen request) {
         return request.body().path("action");
+    }
+
+    /** T016-066 (G665): the server says hasInput; an older one sent the input's digest, which only says there is one. */
+    @Test
+    void aScheduleSaysWhetherItHasAnInputAndNeverCarriesADigestOfIt() {
+        String digest = "a".repeat(64);
+        for (Map.Entry<String, Boolean> answer : Map.of(
+                "{'workflowId':'" + WF + "','hasInput':true}", true,
+                "{'workflowId':'" + WF + "','hasInput':false}", false,
+                "{'workflowId':'" + WF + "','inputDigest':'" + digest + "'}", true).entrySet()) {
+            server.prepare((req, reply) -> reply.send(201, schedule("action", answer.getKey())));
+            Schedule created = client().schedules().create(NS, writeOf(ScheduleWrite.Action.of(WF, Map.of())), key("sched-key-9"));
+            assertEquals(answer.getValue(), created.action().hasInput(), answer.getKey());
+            assertFalse(created.action().toString().contains(digest), "the digest is not kept");
+        }
     }
 
     @Test
@@ -508,7 +523,7 @@ class OperationsTest {
         assertEquals("USE_EXISTING", created.action().businessIdConflictPolicy());
         assertEquals("REJECT_DUPLICATE", created.action().businessIdReusePolicy());
         assertEquals("order", created.raw().path("action").path("businessIdPrefix").textValue(), "and raw() keeps it");
-        assertEquals("a".repeat(64), created.action().inputDigest(), "the other members of the action are what they were");
+        assertTrue(created.action().hasInput(), "the other members of the action are what they were");
     }
 
     @Test

@@ -153,9 +153,12 @@ export interface Schedule {
   state: string;
   revision: number;
   exhausted: boolean;
-  /** The action as the server keeps it: without the input, with its digest. */
+  /**
+   * The action as the server keeps it, without the input and without any digest of it (a digest would let a reader confirm a
+   * guessed input: T016-066, G665). `hasInput` says whether it has one; its values come out only through an input disclosure.
+   */
   action: {
-    workflowId: string | null; versionPolicy: string | null; versionId: string | null; inputDigest: string | null; nominalTimeField: string | null; runTimeoutMs: number | null;
+    workflowId: string | null; versionPolicy: string | null; versionId: string | null; hasInput: boolean; nominalTimeField: string | null; runTimeoutMs: number | null;
     /** The business-id prefix of the action (customer text), or null when the schedule has none. */
     businessIdPrefix: string | null;
     /** As the server sent it (`FAIL` or `USE_EXISTING` today, another string when the server is newer); null without a prefix. */
@@ -238,7 +241,8 @@ function toSchedule(value: unknown): Schedule {
     exhausted: raw['exhausted'] === true,
     action: {
       workflowId: optStr(action, 'workflowId'), versionPolicy: optStr(action, 'versionPolicy'), versionId: optStr(action, 'versionId'),
-      inputDigest: optStr(action, 'inputDigest'), nominalTimeField: optStr(action, 'nominalTimeField'),
+      // An older server sends `inputDigest` instead: it only tells that there is an input, and is not kept.
+      hasInput: action['hasInput'] === true || typeof action['inputDigest'] === 'string', nominalTimeField: optStr(action, 'nominalTimeField'),
       runTimeoutMs: typeof action['runTimeoutMs'] === 'number' ? action['runTimeoutMs'] : null,
       businessIdPrefix: optStr(action, 'businessIdPrefix'), businessIdConflictPolicy: optStr(action, 'businessIdConflictPolicy'),
       businessIdReusePolicy: optStr(action, 'businessIdReusePolicy'),

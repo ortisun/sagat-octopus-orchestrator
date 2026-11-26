@@ -99,8 +99,8 @@ use sagat_application::execution::{
 };
 use sagat_application::primitives::CollectionFinish;
 use sagat_application::runs::{
-    Admitted, ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter,
-    RunStore, SagaView, StepView,
+    Admitted, ApprovalView, ChainView, GraphSnapshot, JournalEntry, JournalPayloadRef, Lock,
+    NewRun, RunFilter, RunStore, SagaView, StepView,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
@@ -1700,9 +1700,11 @@ impl RunStore for PgRunStore {
         if !exists {
             return Ok(None);
         }
+        // Whether an event carries a payload, never its digest: the digest is the payload's content address
+        // inside the server and an oracle for a guessed value outside it (FR-016-030, G665).
         let rows = sqlx::query(
             "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, detail, \
-                    encode(payload_digest, 'hex') AS payload_ref, instance_path_nodes, \
+                    payload_digest IS NOT NULL AS carries_payload, instance_path_nodes, \
                     instance_path_indices \
              FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND seq > $3 \
              ORDER BY seq LIMIT $4",
@@ -1769,8 +1771,9 @@ impl RunStore for PgRunStore {
                         .and_then(|instance| steps.get(instance))
                         .map(|step| sagat_telemetry::attempt_span_id(*step, attempt).to_string())
                 });
+                let seq = u64::try_from(seq).map_err(|_| corrupt("sequence"))?;
                 Ok(JournalEntry {
-                    seq: u64::try_from(seq).map_err(|_| corrupt("sequence"))?,
+                    seq,
                     event_type,
                     node,
                     touched,
@@ -1780,7 +1783,8 @@ impl RunStore for PgRunStore {
                     actor: col(row, "actor")?,
                     trace_id: col(row, "trace_id")?,
                     occurred_at: col(row, "occurred_at")?,
-                    payload_ref: col(row, "payload_ref")?,
+                    payload: col::<bool>(row, "carries_payload")?
+                        .then_some(JournalPayloadRef { run, seq }),
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()

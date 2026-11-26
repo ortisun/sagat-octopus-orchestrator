@@ -188,7 +188,7 @@ func cursorJSON(next string) any {
 func scheduleActionJSON(a *client.ScheduleActionInfo) object {
 	out := object{
 		"workflowId": orNull(a.WorkflowID), "versionPolicy": orNull(a.VersionPolicy), "versionId": orNull(a.VersionID),
-		"inputDigest": orNull(a.InputDigest), "nominalTimeField": orNull(a.NominalTimeField), "runTimeoutMs": nullable(a.RunTimeoutMs),
+		"hasInput": a.HasInput, "nominalTimeField": orNull(a.NominalTimeField), "runTimeoutMs": nullable(a.RunTimeoutMs),
 	}
 	for name, value := range map[string]string{
 		"businessIdPrefix": a.BusinessIDPrefix, "businessIdConflictPolicy": a.BusinessIDConflictPolicy, "businessIdReusePolicy": a.BusinessIDReusePolicy,

@@ -7,7 +7,7 @@
       "op": "scheduleCreate",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -34,7 +34,7 @@
       "op": "schedulePause",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -61,7 +61,7 @@
       "op": "schedulePause",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -88,7 +88,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -192,7 +192,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -273,7 +273,7 @@
       "op": "scheduleResume",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -300,7 +300,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -342,7 +342,7 @@
       "op": "scheduleCreate",
       "result": {
         "action": {
-          "inputDigest": "ca2efa0c76ec0a270ab2fea8dd4498cf8127d946b687c5ae4c57ab305ba58df0",
+          "hasInput": true,
           "nominalTimeField": "scheduledFor",
           "runTimeoutMs": null,
           "versionId": null,
@@ -465,7 +465,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "ca2efa0c76ec0a270ab2fea8dd4498cf8127d946b687c5ae4c57ab305ba58df0",
+          "hasInput": true,
           "nominalTimeField": "scheduledFor",
           "runTimeoutMs": null,
           "versionId": null,
@@ -638,7 +638,7 @@
           "businessIdConflictPolicy": "USE_EXISTING",
           "businessIdPrefix": "biz-{{unique}}",
           "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY",
-          "inputDigest": "783831582efb9f2ecea5d40293f99d71a897fefde355e7dcb6076b74d4f4b7a7",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -668,7 +668,7 @@
           "businessIdConflictPolicy": "FAIL",
           "businessIdPrefix": "dflt-{{unique}}",
           "businessIdReusePolicy": "ALLOW_DUPLICATE",
-          "inputDigest": "b2762a4fc7aa43a0a5ba0b599eaa27364d84fe85f09addea918fde5453514fa6",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -747,7 +747,7 @@
           "businessIdConflictPolicy": "USE_EXISTING",
           "businessIdPrefix": "biz-{{unique}}",
           "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY",
-          "inputDigest": "783831582efb9f2ecea5d40293f99d71a897fefde355e7dcb6076b74d4f4b7a7",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,

@@ -5,7 +5,7 @@ import { Banner } from '../../ui/Banner';
 import { eventLabel, eventTone } from '../../model/events';
 import { ErrorState } from '../../ui/ErrorState';
 import { CopyButton } from './CopyButton';
-import { digestView } from './display';
+import { payloadRefView } from './display';
 import { filterEntries } from './journal';
 import type { Entry, EntryFilter, JournalStore } from './journal';
 import { Moment } from './Now';
@@ -44,8 +44,8 @@ const TONES: Record<string, { word: string; symbol: string; tone: string } | und
 
 /**
  * The journal of the run, which is the source of truth, read a page at a time and drawn a window at
- * a time. The payload of an event is never shown (the journal holds a digest only): the digest is
- * shown shortened with the whole of it to copy.
+ * a time. The payload of an event is never shown, nor a digest of it: the journal says only where it is
+ * kept, shown shortened with the whole reference to copy.
  */
 export function TimelineView({ runId, journal, filter, onFilter, onSelect, selectedId }: { runId: string; journal: JournalStore; filter: EntryFilter; onFilter: (filter: EntryFilter) => void; onSelect: (id: string) => void; selectedId: string | undefined }) {
   const snapshot = useSyncExternalStore(journal.subscribe, journal.getSnapshot);
@@ -160,7 +160,7 @@ export function TimelineView({ runId, journal, filter, onFilter, onSelect, selec
 
 function EntryRow({ runId, entry, index, measure, selected, onSelect }: { runId: string; entry: Entry; index: number; measure: (element: Element | null) => void; selected: boolean; onSelect: (id: string) => void }) {
   const tone = TONES[eventTone(entry.eventType)];
-  const digest = digestView(entry.payloadRef);
+  const payload = payloadRefView(entry.payloadRef);
   const live = entry.detail === 'live';
   return (
     <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-tone={tone?.tone} data-selected={selected ? 'true' : undefined}>
@@ -226,9 +226,9 @@ function EntryRow({ runId, entry, index, measure, selected, onSelect }: { runId:
       <td>
         {live ? (
           '—'
-        ) : digest ? (
+        ) : payload ? (
           <>
-            <span>payload (redacted) {digest.short}</span> <CopyButton text={digest.full} what="payload digest" />
+            <span>payload (redacted) {payload.short}</span> <CopyButton text={payload.full} what="payload reference" />
             <PayloadInspector runId={runId} selector={{ source: 'journal', sequence: entry.seq }} compact />
           </>
         ) : (

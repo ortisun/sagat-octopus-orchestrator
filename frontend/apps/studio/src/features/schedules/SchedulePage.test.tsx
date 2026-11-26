@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ScheduleActionRecord } from '../../api/endpoints';
+import type { ScheduleActionRecord, ScheduleDescription } from '../../api/endpoints';
 import { BASE, ID, NS, WORKFLOW, backfill, bodyOf, decision, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
 import { SchedulePage } from './SchedulePage';
 
@@ -28,8 +28,22 @@ describe('A schedule', () => {
     expect(screen.getByText('Started a run', { selector: 'dt' }).closest('div')).toHaveTextContent('12');
     expect(screen.queryByText('Coalesced', { selector: 'dt' })).not.toBeInTheDocument();
     expect(screen.getByText(/input of its runs is not shown/)).toBeVisible();
-    expect(screen.getByText(/abababababababab…/)).toBeVisible();
-    expect(document.body).not.toHaveTextContent('ab'.repeat(32));
+    // No digest of the input, nor anything said to be one (T016-066, G665).
+    expect(document.body).not.toHaveTextContent(/SHA-256|fingerprint/i);
+  });
+
+  it('says an input exists when an older platform still sends its digest, and never shows the digest', async () => {
+    const legacy = { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32) } as unknown as NonNullable<ScheduleDescription['action']>;
+    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ action: legacy }) } });
+    await screen.findByRole('heading', { name: /nightly/ });
+    expect(screen.getByText(/input of its runs is not shown/)).toBeVisible();
+    expect(document.body).not.toHaveTextContent('abababab');
+  });
+
+  it('says nothing about an input the action does not have', async () => {
+    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: false } }) } });
+    await screen.findByRole('heading', { name: /nightly/ });
+    expect(screen.queryByText(/input of its runs/)).not.toBeInTheDocument();
   });
 
   it('says the business id prefix of its action and what each policy does, in words', async () => {
@@ -37,7 +51,7 @@ describe('A schedule', () => {
       routes: {
         [`GET ${BASE}/${ID}`]: () =>
           described({
-            action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32), businessIdPrefix: 'order-', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' },
+            action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: true, businessIdPrefix: 'order-', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' },
           }),
       },
     });
@@ -50,7 +64,7 @@ describe('A schedule', () => {
   });
 
   it('says the defaults for a prefix the platform returned without its policies, and nothing about business ids for a schedule that has none', async () => {
-    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: 'order-' } }) } });
+    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: false, businessIdPrefix: 'order-' } }) } });
     await screen.findByRole('heading', { name: /nightly/ });
     expect(screen.getByText('If an open run has the id', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Record a conflict and start nothing');
     expect(screen.getByText('If a closed run remembers the id', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Start a new run');
@@ -67,7 +81,7 @@ describe('A schedule', () => {
   it('shows the prefix as text, never as markup, and says it nowhere else', async () => {
     const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => undefined));
     const { app } = await mount({
-      routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: '<img/src=x/onerror=alert(1)>', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } }) },
+      routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: false, businessIdPrefix: '<img/src=x/onerror=alert(1)>', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } }) },
     });
     await screen.findByRole('heading', { name: /nightly/ });
     expect(screen.getByText('<img/src=x/onerror=alert(1)>', { selector: 'code' })).toBeVisible();

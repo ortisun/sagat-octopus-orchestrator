@@ -566,7 +566,7 @@ internal sealed partial class RunMode
             ["workflowId"] = action.WorkflowId,
             ["versionPolicy"] = action.VersionPolicy,
             ["versionId"] = action.VersionId,
-            ["inputDigest"] = action.InputDigest,
+            ["hasInput"] = action.HasInput,
             ["nominalTimeField"] = action.NominalTimeField,
             ["runTimeoutMs"] = action.RunTimeoutMs,
         };

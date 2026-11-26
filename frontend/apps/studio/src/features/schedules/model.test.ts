@@ -43,7 +43,7 @@ function schedule(over: Partial<Schedule> = {}): Schedule {
     revision: 3,
     spec: { intervals: [{ everyMs: 7_200_000, offsetMs: 0 }], timezone: 'UTC', jitterMs: 0 },
     policies: { overlap: 'SKIP', catchupWindowMs: 31_622_400_000, catchupMode: 'ONE', pauseOnFailure: false, bufferLimit: 100 },
-    action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32) },
+    action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: true },
     createdAt: '2026-11-01T00:00:00Z',
     ...over,
   };
@@ -187,7 +187,7 @@ describe('the business id of what a schedule starts', () => {
 
   it('is shown by the draft of a schedule that has one, with its policies, and none for a schedule without one', () => {
     const result = draftOf(
-      schedule({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32), businessIdPrefix: 'order', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } }),
+      schedule({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: true, businessIdPrefix: 'order', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } }),
     );
     expect(result).toMatchObject({ draft: { businessIdPrefix: 'order', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } });
     const without = draftOf(schedule());
@@ -195,7 +195,7 @@ describe('the business id of what a schedule starts', () => {
   });
 
   it('shows the defaults for a prefix the platform returned without its policies', () => {
-    const result = draftOf(schedule({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: 'order' } }));
+    const result = draftOf(schedule({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: false, businessIdPrefix: 'order' } }));
     expect(result).toMatchObject({ draft: { businessIdPrefix: 'order', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } });
   });
 
@@ -204,7 +204,7 @@ describe('the business id of what a schedule starts', () => {
       action: {
         workflowId: WORKFLOW,
         versionPolicy: 'ACTIVE',
-        inputDigest: 'cd'.repeat(32),
+        hasInput: true,
         nominalTimeField: 'at',
         runTimeoutMs: 30_000,
         businessIdPrefix: 'order-',
@@ -319,7 +319,7 @@ describe('the draft that edits a schedule', () => {
     const original = schedule({
       spec: { intervals: [{ everyMs: 3_600_000, offsetMs: 900_000 }], timezone: 'Europe/Lisbon', jitterMs: 0, dst: { gap: 'SHIFT_FORWARD', ambiguous: 'TWICE' } },
       policies: { overlap: 'BUFFER_ALL', catchupWindowMs: 60_000, catchupMode: 'ALL', pauseOnFailure: true, bufferLimit: 7 },
-      action: { workflowId: WORKFLOW, versionPolicy: 'PINNED', versionId, inputDigest: 'cd'.repeat(32), nominalTimeField: 'at', runTimeoutMs: 30_000 },
+      action: { workflowId: WORKFLOW, versionPolicy: 'PINNED', versionId, hasInput: true, nominalTimeField: 'at', runTimeoutMs: 30_000 },
     });
     const result = draftOf(original);
     if (!('draft' in result)) throw new Error(result.cannot);
