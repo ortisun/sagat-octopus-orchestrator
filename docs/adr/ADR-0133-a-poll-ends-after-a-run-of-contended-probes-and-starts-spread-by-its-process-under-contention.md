@@ -19,12 +19,13 @@ rules).
 
 1. A poll MUST stop walking its eligible window after 8 consecutive probes that met contention (a run lock skipped, no
    ready step left, a step leased meanwhile); a refusal of this build or session (an unreadable definition, the protocol
-   minor, a pool refusal) does not count. A poll so stopped with candidates untried fetches its window once more from
-   the spread start, then walks the ineligible sample uncounted, and if it leased nothing with work left asks again
+   minor, a pool refusal) does not count. A poll so stopped with candidates untried fetches its window once more, past
+   what it tried and without the runs it probed, then walks the ineligible sample uncounted, and if it leased nothing with work left asks again
    after 50 ms instead of reporting empty.
-2. While a poll of a namespace in flight in a process has met contention, the polls of that namespace in that process
-   MUST start at an offset of the process's registry identifier (modulo 8) times an eighth of the window, added to
-   design 038's turn, within one priority; with no poll in flight a poll keeps the scan's order.
+2. While a namespace is contended in a process (from a contended probe until a poll ends having met none, or 1 s
+   after the last), the polls of that namespace in that process MUST start at an offset of the process's registry
+   identifier modulo the window's length, added to design 038's turn, within one priority; an uncontended poll keeps the
+   scan's order.
 3. A queue of ready steps is not built until design 052's Success criterion 052-005 (at most 4 probes per lease, two
    instances, an open loop) is missed; then it is a design of its own.
 

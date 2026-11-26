@@ -88,21 +88,25 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   consecutive probes that met contention (probes that did not meet contention reset nothing and count nothing), in place
   of design 038's rule that a poll walks every candidate of its window (FR-038-004, refined: the order stays a
   preference, and no candidate is dropped, only deferred). A poll so stopped with untried eligible candidates fetches its
-  window once more, from the spread start of Requirement 052-042, and walks it under the same bound; it then walks the
+  window once more, starting past the candidates its first walk tried (its first start plus the number tried) and
+  excluding the runs it already probed, and walks it under the same bound; it then walks the
   ineligible sample that ADR-0075's activation condition (d) puts behind every eligible candidate (`INELIGIBLE_SAMPLE`, 4,
   passed to `claim()` with the eligible window's length), uncounted; and if it leased nothing while candidates remain
-  untried, a unary poll answers `retry_after_ms = 50` and a stream claims again after 50 ms instead of parking, once,
-  before it may park. The bound counts only when untried eligible candidates remain and no other ending applies (the
+  untried, a stream claims again after 50 ms instead of parking, once, before it may park, and a unary poll answers
+  `retry_after_ms = 50`, unless the same session received that answer less than `idle_retry` ago, in which case it
+  answers `idle_retry` (the last such answer kept per session in memory for `idle_retry`, at most one entry per session
+  with a poll in that interval). The bound counts only when untried eligible candidates remain and no other ending applies (the
   session full, the consumer gone, the byte budget, `MAX_CLAIM_FAILURES`); errors count towards `MAX_CLAIM_FAILURES`
   only.
 - **Requirement 052-042 A spread start under contention, per process.** The polls of a namespace in a process MUST
-  start as design 038's turn says, plus, while a poll of that namespace in flight in the same process has met
-  contention (a flag on design 038's in-flight entry, which exists only while polls of the namespace are in flight), an
-  offset of `⌊r × len / 8⌋` positions, `len` being the window's length and `r` the process's registry instance
-  identifier (Architecture decision 0082) hashed modulo 8 (its first eight bytes as a little-endian integer, modulo 8),
-  the rotation applied within one priority when feature 019 adds priorities (FR-019-013). The turn stays a permutation
-  inside a process; processes differ by `r`; a poll with no poll of its namespace in flight keeps the scan's order. The
-  offset is the server's, never the client's.
+  start as design 038's turn says, plus, while the namespace is *contended* in the process, an offset of `r mod len`
+  positions, `len` being the window's length and `r` the process's registry instance identifier (Architecture decision
+  0082) read as an integer (its first eight bytes, little-endian), the rotation applied within one priority when
+  feature 019 adds priorities (FR-019-013). A namespace is contended in a process from a probe there that met contention
+  until a poll of the namespace there ends having met none, or 1 s after its last contended probe, whichever is first
+  (a map of the namespaces contended in the last second, at most 10,000 entries, the oldest dropped first). The turn
+  stays a permutation inside a process; processes differ by `r`; a poll of a namespace that is not contended keeps the
+  scan's order. The offset is the server's, never the client's.
 - **Requirement 052-043 Counted.** The poll MUST count, beside design 038's counters, the polls stopped by the bound,
   the windows fetched again and the polls started spread (`worker_poll_bounded_total`, `worker_poll_refetched_total`,
   `worker_poll_spread_total`, no label), and the statements of a poll (`stage="poll"` in design 038's
@@ -115,19 +119,23 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
 
 - **Requirement 052-050 A registry without a runtime.** The application MUST keep, per process, a wake registry
   (`crates/application/src/worker/wake.rs`) of per-key permits behind a standard mutex, a key being (tenant, namespace,
-  activity), with no `tokio` feature beyond `rt` (ADR-0092's check unchanged): an entry exists only while a parked
-  stream is registered for its key, so the registry holds at most the stream permits times `MAX_ACTIVITIES` entries, and
-  goes with the last registration. Parking, its timer and the 10 ms coalescing are in `crates/api-grpc`, which already
-  parks with `tokio::time`.
+  activity), with no `tokio` feature beyond `rt` (ADR-0092's check unchanged): a stream registers its keys from before its claim
+  begins until it leaves its park (or its window ends), an entry exists only while a stream is registered for its key,
+  so the registry holds at most the stream permits times `MAX_ACTIVITIES` entries, and goes with the last registration.
+  Parking, its timer and the coalescing (the parked streams of a key are woken at most once per 10 ms; a pass hands out
+  the permits gathered meanwhile) are in `crates/api-grpc`, which already parks with `tokio::time`.
 - **Requirement 052-051 Permits, not versions.** A commit that makes `k` steps of a key ready MUST add `k` permits to
-  the key's registered entry (none when no stream is registered); a stream about to park MUST take a permit if one is
+  the key's registered entry (none when no stream is registered), the permits of a key never more than the streams
+  registered for it, and a claim that leases `n` tasks of a key removes up to `n` of its permits, so that a fan-out
+  leased by one stream leaves no permit behind; a stream about to park MUST take a permit if one is
   there and claim again, or park, and a claim on a permit validates the session in its transaction as every claim does
   today, so a session revoked while its stream was parked leases nothing; a parked stream is woken by a permit added while it waits, and a permit added between
   its empty claim and its park is taken by the check before the park, so no wake is lost. A stream whose claim on a
   permit leased nothing takes no further permit until `idle_retry` has passed, and a stream whose session is full or
-  whose window is drained parks without registering. A barrier test commits between a stream's empty claim and its park
-  and sees the stream claim at once; another makes one step ready with eight streams ending empty claims and sees at
-  most one more claim.
+  whose window is drained parks without registering. A barrier test commits after a stream's claim has scanned and before its
+  transaction ends, and sees the stream claim again at once; another makes one step ready with eight streams ending
+  empty claims and sees at most one more claim; a third makes five steps ready, lets one stream lease them all, then
+  makes a sixth ready within `idle_retry` and sees it leased at once.
 - **Requirement 052-052 Published after a successful commit, from every writer.** Every transaction that writes a
   `task.ready` outbox row (`crates/infra-postgres/src/execution.rs`, `execution/path.rs`, `chain_progress.rs`,
   `loop_progress.rs` and `primitives.rs`) MUST collect its keys and counts as it writes the row and, inside its
@@ -139,8 +147,10 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   NATS publish, or Redis `PUBLISH`), never through the outbox and never awaiting the broker: it `try_send`s into a
   bounded queue drained by one task on a connection of its own, and drops and counts what does not fit or cannot be
   sent. Each execution engine subscribes on a connection of its own and, for each message, looks the key's registry entry up
-  first: a message for an absent key touches no state; otherwise it adds one permit, at most 20 per second per key (a
-  token bucket kept inside the entry). The control plane, whose run starts make steps
+  first: a message for an absent key touches no state; otherwise, unless the message is the process's own (its payload, the publishing
+  instance's identifier, equals the receiver's), it adds one permit, at most 20 per second per key (a token bucket kept
+  inside the entry). One message adds one permit whatever the number of steps the remote commit made ready, so a remote
+  fan-out wider than one stream's credit leaves the other streams to `idle_retry`. The control plane, whose run starts make steps
   ready, publishes and does not subscribe. A lost wake costs at most `idle_retry`; the paths that make work leasable
   with no commit of a step (a breaker closing with time, quota freed by a lease's expiry, a binding added) stay bounded by
   it. Without a transport, the wake covers the commits of the same process only.
@@ -148,8 +158,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   internal channel of `specs/001-platform-foundation/contracts/events.asyncapi.yaml`, unstored, under the contract
   baseline check: subject (NATS) or channel (Redis) `sagat.wake.v1.<tenant>.<namespace>.<activity token>`, the tenant and
   namespace as their identifiers and the activity as the hexadecimal of the first 16 bytes of its name's SHA-256, outside
-  the platform stream's filter `sagat.v1.>` so that JetStream never stores it; an empty payload; the key is read from the
-  subject alone, a malformed one dropped and counted. The cross-process wake is on only when the broker authenticates the
+  the platform stream's filter `sagat.v1.>` so that JetStream never stores it; the payload is the publishing instance's
+  identifier (16 bytes), read only to drop a process's own messages; the key is read from the subject alone, a
+  malformed message dropped and counted. The cross-process wake is on only when the broker authenticates the
   platform with a wake user of its own, on a connection and credentials of its own (`nats.wakeCredentialsSecret`, or a
   Redis wake URL secret, `redis.wakeUrlSecret`; the outbox keeps its own user, which needs the JetStream API), whose
   permissions are: for engines, publish and subscribe on `sagat.wake.v1.>`; for the control plane, publish only; no
@@ -188,8 +199,9 @@ From design 038's research (`specs/038-claim-transition-efficiency/research.md`)
   (t(0.975, 5) + t(0.8, 5)) / √6 = (2.571 + 0.920) / 2.449, a heuristic, since the sign rule decides first. Under no
   change the sign rule alone fires with probability 1/64, about 1.6%; the pilot's report states the false-positive rate
   and the power at a 15% loss of transitions per second, estimated by resampling its pairs with that loss injected; if
-  that power is below 0.8, the gate runs ten pairs and fails on nine of ten slower (probability 11/1024, about 1.1%,
-  under no change). A one-statement regression is the statement budget's to catch; the scenario uses unary polls, so a
+  that power is below 0.8, the gate runs ten pairs (A B B A five times) and fails on nine of ten slower (probability
+  11/1024, about 1.1%, under no change) and the median beyond T10 = (t(0.975, 9) + t(0.8, 9)) / √10 × sd =
+  (2.262 + 0.883) / 3.162 × sd = 0.995 × sd. Both factors are a paired t-test's, applied to the median as a heuristic. A one-statement regression is the statement budget's to catch; the scenario uses unary polls, so a
   slowdown of streams or of the wake, or one from a migration or a dependency's update, is the release benchmark's.
 
 ### Success criteria
@@ -273,7 +285,7 @@ design claims no number measured on a machine it was not run on.
 *   **Given**: 16 workers on one activity through two application instances, and a backlog larger than they ask for.
 *   **When**: they poll at once.
 *   **Then**: polls that meet contention set their process's flag, and the next polls of each process start at a point
-    spread by the process; a poll that meets contention in 8 probes in a row fetches its window again from the spread
+    spread by the process; a poll that meets contention in 8 probes in a row fetches its window again past what it tried
     start, and a poll that leased nothing with work left asks again after 50 ms.
 
 ### CUJ 2: A chain under light load
@@ -299,7 +311,7 @@ The scan's two branches gain the missing filter.
 
 **Wake.** `WakeRegistry` and the `WakeSink` port in `crates/application/src/worker/wake.rs`; the stores collect keys
 where they write `task.ready` and call the sink inside `commit()`; the gRPC stream loop keeps its `SessionRecord`,
-registers its activities before its claim, takes a permit or parks with its timer; a `NatsWake` (core client, publish
+registers its activities from before its claim until it leaves its park, takes a permit or parks with its timer; a `NatsWake` (core client, publish
 and subscribe) in `crates/infra-nats` and a `RedisWake` in the Redis adapter implement the transport port; the engine
 builds one registry and sink and hands them to every store and to the gRPC service; the control plane builds a
 publish-only sink.
@@ -330,8 +342,8 @@ is empty and whose readers drop what they cannot parse.
 |---|---|
 | The bound defers eligible work | Only contention counts; a second fetch from another point; a 50 ms retry with work left; the counters |
 | Unreadable or refused runs at the head end every poll | They do not count towards the bound |
-| The spread breaks the oldest-first order | Only while a poll of the namespace in the process met contention; a poll alone keeps the order |
-| Wakes spin streams | Permits, not versions; no permit for a stream whose permitted claim leased nothing; full streams unregistered |
+| The spread breaks the oldest-first order | Only within a second of contention in the process; an uncontended poll keeps the order |
+| Wakes spin streams | Permits, capped by the registered streams and debited by leases; no permit for a stream whose permitted claim leased nothing; full streams unregistered; own messages dropped |
 | A forged or flooded wake | The platform's own broker user and channel permissions; one permit per message, 20 per second per key |
 | The broker stalls a request | A bounded queue drained by one task; drops counted |
 | A lost wake | `idle_retry` stays the upper bound; a CI configuration runs the suite with the wake off |
@@ -392,13 +404,13 @@ is empty and whose readers drop what they cannot parse.
   Refs: Requirement 052-041, Requirement 052-042, Requirement 052-053
 - [ ] T052-2 Add the missing path filter to the two branches of the candidate scan and count `probed` only with a transaction begun, with the test `a_minor_four_session_reaches_its_forward_work_behind_nine_scoped_compensations` and the counters' test in the style of `a_poll_counts_each_stage_once_with_the_stage_as_its_only_label`.
   Refs: Requirement 052-040
-- [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the ChildRoot capacity guard's suite, `tests/integration/workflow-primitives/`, the guard being off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
+- [ ] T052-3 Bound the walk, fetch again, walk the ineligible sample uncounted (in the ChildRoot capacity guard's suite, `tests/integration/workflow-primitives/`, the guard being off in production), and the 50 ms retry, with `SAGAT_POLL_BOUND`, the counters and the tests `a_poll_stops_after_eight_probes_that_met_contention` (`wanted` 3 or more, the ninth candidate still `READY`, `probed` 8), `the_second_fetch_starts_past_what_the_first_tried` (with an instance identifier of offset 0 and the namespace already contended), `two_bounded_unary_polls_in_a_row_answer_fifty_then_idle_retry`, `unreadable_runs_ahead_do_not_end_the_poll` (nine runs whose definition this build cannot read before one it can), `a_static_backlog_behind_eight_locked_runs_is_leased_within_one_hundred_milliseconds` and `the_ineligible_sample_is_walked_after_the_bound`.
   Refs: Requirement 052-041, Requirement 052-043
-- [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed identifiers, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, and `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database, a contended first round, then K pollers per instance asserting K probes for K leases).
+- [ ] T052-4 Spread the start by the process while a poll of the namespace met contention, with `SAGAT_POLL_SPREAD`, a unit test of the offset on fixed identifiers, `a_poll_alone_keeps_the_order_of_the_scan` and `a_lone_poll_is_served_oldest_first` kept, `k_polls_in_flight_together_probe_once_per_lease` kept unmodified, `a_second_round_after_contention_probes_once_per_lease_in_each_of_two_instances` (two application instances on one database with identifiers fixed to distinct offsets, a contended first round, then K pollers per instance asserting K probes for K leases), `one_poller_per_instance_stays_spread_within_a_second_of_contention` and `the_contended_map_drops_its_oldest_entry_past_ten_thousand`; the report of Task 052-9 records the instances' offsets.
   Refs: Requirement 052-042, Requirement 052-043
-- [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_parked_stream`.
+- [ ] T052-5 Add the registry, the permits, the parking with its timer, the unregistered full streams, the deadline window's hint and `SAGAT_WAKE`, with the tests `a_commit_between_an_empty_claim_and_the_park_wakes_the_stream` (a park probe beside the `ConsumerWatch` probes, `idle_retry` 60 s, a lease within 1 s), `one_step_made_ready_wakes_at_most_one_of_eight_streams`, `a_second_step_after_a_fan_out_is_woken_at_once`, `the_permits_of_a_key_never_exceed_its_registered_streams`, `a_full_stream_is_not_woken_and_a_free_one_is`, `a_stream_whose_woken_claim_leased_nothing_waits_its_idle_retry`, `a_deadline_window_asks_to_reopen_within_fifty_milliseconds` and `the_registry_holds_no_entry_without_a_registered_stream`.
   Refs: Requirement 052-050, Requirement 052-051, Requirement 052-055
-- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS and Redis transports with their bounded queues and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and a CI configuration of `integration_durable_execution` with `SAGAT_WAKE` off on the pull requests the hot-path selector picks, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; the integration suite of `crates/infra-nats` selected by its rule.
+- [ ] T052-6 Collect the keys in every writer of `task.ready`, call the sink after a successful commit, add the NATS and Redis transports with their bounded queues and connections, the control plane's publish-only sink, the channel in the AsyncAPI contract, the broker users and permissions in Helm and Compose, the chart's refusal, and a CI configuration of `integration_durable_execution` with `SAGAT_WAKE` off on the pull requests the hot-path selector picks, with the tests `a_wake_from_another_instance_claims_at_once` (a registry per instance, the NATS-received counter asserted), `a_failed_commit_publishes_nothing`, `the_wake_prefix_is_outside_the_stream_filter`, `a_stopped_broker_does_not_slow_a_completion`, `a_wake_flood_is_limited_per_key`, `a_wake_for_an_absent_key_touches_no_state`, `a_process_drops_its_own_wake`, `an_open_broker_keeps_the_wake_local`, `a_session_revoked_while_parked_leases_nothing_on_a_wake`, `a_lost_wake_is_bounded_by_idle_retry` (seen failing first on a park that waits for the wake alone), and the telemetry vocabulary test over the new counters; the integration suite of `crates/infra-nats` selected by its rule.
   Refs: Requirement 052-052, Requirement 052-053, Requirement 052-054
 - [ ] T052-7 Give the in-process transitions scenario its gate configuration (workers end on completions and sleep the SDK's `receive_delay`), a JSON output, and an open-loop mode (runs started at a fixed rate, the maximum sustained rate found by stepping it) in `tests/performance/scalability-ha/`.
   Refs: Requirement 052-030, Success criterion 052-005, Success criterion 052-006
