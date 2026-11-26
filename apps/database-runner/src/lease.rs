@@ -232,6 +232,7 @@ async fn send_report(
                 output_sha256: sagat_domain::workflow::Digest::new(Sha256::digest(bytes).into())
                     .to_hex(),
                 traceparent: lease.traceparent.clone(),
+                accept_workflow_task: false,
             };
             rpc.client
                 .clone()

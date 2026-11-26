@@ -180,9 +180,9 @@ Proposed until its build-evidence conditions are met) and being built: Task 044-
 the replay checks, and the deferrable Tasks 044-29 and 044-14 the worker queries and `ReleaseSticky`. Nothing below is
 served on `develop` before its task lands.
 
-**The minor.** Workflow tasks travel on *the workflow-as-code minor*: the next free minor of the register in
-[`sdks/SPEC.md`](../../sdks/SPEC.md) section 9 when the contract of Task 044-2 merges (Architecture decision 0109; Gap
-044-013). This page does not name its number; Task 044-2 adds the register row. **Minors are cumulative:** a session on
+**The minor.** Workflow tasks travel on *the workflow-as-code minor*: minor **1.10**, the next free minor of the
+register in [`sdks/SPEC.md`](../../sdks/SPEC.md) section 9 after design 045's 1.9, taken by the contract of Task 044-2
+(Architecture decision 0109; Gap 044-013; Decision 044-233). **Minors are cumulative:** a session on
 the workflow-as-code minor implements the host procedures of 1.7 (step logs, design 041), 1.8 (delivery acknowledgement,
 feature 006) and 1.9 (activity timeouts, design 045, which names that minor), so the workflow tasks of each SDK depend on
 those three in that SDK. Everything is additive: `worker.baseline.json` grows and nothing changes meaning. A session

@@ -172,6 +172,8 @@ impl Dev<'_> {
                     pools: vec![],
                     max_inflight: 8,
                     protocol_version: crate::doctor::WORKER_PROTOCOL.to_owned(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         )?;
@@ -295,6 +297,7 @@ impl Dev<'_> {
                         output_sha256: String::new(),
                         traceparent: task.traceparent.clone(),
                         instance: task.instance.clone(),
+                        accept_workflow_task: false,
                     },
                 )?;
                 let effect = (kind == Kind::Reconciliation)

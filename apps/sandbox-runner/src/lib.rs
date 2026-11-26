@@ -627,6 +627,8 @@ impl<S: Sandbox + 'static> Runner<S> {
                     pools: vec![],
                     max_inflight: i32::try_from(self.config.max_concurrent).unwrap_or(i32::MAX),
                     protocol_version: "1".to_owned(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             })
             .await?;
@@ -1110,6 +1112,7 @@ impl<S: Sandbox + 'static> Runner<S> {
                     output_sha256: String::new(),
                     traceparent: lease.traceparent.clone(),
                     instance: lease.instance.clone(),
+                    accept_workflow_task: false,
                 })
                 .await?;
             let mut client = self.client().await?;

@@ -354,6 +354,8 @@ impl Worker<'_> {
             pools: vec![],
             max_inflight,
             protocol_version: "1".into(),
+            workflow_types: Vec::new(),
+            offers_workflow_as_code: false,
         }
     }
 
@@ -573,6 +575,7 @@ impl Worker<'_> {
             output_sha256: String::new(),
             traceparent: String::new(),
             instance: lease.instance.clone(),
+            accept_workflow_task: false,
         }
     }
 

@@ -274,6 +274,45 @@ impl pb::worker_service_server::WorkerService for Proxy {
             ))
             .await
     }
+    // Protocol 1.10 (design 044, workflow as code): the Rust SDK offers no workflow as code, so the
+    // fault proxy serves none of the workflow procedures (as it does for AppendStepLogs).
+    async fn complete_workflow_task(
+        &self,
+        _: Request<pb::CompleteWorkflowTaskRequest>,
+    ) -> Result<Response<pb::CompleteWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("CompleteWorkflowTask"))
+    }
+    async fn fail_workflow_task(
+        &self,
+        _: Request<pb::FailWorkflowTaskRequest>,
+    ) -> Result<Response<pb::FailWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("FailWorkflowTask"))
+    }
+    type ReadHistoryStream = BoxStream<'static, Result<pb::ReadHistoryResponse, Status>>;
+    async fn read_history(
+        &self,
+        _: Request<pb::ReadHistoryRequest>,
+    ) -> Result<Response<Self::ReadHistoryStream>, Status> {
+        Err(Status::unimplemented("ReadHistory"))
+    }
+    async fn respond_worker_query(
+        &self,
+        _: Request<pb::RespondWorkerQueryRequest>,
+    ) -> Result<Response<pb::RespondWorkerQueryResponse>, Status> {
+        Err(Status::unimplemented("RespondWorkerQuery"))
+    }
+    async fn respond_replay_check(
+        &self,
+        _: Request<pb::RespondReplayCheckRequest>,
+    ) -> Result<Response<pb::RespondReplayCheckResponse>, Status> {
+        Err(Status::unimplemented("RespondReplayCheck"))
+    }
+    async fn release_sticky(
+        &self,
+        _: Request<pb::ReleaseStickyRequest>,
+    ) -> Result<Response<pb::ReleaseStickyResponse>, Status> {
+        Err(Status::unimplemented("ReleaseSticky"))
+    }
 }
 pub async fn start(
     url: &str,

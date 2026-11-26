@@ -84,6 +84,12 @@ fn only_the_four_output_producers_declare_node_output_schema_carriers() {
             "bodyScript",
             "bodyWaitEvent",
             "child",
+            // Design 044 (Technical Plan 7.4, Architecture decision 0108 decision 5): the carriers of a code version,
+            // an activity, script or children entry's outputSchema of the envelope, under the new classification
+            // rules version of code versions (Task 044-24).
+            "codeActivityEntry",
+            "codeChildEntry",
+            "codeScriptEntry",
             "script",
             "waitEvent",
         ]

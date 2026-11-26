@@ -775,6 +775,49 @@ finding was answered.
   classified by the union of the parent's entry and the child's current version; the verifier's session is matched by
   id, token hash and namespace; the continue-as-new suggestion fires at 2.5 MiB.
 
+### Decisions while building the server lane (2026-11-26)
+
+- **D044-232** (2026-11-26) The body each command kind contributes to the command chain is the table of
+  `specs/044-workflow-as-code/contracts/goldens/README.md`: a work command's code-profile fragment with its value field
+  (`input`, or an approval's `subject`) as the descriptor `{"sha256", "size"}`; each typed kind a small closed object, a
+  value that may travel as a blob again as its descriptor. delegate (OD-2026-11-24-4): Technical Plan 6.2 fixes the chain
+  and which values enter as descriptors but leaves the typed bodies to the corpus; six SDKs and the server must produce
+  the same bytes, so they are written once, beside the goldens that test them, rather than left to each implementation.
+- **D044-233** (2026-11-26) The worker-protocol contract of Task 044-2 takes minor 1.10, the next free one after design
+  045's 1.9 (Gap 044-013, later state). Draft 019 names 1.10 to 1.12 on the branch of PR #279 but has no contract merged,
+  so it takes the next free minors when its contract merges, as the register's rule says. Its field numbers are the next
+  ones no design has named: `WorkerCapabilities` 11 and 12 (6, 7 and 10 are drafts 019 and 031 and feature 006's),
+  `TaskLease` 28 to 30 as a `oneof` (19 to 27 are named by drafts 019 and 031, feature 006 and design 045),
+  `CompleteStepRequest` 14 (13 is design 041's), `StepCommandResponse` 5. A work command's value travels in
+  `Command.value` beside its fragment, so a blob-carried value never needs a marker inside user JSON; the workflow lease
+  carries `workflow_type` and `code_digest` beside the reserved activity name, so no SDK parses that name; one enumeration
+  `WorkflowTaskFailureCause` holds every cause of Technical Plan 6.3, and the server refuses a server-only cause in
+  `FailWorkflowTask`. delegate (OD-2026-11-24-4): taking 1.13 to keep clear of draft 019 would make a 1.13 session owe
+  019's host procedures, which minors being cumulative forbids; the other choices keep the contract smaller for six SDKs.
+- **D044-234** (2026-11-26) The REST codes of Technical Plan 13.3 that carry an HTTP status are `details.reason` values
+  of the closed `Error.code` set (`409 CONFLICT`, `422 VALIDATION_FAILED`, `429 RATE_LIMITED` and so on), as the
+  repository writes every specific REST code (`workflow_primitives_keep_the_rest_error_code_set_closed`). The error
+  catalog lists each of them, as Task 044-2 asks, with `http: []`, so the bodiless status mapping of the six SDKs does
+  not change (a bodiless `504` must not become `QUERY_TIMEOUT`). delegate (OD-2026-11-24-4): the design's table names
+  codes; the repository's contract rule decides where a code travels.
+  The catalog then holds three codes that are not failures (`MATCHED`, the reason of a dry-run match, and the deferral
+  causes `OUTSTANDING_OBLIGATIONS` and `UNHANDLED_EVENTS`, gRPC `OK`), and an SDK's closed code type accepts the reason
+  codes as envelope codes; both are kept, settled against the SDK lane's finding: the catalog is the SDKs' one
+  dictionary of codes with their remediation, which a batch item's reason and a completion's cause need as much as an
+  error does, and a new origin value would change the closed origin type of six SDKs for no behaviour.
+- **D044-235** (2026-11-26) `history:export` is a reserved entry of feature 029's draft permission catalog (not
+  assignable to a custom role in 0.3.0, Owner question 044-015), held by the admin role only, and joins the test list of
+  permissions only the admin role holds.
+- **D044-236** (2026-11-26) The reset rules of design 044 are a table of their own in feature 018's registry with a
+  column "Code run" for the rules that differ for code runs (`timer.started` and `wait.started` `REMATERIALIZE`, the
+  settled saga outcomes `COPY`), instead of a fourth column on every existing table: the existing rows keep their
+  meaning for graph runs and the code-run differences are in one place, which `every_new_event_kind_has_a_reset_rule`
+  reads.
+- **D044-237** (2026-11-26) Task 044-6 is built against Architecture decision 0112 (design 054, approved on PR #279):
+  its shared registry table replaces the shared body of `platform_requirement_hold` that Technical Plan 14 and Decision
+  044-206 give, and design 045's rollback floor. Until PR #279 merges, Task 044-6 stays closed; whether the hold of
+  Architecture decision 0112 can starve an operator's commands is settled by Task 045-21's barrier test, on which this
+  lane does not depend yet.
 ### Decisions while building the server lane: documents (2026-11-26)
 
 - **D044-238** (2026-11-26) `publishCode` takes the code document's declarations as well:
@@ -906,6 +949,12 @@ finding was answered.
   Task 044-21 waits for it.
 - **G044-020, G044-026** (2026-11-26, later state) Handed to design 045's owner by the coordinating session.
 
+- **G044-028** (2026-11-26) Draft 019's `FailStepRequest.details_json = 13` (PR #279, `specs/019-worker-deployments-dispatch/contracts/worker-protocol.md`)
+  takes the number design 041 gives to `StepLogCarry step_logs = 13`; not this design's to settle, reported to the
+  coordinating session for draft 019's owner.
+- **G044-026** (2026-11-26, later state) Design 045's text on PR #279 drops the capability list from the hold's body,
+  and design 054's Architecture decision 0112 replaces the shared hold with a registry table (Decision 044-237); the gap
+  closes when PR #279 merges.
 - **G044-029** (2026-11-26) Design 044, Technical Plan 8.2, says a chain-addressed update of a code run behaves as for
   a run, but table 13.2 does not list the chain's update route (`updateExecutionChain`), whose contract therefore has no
   `waitMs`, `acceptPending` or `202`; Task 044-21 adds them with the update transitions.

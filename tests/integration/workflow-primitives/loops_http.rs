@@ -162,6 +162,7 @@ async fn poll_and_complete(
                 output_sha256: String::new(),
                 traceparent: String::new(),
                 instance: task.instance.clone(),
+                accept_workflow_task: false,
             },
         ))
         .await
@@ -279,6 +280,8 @@ async fn public_pre_and_post_test_loops_finish_after_restart_and_terminal_rollba
                     pools: Vec::new(),
                     max_inflight: 1,
                     protocol_version: "1.5".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))
@@ -578,6 +581,8 @@ async fn register_loop_worker(
                     pools: Vec::new(),
                     max_inflight: 1,
                     protocol_version: "1.5".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))
@@ -1019,6 +1024,7 @@ impl PublicLoop {
                     output_sha256: String::new(),
                     traceparent: String::new(),
                     instance: task.instance.clone(),
+                    accept_workflow_task: false,
                 },
             ))
             .await

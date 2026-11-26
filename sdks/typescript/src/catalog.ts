@@ -115,6 +115,182 @@ export const CATALOG: readonly CatalogEntry[] = [
     "remediation": "An unexpected error on the server: retry once, and if it persists report the trace id to the operator."
   },
   {
+    "code": "CAPABILITY_NOT_ACTIVE",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The platform operator has not recorded the instance registry requirement this needs (code-workflows-v1 for a code version, signal-inbox-v1 for one that declares signals): ask the operator to record it once every instance reports the capability."
+  },
+  {
+    "code": "SIGNAL_NOT_DECLARED",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run's code version does not declare this signal: send a declared signal name, or publish and move to a version that declares it."
+  },
+  {
+    "code": "SIGNAL_INBOX_FULL",
+    "origin": "rest",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": true,
+    "remediation": "The run holds as many pending signals of this name as its version allows: retry after the workflow has consumed some."
+  },
+  {
+    "code": "HISTORY_HEADROOM",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run is near its history limit and takes no more signals or updates: send them to the run's successor after it continues as new."
+  },
+  {
+    "code": "RUN_CLOSING",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": true,
+    "remediation": "The run is about to end and is not taking new signals or updates: retry later, or send them to the run that follows it."
+  },
+  {
+    "code": "UPDATE_PENDING",
+    "origin": "rest",
+    "http": [],
+    "grpc": "DEADLINE_EXCEEDED",
+    "retryable": true,
+    "remediation": "The update was admitted but has not completed within the wait: read its receipt later, or send it again with acceptPending."
+  },
+  {
+    "code": "UPDATE_BACKLOG",
+    "origin": "rest",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": true,
+    "remediation": "The run, or this caller's share of it, has as many open updates as it may hold: retry after some complete, honouring retry-after-ms."
+  },
+  {
+    "code": "RUN_NOT_MUTABLE",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run is stopping or has ended and cannot take this request: check the run's status."
+  },
+  {
+    "code": "QUERY_TIMEOUT",
+    "origin": "rest",
+    "http": [],
+    "grpc": "DEADLINE_EXCEEDED",
+    "retryable": true,
+    "remediation": "No worker answered the query within its timeout: check that a worker serves the run's code digest, or use a declared query, which needs no worker."
+  },
+  {
+    "code": "QUERY_COMMAND",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The query handler tried to change the workflow: a worker query must only read the workflow's state."
+  },
+  {
+    "code": "QUERY_UNAVAILABLE",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": true,
+    "remediation": "The run cannot answer a worker query now (its namespace's workflow tasks are paused, it is under review, or it has ended): use a declared query, or retry once it runs again."
+  },
+  {
+    "code": "MOVE_TARGET_INVALID",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The target is not a published code version of the run's own workflow: check the version number."
+  },
+  {
+    "code": "RESULT_SCHEMA_VIOLATION",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The update handler returned a result outside the update's declared resultSchema: fix the handler; the update failed and the run went on."
+  },
+  {
+    "code": "RUN_ENDED",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run ended before the update completed: the update was finished by the platform; send it to another run if it still applies."
+  },
+  {
+    "code": "RUN_CONTINUED",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run continued as new before the update completed: send the update again to the chain, which addresses the run that follows."
+  },
+  {
+    "code": "RUN_BUSY",
+    "origin": "rest",
+    "http": [],
+    "grpc": "ABORTED",
+    "retryable": true,
+    "remediation": "The run kept working while its move was being checked: pause the namespace's workflow tasks and request the move again."
+  },
+  {
+    "code": "NO_TARGET_WORKER",
+    "origin": "rest",
+    "http": [],
+    "grpc": "UNAVAILABLE",
+    "retryable": true,
+    "remediation": "No worker of the target code digest took the replay check within an hour: start a worker of the target version and request the move again."
+  },
+  {
+    "code": "REPLAY_MISMATCH",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run's history does not replay to the same commands on the target code: the run stays on its version; see the first difference and guard the change with patched."
+  },
+  {
+    "code": "ENVELOPE_MISMATCH",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "Work the run still has open does not fit the target version's envelope or declarations: the run stays on its version; publish a target that keeps them."
+  },
+  {
+    "code": "MATCHED",
+    "origin": "rest",
+    "http": [],
+    "grpc": "OK",
+    "retryable": false,
+    "remediation": "The run's history replays to the same commands on the target code: a move of this run would apply."
+  },
+  {
+    "code": "REPLAY_CHECK_ABANDONED",
+    "origin": "rest",
+    "http": [],
+    "grpc": "UNAVAILABLE",
+    "retryable": true,
+    "remediation": "The replay check of this run was abandoned by its workers three times: check the target version's workers and request the move again."
+  },
+  {
+    "code": "WORKFLOW_FAILED",
+    "origin": "rest",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The workflow failed itself with a code outside the allowed pattern: use a code matching ^[A-Z][A-Z0-9_]{0,63}$ in the workflow failure."
+  },
+  {
     "code": "STALE_ATTEMPT",
     "origin": "worker",
     "http": [],
@@ -355,6 +531,158 @@ export const CATALOG: readonly CatalogEntry[] = [
     "remediation": "Whether the write happened is unknown: do not repeat it blindly; check the destination and resolve the step."
   },
   {
+    "code": "NONDETERMINISM",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The workflow code made other commands on replay than the run recorded: the run is under review; move it to fixed code, reset it or cancel it."
+  },
+  {
+    "code": "CHAIN_MISMATCH",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The commands of the completion do not reproduce the run's command chain: the run is under review; retry it on another worker, move it, reset it or cancel it."
+  },
+  {
+    "code": "NONDETERMINISM_RISK",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The workflow left the deterministic runtime or answered before its window: the run is under review; retry, move, reset or cancel it."
+  },
+  {
+    "code": "COMMAND_OUTSIDE_ENVELOPE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "A command is outside the code version's envelope: the run is under review; publish a version whose envelope covers it and move the run."
+  },
+  {
+    "code": "COMMAND_INVALID",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "A command is malformed or not allowed in the run's state: the run is under review; fix the code and move the run, reset it or cancel it."
+  },
+  {
+    "code": "VALIDATOR_COMMAND",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "An update validator issued a command: validators must only read; the run is under review; fix the code and move the run."
+  },
+  {
+    "code": "WORKFLOW_TASK_FAILED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": true,
+    "remediation": "The workflow code threw an exception that is not a workflow failure: it is retried with a backoff, and after five failures in a row the run goes under review."
+  },
+  {
+    "code": "ACTIVATION_DEADLINE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "DEADLINE_EXCEEDED",
+    "retryable": true,
+    "remediation": "The workflow code did not yield within the activation deadline: look for a busy loop or blocking call; it counts as a workflow task failure."
+  },
+  {
+    "code": "WORKFLOW_TASK_TIMED_OUT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "DEADLINE_EXCEEDED",
+    "retryable": true,
+    "remediation": "No completion arrived within the workflow task timeout: it is retried with a backoff and counts as a workflow task failure."
+  },
+  {
+    "code": "COMMAND_VALUE_RELEASED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "ABORTED",
+    "retryable": true,
+    "remediation": "A value held for a deferred command was released before it was used: the workflow task is retried and uploads the value again."
+  },
+  {
+    "code": "COMMAND_VALUE_LIMIT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": true,
+    "remediation": "The workflow task uploaded more than 16 command values: pass fewer large values per activation; it counts as a workflow task failure."
+  },
+  {
+    "code": "COMMAND_LIMIT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": true,
+    "remediation": "The run has 2,048 steps that can still act: wait for some to finish, or move a large fan-out to a graph child."
+  },
+  {
+    "code": "OUTSTANDING_OBLIGATIONS",
+    "origin": "worker",
+    "http": [],
+    "grpc": "OK",
+    "retryable": false,
+    "remediation": "The terminal command waits for open work of the run to settle; nothing to do, it is applied when it settles."
+  },
+  {
+    "code": "UNHANDLED_EVENTS",
+    "origin": "worker",
+    "http": [],
+    "grpc": "OK",
+    "retryable": false,
+    "remediation": "The terminal command waits until the workflow has seen the events that arrived meanwhile; nothing to do."
+  },
+  {
+    "code": "CLOSING_WINDOW_COMMAND",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "Only commands that wind the run down are allowed after its history limit: the run is under review; move it to code that ends or continues it, or cancel it."
+  },
+  {
+    "code": "HISTORY_LIMIT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The run's history reached its limit: retry the review to open the closing window, in which the workflow should continue as new or end."
+  },
+  {
+    "code": "RETAINED_BYTES_LIMIT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": false,
+    "remediation": "The run would retain more than 4 MiB: keep large values in blobs or continue as new; the run is under review, or the update failed."
+  },
+  {
+    "code": "STORAGE_QUOTA_EXCEEDED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": true,
+    "remediation": "The tenant's content quota refused the values of the completion: free stored content or raise the quota; it counts as a workflow task failure."
+  },
+  {
+    "code": "EXTERNAL_CONTENT_NOT_INSPECTED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "PERMISSION_DENIED",
+    "retryable": false,
+    "remediation": "The value is withheld because it may hold a secret field or travels as a blob: read it through the activity that owns it, or with the reveal rights."
+  },
+  {
     "code": "TRANSPORT",
     "origin": "sdk",
     "http": [],
@@ -385,5 +713,29 @@ export const CATALOG: readonly CatalogEntry[] = [
     "grpc": "INVALID_ARGUMENT",
     "retryable": false,
     "remediation": "The payload is over the limit (256 KiB inline): send a smaller output."
+  },
+  {
+    "code": "COMMAND_BATCH_LIMIT_EXCEEDED",
+    "origin": "sdk",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": false,
+    "remediation": "One activation made more than 256 commands or 48 KiB of command metadata: catch it, or move the fan-out to a graph child."
+  },
+  {
+    "code": "INLINE_VALUES_EXCEEDED",
+    "origin": "sdk",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": false,
+    "remediation": "The values of one activation do not fit its message: pass smaller values, fewer gated inputs, or continue as new with a smaller state."
+  },
+  {
+    "code": "INCONCLUSIVE_REDACTED",
+    "origin": "sdk",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The replayer reached a value withheld from the export: the replay is neither a match nor a mismatch from that command on; export with the reveal rights."
   }
 ] as const;

@@ -952,6 +952,7 @@ async fn a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_drop
             output_sha256: String::new(),
             traceparent: String::new(),
             instance: task.instance.clone(),
+            accept_workflow_task: false,
         },
     );
     report_request.metadata_mut().insert(

@@ -828,7 +828,9 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
-  | next | Drafts 019, 020, 021, 023, 024, 025, 026, 031, 032 and 035 each name a minor; each takes the next free one (1.9 or later) when its contract merges, and its SDKs carry the 1.8 host procedure first | |
+  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` field 26 and `heartbeat_from_handler` field 27, `FailStepRequest.next_retry_delay_ms` field 14) | design 045, named on its branch (pull request #279); taken when its contract merges |
+  | 1.10 | Workflow as code: the task kinds `WORKFLOW`, `QUERY` and `REPLAY_CHECK` (`TaskLease` fields 28 to 30, a `oneof`), `WorkerCapabilities.workflow_types` field 11 and `offers_workflow_as_code` field 12, `CompleteStepRequest.accept_workflow_task` field 14, `StepCommandResponse.workflow_task` field 5, the RPCs `CompleteWorkflowTask`, `FailWorkflowTask`, `ReadHistory`, `RespondWorkerQuery`, `RespondReplayCheck` and `ReleaseSticky` and their messages; a session on 1.10 carries the host procedures of 1.7, 1.8 and 1.9 | design 044, Architecture decision 0109, Decision 044-233; taken by the contract of Task 044-2; served from Tasks 044-8 (lease, history), 044-9 (completion), 044-13 (replay checks), 044-14 (sticky, eager) and 044-29 (worker queries) |
+  | next | Drafts 019, 020, 021, 023, 024, 025, 026, 031, 032 and 035 each name a minor; each takes the next free one (1.11 or later) when its contract merges, and its SDKs carry the 1.8 host procedure first | |
 
 ## 10. Observability and safety
 
@@ -1016,8 +1018,8 @@ and target), and reports a command where the history has none, a recorded comman
 ### 12.5 Registration and the capability declaration
 
 A worker host that registers workflow types sends `WorkerCapabilities.workflow_types` (its `(workflow type, code
-digest)` pairs, at most 64) and **`offers_workflow_as_code`**, and offers the workflow-as-code minor (the next free minor
-of §9's register when the contract of Task 044-2 merges, Architecture decision 0109); a host with activities only keeps
+digest)` pairs, at most 64) and **`offers_workflow_as_code`**, and offers the workflow-as-code minor (1.10 in §9's
+register, Architecture decision 0109); a host with activities only keeps
 its minor. Minors are cumulative: a host on that minor implements the host procedures of 1.7, 1.8 and 1.9. An SDK whose
 runtime task has not landed declares `offers_workflow_as_code = false`, and the conformance suite reports it as **not
 offered**, never as passed; the release needs all six offered (Success criterion 044-001).

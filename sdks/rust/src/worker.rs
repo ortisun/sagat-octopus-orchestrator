@@ -543,6 +543,9 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
             pools: core.options.pools.clone(),
             max_inflight: core.options.max_inflight as i32,
             protocol_version: core.options.protocol_version.clone(),
+            // Protocol 1.10 (design 044): this SDK offers no workflow as code.
+            workflow_types: Vec::new(),
+            offers_workflow_as_code: false,
         }),
     };
     let mut refreshed = false;
@@ -1248,6 +1251,8 @@ async fn report(
                     output_sha256,
                     traceparent: lease.traceparent.clone(),
                     instance,
+                    // Protocol 1.10 (design 044): no eager workflow task; this SDK offers none.
+                    accept_workflow_task: false,
                 }),
                 None,
             )

@@ -137,6 +137,138 @@ public enum SagatErrorCode
 
     /// <summary>Whether the write happened is unknown.</summary>
     OutcomeUnknown,
+
+    /// <summary>The platform operator has not recorded the instance registry requirement this needs.</summary>
+    CapabilityNotActive,
+
+    /// <summary>The run's code version does not declare this signal.</summary>
+    SignalNotDeclared,
+
+    /// <summary>The run holds as many pending signals of this name as its version allows.</summary>
+    SignalInboxFull,
+
+    /// <summary>The run is near its history limit and takes no more signals or updates.</summary>
+    HistoryHeadroom,
+
+    /// <summary>The run is about to end and takes no new signals or updates.</summary>
+    RunClosing,
+
+    /// <summary>The update was admitted but did not complete within the wait.</summary>
+    UpdatePending,
+
+    /// <summary>The run, or this caller's share of it, holds as many open updates as it may.</summary>
+    UpdateBacklog,
+
+    /// <summary>The run is stopping or has ended and cannot take this request.</summary>
+    RunNotMutable,
+
+    /// <summary>No worker answered the query within its timeout.</summary>
+    QueryTimeout,
+
+    /// <summary>The query handler tried to change the workflow.</summary>
+    QueryCommand,
+
+    /// <summary>The run cannot answer a worker query now.</summary>
+    QueryUnavailable,
+
+    /// <summary>The target is not a published code version of the run's own workflow.</summary>
+    MoveTargetInvalid,
+
+    /// <summary>The update handler returned a result outside the update's declared result schema.</summary>
+    ResultSchemaViolation,
+
+    /// <summary>The run ended before the update completed.</summary>
+    RunEnded,
+
+    /// <summary>The run continued as new before the update completed.</summary>
+    RunContinued,
+
+    /// <summary>The run kept working while its move was being checked.</summary>
+    RunBusy,
+
+    /// <summary>No worker of the target code digest took the replay check.</summary>
+    NoTargetWorker,
+
+    /// <summary>The run's history does not replay to the same commands on the target code.</summary>
+    ReplayMismatch,
+
+    /// <summary>Open work of the run does not fit the target version's envelope or declarations.</summary>
+    EnvelopeMismatch,
+
+    /// <summary>The run's history replays to the same commands on the target code (a verdict, not a failure).</summary>
+    Matched,
+
+    /// <summary>The replay check of the run was abandoned by its workers three times.</summary>
+    ReplayCheckAbandoned,
+
+    /// <summary>The workflow failed itself with a code outside the allowed pattern.</summary>
+    WorkflowFailed,
+
+    /// <summary>The workflow code made other commands on replay than the run recorded.</summary>
+    Nondeterminism,
+
+    /// <summary>The commands of the completion do not reproduce the run's command chain.</summary>
+    ChainMismatch,
+
+    /// <summary>The workflow left the deterministic runtime or answered before its window.</summary>
+    NondeterminismRisk,
+
+    /// <summary>A command is outside the code version's envelope.</summary>
+    CommandOutsideEnvelope,
+
+    /// <summary>A command is malformed or not allowed in the run's state.</summary>
+    CommandInvalid,
+
+    /// <summary>An update validator issued a command.</summary>
+    ValidatorCommand,
+
+    /// <summary>The workflow code threw an exception that is not a workflow failure.</summary>
+    WorkflowTaskFailed,
+
+    /// <summary>The workflow code did not yield within the activation deadline.</summary>
+    ActivationDeadline,
+
+    /// <summary>No completion arrived within the workflow task timeout.</summary>
+    WorkflowTaskTimedOut,
+
+    /// <summary>A value held for a deferred command was released before it was used.</summary>
+    CommandValueReleased,
+
+    /// <summary>The workflow task uploaded more than 16 command values.</summary>
+    CommandValueLimit,
+
+    /// <summary>The run has 2,048 steps that can still act.</summary>
+    CommandLimit,
+
+    /// <summary>The terminal command waits for open work of the run to settle (a deferral, not a failure).</summary>
+    OutstandingObligations,
+
+    /// <summary>The terminal command waits until the workflow has seen the events that arrived meanwhile (a deferral, not a failure).</summary>
+    UnhandledEvents,
+
+    /// <summary>Only commands that wind the run down are allowed after its history limit.</summary>
+    ClosingWindowCommand,
+
+    /// <summary>The run's history reached its limit.</summary>
+    HistoryLimit,
+
+    /// <summary>The run would retain more than 4 MiB.</summary>
+    RetainedBytesLimit,
+
+    /// <summary>The tenant's content quota refused the values of the completion.</summary>
+    StorageQuotaExceeded,
+
+    /// <summary>The value is withheld because it may hold a secret field or travels as a blob.</summary>
+    ExternalContentNotInspected,
+
+    /// <summary>One activation made more than 256 commands or 48 KiB of command metadata (raised by the SDK).</summary>
+    CommandBatchLimitExceeded,
+
+    /// <summary>The values of one activation do not fit its message (raised by the SDK).</summary>
+    InlineValuesExceeded,
+
+    /// <summary>The replayer reached a value withheld from the export (raised by the SDK).</summary>
+    InconclusiveRedacted,
 }
 
 /// <summary>The wire names and the catalog facts of <see cref="SagatErrorCode"/>.</summary>

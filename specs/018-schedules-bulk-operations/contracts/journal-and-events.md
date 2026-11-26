@@ -140,6 +140,31 @@ instance) applies in addition to these rules.
 | 030 | `service_operation.cancel_requested`, `service_operation.completed` | `EXCLUDE` | declared by 030 — FR-030-038 |
 | 030 | handler `run.started` `cause` | `COPY` as provenance; the reset run backs no operation | declared by 030 — FR-030-038 |
 
+### Event types added by design 044, and the rules that differ for code runs
+
+Design 044 (workflow as code, Technical Plan 5.1 and 6.3; Architecture decision 0105 refines Architecture decision 0050
+for code runs) declares its event types here. The column "Code run" gives the rule for a run whose start version is a
+code version where it differs from the rule for a graph run; a code run is reset only to its current code version
+(Gap 044-019). An eligible point of a code run is the end of the journal block of a completion where no `c-<n>` step
+has an attempt in flight, no outcome is unknown, no saga scope is open, aborting or compensating, no approval or child
+is open, and no code update is admitted or accepted without being completed. `REMATERIALIZE` for a code run re-creates
+the step rows of outstanding commands: a timer keeps its absolute fire time, a wait its absolute deadline and the
+look-back measured from its original start.
+
+| Event type | Graph run | Code run | Notes |
+| --- | --- | --- | --- |
+| `workflow_task.started`, `workflow_task.completed`, `workflow_task.failed`, `workflow_task.timed_out` | none (never written) | `COPY` | the reset run's command chain is recomputed from the prefix's command records alone; `server_detail` is copied with every row |
+| `command.noop` | none | `COPY` | |
+| `signal.consumed` | none | `COPY` | the reset rebuilds the inbox from the prefix's `signal.buffered` and `signal.consumed` (design 054's inbox) |
+| `run.cancel_requested` | none | `COPY` | with no accepted terminal command in the prefix, the reset sets the cancellation deadline from the reset's time plus the grace the event carries |
+| `marker.recorded` | none | `COPY` | |
+| `update.admitted`, `update.accepted`, `update.rejected`, `update.completed` | none | `COPY` | `code_update_transitions` rebuilt from them with their admitting principals; `reapply: UPDATES` is refused for a code run |
+| `run.code_version_moved` | none | `COPY` | the new run's pin is its start version, the source's current code version |
+| `run.continue_requested` | none | `EXCLUDE` | the chain's tail; a chained run offers no point (FR-018-035) |
+| `timer.started`, `wait.started` | `COPY` | `REMATERIALIZE` | an open timer or wait does not make a code run's point ineligible |
+| step rows of outstanding commands (`step.released` of a `c-<n>` step still `READY`) | `COPY` | `REMATERIALIZE` | |
+| `saga.aborting`, `compensation.planned`, `saga.compensated`, the partial and failed saga outcomes | `EXCLUDE` | `COPY` once the scope's outcome is in the prefix | a point between them is already ineligible; the reset rebuilds the settled scope's `run_sagas` and `run_saga_entries` |
+
 Drafts 023, 027, 028, 029, 031 and 032 add no journal event type in their drafts of 2026-10-27; any they
 add later has no rule until declared here, so resets over it are refused rather than guessed.
 

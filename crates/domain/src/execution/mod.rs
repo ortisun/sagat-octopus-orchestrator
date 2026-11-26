@@ -59,7 +59,7 @@ pub use continuation::{
 };
 pub use error::ExecutionError;
 pub use event::{
-    AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
+    AddressedRunEvent, CancelOrigin, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
     LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ResetReapply,
     ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,

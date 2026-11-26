@@ -1,5 +1,6 @@
 {
   "messages": {
+    "sagat_octopus_orchestrator.v1.AcknowledgeCancellationCommand": {},
     "sagat_octopus_orchestrator.v1.AppendStepLogsRequest": {
       "1": {
         "name": "worker_id",
@@ -116,6 +117,120 @@
         "type": "Message:.sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry"
       }
     },
+    "sagat_octopus_orchestrator.v1.Command": {
+      "1": {
+        "name": "command_number",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "10": {
+        "name": "target",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TargetCommand"
+      },
+      "11": {
+        "name": "saga_open",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.SagaOpenCommand"
+      },
+      "12": {
+        "name": "saga_close",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TargetCommand"
+      },
+      "13": {
+        "name": "saga_abort",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TargetCommand"
+      },
+      "14": {
+        "name": "marker",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.MarkerCommand"
+      },
+      "15": {
+        "name": "set_state",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      },
+      "16": {
+        "name": "update_decision",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.UpdateDecisionCommand"
+      },
+      "17": {
+        "name": "update_result",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.UpdateResultCommand"
+      },
+      "18": {
+        "name": "consume_signals",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ConsumeSignalsCommand"
+      },
+      "19": {
+        "name": "complete",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      },
+      "2": {
+        "name": "kind",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.CommandKind"
+      },
+      "20": {
+        "name": "fail",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.FailCommand"
+      },
+      "21": {
+        "name": "continue_as_new",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ContinueAsNewCommand"
+      },
+      "22": {
+        "name": "acknowledge_cancellation",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.AcknowledgeCancellationCommand"
+      },
+      "3": {
+        "name": "fragment_json",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "4": {
+        "name": "value",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      },
+      "5": {
+        "name": "saga_scope",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.CommandValue": {
+      "1": {
+        "name": "json",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "2": {
+        "name": "blob_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "descriptor_sha256",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "descriptor_size",
+        "repeated": false,
+        "type": "Int64"
+      }
+    },
     "sagat_octopus_orchestrator.v1.CompleteStepRequest": {
       "1": {
         "name": "task_id",
@@ -136,6 +251,11 @@
         "name": "instance",
         "repeated": false,
         "type": "Message:.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+      },
+      "14": {
+        "name": "accept_workflow_task",
+        "repeated": false,
+        "type": "Bool"
       },
       "2": {
         "name": "run_id",
@@ -176,6 +296,131 @@
         "name": "output_blob_ref",
         "repeated": false,
         "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "deferred_command",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.Command"
+      },
+      "11": {
+        "name": "eager_activity_slots",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "12": {
+        "name": "behaviour_flags",
+        "repeated": true,
+        "type": "String"
+      },
+      "13": {
+        "name": "traceparent",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "4": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "idempotency_key",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "applied_through_seq",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "8": {
+        "name": "replayed_chain",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "9": {
+        "name": "commands",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.Command"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse": {
+      "1": {
+        "name": "outcome",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.WorkflowTaskOutcome"
+      },
+      "2": {
+        "name": "cause",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause"
+      },
+      "3": {
+        "name": "already_applied",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "4": {
+        "name": "eager_activity_leases",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TaskLease"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ConsumeSignalsCommand": {
+      "1": {
+        "name": "signals",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ConsumedSignals"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ConsumedSignals": {
+      "1": {
+        "name": "signal_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "seqs",
+        "repeated": true,
+        "type": "Int64"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ContinueAsNewCommand": {
+      "1": {
+        "name": "input",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      },
+      "2": {
+        "name": "state",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      },
+      "3": {
+        "name": "active_version",
+        "repeated": false,
+        "type": "Bool"
       }
     },
     "sagat_octopus_orchestrator.v1.DatabaseLimits": {
@@ -289,6 +534,18 @@
         "type": "String"
       }
     },
+    "sagat_octopus_orchestrator.v1.FailCommand": {
+      "1": {
+        "name": "code",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "safe_message",
+        "repeated": false,
+        "type": "Bytes"
+      }
+    },
     "sagat_octopus_orchestrator.v1.FailStepRequest": {
       "1": {
         "name": "task_id",
@@ -351,6 +608,80 @@
         "type": "String"
       }
     },
+    "sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "actual_target",
+        "repeated": false,
+        "type": "String"
+      },
+      "11": {
+        "name": "exception_type",
+        "repeated": false,
+        "type": "String"
+      },
+      "12": {
+        "name": "code_digest",
+        "repeated": false,
+        "type": "String"
+      },
+      "13": {
+        "name": "traceparent",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "4": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "idempotency_key",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "cause",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause"
+      },
+      "8": {
+        "name": "command_number",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "9": {
+        "name": "actual_kind",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.CommandKind"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.FailWorkflowTaskResponse": {
+      "1": {
+        "name": "already_applied",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
     "sagat_octopus_orchestrator.v1.HeartbeatRequest": {
       "1": {
         "name": "task_id",
@@ -401,6 +732,370 @@
       },
       "2": {
         "name": "cancel_requested",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryApprovalDecided": {
+      "1": {
+        "name": "node",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "decision",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryBlobRef": {
+      "1": {
+        "name": "blob_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "size",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "3": {
+        "name": "sha256",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "content_type",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryCancellationRequested": {
+      "1": {
+        "name": "grace_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "2": {
+        "name": "cancel_origin",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.CancelOrigin"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryChildFinished": {
+      "1": {
+        "name": "node",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "child_run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "status",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "output",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      },
+      "5": {
+        "name": "error_code",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryCommandRecord": {
+      "1": {
+        "name": "kind",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.CommandKind"
+      },
+      "2": {
+        "name": "target",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "node",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "noop",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryEvent": {
+      "1": {
+        "name": "seq",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "10": {
+        "name": "run_started",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryRunStarted"
+      },
+      "11": {
+        "name": "workflow_task_started",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryWorkflowTaskStarted"
+      },
+      "12": {
+        "name": "workflow_task_completed",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompleted"
+      },
+      "13": {
+        "name": "command_record",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryCommandRecord"
+      },
+      "14": {
+        "name": "step_outcome",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryStepOutcome"
+      },
+      "15": {
+        "name": "timer_fired",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryTimerFired"
+      },
+      "16": {
+        "name": "wait_outcome",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryWaitOutcome"
+      },
+      "17": {
+        "name": "child_finished",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryChildFinished"
+      },
+      "18": {
+        "name": "approval_decided",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryApprovalDecided"
+      },
+      "19": {
+        "name": "saga_outcome",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistorySagaOutcome"
+      },
+      "2": {
+        "name": "kind",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.HistoryEventKind"
+      },
+      "20": {
+        "name": "signal_buffered",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistorySignalBuffered"
+      },
+      "21": {
+        "name": "update_admitted",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryUpdateAdmitted"
+      },
+      "22": {
+        "name": "cancellation_requested",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryCancellationRequested"
+      },
+      "23": {
+        "name": "marker_recorded",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryMarkerRecorded"
+      },
+      "3": {
+        "name": "origin",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.HistoryEventOrigin"
+      },
+      "4": {
+        "name": "command_number",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "at_us",
+        "repeated": false,
+        "type": "Int64"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryMarkerRecorded": {
+      "1": {
+        "name": "marker_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "side_effect",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "3": {
+        "name": "value",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryPayload": {
+      "1": {
+        "name": "json",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "2": {
+        "name": "blob",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryBlobRef"
+      },
+      "3": {
+        "name": "placeholder",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryRunStarted": {
+      "1": {
+        "name": "input",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      },
+      "2": {
+        "name": "carried_state",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      },
+      "3": {
+        "name": "predecessor_run_id",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistorySagaOutcome": {
+      "1": {
+        "name": "scope",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "outcome",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistorySignalBuffered": {
+      "1": {
+        "name": "signal_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "payload",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryStepOutcome": {
+      "1": {
+        "name": "node",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "outcome",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.StepOutcome"
+      },
+      "3": {
+        "name": "output",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      },
+      "4": {
+        "name": "error_code",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "retryable",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryTimerFired": {
+      "1": {
+        "name": "node",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryUpdateAdmitted": {
+      "1": {
+        "name": "update_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "args",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryWaitOutcome": {
+      "1": {
+        "name": "node",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "timed_out",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "3": {
+        "name": "payload",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryPayload"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompleted": {
+      "1": {
+        "name": "deferred",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "2": {
+        "name": "deferred_kind",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.CommandKind"
+      },
+      "3": {
+        "name": "deferred_target",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "deferral_cause",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.HistoryWorkflowTaskStarted": {
+      "1": {
+        "name": "continue_as_new_suggested",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "2": {
+        "name": "history_limit_reached",
         "repeated": false,
         "type": "Bool"
       }
@@ -665,6 +1360,18 @@
         "type": "Bool"
       }
     },
+    "sagat_octopus_orchestrator.v1.MarkerCommand": {
+      "1": {
+        "name": "marker_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "side_effect_value",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      }
+    },
     "sagat_octopus_orchestrator.v1.ObjectStorageConnection": {
       "1": {
         "name": "storage",
@@ -758,6 +1465,68 @@
         "type": "String"
       }
     },
+    "sagat_octopus_orchestrator.v1.QueryTask": {
+      "1": {
+        "name": "query_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "workflow_type",
+        "repeated": false,
+        "type": "String"
+      },
+      "11": {
+        "name": "code_digest",
+        "repeated": false,
+        "type": "String"
+      },
+      "12": {
+        "name": "seed",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "query_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "args",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "5": {
+        "name": "deadline_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "gated_entries",
+        "repeated": true,
+        "type": "String"
+      },
+      "7": {
+        "name": "state_max_bytes",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "8": {
+        "name": "read_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "9": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      }
+    },
     "sagat_octopus_orchestrator.v1.ReadBlobHeader": {
       "1": {
         "name": "blob_id",
@@ -834,6 +1603,60 @@
         "type": "Bytes"
       }
     },
+    "sagat_octopus_orchestrator.v1.ReadHistoryRequest": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "4": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "read_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "from_seq",
+        "repeated": false,
+        "type": "Int64"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReadHistoryResponse": {
+      "1": {
+        "name": "events",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryEvent"
+      },
+      "2": {
+        "name": "last_page",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "3": {
+        "name": "lease_expires_at_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
+      }
+    },
     "sagat_octopus_orchestrator.v1.RegisterWorkerRequest": {
       "1": {
         "name": "worker_name",
@@ -871,6 +1694,94 @@
         "name": "step_logs",
         "repeated": false,
         "type": "Message:.sagat_octopus_orchestrator.v1.StepLogPolicy"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReleaseStickyRequest": {
+      "1": {
+        "name": "worker_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "session_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "run_ids",
+        "repeated": true,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReleaseStickyResponse": {
+      "1": {
+        "name": "released",
+        "repeated": false,
+        "type": "Int32"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReplayCheckItem": {
+      "1": {
+        "name": "job_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "ordinal",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "3": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "read_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "seed",
+        "repeated": false,
+        "type": "Bytes"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReplayCheckTask": {
+      "1": {
+        "name": "items",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ReplayCheckItem"
+      },
+      "2": {
+        "name": "gated_entries",
+        "repeated": true,
+        "type": "String"
+      },
+      "3": {
+        "name": "state_max_bytes",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "4": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "expires_at_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "workflow_type",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "code_digest",
+        "repeated": false,
+        "type": "String"
       }
     },
     "sagat_octopus_orchestrator.v1.ResolveSecretsRequest": {
@@ -1016,6 +1927,121 @@
         "type": "Uint32"
       }
     },
+    "sagat_octopus_orchestrator.v1.RespondReplayCheckRequest": {
+      "1": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "job_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "ordinal",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "4": {
+        "name": "from_command",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "body_digests",
+        "repeated": true,
+        "type": "Bytes"
+      },
+      "6": {
+        "name": "last_range",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "7": {
+        "name": "s_k",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "8": {
+        "name": "chain",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "9": {
+        "name": "deferred_body_digest",
+        "repeated": false,
+        "type": "Bytes"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.RespondReplayCheckResponse": {
+      "1": {
+        "name": "accepted",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "2": {
+        "name": "next_from_command",
+        "repeated": false,
+        "type": "Int64"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.RespondWorkerQueryRequest": {
+      "1": {
+        "name": "query_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "answer",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "4": {
+        "name": "committed_through_seq",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "5": {
+        "name": "failure_code",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.RespondWorkerQueryResponse": {
+      "1": {
+        "name": "accepted",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.SagaOpenCommand": {
+      "1": {
+        "name": "scope",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "parent_scope",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "on_compensation_failure",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "cancel_policy",
+        "repeated": false,
+        "type": "String"
+      }
+    },
     "sagat_octopus_orchestrator.v1.ScopePathSegment": {
       "1": {
         "name": "scope_node_id",
@@ -1048,6 +2074,11 @@
         "name": "run_status",
         "repeated": false,
         "type": "String"
+      },
+      "5": {
+        "name": "workflow_task",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TaskLease"
       }
     },
     "sagat_octopus_orchestrator.v1.StepLogField": {
@@ -1121,6 +2152,13 @@
         "type": "Bool"
       }
     },
+    "sagat_octopus_orchestrator.v1.TargetCommand": {
+      "1": {
+        "name": "target",
+        "repeated": false,
+        "type": "String"
+      }
+    },
     "sagat_octopus_orchestrator.v1.TaskLease": {
       "1": {
         "name": "task_id",
@@ -1177,10 +2215,25 @@
         "repeated": false,
         "type": "String"
       },
+      "28": {
+        "name": "workflow_task",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.WorkflowTaskLease"
+      },
+      "29": {
+        "name": "query_task",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.QueryTask"
+      },
       "3": {
         "name": "step_id",
         "repeated": false,
         "type": "String"
+      },
+      "30": {
+        "name": "replay_check_task",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ReplayCheckTask"
       },
       "4": {
         "name": "attempt",
@@ -1213,11 +2266,55 @@
         "type": "String"
       }
     },
+    "sagat_octopus_orchestrator.v1.UpdateDecisionCommand": {
+      "1": {
+        "name": "admitted_seq",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "2": {
+        "name": "accepted",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "3": {
+        "name": "rejection_reason",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.UpdateResultCommand": {
+      "1": {
+        "name": "admitted_seq",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "2": {
+        "name": "result",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.CommandValue"
+      },
+      "3": {
+        "name": "failure_code",
+        "repeated": false,
+        "type": "String"
+      }
+    },
     "sagat_octopus_orchestrator.v1.WorkerCapabilities": {
       "1": {
         "name": "languages",
         "repeated": true,
         "type": "String"
+      },
+      "11": {
+        "name": "workflow_types",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.WorkflowTypeOffer"
+      },
+      "12": {
+        "name": "offers_workflow_as_code",
+        "repeated": false,
+        "type": "Bool"
       },
       "2": {
         "name": "activities",
@@ -1236,6 +2333,105 @@
       },
       "5": {
         "name": "protocol_version",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.WorkflowTaskLease": {
+      "1": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "state_max_bytes",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "11": {
+        "name": "first_page",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.HistoryEvent"
+      },
+      "12": {
+        "name": "visible_count",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "13": {
+        "name": "continue_as_new_suggested",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "14": {
+        "name": "history_limit_reached",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "15": {
+        "name": "traceparent",
+        "repeated": false,
+        "type": "String"
+      },
+      "16": {
+        "name": "workflow_type",
+        "repeated": false,
+        "type": "String"
+      },
+      "17": {
+        "name": "code_digest",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "3": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "4": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "expires_at_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "seed",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "7": {
+        "name": "started_at_us",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "8": {
+        "name": "window_start_seq",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "9": {
+        "name": "gated_entries",
+        "repeated": true,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.WorkflowTypeOffer": {
+      "1": {
+        "name": "workflow_type",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "code_digest",
         "repeated": false,
         "type": "String"
       }
@@ -1341,10 +2537,22 @@
         "output": ".sagat_octopus_orchestrator.v1.StepCommandResponse",
         "serverStreaming": false
       },
+      "CompleteWorkflowTask": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest",
+        "output": ".sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse",
+        "serverStreaming": false
+      },
       "FailStep": {
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.FailStepRequest",
         "output": ".sagat_octopus_orchestrator.v1.StepCommandResponse",
+        "serverStreaming": false
+      },
+      "FailWorkflowTask": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest",
+        "output": ".sagat_octopus_orchestrator.v1.FailWorkflowTaskResponse",
         "serverStreaming": false
       },
       "Heartbeat": {
@@ -1365,10 +2573,22 @@
         "output": ".sagat_octopus_orchestrator.v1.ReadBlobResponse",
         "serverStreaming": true
       },
+      "ReadHistory": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.ReadHistoryRequest",
+        "output": ".sagat_octopus_orchestrator.v1.ReadHistoryResponse",
+        "serverStreaming": true
+      },
       "RegisterWorker": {
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.RegisterWorkerRequest",
         "output": ".sagat_octopus_orchestrator.v1.RegisterWorkerResponse",
+        "serverStreaming": false
+      },
+      "ReleaseSticky": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.ReleaseStickyRequest",
+        "output": ".sagat_octopus_orchestrator.v1.ReleaseStickyResponse",
         "serverStreaming": false
       },
       "ResolveDatabase": {
@@ -1381,6 +2601,18 @@
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.ResolveSecretsRequest",
         "output": ".sagat_octopus_orchestrator.v1.ResolveSecretsResponse",
+        "serverStreaming": false
+      },
+      "RespondReplayCheck": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.RespondReplayCheckRequest",
+        "output": ".sagat_octopus_orchestrator.v1.RespondReplayCheckResponse",
+        "serverStreaming": false
+      },
+      "RespondWorkerQuery": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.RespondWorkerQueryRequest",
+        "output": ".sagat_octopus_orchestrator.v1.RespondWorkerQueryResponse",
         "serverStreaming": false
       },
       "StreamTasks": {

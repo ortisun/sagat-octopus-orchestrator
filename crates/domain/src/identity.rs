@@ -394,11 +394,15 @@ pub enum Permission {
     RunLogsRead,
     /// Delete a run's step logs, for an incident (feature 041, FR-041-023).
     RunLogsDelete,
+    /// Export a code run's history for a replayer (design 044, Requirement 044-025): every payload,
+    /// redacted by feature 016's rules. Held by the admin role only by default (Owner question
+    /// 044-015); not assignable to a custom role in 0.3.0.
+    HistoryExport,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 55] = [
+    pub const ALL: [Self; 56] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -454,6 +458,7 @@ impl Permission {
         Self::RunBatch,
         Self::RunLogsRead,
         Self::RunLogsDelete,
+        Self::HistoryExport,
     ];
 
     #[must_use]
@@ -514,6 +519,7 @@ impl Permission {
             Self::RunBatch => "run:batch",
             Self::RunLogsRead => "run:logs:read",
             Self::RunLogsDelete => "run:logs:delete",
+            Self::HistoryExport => "history:export",
         }
     }
 }
@@ -598,6 +604,7 @@ impl Role {
         Permission::RunBatch,
         Permission::RunLogsRead,
         Permission::RunLogsDelete,
+        Permission::HistoryExport,
     ];
 
     #[must_use]

@@ -7,9 +7,7 @@
   "required": [
     "apiVersion",
     "kind",
-    "metadata",
-    "entrypoint",
-    "nodes"
+    "metadata"
   ],
   "properties": {
     "apiVersion": {
@@ -127,6 +125,9 @@
     },
     "chainPolicy": {
       "$ref": "#/$defs/chainPolicy"
+    },
+    "code": {
+      "$ref": "#/$defs/code"
     }
   },
   "$defs": {
@@ -1946,7 +1947,14 @@
           },
           "maxProperties": 32,
           "additionalProperties": {
-            "$ref": "#/$defs/update"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/update"
+              },
+              {
+                "$ref": "#/$defs/codeUpdate"
+              }
+            ]
           }
         }
       },
@@ -3142,6 +3150,533 @@
           "maxLength": 512
         }
       }
+    },
+    "codeActivityName": {
+      "description": "An activity name of a code version's envelope or command; never the reserved prefixes script. or sagat. (design 044, Requirement 044-013).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/name"
+        },
+        {
+          "not": {
+            "pattern": "^(script|sagat)\\."
+          }
+        }
+      ]
+    },
+    "codeActivityPattern": {
+      "description": "An exact activity name, or a prefix ending in .* that covers every name starting with the prefix.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,125}(\\.\\*)?$",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^(script|sagat)\\."
+          }
+        }
+      ]
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A code version (design 044, Technical Plan 3.1): a workflow written as a function in an SDK language, run in the tenant's worker. The platform never receives the code; it names it by its digest and checks every command against the envelope.",
+      "required": [
+        "workflowType",
+        "language",
+        "digest",
+        "envelope"
+      ],
+      "properties": {
+        "workflowType": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
+          "description": "Unique in its namespace; every code version of a workflow keeps the type of its first code version."
+        },
+        "language": {
+          "enum": [
+            "typescript",
+            "python",
+            "go",
+            "csharp",
+            "java",
+            "rust"
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "The code digest: the SHA-256 of the RFC 8785 JSON of language, runtime, SDK name and version, workflow type and content (Technical Plan 3.2)."
+        },
+        "workflowTaskTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 10000
+        },
+        "cancellationGraceMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000,
+          "default": 60000
+        },
+        "envelope": {
+          "$ref": "#/$defs/codeEnvelope"
+        },
+        "workerQueries": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "maxProperties": 32,
+          "additionalProperties": {
+            "$ref": "#/$defs/codeWorkerQuery"
+          },
+          "description": "Queries answered by a worker of the run's current digest from the function's state (Task 044-29)."
+        }
+      }
+    },
+    "codeEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activities"
+      ],
+      "description": "What the commands of a code version may use (Technical Plan 3.1). A command outside it puts the run under review with COMMAND_OUTSIDE_ENVELOPE.",
+      "properties": {
+        "activities": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/codeActivityEntry"
+          }
+        },
+        "scripts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/codeScriptEntry"
+          }
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/codeChildEntry"
+          }
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/codeEventEntry"
+          }
+        },
+        "approvalPolicies": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "maxProperties": 32,
+          "additionalProperties": {
+            "$ref": "#/$defs/codeApprovalPolicyEntry"
+          }
+        },
+        "timeoutLevel": {
+          "enum": [
+            "none"
+          ],
+          "default": "none",
+          "description": "The level of design 045's timeout and retry fields the commands may use; only none until design 045 lands (Gap 044-020)."
+        }
+      }
+    },
+    "codeActivityEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "description": "An exact entry wins over a prefix entry and a longer prefix over a shorter one; only an exact entry may list secrets.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/codeActivityPattern"
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "irreversible": {
+          "type": "boolean"
+        },
+        "highRisk": {
+          "type": "boolean"
+        },
+        "compensateWith": {
+          "$ref": "#/$defs/codeActivityName"
+        },
+        "reconcileWith": {
+          "$ref": "#/$defs/codeActivityName"
+        },
+        "requiresApproval": {
+          "$ref": "#/$defs/name",
+          "description": "A name of approvalPolicies: the engine holds the step until a person approves it."
+        },
+        "inputSchema": {
+          "type": "object",
+          "maxProperties": 64
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "pattern": "\\.\\*$"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "secrets"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "codeScriptEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest"
+      ],
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "inputSchema": {
+          "type": "object",
+          "maxProperties": 64
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64
+        },
+        "compensateWith": {
+          "$ref": "#/$defs/codeActivityName"
+        }
+      }
+    },
+    "codeChildEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflowId",
+        "version"
+      ],
+      "properties": {
+        "workflowId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "version": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "const": "active"
+            }
+          ]
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      }
+    },
+    "codeEventEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventType"
+      ],
+      "properties": {
+        "eventType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "maxLookbackMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800000
+        },
+        "schema": {
+          "type": "object"
+        }
+      }
+    },
+    "codeApprovalPolicyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy"
+      ],
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/approvalPolicy"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        }
+      }
+    },
+    "codeWorkerQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "argsSchema",
+        "disclosure",
+        "resultSchema"
+      ],
+      "properties": {
+        "argsSchema": {
+          "$ref": "#/$defs/resultSchema"
+        },
+        "disclosure": {
+          "const": "declared-business-result-v1"
+        },
+        "resultSchema": {
+          "$ref": "#/$defs/resultSchema"
+        }
+      }
+    },
+    "codeUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "argsSchema",
+        "disclosure",
+        "resultSchema"
+      ],
+      "description": "The update of a code version (Architecture decision 0108): the function validates and handles it, so validate, state and result are absent.",
+      "properties": {
+        "argsSchema": {
+          "$ref": "#/$defs/resultSchema"
+        },
+        "disclosure": {
+          "const": "declared-business-result-v1"
+        },
+        "resultSchema": {
+          "$ref": "#/$defs/resultSchema"
+        }
+      }
+    },
+    "codeProfileActivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "activity"
+      ],
+      "description": "The code profile of an activity command (Technical Plan 5.1). Publisher fields may repeat the envelope's entry, never change it.",
+      "properties": {
+        "type": {
+          "const": "activity"
+        },
+        "activity": {
+          "$ref": "#/$defs/codeActivityName"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "compensationRetry": {
+          "$ref": "#/$defs/retry"
+        },
+        "compensationTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "irreversible": {
+          "type": "boolean"
+        },
+        "highRisk": {
+          "type": "boolean"
+        },
+        "compensateWith": {
+          "$ref": "#/$defs/codeActivityName"
+        },
+        "reconcileWith": {
+          "$ref": "#/$defs/codeActivityName"
+        },
+        "requiresApproval": {
+          "$ref": "#/$defs/name"
+        }
+      }
+    },
+    "codeProfileScript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "artifactDigest"
+      ],
+      "properties": {
+        "type": {
+          "const": "script"
+        },
+        "artifactDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "compensateWith": {
+          "$ref": "#/$defs/codeActivityName"
+        }
+      }
+    },
+    "codeProfileTimer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "durationMs"
+      ],
+      "properties": {
+        "type": {
+          "const": "timer"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "codeProfileWaitEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "eventType",
+        "correlationKey",
+        "timeoutMs"
+      ],
+      "properties": {
+        "type": {
+          "const": "waitEvent"
+        },
+        "eventType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "correlationKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "A literal business value (stored as a classified payload), never an expression."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lookbackMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800000
+        }
+      }
+    },
+    "codeProfileChild": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "workflowId"
+      ],
+      "properties": {
+        "type": {
+          "const": "child"
+        },
+        "workflowId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cancelPolicy": {
+          "enum": [
+            "propagate",
+            "detach",
+            "request_cancel"
+          ]
+        },
+        "businessId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "codeProfileApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "policyName"
+      ],
+      "properties": {
+        "type": {
+          "const": "approval"
+        },
+        "policyName": {
+          "$ref": "#/$defs/name"
+        }
+      }
     }
   },
   "allOf": [
@@ -3161,7 +3696,10 @@
               }
             }
           }
-        }
+        },
+        "required": [
+          "nodes"
+        ]
       },
       "then": {
         "required": [
@@ -3236,5 +3774,66 @@
       }
     }
   ],
-  "description": "Canonical v1 workflow IR with additive bounded capabilities. Existing root shapes remain compatible. Schema acceptance does not enable publication: the codec and runtime must support every used capability."
+  "description": "Canonical v1 workflow IR with additive bounded capabilities. Existing root shapes remain compatible. Schema acceptance does not enable publication: the codec and runtime must support every used capability.",
+  "oneOf": [
+    {
+      "description": "A graph version (today's document).",
+      "required": [
+        "entrypoint",
+        "nodes"
+      ],
+      "not": {
+        "required": [
+          "code"
+        ]
+      },
+      "properties": {
+        "state": {
+          "properties": {
+            "updates": {
+              "additionalProperties": {
+                "$ref": "#/$defs/update"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "A code version (design 044): the top-level code object replaces entrypoint, nodes and bodies.",
+      "required": [
+        "code"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "entrypoint"
+            ]
+          },
+          {
+            "required": [
+              "nodes"
+            ]
+          },
+          {
+            "required": [
+              "bodies"
+            ]
+          }
+        ]
+      },
+      "properties": {
+        "state": {
+          "properties": {
+            "updates": {
+              "additionalProperties": {
+                "$ref": "#/$defs/codeUpdate"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -370,7 +370,11 @@ test('a worker registers its activities and the newest protocol it speaks, with 
   assert.ok(register);
   assert.deepEqual(register.request, {
     worker_name: 'test-worker', namespace: 'payments',
-    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.5' },
+    // The 1.10 fields (design 044) decode to their defaults: this host offers no workflow as code.
+    capabilities: {
+      languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], workflow_types: [],
+      max_inflight: 7, protocol_version: '1.5', offers_workflow_as_code: false,
+    },
   });
   assert.equal(register.metadata.get('authorization')[0], 'Bearer tok');
   assert.equal(h.protocolVersion, '1.2');

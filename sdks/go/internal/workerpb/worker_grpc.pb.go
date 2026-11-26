@@ -19,17 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_RegisterWorker_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
-	WorkerService_PollTasks_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
-	WorkerService_StreamTasks_FullMethodName     = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
-	WorkerService_Heartbeat_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
-	WorkerService_CompleteStep_FullMethodName    = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
-	WorkerService_FailStep_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
-	WorkerService_ResolveSecrets_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets"
-	WorkerService_ResolveDatabase_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase"
-	WorkerService_WriteBlob_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
-	WorkerService_ReadBlob_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
-	WorkerService_AppendStepLogs_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs"
+	WorkerService_RegisterWorker_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
+	WorkerService_PollTasks_FullMethodName            = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
+	WorkerService_StreamTasks_FullMethodName          = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
+	WorkerService_Heartbeat_FullMethodName            = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
+	WorkerService_CompleteStep_FullMethodName         = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
+	WorkerService_FailStep_FullMethodName             = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
+	WorkerService_ResolveSecrets_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets"
+	WorkerService_ResolveDatabase_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase"
+	WorkerService_WriteBlob_FullMethodName            = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
+	WorkerService_ReadBlob_FullMethodName             = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
+	WorkerService_AppendStepLogs_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs"
+	WorkerService_CompleteWorkflowTask_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteWorkflowTask"
+	WorkerService_FailWorkflowTask_FullMethodName     = "/sagat_octopus_orchestrator.v1.WorkerService/FailWorkflowTask"
+	WorkerService_ReadHistory_FullMethodName          = "/sagat_octopus_orchestrator.v1.WorkerService/ReadHistory"
+	WorkerService_RespondWorkerQuery_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/RespondWorkerQuery"
+	WorkerService_RespondReplayCheck_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/RespondReplayCheck"
+	WorkerService_ReleaseSticky_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/ReleaseSticky"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -109,6 +115,41 @@ type WorkerServiceClient interface {
 	//	above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
 	//	by admission; UNAVAILABLE the database or the serving gate.
 	AppendStepLogs(ctx context.Context, in *AppendStepLogsRequest, opts ...grpc.CallOption) (*AppendStepLogsResponse, error)
+	// Added in 1.10, the workflow-as-code minor (design 044, Architecture decision 0109). A session on 1.10
+	// implements the host procedures of 1.7, 1.8 and 1.9 as well. Each call accepts only its own kind of
+	// lease and refuses every other kind (design 044, Technical Plan 4.1, "Lease kinds per RPC"); every
+	// activity call (Heartbeat, CompleteStep, FailStep, ResolveSecrets, ResolveDatabase, AppendStepLogs)
+	// refuses a WORKFLOW, QUERY or REPLAY_CHECK lease. The binding and the tenant membership are checked
+	// again on every call made with the lease, idempotent replays included.
+	//
+	// CompleteWorkflowTask: the commands of one activation, committed in one transaction with the journal,
+	// the steps, timers, waits, the node overlay and the outbox (design 044, Technical Plan 5.2). The answer
+	// is ACCEPTED, ACCEPTED_DEFERRED (a terminal or continue-as-new command that must wait; the rest
+	// committed) or REVIEW (the run is under review with its cause; nothing of the commands committed).
+	//
+	//	Errors: ABORTED (x-sagat-error STALE_ATTEMPT) the lease is not current, the session's digest is not
+	//	the run's current one, the run is stopping or its cancellation deadline passed; INVALID_ARGUMENT a
+	//	message over the bounds of Non-functional requirement 044-006; UNAVAILABLE (retry-after-ms) the
+	//	validation semaphore, or the run's or the tenant's command-value ceiling.
+	CompleteWorkflowTask(ctx context.Context, in *CompleteWorkflowTaskRequest, opts ...grpc.CallOption) (*CompleteWorkflowTaskResponse, error)
+	// FailWorkflowTask: the activation could not answer with commands. The cause is one the SDK raises
+	// (NONDETERMINISM, NONDETERMINISM_RISK, VALIDATOR_COMMAND, WORKFLOW_TASK_FAILED, ACTIVATION_DEADLINE);
+	// a server-only cause is INVALID_ARGUMENT. Never a message: an exception type is kept only when it
+	// matches ^[A-Za-z_][A-Za-z0-9_.$]{0,127}$.
+	FailWorkflowTask(ctx context.Context, in *FailWorkflowTaskRequest, opts ...grpc.CallOption) (*FailWorkflowTaskResponse, error)
+	// ReadHistory: the run's visible history from `from_seq`, in pages of at most 1,024 events or 3 MiB,
+	// under a workflow lease or the read token of a query or replay-check item. Each page extends a
+	// workflow lease, up to 120,000 ms in all.
+	ReadHistory(ctx context.Context, in *ReadHistoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadHistoryResponse], error)
+	// RespondWorkerQuery (Task 044-29): the answer of a worker query from the function's state at its last
+	// committed completion.
+	RespondWorkerQuery(ctx context.Context, in *RespondWorkerQueryRequest, opts ...grpc.CallOption) (*RespondWorkerQueryResponse, error)
+	// RespondReplayCheck: one range of one item of a replay-check task (a move's verification, design 044,
+	// Technical Plan 7.3). The verdict is the server's own.
+	RespondReplayCheck(ctx context.Context, in *RespondReplayCheckRequest, opts ...grpc.CallOption) (*RespondReplayCheckResponse, error)
+	// ReleaseSticky (Task 044-14): the runs the worker evicted from its cache; applied only to steps whose
+	// sticky session is the caller's.
+	ReleaseSticky(ctx context.Context, in *ReleaseStickyRequest, opts ...grpc.CallOption) (*ReleaseStickyResponse, error)
 }
 
 type workerServiceClient struct {
@@ -250,6 +291,75 @@ func (c *workerServiceClient) AppendStepLogs(ctx context.Context, in *AppendStep
 	return out, nil
 }
 
+func (c *workerServiceClient) CompleteWorkflowTask(ctx context.Context, in *CompleteWorkflowTaskRequest, opts ...grpc.CallOption) (*CompleteWorkflowTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompleteWorkflowTaskResponse)
+	err := c.cc.Invoke(ctx, WorkerService_CompleteWorkflowTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceClient) FailWorkflowTask(ctx context.Context, in *FailWorkflowTaskRequest, opts ...grpc.CallOption) (*FailWorkflowTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FailWorkflowTaskResponse)
+	err := c.cc.Invoke(ctx, WorkerService_FailWorkflowTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceClient) ReadHistory(ctx context.Context, in *ReadHistoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadHistoryResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[3], WorkerService_ReadHistory_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ReadHistoryRequest, ReadHistoryResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_ReadHistoryClient = grpc.ServerStreamingClient[ReadHistoryResponse]
+
+func (c *workerServiceClient) RespondWorkerQuery(ctx context.Context, in *RespondWorkerQueryRequest, opts ...grpc.CallOption) (*RespondWorkerQueryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RespondWorkerQueryResponse)
+	err := c.cc.Invoke(ctx, WorkerService_RespondWorkerQuery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceClient) RespondReplayCheck(ctx context.Context, in *RespondReplayCheckRequest, opts ...grpc.CallOption) (*RespondReplayCheckResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RespondReplayCheckResponse)
+	err := c.cc.Invoke(ctx, WorkerService_RespondReplayCheck_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceClient) ReleaseSticky(ctx context.Context, in *ReleaseStickyRequest, opts ...grpc.CallOption) (*ReleaseStickyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseStickyResponse)
+	err := c.cc.Invoke(ctx, WorkerService_ReleaseSticky_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
@@ -327,6 +437,41 @@ type WorkerServiceServer interface {
 	//	above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
 	//	by admission; UNAVAILABLE the database or the serving gate.
 	AppendStepLogs(context.Context, *AppendStepLogsRequest) (*AppendStepLogsResponse, error)
+	// Added in 1.10, the workflow-as-code minor (design 044, Architecture decision 0109). A session on 1.10
+	// implements the host procedures of 1.7, 1.8 and 1.9 as well. Each call accepts only its own kind of
+	// lease and refuses every other kind (design 044, Technical Plan 4.1, "Lease kinds per RPC"); every
+	// activity call (Heartbeat, CompleteStep, FailStep, ResolveSecrets, ResolveDatabase, AppendStepLogs)
+	// refuses a WORKFLOW, QUERY or REPLAY_CHECK lease. The binding and the tenant membership are checked
+	// again on every call made with the lease, idempotent replays included.
+	//
+	// CompleteWorkflowTask: the commands of one activation, committed in one transaction with the journal,
+	// the steps, timers, waits, the node overlay and the outbox (design 044, Technical Plan 5.2). The answer
+	// is ACCEPTED, ACCEPTED_DEFERRED (a terminal or continue-as-new command that must wait; the rest
+	// committed) or REVIEW (the run is under review with its cause; nothing of the commands committed).
+	//
+	//	Errors: ABORTED (x-sagat-error STALE_ATTEMPT) the lease is not current, the session's digest is not
+	//	the run's current one, the run is stopping or its cancellation deadline passed; INVALID_ARGUMENT a
+	//	message over the bounds of Non-functional requirement 044-006; UNAVAILABLE (retry-after-ms) the
+	//	validation semaphore, or the run's or the tenant's command-value ceiling.
+	CompleteWorkflowTask(context.Context, *CompleteWorkflowTaskRequest) (*CompleteWorkflowTaskResponse, error)
+	// FailWorkflowTask: the activation could not answer with commands. The cause is one the SDK raises
+	// (NONDETERMINISM, NONDETERMINISM_RISK, VALIDATOR_COMMAND, WORKFLOW_TASK_FAILED, ACTIVATION_DEADLINE);
+	// a server-only cause is INVALID_ARGUMENT. Never a message: an exception type is kept only when it
+	// matches ^[A-Za-z_][A-Za-z0-9_.$]{0,127}$.
+	FailWorkflowTask(context.Context, *FailWorkflowTaskRequest) (*FailWorkflowTaskResponse, error)
+	// ReadHistory: the run's visible history from `from_seq`, in pages of at most 1,024 events or 3 MiB,
+	// under a workflow lease or the read token of a query or replay-check item. Each page extends a
+	// workflow lease, up to 120,000 ms in all.
+	ReadHistory(*ReadHistoryRequest, grpc.ServerStreamingServer[ReadHistoryResponse]) error
+	// RespondWorkerQuery (Task 044-29): the answer of a worker query from the function's state at its last
+	// committed completion.
+	RespondWorkerQuery(context.Context, *RespondWorkerQueryRequest) (*RespondWorkerQueryResponse, error)
+	// RespondReplayCheck: one range of one item of a replay-check task (a move's verification, design 044,
+	// Technical Plan 7.3). The verdict is the server's own.
+	RespondReplayCheck(context.Context, *RespondReplayCheckRequest) (*RespondReplayCheckResponse, error)
+	// ReleaseSticky (Task 044-14): the runs the worker evicted from its cache; applied only to steps whose
+	// sticky session is the caller's.
+	ReleaseSticky(context.Context, *ReleaseStickyRequest) (*ReleaseStickyResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -369,6 +514,24 @@ func (UnimplementedWorkerServiceServer) ReadBlob(*ReadBlobRequest, grpc.ServerSt
 }
 func (UnimplementedWorkerServiceServer) AppendStepLogs(context.Context, *AppendStepLogsRequest) (*AppendStepLogsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AppendStepLogs not implemented")
+}
+func (UnimplementedWorkerServiceServer) CompleteWorkflowTask(context.Context, *CompleteWorkflowTaskRequest) (*CompleteWorkflowTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompleteWorkflowTask not implemented")
+}
+func (UnimplementedWorkerServiceServer) FailWorkflowTask(context.Context, *FailWorkflowTaskRequest) (*FailWorkflowTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FailWorkflowTask not implemented")
+}
+func (UnimplementedWorkerServiceServer) ReadHistory(*ReadHistoryRequest, grpc.ServerStreamingServer[ReadHistoryResponse]) error {
+	return status.Error(codes.Unimplemented, "method ReadHistory not implemented")
+}
+func (UnimplementedWorkerServiceServer) RespondWorkerQuery(context.Context, *RespondWorkerQueryRequest) (*RespondWorkerQueryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RespondWorkerQuery not implemented")
+}
+func (UnimplementedWorkerServiceServer) RespondReplayCheck(context.Context, *RespondReplayCheckRequest) (*RespondReplayCheckResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RespondReplayCheck not implemented")
+}
+func (UnimplementedWorkerServiceServer) ReleaseSticky(context.Context, *ReleaseStickyRequest) (*ReleaseStickyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseSticky not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -564,6 +727,107 @@ func _WorkerService_AppendStepLogs_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_CompleteWorkflowTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteWorkflowTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).CompleteWorkflowTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_CompleteWorkflowTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).CompleteWorkflowTask(ctx, req.(*CompleteWorkflowTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerService_FailWorkflowTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FailWorkflowTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).FailWorkflowTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_FailWorkflowTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).FailWorkflowTask(ctx, req.(*FailWorkflowTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerService_ReadHistory_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ReadHistoryRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(WorkerServiceServer).ReadHistory(m, &grpc.GenericServerStream[ReadHistoryRequest, ReadHistoryResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_ReadHistoryServer = grpc.ServerStreamingServer[ReadHistoryResponse]
+
+func _WorkerService_RespondWorkerQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RespondWorkerQueryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).RespondWorkerQuery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_RespondWorkerQuery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).RespondWorkerQuery(ctx, req.(*RespondWorkerQueryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerService_RespondReplayCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RespondReplayCheckRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).RespondReplayCheck(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_RespondReplayCheck_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).RespondReplayCheck(ctx, req.(*RespondReplayCheckRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerService_ReleaseSticky_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseStickyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).ReleaseSticky(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_ReleaseSticky_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).ReleaseSticky(ctx, req.(*ReleaseStickyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -603,6 +867,26 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "AppendStepLogs",
 			Handler:    _WorkerService_AppendStepLogs_Handler,
 		},
+		{
+			MethodName: "CompleteWorkflowTask",
+			Handler:    _WorkerService_CompleteWorkflowTask_Handler,
+		},
+		{
+			MethodName: "FailWorkflowTask",
+			Handler:    _WorkerService_FailWorkflowTask_Handler,
+		},
+		{
+			MethodName: "RespondWorkerQuery",
+			Handler:    _WorkerService_RespondWorkerQuery_Handler,
+		},
+		{
+			MethodName: "RespondReplayCheck",
+			Handler:    _WorkerService_RespondReplayCheck_Handler,
+		},
+		{
+			MethodName: "ReleaseSticky",
+			Handler:    _WorkerService_ReleaseSticky_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -618,6 +902,11 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "ReadBlob",
 			Handler:       _WorkerService_ReadBlob_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "ReadHistory",
+			Handler:       _WorkerService_ReadHistory_Handler,
 			ServerStreams: true,
 		},
 	},

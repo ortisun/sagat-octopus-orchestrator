@@ -464,3 +464,16 @@ path = "fault/step-destinations/main.rs"
 [[test]]
 name = "e2e_step_destinations"
 path = "e2e/step-destinations/main.rs"
+
+# Design 044, workflow as code (Task 044-2).
+[[test]]
+name = "contract_workflow_as_code"
+path = "contract/workflow-as-code/main.rs"
+
+[[test]]
+name = "integration_workflow_as_code"
+path = "integration/workflow-as-code/main.rs"
+
+[[test]]
+name = "fault_workflow_as_code"
+path = "fault/workflow-as-code/main.rs"

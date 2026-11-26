@@ -103,6 +103,44 @@ impl WorkerService for Stub {
     ) -> Result<Response<sagat_api_grpc::pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    type ReadHistoryStream =
+        tokio_stream::Empty<Result<sagat_api_grpc::pb::ReadHistoryResponse, Status>>;
+    async fn complete_workflow_task(
+        &self,
+        _: Request<sagat_api_grpc::pb::CompleteWorkflowTaskRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::CompleteWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("CompleteWorkflowTask"))
+    }
+    async fn fail_workflow_task(
+        &self,
+        _: Request<sagat_api_grpc::pb::FailWorkflowTaskRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::FailWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("FailWorkflowTask"))
+    }
+    async fn read_history(
+        &self,
+        _: Request<sagat_api_grpc::pb::ReadHistoryRequest>,
+    ) -> Result<Response<Self::ReadHistoryStream>, Status> {
+        Err(Status::unimplemented("ReadHistory"))
+    }
+    async fn respond_worker_query(
+        &self,
+        _: Request<sagat_api_grpc::pb::RespondWorkerQueryRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::RespondWorkerQueryResponse>, Status> {
+        Err(Status::unimplemented("RespondWorkerQuery"))
+    }
+    async fn respond_replay_check(
+        &self,
+        _: Request<sagat_api_grpc::pb::RespondReplayCheckRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::RespondReplayCheckResponse>, Status> {
+        Err(Status::unimplemented("RespondReplayCheck"))
+    }
+    async fn release_sticky(
+        &self,
+        _: Request<sagat_api_grpc::pb::ReleaseStickyRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::ReleaseStickyResponse>, Status> {
+        Err(Status::unimplemented("ReleaseSticky"))
+    }
     async fn resolve_database(
         &self,
         _: Request<ResolveSecretsRequest>,
