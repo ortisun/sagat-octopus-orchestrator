@@ -418,65 +418,15 @@ already has.
 #### Clients
 
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
-  access token and a refresh token (`<sid>.<generation>.<key id>.<mac>`, where the MAC is an HMAC-SHA256, under a purpose key
-  `cli-refresh` derived from the ring key named by the token's key id (`KeyRing::derive_purpose_key(key_id, label,
-  info)`, which keeps key bytes by id and answers none for an id it does not know; added to `crates/infra-secrets` by
-  whichever of design 050's Task 050-4 and this design's Task 013-8 runs first) of a dedicated `cli-refresh` ring in the identity mount, read by the
-  control plane only and never `SAGAT_SECRETS_KEYS`, which every execution engine also holds (Requirement 013-025); the identity ring has its own type, `IdentityKeyRing`
-  wrapping `KeyRing` in `crates/infra-secrets`, whose only constructor is the identity-mount loader in the same module
-  (no public constructor, no `From<KeyRing>`), and the refresh MAC code takes that type, so passing the
-  secrets ring fails to compile, and an architecture rule keeps the `cli-refresh` label inside that type's module, and never the access-token key, of
-  the session id, the generation and a random value kept on the session; a successor is always minted under the
-  active key with the highest generation issued plus one, a number never reused (after a database restore,
-  the runbook's restore page rotates every CLI session's random value, so no rolled-back generation becomes valid again); a token under an unknown key id, or
-  with a valid MAC and a generation above the current one, is `invalid_grant` with no effect; the ring rotates in two steps
-  by `identity cli-refresh-key rotate`, the new key added first for verifying only and made the minting key after two
-  refresh intervals (a second `rotate` finding a verify-only key that it did not write continues that rotation from
-  its second step, by check-and-set), and the command itself keeps the old key until 7 days and one refresh interval after its successor
-  became active, so no live CLI token loses its key (`a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`,
-  a test of the command with a session kept alive by refreshes on both sides of the rotation); `rotate` on an empty
-  ring creates a key that is active at once (no token exists yet); with an empty ring the control plane starts and refuses only CLI redemption and
-  refresh, with `IDENTITY_SIGNING_UNAVAILABLE` and the gauge, as a missing signing key does, and never falls back to
-  another ring; the ring is read at start and on the key set's refresh and kept on a failed read, so an OpenBao
-  outage stops no verification; a replica whose last successful ring read is older than two intervals refuses CLI
-  redemption and refresh with `IDENTITY_SIGNING_UNAVAILABLE`, the token unspent, as the signer does for signing keys,
-  so after a `revoke` no replica mints under the dropped key for longer than two intervals; a token under a key id the
-  replica does not know triggers one re-read of the ring (at most once per interval) before `invalid_grant`
-  (`a_replica_with_a_stale_cli_refresh_ring_stops_minting`); `identity cli-refresh-key revoke` (audited) is the
-  emergency path for a leaked key: it activates a new key at once, drops every key it did not create (the active one, a
-  retained predecessor and a pending one), cancels any unfinished rotation and rotates every CLI session's random value (every write of the
-  `cli-refresh` ring is a KV version 2 check-and-set on the version the command read, and `rotate`'s second step
-  promotes only if the ring is still at the version its first step wrote, otherwise it stops with an audited
-  "rotation cancelled" and writes nothing; `revoke` instead must win: on a failed check-and-set it re-reads the ring
-  and writes again, up to five times, then exits non-zero with an audited failure that names the conflict, and it
-  rotates the random values only after its ring write has committed, in bounded batches tenant by tenant, so a refused
-  write never passes for success; a failure after the ring write is safe, because tokens under the dropped key no
-  longer verify, and running `revoke` again finishes the rotation),
-  so no forged refresh token survives; one use, rotated on every refresh by
-  compare-and-set on its generation; the server can verify any generation by recomputing its MAC, so it stores no
-  per-generation secret and its storage per session is bounded; the access token is signed with a handle obtained
-  before the transaction; a session refreshes at most six times a minute, counted by a window start and a count on `signin_sessions` (a fixed
-  window, so at most 12 grace rows younger than 30 seconds can exist across a window boundary) and
-  applied in this order: the MAC first, compared in constant time (`Mac::verify_slice`), then the generation's class (a
-  reuse revokes whatever the limit), then the limit, for current-generation rotations only (a grace rotation is
-  bounded by the grace itself and is exempt), a refusal answering `429` with `Retry-After` and the reason
-  `REFRESH_RATE_LIMITED`, the token unspent, and an unavailable key answering a retryable `503` with
-  `IDENTITY_SIGNING_UNAVAILABLE`, the token unspent, so no refusal that leaves a token usable is an `invalid_grant`
-  a client would discard; the MAC is verified against the random value of the session row locked `FOR UPDATE` in the
-  refresh's transaction and the successor is minted from that same row, so a refresh racing the random-value rotation
-  of a `revoke` or a restore never promotes a token of the old value
-  (`a_refresh_racing_a_random_value_rotation_mints_nothing_old`, a barrier test); every path, logout included, first checks the presented MAC, and a token that fails is `invalid_grant` with no effect on the session and the same answer
-  whether or not the session exists; a token that passes and whose generation is below the current one is a reuse
-  however long ago it was rotated; a reuse, within 30 seconds of its rotation, of a generation whose later generations
-  have all never been used issues a new successor and retires the unused ones (a retired generation has no row, so its later use revokes the
-  session), which covers a lost response, and a
-  second lost response in a row (`two_lost_refresh_responses_keep_the_session`);
-  any other reuse revokes the session and is audited; the CLI holds a file lock around a refresh and re-reads the key
-  store under it, so a second CLI process uses the new token instead of reusing the old; CLI sessions absolute 7 days, or 24 hours on a connection without SCIM, idle 24 hours), and store them in the operating system's key store, or a file
-  with mode `0600` where none exists; a CLI sign-in sets no session cookie in the browser. The CLI's token sources are,
-  in order, `--token-file`, `SAGAT_TOKEN`, then the key store (refining Architecture decision 0019 decision 2). *Acceptance:* CLI tests
-  against the test composition; the reuse test; `two_concurrent_refreshes_keep_the_session`;
-  `a_lost_refresh_response_keeps_the_session`; `a_reuse_after_the_successor_was_used_revokes_the_session`.
+  access token and a refresh token, and store them in the operating system's key store, or a file with mode `0600`
+  where none exists; a CLI sign-in sets no session cookie in the browser. The CLI's token sources are, in order,
+  `--token-file`, `SAGAT_TOKEN`, then the key store (refining Architecture decision 0019 decision 2). CLI sessions last
+  7 days at most (24 hours on a connection without SCIM) and expire after 24 idle hours. The refresh token MUST follow
+  Technical Plan 4, "Refresh tokens", and Architecture decision 0140 decision 11: it carries an HMAC under a key of the
+  dedicated `cli-refresh` ring (Technical Plan 12), never `SAGAT_SECRETS_KEYS` and never the access-token key; every path
+  checks its MAC first; a reuse outside the grace revokes the session; a refusal that leaves the token usable is never
+  `invalid_grant`; and the storage per session is bounded. *Acceptance:* CLI tests against the test composition and the
+  tests named in Technical Plan 4, "Refresh tokens", and Technical Plan 12, "The `cli-refresh` ring".
 - **Requirement 013-027** The Studio MUST offer sign-in by organization (with an optional e-mail address passed as
   `login_hint`), sign-in through the deployment issuer as a second choice while it is offered, the connection chooser, and tenant
   screens for connections (with a guided setup per protocol and provider, the service provider's metadata, the test
@@ -872,7 +822,7 @@ raise of the required context), `revoked_below_epoch` (set by a disable), the co
 raise, cleared by the maintenance loop once its sessions are marked), `settings_revision` (a counter incremented by every change) and the revision a test sign-in verified, up to two client secret references with their entered expiry, subject claim or attribute, tenant restriction (`hd`, `tid`), provisioning policy, required authentication context, the client authentication method | a change writes a revision; delete refused while one of its external groups is named (Decision 013-017) |
 | `identity_connection_keys` | tenant, connection, SAML signing keys and certificates, at most 3 | public data |
 | `identity_mapping_rules` | tenant, connection, position, group value, role | at most 32; a change increments the connection's `rules_revision` |
-| `identity_role_recompute` | tenant, connection, subject (a member to recompute) or a job row (rules revision, subject cursor) | written in the transaction of the change that needs it; cleared by the maintenance loop by compare-and-set |
+| `identity_role_recompute` | tenant, connection, subject (a member to recompute, with its rules revision, a guarded marker and the tenant's count of active administrators at the last attempt) or a job row (rules revision, subject cursor) | written in the transaction of the change that needs it; cleared by the maintenance loop by compare-and-set |
 | `external_identities` | tenant, connection, provider subject, membership subject, created, last sign-in, deprovisioned at | unique (tenant, connection, provider subject); a connection's deletion keeps them, deprovisioned |
 | `member_profiles` | tenant, subject, display name, e-mail (display only), role pinned, owning connection (`ON DELETE SET NULL (owning_connection_id)`, the column-list form of PostgreSQL 15 and later, so the tenant column of the composite key stays) | `memberships` gains `status` (`ACTIVE`, `SUSPENDED`; default `ACTIVE`) and `status_changed_at`, written by
 `sagat_member_set_status` and read after the membership lock by the SCIM reactivation rule, so the per-request read
@@ -887,6 +837,7 @@ current one with no row is outside the grace, so its reuse revokes; each refresh
 under the session row, the session's rows older than 30 seconds, and the maintenance loop purges those of ended
 sessions; the session keeps its random MAC value and current generation), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
+| `identity_connection_health` | tenant, connection, consecutive refused SCIM requests, last success, `scimFailing` | one row per connection, written after a SCIM request's transaction, never under the connection row; `protected_system`; the runtime role gets `SELECT`, `INSERT`, `UPDATE` |
 | `scim_tokens` | tenant, connection, hash, created, last used, revoked | at most 2 in force |
 | `scim_resources` | tenant, connection, kind, SCIM id, the immutable matching value, the membership subject or external group, version (for `ETag`) | |
 | `access_groups`, `access_group_members` (feature 029's, gain columns) | `source_kind` (`LOCAL`, `SCIM`), `connection_id`, `external_value`, `generation` | Decision 013-017; 029's migration lands first; 029's unique name becomes unique among `LOCAL` rows only, and external rows are unique by (tenant, connection, `external_value`) |
@@ -1013,6 +964,51 @@ lost response and the revocation on any other reuse are Requirement 013-026's.
 `POST /v1/auth/session/token` (`studio` only): cookie, the Studio's exact `Origin`, header
 `X-Sagat-Renew: 1`, no CORS; the re-checks of Requirement 013-019; extends the idle expiry and returns a new access
 token; refuses after the absolute expiry.
+
+#### Refresh tokens
+
+*Format and MAC.* A CLI refresh token is `<sid>.<generation>.<key id>.<mac>`. The MAC is an HMAC-SHA256, under the
+purpose key `cli-refresh` derived from the `cli-refresh` ring's key named by `<key id>` (Technical Plan 12), over the
+session id, the generation and a random value kept on the session. The server recomputes the MAC of any generation, so
+it stores no per-generation secret. A successor is always minted under the ring's active key, with the highest
+generation issued plus one; a number is never reused.
+
+*Verification order and locking.* Every path, redemption's refresh grant and logout included, first verifies the MAC
+in constant time (`Mac::verify_slice`) against the random value of the session row, which the refresh's transaction
+locks `FOR UPDATE`; the successor is minted from that same row, so a refresh racing a random-value rotation never
+promotes a token of the old value (`a_refresh_racing_a_random_value_rotation_mints_nothing_old`, a barrier test). A
+token whose MAC fails, whose key id the replica does not know after one re-read of the ring, or whose generation is
+above the current one, is `invalid_grant` with no effect and the same answer whether or not the session exists
+(`a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
+`a_token_under_an_unknown_key_id_is_invalid_grant_with_no_effect`, `a_mac_valid_generation_above_the_current_one_is_invalid_grant`,
+`a_forged_refresh_token_cannot_sign_out`). Then the generation's class decides; then the rate limit.
+
+*Grace and retirement.* A token of the current generation rotates by compare-and-set on the generation. A token below
+the current one is a reuse however long ago it was rotated, and revokes the session (audited), except within the
+grace: a reuse within 30 seconds of its generation's rotation, while every later generation has never been used,
+issues a new successor and retires the unused ones, which covers a lost response and a second lost response in a row
+(`a_lost_refresh_response_keeps_the_session`, `two_lost_refresh_responses_keep_the_session`). A retired generation, and
+a generation with no grace row, is outside the grace, so its use revokes (`a_retired_generation_revokes_the_session`,
+`a_reuse_an_hour_after_rotation_revokes_the_session` with an intermediate refresh that deletes the row,
+`a_reuse_after_the_successor_was_used_revokes_the_session`,
+`a_stolen_refresh_token_used_first_revokes_the_session_when_the_owner_returns`). The CLI holds a file lock around a
+refresh and reads the key store again under it, so a second CLI process uses the new token
+(`two_concurrent_refreshes_keep_the_session` keeps the token of the transaction that committed second and asserts the
+other is refused).
+
+*Rate limit and answers.* A session rotates at most six times a minute in its current generation, counted by a window
+start and a count on `signin_sessions` (a fixed window); grace rotations are exempt, the grace bounding them. A refusal
+by the limit answers `429` with `Retry-After`, and a key that cannot be read answers `503`; both use the RFC 6749 form
+with `error=temporarily_unavailable` and the platform's reason in `error_reason` (`REFRESH_RATE_LIMITED`,
+`IDENTITY_SIGNING_UNAVAILABLE`), and both leave the token unspent, so a client never discards a usable token
+(`refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
+`forged_refreshes_do_not_consume_the_rate_limit`, `a_rate_limited_or_unavailable_refresh_keeps_the_token`).
+
+*Storage.* The `signin_refresh_generations` rows serve the grace only: each refresh deletes, under the session row, the
+session's rows older than 30 seconds, and the maintenance loop purges those of ended sessions, so at most 12 rows
+younger than 30 seconds exist across a window boundary (`a_week_of_refreshes_keeps_storage_bounded`, with a burst
+across a window boundary). The grace is decided by the row's rotation time plus 30 seconds, never by whether a row
+exists.
 
 #### Verify
 
@@ -1153,7 +1149,7 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   current rules: a per-member row is recomputed and then cleared by compare-and-set on the revision it carries; a job
   row clears itself by compare-and-set on its revision when its cursor reaches the end, and restarts from the first
   subject when the revision moved; a job row of a newer revision makes the older per-member rows of that connection
-  unnecessary, and the loop deletes them. A demotion therefore applies within one maintenance interval per batch of 100, and a crash loses nothing
+  unnecessary, and the loop deletes them, except guarded rows, which the job's recomputation updates in place. A demotion therefore applies within one maintenance interval per batch of 100, and a crash loses nothing
   (`a_crash_after_a_large_group_change_still_demotes_everyone`, a fault test;
   `a_rule_change_during_the_job_recomputes_everyone_under_the_new_rules`). Within one change, promotions are applied before demotions, so a handover in one change never meets the guard. A
   recomputed demotion that the last-administrator guard still refuses is skipped, and recorded durably as an
@@ -1304,7 +1300,7 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 
 `details.reason` values (new): `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `SIGNIN_ATTEMPT_INVALID`,
   `SIGNIN_PROVIDER_REFUSED`, `SIGNIN_TOKEN_INVALID`, `SAML_PROFILE_VIOLATION`, `AUTH_CONTEXT_REQUIRED`,
-  `IDENTITY_NOT_PROVISIONED`, `IDENTITY_LINK_CONFLICT`, `FEDERATION_REQUIRED`, `LOCKOUT_GUARD`,
+  `IDENTITY_NOT_PROVISIONED`, `IDENTITY_LINK_CONFLICT`, `FEDERATION_REQUIRED`, `LOCKOUT_GUARD`, `REFRESH_RATE_LIMITED`,
   `PROVIDER_DESTINATION_DENIED`, `REFRESH_TOKEN_REUSED`, `SESSION_REVOKED`,
   `MEMBER_SUSPENDED`, `ISSUER_IMMUTABLE`, `TENANT_RESTRICTION_REQUIRED`, `SUBJECT_FORMAT_REFUSED`,
   `CODE_CLIENT_MISMATCH`, `RECENT_SIGN_IN_REQUIRED`, `NOT_OWNING_CONNECTION`, `FEDERATION_NOT_ACTIVATED`,
@@ -1377,15 +1373,45 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
 **Operator commands.** The commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
-`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate|revoke` (Requirement 013-026: `rotate` in two steps, the old key kept 7 days and one refresh
-interval after its successor became active; `revoke` replaces every key and rotates every CLI session's random
-value); `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
+`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate|revoke` (the `cli-refresh` ring, below); `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
 keys do: the new key is added as an opening key, and after one refresh interval it becomes the sealing key, so an
 attempt sealed on an updated replica opens on every replica; keys older than one rotation plus 10 minutes, an
 attempt's lifetime, are dropped; every control plane reads the ring at start and on the key set's refresh;
 `an_attempt_sealed_after_a_rotation_opens_on_every_replica`); `identity break-glass add|remove --tenant <slug> --subject <subject>`; `identity federation
 activate|remove`, which records or removes the `identity-federation-v1` requirement through the registry's functions
 (Architecture decision 0082 decision 1), the `remove` command refusing a removal while any tenant requires federated sign-in.
+
+**The `cli-refresh` ring.** A dedicated ring in the identity mount, read by the control plane only and never
+`SAGAT_SECRETS_KEYS`, which every execution engine also holds (Requirement 013-025, Architecture decision 0140 decision
+11). Its stored document holds each key's id, material, state (`PENDING`, `ACTIVE`, `RETAINED`), time added and time
+activated; the loader of `IdentityKeyRing` (in `crates/infra-secrets`, wrapping `KeyRing`, its only constructor, with
+no public constructor and no `From<KeyRing>`) builds the ring from it, and the refresh MAC code takes that type
+through the port `RefreshTokenMac`, so passing the secrets ring fails to compile; an architecture rule keeps the
+`cli-refresh` label in that module, and `KeyRing::derive_purpose_key(key_id, label, info)` (key bytes kept by id, none
+for an unknown id) is `pub(crate)` for it, added by Task 013-8. Every write of the document is a KV version 2
+check-and-set on the version the command read.
+- `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
+  refresh intervals, then by check-and-set on the version its first step wrote makes it `ACTIVE` and the previous key
+  `RETAINED`; if the version moved, it stops with an audited "rotation cancelled" and writes nothing. A `rotate` that
+  finds a `PENDING` key it did not write finishes that rotation from its second step once the key is two intervals
+  old. Every `rotate` drops `RETAINED` keys activated over 7 days and one refresh interval ago, so no live CLI token
+  loses its key (`a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, with a session kept alive by
+  refreshes on both sides; `a_second_rotate_finishes_an_interrupted_rotation`).
+- `revoke` (audited) activates a new key at once, drops every key it did not create (`ACTIVE`, `RETAINED`, `PENDING`),
+  and must win: on a failed check-and-set it reads again and writes again, up to five times, then exits non-zero with
+  an audited failure that names the conflict. Only after its write has committed does it rotate every CLI session's
+  random value, in bounded batches tenant by tenant; a failure after the ring write is safe, because tokens under the
+  dropped keys no longer verify, and running `revoke` again finishes the rotation
+  (`a_cli_refresh_key_revoke_rotates_every_random_value` starting mid-rotation,
+  `a_rotation_resumed_after_a_revoke_writes_nothing`, `a_revoke_racing_a_rotation_promotion_still_replaces_every_key`).
+- The ring is read at start and on the key set's refresh and kept on a failed read, so an OpenBao outage stops no
+  verification; a replica whose last successful read is older than two intervals refuses CLI redemption and refresh
+  with `IDENTITY_SIGNING_UNAVAILABLE`, the token unspent, so after a `revoke` no replica mints under a dropped key for
+  longer than two intervals (`a_replica_with_a_stale_cli_refresh_ring_stops_minting`). With an empty ring the control
+  plane starts and refuses only CLI redemption and refresh, as a missing signing key does, and never falls back to
+  another ring (`an_empty_cli_refresh_ring_refuses_only_cli_refresh`).
+- After a database restore, the runbook's restore page rotates every CLI session's random value, so no rolled-back
+  generation becomes valid again.
 
 **Rollout.**
 
@@ -1651,7 +1677,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key` (a `KeyRing`) and `identity cli-refresh-key rotate|revoke` (an
   `IdentityKeyRing` loaded from the identity mount); `KeyRing::derive_purpose_key(key_id, label, info)` with key bytes
-  kept by id, unless design 050's Task 050-4 has landed it; the architecture rule on the `cli-refresh` label with its
+  kept by id (design 050 no longer uses it); the architecture rule on the `cli-refresh` label with its
   negative fixture; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,

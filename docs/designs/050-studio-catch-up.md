@@ -199,11 +199,8 @@ REST API to approve a step.
   or a `5xx` MUST replay the first decision, and a changed body MUST use a new key, so the server never refuses it as a reused key; after a `403` or
   a `409` the status is re-read and shown. *Acceptance:* the journey
   `a_person_approves_a_step_from_the_run_view_and_the_run_moves_on`; `a_resend_replays_and_a_changed_decision_gets_a_new_key`.
-- **Requirement 050-010** Where the deployment's key ring (`SAGAT_SECRETS_KEYS`) is configured, the server MUST list
-  the pending approval requests of a namespace; without it both inbox routes answer `503 UNAVAILABLE` with the reason
-  `KEY_RING_NOT_CONFIGURED` and its remediation row, because their cursors are sealed (Technical Plan 6) and an unsealed
-  cursor is never returned. The list is
-  (`GET /namespaces/{namespaceId}/approvals`) under Architecture decision 0144: ordered by deadline, each item with
+- **Requirement 050-010** The server MUST list the pending approval requests of a namespace
+  (`GET /namespaces/{namespaceId}/approvals`) under Architecture decision 0144, with a sealed cursor (Technical Plan 6): ordered by deadline, each item with
   `youMayDecide` computed by `ApprovalRequest::may_decide` on the caller's current principal, the
   filter `decidable=true` (`false` or absent: every pending item, each flagged), nothing of the policy, never an
   unbounded scan and always a cursor while rows remain. The items of `GET /runs/{runId}/approvals` gain the same
@@ -833,25 +830,27 @@ work of a page is bounded whatever the predicates drop, and `inbox_rows_scanned{
 The use case keeps rows until it has `limit` items or the examined rows run out: when the page fills, the cursor is
 the key (`deadline`, `request_id`) of its last item; otherwise the key of the last row examined; it is null only when
 no row remains (Architecture decision 0144, decision 5). Because a cursor can then be the key of a row the caller may
-not see, the cursor is sealed with AES-256-GCM-SIV (no random-nonce bound; the RustCrypto `aes-gcm-siv` crate, beside the `aes-gcm`
-the workspace already uses) under a purpose key derived by HKDF-SHA256 from
-the active key of the deployment's `KeyRing` (`SAGAT_SECRETS_KEYS`) by a new `KeyRing::derive_purpose_key(key_id,
-label, info)` in `crates/infra-secrets` (added by whichever of this design's Task 050-4 and design 013's Task 013-8
-runs first) (the ring keeps key bytes by id, answers none for an unknown id, zeroized on
-drop, redacted in `Debug`; a cursor sealed under a key since retired does not open and gets the same `400`, and the
-Studio starts again from the first page), with the label `approval-inbox-cursor` (and
-`publication-inbox-cursor` for the publication list) and, as `info`, the ring's key id and the tenant, so each tenant's
-cursors have their own key, so the secrets key's own nonce budget is untouched and rotation
-follows the ring; the associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and
-opens only for its caller. The use cases seal and open cursors through a port, `InboxCursorSealer` (`seal(scope,
-key) -> String`, `open(scope, &str) -> Option<key>`) in `crates/application/src/approval_inbox.rs`, shared by both
-inbox use cases, as `SecretCipher` is a trait the `KeyRing` implements today; its adapter in `crates/infra-secrets`
-uses `KeyRing::derive_purpose_key` and the `aes-gcm-siv` crate, and `apps/control-plane` and `tests/support/api.rs`
-wire it, so no dependency edge is added. Without a key ring the two inbox routes answer `503 UNAVAILABLE` (`retryable: false` in the envelope) with the
-reason `KEY_RING_NOT_CONFIGURED` (a remediation row naming the setting; the Studio shows the inbox as unavailable with
-that reason, never as a retryable fault) and never return an unsealed cursor (`without_a_key_ring_the_inbox_returns_no_unsealed_cursor`); a `cursor`
-parameter over 512 bytes is refused before decoding, and every cursor that does not open (another caller's, a retired
-key, tampered) gets the same `400` as a malformed one. Because the bound is counted before the folder predicate, a page
+not see, the cursor is sealed.
+
+*Cursor sealing.* The key is a deployment-wide cursor key kept in the table `inbox_cursor_keys` (key id, 32 random
+bytes, created at; `protected_system`; the runtime role reads it), which the control plane creates at its first start
+from the operating system's random source (`INSERT ... ON CONFLICT DO NOTHING`) and which `control-plane
+inbox-cursor-key rotate` replaces, keeping the previous key until the next rotation. It is not a secret of the
+platform: a cursor hides only the key of a row from a caller, and whoever can read the table can read the rows
+themselves, so it needs neither OpenBao nor `SAGAT_SECRETS_KEYS` and the inbox works on every deployment. Each cursor
+is sealed with AES-256-GCM (the `aes-gcm` crate the workspace already uses) under a key derived by HKDF-SHA256 (the
+`hkdf` crate already in the lock file) from the cursor key, with the label `approval-inbox-cursor` or
+`publication-inbox-cursor` and the tenant as `info`, so each tenant's random-nonce budget is bounded by its own rate
+limit. The associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and opens only
+for its caller. Its wire form is `<key id>.<nonce>.<ciphertext>` in base64url, and `open` derives the key from the
+cursor's own key id. The use cases seal and open cursors through a port, `InboxCursorSealer` (`seal(scope, key) ->
+String`, `open(scope, &str) -> Option<key>`) in `crates/application/src/approval_inbox.rs`, shared by both inbox use
+cases; its adapter is `crates/infra-postgres/src/inbox_cursor.rs`, wired by `apps/control-plane` and
+`tests/support/api.rs`, so no dependency edge is added.
+
+*Cursor refusals.* A `cursor` parameter over 512 bytes is refused before decoding, and every cursor that does not open
+(another caller's, a replaced key, tampered) gets the same `400` as a malformed one; the Studio then starts again from
+the first page. Because the bound is counted before the folder predicate, a page
 that is not full tells a folder-restricted caller how many hidden pending rows its window held, a count feature 029
 allows aggregates to disclose (Requirement 029-017, its Gap 1442); no hidden row's identifier or content is
 disclosed. The tests:
@@ -916,9 +915,8 @@ test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The ite
 or subject label.
 
 **Studio.** `features/inbox/`, its refresh built on the Studio's existing pattern (TanStack Query's
-`refetchInterval` with a function, as `BatchPage.tsx` uses; a `KEY_RING_NOT_CONFIGURED` answer, read by `details.reason` before `retryable` (the
-client marks every `UNAVAILABLE` retryable, `src/api/errors.ts`), shows the inbox as unavailable on this server and
-stops the refresh and the refetch on focus; a `400` on a later page sends the next refresh to the first page, which skips a hidden browser tab, with the back-off as that
+`refetchInterval` with a function, as `BatchPage.tsx` uses; a `400` on a later page ends that refresh, which shows what it collected with "more may wait", and the next
+refresh starts from the first page as every refresh does; which skips a hidden browser tab, with the back-off as that
 function; `RunListStore` of `features/runs/runList.ts` shows the same rules): two tabs, approvals (deadline ascending, "time left" in words and as a number) and
 publication requests (oldest first), each read with `decidable=true` through `collectPagesBounded` (at most five
 pages per list per refresh), saying "more may wait" when it stopped with a cursor left. Every refresh starts from the
@@ -991,8 +989,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 - `docs/engineering/architecture-principles.md`: four rows with their checks (the registry against the schema; the
   capability names against `AdvertisedCapability`; `may_decide` against `decide` for approvals
   and publication requests; `AuditAction::ALL` against the Studio's list).
-- `docs/runbooks/studio.md`: the inbox (which needs the deployment's key ring, `SAGAT_SECRETS_KEYS`, and answers
-  `KEY_RING_NOT_CONFIGURED` without it), the audit page, the capability list and how an operator reads it.
+- `docs/runbooks/studio.md`: the inbox (its cursor key and `control-plane inbox-cursor-key rotate`), the audit page, the capability list and how an operator reads it.
 - `specs/007-workflow-studio/design/README.md`: the new screens.
 
 ## Risks and Mitigations
@@ -1029,6 +1026,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 |---|---|---|
 | A capability list on `GET /version` | The palette must follow the server it talks to, and three other features need the same advertisement | A field per feature; the Studio's constant list (how it drifted) |
 | Two list routes | A person cannot find what waits for them without them | The Studio asks every run (one request per run, no eligibility) |
+| A sealed inbox cursor | The cursor may name a row in a hidden folder, and the 2,000-row bound must count rows before the access predicates | An unsealed keyset cursor (names hidden rows); a bound after the predicates (an unbounded scan) |
 | A paged iteration list | Per-iteration outcomes on 10,000 scoped instances would go stale under `graph/changes` and grow every node | A status on each scoped instance (Decision 050-012) |
 | A body canvas | Bodies are named graphs of their own in the IR | Editing bodies as JSON |
 | A guided replacement for legacy nodes | Drafts of the first Studio exist | Dropping or converting silently |
@@ -1098,11 +1096,8 @@ primitive goes in a new file of `src/ui/`.
   Refs: Requirement 050-002
 - [ ] T050-4 Server builder: first the probe `every_run_end_cancels_its_pending_approvals`; then
   `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`); the port
-  `InboxCursorSealer` and its adapter in `crates/infra-secrets` with `aes-gcm-siv`; `KeyRing::derive_purpose_key` with
-  key bytes kept by id and a closed enumeration of purpose labels (`ApprovalInboxCursor`, `PublicationInboxCursor`;
-  design 013's `cli-refresh` label lives only in `IdentityKeyRing`'s module, added by its Task 013-8), unless Task
-  013-8 landed the derivation; `KEY_RING_NOT_CONFIGURED` with its remediation row; the
-  harness and `integration_studio_catch_up` configured with a ring; `ApprovalInboxStore`, its use case and adapter, the migration with the
+  `InboxCursorSealer`, its adapter `crates/infra-postgres/src/inbox_cursor.rs`, the table `inbox_cursor_keys` in the
+  migration, its creation at first start and `control-plane inbox-cursor-key rotate`; `ApprovalInboxStore`, its use case and adapter, the migration with the
   partial index and its `down`; the route, its metrics and `x-implemented`; `youMayDecide` on the per-run list through
   `list_for_run`; the adapter's ended-run guard moved after authorization; the route removed from `not_built`; the new
   target `integration_studio_catch_up` (`tests/integration/studio-catch-up/main.rs` and its `[[test]]` entry in
@@ -1114,8 +1109,8 @@ primitive goes in a new file of `src/ui/`.
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
   `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders` (2,000 pending rows of ended runs, seeded, ahead of
   one live row: the first page is empty with a cursor, the second returns the live row),
-  `a_cursor_reveals_nothing_and_opens_only_for_its_caller`, `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
-  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_does_not_open_under_the_secrets_key`, `without_a_key_ring_the_inbox_answers_key_ring_not_configured`,
+  `a_cursor_reveals_nothing_and_opens_only_for_its_caller`,
+  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_replaced_key_is_a_malformed_cursor`, `the_cursor_key_is_created_at_first_start`,
   `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
@@ -1132,8 +1127,8 @@ primitive goes in a new file of `src/ui/`.
   `paging_holds_across_a_supersede`, `a_publication_inbox_page_is_one_statement`, the publication twins of
   `a_full_page_resumes_after_its_last_item` (300 decidable open requests inside the first 2,000, `limit=200`),
   `a_page_stops_at_the_scan_bound_and_continues` and
-  `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, the publication twins of
-  `a_cursor_reveals_nothing_and_opens_only_for_its_caller` and `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
+  `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, the publication twin of
+  `a_cursor_reveals_nothing_and_opens_only_for_its_caller`,
   `an_approval_cursor_does_not_open_on_the_publication_list`, and the publication twins of
   `an_oversized_cursor_is_refused_before_decoding` and `an_unopenable_cursor_is_a_malformed_cursor`;
   `the_publication_inbox_item_has_exactly_its_fields` (`rest/approvals_inbox.rs`); the battery entry, with the route
@@ -1215,7 +1210,7 @@ primitive goes in a new file of `src/ui/`.
   Red tests (`src/features/inbox/InboxPage.test.tsx`): `only_decidable_items_are_under_waiting_for_me`,
   `an_empty_first_page_with_a_cursor_is_followed`, `each_refresh_starts_from_the_first_page`,
   `a_settled_item_shows_its_status_not_an_error`, `the_inbox_refreshes_only_while_visible`,
-  `a_key_ring_not_configured_answer_stops_the_refresh` (with a focus event), `a_bad_cursor_restarts_from_the_first_page`,
+  `a_bad_cursor_ends_the_refresh_and_the_next_starts_from_the_first_page`,
   `only_the_tab_in_view_is_refreshed`, `an_unchanged_list_doubles_the_interval_up_to_four_minutes`,
   `a_route_not_found_says_the_page_is_not_available`.
   Verification: `(cd frontend/apps/studio && npm test -- inbox)`.

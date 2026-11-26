@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
 **Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor", and Architecture decision 0018 decision 4 (who may approve a publication request), on which `PublicationRequest::may_decide` is built; supersedes none
-**Enforced by:** planned in design 050 and not existing yet: `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`, `a_full_page_resumes_after_its_last_item`, `a_cursor_reveals_nothing_and_opens_only_for_its_caller` and `without_a_key_ring_the_inbox_returns_no_unsealed_cursor` (decisions 4 and 5); the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles and initiators, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
+**Enforced by:** planned in design 050 and not existing yet: `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`, `a_full_page_resumes_after_its_last_item`, `a_cursor_reveals_nothing_and_opens_only_for_its_caller` (decisions 4 and 5); the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles and initiators, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
 
 ## Context
 
@@ -48,10 +48,10 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 5. A page MUST examine a bounded number of pending rows, counted before any data or access predicate; when the bound
    is reached before the page is full, the answer returns what it found and a cursor to continue, never an error and
    never an unbounded scan. When the page fills, the cursor is the key of its last item; when it does not, the key of
-   the last row examined; it is null only when no row remains. The cursor is sealed with AES-256-GCM-SIV under a purpose key
-   derived by HKDF-SHA256 from the deployment's key ring (labels `approval-inbox-cursor` and
-   `publication-inbox-cursor`, the key id and the tenant as `info`), with the tenant, the namespace and the caller as associated data, so it reveals no row
-   key and opens only for its caller; without a key ring the routes answer `503` and never return an unsealed cursor.
+   the last row examined; it is null only when no row remains. The cursor is sealed with AES-256-GCM under a key derived by
+   HKDF-SHA256 from the deployment's cursor key (labels `approval-inbox-cursor` and `publication-inbox-cursor`, the
+   tenant as `info`), with the tenant, the namespace and the caller as associated data, so it reveals no row
+   key and opens only for its caller.
 6. The same holds for a namespace list of the open publication requests that still need an approval under the current
    effective policy (`PENDING`, and `APPROVED` with fewer approvals than now required), ordered by request time, with
    `PublicationRequest::may_decide` (the request open, not the requester, not the last editor, not a person who already
@@ -76,9 +76,9 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 ## Consequences
 
-- The inbox routes need the deployment's key ring (`SAGAT_SECRETS_KEYS`), because their cursors are sealed; without it
-  they answer `503 UNAVAILABLE` with the reason `KEY_RING_NOT_CONFIGURED`. A dedicated inbox ring was rejected: one more
-  key for operators to manage, for a cursor whose key is already separated by its purpose label.
+- The cursors are sealed under a deployment-wide cursor key kept in PostgreSQL (`inbox_cursor_keys`), created at the
+  control plane's first start: it hides only row keys from callers, which whoever reads the table can read anyway, so
+  the inbox needs neither OpenBao nor the secrets key ring and works on every deployment.
 - Two migrations add partial indexes, on pending approvals by namespace and deadline and on open publication requests by
   namespace and request time. The decision path keeps its rule and its
   answers; its ended-run refusal moves after authorization.

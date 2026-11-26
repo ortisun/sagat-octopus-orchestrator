@@ -188,3 +188,14 @@ The security re-read of round 10 (`approval/reread-10-security.md`, at `9a760bd7
 | 2 | Nit | Fixed: `retryable: false`; the inbox reads `details.reason` before `retryable` and stops the refresh and the focus refetch; two tests | Technical Plan 6, Task 050-10 |
 | 3 | Nit | Fixed: only the two inbox labels; `cli-refresh` stays in design 013's `IdentityKeyRing` | Task 050-4 |
 | 4 | Nit | Fixed: 2,000 seeded ended-run rows ahead of a live row | Task 050-4 |
+
+## egm-review re-read, round 2 (`approval/reread-2-egm-review.md`, at `e1537935`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed (the reviewer's second option, chosen for the architectural advantage): the cursor key is a deployment-wide key kept in PostgreSQL (`inbox_cursor_keys`), created at the control plane's first start, rotated by `control-plane inbox-cursor-key rotate`; it hides only row keys, which whoever reads the table can read anyway, so the inbox needs neither OpenBao nor `SAGAT_SECRETS_KEYS` and works on every deployment; `KEY_RING_NOT_CONFIGURED` is gone; Architecture decision 0144's Consequences say so | Requirement 050-010, Technical Plans 6 and 9, Task 050-4, Architecture decision 0144 |
+| 2 | Major | Fixed by removal: design 050 no longer uses `KeyRing` or `derive_purpose_key`; design 013 owns the function alone | Technical Plan 6, Task 050-4 |
+| 3 | Nit | Fixed: `<key id>.<nonce>.<ciphertext>` in base64url; `open` derives from the cursor's own key id | Technical Plan 6 |
+| 4 | Nit | Fixed by removal: there is no ring check | Technical Plan 6 |
+| 5 | Nit | Fixed: AES-256-GCM (`aes-gcm`) and HKDF-SHA256 (`hkdf`), both already in the lock file, so no new crate; a Complexity Tracking row for the sealed cursor | Technical Plan 6, Complexity Tracking |
+| 6 | Nit | Fixed: the requirement's sentence restored; a `400` ends the refresh, shows what it collected, and the next starts from the first page; the cursor text split into "Cursor sealing" and "Cursor refusals" | Requirement 050-010, Technical Plan 6 |

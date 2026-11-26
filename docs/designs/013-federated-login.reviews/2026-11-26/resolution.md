@@ -253,3 +253,14 @@ session idle for a day expires (the reviewer's note for correctness).
 | 6 | Nit | Fixed: the guarded row is upserted and audited once; retried when the administrator count changed | Technical Plan 6 |
 | 7 | Nit | Fixed: the barrier test of the restart | Task 013-12 |
 | 8 | Nit | Fixed: the attempt is consumed after the membership lock; `a_confirmation_sent_twice_links_once` | Technical Plan 4, Task 013-12 |
+
+## egm-review re-read, round 2 (`approval/reread-2-egm-review.md`, at `e1537935`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the ring's stored document holds each key's id, material, state (`PENDING`, `ACTIVE`, `RETAINED`) and times; `IdentityKeyRing`'s loader builds the `KeyRing` from it; every `rotate` drops `RETAINED` keys past 7 days and one interval; a `rotate` finishes an interrupted one; `a_second_rotate_finishes_an_interrupted_rotation` | Technical Plan 12 ("The `cli-refresh` ring"), Task 013-8 |
+| 2 | Major | Fixed: Technical Plan 4 gains "Refresh tokens" (format and MAC; verification order and locking; grace and retirement; rate limit and answers; storage); Technical Plan 12 gains "The `cli-refresh` ring"; Requirement 013-026 keeps its MUSTs and points to both | Requirement 013-026, Technical Plans 4 and 12 |
+| 3 | Nit | Fixed: the reason in the list; the token endpoint's `429` and `503` use the RFC 6749 form with `temporarily_unavailable` and `error_reason` | Technical Plans 4 and 11 |
+| 4 | Nit | Fixed: guarded rows are exempt and updated in place | Technical Plan 6 |
+| 5 | Nit | Fixed: the columns of `identity_role_recompute` and the row of `identity_connection_health` | Technical Plan 3 |
+| 6 | Nit | Fixed: design 050 no longer uses the function; it is `pub(crate)` in `crates/infra-secrets` for `IdentityKeyRing`, added by Task 013-8 | Technical Plan 12, Task 013-8 |
