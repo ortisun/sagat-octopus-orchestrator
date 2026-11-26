@@ -42,7 +42,13 @@ so erasure before the policy's retention (feature 020, Requirement 020-037) is n
 owner (feature 020, Gap 1101). The same differences touch decision 1 (`archive` `NONE`), decision 3 (deletion
 only after the verified archive, which now holds without exception) and rejected option 3 (dropping a whole month,
 which design 049 admits once every run in it is purged; its record is ADR-0132 on branch
-`docs/scale-resilience-readiness`). This record stays `Proposed`; its acceptance is feature 020's.
+`docs/scale-resilience-readiness`). 5.1.0 also contradicts decision 4, where the runtime role executes the purge: the
+function is a retention role's that the runtime role neither is nor can become, which alone records an archive as
+verified and writes the stub. And it adds four obligations this record does not have: the first transaction checks that
+the archive covers the journal up to its last sequence under the lock; a notice period for creating a policy,
+shortening it, moving or re-credentialing the destination, or narrowing what the archive keeps; the archive's size and
+SHA-256 on the stub, checked on every read; and an audit record with the first purge transaction as well as the last.
+Feature 020's Task 020-063 brings the design to it. This record stays `Proposed`; its acceptance is feature 020's.
 
 Principle I today: the journal is append-only, and no component other than PostgreSQL holds the only copy
 of a transition. Retention breaks both for some runs: it removes whole journals, and with

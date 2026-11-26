@@ -3,7 +3,8 @@
 Draft. Every table is tenant-keyed, every foreign key carries the tenant, every query filters tenant and
 namespace. Grants are for the runtime role `sagat_app`; "definer" means a `SECURITY DEFINER` function
 with `search_path = pg_catalog, pg_temp`, every name qualified, `EXECUTE` revoked from `PUBLIC` and
-granted to `sagat_app` only (the ADR-0020/ADR-0027 pattern). Variable-size columns are added to
+granted to `sagat_app` only (the ADR-0020/ADR-0027 pattern). *2026-11-26: constitution 5.1.0 makes the retention
+functions an exception: `purge_run_content` and the verified state are the retention role's, not `sagat_app`'s (T020-063).* Variable-size columns are added to
 `crates/infra-postgres/storage-classification.json` in the same migration (ADR-0027). Migrations are
 additive; each `down` refuses while rows of the new feature exist rather than deleting customer data.
 
@@ -195,6 +196,10 @@ Each arrow is one transaction; object-store I/O happens between transactions wit
 from `ELIGIBLE` when `archive = NONE`, and is not reversible. *(2026-11-26: constitution 5.1.0 admits only the path through `VERIFIED`; the `archive = NONE` arrow waits for the owner, Gap 1101.)*
 
 ### Purge privilege
+
+*2026-11-26: this section predates constitution 5.1.0, principle I, and changes under T020-063: the function is the
+retention role's, it checks the archive's coverage of the journal under the lock, audits with its first transaction
+too, and writes the archive's size and SHA-256 on the stub.*
 
 `run_events` and `payloads` are append-only by `ALWAYS` triggers and the runtime role has no `DELETE`
 on `runs`, `steps`, `payloads` or `run_events`. Purge uses the definer function

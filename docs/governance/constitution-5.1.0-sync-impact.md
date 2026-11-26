@@ -21,8 +21,8 @@ amendment.
 
 ## Scope and why MINOR
 
-Principles I, IV and V and the CI gates bullet of the Development Workflow change. Principles II, III, VI, VII and VIII,
-the Delivery Constraints and Governance do not.
+Principles I, IV and V, the CI gates bullet of the Development Workflow and the footer change. Principles II, III, VI,
+VII and VIII, the Delivery Constraints and the Governance clauses do not.
 
 **MINOR departs from this repository's precedents, and the owner chose it.** Two earlier amendments set the test:
 
@@ -96,10 +96,14 @@ Preconditions:
 - "the further conditions its design sets": sink application, and design 049's leaf-certificate exclusion;
 - an archive written and read back with matching size and SHA-256 before anything is deleted.
 
-Who may purge: a change that shortens the retention or moves the archive's destination applies only after a notice
-period announced to the namespace's administrators, so that one person cannot point the archive at a store they control
-and purge the next day unseen (security review, Major 4). The function is executable only by a retention role that the
-runtime role neither is nor can become, and only that role records an archive as verified. Feature 020's design let the
+Who may purge: a change that creates a policy, shortens its retention, moves or re-credentials its archive's
+destination, or narrows what its archive keeps applies only after a notice period announced to the namespace's
+administrators. Without the notice, one person could point the archive at a store they control, or narrow it to
+metadata, and purge the next day unseen (security review, Major 4; correctness review, Major 5). The function is executable only by a retention role whose credential no
+process that holds the runtime credential or runs tenant code holds. Only that role's function records an archive as
+verified and writes the stub and the purge's state, and a trigger refuses any other writer (correctness review, Majors 3
+and 4). The runtime role keeps table-level `UPDATE` on `runs`, which would otherwise cover the stub's columns; retirement
+judges "purged" by the retention role's records, not by a stub column the runtime role could forge. Feature 020's design let the
 runtime role write the policy, the verified state and audit rows (ADR-0054 decision 1, Gap 1102). A holder of the
 runtime credential could then have marked invented archives verified and erased every settled journal with no copy
 anywhere (security review, Major 2). With the verified state in another role's hands, a forged policy can at worst make
@@ -114,13 +118,28 @@ Mechanism and audit: one privileged database function works in bounded transacti
   unaudited (security review, minor 3).
 - The others remove the run's journal and content, or, in design 049's mark-only form, leave them in their month's
   partition for the second path to drop.
-- An interrupted purge resumes until nothing of the journal is left.
-- A second audit record commits with the last transaction.
+- The stub refuses every later append to the run's journal and every write but the purge's and the retirement's own.
+  The coverage check is sound because of that: no entry can commit after the last sequence it found (correctness review,
+  minors 2 and 3).
+- An interrupted purge resumes until nothing of the journal is left. A run left in the mark-only form whose retirement
+  does not complete is finished by this path (design 049's `CONTENT_PENDING_DROP`; correctness review, minor 1).
+- A second audit record commits once the run's rows are gone.
+
+**What an archive keeps.** The archive keeps every journal entry, and the payload values up to the policy's level
+(`archiveValues`), never a secret value. The values above that level leave with no copy, and the policy says so. This
+is feature 020's design (Requirement 020-030, ADR-0054 decision 1). It means that a policy that archives
+`METADATA_ONLY` deletes payload values with no copy, which is close to what the owner excluded with "only after a
+verified archive" (correctness review, Major 5). The text says it openly rather than hide it, and it is put to the
+owner (follow-ups). The alternative, requiring every value in the archive, would put `pii` into object storage for every
+namespace that wants retention at all, which feature 020 deliberately made a separate, granted choice (`UP_TO_PII`).
 
 **Partition retirement** (design 049, Requirements 049-009 and 049-014, and its retirement procedure).
-- Who: the operator, with a credential no platform process holds or can obtain. The credential is the database
-  owner's, which could also drop a partition outside the command, so a partition that is missing without a completed
-  retirement record is detected and alarmed (security review, minor 2).
+- Who: the operator, with a credential that only the operator's retirement command holds and that no process that
+  serves requests, runs work or runs tenant code holds or can obtain. Design 049's opt-in scheduled job, with its own
+  service account and the Secret only it mounts, is that command; the first draft's "no platform process" contradicted
+  it (correctness review, minor 4). The command may run the mark-only purges with that credential. The credential is
+  the database owner's, which could also drop a partition outside the command, so a partition that is missing without a
+  completed retirement record is detected and alarmed (security review, minor 2).
 - When: only after every run of the month has been purged on the first path, in full or in its mark-only form, and
   after a check that the detached partitions hold no row of a run that is not purged.
 - Audit: the drop commits with the retirement's audit record and one per affected tenant. Every step is recorded, so a
@@ -145,6 +164,9 @@ governs the archive that now carries that duty:
 - an archive in a customer's own store is as durable as that store, which the platform does not promise (ADR-0054
   allows a customer destination by secret reference);
 - for a run that ended `PARTIAL` or `COMPENSATION_FAILED`, it is the step and history evidence Principle III retains.
+
+The exceptions sentence also names the surviving-timeline rule of the Delivery Constraints (5.0.0), which already lets
+a lossy failover lose acknowledged transitions (correctness review, minor 5).
   Principle III says terminal failure "retains state and step/history evidence"; after an audited resolution, the
   verified archive keeps that evidence, so Principle III stays byte-identical (security review, minor 4).
 
@@ -180,7 +202,8 @@ client secret or a private or signing key. The security review tightened it twic
 - the access token is a secret value under Principle V, so it may not reach the journal, logs, audit or telemetry like
   any other (Major 5);
 - a token with no expiry, such as a GitHub OAuth application's, is as durable as the refresh token the owner excluded,
-  so it is disclosed only to a managed integration runner (Major 5).
+  so one with no stated expiry (`expires_in` is optional in OAuth) is disclosed only to a managed integration runner
+  (Major 5).
 
 The first draft followed design 047's Technical Plan 12 further, and also released "the values its slots bind …: their
 secrets" (an API key, an SMTP password). The architecture review found that this widens a security exception beyond the
@@ -189,7 +212,10 @@ reaches an executor only as a declared secret of the first set". Feature 021's i
 credentials the way every step gets its secrets: declared by the step's immutable task definition, all or nothing,
 under the first set's authorities.
 
-Those first-set secrets, when they go to a managed integration runner, are bound like managed delivery: the recorded
+Those first-set secrets go under the first set's checks and the resource's own authorities as well (the initiator's
+right to use the resource and cause effects through it, the resource's state), so that a slot's secret never skips
+what design 047 requires of every delivery (correctness review, minor 7). When they go to a managed integration
+runner, they are bound like managed delivery: the recorded
 lease-owning executor subject and live session too, so a long-lived API key is never bound more weakly than a one-hour
 token (security review, minor 1). Feature 021 can ask the owner for the wider set if that matters.
 
@@ -207,8 +233,12 @@ carries no secret value, and the third set must not become a way around that.
 ## Point 3: the throughput gate
 
 When a pull request changes the code that runs a lease or a completion, it runs the throughput regression gate as well
-as the budget suite. The scenarios are the base's, so that a pull request cannot edit what it is judged by. Design 052 adds the gate to `scripts/select-test-targets.py`'s output, with design 038's budget
-target and the same files (Requirement 052-030; Task 052-14). The gate compares the base and the head of the pull
+as the budget suite. The scenario definitions are the base's (workload, rate and order), so that a pull request
+cannot edit what it is judged by, but each side builds them with its own code, so that a refactor of the hot path's
+interfaces does not make the gate impossible to pass (correctness review, Major 6). The constitution says the selector
+decides what a pull request runs, so `scripts/select-test-targets.py` must select the gate on design 038's files. Design
+052 does not say so yet; that is a follow-up for it (correctness review, minor 8). Requirement 052-030 and Task 052-14
+build the job. The gate compares the base and the head of the pull
 request on the same scenarios, alternated, on the standard hosted runner. It fails on a slowdown larger than the minimum
 detectable effect that its recorded pilot measured on that runner, by the rule design 052 states: six alternated pairs,
 the head's median slower by more than that effect, and slower in at least five pairs.
@@ -225,7 +255,11 @@ Two choices:
 
 - **Gap 044-024, a deferred terminal command.** 5.0.0 said a completion that ends the run "is refused" while an
   accepted signal, update or cancellation is unseen. Design 044 found that a refused completion repeats for ever when
-  the cause is an obligation the function cannot settle, so it defers the terminal command and commits the rest. The
+  the cause is an obligation the function cannot settle, so it defers the terminal command and commits the rest. It
+  defers for two causes, and the text names both: an accepted event the function has not seen, and an obligation the
+  function cannot settle (an aborting saga scope, a step under review or with an unknown outcome; Requirement 044-031,
+  ADR-0104 decision 4, cause `OUTSTANDING_OBLIGATIONS`). The first draft named only the first, which left the very case
+  of the gap outside the text (correctness review, Major 1). The
   new text says that, and that the deferral is journaled, as ADR-0104 decision 4 and Requirement 044-031 record it in
   `workflow_task.completed`. The obligation of 5.0.0 is kept: a run never ends over an event its sender was told was
   accepted. Only the mechanism changes.
@@ -235,7 +269,9 @@ Two choices:
   completed an activation past the one that was verified", and says those events are delivered in the next activation,
   on the target code. What a later completion would invalidate is still refused. The security review added that the
   target must admit every accepted signal, update and cancellation the function has not yet seen, so that a move never
-  turns an event its sender was told was accepted into one the target refuses (minor 6).
+  turns an event its sender was told was accepted into one the target refuses (minor 6). The correctness review added
+  that the replay must reproduce any recorded deferral too, since a deferred command takes no command number and a
+  target that dropped it would pass verification (minor 11).
 - **Gap 044-021, the pin.** 5.0.0 already said "a run's pin names exactly one version at any moment". The new text adds
   that the version a run started on stays its origin, and that a later version's code reaches a running run only
   through a verified move, as the gap asked.
@@ -248,11 +284,11 @@ The line above is the git blob of `docs/constitution.md` at 5.0.0. A principle b
 
 | Principle | Disposition | sha256 (previous) | sha256 (this version) |
 |---|---|---|---|
-| I | REWRITE | 32d2ec982a4ae0995a472628184c4762ea740f9081886bb4c78fa461237a5a21 | a835c5ef4a879819acf44e13af4377babb6aa88baa657631ea87e4960b410614 |
+| I | REWRITE | 32d2ec982a4ae0995a472628184c4762ea740f9081886bb4c78fa461237a5a21 | 6b1457b923af2a64c908e4439ebb9f2a65eabb0b03023637e09dba3cf6b9e2ae |
 | II | KEEP | 80fbee5c64129b11cc2cc1d978c7a4b91f9af39cfdea73510c3bcb345aad8ec2 | 80fbee5c64129b11cc2cc1d978c7a4b91f9af39cfdea73510c3bcb345aad8ec2 |
 | III | KEEP | 69d38cce2aa95cfa7f3e70b2be2e93260ff8f224afa7e8f779e5558b4f9827d9 | 69d38cce2aa95cfa7f3e70b2be2e93260ff8f224afa7e8f779e5558b4f9827d9 |
-| IV | REWRITE | 2bf35e4b0a41b41d2bd7a98dd2e2825a18ea635bc8eed63ed34b6c98e8c6e5eb | e4c5f0d6f0fedb8da9ac7c5b75924eabee79fa0152f90993fed07f2c9fe3ae08 |
-| V | REWRITE | b816cb76163ef1d8cc8579bb3e326f59c774b077131029cfd64fa45d470f38f9 | e37d4f36b8a308c053cc7120ece20a55fb193186154ad9bcacbb80d7f482370b |
+| IV | REWRITE | 2bf35e4b0a41b41d2bd7a98dd2e2825a18ea635bc8eed63ed34b6c98e8c6e5eb | 170a5d24a4cb6003401ead07afc9baf6ce7e8d44d2320f785532c98fd3f52bdc |
+| V | REWRITE | b816cb76163ef1d8cc8579bb3e326f59c774b077131029cfd64fa45d470f38f9 | 9d6efc5532b3493214a073e0a60d4314dbf20df682da62c2a9d1f329d9a4f999 |
 | VI | KEEP | 3fbc81dd01da920dafb2681958b3a7864f90b6395d3aecb2254555436c6aa8bc | 3fbc81dd01da920dafb2681958b3a7864f90b6395d3aecb2254555436c6aa8bc |
 | VII | KEEP | 708ea13f72890e3ff5bf0472c30fdb2a5cab3d5e616e40e88197c880eeba2760 | 708ea13f72890e3ff5bf0472c30fdb2a5cab3d5e616e40e88197c880eeba2760 |
 | VIII | KEEP | df43387c86a14df13ffde3c5033971086a075c0b7e18fa538322c1f52b3d1a37 | df43387c86a14df13ffde3c5033971086a075c0b7e18fa538322c1f52b3d1a37 |
@@ -261,8 +297,8 @@ The line above is the git blob of `docs/constitution.md` at 5.0.0. A principle b
 
 | Rule | Check today | Check to add, and where |
 |---|---|---|
-| The runtime role holds no `DELETE` or `TRUNCATE` on runs, steps, the journal or payloads | `scripts/check-architecture.py` (new in this change) reads every migration, up and down. It refuses a `GRANT` of `DELETE`, `TRUNCATE` or `ALL` on `runs`, `steps`, `run_events`, `payloads` or `run_payloads` (named, through `ALL TABLES` or default privileges, with or without `GRANT OPTION` or `GRANTED BY`) to `sagat_app` or `PUBLIC`; any role granted to `sagat_app`; `OWNER TO sagat_app`; and such a `GRANT` built in a string for dynamic SQL. Tests are in `scripts/tests/test_check_architecture.py`. At run time, `crates/infra-postgres/src/privilege.rs` refuses `DELETE` on `run_events` and `payloads` only | the runtime check the security review asked for: `privilege.rs` extended to `DELETE` and `TRUNCATE` on `runs`, `steps` and every partition of the journal tables and `run_payloads` (through `pg_inherits`), which follows memberships and grants made outside migrations; it is feature 020's privilege sweep and needs a Rust build, so it is a follow-up |
-| Only the retention role can purge and record an archive as verified | none (feature 020 not built) | feature 020: the definer function's `EXECUTE` granted only to the retention role, and a test that the runtime role cannot call it or write the verified state |
+| The runtime role holds no `DELETE` or `TRUNCATE` on runs, steps, the journal or payloads | `scripts/check-architecture.py` (new in this change) reads every migration, up and down. It refuses a `GRANT` of `DELETE`, `TRUNCATE` or `ALL` on `runs`, `steps`, `run_events`, `payloads`, `run_payloads` or a monthly or legacy partition of them (named, through `ALL TABLES` or default privileges, with any `WITH` option or `GRANTED BY`) to `sagat_app` or `PUBLIC`; a role granted to `sagat_app` by `GRANT`, `CREATE ROLE … ROLE`/`IN ROLE` or `ALTER GROUP … ADD USER`; `OWNER TO sagat_app` and `REASSIGN OWNED … TO sagat_app`; and such a `GRANT` built for dynamic SQL, in one literal or through `format()` arguments. Block and line comments are skipped, and a last statement without its semicolon is read. It does not judge `GRANT EXECUTE` on a definer function that deletes journal rows, which is the purge's own pattern; the retention role's exclusivity (above) is checked by feature 020's tests. Tests are in `scripts/tests/test_check_architecture.py`. At run time, `crates/infra-postgres/src/privilege.rs` refuses `DELETE` on `run_events` and `payloads` only | the runtime check the security review asked for: `privilege.rs` extended to `DELETE` and `TRUNCATE` on `runs`, `steps` and every partition of the journal tables and `run_payloads` (through `pg_inherits`), which follows memberships and grants made outside migrations; it is feature 020's privilege sweep and needs a Rust build, so it is a follow-up |
+| Only the retention role can purge, record an archive as verified and write the stub | none (feature 020 not built) | feature 020, Task 020-063: the definer function's `EXECUTE` granted only to the retention role, a trigger that refuses any other writer of the stub and purge state, and tests that the runtime role can do neither |
 | Deletion only after a verified archive; only the two paths | none (neither path is built) | feature 020: the purge refuses an unverified archive (fault tests with a corrupted and a missing object); design 049: Task 049-14's crash and race tests |
 | The third set never releases a refresh token, client secret or private or signing key, nor a slot's secret | none (design 047 not built); `scripts/check-architecture.py` already keeps the `"grant_type"` literal inside `crates/infra-oauth` | design 047: the broker's canary tests across the protocol, logs and audit |
 | A workflow task is not an executor of the third set | none | design 044: the workflow task carries no secret (Requirement 044-003), and design 047's resolver refuses it |
@@ -289,7 +325,11 @@ The line above is the git blob of `docs/constitution.md` at 5.0.0. A principle b
   - `plan.md`: the Constitution Check reads Pass for the purge after a verified archive.
   - `research.md`: Gap 1101 is closed for the purge and open for `archive = NONE` and erasure, with the recommendation.
   - `checklists/requirements.md` and `tasks.md`: Task 020-061 is reworded and annotated, to be ticked with this pull
-    request once it merges.
+    request once it merges. A new Task 020-063 brings the retention design to 5.1.0 before Tasks 020-044 to 020-048
+    start, and Task 020-052 (erasure) carries its own `Owner-gate:` line on Gap 1101 (correctness review, Major 2 and
+    minor 9).
+  - `plan.md`'s Constitution Check row now reads "Requires design change"; `data-model.md`'s grant note and "Purge
+    privilege" section are annotated.
 - `SPECIFICATION-INDEX.md` and `docs/roadmap.md`: the retention gate is settled for the purge and still open for the
   rest; the roadmap names 5.1.0.
 - `docs/governance/README.md`: the row of this report.
@@ -308,6 +348,9 @@ Not changed, on purpose:
   answers, feature 020 builds the purge under a policy with a required archive, and its erasure story (user story 09)
   waits.
 - **The owner, if feature 021 asks: slot secrets in the third set.** They are out; feature 021 uses the first set.
+- **The owner: an archive below `UP_TO_PII`.** Such a policy deletes payload values above its level with no copy. The
+  text says so and requires the notice period for narrowing it. Recommended: keep it, since requiring every value would
+  force `pii` into object storage; the owner may instead require full values, by a later amendment.
 - **Feature 021**: Decision 021-022 is answered in part. The settings and an OAuth access token come through the third
   set; a slot's secret comes through the first set, declared by the step, with ordinary delivery's binding. Its
   capability resolution must follow that.
@@ -322,8 +365,9 @@ Not changed, on purpose:
 
   Task 049-18 is done by this text.
 - **Design 052**: replace "pending (Owner decision 2026-11-24-512)" in Open Question 2, its owner-decision list and its
-  Constitution Check, and change Task 052-14's `Owner-gate:` line to cite Owner decision 2026-11-25-3. Task 052-15 is
-  done by this text.
+  Constitution Check, and change Task 052-14's `Owner-gate:` line to cite Owner decision 2026-11-25-3. Add to Task
+  052-14 that `scripts/select-test-targets.py` selects the gate on design 038's files, and that the gate runs the
+  base's scenario definitions built by each side. Task 052-15 is done by this text.
 - **Design 044**: gaps 044-021, 044-024 and 044-025 close when this merges, and its Constitution Check for principles I
   and IV can drop the conditions they caused. Its move (ADR-0105) must also check that the target admits every accepted,
   unseen signal, update and cancellation, and the verification must reproduce a recorded deferred terminal command.
@@ -335,6 +379,8 @@ Not changed, on purpose:
   runtime privilege check of `runs`, `steps` and every journal partition.
 - **Design 047, from the security review**: tokens disclosed to activities join the redaction set as they do for
   scripts; a token with no expiry is disclosed only to a managed integration runner.
+- **Design 049, from the correctness review**: the drop of the legacy partition writes a retirement record too, or the
+  missing-partition alarm would flag it.
 - **Design 049, from the security review**: the retirement credential is obtainable by no platform pod (today no chart
   Role grants Secret access, and the control plane mounts no service-account token), and a missing partition without a
   completed `journal_retirements` record raises an alarm.
@@ -388,9 +434,32 @@ one after the other, with the owner's row and no conclusion of the author's. Eac
 | Nit: the governance index called it "a third declared set of secrets" | Fixed |
 | Nit, in "classes with no finding": a pull request could edit the gate's scenarios | Fixed: "the base's scenarios" |
 
-### Correctness review
+### Correctness review (no Blocker; six Major, eleven minor, five Nit; every one fixed, none settled)
 
-(Filled in after the review.)
+| Finding | Disposition |
+|---|---|
+| Major 1: the deferral covered only unseen events, not open obligations, which is gap 044-024's own case | Fixed: both causes are named |
+| Major 2: feature 020's design contradicts 5.1.0 while its plan read Pass | Fixed: the plan reads "Requires design change", Task 020-063 brings the design to 5.1.0 before Tasks 020-044 to 020-048, the data model is annotated |
+| Major 3 (security): the retention role's credential had no home | Fixed: no process that holds the runtime credential or runs tenant code holds it |
+| Major 4 (security): the runtime role could forge the stub | Fixed: only the retention role's function writes the stub and the purge state, a trigger refuses any other writer, and retirement judges "purged" by that role's records |
+| Major 5 (security and the owner's words): an archive may keep no values; the notice period had holes | Fixed: the text says what the archive keeps and that values above the policy's level leave with no copy; the notice period covers creating a policy, re-crediting the destination and narrowing what the archive keeps. The level itself is put to the owner (follow-ups) |
+| Major 6: "the base's scenarios" could make the gate impossible to pass | Fixed: the base's scenario definitions, each built by the side it measures |
+| minor 1: no path finished an abandoned mark-only purge | Fixed |
+| minor 2: the coverage check needed appends refused | Fixed: the stub refuses every later append |
+| minor 3: "accepts no further write" was stricter than the purge itself | Fixed: except the purge's and the retirement's own |
+| minor 4: two statements contradicted design 049 | Fixed: the retirement command's credential and its mark-only purges |
+| minor 5: the exceptions ignored the surviving-timeline rule | Fixed |
+| minor 6: the grant check missed `WITH ADMIN`/`INHERIT`/`SET`, `CREATE ROLE … ROLE`, `ALTER GROUP`, `REASSIGN OWNED`, partitions, `format()` arguments, and the report overclaimed | Fixed in the check, with tests seen failing first; the report now says what it does not judge (`GRANT EXECUTE` on a definer function) |
+| minor 7 (security): a slot's secret through the first set skipped the resource's checks | Fixed: "under that set's checks and the resource's authorities below" |
+| minor 8: the report credited design 052 with a selector change it does not make | Fixed: a follow-up for design 052 |
+| minor 9: erasure lost its gate with Task 020-061 | Fixed: Task 020-052 carries its own `Owner-gate:` line |
+| minor 10: ADR-0054's note was incomplete | Fixed: decision 4 and the four added obligations |
+| minor 11: the move's check might not cover a deferred command | Fixed: "and any recorded deferral" |
+| Nit: Governance and the footer | Fixed: the scope names the footer |
+| Nit: this section was a placeholder | Fixed |
+| Nit: "with no expiry" | Fixed: "no stated expiry" |
+| Nit: design 049's legacy partition drop has no retirement record | Follow-up for design 049 |
+| Nit: the check missed a last statement without `;` and block comments | Fixed, with tests |
 
 ## Risks and rollback
 

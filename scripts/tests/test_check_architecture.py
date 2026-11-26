@@ -751,7 +751,15 @@ class TheRuntimeRoleCannotDeleteTheJournal(unittest.TestCase):
                     "GRANT DELETE ON run_payloads TO sagat_app;",
                     "GRANT sagat_owner TO sagat_app;",
                     "ALTER TABLE runs OWNER TO sagat_app;",
-                    "DO $$ BEGIN EXECUTE format('GRANT DELETE ON %I TO sagat_app', 'runs'); END $$;"):
+                    "DO $$ BEGIN EXECUTE format('GRANT DELETE ON %I TO sagat_app', 'runs'); END $$;",
+                    "GRANT sagat_owner TO sagat_app WITH ADMIN OPTION;",
+                    "GRANT sagat_owner TO sagat_app WITH INHERIT TRUE, SET TRUE;",
+                    "CREATE ROLE sagat_purger NOLOGIN ROLE sagat_app;",
+                    "ALTER GROUP sagat_owner ADD USER sagat_app;",
+                    "REASSIGN OWNED BY sagat_owner TO sagat_app;",
+                    "GRANT DELETE ON run_events_2026_12 TO sagat_app;",
+                    "DO $$ BEGIN EXECUTE format('GRANT %s ON %I TO %I', 'DELETE', 'runs', 'sagat_app'); END $$;",
+                    "/* a block comment */ GRANT DELETE ON runs TO sagat_app"):
             with self.subTest(sql=sql):
                 code, out = creator_check(creator_tree(**{self.MIGRATION: "-- a comment\n" + sql + "\n"}))
                 self.assertEqual(code, 1, out)
@@ -767,7 +775,9 @@ class TheRuntimeRoleCannotDeleteTheJournal(unittest.TestCase):
     def test_a_grant_on_another_table_or_a_comment_passes(self):
         for sql in ("GRANT DELETE ON runs_archive TO sagat_app;", "-- GRANT DELETE ON runs TO sagat_app;",
                     "GRANT DELETE ON runs TO sagat_owner;", "REVOKE DELETE ON runs FROM sagat_app;",
-                    "REVOKE GRANT OPTION FOR SELECT ON runs FROM sagat_app;\nGRANT SELECT ON steps TO sagat_app;"):
+                    "REVOKE GRANT OPTION FOR SELECT ON runs FROM sagat_app;\nGRANT SELECT ON steps TO sagat_app;",
+                    "/* GRANT DELETE ON runs TO sagat_app; */ SELECT 1;",
+                    "GRANT DELETE ON run_events_archive TO sagat_app;"):
             with self.subTest(sql=sql):
                 code, out = creator_check(creator_tree(**{self.MIGRATION: sql + "\n"}))
                 self.assertEqual(code, 0, out)
