@@ -11,17 +11,17 @@ limit; nothing large passes through the control plane except private package fil
 |---|---|---|
 | `POST /script-runner/dependency-jobs/claim` | `{capabilities, target, languages}` | `204`, or `{jobId, attempt, leaseToken, phase: "resolve" \| "install", version, language, runtime, targets, manifest, cut, maxLayerBytes, reservedNames, lock (install), files (install: hash, size, install path, source "public" \| "private"), grant}` |
 | `POST /script-runner/dependency-jobs/{jobId}/heartbeat` | `{leaseToken}` | `204`, or `409` when the lease is lost |
-| `POST /script-runner/dependency-jobs/{jobId}/complete` | resolve: `{leaseToken, outcome, lock, forwardedBytes}` (also on a failed resolve); install: `{leaseToken, outcome, target, layer: {digest, size, files}, installScripts: [{name, version, scripts}], compileFailures}`; failure: `{leaseToken, outcome: "failed", kind, code, retryable, log}` | `204`; a finished job answers `204` and changes nothing |
+| `POST /script-runner/dependency-jobs/{jobId}/complete` | resolve: `{leaseToken, outcome, lock, forwardedBytes}` (also on a failed resolve); install: `{leaseToken, outcome, target, layer: {digest, size, files}, installScripts: [{name, version, scripts}], compileFailures}`; failure: `{leaseToken, outcome: "failed", kind, code, retryable, log}`, with `forwardedBytes` for a resolve | `204`; a finished job answers `204` and changes nothing |
 | `GET /script-runner/namespaces/{namespace}/pending-activities` (feature 005's, extended) | query `target` | each ready activity with its artifact digest and whether a layer for the target is needed |
 | `POST /script-runner/materializations` | `{activity, target}` (a ready activity from the pending-activities answer) | `{id, artifactDigest, lock, files, layerRecord, maxLayerBytes, grant}`; the tenant, namespace and artifact come from the activity, never from the runner; `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED` if blocked for that namespace; `404` for another tenant's activity, one that is not ready, or an artifact without a record for the target (the attempt is audited) |
-| `POST /script-runner/materializations/{id}/failed` | `{code}` | `204`; the failure is recorded against the authenticated runner principal, and only three distinct principals fail the ready steps |
+| `POST /script-runner/materializations/{id}/failed` | `{code}` | `204`; accepted only from the principal that created the row, in its tenant (any other caller gets the unknown `404`); only three distinct principals fail the ready steps |
 | `GET /script-runner/attempts/{attempt}/runnable` | | `204`, `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED`, or `404` for an unknown attempt and, alike, for another tenant's; the tenant and namespace come from the attempt |
 | `GET /script-runner/test-runs/{run}/runnable` | query `lockDigest` | the same, for a test run; `404` also when `lockDigest` differs from the test run's stored lock digest |
 | `POST /script-runner/test-runs/claim` (feature 005's, extended) | as today | for a draft with a manifest, also `{manifest, cut, reservedNames, targets: [the runner's], grant}` |
 | `POST /script-runner/test-runs/{runId}/dependencies` | `{leaseToken, lock}` | `{verdict, findings, files, maxLayerBytes, grant}` or `422` with the refusal reason |
 | `GET /script-runner/private-index/npm/{name}`, `GET /script-runner/private-index/pypi/{project}/` | | the tenant's uploads of that name, in the npm and PEP 691 shapes; `404` otherwise |
 | `GET /script-runner/private-metadata/pypi/{sha256}/{filename}.metadata` | | a private wheel's core metadata |
-| `GET /script-runner/private-files/{sha256}` | | a file of the tenant's uploads; `404` otherwise (audited) |
+| `GET /script-runner/private-files/{sha256}` | | a file of the tenant's uploads that the private quarantine no longer holds; `404` otherwise, a held file included (audited) |
 
 ## Channel messages of a resolve container
 

@@ -430,8 +430,10 @@ only in the last three, whose locks the control plane has validated; in a `Build
 The gateway applies three fixed rules to what it serves, none of them policy. Versions published after the job grant's
 quarantine cut are left out: for npm it reads each version's time from the full document with a streaming parse capped at
 64 MiB and drops a version without a time. Because `versions` usually comes before `time` in that document, the parse
-keeps only a compact index (each version's offsets and time), at most 8 parses run at once per gateway (others wait,
-then answer `503` after 10 s), and the index is cached per name for 5 minutes, so the filter for any cut is a lookup; a
+keeps only the extracted per-version entries of the abbreviated form with each version's time, never the raw document;
+the entries are cached per name for 5 minutes in a cache bounded to 256 MiB with least-recently-used eviction, so the
+filter for any cut is a lookup; at most 8 parses run at once per gateway and at most 2 per job grant (others wait, then
+answer `503` after 10 s), so one tenant's resolve cannot hold every slot; a
 document over 64 MiB is refused with `502` and the job fails `RESOLUTION_FAILED`, never served partly filtered; for PyPI it drops a file without `upload-time`. For Python, source
 distributions and wheels that none of the grant's targets and interpreter can use are left out. Yanked versions are marked
 as the registries mark them. Allow and deny rules, waivers and advisories are not the gateway's: the control plane's evaluation
@@ -457,13 +459,13 @@ and deletes, after 7 days, those still unreferenced and unpinned at deletion tim
 a running resolve, install, test run or materialization pins its files until it ends; an imported offline bundle pins its
 files until an operator removes it.
 
-**Fetch budget.** Every completion of a resolve job, a failed one and each retry included, charges `package_fetch_usage`
-with the bytes the runner reports it forwarded during that attempt, and a successful completion also charges the sizes of
-the locked files the metadata marks as not yet stored; over the daily budget (20 GiB per tenant by default) the version
-is refused with `PACKAGE_FETCH_BUDGET_EXCEEDED`. The claim checks the budget first: a tenant already at or over it is
-not given a resolve job (the job stays queued until the next day, and its version shows why), so an over-budget tenant
-cannot start another 1 GiB of forwarding. A job whose lease expires without a completion is charged its 1 GiB ceiling
-when the lease is reclaimed, since what it forwarded is unknown.
+**Fetch budget.** The claim of a resolve job charges `package_fetch_usage` the job's 1 GiB forwarding ceiling in the
+claim transaction, under the usage row's lock, and is refused when that would pass the daily budget (20 GiB per tenant
+by default; the job stays queued until the next day, and its version shows why); so concurrent claims cannot overshoot.
+Every completion of that attempt, a failed one included, settles the charge to the bytes the runner reports it
+forwarded; a lease that expires without a completion keeps the ceiling. A successful completion also charges the sizes
+of the locked files the metadata marks as not yet stored; over the budget the version is refused with
+`PACKAGE_FETCH_BUDGET_EXCEEDED`.
 
 ### 4. The resolve job
 
@@ -562,7 +564,9 @@ System) base score mapped to the same labels, else unrated.
 
 An import begins with a barrier: one short transaction takes the snapshot row `FOR UPDATE`, which waits for every
 writer of `script_locked_packages` (each takes that row `FOR SHARE` before its first insert and holds it to its commit),
-records the highest `locked_seq` of the table (an identity column) as the import's mark, and commits. Every row at or
+records the highest `locked_seq` of the table (an identity column declared with `CACHE 1`, so values are handed out in
+order across sessions) as the import's mark, and commits. The migration seeds one snapshot row per ecosystem, so the row
+every writer and the barrier lock always exists. Every row at or
 below the mark was committed before the barrier; every row inserted later gets a higher value. The import then stages
 its records under a new snapshot identifier in paged transactions, outside any lock, and computes, for each new
 malicious record, the exact (name, version) pairs it matches among the rows at or below the mark. The switch is one
@@ -653,7 +657,9 @@ resolving namespace's `private.quarantineHours` (default 24, 0 to 720) after its
 `package:manage` other than the uploader releases it earlier (`POST /v1/packages/{ecosystem}/{name}/{version}/release`,
 audited; the uploader is refused with `PACKAGE_RELEASE_BY_UPLOADER`). So a stolen `package:upload` credential cannot
 put a version into a build at once: someone else sees it first, or it waits out the hold, during which an administrator
-can delete it. Uploads count against the tenant's content bytes (Architecture
+can delete it. The hold applies everywhere a private version enters a build: the private index leaves it out, an author
+lock that names it is refused with `PACKAGE_QUARANTINED`, and the private file route answers the unknown `404` for its
+file. Uploads count against the tenant's content bytes (Architecture
 decision 0027).
 
 The control plane serves the private index and files to runners (`/script-runner/private-index/...`,
@@ -675,7 +681,8 @@ attempt timeout never includes a materialization. Materializations run at most t
 time per (tenant, digest), within a deadline of 120 s plus 20 s per 100 MiB of layer (about 16 minutes at the 4 GiB
 ceiling; the install job and the grant use the same deadline). The materialization route takes the ready activity, not a namespace: the control plane reads the tenant, namespace and
 artifact from it, checks the blocks for that namespace, and answers an `id`. A runner reports a failed materialization
-(`POST /script-runner/materializations/{id}/failed`); when three distinct runner identities (the authenticated runner
+(`POST /script-runner/materializations/{id}/failed`, accepted only from the principal that created that row, in its
+tenant; any other caller gets the unknown `404`); when three distinct runner identities (the authenticated runner
 principals of the route, never the self-configured `SAGAT_RUNNER_INSTANCE_ID`) have failed one, or no registered target
 has a layer record for 10 minutes, the control plane fails the ready steps of that artifact through `reject_input` with
 `SCRIPT_SANDBOX_UNAVAILABLE` and `LAYER_UNAVAILABLE`, so no step waits silently, and the gauge
@@ -926,6 +933,7 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   (`apps/package-gateway/tests/fixtures/npm/`, refreshed by `scripts/record-registry-fixtures.sh`):
   `filters_versions_after_the_cut`, `drops_versions_without_a_time`, `refuses_a_redirect_to_another_host`,
   `a_document_over_the_cap_is_refused_not_partly_served`, `full_document_parses_are_bounded_and_cached`,
+  `one_grant_cannot_hold_every_parse_slot`,
   `validates_names_before_upstream`,
   `egress_is_get_only`.
   Refs: Requirement 046-004, Requirement 046-018
@@ -940,7 +948,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   store, the private index and file routes, re-evaluation on reservation and deletion, audit (`sagat package push` is
   Task 046-19's). Tests: `an_identical_upload_is_accepted_again`, `a_different_file_for_an_uploaded_version_is_a_conflict`,
   `a_reservation_blocks_a_lock_that_took_the_name_from_public`, `another_tenants_private_file_is_not_found`,
-  `a_private_upload_is_held_for_the_private_quarantine`, `the_uploader_cannot_release_their_own_upload`.
+  `a_private_upload_is_held_for_the_private_quarantine`, `the_uploader_cannot_release_their_own_upload`,
+  `a_held_upload_is_refused_in_an_author_lock_and_on_the_file_route`.
   Refs: Requirement 046-017
 - [ ] T046-10 Publication flow: `content_digest` with the manifest, `:resolve-again`, dependency jobs and their
   transitions, the build key version 2 at claim, the author-lock path, `Expected` and `BuildAssignment`. Files:
@@ -973,7 +982,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `a_runner_of_another_target_is_not_offered_the_step`, `a_test_run_with_packages_runs_and_is_refused_for_malware`,
   `a_step_no_runner_can_materialize_fails_typed`, `the_runnable_check_takes_the_namespace_from_the_attempt`,
   `a_materialization_takes_the_namespace_from_the_activity`, `one_runner_failing_three_times_does_not_fail_the_step`,
-  `another_tenants_attempt_answers_the_unknown_404`, `a_test_run_lock_digest_must_match`.
+  `another_tenants_attempt_answers_the_unknown_404`, `a_test_run_lock_digest_must_match`,
+  `only_the_creating_runner_may_fail_a_materialization`.
   Refs: Requirement 046-016, Requirement 046-020
 - [ ] T046-15 Bundle version 5, layer records, the finishing steps on both build paths, the SBOM, the provenance (the
   module feature 023 reuses). Files: `crates/infra-schema/src/bundle.rs`, `crates/infra-packages/src/{sbom,provenance}.rs`,
@@ -997,7 +1007,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
 - [ ] T046-18 Store collection with marks, pins and the grace period; the fetch budget. Tests:
   `a_pinned_file_is_never_collected`, `a_reference_gained_after_the_mark_keeps_the_file`,
   `a_collected_file_is_fetched_again_by_name`, `the_fetch_budget_counts_forwarded_bytes`,
-  `a_failed_resolve_is_charged_its_forwarded_bytes`, `an_over_budget_tenant_is_not_given_a_resolve`.
+  `a_failed_resolve_is_charged_its_forwarded_bytes`, `an_over_budget_tenant_is_not_given_a_resolve`,
+  `concurrent_claims_cannot_overshoot_the_budget` (a barrier).
   Refs: Requirement 046-018
 - [ ] T046-19 Studio panel and CLI (`sagat script packages`, `sagat package push`). Files:
   `frontend/apps/studio/src/features/scripts/`, `apps/cli`. Tests: the Studio journey test, the CLI contract tests.
