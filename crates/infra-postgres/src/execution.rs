@@ -573,6 +573,7 @@ impl PgRunStore {
             gate_returns_applied: BTreeSet::new(),
             gate_outcomes: Vec::new(),
             run_gate_outcomes: Vec::new(),
+            held_signal: None,
             #[cfg(feature = "perf-spike")]
             report_hook: self.report_hook.clone(),
             #[cfg(feature = "perf-spike")]
@@ -1897,6 +1898,7 @@ impl RunStore for PgRunStore {
                     gate_returns_applied: BTreeSet::new(),
                     gate_outcomes: Vec::new(),
                     run_gate_outcomes: Vec::new(),
+                    held_signal: None,
                     #[cfg(feature = "perf-spike")]
                     report_hook: self.report_hook.clone(),
                     #[cfg(feature = "perf-spike")]
@@ -4253,6 +4255,9 @@ pub struct PgRunTx {
         sagat_domain::workflow::GateKind,
         readiness_gate::GateOutcome,
     )>,
+    /// What this transaction did with the signal a Signal-with-Start held with the run, counted once it commits
+    /// (decision D022-127).
+    held_signal: Option<sagat_telemetry::flow_control::HeldSignalOutcome>,
     /// Design 041's spike only: the store's report hook, and the attempt this transaction reported.
     #[cfg(feature = "perf-spike")]
     report_hook: crate::report_hook::HookSlot,
@@ -6254,6 +6259,9 @@ impl RunTx for PgRunTx {
             &self.run_gate_outcomes,
             sagat_telemetry::flow_control::FlowControlScope::Run,
         );
+        if let Some(outcome) = self.held_signal {
+            sagat_telemetry::flow_control::record_held_signal(outcome);
+        }
         for waited in self.cancelled_waits {
             metrics::histogram!(
                 WorkflowPrimitiveMetric::ApprovalWait.as_str(),

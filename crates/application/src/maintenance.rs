@@ -196,6 +196,16 @@ pub trait MaintenanceStore: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<crate::flow_control::GateWaiter>, StoreError>> + Send;
 
+    /// Records that the grant of `waiter`, a waiter of `key`, failed for a reason that does not clear on its own, of class
+    /// `failure` (its first instant kept), or, with `None`, that a later try decided it (decision D022-124). One statement,
+    /// outside every run and key lock; a waiter that left its queue meanwhile is a row that matches no waiter.
+    fn record_gate_grant_failure(
+        &self,
+        key: &crate::flow_control::GateKey,
+        waiter: &crate::flow_control::GateWaiter,
+        failure: Option<crate::flow_control::GrantFailureClass>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Clears the next-eligible hint of `key` when it is still the one the pass read and `holder` (when given) still holds
     /// the key's home shard: a pass that could grant none of its waiters leaves the key to the next release, queue, pause
     /// or resume, which sets the hint again (early, never late); a window rests until the first instant a grant counted

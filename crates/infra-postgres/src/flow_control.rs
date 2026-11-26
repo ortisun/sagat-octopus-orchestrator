@@ -1327,12 +1327,13 @@ fn micros(at: Option<time::OffsetDateTime>) -> Result<Option<i64>, StoreError> {
 }
 
 /// Reads one page of a group view in one read-only snapshot under the listing's statement timeout, with the namespace's
-/// queued runs and the digest key version that seals its cursor (decision D022-086 item 5). It reads at most
-/// [`GROUP_PAGE_KEY_ROWS`](sagat_application::flow_control_keys::GROUP_PAGE_KEY_ROWS) key rows (and one more, to know
-/// whether a group goes on): it resumes the group `after` read in part, or finds the next group after `after`'s place
-/// with one probe, sums each group's keys in chunks of its primary-key range, emits a group whose range ends within the
-/// budget, and stops at `limit` groups (one probe says whether another follows) or at the budget, inside a group, whose
-/// place and partial sums become the next place.
+/// queued runs and the digest key version that seals its cursor (decision D022-086 item 5). Each group it reads has a
+/// budget of its own of [`GROUP_PAGE_KEY_ROWS`](sagat_application::flow_control_keys::GROUP_PAGE_KEY_ROWS) key rows (and
+/// one more, to know whether it goes on), so where a group's pages break depends on that group alone, as under its own
+/// `group` filter (decision D022-128): it resumes the group `after` read in part, or finds the next group after
+/// `after`'s place with one probe, sums the group's keys in chunks of its primary-key range, emits a group whose range
+/// ends within its budget, and stops at `limit` groups (one probe says whether another follows) or after the first group
+/// it does not finish, whose place and partial sums become the next place. A page reads at most `limit` times the budget.
 async fn group_page(
     pool: &sqlx::PgPool,
     statements: &GroupStatements,
@@ -1354,7 +1355,8 @@ async fn group_page(
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-    let mut budget = GROUP_PAGE_KEY_ROWS as usize;
+    // every group's own budget (decision D022-128)
+    let budget = GROUP_PAGE_KEY_ROWS as usize;
     let mut groups: Vec<SummedGroup> = Vec::new();
     // the place the next group is looked for after, and a group read in part to resume
     let mut place = after.map(|p| (p.pool, p.scope, p.group.clone()));
@@ -1387,8 +1389,8 @@ async fn group_page(
                 let Some(row) = probe.fetch_optional(&mut *tx).await.map_err(store_error)? else {
                     break None;
                 };
-                // a group follows: the page ends before it when it is full or has no budget left
-                if groups.len() >= limit as usize || budget == 0 {
+                // a group follows: the page ends before it when it holds its `limit` of groups
+                if groups.len() >= limit as usize {
                     break place.map(|(p, s, g)| KeyPosition::of_group(p, s, g));
                 }
                 let (pool_of, scope, group) = group_of(&row)?;
@@ -1421,7 +1423,7 @@ async fn group_page(
             );
             digest = row.try_get("key_digest").map_err(store_error)?;
         }
-        budget = budget.saturating_sub(rows.len().min(budget));
+        // a group that does not finish within its budget ends the page (decision D022-128)
         if goes_on {
             let digest: [u8; 32] = digest
                 .try_into()

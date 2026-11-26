@@ -7,7 +7,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{T0, activity, build, id, sid};
+use common::{T0, activity, build, condition, end, id, parallel, sid, timer, wait};
 use sagat_domain::execution::{
     self, Evaluation, ExecutionError, FailureCode, GateChange, GateEvent, GatePhase, GatePool,
     GateRef, GateTarget, KeyLabel, Resolution, RunEvent, RunId, RunState, RunStatus, StepStatus,
@@ -36,6 +36,95 @@ fn concurrency(limit: u32) -> ConcurrencyPolicy {
 fn rate(limit: u32, per: RatePeriod) -> RateLimitPolicy {
     RateLimitPolicy::new(FlowGroup::Derived, None, limit, per, DEFAULT_QUEUE_TIMEOUT)
         .expect("a policy")
+}
+
+// ------------------------------------------------------------------------------------------- the entry path
+
+/// Decision D022-126: the entry path of a run's start is what the settle of its release may reach in that one
+/// transaction. A wait reached only after an activity is not on it (a signal for it is refused while the start queues);
+/// every branch of a condition counts; a parallel's waits each count; an entry of activities and timers cannot end the
+/// run there (its grant takes no extra lock), while a wait (its correlation evaluated), a condition, an `end` or a gated
+/// step's key can.
+#[test]
+fn the_entry_path_holds_what_the_release_of_a_start_reaches() {
+    use sagat_domain::workflow::JoinPolicy;
+    let after_activity = build(
+        "g",
+        vec![activity("g").with_next(id("w")), wait("w", 60, None)],
+    );
+    let path = after_activity.entry_path();
+    assert_eq!(path.waits_for("payment.confirmed"), 0, "{path:?}");
+    assert!(!path.can_end(), "an activity first: {path:?}");
+
+    let waits_first = build(
+        "w",
+        vec![wait("w", 60, None).with_next(id("g")), activity("g")],
+    );
+    let path = waits_first.entry_path();
+    assert_eq!(path.waits_for("payment.confirmed"), 1, "{path:?}");
+    assert_eq!(path.waits_for("order.shipped"), 0, "{path:?}");
+    assert!(path.can_end(), "a correlation is evaluated: {path:?}");
+
+    let branches = build(
+        "c",
+        vec![condition("c", "g", "w"), activity("g"), wait("w", 60, None)],
+    );
+    let path = branches.entry_path();
+    assert_eq!(
+        path.waits_for("payment.confirmed"),
+        1,
+        "every branch counts: {path:?}"
+    );
+    assert!(path.can_end(), "{path:?}");
+
+    let fan = build(
+        "p",
+        vec![
+            parallel("p", &["a", "b", "t"], JoinPolicy::All),
+            wait("a", 60, None),
+            wait("b", 60, None),
+            timer("t", 5),
+        ],
+    );
+    assert_eq!(fan.entry_path().waits_for("payment.confirmed"), 2);
+
+    let plain = build(
+        "p",
+        vec![
+            parallel("p", &["a", "t"], JoinPolicy::All),
+            activity("a"),
+            timer("t", 5),
+        ],
+    );
+    let path = plain.entry_path();
+    assert!(!path.can_end(), "activities and timers wait: {path:?}");
+    // a join's next may be reached at once when every branch passes through, so it counts
+    let joined = build(
+        "p",
+        vec![
+            parallel("p", &["a", "b"], JoinPolicy::All).with_next(id("e")),
+            activity("a"),
+            activity("b"),
+            end("e"),
+        ],
+    );
+    assert!(joined.entry_path().can_end());
+
+    let ends = build("e", vec![end("e")]);
+    assert!(ends.entry_path().can_end());
+
+    let gated = build(
+        "g",
+        vec![
+            activity("g")
+                .with_flow_control(FlowControl::new(Some(concurrency(1)), None))
+                .expect("a gated activity"),
+        ],
+    );
+    assert!(
+        gated.entry_path().can_end(),
+        "a gated step's key is evaluated there"
+    );
 }
 
 // ------------------------------------------------------------------------------------------- the declarations

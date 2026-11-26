@@ -2111,20 +2111,33 @@ where
                         fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
                     };
                     // a start that queued for its gates has no step yet: the signal is held with the run and the
-                    // grant of its start delivers it, when some node of the definition can ever wait for it (feature
-                    // 022, T022-109, decision D022-087)
+                    // grant of its start delivers it, when a wait of its name is on the start's entry path, which the
+                    // grant reaches, and its payload copied to each keeps the run within its output bound; otherwise
+                    // it is refused as the delivery would refuse it with room on the key, and nothing is created
+                    // (feature 022, T022-109, decisions D022-087 and D022-126)
                     let queued = {
                         let (def, state) = tx.parts();
-                        state.run_gates().is_waiting().then(|| {
-                            def.nodes().any(|node| {
-                                matches!(
-                                    node.kind(),
-                                    NodeKind::WaitEvent { event_type, .. } if event_type.as_str() == signal.name
-                                )
-                            })
-                        })
+                        state
+                            .run_gates()
+                            .is_waiting()
+                            .then(|| def.entry_path().waits_for(signal.name))
                     };
-                    match queued {
+                    if let Some(waits) = queued.filter(|waits| *waits > 0) {
+                        let retained = tx
+                            .logical_output_bytes()
+                            .await
+                            .map_err(|error| store_failure(pending_completion, error))?;
+                        let additional = u64::try_from(signal.payload.len())
+                            .unwrap_or(u64::MAX)
+                            .saturating_mul(u64::try_from(waits).unwrap_or(u64::MAX));
+                        if retained.saturating_add(additional)
+                            > crate::execution::MAX_RUN_OUTPUT_BYTES as u64
+                        {
+                            drop(tx);
+                            return Err(AppError::QuotaExceeded("output retained by one run"));
+                        }
+                    }
+                    match queued.map(|waits| waits > 0) {
                         Some(true) => {
                             let held = HeldSignal {
                                 name: signal.name.to_owned(),

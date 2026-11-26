@@ -113,6 +113,47 @@ impl RateLimitOutcome {
     }
 }
 
+/// The `outcome` label of `flow_control_held_signals_total` (decision D022-127): what became of the signal a
+/// Signal-with-Start held with its queued run, counted once its transaction commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldSignalOutcome {
+    /// Held with the queued run by its creation.
+    Held,
+    /// Delivered by the grant of the run's start.
+    Delivered,
+    /// Dropped at the grant: no step waited for it (`NOT_WAITING_AT_GRANT`).
+    DroppedNotWaiting,
+    /// Dropped at the grant: the run's retained output would pass its bound (`OUTPUT_BOUND`).
+    DroppedOutputBound,
+    /// Dropped by the end of the queued run (`RUN_ENDED`).
+    DroppedRunEnded,
+    /// Dropped by the second try of a grant whose delivery failed (`DELIVERY_FAILED`).
+    DroppedDeliveryFailed,
+}
+
+impl HeldSignalOutcome {
+    pub const ALL: [Self; 6] = [
+        Self::Held,
+        Self::Delivered,
+        Self::DroppedNotWaiting,
+        Self::DroppedOutputBound,
+        Self::DroppedRunEnded,
+        Self::DroppedDeliveryFailed,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Held => "held",
+            Self::Delivered => "delivered",
+            Self::DroppedNotWaiting => "dropped_not_waiting",
+            Self::DroppedOutputBound => "dropped_output_bound",
+            Self::DroppedRunEnded => "dropped_run_ended",
+            Self::DroppedDeliveryFailed => "dropped_delivery_failed",
+        }
+    }
+}
+
 /// The metric families of the slice and their only label keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowControlMetric {
@@ -124,10 +165,11 @@ pub enum FlowControlMetric {
     RateLimitWaiters,
     RateLimitGrantLagSeconds,
     RateLimitUnleasedGrants,
+    HeldSignals,
 }
 
 impl FlowControlMetric {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ConcurrencyAcquisitions,
         Self::ConcurrencyWaitSeconds,
         Self::ConcurrencyWaiters,
@@ -136,6 +178,7 @@ impl FlowControlMetric {
         Self::RateLimitWaiters,
         Self::RateLimitGrantLagSeconds,
         Self::RateLimitUnleasedGrants,
+        Self::HeldSignals,
     ];
 
     #[must_use]
@@ -149,6 +192,7 @@ impl FlowControlMetric {
             Self::RateLimitWaiters => "rate_limit_waiters",
             Self::RateLimitGrantLagSeconds => "rate_limit_grant_lag_seconds",
             Self::RateLimitUnleasedGrants => "rate_limit_unleased_grants",
+            Self::HeldSignals => "flow_control_held_signals_total",
         }
     }
 
@@ -161,6 +205,7 @@ impl FlowControlMetric {
             | Self::RateLimitWaitSeconds
             | Self::RateLimitWaiters => &["scope"],
             Self::RateLimitGrantLagSeconds | Self::RateLimitUnleasedGrants => &[],
+            Self::HeldSignals => &["outcome"],
         }
     }
 }
@@ -246,4 +291,9 @@ pub fn record_grant_lag(seconds: f64) {
 
 pub fn set_unleased_grants(grants: f64) {
     metrics::gauge!(FlowControlMetric::RateLimitUnleasedGrants.as_str()).set(grants);
+}
+
+pub fn record_held_signal(outcome: HeldSignalOutcome) {
+    metrics::counter!(FlowControlMetric::HeldSignals.as_str(), "outcome" => outcome.as_str())
+        .increment(1);
 }

@@ -3,7 +3,11 @@
 //! with an audit record when no step waits for it), and dropped with an audit record by the commit that ends the queued
 //! run instead. Every statement runs under the run's own lock, in the run's transaction.
 
-use sagat_application::execution::{HELD_SIGNAL_RUN_ENDED, HeldSignal};
+use sagat_application::execution::{
+    HELD_SIGNAL_DELIVERY_FAILED, HELD_SIGNAL_NOT_WAITING, HELD_SIGNAL_OUTPUT_BOUND,
+    HELD_SIGNAL_RUN_ENDED, HeldSignal,
+};
+use sagat_telemetry::flow_control::HeldSignalOutcome;
 
 use super::*;
 
@@ -53,6 +57,7 @@ impl PgRunTx {
             )
             .await?;
         }
+        self.held_signal = Some(HeldSignalOutcome::Held);
         Ok(())
     }
 
@@ -71,6 +76,10 @@ impl PgRunTx {
         .fetch_optional(&mut *self.tx)
         .await
         .map_err(store_error)?;
+        // delivered, unless its drop is audited next in this transaction
+        if row.is_some() {
+            self.held_signal = Some(HeldSignalOutcome::Delivered);
+        }
         Ok(row.map(|(name, payload, actor, trace_id)| HeldSignal {
             name,
             payload,
@@ -90,7 +99,15 @@ impl PgRunTx {
             &mut self.tx,
             &dropped(self.info.tenant_id, self.info.run_id, signal, reason, now),
         )
-        .await
+        .await?;
+        self.held_signal = match reason {
+            HELD_SIGNAL_NOT_WAITING => Some(HeldSignalOutcome::DroppedNotWaiting),
+            HELD_SIGNAL_OUTPUT_BOUND => Some(HeldSignalOutcome::DroppedOutputBound),
+            HELD_SIGNAL_RUN_ENDED => Some(HeldSignalOutcome::DroppedRunEnded),
+            HELD_SIGNAL_DELIVERY_FAILED => Some(HeldSignalOutcome::DroppedDeliveryFailed),
+            _ => self.held_signal,
+        };
+        Ok(())
     }
 
     /// In a commit that ends a run whose start declares a gate: drops the signal held with it, audited (decision D022-087
@@ -121,7 +138,8 @@ fn dropped(
         format!(
             "{reason}: signal '{}' held with the queued start, sent by '{}'",
             signal.name.chars().take(64).collect::<String>(),
-            signal.actor.chars().take(128).collect::<String>()
+            // the whole sender, which the held row's `CHECK` bounds at 255 characters (decision D022-129)
+            signal.actor.chars().take(255).collect::<String>()
         ),
         signal.trace_id.clone(),
         now,

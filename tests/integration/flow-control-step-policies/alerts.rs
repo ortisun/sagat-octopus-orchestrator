@@ -59,8 +59,19 @@ async fn seed(w: &World, table: &'static str, sql: &'static str, run: RunId) {
     tx.commit().await.expect("seed");
 }
 
-fn monitor(w: &World) -> Monitor<sagat_infra_postgres::PgRunStore> {
-    Monitor::new(w.store.clone(), MonitorSettings::default())
+/// The engine's monitor over a store of the runtime role's pool, in every run of the suite (batch 5 security nit,
+/// decision D022-130 item 6): the alert detection is what the engine runs as `sagat_app`, so a table its statements read
+/// without a grant fails the owner's run too, as the runtime-role statements of `rate_gate.rs` and `migrations.rs` do.
+async fn monitor(w: &World) -> Monitor<sagat_infra_postgres::PgRunStore> {
+    Monitor::new(runtime_store(w).await, MonitorSettings::default())
+}
+
+/// A store of the runtime role's pool (see [`monitor`]).
+async fn runtime_store(w: &World) -> sagat_infra_postgres::PgRunStore {
+    crate::support::flow_control::gate(sagat_infra_postgres::PgRunStore::new(
+        w.db.runtime_pool_with(4).await,
+        w.cache.clone(),
+    ))
 }
 
 /// `CONCURRENCY_QUEUE_STUCK` (section 8): a key with no room whose oldest eligible waiter queued more than the unclaimed
@@ -73,7 +84,7 @@ async fn a_waiter_passed_over_by_every_holder_raises_concurrency_queue_stuck_unt
     let input = json!({"accountId": "acct-1"});
     let holder = w.start(workflow, &input).await;
     let waiter = w.start(workflow, &input).await;
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(
         alerts(&w, "CONCURRENCY_QUEUE_STUCK").await.is_empty(),
@@ -141,7 +152,7 @@ async fn a_due_window_no_pass_serves_raises_rate_limit_grant_lagging_until_it_is
     .execute(&w.db.pool)
     .await
     .expect("due");
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(
         alerts(&w, "RATE_LIMIT_GRANT_LAGGING").await.is_empty(),
@@ -202,7 +213,7 @@ async fn a_buffer_above_eighty_percent_raises_rate_limit_queue_saturated_until_i
     for _ in 0..8 {
         waiters.push(w.start(workflow, &input).await);
     }
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(
         alerts(&w, "RATE_LIMIT_QUEUE_SATURATED").await.is_empty(),
@@ -235,10 +246,10 @@ async fn a_waiter_of_an_ended_run_raises_flow_control_waiter_orphaned_and_the_ga
     let input = json!({"accountId": "acct-1"});
     let _holder = w.start(workflow, &input).await;
     let waiter = w.start(workflow, &input).await;
-    let sample = w.store.sample().await.expect("a sample");
+    let sample = runtime_store(&w).await.sample().await.expect("a sample");
     assert_eq!(sample.flow_control.rate_run_waiters, 1, "{sample:?}");
     assert_eq!(sample.flow_control.concurrency_run_waiters, 0);
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(alerts(&w, "FLOW_CONTROL_WAITER_ORPHANED").await.is_empty());
     let page = telemetry.render();
@@ -348,7 +359,7 @@ async fn a_saturated_key_of_one_tenant_fires_beside_thousands_of_another_tenants
     .execute(&w.db.pool)
     .await
     .expect("tenant A's alert of a key that drained");
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     monitor.run_once().await;
     let states: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
@@ -400,7 +411,7 @@ async fn a_stuck_key_is_judged_against_the_tenants_concurrency_ceiling_below_its
         waiter,
     )
     .await;
-    monitor(&w).run_once().await;
+    monitor(&w).await.run_once().await;
     assert_eq!(
         alerts(&w, "CONCURRENCY_QUEUE_STUCK").await,
         [("accounts".to_owned(), "FIRING".to_owned(), 1)]

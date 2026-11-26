@@ -9628,6 +9628,42 @@
       "owner_paths": [
         "crates/infra-postgres/migrations/20270204000000_start_release_deferrals.up.sql"
       ]
+    },
+    {
+      "table": "flow_control_grant_failures",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "'' for a run's start, else a node id (CHECK flow_control_grant_failures_node_shape: ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, at most 64 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270216000000_flow_control_grant_failures.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_grant_failures",
+      "column": "failure",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_grant_failures_failure_valid: one of four closed failure classes (UNREADABLE_DEFINITION, REFUSED, EXECUTION, INTERNAL), at most 21 ASCII bytes; never an error's text."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270216000000_flow_control_grant_failures.up.sql"
+      ]
     }
   ],
   "external_content": [

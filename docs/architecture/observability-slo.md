@@ -59,6 +59,7 @@ group (`sagat.concurrency.group`, `sagat.rate_limit.group`), never a key's value
 | `rate_limit_waiters` | gauge | `scope` | waiters of every key, deployment-wide |
 | `rate_limit_grant_lag_seconds` | histogram | none | from the instant a slot was free with a waiter present to the grant |
 | `rate_limit_unleased_grants` | gauge | none | step grants not leased yet |
+| `flow_control_held_signals_total` | counter | `outcome` (`held`, `delivered`, `dropped_not_waiting`, `dropped_output_bound`, `dropped_run_ended`, `dropped_delivery_failed`) | each signal a Signal-with-Start held with its queued run, and what became of it, after its commit (D022-127) |
 | `scheduler_actions_total{kind="rate_lease"}`, `{kind="rate_purge"}` | counter | `kind`, `outcome` | lease recording and the purge of old grants (existing family) |
 
 Spans: `workflow.concurrency.acquire`, `workflow.concurrency.grant`, `workflow.rate_limit.admit`,

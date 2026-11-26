@@ -1454,6 +1454,34 @@ pub struct WorkflowDefinition {
     input_schema: Option<InputSchema>,
 }
 
+/// What the settle of a run's start may reach in the transaction that releases its entry
+/// ([`WorkflowDefinition::entry_path`]; feature 022, decision D022-126).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPath<'a> {
+    /// The event type of every `waitEvent` on the path, one per node.
+    waits: Vec<&'a str>,
+    can_end: bool,
+}
+
+impl EntryPath<'_> {
+    /// How many `waitEvent` nodes of the path wait for `event_type`: the most steps a signal of that name delivered at
+    /// the release of the entry can reach.
+    #[must_use]
+    pub fn waits_for(&self, event_type: &str) -> usize {
+        self.waits
+            .iter()
+            .filter(|name| **name == event_type)
+            .count()
+    }
+
+    /// Whether the run can end in the transaction that releases its entry: the path reaches an `end` or a
+    /// `continueAsNew`, or a node whose failure there ends the run.
+    #[must_use]
+    pub const fn can_end(&self) -> bool {
+        self.can_end
+    }
+}
+
 /// The `inputSchema` of a workflow version as the run-input check reads it (design 043): the canonical
 /// JSON bytes the IR codec wrote and their SHA-256, computed by the codec at parse. The domain holds them
 /// opaquely: it neither reads JSON nor hashes (D043-075).
@@ -2090,6 +2118,67 @@ impl WorkflowDefinition {
             };
         }
         self
+    }
+
+    /// The entry path of a run's start (feature 022, decision D022-126): the root nodes the settle of the start passes
+    /// through in the one transaction that releases its entry (the creation of an ungated run, the grant of a queued
+    /// start), found by a walk from the entry point. The walk passes through every node that hands control on in that
+    /// transaction (every branch of a condition or a switch, a parallel's branches, a saga's begin, a collection's or a
+    /// loop's next for an empty input or a false condition) and stops at a node that waits for work, time, a person or
+    /// another run; it follows the failure route of every node that can fail in that transaction (an evaluation, a gated
+    /// step's key). It counts every branch, so it is what the start *may* reach: the branch an evaluation takes is known
+    /// only to the engine, in the transaction.
+    #[must_use]
+    pub fn entry_path(&self) -> EntryPath<'_> {
+        let mut path = EntryPath {
+            waits: Vec::new(),
+            can_end: false,
+        };
+        let mut seen: BTreeSet<&NodeId> = BTreeSet::new();
+        let mut stack = vec![&self.graph.entrypoint];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(node) = self.graph.nodes.get(id) else {
+                continue;
+            };
+            let gated = node.flow_control().concurrency().is_some()
+                || node.flow_control().rate_limit().is_some();
+            // whether the settle goes on to the node's successors in this transaction, and whether the node itself can
+            // fail here (its failure route then taken, or the run failed)
+            let (passes, fails) = match node.kind() {
+                // a worker's step, a timer: it waits; only a gated step's key is evaluated here
+                NodeKind::Activity { .. } | NodeKind::Timer { .. } => (false, gated),
+                NodeKind::WaitEvent { event_type, .. } => {
+                    path.waits.push(event_type.as_str());
+                    // its correlation is evaluated here
+                    (false, true)
+                }
+                // a person's decision, another run: they wait, after an evaluation that can fail
+                NodeKind::Approval { .. } | NodeKind::Child { .. } => (false, true),
+                NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::ForEach { .. }
+                | NodeKind::While { .. }
+                | NodeKind::RepeatUntil { .. } => (true, true),
+                NodeKind::Parallel { .. } | NodeKind::Saga { .. } => (true, false),
+                NodeKind::End { .. } | NodeKind::ContinueAsNew { .. } | NodeKind::Return { .. } => {
+                    path.can_end = true;
+                    (false, true)
+                }
+            };
+            if fails {
+                // a failure without a route fails the run in this transaction
+                path.can_end = true;
+            }
+            if passes {
+                stack.extend(node.successors());
+            } else if fails {
+                stack.extend(node.on_error());
+            }
+        }
+        path
     }
 
     /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.

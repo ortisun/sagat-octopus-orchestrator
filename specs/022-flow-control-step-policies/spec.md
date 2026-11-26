@@ -491,6 +491,12 @@ Added after the review of 2026-11-13:
   `signalRun` would, or drop it with an audit when no step waits for it; a queued run that ends instead MUST drop it
   with an audit. A retry of the request MUST answer the same. A signal no node of the definition waits for keeps the
   refusal of FR-018-024.
+  *Amended 2026-11-26 (decision D022-126; batch 5 correctness minor 1, security suspicion 4):* the signal MUST be held
+  only when a `waitEvent` of its name is on the entry path of the start (the nodes the start's settle passes through
+  in the grant's transaction, every branch counted) and its payload, copied to each such wait, keeps the run's retained
+  output within its bound; otherwise the request MUST be refused as the delivery would refuse it with room on the key
+  (`SIGNAL_NOT_ACCEPTED_AT_START`, or `QUOTA_EXCEEDED`), and nothing is created. The grant of a queued start MUST lock
+  the run's active-run counter only when its entry path can end the run in that transaction.
 - **FR-022-019 — Step permits** *(revised 2026-11-13 after review, D022-019; changes ADR-0056 decision 3
   through the proposed ADR-0089)*: A step whose node declares `concurrency` MUST NOT become `READY` before
   it holds a permit. The transaction that would make it ready (FR-022-051) MUST acquire the permit when its
@@ -527,6 +533,9 @@ Added after the review of 2026-11-13:
   (`view: GROUPS`) with its holders or counted grants, waiters and oldest instants, never how many keys a group has or
   when its next slot frees. A page of groups reads at most 200 key rows; a larger group is summed across the pages that
   read it, each page one snapshot, its partial sums carried in the sealed cursor.
+  *Amended 2026-11-26 (decision D022-128; re-read security new finding 1):* each group of a page reads its own 200 key
+  rows, a page ends after the first group it does not finish, and a page holds at most 5 groups whatever its `limit`,
+  so where a group's pages break depends on that group alone, as under its own `group` filter (D022-100).
 
 #### Standalone steps (US05)
 
@@ -707,6 +716,11 @@ Added after the review of 2026-11-13:
   invariant breach: it is alerted and skipped, and never counts as ahead. The timeout routine, at the
   waiter's deadline, MUST journal the `*.wait_timed_out` of the gate that refuses it then (`rate_limit`
   first when both do) and the `*.dequeued` of the other, in one transaction.
+  *Amended 2026-11-26 (decisions D022-121 and D022-124; re-read correctness new finding 1):* a waiter whose grant
+  failed for a reason that does not clear on its own MUST be skipped and MUST NOT count as eligible (ahead of a younger
+  waiter, or as the eligible waiter a new arrival queues behind) until a later try decides it; the failure is recorded
+  with its class and first instant, outside the run's journal, and the pass still tries that waiter first. A busy run
+  and a failure that clears on its own end the key's pass instead.
 - **FR-022-053 — Fleet activation**: `concurrencyKeys` and `rateLimits` MUST be instance capabilities
   (`flow-control-concurrency-v1`, `flow-control-rate-v1`, required of `CONTROL_PLANE` and
   `EXECUTION_ENGINE`) activated through feature 018's instance-capability registry (ADR-0050 decision 9,
@@ -781,6 +795,9 @@ Added after the review of 2026-11-13:
   handler configuration and redrive, standalone and test admission, pin disclosure). Metric labels MUST
   NOT carry tenant, namespace, run, workflow, group or key; logs, spans and audit MUST NOT carry a payload,
   raw key or secret.
+  *Amended 2026-11-26 (decision D022-127; batch 5 security nit):* the signals a Signal-with-Start holds are counted by
+  outcome once their transaction commits (`flow_control_held_signals_total{outcome}`: `held`, `delivered`,
+  `dropped_not_waiting`, `dropped_output_bound`, `dropped_run_ended`, `dropped_delivery_failed`).
 - **FR-022-034 — Finite ceilings and typed errors**: Every new resource MUST have a default and hard ceiling
   (plan); effective = min(declaration or request, namespace, deployment); zero refuses; admission fails
   before work. Errors MUST use the existing `Error.code` set with the reasons and codes of

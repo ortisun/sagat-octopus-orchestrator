@@ -404,6 +404,18 @@ CASCADE`. Written by the creation transaction of the run, deleted by the grant t
 ends the queued run (audited `run.signal_dropped`). `sagat_app`: `SELECT`, `INSERT`, `DELETE`. Invariant: a row exists
 only for a run whose start waits for its gates.
 
+### `flow_control_grant_failures`
+
+*Added 2026-11-26 (decision D022-124; migration `20270216000000`).* A waiter whose grant failed for a reason that does
+not clear on its own, as the grant routine saw it: scheduler state, never the run's journal or projection (`verify_run`
+does not read it). PK `(tenant_id, run_id, node, attempt)` (the waiter of a run's start is node `''`, attempt 0, as in
+the waiter tables; a step waiting for both gates is one waiter); `namespace_id`; `failure text` (CHECK one of
+`UNREADABLE_DEFINITION`, `REFUSED`, `EXECUTION`, `INTERNAL`); `first_failed_at timestamptz`. Foreign key `(tenant_id,
+namespace_id, run_id)` → `runs (tenant_id, namespace_id, id)` `ON DELETE CASCADE`. Written in a statement of its own after
+a failed try's rollback, deleted by the first later try that decides the waiter and by the grant that takes it. The
+eligibility of a waiter (`eligible_gate_waiter!`) excludes a waiter with a row; the pass's listing of a key's waiters
+does not. `sagat_app`: `SELECT`, `INSERT`, `DELETE`.
+
 ### `flow_control_key_versions`
 
 PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,

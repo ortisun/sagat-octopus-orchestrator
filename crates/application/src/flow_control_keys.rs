@@ -341,9 +341,13 @@ pub enum KeyView {
     Groups,
 }
 
-/// The most key rows a page of a group view reads (decision D022-086 item 5): the per-key page's bound. A group with more
-/// keys is summed across the pages that read it.
+/// The most key rows a page of a group view reads of one group (decisions D022-086 item 5 and D022-128): the per-key
+/// page's bound. A group with more keys is summed across the pages that read it, the page ending after it.
 pub const GROUP_PAGE_KEY_ROWS: u32 = 200;
+
+/// The most groups one page of a group view holds, whatever its `limit` (decision D022-128): each group reads its own
+/// [`GROUP_PAGE_KEY_ROWS`], so a page reads at most this many times as many key rows.
+pub const GROUP_PAGE_GROUPS: u32 = 5;
 
 /// One group of a namespace's concurrency keys, summed over its keys across the pages that read it, each page one
 /// snapshot (decision D022-086 item 5). It never says how many keys the group has: that count tells which runs share a
@@ -456,6 +460,11 @@ impl KeyListing {
 /// for long would tell whether a group still crosses the bound of a page.
 pub const KEY_CURSOR_LIFETIME: time::Duration = time::Duration::minutes(15);
 
+/// How far ahead of the reader's clock a cursor's instant may be and still be read (decision D022-129): far more than
+/// the clocks of replicas that keep time differ by, far less than [`KEY_CURSOR_LIFETIME`]. A cursor stamped further
+/// ahead (a replica whose clock ran ahead) would otherwise never expire.
+pub const KEY_CURSOR_LEAD: time::Duration = time::Duration::minutes(1);
+
 /// The position a cursor names, the view of the listing that wrote it (decision D022-086), and the instant its page
 /// sealed it, in whole seconds (decision D022-100).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,11 +475,12 @@ pub struct ListingPosition {
 }
 
 impl ListingPosition {
-    /// Whether the cursor has outlived [`KEY_CURSOR_LIFETIME`] at `now` (decision D022-100). A cursor sealed ahead of
-    /// `now` (another process whose clock is ahead) is read: processes' clocks differ by far less than the lifetime.
+    /// Whether the cursor has outlived [`KEY_CURSOR_LIFETIME`] at `now` (decision D022-100), or is stamped more than
+    /// [`KEY_CURSOR_LEAD`] ahead of `now`, so that its lifetime cannot be measured (decision D022-129). A cursor sealed
+    /// less far ahead (another process whose clock is a little ahead) is read.
     #[must_use]
     pub fn expired(&self, now: OffsetDateTime) -> bool {
-        now - self.sealed_at > KEY_CURSOR_LIFETIME
+        now - self.sealed_at > KEY_CURSOR_LIFETIME || self.sealed_at - now > KEY_CURSOR_LEAD
     }
 }
 
@@ -837,9 +847,30 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(1_795_608_000).expect("an instant")
     }
 
+    /// Decision D022-129 (re-read security nit 2): a cursor stamped more than a minute ahead of the reader's clock (a
+    /// replica whose clock ran ahead) is refused as an expired one, since its lifetime cannot be measured; one a minute
+    /// ahead or less is read.
+    #[test]
+    fn a_cursor_stamped_more_than_a_minute_ahead_is_refused() {
+        let at = |sealed_at| ListingPosition {
+            view: KeyView::Groups,
+            position: position(Some(1_763_640_000_123_456), "payments.eu"),
+            sealed_at,
+        };
+        let now = page_instant();
+        for (lead, expired) in [
+            (time::Duration::seconds(30), false),
+            (KEY_CURSOR_LEAD, false),
+            (KEY_CURSOR_LEAD + time::Duration::seconds(1), true),
+            (time::Duration::days(365), true),
+        ] {
+            assert_eq!(at(now + lead).expired(now), expired, "{lead}");
+        }
+    }
+
     /// Decision D022-100 (batch 5 security suspicion 3): a cursor carries the instant of its page, sealed, and expires
-    /// fifteen minutes after it; one sealed ahead of the reader's clock is read; an instant that is not whole seconds
-    /// written by [`KeyPosition::seal`] is no cursor.
+    /// fifteen minutes after it; one sealed up to a minute ahead of the reader's clock is read (decision D022-129); an
+    /// instant that is not whole seconds written by [`KeyPosition::seal`] is no cursor.
     #[test]
     fn a_cursor_expires_fifteen_minutes_after_its_page() {
         let ring = KeyRing::parse(RING).expect("ring");

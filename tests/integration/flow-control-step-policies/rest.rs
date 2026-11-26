@@ -1179,7 +1179,8 @@ async fn seed_group_keys(
 }
 
 /// Batch 4 reviews of 2026-11-25, correctness Major 1 and security minor 2 (decision D022-086 item 5): a page of groups
-/// reads at most its budget of key rows, whatever its groups' sizes: each statement of the walk, asked of the planner over
+/// reads at most its budget of key rows of each group (decision D022-128), whatever its groups' sizes: each statement of
+/// the walk, asked of the planner over
 /// a group of 20,000 keys beside 100 groups of 50, reads at most the budget and one more of the key table (and one probe
 /// of the holders a key), and the probe for the next group, named or not, at most four rows; never a scan.
 #[tokio::test]
@@ -1365,6 +1366,115 @@ async fn a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is
     }
 }
 
+/// Every group row a viewer reads of `listing` from `query` on, page by page: (page index, group, `spansPages`).
+async fn group_walk(
+    api: &TestApi,
+    namespace: &str,
+    listing: &str,
+    query: &str,
+) -> Vec<(u32, String, bool)> {
+    let mut cursor: Option<String> = None;
+    let mut rows = Vec::new();
+    for page_index in 0_u32.. {
+        let path = match &cursor {
+            Some(cursor) => format!("/namespaces/{namespace}/{listing}?{query}&cursor={cursor}"),
+            None => format!("/namespaces/{namespace}/{listing}?{query}"),
+        };
+        let (status, page) = read_as(api, &path, "vera-viewer").await;
+        assert_eq!(status, StatusCode::OK, "{path}: {page}");
+        assert_eq!(page["view"], "GROUPS", "{page}");
+        for group in page["groups"].as_array().into_iter().flatten() {
+            rows.push((
+                page_index,
+                group["group"].as_str().expect("a group").to_owned(),
+                group["spansPages"].as_bool().expect("spansPages"),
+            ));
+        }
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+        assert!(page_index < 100, "{listing} never ends");
+    }
+    rows
+}
+
+/// Re-read security new finding 1 (decision D022-128): where a group's pages break depends on that group alone, as
+/// under its own `group` filter. Groups `aa` (100 keys), `big` (150), `huge` (250) and `zz` (1): a viewer's first page of
+/// three groups holds `aa` and `big` whole (each its own 200 key rows; before, `aa`'s 100 rows left `big` 100 and it
+/// spanned pages) and ends inside `huge`, whose row comes on the next page marked `spansPages`; and every group's
+/// `spansPages` is what its own filter answers.
+#[tokio::test]
+async fn a_group_view_breaks_a_group_where_its_own_filter_does() {
+    use sagat_domain::identity::Role;
+    let (api, namespace, tenant) = api().await;
+    member(&api, tenant, "vera-viewer", Role::Viewer).await;
+    for (group, keys) in [("aa", 100), ("big", 150), ("huge", 250), ("zz", 1)] {
+        seed_group_keys(&api, tenant, &namespace, group, keys).await;
+    }
+    for listing in ["concurrency-keys", "rate-limit-keys"] {
+        let walk = group_walk(&api, &namespace, listing, "limit=3").await;
+        let shape: Vec<(u32, &str, bool)> = walk
+            .iter()
+            .map(|(page, group, spans)| (*page, group.as_str(), *spans))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (0, "aa", false),
+                (0, "big", false),
+                (1, "huge", true),
+                (1, "zz", false)
+            ],
+            "{listing}"
+        );
+        for (_, group, spans) in &walk {
+            let filtered =
+                group_walk(&api, &namespace, listing, &format!("limit=3&group={group}")).await;
+            assert_eq!(
+                filtered
+                    .iter()
+                    .map(|(_, g, s)| (g.as_str(), *s))
+                    .collect::<Vec<_>>(),
+                [(group.as_str(), *spans)],
+                "{listing}: {group} as its own filter reads it"
+            );
+        }
+    }
+}
+
+/// Decision D022-128: a page of the group view holds at most five groups whatever its `limit`, since each group reads
+/// its own 200 key rows; the next page goes on after the fifth.
+#[tokio::test]
+async fn a_page_of_groups_holds_at_most_five_groups() {
+    use sagat_domain::identity::Role;
+    let (api, namespace, tenant) = api().await;
+    member(&api, tenant, "vera-viewer", Role::Viewer).await;
+    for group in ["g1", "g2", "g3", "g4", "g5", "g6", "g7"] {
+        seed_group_keys(&api, tenant, &namespace, group, 1).await;
+    }
+    for listing in ["concurrency-keys", "rate-limit-keys"] {
+        let walk = group_walk(&api, &namespace, listing, "limit=200").await;
+        let pages: Vec<(u32, &str)> = walk
+            .iter()
+            .map(|(page, group, _)| (*page, group.as_str()))
+            .collect();
+        assert_eq!(
+            pages,
+            [
+                (0, "g1"),
+                (0, "g2"),
+                (0, "g3"),
+                (0, "g4"),
+                (0, "g5"),
+                (1, "g6"),
+                (1, "g7")
+            ],
+            "{listing}"
+        );
+    }
+}
+
 /// Batch 4 reviews of 2026-11-25, security Major 1: what a caller without the reveal right reads of a group does not
 /// change with how many keys its runs share. Two groups with two holders each, one on a single key (limit 2) and one on
 /// two keys: their rows, but for the group's name and instants, are equal.
@@ -1484,40 +1594,62 @@ async fn a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version
 
 /// Batch 4 correctness nit 1 (decision D022-123): a cursor of the key view, read again by its caller once the caller's
 /// reveal grant is gone (the caller now gets the group view), is refused `400` with a message of its own, so the caller
-/// learns to read the listing again from its start rather than that its cursor was altered.
+/// learns to read the listing again from its start rather than that its cursor was altered. Both listings (the
+/// rate-limit listing's message was untested: re-read correctness finding 7, decision D022-130 item 5).
 #[tokio::test]
 async fn a_cursor_of_the_other_view_is_refused_with_its_own_message() {
     let (api, namespace, acme) = api().await;
     let workflow = publish(&api, "rest-other-view", serial_start("rest-other-view", 1))
         .await
         .expect("published");
-    let _first = start(&api, &workflow, CANARY).await;
-    let _second = start(&api, &workflow, "acct-other-view").await;
-    let keys = format!("/namespaces/{namespace}/concurrency-keys");
-    let (status, page) = read_as(&api, &format!("{keys}?limit=1"), "alice").await;
-    assert_eq!(status, StatusCode::OK, "{page}");
-    assert_eq!(
-        page["view"], "KEYS",
-        "the admin with the grant reads keys: {page}"
-    );
-    let cursor = page["nextCursor"].as_str().expect("a next page").to_owned();
+    let mut rated = serial_start("rest-other-view-rate", 1);
+    rated
+        .as_object_mut()
+        .expect("a document")
+        .remove("concurrency");
+    rated["rateLimit"] =
+        json!({"group": "providers", "key": "input.accountId", "limit": 1, "per": "hour"});
+    let rated = publish(&api, "rest-other-view-rate", rated)
+        .await
+        .expect("published");
+    for flow in [&workflow, &rated] {
+        let _first = start(&api, flow, CANARY).await;
+        let _second = start(&api, flow, "acct-other-view").await;
+    }
+    let mut cursors = Vec::new();
+    for listing in ["concurrency-keys", "rate-limit-keys"] {
+        let keys = format!("/namespaces/{namespace}/{listing}");
+        let (status, page) = read_as(&api, &format!("{keys}?limit=1"), "alice").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(
+            page["view"], "KEYS",
+            "the admin with the grant reads keys: {page}"
+        );
+        cursors.push((
+            keys,
+            page["nextCursor"].as_str().expect("a next page").to_owned(),
+        ));
+    }
     sqlx::query("DELETE FROM payload_reveal_grants WHERE tenant_id = $1 AND subject = 'alice'")
         .bind(acme.as_uuid())
         .execute(&api.db.pool)
         .await
         .expect("the grant revoked");
-    let (status, refused) =
-        read_as(&api, &format!("{keys}?limit=1&cursor={cursor}"), "alice").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
-    assert!(
-        refused.to_string().contains("other view of this listing"),
-        "{refused}"
-    );
+    for (keys, cursor) in cursors {
+        let (status, refused) =
+            read_as(&api, &format!("{keys}?limit=1&cursor={cursor}"), "alice").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{keys}: {refused}");
+        assert!(
+            refused.to_string().contains("other view of this listing"),
+            "{keys}: {refused}"
+        );
+    }
 }
 
 /// Batch 5 security suspicion 3 (decision D022-100): a key listing's cursor expires fifteen minutes after its page. A
 /// real page's cursor of both listings and both views, opened and sealed again with the deployment's ring sixteen
-/// minutes earlier, is refused `400` with a message of its own; sealed fourteen minutes earlier, it is read.
+/// minutes earlier, is refused `400` with a message of its own; sealed fourteen minutes earlier, it is read. One sealed
+/// two minutes ahead is refused the same way, thirty seconds ahead is read (decision D022-129).
 #[tokio::test]
 async fn an_expired_cursor_is_refused_with_its_own_message() {
     use sagat_application::flow_control_keys::{KeyListing, KeyPosition};
@@ -1585,6 +1717,42 @@ async fn an_expired_cursor_is_refused_with_its_own_message() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{path} as {subject}: {read}");
+        // decision D022-129: thirty seconds ahead of the reader's clock is read, two minutes ahead is refused
+        let ahead = |seconds: i64| {
+            opened
+                .position
+                .seal(
+                    gate.of(opened.view),
+                    &ring,
+                    1,
+                    acme,
+                    namespace_id,
+                    opened.sealed_at + time::Duration::seconds(seconds),
+                )
+                .expect("sealed again")
+        };
+        let (status, read) = read_as(
+            &api,
+            &format!("{listing}?limit=1&cursor={}", ahead(30)),
+            subject,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path} as {subject}: {read}");
+        let (status, refused) = read_as(
+            &api,
+            &format!("{listing}?limit=1&cursor={}", ahead(120)),
+            subject,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{path} as {subject}: {refused}"
+        );
+        assert!(
+            refused.to_string().contains("the cursor has expired"),
+            "{path} as {subject}: {refused}"
+        );
         let (status, refused) = read_as(
             &api,
             &format!("{listing}?limit=1&cursor={}", aged(16)),

@@ -736,3 +736,256 @@ async fn a_mixed_limit_pair_sharing_a_group_applies_each_limit_to_the_shared_hol
     }
     w.assert_keys_consistent().await;
 }
+
+// ------------------------------------------------------------------------------------------- held signals
+
+/// A workflow `name` whose entry waits for `payment.confirmed` (then runs `notify`) and whose start takes a permit of
+/// `input.accountId` with `limit: 1`: a Signal-with-Start whose start queues holds its signal (decision D022-087).
+fn held_signal_waiter(name: &str) -> Value {
+    let mut doc = document(
+        name,
+        "w",
+        vec![
+            crate::support::engine::with(
+                crate::support::engine::wait_node(
+                    "w",
+                    "payment.confirmed",
+                    "input.k",
+                    300_000,
+                    None,
+                ),
+                "next",
+                json!("notify"),
+            ),
+            activity("notify"),
+        ],
+    );
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    doc
+}
+
+/// A Signal-with-Start of `workflow` for business identifier `id` on `account`.
+async fn signal_with_start(
+    w: &World,
+    workflow: sagat_domain::definition::WorkflowId,
+    id: &str,
+    account: &str,
+) -> sagat_application::runs::SignalStarted {
+    use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseWindow};
+    let key = format!("fault-held-{}", uuid::Uuid::now_v7());
+    let input = format!(r#"{{"k": "s", "accountId": "{account}"}}"#);
+    w.runs
+        .signal_with_start(
+            &w.admin,
+            &sagat_application::runs::StartRun {
+                namespace: "payments",
+                workflow,
+                version: None,
+                input: input.as_bytes(),
+                correlation_id: None,
+                deadline: None,
+                key: &key,
+            },
+            sagat_application::runs::BusinessStart {
+                id: BusinessId::new(id).expect("an identifier"),
+                conflict: ConflictPolicy::UseExisting,
+                reuse: ReusePolicy::AllowDuplicate,
+                window: ReuseWindow::default(),
+            },
+            sagat_application::runs::SignalAtStart {
+                name: "payment.confirmed",
+                payload: br#"{"paid": true}"#,
+            },
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("a Signal-with-Start")
+}
+
+/// The held rows of `run`, and its audit records of a delivered and of a dropped signal (with the drop's reasons).
+async fn held_outcome(w: &World, run: RunId) -> (i64, usize, Vec<String>) {
+    let held: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM flow_control_held_signals WHERE run_id = $1")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("held rows");
+    let audited = |action: &'static str| {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reason FROM audit_records WHERE resource_id = $1 AND action = $2 ORDER BY created_at",
+        )
+        .bind(run.to_string())
+        .bind(action)
+        .fetch_all(&w.db.pool)
+    };
+    let delivered = audited("run.signalled").await.expect("audit").len();
+    let dropped = audited("run.signal_dropped")
+        .await
+        .expect("audit")
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect();
+    (held, delivered, dropped)
+}
+
+/// Batch 5 correctness nit and the re-read's minor 2 (decision D022-125): the commit of a grant that delivered a held
+/// signal fails (a deferred constraint trigger refuses the delivery's `run.signalled` audit record at commit, as the
+/// content quota's deferred flush would). The failure is the delivery's: the grant is tried once more without the
+/// signal, which is dropped with its audit record (`DELIVERY_FAILED`), and the start is granted in the same pass.
+/// Before, a commit failure was the grant's own, so the start failed on every pass with its signal still held.
+#[tokio::test]
+async fn a_commit_that_fails_after_the_delivery_of_a_held_signal_grants_the_start_without_it() {
+    let w = gated_world().await;
+    let workflow = publish(&w, held_signal_waiter("fault-held-commit")).await;
+    let holder = signal_with_start(&w, workflow, "cart-1", "acct-1").await;
+    let queued = signal_with_start(&w, workflow, "cart-2", "acct-1").await;
+    assert!(queued.held, "{queued:?}");
+    let run = queued.run.info.run_id;
+    for statement in [
+        format!(
+            "CREATE FUNCTION test_refuse_signalled_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+               IF NEW.resource_id = '{run}' AND NEW.action = 'run.signalled' THEN \
+                 RAISE EXCEPTION 'the test refuses this delivery at commit'; END IF; RETURN NULL; END $$"
+        ),
+        "CREATE CONSTRAINT TRIGGER test_refuse_signalled_commit AFTER INSERT ON audit_records \
+           DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_refuse_signalled_commit()"
+            .to_owned(),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&w.db.pool)
+            .await
+            .expect("the trigger that refuses the commit");
+    }
+    w.operate_run(
+        holder.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    let report = w.scheduler.grant_gates().await;
+    for statement in [
+        "DROP TRIGGER test_refuse_signalled_commit ON audit_records",
+        "DROP FUNCTION test_refuse_signalled_commit()",
+    ] {
+        sqlx::query(statement)
+            .execute(&w.db.pool)
+            .await
+            .expect("the trigger dropped");
+    }
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_rows(&w, run).await, (1, 0), "granted");
+    let (held, delivered, dropped) = held_outcome(&w, run).await;
+    assert_eq!((held, delivered), (0, 0), "nothing delivered, nothing held");
+    assert!(
+        dropped.len() == 1 && dropped[0].starts_with("DELIVERY_FAILED"),
+        "{dropped:?}"
+    );
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Waiting),
+        "the start runs without the signal"
+    );
+    w.assert_consistent(run).await;
+}
+
+/// Batch 5 correctness nit (decision D022-130 item 7): the grant and the timeout of a queued start that holds a signal,
+/// in the four orders of `a_grant_and_a_timeout_of_a_queued_start_are_decided_by_the_first_commit`, held by key locks and
+/// observed through `pg_stat_activity`. The first commit decides the signal too: the grant delivers it once
+/// (`run.signalled`) or the timeout drops it once (`run.signal_dropped`, `RUN_ENDED`), never both, never neither, and no
+/// held row is left behind.
+#[tokio::test]
+async fn a_grant_and_a_timeout_of_a_queued_start_with_a_held_signal_deliver_or_drop_it_once() {
+    let w = gated_world().await;
+    let workflow = publish(&w, held_signal_waiter("fault-held-race")).await;
+    let session = w.session(&["act.notify"]).await;
+    for round in 0..8 {
+        let account = format!("held-race-{round}");
+        let holder = signal_with_start(&w, workflow, &format!("hold-{round}"), &account).await;
+        let queued = signal_with_start(&w, workflow, &format!("wait-{round}"), &account).await;
+        assert!(queued.held, "round {round}: {queued:?}");
+        let waiter = queued.run.info.run_id;
+        let holder_task = w.one_task(&session).await;
+        assert_eq!(holder_task.run_id, holder.run.info.run_id, "round {round}");
+        w.complete(&session, &holder_task, &json!({}))
+            .await
+            .expect("the key frees");
+        let other = || scheduler(&w, SchedulerSettings::default(), None);
+        match round % 4 {
+            3 => {
+                let deadline =
+                    crate::support::flow_control::set_start_deadline(&w.db.pool, waiter, 2_000_000)
+                        .await;
+                let key = hold_keys(&w).await;
+                let (grants, timeouts) = (other(), other());
+                let grant = tokio::spawn(async move { grants.grant_gates().await });
+                barrier(&w, 1).await;
+                crate::support::flow_control::until_past(&w.db.pool, deadline).await;
+                let timeout = tokio::spawn(async move { timeouts.time_out_gates().await });
+                barrier(&w, 2).await;
+                key.rollback().await.expect("released");
+                let (g, t) = (grant.await.expect("grant"), timeout.await.expect("timeout"));
+                assert_eq!(g.gates_granted, 0, "round {round}: {g:?}");
+                assert_eq!(t.gate_waits_timed_out, 1, "round {round}: {t:?}");
+            }
+            0 => {
+                age_start_deadline(&w, waiter).await;
+                let key = hold_keys(&w).await;
+                let (grants, timeouts) = (other(), other());
+                let grant = tokio::spawn(async move { grants.grant_gates().await });
+                barrier(&w, 1).await;
+                let timeout = tokio::spawn(async move { timeouts.time_out_gates().await });
+                barrier(&w, 2).await;
+                key.rollback().await.expect("released");
+                let (g, t) = (grant.await.expect("grant"), timeout.await.expect("timeout"));
+                assert_eq!(g.gates_granted, 0, "round {round}: {g:?}");
+                assert_eq!(t.gate_waits_timed_out, 1, "round {round}: {t:?}");
+            }
+            1 => {
+                age_start_deadline(&w, waiter).await;
+                let key = hold_keys(&w).await;
+                let (grants, timeouts) = (other(), other());
+                let timeout = tokio::spawn(async move { timeouts.time_out_gates().await });
+                barrier(&w, 1).await;
+                let grant = tokio::spawn(async move { grants.grant_gates().await });
+                barrier(&w, 2).await;
+                key.rollback().await.expect("released");
+                let (g, t) = (grant.await.expect("grant"), timeout.await.expect("timeout"));
+                assert_eq!(g.gates_granted, 0, "round {round}: {g:?}");
+                assert_eq!(t.gate_waits_timed_out, 1, "round {round}: {t:?}");
+            }
+            _ => {
+                assert_eq!(
+                    w.scheduler.grant_gates().await.gates_granted,
+                    1,
+                    "round {round}"
+                );
+                age_start_deadline(&w, waiter).await;
+                assert_eq!(w.scheduler.time_out_gates().await.gate_waits_timed_out, 0);
+            }
+        }
+        let (held, delivered, dropped) = held_outcome(&w, waiter).await;
+        assert_eq!(held, 0, "round {round}: no held row is left");
+        assert_eq!(
+            delivered + dropped.len(),
+            1,
+            "round {round}: delivered or dropped, once: {delivered} {dropped:?}"
+        );
+        assert_eq!(delivered == 1, round % 4 == 2, "round {round}");
+        assert!(
+            dropped.iter().all(|reason| reason.starts_with("RUN_ENDED")),
+            "round {round}: {dropped:?}"
+        );
+        let report = w.scheduler.tick().await;
+        assert_eq!(
+            report.gates_granted + report.gate_waits_timed_out,
+            0,
+            "round {round}: decided once: {report:?}"
+        );
+        w.assert_consistent(waiter).await;
+        if delivered == 1 {
+            let task = w.one_task(&session).await;
+            assert_eq!(task.run_id, waiter, "round {round}");
+            w.complete(&session, &task, &json!({})).await.expect("done");
+        }
+    }
+    assert_eq!(counters(&w).await, (0, 0), "every key drained");
+}

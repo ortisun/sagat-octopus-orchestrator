@@ -743,7 +743,10 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                         namespace,
                         group,
                         after,
-                        limit.saturating_sub(1).max(1),
+                        // at most five groups a page, each its own budget of key rows (decision D022-128)
+                        limit
+                            .saturating_sub(1)
+                            .clamp(1, crate::flow_control_keys::GROUP_PAGE_GROUPS),
                     )
                     .await?
             }
@@ -818,7 +821,10 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                         namespace,
                         group,
                         after,
-                        limit.saturating_sub(1).max(1),
+                        // at most five groups a page, each its own budget of key rows (decision D022-128)
+                        limit
+                            .saturating_sub(1)
+                            .clamp(1, crate::flow_control_keys::GROUP_PAGE_GROUPS),
                     )
                     .await?
             }
