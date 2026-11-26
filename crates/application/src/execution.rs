@@ -1768,6 +1768,15 @@ pub trait RunTx: Send {
         &mut self,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Whether the rate slot of the root step `node`'s attempt `attempt` has stopped counting (feature 022, decision
+    /// D022-148): its lease instant recorded and its window passed. Such a lease is not withdrawn: it would run in another
+    /// grant's window. A step without a rate limit has none, so `false`.
+    fn withdrawal_slot_spent(
+        &mut self,
+        node: &NodeId,
+        attempt: u32,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// The result stored by an earlier command with the same idempotency key, if any. A different
     /// request under the same key is [`StoreError::IdempotencyKeyReused`].
     fn replay(

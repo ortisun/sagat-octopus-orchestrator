@@ -8,6 +8,11 @@
 -- pass that read the row before the withdrawal then finds another version on its recheck and does not write the
 -- withdrawn lease (D022-139). A run's grant cannot be cleared: its shape check requires `leased_at = granted_at`.
 --
+-- The guard is a defence against bugs, not against the runtime role: `sagat_app` may clear a recorded instant and record
+-- an earlier one, which it could equally reach by deleting the grant, a privilege it already holds (security review of
+-- 2026-11-26, nit 3; decision D022-149 item 2). The application clears only under the grant's window lock, and only while
+-- the slot still counts (D022-148).
+--
 -- Additive: the function is replaced under its name, the triggers that call it are unchanged; no row changes. The down
 -- restores the guard of `20270130000100`.
 CREATE OR REPLACE FUNCTION rate_limit_rows_guard() RETURNS trigger

@@ -79,8 +79,8 @@ pub enum WithdrawalOutcome {
     /// The platform does not require `lease-withdrawal-v1` yet, or the host's session is older than
     /// [`HAND_BACK_PROTOCOL_MINOR`]: the lease lapses as before, or the hand-back is an ordinary failure.
     Lapsed,
-    /// The attempt was withdrawn [`MAX_WITHDRAWALS_PER_ATTEMPT`] times already (decision D006-031): a lease not sent lapses,
-    /// a hand-back is an ordinary failure.
+    /// The attempt was withdrawn [`MAX_WITHDRAWALS_PER_ATTEMPT`] times already (decision D006-031), or its rate slot has
+    /// stopped counting (feature 022, decision D022-148): a lease not sent lapses, a hand-back is an ordinary failure.
     Capped,
     /// This engine runs with `SAGAT_LEASE_WITHDRAWAL=off` (decision D006-032): the lease lapses.
     Disabled,
@@ -301,7 +301,16 @@ where
             return Ok(cheap);
         }
         let required = tx.lease_withdrawal_required().await?;
-        let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
+        // a rate slot that has stopped counting is not made to count again: the hand-back is the ordinary failure, as for
+        // an attempt withdrawn as often as it may be (feature 022, decision D022-148)
+        let before = if tx
+            .withdrawal_slot_spent(task.instance.node(), task.fence.attempt)
+            .await?
+        {
+            MAX_WITHDRAWALS_PER_ATTEMPT
+        } else {
+            tx.lease_withdrawals(step_id, task.fence.attempt).await?
+        };
         Ok(hand_back_verdict(
             gate, leased, minor, ceiling, required, before,
         ))
@@ -463,6 +472,14 @@ where
                     .await?;
             if !fenced {
                 outcomes.push(WithdrawalOutcome::FenceMissed);
+                continue;
+            }
+            // a rate slot that has stopped counting is not made to count again (feature 022, decision D022-148)
+            if tx
+                .withdrawal_slot_spent(lease.instance.node(), lease.fence.attempt)
+                .await?
+            {
+                outcomes.push(WithdrawalOutcome::Capped);
                 continue;
             }
             let before = tx

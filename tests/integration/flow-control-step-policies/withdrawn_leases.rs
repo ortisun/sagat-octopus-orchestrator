@@ -67,7 +67,10 @@ fn withdrawing(w: &World) -> crate::support::engine::Workers {
             kinds: vec!["CONTROL_PLANE".to_owned(), "EXECUTION_ENGINE".to_owned()],
         }],
     });
-    w.workers.clone().with_lease_withdrawal(Arc::new(gate))
+    w.workers
+        .clone()
+        .with_lease_withdrawal(Arc::new(gate))
+        .with_hand_back_ceiling(8)
 }
 
 /// Withdraws the lease of `task` as one the server never sent.
@@ -269,9 +272,10 @@ async fn a_withdrawn_lease_keeps_its_slot_and_the_slot_counts_from_the_lease_tha
     }
 }
 
-/// Decision D022-138 item 2 and ADR-0096 decision 6: a pause after a withdrawal gives back the permit and the slot of the
-/// step, which is granted and not leased, even though the scheduler had recorded the withdrawn lease's instant; the key
-/// serves the next waiter.
+/// Decision D022-138 item 2 and ADR-0096 decision 6: a pause after a withdrawal gives back the permit and the slot of
+/// the step, which is granted and not leased: the withdrawal's commit cleared the lease instant the scheduler had
+/// recorded, so the give-back finds an unleased grant. (The give-back of a recorded instant in the withdrawal's own commit
+/// is the cancellation test's.) The key serves the next waiter.
 #[tokio::test]
 async fn a_pause_after_a_withdrawal_gives_back_the_permit_and_the_slot() {
     let w = gated_world().await;
@@ -364,6 +368,10 @@ async fn a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass
     lease(&w, &session, holder, 1).await;
 
     let mut withdrawal = w.db.pool.begin().await.expect("a transaction");
+    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *withdrawal)
+        .await
+        .expect("the holder's backend");
     sqlx::query("UPDATE rate_limit_grants SET leased_at = NULL WHERE run_id = $1 AND node = 'g'")
         .bind(holder.as_uuid())
         .execute(&mut *withdrawal)
@@ -373,26 +381,7 @@ async fn a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass
     let scheduler =
         crate::support::scale::scheduler(&w, sagat_scheduler::SchedulerSettings::default(), None);
     let pass = tokio::spawn(async move { scheduler.record_rate_leases().await });
-    crate::support::bounded::within(
-        "the pass waits for the grant row",
-        std::time::Duration::from_secs(120),
-        async {
-            loop {
-                let waiting: i64 = sqlx::query_scalar(
-                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
-                     AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'",
-                )
-                .fetch_one(&w.db.pool)
-                .await
-                .expect("activity");
-                if waiting >= 1 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        },
-    )
-    .await;
+    blocked_by(&w, holder_pid, "the pass waits for the grant row").await;
     withdrawal.commit().await.expect("committed");
     let report = pass.await.expect("the pass ended");
     assert_eq!(
@@ -410,4 +399,274 @@ async fn a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass
         leases(&w, holder).await.last().copied()
     );
     w.assert_consistent(holder).await;
+}
+
+/// Waits until a backend of this database is blocked by the backend `holder` (`pg_blocking_pids`), for at most two minutes:
+/// the barrier of a held-lock race, which another waiter cannot release.
+async fn blocked_by(w: &World, holder: i32, stage: &'static str) {
+    crate::support::bounded::within(stage, std::time::Duration::from_secs(120), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                                AND $1 = ANY (pg_blocking_pids(pid)))",
+            )
+            .bind(holder)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("activity");
+            if blocked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+/// The grant row of step `g` of `run`: (rows, granted_at, leased_at) in microseconds.
+async fn grant_row(w: &World, run: RunId) -> (i64, Option<i64>, Option<i64>) {
+    let (rows, granted, leased): (i64, Option<OffsetDateTime>, Option<OffsetDateTime>) = sqlx::query_as(
+        "SELECT count(*), min(granted_at), min(leased_at) FROM rate_limit_grants WHERE run_id = $1 AND node = 'g'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the grant");
+    (rows, granted.map(us), leased.map(us))
+}
+
+/// Moves the grant of step `g` of `run` (its grant and lease instants) two hours back, as the owner with the row guard off
+/// for this transaction: its window has passed, as if its lease had been held that long.
+async fn age_grant(w: &World, run: RunId) {
+    let mut tx = w.db.pool.begin().await.expect("a transaction");
+    for statement in [
+        "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
+        "UPDATE rate_limit_grants SET granted_at = granted_at - interval '2 hours', \
+                leased_at = leased_at - interval '2 hours' WHERE run_id = $1 AND node = 'g'",
+        "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
+            .bind(run.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .expect(statement);
+    }
+    tx.commit().await.expect("aged");
+}
+
+/// Decision D022-146 (correctness review of 2026-11-26, Major 1): the purge keeps the grant of a step still leased at its
+/// attempt, however long ago its lease instant; so a later withdrawal finds the row, and a pause gives the slot back. As
+/// of an instant past the window and a minute, the purge deletes nothing; once the step has run and ended, the same purge
+/// deletes the grant.
+#[tokio::test]
+async fn the_purge_keeps_the_grant_of_a_step_still_leased_and_a_pause_after_its_withdrawal_succeeds()
+ {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let workflow = publish(
+        &w,
+        document("withdrawn-purge", "g", vec![slot(activity("g"))]),
+    )
+    .await;
+    let session = w.session(&["act.g"]).await;
+    let held = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let first = lease(&w, &session, held, 1).await;
+    assert_eq!(
+        w.scheduler.record_rate_leases().await.rate_leases_recorded,
+        1
+    );
+    let leased = leased_at(&w, held).await.expect("recorded");
+    let past = OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(leased + 3_600_000_000 + 61_000_000) * 1_000,
+    )
+    .expect("an instant");
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(past, 64, 100)
+            .await
+            .expect("purge"),
+        0,
+        "the grant of a step still leased is kept"
+    );
+    assert_eq!(grant_row(&w, held).await.0, 1);
+    withdraw(&w, &first).await;
+    w.operate(held, RunOperation::Pause)
+        .await
+        .expect("the pause gives the slot back");
+    assert_eq!(count(&w, held, "rate_limit.returned").await, 1);
+    assert_eq!(rows(&w, held, "g").await, (0, 0, 0, 0));
+    w.assert_consistent(held).await;
+    w.operate_run(held, RunOperation::Resume).await;
+    let again = w.one_task(&session).await;
+    assert_eq!(again.run_id, held);
+    w.complete(&session, &again, &json!({}))
+        .await
+        .expect("done");
+    w.scheduler.record_rate_leases().await;
+    let leased = leased_at(&w, held).await.expect("the lease that ran");
+    let past = OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(leased + 3_600_000_000 + 61_000_000) * 1_000,
+    )
+    .expect("an instant");
+    assert_eq!(
+        w.store
+            .purge_rate_grants_as_of(past, 64, 100)
+            .await
+            .expect("purge"),
+        1,
+        "an ended attempt's grant is purged as before"
+    );
+}
+
+/// Decision D022-147 (correctness minor 1, security minor 1 of 2026-11-26): a give-back of a grant whose lease instant is
+/// recorded, for an attempt no withdrawal gave back, is refused: the pause fails and nothing changes. (The domain never
+/// asks it; the instant is written here by hand, as a stand-in for a mistake.)
+#[tokio::test]
+async fn a_give_back_of_a_recorded_grant_whose_lease_was_not_withdrawn_is_refused() {
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document("withdrawn-refused", "g", vec![slot(activity("g"))]),
+    )
+    .await;
+    let held = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    granted(&w, held, "g", (false, true)).await;
+    sqlx::query("UPDATE rate_limit_grants SET leased_at = clock_timestamp() WHERE run_id = $1 AND node = 'g'")
+        .bind(held.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("a lease instant recorded by hand");
+    let refused = w.operate(held, RunOperation::Pause).await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(count(&w, held, "rate_limit.returned").await, 0);
+    assert_eq!(
+        rows(&w, held, "g").await,
+        (0, 0, 1, 0),
+        "the grant still counts"
+    );
+}
+
+/// Decision D022-148 (security minor 2 of 2026-11-26; closes gap G022-041): a withdrawal of a rate-gated lease whose
+/// recorded slot has stopped counting is refused. A lease that was not sent lapses (`capped`), with nothing changed; a
+/// host's hand-back of protocol 1.8 is the ordinary failure, so the attempt is spent and no withdrawal is journaled.
+#[tokio::test]
+async fn a_withdrawal_whose_slot_has_stopped_counting_is_refused() {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let workflow = publish(
+        &w,
+        document("withdrawn-spent", "g", vec![slot(activity("g"))]),
+    )
+    .await;
+    let session = w.session(&["act.g"]).await;
+    let held = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let task = lease(&w, &session, held, 1).await;
+    assert_eq!(
+        w.scheduler.record_rate_leases().await.rate_leases_recorded,
+        1
+    );
+    age_grant(&w, held).await;
+    let before = grant_row(&w, held).await;
+    let outcomes = withdrawing(&w)
+        .withdraw_undelivered(
+            vec![UndeliveredLease::of(w.admin.tenant_id(), &task)],
+            WithdrawalCause::NotSent,
+        )
+        .await;
+    assert_eq!(outcomes, [WithdrawalOutcome::Capped]);
+    assert_eq!(step(&w, held, "g").await.0, "LEASED");
+    assert_eq!(grant_row(&w, held).await, before, "nothing changed");
+    // the host of the lease says it did not start it: an ordinary failure, not a withdrawal
+    sqlx::query("UPDATE worker_sessions SET accepted_protocol_minor = 8 WHERE id = $1")
+        .bind(session.worker_id)
+        .execute(&w.db.pool)
+        .await
+        .expect("a host of protocol 1.8");
+    withdrawing(&w)
+        .fail(
+            &session.principal,
+            &crate::support::engine::task_ref(&task),
+            "TASK_NOT_STARTED",
+            true,
+            "spent-hand-back",
+        )
+        .await
+        .expect("an ordinary failure");
+    assert_eq!(count(&w, held, "step.lease_withdrawn").await, 0);
+    assert_ne!(step(&w, held, "g").await.0, "LEASED", "the attempt ended");
+    // the journal replays; the key rows are not compared, because the grant's instants were moved by hand above
+    w.store
+        .verify_run(w.admin.tenant_id(), held)
+        .await
+        .expect("the journal replays");
+}
+
+/// Decision D022-148, under the lock: the check before the command found the slot counting (its lease instant not yet
+/// recorded), but the commit waits for the window's lock while the scheduler records the lease and its window passes; the
+/// commit's own check, under the lock, refuses: the withdrawal fails and the lease lapses (`error`), nothing changed.
+#[tokio::test]
+async fn a_withdrawal_whose_slot_stops_counting_while_it_waits_for_the_window_is_refused_under_the_lock()
+ {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let workflow = publish(
+        &w,
+        document(
+            "withdrawn-lock",
+            "g",
+            vec![with(
+                activity("g"),
+                "rateLimit",
+                json!({"key": "input.accountId", "limit": 1, "per": "second"}),
+            )],
+        ),
+    )
+    .await;
+    let session = w.session(&["act.g"]).await;
+    let held = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let task = lease(&w, &session, held, 1).await;
+    let mut holder = w.db.pool.begin().await.expect("a transaction");
+    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *holder)
+        .await
+        .expect("the holder's backend");
+    sqlx::query("SELECT 1 FROM rate_limit_windows WHERE group_name LIKE '=%' FOR UPDATE")
+        .execute(&mut *holder)
+        .await
+        .expect("the window is held");
+    let service = withdrawing(&w);
+    let tenant = w.admin.tenant_id();
+    let lease_of = UndeliveredLease::of(tenant, &task);
+    let withdrawal = tokio::spawn(async move {
+        service
+            .withdraw_undelivered(vec![lease_of], WithdrawalCause::NotSent)
+            .await
+    });
+    blocked_by(&w, holder_pid, "the withdrawal waits for the window").await;
+    // the scheduler records the lease meanwhile (its hint update waits for the window too, after its own commit)
+    let recorder =
+        crate::support::scale::scheduler(&w, sagat_scheduler::SchedulerSettings::default(), None);
+    let recording = tokio::spawn(async move { recorder.record_rate_leases().await });
+    crate::support::bounded::within(
+        "the lease instant is recorded",
+        std::time::Duration::from_secs(120),
+        async {
+            while leased_at(&w, held).await.is_none() {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    let leased = leased_at(&w, held).await.expect("recorded");
+    crate::support::flow_control::until_past(&w.db.pool, leased + 1_000_000).await;
+    let before = grant_row(&w, held).await;
+    holder.commit().await.expect("the window is free");
+    assert_eq!(
+        withdrawal.await.expect("the withdrawal ended"),
+        [WithdrawalOutcome::Error]
+    );
+    recording.await.expect("the pass ended");
+    assert_eq!(step(&w, held, "g").await.0, "LEASED");
+    assert_eq!(count(&w, held, "step.lease_withdrawn").await, 0);
+    assert_eq!(grant_row(&w, held).await, before, "nothing changed");
 }

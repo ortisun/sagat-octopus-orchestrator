@@ -5525,6 +5525,14 @@ impl RunTx for PgRunTx {
         lease_withdrawal_required(&mut self.tx).await
     }
 
+    async fn withdrawal_slot_spent(
+        &mut self,
+        node: &NodeId,
+        attempt: u32,
+    ) -> Result<bool, StoreError> {
+        self.rate_slot_spent(node, attempt).await
+    }
+
     async fn reported_by(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -5588,7 +5596,7 @@ impl RunTx for PgRunTx {
             matches!(
                 event,
                 RunEvent::Gate(_) | RunEvent::RunPaused | RunEvent::RunResumed
-            )
+            ) || self.withdraws_a_rate_slot(event)
         }) {
             // a commit that ends the run sets `finished_at`, whose trigger locks the run's active-run counter row (slot 6
             // of ADR-0050's merged order): it is locked first, before any key, as an admission locks it (correctness
@@ -5788,16 +5796,6 @@ impl RunTx for PgRunTx {
                     sagas.insert(node.clone());
                 }
                 continue;
-            }
-            // a withdrawn lease of a rate-gated step leaves the step granted and not leased: its slot counts as unleased
-            // again until the attempt's next lease is recorded (decisions D022-138 and D022-139; ADR-0096 decision 6)
-            if let RunEvent::StepLeaseWithdrawn { node, attempt, .. } = event
-                && self
-                    .def
-                    .node(node)
-                    .is_some_and(|declared| declared.flow_control().rate_limit().is_some())
-            {
-                self.clear_withdrawn_lease(node, *attempt).await?;
             }
             self.signals.extend(of_event(event));
             match event {

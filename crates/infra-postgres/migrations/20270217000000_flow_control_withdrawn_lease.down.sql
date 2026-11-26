@@ -1,5 +1,8 @@
 -- Restores the guard of `20270130000100_flow_control_rate_limits`: a grant records its lease instant once and is never
--- cleared. No row changes; a grant cleared by a withdrawal stays unleased until the scheduler records its next lease.
+-- cleared. No row changes. After this rollback the older build runs: its lease pass records an attempt's FIRST lease after
+-- the grant, which for an attempt that was withdrawn is the withdrawn lease, so such a slot stops counting one window
+-- after a lease that never ran, earlier than the lease that runs (correctness review of 2026-11-26, nit 2; decision
+-- D022-149 item 3). A grant cleared by a withdrawal and not leased again is recorded that way by the older pass.
 CREATE OR REPLACE FUNCTION rate_limit_rows_guard() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
 AS $$

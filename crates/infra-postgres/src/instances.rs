@@ -487,14 +487,15 @@ pub enum ActivationPrerequisite {
 }
 
 impl ActivationPrerequisite {
-    /// Whether the prerequisite holds, read on `conn`.
+    /// Whether the prerequisite holds, read on `conn` under a share lock of the row it reads (decision D022-149 item 1): a
+    /// transaction that changes that row waits for this one's end, and this read waits for it and judges what it committed.
     ///
     /// # Errors
     /// The store's.
     pub async fn holds(self, conn: &mut sqlx::PgConnection) -> Result<bool, StoreError> {
         match self {
             Self::ActiveDigestKeyVersion => sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM flow_control_key_versions WHERE state = 'ACTIVE')",
+                "SELECT EXISTS (SELECT 1 FROM flow_control_key_versions WHERE state = 'ACTIVE' FOR SHARE)",
             )
             .fetch_one(conn)
             .await

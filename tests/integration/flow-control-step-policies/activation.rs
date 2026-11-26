@@ -281,3 +281,63 @@ async fn the_operator_is_required_and_must_be_a_subject() {
     ));
     assert_eq!(recorded(&r, "flow-control-rate-v1").await, None);
 }
+
+/// Decision D022-149 item 1 (security nit 4 of 2026-11-26): the activation reads the digest key version under a share lock,
+/// so it waits for a transaction that is changing the version row, and judges what that transaction committed: here no
+/// version is left `ACTIVE` (a fixture: no command of this build does that), and the activation is refused. A plain read
+/// would neither wait nor see it.
+#[tokio::test]
+async fn the_activation_waits_for_a_change_of_the_digest_key_version_and_judges_what_it_committed()
+{
+    let r = registry().await;
+    key_version_active(&r).await;
+    for kind in InstanceKind::ALL {
+        r.serving(kind, &[Capability::FlowControlConcurrencyV1])
+            .await;
+    }
+    let mut holder = r.db.pool.begin().await.expect("a transaction");
+    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *holder)
+        .await
+        .expect("the holder's backend");
+    sqlx::query("UPDATE flow_control_key_versions SET state = 'RETIRING' WHERE state = 'ACTIVE'")
+        .execute(&mut *holder)
+        .await
+        .expect("the version row is being changed");
+    let url = r.db.url.clone();
+    let activation = tokio::spawn(async move {
+        capability_activate(
+            &database(url),
+            &args("flow-control-concurrency-v1", Some(2), false),
+        )
+        .await
+    });
+    crate::support::bounded::within(
+        "the activation waits for the version row",
+        Duration::from_secs(120),
+        async {
+            loop {
+                let blocked: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                                    AND $1 = ANY (pg_blocking_pids(pid)))",
+                )
+                .bind(holder_pid)
+                .fetch_one(&r.db.pool)
+                .await
+                .expect("activity");
+                if blocked {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    holder.commit().await.expect("committed");
+    let message = declined(activation.await.expect("the activation ended"));
+    assert!(
+        message.contains("needs a digest key version in force"),
+        "{message}"
+    );
+    assert_eq!(recorded(&r, "flow-control-concurrency-v1").await, None);
+}

@@ -9,7 +9,10 @@ use sqlx::migrate::Migrator;
 /// The predicate of a rate-limit grant (alias `$g`, its window row `$w`) that the purge may delete at the instant `$now`
 /// (FR-022-056: once its window row's longest period and one minute more have passed since its lease; exactly at that
 /// instant it is kept). One text for the purge (transaction T25) and for a decision's reclaim of its namespace's windows
-/// (decision D022-066 item 1), so the purge's boundary test holds for both.
+/// (decision D022-066 item 1), so the purge's boundary test holds for both. A step grant whose root step is still `LEASED` at
+/// the grant's attempt is kept, however old its lease instant (decision D022-146): its lease may still be withdrawn and its
+/// slot given back. Both callers hold the grant's window row, which a withdrawal also locks before it changes the grant
+/// (decision D022-148), so the step's status is not read across a withdrawal in flight.
 macro_rules! purgeable_grant {
     ($g:literal, $w:literal, $now:literal) => {
         concat!(
@@ -19,7 +22,19 @@ macro_rules! purgeable_grant {
             ".leased_at + make_interval(secs => ",
             $w,
             ".max_period_ms / 1000.0 + 60) < ",
-            $now
+            $now,
+            " AND NOT (",
+            $g,
+            ".limit_scope = 'STEP' AND EXISTS (SELECT 1 FROM steps leased WHERE leased.tenant_id = ",
+            $g,
+            ".tenant_id AND leased.run_id = ",
+            $g,
+            ".run_id AND leased.node = ",
+            $g,
+            ".node AND leased.instance_path_nodes = '{}' AND leased.instance_path_indices = '{}' \
+               AND leased.status = 'LEASED' AND leased.attempt = ",
+            $g,
+            ".attempt))"
         )
     };
 }
