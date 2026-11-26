@@ -149,8 +149,8 @@ From the code and documents on `develop` at `546d5aa5`:
   boundary checks run the base branch's copy of the lint, so a pull request is never judged by rules it edits itself.
   `CODEOWNERS` (a new file) names the owner for itself, `crates/infra-postgres/migrations/`,
   `scripts/check-migrations.py`, `scripts/check-migrations.toml`, `scripts/requirements-lint.txt`,
-  `scripts/tests/check-migrations/`, `tests/integration/platform-foundation/migrations.rs` (the catalog test and its
-  allowlist) and the workflow that runs them, a job with `permissions: contents: read`; it binds only with "Require
+  `scripts/tests/check-migrations/`, `scripts/tests/mixed-writers/` (whose migrations the lint's security rules check
+  too), `tests/integration/platform-foundation/migrations.rs` (the catalog test and its allowlist) and the workflow that runs them, a job with `permissions: contents: read`; it binds only with "Require
   review from Code Owners" on `develop` and `main`, a repository setting the owner turns on (Task 053-2 asks for it). What a parse cannot see is checked on the catalog:
   one test after every migration lists every `prosecdef` function of every schema but `pg_catalog` and
   `information_schema`, and requires `proconfig` to pin `search_path=pg_catalog, pg_temp`, `proowner` to be the
@@ -243,8 +243,12 @@ From the code and documents on `develop` at `546d5aa5`:
   fixture of a command calling `open_pool`; a command whose schema is too old exits with code
   1 ("retry later"), except `input-schema-inventory`, which exits with code 2 (its code 1 means non-conforming versions
   found, decision D043-072), tested in `apps/control-plane/tests/cli.rs`. Design 049's retirement commands connect as
-  `sagat_retirer`, which executes exactly design 049's retirement functions, this check and `command_await_durability`,
-  granted by design 049's Task 049-14 and checked by the catalog test of Requirement 053-003. The check's tests run as
+  `sagat_retirer` through `connect_command`, so the role executes exactly design 049's retirement functions, this
+  check, `command_await_durability` and design 048's `sagat_server_identity()` (every connection's `after_connect`
+  calls it), and selects `registry_first_confirmation` (read by each new connection's fresh-database admission),
+  nothing else; it is never granted membership of another role. The grants are made by design 049's Task 049-14, whose
+  test runs the real `connect_command` path as `sagat_retirer`, and checked by the catalog test of Requirement
+  053-003. The check's tests run as
   the runtime role.
 
 ### New behaviour and the fleet
@@ -263,7 +267,10 @@ From the code and documents on `develop` at `546d5aa5`:
     it (one-run commands never register, and a process outside the census is not counted by phase 2). `crates/infra-postgres` keeps, beside the capability map of Requirement 053-005, one descriptor per capability (its
     fence form, the table it writes, its drain check over a `PgConnection`), which `PgInstanceStore::remove` reads to
     take phase 2's locks and run the check, and to which `capability_activation.rs`'s `ACTIVATABLE` refers; a test over
-    every `Capability` requires a descriptor or an explicit mark "writes nothing N-1 cannot process". The fence takes
+    every `Capability` requires a descriptor whose fence is form (a), form (b), or the explicit variant "no fence"
+    carrying its reason (for `journal-buckets-v1`, "every release a rollback can reach processes it"), or the explicit
+    mark "writes nothing N-1 cannot process", and lists the capabilities of the last two kinds by name, so that adding
+    one is a visible change. The fence takes
     one of two forms, named by the capability's design: (a) the writing transaction calls an owner-owned definer function of
     the capability that takes the capability's row `FOR KEY SHARE` and answers whether it is `active` (decision
     D006-032's pattern; `lease_withdrawal_required()`'s `FOR SHARE` becomes `FOR KEY SHARE` in 0.3.0, so that phase 1's
@@ -369,7 +376,9 @@ From the code and documents on `develop` at `546d5aa5`:
   same runner and used again for the baseline: start one N process on N-1's schema before `migrate` and require it to
   register, confirm, beat, answer `UNAVAILABLE` and open within 20 s after the migrations; apply N's migrations during
   the load, together with a fixture expand migration on `runs` and `steps` from `scripts/tests/mixed-writers/`, built into N's
-  migrator by the test build feature `mixed-writers-fixture` (so that the loop runs it and later runs know it), so
+  migrator by the test build feature `mixed-writers-fixture` (so that the loop runs it and later runs know it; the
+  feature is refused in normal dependencies and checked absent from the release artifacts by `cargo tree`, as design
+  048's `test-support` is), so
   that the latency window always holds a migration; roll the processes one at a time; activate N's capabilities; drain
   and remove those that can be removed, then, when every capability N added was removed, roll one process back to N-1
   and require it to open its gate and lease work, then roll it forward and activate them again; otherwise (an N-1
