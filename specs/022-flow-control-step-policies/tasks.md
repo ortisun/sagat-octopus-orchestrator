@@ -892,3 +892,6 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   `a_lease_pass_does_not_write_a_grant_a_withdrawal_changed_after_the_pass_read_it`, and the clear in
   `migrations::the_counters_follow_the_rows_and_the_runtime_role_cannot_write_them`) and before D022-146 to D022-149 (the
   tests named in `reviews/2026-11-26/activation-review-responses.md`).
+  *Evidence 2026-11-26, not ticked:* the whole `integration_flow_control_step_policies` target 260 passed, 0 failed as
+  the owner and with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation -- runtime_privileges migrations` 70
+  passed; the red runs are listed in `reviews/2026-11-26/activation-review-responses.md`.
