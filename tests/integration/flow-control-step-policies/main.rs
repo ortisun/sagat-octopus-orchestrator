@@ -7,6 +7,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod activation;
 mod admission;
 mod alerts;
 mod ceilings;

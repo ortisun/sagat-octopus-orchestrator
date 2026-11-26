@@ -44,7 +44,6 @@ pub mod capability_activation;
 pub mod cleanup;
 pub mod cli;
 pub mod config;
-pub mod flow_control;
 pub mod handover;
 pub mod inventory;
 pub mod registry;

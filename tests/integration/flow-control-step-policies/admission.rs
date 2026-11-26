@@ -17,8 +17,7 @@ use sagat_application::flow_control::{
     FlowControlCapability, FlowControlRefusal, FlowControlSwitches,
 };
 use sagat_application::instances::{
-    Activated, Activation, Capability, ChangeRefused, InstanceKind, InstanceStore, Registered,
-    Removed,
+    Activation, Capability, InstanceKind, InstanceStore, Registered, Removed,
 };
 use sagat_application::runs::{RunService, StartRun};
 use sagat_domain::identity::Subject;
@@ -131,11 +130,33 @@ async fn runs_of(w: &World, workflow: sagat_domain::definition::WorkflowId) -> i
         .expect("count")
 }
 
-/// SC-022-027: with one live engine that does not run the gate, the operator's activation is refused; once every live
+/// SC-022-027: with one live engine that does not run the gate, the operator's activation
+/// (`control-plane capability-activate flow-control-rate-v1`, task T022-116) is refused, naming it; once every live
 /// control plane and engine lists the capability it is recorded.
 #[tokio::test]
 async fn the_activation_is_refused_while_a_live_process_lacks_the_capability() {
+    use sagat_control_plane::capability_activation::{
+        ActivationArgs, ActivationOutcome, capability_activate,
+    };
     let w = world().await;
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM flow_control_key_activate(1::smallint, 'operator')",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the digest key version is activated");
+    assert_eq!(outcome, "ACTIVATED");
+    let database = sagat_control_plane::config::DatabaseConfig {
+        url: w.db.url.clone(),
+        max_connections: 2,
+        statement_timeout: StdDuration::from_secs(5),
+    };
+    let command = ActivationArgs {
+        capability: "flow-control-rate-v1".to_owned(),
+        operator: Some("ops:ana".to_owned()),
+        expect_live: Some(3),
+        dry_run: false,
+    };
     let registry = PgInstanceStore::new(w.db.pool.clone());
     let lacking = Uuid::new_v4();
     assert!(matches!(
@@ -145,28 +166,6 @@ async fn the_activation_is_refused_while_a_live_process_lacks_the_capability() {
             .expect("an engine of this build registers"),
         Registered::Serving { .. }
     ));
-    let actor = operator();
-    let refused = registry
-        .activate(
-            Activation {
-                capability: Capability::FlowControlRateV1,
-                kinds: &KINDS,
-                actor: &actor,
-            },
-            nothing,
-        )
-        .await;
-    match refused {
-        Err(ChangeRefused::InstancesLackCapability { missing, examples }) => {
-            assert_eq!(missing, 1);
-            assert_eq!(examples, vec![lacking]);
-        }
-        other => panic!("expected INSTANCES_LACK_CAPABILITY, got {other:?}"),
-    }
-    registry
-        .deregister(lacking, &TEST_TOKEN)
-        .await
-        .expect("the old engine leaves");
     for kind in KINDS {
         registry
             .register(&registration(
@@ -177,18 +176,30 @@ async fn the_activation_is_refused_while_a_live_process_lacks_the_capability() {
             .await
             .expect("a process that runs the gate");
     }
+    match capability_activate(&database, &command).await {
+        Err(sagat_control_plane::RunError::Declined(message)) => {
+            assert!(
+                message.contains("1 live process(es) do not list flow-control-rate-v1")
+                    && message.contains(&lacking.to_string()),
+                "{message}"
+            );
+        }
+        other => panic!("expected a refusal naming the engine, got {other:?}"),
+    }
+    registry
+        .deregister(lacking, &TEST_TOKEN)
+        .await
+        .expect("the old engine leaves");
     assert!(matches!(
-        registry
-            .activate(
-                Activation {
-                    capability: Capability::FlowControlRateV1,
-                    kinds: &KINDS,
-                    actor: &actor,
-                },
-                nothing,
-            )
-            .await,
-        Ok(Activated::Recorded { .. })
+        capability_activate(
+            &database,
+            &ActivationArgs {
+                expect_live: Some(2),
+                ..command
+            }
+        )
+        .await,
+        Ok(ActivationOutcome::Activated { live: 2, .. })
     ));
 }
 
@@ -563,61 +574,6 @@ async fn a_gated_definition_that_reaches_a_continuation_successor_is_refused() {
         report.continuations_advanced, 1,
         "the refusal was the gate's: {report:?}"
     );
-}
-
-/// Architecture review M3: with no live process at all the registry would record the requirement and then no process
-/// of this build would serve; the activation's own step refuses unless a live process of each kind runs the gate.
-#[tokio::test]
-async fn the_activation_of_an_empty_fleet_is_refused_by_its_own_step() {
-    let w = world().await;
-    let registry = PgInstanceStore::new(w.db.pool.clone());
-    let actor = operator();
-    let activation = Activation {
-        capability: Capability::FlowControlConcurrencyV1,
-        kinds: &KINDS,
-        actor: &actor,
-    };
-    let refused = registry
-        .activate(
-            activation,
-            sagat_infra_postgres::live_capable_step(Capability::FlowControlConcurrencyV1, &KINDS),
-        )
-        .await;
-    assert!(
-        matches!(refused, Err(ChangeRefused::Store(_))),
-        "nothing would serve after it: {refused:?}"
-    );
-    let recorded: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM platform_requirements)")
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("read");
-    assert!(!recorded, "nothing was recorded");
-    for kind in KINDS {
-        registry
-            .register(&registration(
-                Uuid::new_v4(),
-                kind,
-                &[Capability::FlowControlConcurrencyV1],
-            ))
-            .await
-            .expect("a process that runs the gate");
-    }
-    assert!(matches!(
-        registry
-            .activate(
-                Activation {
-                    capability: Capability::FlowControlConcurrencyV1,
-                    kinds: &KINDS,
-                    actor: &actor,
-                },
-                sagat_infra_postgres::live_capable_step(
-                    Capability::FlowControlConcurrencyV1,
-                    &KINDS
-                ),
-            )
-            .await,
-        Ok(Activated::Recorded { .. })
-    ));
 }
 
 /// D022-057, keys reviews' minors of 2026-11-20: a control plane checks its ring against the versions the database has

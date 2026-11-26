@@ -2,7 +2,8 @@
 //! `specs/006-sdk-multilanguage/research.md`; ADR-0098 decision 4; the pattern of ADR-0082): the one operator command that
 //! records a fleet requirement of the instance-capability registry. Each capability it may activate is an entry of
 //! [`ACTIVATABLE`]: the kinds the requirement covers, whether an empty fleet may be activated, and what follows. Feature 022
-//! adds its own entries. The one-way handover of `schedules-v1` (`schedule-trigger-handover`) is not one of them: it
+//! adds its own entries, the two flow-control gates, which need a live process of each kind and an active digest key
+//! version (task T022-116, decisions D022-136 and D022-137). The one-way handover of `schedules-v1` (`schedule-trigger-handover`) is not one of them: it
 //! changes the platform's state in the same transaction and has no way back.
 //!
 //! It runs with the schema-owning role, in one bounded transaction (the registry's), with a second count of the fleet under
@@ -18,8 +19,8 @@ use sagat_application::instances::{
 };
 use sagat_domain::identity::Subject;
 use sagat_infra_postgres::{
-    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, PgInstanceStore, capability_census,
-    census_step, may_activate, requirement_recorded,
+    ActivationPrerequisite, CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, PREREQUISITE_MISSING,
+    PgInstanceStore, capability_census, census_step, may_activate, requirement_recorded,
 };
 
 use crate::config::{ConfigError, DatabaseConfig};
@@ -40,6 +41,9 @@ pub struct Activatable {
     /// A requirement that must be recorded for every kind before this one may be (decision D006-096): the command refuses
     /// while it is not, before its census and again under the epoch lock, where its removal cannot cross the activation.
     pub follows: Option<Capability>,
+    /// A state of the platform the requirement needs (decision D022-137): the command refuses while it does not hold,
+    /// before its census (a dry run too) and again under the epoch lock.
+    pub prerequisite: Option<ActivationPrerequisite>,
     /// What follows the activation, in words for the operator, and where the runbook is.
     pub after: &'static str,
 }
@@ -53,6 +57,7 @@ pub const ACTIVATABLE: &[Activatable] = &[
         empty_fleet: true,
         each_kind_live: false,
         follows: None,
+        prerequisite: None,
         after: "Each engine withdraws the leases it never handed to a host from its next heartbeat on (within about ten \
                 seconds). The activation is one-way once a lease is withdrawn; to stop, set SAGAT_LEASE_WITHDRAWAL=off on \
                 the engines: docs/runbooks/lease-withdrawal.md.",
@@ -64,9 +69,37 @@ pub const ACTIVATABLE: &[Activatable] = &[
         empty_fleet: true,
         each_kind_live: false,
         follows: Some(Capability::LeaseWithdrawalV1),
+        prerequisite: None,
         after: "From now on a process that does not list lease-withdrawal-v2 (an older build, one of lease-withdrawal-v1 \
                 alone among them) is refused registration. The requirement can be removed again until a journal holds a \
                 withdrawal with the cause NOT_ACKNOWLEDGED: docs/runbooks/lease-withdrawal.md.",
+    },
+    // feature 022's two gates (task T022-116, decisions D022-136 and D022-137): every check of the removed
+    // `flow-control-activate` (a live process of each kind, none lacking it, the operator, the owner role, the history)
+    // and an active digest key version, without which every gated decision is refused as unavailable
+    Activatable {
+        capability: Capability::FlowControlConcurrencyV1,
+        kinds: &InstanceKind::ALL,
+        empty_fleet: false,
+        each_kind_live: true,
+        follows: None,
+        prerequisite: Some(ActivationPrerequisite::ActiveDigestKeyVersion),
+        after: "Workflows that declare concurrency keys may now be published and started, and a process that does not list \
+                flow-control-concurrency-v1 is refused registration. To stop admitting new gated work, switch \
+                SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED off and keep the key file mounted so that what was admitted \
+                drains: docs/runbooks/flow-control.md, section 7.",
+    },
+    Activatable {
+        capability: Capability::FlowControlRateV1,
+        kinds: &InstanceKind::ALL,
+        empty_fleet: false,
+        each_kind_live: true,
+        follows: None,
+        prerequisite: Some(ActivationPrerequisite::ActiveDigestKeyVersion),
+        after: "Workflows that declare rate limits may now be published and started, and a process that does not list \
+                flow-control-rate-v1 is refused registration. To stop admitting new gated work, switch \
+                SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED off and keep the key file mounted so that what was admitted drains: \
+                docs/runbooks/flow-control.md, section 7.",
     },
 ];
 
@@ -167,6 +200,18 @@ fn not_followed(entry: &Activatable, follows: Capability) -> RunError {
         follows.as_str(),
         follows.as_str()
     ))
+}
+
+/// The refusal of an entry whose prerequisite does not hold (decision D022-137).
+fn unready(entry: &Activatable, prerequisite: ActivationPrerequisite) -> RunError {
+    let token = entry.capability.as_str();
+    declined(match prerequisite {
+        ActivationPrerequisite::ActiveDigestKeyVersion => format!(
+            "{token} needs a digest key version in force, and none is active. Activate one first, as the schema-owning \
+             role (SELECT * FROM flow_control_key_activate(1::smallint, '<your name>'); docs/runbooks/flow-control.md, \
+             section 1.2), and run the command again. Nothing was changed."
+        ),
+    })
 }
 
 fn lacking(entry: &Activatable, census: &CapabilityCensus) -> RunError {
@@ -322,6 +367,14 @@ async fn run(
     {
         return Err(not_followed(entry, follows));
     }
+    if let Some(prerequisite) = entry.prerequisite
+        && !prerequisite
+            .holds(&mut conn)
+            .await
+            .map_err(|error| store_failure(&error))?
+    {
+        return Err(unready(entry, prerequisite));
+    }
     check_live(entry, census.live, args.expect_live)?;
     check_kinds(entry, &census.kinds_live)?;
     if census.lacking > 0 {
@@ -362,7 +415,7 @@ async fn run(
                 kinds,
                 actor: operator,
             },
-            census_step(capability, kinds, entry.follows, judge),
+            census_step(capability, kinds, entry.follows, entry.prerequisite, judge),
         )
         .await;
     match activated {
@@ -394,6 +447,14 @@ async fn run(
             Err(entry
                 .follows
                 .map_or_else(|| declined(reason), |follows| not_followed(entry, follows)))
+        }
+        Err(ChangeRefused::Store(StoreError::StateConflict(reason)))
+            if reason == PREREQUISITE_MISSING =>
+        {
+            Err(entry.prerequisite.map_or_else(
+                || declined(reason),
+                |prerequisite| unready(entry, prerequisite),
+            ))
         }
         Err(ChangeRefused::Store(StoreError::StateConflict(_))) => Err(declined(
             "the live processes changed while the activation was being made. Nothing was changed; run the command \
@@ -567,6 +628,85 @@ mod tests {
                 assert!(activatable(follows.as_str()).is_some(), "{follows:?}");
             }
         }
+    }
+
+    /// Task T022-116, decision D022-137: the two flow-control gates are entries; each covers both kinds, needs a live
+    /// process of each, may not be activated with none live, follows nothing, needs an active digest key version, and
+    /// says what follows and where the runbook is. The names of the removed command are not tokens.
+    #[test]
+    fn the_flow_control_gates_are_entries_with_every_check_of_the_removed_command() {
+        for (token, capability, switch) in [
+            (
+                "flow-control-concurrency-v1",
+                Capability::FlowControlConcurrencyV1,
+                "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
+            ),
+            (
+                "flow-control-rate-v1",
+                Capability::FlowControlRateV1,
+                "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED",
+            ),
+        ] {
+            let entry = activatable(token).expect("an entry");
+            assert_eq!(entry.capability, capability);
+            assert_eq!(entry.kinds, &InstanceKind::ALL);
+            assert!(!entry.empty_fleet && entry.each_kind_live, "{token}");
+            assert_eq!(entry.follows, None, "{token}");
+            assert_eq!(
+                entry.prerequisite,
+                Some(ActivationPrerequisite::ActiveDigestKeyVersion),
+                "{token}"
+            );
+            assert!(entry.after.contains(switch), "{token}: {}", entry.after);
+            assert!(
+                entry.after.contains("docs/runbooks/flow-control.md"),
+                "{token}: {}",
+                entry.after
+            );
+            assert!(matches!(
+                check_live(entry, 0, Some(0)),
+                Err(RunError::Declined(_))
+            ));
+            assert!(check_kinds(entry, &[InstanceKind::ExecutionEngine]).is_err());
+            let RunError::Declined(message) =
+                unready(entry, ActivationPrerequisite::ActiveDigestKeyVersion)
+            else {
+                panic!("a refusal in words");
+            };
+            assert!(
+                message.contains(&format!(
+                    "{token} needs a digest key version in force, and none is active"
+                )) && message.contains("Nothing was changed"),
+                "{message}"
+            );
+            assert!(not_activatable("concurrency-keys").contains(token));
+        }
+        for old in ["concurrency-keys", "rate-limits"] {
+            assert_eq!(activatable(old), None, "{old}");
+        }
+        assert_eq!(
+            LEASE.prerequisite, None,
+            "lease-withdrawal-v1 needs nothing more"
+        );
+    }
+
+    /// Decisions D022-057 and D022-062 (moved from the removed command's module): a process of this build serves both
+    /// gates when it holds the key ring, so it lists both capabilities and an activation of either can pass once every
+    /// live process is of this build.
+    #[test]
+    fn this_build_lists_both_gates() {
+        use sagat_application::flow_control::{FlowControlSwitches, served};
+        use sagat_application::run_input::InputValidationMode;
+        let on = FlowControlSwitches {
+            concurrency_keys: true,
+            rate_limits: true,
+        };
+        let listed: Vec<_> = [InputValidationMode::Enforce, InputValidationMode::Report]
+            .into_iter()
+            .flat_map(|mode| crate::registry::capabilities(mode, &served(on, true)))
+            .collect();
+        assert!(listed.contains(&Capability::FlowControlConcurrencyV1));
+        assert!(listed.contains(&Capability::FlowControlRateV1));
     }
 
     #[test]

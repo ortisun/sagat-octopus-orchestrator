@@ -180,19 +180,6 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             println!("{said}");
             Ok(())
         }
-        Command::FlowControlActivate {
-            capability,
-            operator,
-        } => {
-            let said = sagat_control_plane::flow_control::activate(
-                &config.database,
-                capability,
-                &operator,
-            )
-            .await?;
-            println!("{said}");
-            Ok(())
-        }
         Command::ProvisionTenant => {
             let request = ProvisionConfig::from_lookup(&env_lookup)?;
             sagat_control_plane::provision_tenant(config, &request).await?;
