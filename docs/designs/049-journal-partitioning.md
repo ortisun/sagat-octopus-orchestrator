@@ -291,8 +291,10 @@ From the code on `develop` at `546d5aa5`:
   write them. A purged run refuses any later
   append, and every read of its journal or content answers `RUN_PURGED` without reading a partition, so that rows
   awaiting the drop are never served: per-run reads of `run_events` that return journal rows go through the functions
-  of `crates/infra-postgres/src/journal.rs`, each of which checks `purged_at` (a statement that reads only a row's time,
-  as `mark_projected` does, returns no content and needs no check), as content reads go through `read_run_content`, and the
+  of `crates/infra-postgres/src/journal.rs`, one per read shape, each of which checks `purged_at` by a join on `runs` in
+  the same statement, so that a lease or a completion gains no statement (a statement that reads only a row's time, as
+  `mark_projected` does, returns no content and needs no check, and takes its bucket, which never changes, from a read
+  made earlier and carried with it), as content reads go through `read_run_content`, and the
   static check of Requirement 049-011 refuses a per-run read of `run_events` in any other file. The rows that refer to content across runs belong to the run that holds the row: a chain's
   operation receipt to its `resolved_run_id`, a segment's `transfer_input_digest` to the segment's run.
 - **Requirement 049-015 Features that will reference run content follow the rule.** The approved designs that plan new
@@ -332,8 +334,8 @@ From the code on `develop` at `546d5aa5`:
   parent; the startup privilege check and the runtime-privilege audit MUST list partitions through `pg_inherits` and
   fail on a partition with any grant to the runtime role, with a required trigger missing, duplicated or not enabled
   always, on a function of this design whose `proacl`, `prosecdef` or `proconfig` (its pinned `search_path`, `TimeZone`
-  and `DateStyle`, compared as a set) differs from this design's list, and on any `SECURITY DEFINER` function owned by
-  the owner role that no design's list names, so that a function left off a list is not left unchecked.
+  and `DateStyle`, compared as a set) differs from this design's list; the list is generated from the functions this
+  design's migrations create, so a function they add cannot be left off it.
 - **Requirement 049-016 Privileges.** The runtime role keeps `SELECT, INSERT` on `run_events`, `run_payloads` and
   `payloads` and gains no `UPDATE`: the reference and bucket triggers, which lock rows `FOR KEY SHARE`, are `SECURITY
   DEFINER` functions owned by the owner role with `search_path` set to `pg_catalog, pg_temp` and every name qualified,
@@ -547,8 +549,8 @@ keys recreated `NOT VALID` and validated), refused once a dated row exists. In o
    not match its rule raises SQLSTATE 23514 with the constraint name `runs_journal_bucket`, which the adapter maps to an
    internal error, since only a defect in the platform's bucket computation can cause it; the refusals of the
    ended-month branch (a retirement active, an isolation other than `READ COMMITTED`) raise it with
-   `runs_journal_bucket_retiring` and `runs_journal_bucket_isolation`, mapped to `UNAVAILABLE` (retryable: a retry takes
-   the legacy bucket) and to an internal error respectively.
+   `runs_journal_bucket_retiring` and `runs_journal_bucket_isolation`, mapped to `UNAVAILABLE` (retryable: a retry
+   succeeds) and to an internal error respectively.
 3. **Task 049-10, `run_payloads` and the references.** Create `run_payloads`, partitioned like `run_events`, with the
    append-only, no-truncate, quota delta and flush triggers, the constraint trigger of Requirement 049-002, grants `SELECT,
    INSERT` on the parent only, and its storage classification as content; create the reference triggers of Requirement
@@ -717,7 +719,7 @@ Each task's files are named; the test suites are those of the Verification Plan.
   Refs: Requirement 049-001, Requirement 049-005, Requirement 049-014
 - [ ] T049-2 Measure, with design 051's shapes and history loader (its Tasks 051-1 and 051-3), the share of payload bytes referenced by more than one tree and the share of a run's bytes in `run_events` and payloads, and record them in `tests/performance/reports/journal-partitioning.md`.
   Refs: Requirement 049-005
-- [ ] T049-3 Add the parameter `SAGAT_TEST_POSTGRES_TAG` to the database image of `tests/support/mod.rs` and `tests/support/bounded.rs` (default `16-alpine`); then measure, in a new `perf_journal_partitioning` target, locks, round trips, planning time and completion latency with 1, 6, 16 and 60 partitions for the four planning choices, for triggers against key checks, and for the statements that span runs, on PostgreSQL 16 and 18; choose by Open Question 8's rule and amend this design.
+- [ ] T049-3 Add the parameter `SAGAT_TEST_POSTGRES_TAG` (which also selects an image with libfaketime, so that the tests of Tasks 049-5 and 049-14 move the database clock across a month boundary and into the 24-hour window) to the database image of `tests/support/mod.rs` and `tests/support/bounded.rs` (default `16-alpine`); then measure, in a new `perf_journal_partitioning` target, locks, round trips, planning time and completion latency with 1, 6, 16 and 60 partitions for the four planning choices, for triggers against key checks, and for the statements that span runs, on PostgreSQL 16 and 18; choose by Open Question 8's rule and amend this design.
   Refs: Requirement 049-006, Requirement 049-011, Requirement 049-012
 - [ ] T049-4 Add the `test-probes` feature of `crates/infra-postgres` with the probe of "Locks and plans" and the step of `.github/workflows/ci.yml` that refuses it in `cargo tree -e features` of each application, and to `tests/integration/claim-transition-efficiency/work_budget.rs` the relations locked and the round trips, at today's values.
   Refs: Requirement 049-012
@@ -727,7 +729,7 @@ Each task's files are named; the test suites are those of the Verification Plan.
   Refs: Requirement 049-011
 - [ ] T049-7 Map partitions to their parent in the classification test (`tests/integration/security-multitenancy/durable_quotas.rs`, its `manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers`), and list partitions through `pg_inherits` in `crates/infra-postgres/src/privilege.rs` and `tests/integration/platform-foundation/runtime_privileges.rs`, with the trigger and function checks of Requirement 049-013 (`proacl`, `prosecdef` and `proconfig`); it merges with Task 049-8, whose partitions the classification test would otherwise refuse. Task 049-10 adds `run_payloads` to the append-only set.
   Refs: Requirement 049-013, Requirement 049-016
-- [ ] T049-8 Write step 1 of "The migrations of the stopped upgrade" with its waivers (after design 053's Task 053-2), rewrite the references to `run_events` in `crates/infra-postgres/src` to name the bucket from the run row and move the per-run reads into `read_run_events` and the functions that hold a per-run read inside a statement on another table (in `telemetry.rs` and `execution.rs`), moved whole, in a new `crates/infra-postgres/src/journal.rs` (its `purged_at` check arrives with feature 020's Task T020-045), add the mapping of `JOURNAL_BUCKET_MISSING` and `RUN_PURGED` with the reason in the contracts and a test of each, update `tests/integration/claim-transition-efficiency/work_budget.rs` for the legacy runs it measures at this task, and run the migration tests and the measurement of Success criterion 049-003.
+- [ ] T049-8 Write step 1 of "The migrations of the stopped upgrade" with its waivers (after design 053's Task 053-2), rewrite the references to `run_events` in `crates/infra-postgres/src` to name the bucket from the run row and move the per-run reads into one function per read shape (`read_run_events` among them, and the functions that hold a per-run read inside a statement on another table, moved whole; in `telemetry.rs`, `execution.rs`, `approval_progress.rs`, `chain_progress.rs`, `declared_operations.rs`, `execution/database.rs`, `execution/path.rs`, `execution/resets.rs`, `leaf_certification.rs`, `loop_progress.rs`, `payload_disclosure.rs`, `primitives.rs`, `scripts.rs` and any other the static check finds) in a new `crates/infra-postgres/src/journal.rs` (its `purged_at` check arrives with feature 020's Task T020-045), add the mapping of `JOURNAL_BUCKET_MISSING` and `RUN_PURGED` with the reason in the contracts and a test of each, update `tests/integration/claim-transition-efficiency/work_budget.rs` for the legacy runs it measures at this task, and run the migration tests and the measurement of Success criterion 049-003.
   Refs: Requirement 049-002, Requirement 049-003, Requirement 049-004, Requirement 049-008, Success criterion 049-003
 - [ ] T049-9 Add `journal_retirements` (key `bucket date`; `state text` checked among `ACTIVE`, `ABANDONING`, `ABANDONED`, `DONE`; `run_events_dropped` and `run_payloads_dropped` booleans; the other columns from Task 049-14), `journal_bucket_retiring(bucket date) returns text` (the state, `DROPPED` once either table is recorded dropped, or null), and `ensure_journal_buckets()` in `crates/infra-postgres/src/journal_buckets.rs` and their migration, with tests on a disposable partitioned table (five months created `LIKE` the parent, the truncate trigger present, the row triggers enabled always, a `DONE` or dropped month skipped, an `ABANDONED` month created, two concurrent calls), enumerating the partitioned tables through `pg_partitioned_table`; its call from the engine's housekeeping in `crates/scheduler/src/passes.rs`, at start, daily and hourly after a failure; the gauge and the alert in `infra/observability/alerts.yaml` with its rule test added to CI's `promtool` list.
   Refs: Requirement 049-008
