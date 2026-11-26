@@ -122,58 +122,57 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   best the pilots find across the shapes (a per-shape change only where a pilot shows it matters), within the fixed
   constraints of Technical Plan, "Fixed constraints"; each constraint and each excluded feature is a deviation line, and
   the report publishes each product's tuning budget (the configurations tried and the runner minutes spent). Durability
-  is never changed: at the start of each turn `pg_settings` shows the fixed constraints' values and
-  `pg_db_role_setting` holds no setting for the product's roles and database and `pg_proc.proconfig` no entry on any
-  function outside a per-product published list of settings unrelated to durability (`search_path` for this platform,
-  whose migrations set it on their functions; checked with a fixture built from this platform's migrated schema; the
-  rule refuses this list, and the `set_config` list below, when it names `synchronous_commit` or `commit_delay`, the
-  durability settings a function or a session can set, with a fixture for each), both
-  read at the start and at the end of each turn; each product's connection options are published, and
-  `check_competitive_benchmark` refuses `PGOPTIONS` and parses every `options` value in the compose files, the
-  products' configurations and their connection options, admitting a `-c` only for a listed setting unrelated to
-  durability (`statement_timeout`, `idle_in_transaction_session_timeout`, `lock_timeout`, `DateStyle`, `TimeZone`;
-  this platform's pool sends the first two) and refusing any other option; since this platform builds its options in
-  code, the rule also finds every `.options(` call of `PgConnectOptions` or `tokio_postgres::Config`, every string
-  literal holding an option, and every connection URL (in the compose files, the configurations and the workspace's
-  string literals, its `options` query parameter decoded) at the commit under test, parses all three forms (`-c
-  name=value`, `-cname=value`, `--name=value`) wherever it reads options, refuses a setting name outside that list or
-  one not a constant, and generates this platform's published connection options from those URLs and call sites
-  (fixtures with a `synchronous_commit` entry in a call site and in a URL literal carrying
-  `options=-csynchronous_commit%3Doff` are refused); as it refuses the keys `service`, `PGSERVICE` and `PGSERVICEFILE` there
-  and a `pg_service.conf` that carries `options`; at each turn's start and after each rung `run.sh` reads, through
-  `sudo`, `/proc/<pid>/environ` of every process in each product container's control group, keeping only the names at
-  the read (so that no value enters a shell variable), and refuses `PGOPTIONS`, `PGSERVICE` and `PGSERVICEFILE` (an
-  entrypoint's exports and a vendor image's own environment included), any read error but a process that has exited
-  refusing the turn too; it runs with tracing off and prints only the container's and the variable's names, never a
-  value, since the job log is public (fixture tests confirm that a refused value does not reach the output and that an
-  unreadable file refuses);
-  the start probe refuses, in each product's published connection options, any startup parameter outside an allowlist
-  (`application_name`, `search_path`, `client_encoding`, `TimeZone`, `DateStyle`, `extra_float_digits`, which SQLx
-  sends, and `options` holding only the admitted `-c` settings), and confirms from `pg_stat_activity` the one value it
-  shows, `application_name`; the
-  products' roles are not superusers and hold no `SET` grant on `commit_delay` and no `EXECUTE` on
-  `pg_stat_statements_reset`, checked through SQL (`synchronous_commit`
-  has user context, so any role may set it, which only the scan below catches); and, with `pg_stat_statements.track =
-  all` so that statements inside functions are seen, `pg_stat_statements_reset()` runs once per turn, after the
-  restore and before the product starts (no session exists yet), and never again in the turn, so a scan after every rung
-  and at the turn's end covers every interval since then (the start-up of connection pools and the waits between rungs
-  included); the scan fails the turn when `pg_stat_statements_info.dealloc` is not 0 (an entry evicted) or its `stats_reset` is
-  not the time of that one reset, except that fault (c), whose kill empties the statistics, admits one more reset time
-  between `pg_postmaster_start_time()` and the first scan after the restart, with `dealloc` at 0 from then on, and runs a scan just before
-  the kill (a statement between that scan and the kill goes unseen, a stated residual; a session setting it made ends
-  with the kill, which ends every session); the scan also fails the turn on a `SET` of
-  `synchronous_commit` or `commit_delay` and on any `set_config` statement outside a per-product list that the pilot
-  fixes and publishes, since `pg_stat_statements` stores the setting's name of a `set_config` call as a placeholder;
-  each entry is a normalized statement text admitted only when every call site of the pinned vendor source that
-  produces that text, all of them listed, issues it with a constant setting name that is not about durability, so that
-  the list trusts only source no pilot can change; for this platform, whose source changes between campaigns,
-  `check_competitive_benchmark` finds every `set_config` call site of the workspace at the commit under test and
-  refuses one not listed or without a constant setting name. The statement latency of Requirement 051-007 for a rung is
-  the difference of two snapshots of `pg_stat_statements`, taken at the start and end of the rung's 300 s window and
-  keyed on (`userid`, `dbid`, `queryid`, `toplevel`), with top-level and nested time published apart (a function call's
-  time already includes its inner statements); the snapshots stay in the host-only directory, and only their computed
-  differences per table (those keys, table, `calls`, `total_exec_time`, never `query`) are uploaded. This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's
-  task that adds the setting is in the commit, as a single node requires, stated.
+  is never changed, which these checks hold:
+  - *Server and objects.* At the start and at the end of each turn `pg_settings` shows the fixed constraints' values,
+    `pg_db_role_setting` holds no setting for the product's roles and database, and no function's
+    `pg_proc.proconfig` names `synchronous_commit` or `commit_delay` (the durability settings a function or a session
+    can set; the others need a reload or a restart, which `pg_settings` shows); each product's other function
+    settings are published (`search_path` and `lock_timeout` for this platform's migrations).
+  - *Startup.* Every product reaches its database server only through the startup guard, a first-party proxy built at
+    the commit (in the driver's workspace) and run as a compose service in the product's set, the database server's
+    only network peer, `pg_hba.conf` admitting no other address (the host's probe uses the server container's local
+    socket). TLS is off on every hop (Requirement 051-002), so the guard reads each connection's startup message
+    whatever its source (code, a URL's `options` or `options[...]` keys, `PGOPTIONS`, a service file): it refuses the
+    connection, and fails the turn, on a parameter outside `user`, `database`, `application_name`, `client_encoding`,
+    `DateStyle`, `TimeZone`, `extra_float_digits` and `search_path` (names compared without case) or on an `options`
+    value holding anything but `-c` settings, parsed in all three forms (`-c name=value`, `-cname=value`,
+    `--name=value`), of `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, `DateStyle` and
+    `TimeZone`; it answers a TLS or GSS encryption request with "not supported", forwards a cancel request, logs a refusal by parameter name only,
+    never a value, and then copies bytes both ways unchanged. It is charged to the product, and its added latency,
+    measured by the pilot, is a deviation line common to the three. Fixtures refuse a direct `synchronous_commit`
+    parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and a parameter of unknown name, and accept the
+    startup messages this platform's pool and SQLx send.
+  - *Roles.* The products' roles are not superusers and hold no `SET` grant on `commit_delay` and no `EXECUTE` on
+    `pg_stat_statements_reset`, checked through SQL (`synchronous_commit` has user context, so any role may set it in
+    a session, which only the scan below catches).
+  - *Statements.* With `pg_stat_statements.track = all`, so that statements inside functions are seen,
+    `pg_stat_statements_reset()` runs once per turn, after the restore and before the product starts (no session
+    exists yet), and never again in the turn, so a scan after every rung and at the turn's end covers every interval
+    since then (the start-up of connection pools and the waits between rungs included). The scan fails the turn when
+    `pg_stat_statements_info.dealloc` is not 0 (an entry evicted) or its `stats_reset` is not the time of that one
+    reset, except that fault (c), whose kill empties the statistics, admits one more reset between the injector's
+    recorded fault time and the first scan after the restart, with `dealloc` at 0 from then on, and runs a scan just
+    before the kill (a statement between that scan and the kill goes unseen, a stated residual; a session setting it
+    made ends with the kill, which ends every session). The scan also fails the turn on a `SET` of
+    `synchronous_commit` to `off` or of `commit_delay`, and on any `set_config` statement outside a per-product list
+    that the pilot fixes and publishes, since `pg_stat_statements` stores the setting's name of a `set_config` call as
+    a placeholder. A vendor's entry is a normalized statement text admitted only when every call site of the pinned
+    vendor source that produces that text, all of them listed, passes a literal setting name other than
+    `commit_delay`, and for `synchronous_commit` a literal value other than `off`, so that the list trusts only source
+    no pilot can change. For this platform, whose source changes between campaigns, `check_competitive_benchmark` finds
+    every `set_config(` call of the workspace's SQL and Rust at the commit under test and refuses one whose first
+    argument is not a string literal, one naming `commit_delay`, and one naming `synchronous_commit` with a value that
+    is not a literal other than `off` (feature 006's acknowledgement, which raises it to `local`, passes), a fixture
+    for each.
+  - *Latency.* The statement latency of Requirement 051-007 for a rung is the difference of two snapshots of
+    `pg_stat_statements`, taken by the host at the planned start and end of the rung's 300 s window, which the driver
+    posts before the rung (its schedule is precomputed), the snapshot's lag after the planned time published and a
+    rung whose lag exceeds 1 s marked; the snapshots are keyed on (`userid`, `dbid`, `queryid`, `toplevel`), with
+    top-level and nested time published apart (a function call's time already includes its inner statements); they
+    stay in the host-only directory, and only their computed differences per table (those keys, table, `calls`,
+    `total_exec_time`, never `query`) are uploaded. 
+  This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's task that adds the setting is
+  in the commit, as a single node requires, stated.
 
 ### The load and the measurement
 
@@ -385,14 +384,14 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   namespace, added capability or device, or unconfined profile); the driver, built at the commit under test, runs its load as a container on each product's
   internal network, started by `run.sh` once per turn in the order `driver plan` prints, it and the metrics containers
   with an explicit `cgroup_parent` pinned to the driver's thread (their effective CPU sets confirmed from `docker
-  inspect` at each turn's start, so that this platform's turn's default parent does not capture them), while its fault injector runs
-  on the host as the driver's `crash` subcommand, built at the commit and started by `run.sh` (it needs the engine to
-  kill and start containers); the driver in its container and the host side talk through two directories, neither
+  inspect` at each turn's start, so that this platform's turn's default parent does not capture them), while its host side runs
+  on the host as the driver's `host` subcommand, built at the commit and started by `run.sh` in every job kind (in the
+  crash jobs it is also the fault injector, which needs the engine to kill and start containers); the driver in its container and the host side talk through two directories, neither
   mounted into a product container: the driver's own, which only it writes, where it posts each rung's window
   boundaries and the baseline's and null fault's ends in a fixed grammar (a rung index and `CLOCK_REALTIME` integers,
-  anything else refused), and the host-only directory, where an acknowledgement the driver waits for before each rung
-  is written (after the snapshots, the environment read and the calibration); on the host only the driver's `crash`
-  subcommand reads either directory and copies files out of them, each directory from its own root handle under the
+  anything else refused), and the host-only directory, where the `host` subcommand writes an acknowledgement the
+  driver waits for before each rung (after the scan and the calibration); on the host only the `host` subcommand
+  reads either directory and copies files out of them, each directory from its own root handle under the
   rule below, and `run.sh` never reads a file of them by path; the injector writes each fault's time as
   `CLOCK_REALTIME` into a host-only directory that no container can write (mounted read-only into the driver), where
   `run.sh` also gathers every file it uploads; the injector opens each execution record, and each file it reads or copies, from a handle on its directory's root with
@@ -405,7 +404,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   `SAGAT_RUNNER_IMAGE_*` of this platform set from it (this platform's own images exempt as "built at the commit under
   test"); after each turn `docker image ls --digests` is compared with it and an image not in it fails the job. `omes`
   is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of regular files copied into the host-only directory by
-  the `crash` subcommand, each opened the same way, checked by `fstat` on the open file, bounded in size and copied from that same open file (a link anywhere in
+  the `host` subcommand, each opened the same way, checked by `fstat` on the open file, bounded in size and copied from that same open file (a link anywhere in
   the path or any other kind of file refused; no
   environment dumps, `docker inspect`, `docker compose config`, logs with statements or `pg_stat_statements` snapshots; `log_statement` stays `none`).
   The release workflow (`.github/workflows/release.yml`) downloads its artifacts by name and refuses a duplicate file
@@ -511,7 +510,7 @@ lists what a later release would ask the owner for.
 |---|---|
 | `shapes.md` | The method version; each variant and the procedure (steps, payloads, the activity body, outcomes, transitions, completion records, ceilings with their reasoning, timeouts and retry budgets per product, idempotency per product, early arrivals); the execution records' grammar |
 | `images.lock` | Every image's name, digest and signature check |
-| `driver/` | The driver's own workspace (`sagat-competitive-driver`): the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan --job-kind --variant --repetition --seed` (prints the turns and their order, the worst-case minutes and disk), `turn --product --variant --seed`, `crash --product --fault`, `burst --product`, `capacity`, `load`, `report <artifacts> [--common-rate <variant>]` |
+| `driver/` | The driver's own workspace (`sagat-competitive-driver`): the startup guard, the `host` subcommand, the schedule, the ladder state machine, the rotation, the plan check, the adapters behind features, the execution-record reader, the recorded-end reader, the fault injector, the recovery estimator, the ranking, the aggregation command; subcommands `plan --job-kind --variant --repetition --seed` (prints the turns and their order, the worst-case minutes and disk), `turn --product --variant --seed`, `crash --product --fault`, `burst --product`, `capacity`, `load`, `report <artifacts> [--common-rate <variant>]` |
 | `sagat/`, `temporal/`, `windmill/` | For each product: the compose files (single-node, and two of each for crashes), its load balancer, the configuration with placeholders, the code of each variant, the history loader |
 | `postgres/` | The PostgreSQL configuration of the fixed constraints, `pg_hba.conf`, and the server's compose service |
 | `run.sh` | Prepares the machine (tool caches freed, the daemon's control-group parent, the sets), runs `check-architecture.py --only competitive` first, starts and stops containers, and calls the driver's subcommands; its arguments (job kind, variant, repetition, seed) are the matrix fields |
@@ -521,9 +520,9 @@ lists what a later release would ask the owner for.
 `check_competitive_benchmark` in `scripts/check-architecture.py`, with a flag `--competitive-root DIR` for its fixtures
 in `scripts/tests/test_check_architecture.py`, checks the workflow's rules key by key with a line match (no YAML
 library), its `concurrency` group with `cancel-in-progress: false`, `campaign.json` with the standard library's `json`
-(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules, the refusal of `options`, `-c` and `PGOPTIONS` in the compose files, each product's
-configuration and its published connection options, the keys `service`, `PGSERVICE` and `PGSERVICEFILE` there,
-any `pg_service.conf` with `options`, every `set_config` call site of the workspace listed with a constant setting name, `run.sh`'s `docker run` and `docker create`
+(every stage's `max-parallel` at most 12, each stage needing the one before), the compose files' rules (each database server's only network shared with its startup guard alone, and
+`pg_hba.conf` admitting the guard's address and the local socket only), every `set_config(` call of the workspace
+checked as Requirement 051-004 states, `run.sh`'s `docker run` and `docker create`
 lines, the image manifest, the release workflow's caches, and that no workspace member depends on `sagat-competitive-driver`;
 `run.sh` calls it first as `python3 scripts/check-architecture.py --only competitive`; `--only competitive` is a new flag that runs this rule alone, without `cargo metadata`, as `--capability-root`
 does; the workflow is required once `campaign.json` exists. A `ci.yml` step builds and tests the driver (`cargo test --locked --manifest-path
@@ -536,7 +535,7 @@ turn; the others are stopped.
 
 | Component | Hardware threads | Memory limit |
 |---|---:|---:|
-| The product under test and its database server (the split the pilot chooses), the Temporal sidecar in Temporal's turn | 3 | 12 GB |
+| The product under test, its startup guard and its database server (the split the pilot chooses), the Temporal sidecar in Temporal's turn | 3 | 12 GB |
 | The driver and metrics collection | 1 | 2 GB |
 
 3 + 1 = 4 threads; 12 + 2 = 14 GB of 16, leaving 2 GB to the system.
@@ -672,6 +671,9 @@ estimate is to be recomputed with the method then current. Each is the owner's d
 - **A doubling ladder alone.** A factor-two resolution cannot rank; bisection gives a factor of 2^(1/8), about 1.09, and ties are reported.
 - **Each product's recorded end time.** Stamped before the commit, by a different amount per product; the database's
   commit time is one clock for all three.
+- **Searching every source of startup options statically.** Options come from code, URLs (two syntaxes), the
+  environment and service files, in three forms; a search of each source missed one at every review, while the
+  startup guard reads what the client actually sends.
 - **Polling the products for completions during a rung.** It loads each product's database differently; the workers'
   own records count them.
 - **Interleaving the products rung by rung.** Twenty-nine switches per job do not fit its time; contiguous turns rotated
@@ -707,9 +709,9 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the durability checks (`pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end, `PGOPTIONS`, `PGSERVICE` and `PGSERVICEFILE` in every product process's environment from `/proc` with no value printed and its fixture test, the single reset before the product starts, the scan after every rung and at the turn's end with `dealloc` at 0 and `stats_reset` equal to that reset (and one reset between the restart and the first scan after fault (c), with the scan before the kill), the per-rung snapshots at the window's boundaries keyed with `toplevel`, the `proconfig` list with its fixture from this platform's migrated schema, the parsed `options` with the admitted `-c` settings and this platform's `.options(` call sites, option literals and connection URLs (their `options` decoded) found in the workspace, the three option forms parsed, its published options generated from them, with the refused call-site and URL fixtures, the refusal of `synchronous_commit` and `commit_delay` in both per-product lists, no `EXECUTE` on `pg_stat_statements_reset`, the acknowledgement before each rung, the environment names read through `sudo` with a read error refusing, the per-product `set_config` list with every call site of each entry), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
-  Refs: Requirement 051-003, Requirement 051-004, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
-- [ ] T051-7 Add the fault injector on the host as the driver's `crash` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the driver's own directory for rung boundaries and milestones in its fixed grammar, the only host reader of both directories with a root handle each, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath the record root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
+- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the startup guard (its allowlists, the three `options` forms, the encryption refusal, the log by name only, its fixtures refusing a direct `synchronous_commit` parameter, `-csynchronous_commit=off`, `--synchronous_commit=off` and an unknown parameter and accepting this platform's pool and SQLx, the database server's network and `pg_hba.conf` admitting only it), the durability checks (`pg_settings`, `pg_db_role_setting` and `pg_proc.proconfig` at each turn's start and end, the roles' grants, the single reset before the product starts, the scan after every rung and at the turn's end with `dealloc` at 0 and `stats_reset` equal to that reset, and one reset between the fault time and the first scan after fault (c) with the scan before the kill, the per-product `set_config` list and this platform's `set_config(` call sites with a fixture each), the snapshots at the planned window boundaries keyed with `toplevel` with their lag, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+  Refs: Requirement 051-003, Requirement 051-004, Requirement 051-007, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
+- [ ] T051-7 Add the fault injector to the driver's `host` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the baseline's and null fault's ends read from the driver's posts, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath the record root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
   Refs: Requirement 051-009
 - [ ] T051-8 Add the `competitive-benchmark` workflow (Requirement 051-020's rules, the stages and matrices of `campaign.json`, the `concurrency` group, the refusal of a private repository and of other refs), publish the method and configurations, run the pilots once for the method version and publish them.
   Refs: Requirement 051-004, Requirement 051-012, Requirement 051-014, Requirement 051-019, Requirement 051-020
