@@ -196,3 +196,15 @@ first, then the connection row, as redemption does, and Architecture decision 00
 | 1 | Major | Fixed: a dedicated `cli-refresh` ring in the identity mount, never `SAGAT_SECRETS_KEYS` (an architecture rule refuses the label there); two-step rotation by `identity cli-refresh-key rotate`, which keeps the old key 7 days and one interval; a test of the command; the `KeyRing` change owned by whichever of Tasks 050-4 and 013-9 runs first | Requirement 013-026, Technical Plan 12, Task 013-9 |
 | 2 | Nit | Fixed: the bound stated as 12 for the fixed window; the test bursts across a boundary | Requirement 013-026, Task 013-9 |
 | 3 | Nit | Fixed: a lower generation with no row is outside the grace and its reuse revokes; the test includes a deleting refresh | Technical Plan 3, Task 013-9 |
+
+## Security re-read, round 9 (`approval/reread-9-security.md`, at `dcfd91b1`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: Task 013-8 builds `IdentityKeyRing`, the `cli-refresh` commands, the `KeyRing` derivation (unless Task 050-4 landed it) and the rule with its fixture; Task 013-9 uses the ring for the MAC; four rules in Technical Plan 2; the architecture check in the verification | Tasks 013-8, 013-9, Technical Plan 2 |
+| 2 | Nit | Fixed: `IdentityKeyRing` wraps `KeyRing`, built only by the identity-mount loader; the refresh code takes that type; the label is confined to its module | Requirement 013-026, Technical Plan 2 |
+| 3 | Nit | Fixed: `rotate` on an empty ring creates an active key; rollout runs it; start-up refuses an empty ring and never falls back | Requirement 013-026, Technical Plan 12 |
+| 4 | Nit | Fixed: `identity cli-refresh-key revoke` replaces the key and rotates every CLI session's random value; the Risks row names it | Requirement 013-026, Risks |
+
+The test of the rotation is renamed `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, since a CLI
+session idle for a day expires (the reviewer's note for correctness).

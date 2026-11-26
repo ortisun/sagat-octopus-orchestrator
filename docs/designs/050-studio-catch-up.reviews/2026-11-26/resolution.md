@@ -157,3 +157,5 @@ The security re-read of round 6 (`approval/reread-6-security.md`, at `4dea6eaa`)
 key gets the same `400` and the Studio starts from the first page).
 
 The security re-read of round 7 (`approval/reread-7-security.md`, at `9a19411f`) found nothing.
+
+The security re-read of round 8 (`approval/reread-8-security.md`, at `dcfd91b1`) found nothing.
