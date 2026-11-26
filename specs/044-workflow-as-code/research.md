@@ -858,6 +858,12 @@ finding was answered.
   replay-check workers, Decision 044-240): Technical Plan 4.5, 13.1 and 14 read with Decision 044-240, and the
   source-text test of Task 044-24 on `server_detail` allows the seed on the claim paths of the three task kinds.
 
+- **D044-243** (2026-11-26) On the wire a terminal or continue-as-new command travels the first time last in
+  `commands`, numbered as the next command (the SDK cannot know it will be deferred); a deferred one takes no number,
+  and the next accepted command takes that number; each re-emission after a deferral travels in `deferred_command` with
+  number 0, and is numbered when accepted. delegate (OD-2026-11-24-4): Technical Plan 4.4 and 13.1 named the re-emission
+  only; found while building the fake server of Task 044-30, whose tests hold it.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap

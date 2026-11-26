@@ -853,7 +853,10 @@ message CompleteWorkflowTaskRequest {
   // The command chain the function produced up to its first new command (32 bytes).
   bytes replayed_chain = 8;
   repeated Command commands = 9;         // at most 403; the consumption of signals is one of them
-  Command deferred_command = 10;         // the terminal or continue-as-new command the SDK re-emits, without a number
+  // The terminal or continue-as-new command the SDK re-emits after a deferral, with command_number 0 (Decision
+  // 044-243). The first time, the SDK sends such a command last in `commands`, numbered as the next command; if the
+  // server defers it, it takes no number, and the next accepted command takes that number.
+  Command deferred_command = 10;
   int32 eager_activity_slots = 11;       // Task 044-14; ignored until then
   repeated string behaviour_flags = 12;  // reserved (Gap 044-015); must be empty in this minor
   string traceparent = 13;

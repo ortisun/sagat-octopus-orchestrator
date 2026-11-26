@@ -7450,12 +7450,15 @@ type CompleteWorkflowTaskRequest struct {
 	// puts the run under review with NONDETERMINISM_RISK.
 	AppliedThroughSeq int64 `protobuf:"varint,7,opt,name=applied_through_seq,json=appliedThroughSeq,proto3" json:"applied_through_seq,omitempty"`
 	// The command chain the function produced up to its first new command (32 bytes).
-	ReplayedChain      []byte     `protobuf:"bytes,8,opt,name=replayed_chain,json=replayedChain,proto3" json:"replayed_chain,omitempty"`
-	Commands           []*Command `protobuf:"bytes,9,rep,name=commands,proto3" json:"commands,omitempty"`                                                   // at most 403; the consumption of signals is one of them
-	DeferredCommand    *Command   `protobuf:"bytes,10,opt,name=deferred_command,json=deferredCommand,proto3" json:"deferred_command,omitempty"`             // the terminal or continue-as-new command the SDK re-emits, without a number
-	EagerActivitySlots int32      `protobuf:"varint,11,opt,name=eager_activity_slots,json=eagerActivitySlots,proto3" json:"eager_activity_slots,omitempty"` // Task 044-14; ignored until then
-	BehaviourFlags     []string   `protobuf:"bytes,12,rep,name=behaviour_flags,json=behaviourFlags,proto3" json:"behaviour_flags,omitempty"`                // reserved (Gap 044-015); must be empty in this minor
-	Traceparent        string     `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	ReplayedChain []byte     `protobuf:"bytes,8,opt,name=replayed_chain,json=replayedChain,proto3" json:"replayed_chain,omitempty"`
+	Commands      []*Command `protobuf:"bytes,9,rep,name=commands,proto3" json:"commands,omitempty"` // at most 403; the consumption of signals is one of them
+	// The terminal or continue-as-new command the SDK re-emits after a deferral, with command_number 0 (Decision
+	// 044-243). The first time, the SDK sends such a command last in `commands`, numbered as the next command; if the
+	// server defers it, it takes no number, and the next accepted command takes that number.
+	DeferredCommand    *Command `protobuf:"bytes,10,opt,name=deferred_command,json=deferredCommand,proto3" json:"deferred_command,omitempty"`
+	EagerActivitySlots int32    `protobuf:"varint,11,opt,name=eager_activity_slots,json=eagerActivitySlots,proto3" json:"eager_activity_slots,omitempty"` // Task 044-14; ignored until then
+	BehaviourFlags     []string `protobuf:"bytes,12,rep,name=behaviour_flags,json=behaviourFlags,proto3" json:"behaviour_flags,omitempty"`                // reserved (Gap 044-015); must be empty in this minor
+	Traceparent        string   `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
