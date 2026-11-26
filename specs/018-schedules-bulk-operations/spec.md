@@ -394,7 +394,8 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   over runs created at or before the creation instant, in bounded transactions, up to `maxItems`. The
   result is evaluated per round and fixed once an item is materialized; a materialized item's filter is
   not re-evaluated. With feature 020 the selector is 020's `RunSelector` (`contracts/list-query.md`:
-  creator's rights re-resolved each round, keyset `(StartedAt, RunId)`, bounded preview); a query while
+  creator's rights re-resolved each round, keyset `RunId` (`select_cursor`) bounded by `selection_bound_at`, corrected 2026-11-26
+  from feature 020's readiness review; bounded preview); a query while
   020's capability is off is refused `VALIDATION_FAILED`/`QUERY_UNSUPPORTED_OPERATOR`. A selection round
   that fails (a statement over its time limit, a deadlock, an error that comes again) rolls back its own
   work and MUST be recorded durably, so that the count survives a restart and a move of the shard lease;

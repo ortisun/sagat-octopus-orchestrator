@@ -1010,6 +1010,8 @@ impl ApiError {
             }
             AppError::Unavailable => Self::unavailable(),
             AppError::FlowControl(refusal) => flow_control_refusal(refusal),
+            AppError::RegistrySilent => Self::unavailable_after(1)
+                .with_reason(sagat_application::instances::REASON_REGISTRY_SILENT),
             AppError::PayloadTooLarge(what) => {
                 let mut e = Self::new(
                     StatusCode::PAYLOAD_TOO_LARGE,

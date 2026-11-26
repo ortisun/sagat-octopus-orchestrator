@@ -110,6 +110,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::FlowControl(_) => "FlowControl",
         AppError::Versioning(_) => "Versioning",
         AppError::Unavailable => "Unavailable",
+        AppError::RegistrySilent => "RegistrySilent",
         AppError::PayloadTooLarge(_) => "PayloadTooLarge",
         AppError::Busy { .. } => "Busy",
         AppError::Internal => "Internal",

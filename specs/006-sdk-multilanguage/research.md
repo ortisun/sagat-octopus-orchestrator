@@ -457,6 +457,11 @@ each decision below is "delegate (OD-2026-11-20-6)". Numbers 019 to 029 and 040 
      any other failure.
   4. So an honest attempt meets each cause at most once: four withdrawals. The cap is on the total, because the host's
      three causes cannot be told apart.
+  5. The causes of protocol 1.8 count toward the same four (request (5) of D006-059, Task 006-073): a provisional lease
+     withdrawn at its deadline (`NOT_ACKNOWLEDGED`) and a hand-back after the acknowledgement each end one delivery before
+     any handler ran, as the four above do, so each takes one of them. A cap of its own for 1.8 would let a client that
+     never acknowledges, or a host that always hands back, take four more free leases of the same attempt; an attempt
+     whose deliveries keep ending is a property of the task, the host or the client, which must spend it.
   The fifth withdrawal of one attempt is refused, and the outcome is counted as `capped`. Past the cap a `TASK_NOT_STARTED`
   is the ordinary failure (the attempt spent, the backoff, the flag honoured), never a review. A lease the server did not
   send is left to lapse, as before this feature: the server has no failure of a host to record, and a lapse keeps today's
@@ -682,7 +687,8 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
 
 - **G006-032 — This build is not the rollback floor of protocol 1.8.** ADR-0099's requests (1), (2) and (5) to (9) are a
   follow-up of pull request #260 (D006-090). Closed when that follow-up merges; it must merge before any build negotiates
-  1.8.
+  1.8. Built on 2026-11-24 as Tasks 006-068 to 006-074 (D006-094 to D006-099); what of request (1) is behaviour of 1.8 is
+  G006-037, and the reader of `lease-withdrawal-v2` under its lock is G006-034. Closed with the merge of that pull request.
 - **G006-033 — Minors left after round 3** (D006-091). None weakens a guarantee of this build: each is unreachable before
   1.8, an operability improvement, or a test seam.
   - No check refuses a migration stamped below one already applied; the restamp rule (D006-033) is prose until the
@@ -780,7 +786,212 @@ holds the lock, not when it ends.
     tests. Recorded in G006-033 with the probe's locks.
   - Security Nit 3 (no test pins the two newer definer functions): fixed, the privilege test lists them.
 
-## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-068, Gap 006-040 to Gap 006-048, Owner question 006-002)
+### The follow-up of pull request #260 (2026-11-24, D006-094 to D006-100, G006-034 to G006-038)
+
+What ADR-0099 asks of the build of ADR-0098 and pull request #260 left out (D006-090, G006-032), built as Task 006-068 to
+Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of its own. Each decision is "delegate
+(OD-2026-11-24-4)" unless it says otherwise.
+
+- **D006-094 — The cause `NOT_ACKNOWLEDGED` is a value of the closed set, with the list of all of them** (Task 006-068). The
+  domain gains `WithdrawalCause::NotAcknowledged` and `WithdrawalCause::ALL`, which the parse, the codec's tests and the
+  domain's tests iterate, so a fourth cause cannot be added without them. Nothing writes it in this build; the transition
+  that replays it is the one of the other causes (`LEASED` of that attempt and generation to `READY`, the attempt given back).
+  The Studio names the event, not its causes, so it has nothing to change. Tested: `the_cause_has_three_closed_values` (seen
+  failing with two values), the transition test over every cause, `a_withdrawn_lease_is_an_exact_codec_inverse` over every
+  cause. Weighed: a separate event for 1.8 (an older replica would have to learn a second event for the same transition) and
+  an open text field (a replica would replay a cause it does not know); the closed value is ADR-0099's choice.
+- **D006-095 — The two functions of the replay floor are rewritten in place, and the requirement counts only for both kinds**
+  (Task 006-070; requests (6) and (8) of D006-059). Migration `20270208000000_lease_withdrawal` may have been applied, so the
+  new migration `20270211000000_lease_withdrawal_functions` rewrites both functions with `CREATE OR REPLACE FUNCTION`, which
+  keeps their grants, and its down restores the bodies of `20270208000000` and `20270208000200` (nothing is stored, so
+  nothing is refused). `lease_withdrawal_required()` answers yes only when the row of `lease-withdrawal-v1` lists both kinds
+  (`kinds @> ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']`), the question an engine's gate asks (`ServingGate::requires` over
+  both kinds): a requirement recorded for the engines only, by hand SQL, leaves control planes that cannot replay the event
+  free to register, so nothing is withdrawn under it; the lease lapses as before and a 1.8 hand-back is answered
+  `STALE_ATTEMPT` (D006-089). The replay-floor guard says that the switch stops "new withdrawals of unmarked leases", which
+  is all it does from 1.8 (ADR-0099 decision 10). The guard had run as the role that deletes the row; it now runs as its
+  owner with `search_path = pg_catalog, pg_temp`, like every other function of the registry, so its look at `run_events`
+  never depends on the deleting role's privileges or search path, and the privilege test lists it with the other eight.
+  Tested: `a_requirement_recorded_for_one_kind_withdraws_nothing` (`contract_grpc_durable_execution`), the guard's text in
+  `the_requirement_cannot_be_removed_once_a_journal_holds_a_withdrawal`, `the_requirement_counts_only_for_both_kinds_and_the_rollback_restores_the_old_bodies`
+  (`integration_platform_foundation`), and the privilege test of `instances.rs`. Weighed: editing `20270208000000` in place
+  (a database that applied it fails sqlx's checksum, and the old bodies stay where it ran); equality with the pair of kinds
+  instead of containment (a requirement recorded for a kind added later would turn every withdrawal off); keeping the guard
+  as an invoker's function (it would read the journal through the deleting role's search path, the one function of the
+  registry that does).
+- **D006-096 — `lease-withdrawal-v2`: a capability of its own, an entry that follows `lease-withdrawal-v1`, and a floor of
+  one cause** (Task 006-071; request (9) of D006-059). `Capability::LeaseWithdrawalV2` (`lease-withdrawal-v2`) joins the
+  closed set, and the migrations `20270211000100_lease_withdrawal_v2` and `20270211000200_lease_withdrawal_v2_validate`
+  add it to the three checks (the floor below is `20270211000150_lease_withdrawal_v2_floor`, split out by D006-100)
+  (the union with every value of `develop`; feature 022's are still on its own branch, and the
+  branch that merges second takes the union, D006-033), `NOT VALID` then validated, its down restoring the list of
+  `20270208000000` (D006-083). The processes list it from Task 006-072 on, in the same commit as the rule it promises (an
+  engine whose registry is silent serves no capability call): a commit that listed it first would announce a rule the binary
+  did not apply. The rules:
+  - **The entry.** `capability-activate lease-withdrawal-v2` covers both kinds, may be activated with nothing live, as
+    `lease-withdrawal-v1` may, and gains the entry field `follows`: the command refuses, saying so, while
+    `lease-withdrawal-v1` is not recorded for both kinds, once before its census and again in its step under the epoch
+    lock, where a removal of `lease-withdrawal-v1` (which takes the same lock) cannot cross it. The order is the command's,
+    not a trigger's: ADR-0100 retired the trigger that would have ordered requirements, and an order broken by hand SQL is
+    harmless here, because a binary that lists `lease-withdrawal-v2` lists `lease-withdrawal-v1` too, and every
+    withdrawal still reads `lease-withdrawal-v1` under its lock (D006-032).
+  - **The floor.** The replay-floor guard refuses to remove `lease-withdrawal-v2` while a journal holds
+    `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED`, the one cause a build without it cannot replay, and, as for
+    `lease-withdrawal-v1` (D006-084), outside READ COMMITTED. So recording it stays reversible until the first withdrawal
+    of 1.8. Its look is a probe of a new partial index, `run_events_lease_not_acknowledged_idx` on `run_events (tenant_id)
+    WHERE event_type = 'step.lease_withdrawn' AND detail->>'cause' = 'NOT_ACKNOWLEDGED'`, built as
+    `run_events_lease_withdrawn_idx` is (`IF NOT EXISTS`, an invalid one refused, the runbook's `CONCURRENTLY` first).
+    The down refuses while the requirement or its history exists, while a registered process lists the capability, or while
+    a journal holds a `NOT_ACKNOWLEDGED` withdrawal.
+  - **The tests that said it was not activatable** (`the_command_activates_only_its_listed_capabilities`, the command-line
+    test of `lease_withdrawal_activation.rs`) are inverted, and new ones show the activation refused without
+    `lease-withdrawal-v1`, refused with it recorded for one kind, recorded with it for both, and the removal refused with a
+    `NOT_ACKNOWLEDGED` row written by SQL fixture (nothing of this build writes one) and allowed with only a `NOT_SENT` one.
+  Weighed: a trigger that refuses recording `lease-withdrawal-v2` before `lease-withdrawal-v1` (ADR-0100's option, retired:
+  it orders nothing the reads under lock do not already make safe); reusing `run_events_lease_withdrawn_idx` and filtering
+  the cause (the probe would read every withdrawal of every cause under the epoch lock, so the removal's 1.5 s bound would
+  depend on how many withdrawals the platform ever made, D006-085); a guard that refuses the removal once any withdrawal
+  exists (it would make the activation one-way from the first `NOT_SENT`, which a build without `lease-withdrawal-v2`
+  replays).
+- **D006-097 — A hand-back of a lease still `LEASED` passes the report fence whatever the cancellation says** (Task
+  006-069; the part of request (1) of D006-059 that belongs to this build). A run whose cancellation was requested, or that
+  is stopping, still has steps `LEASED` to hosts that never started them, and a host that stops hands those back. Without
+  declared secrets the report reached the verdict of D006-030 already; with them, `checked_secret_report` (root) and
+  `live_path_fence` (scoped) refused it `STALE_ATTEMPT`, because the fence let a stop through only for an acknowledged
+  cancellation (`CANCELLED`, not retryable): the lease then lapsed into a review instead of being withdrawn and cancelled
+  at once (D006-011). The fence now takes the closed `StopAllowance`: `None` (any other report), `Cancellation` (the
+  acknowledgement, as before) and `HandBack` (a `TASK_NOT_STARTED`), which lets the stop through only while the step is
+  still `LEASED` to this attempt and generation, judged again on the second fence after the scan. A hand-back of a step that
+  started (a heartbeat made it `RUNNING`) keeps the fence it had, so a secret step whose cancellation was requested cannot
+  record an ordinary failure past it. The verdict that follows is unchanged (the minor that reserves the code, the
+  requirement, the cap), and the withdrawal settles the stopping run in the same command, so the step ends `CANCELLED` with
+  its attempt unspent. What request (1) also asks, the expiry of an acknowledged lease and the lifted expiry of a lease whose
+  mark counts, is behaviour of protocol 1.8 (G006-037). Tested, red first for the two cases with declared secrets (the
+  hand-back answered `STALE_ATTEMPT`, the step still `LEASED`):
+  `a_hand_back_of_a_run_whose_cancellation_was_requested_is_withdrawn` for a root and a scoped lease, each with and without
+  declared secrets (`contract_grpc_durable_execution`). Weighed: allowing every stop for `TASK_NOT_STARTED` (a started
+  secret step whose cancellation was requested could then fail past the fence with a code a handler may have raised before
+  1.8); deciding the hand-back's verdict before the fence (the verdict needs the requirement's lock, which the scan's
+  transaction must not hold across the provider's input and output).
+- **D006-098 — An engine whose registry is silent serves no capability call** (Task 006-072; request (7) of D006-059; the
+  amendment of ADR-0082 decision 5, recorded in its Amendments section and in section 3 of `docs/runbooks/instance-registry.md`).
+  - **The beat.** The migration `20270211000300_instance_heartbeat_reporting_change` adds
+    `instance_heartbeat_reporting_change(p_instance uuid, p_token bytea)`, a function of its own name (the two-argument
+    `instance_heartbeat` keeps its contract for older binaries, and no call is ambiguous). It does what `instance_heartbeat`
+    does, then takes the epoch row `FOR SHARE SKIP LOCKED` and returns that locked read's epoch with
+    `out_change_in_progress = false`; only when an owner transaction holds the row does it read the committed epoch plainly
+    and return `true`. It raises when the row is missing. It takes the epoch after the process's own row and the day rule,
+    so the share lock is held only for the counts and the commit, and it never waits for it, so it adds no wait to the lock
+    order of the registry. `EXECUTE` is revoked from `PUBLIC` and granted to the runtime role; it runs as its owner with the
+    fixed search path. Both kinds call it (their membership is the shared `Member`). Under the share lock an activation
+    waits for the beat, and its census, a statement after its lock under READ COMMITTED, sees the beat's `last_seen`, so it
+    refuses an engine that lacks the capability.
+  - **The decision.** The gate keeps the start of the last registration or beat that succeeded with no change in progress and
+    whose decision under its epoch succeeded (the requirements read again when the epoch moved). Capability calls are served
+    while the gate is open and that start is at most `CAPABILITY_WINDOW` = 25 s old (`LIVENESS` less 5 s). A beat that
+    reports a change in progress is a successful beat for liveness, readiness and the closing rule, applies an epoch that
+    moved (closing the gate when the process lacks what was recorded), keeps the current decision only while it is inside its
+    window and never renews it, so a lapsed one waits for a beat with no change in progress; it is counted in
+    `instance_heartbeats_change_in_progress_total{kind}`. A gate no registry decides (`ServingGate::opened`, a process or
+    a test without a registry) is not bounded. The derivation: a census counts a process live when its `last_seen` is
+    within 30 s, and `last_seen` is written after the beat's start, so a process the census cannot see stopped serving
+    capability calls at least 5 s before; the 5 s cover the clocks of the process and of the database and the time from the
+    second check to the answer.
+  - **The refusal.** `ResolveSecrets`, `ResolveDatabase`, `ReadBlob` and `WriteBlob`, the lease-token calls other than
+    `Heartbeat`, `CompleteStep` and `FailStep` (`AcknowledgeTasks` does not exist before 1.8), are refused `UNAVAILABLE` with
+    the envelope reason `REGISTRY_SILENT` and `retry-after-ms` 1000, counted in
+    `worker_capability_calls_refused_total{method, reason="REGISTRY_SILENT"}`. The gate is checked when the call arrives and
+    again before the first byte of an answer that hands data out (after the secrets or the database credential are
+    resolved and before the answer is built; at the first item of a blob download) and before the store's write of an
+    upload starts. (A resolution refused there is rolled back with its audit: D006-100.) While the window has lapsed
+    the heartbeat tries every second
+    (`RETRY_WHILE_CLOSED`), as for a closed gate, so the calls come back within about a second of the registry answering.
+  - **The connection.** The registry's pool carries the process's statement timeout, at most 5 s
+    (`REGISTRY_STATEMENT_TIMEOUT`); a longer setting is lowered, not refused. With a beat every 12 s at most, each bounded to
+    5 s, a healthy process renews its decision well inside the 25 s.
+  - **The capability.** Every control plane and engine of this build lists `lease-withdrawal-v2` from this task on (D006-096).
+  Tested, each red first: the gate's window at its edges and the beat that reports a change (unit tests of
+  `crates/application/src/instances.rs`); `a_beat_held_behind_an_owner_transaction_reports_the_change_and_does_not_wait`,
+  `an_activation_waits_for_a_beat_that_holds_the_epoch_and_sees_its_last_seen` and the privilege tests
+  (`integration_schedules_bulk_operations`); `a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports`
+  (`contract_grpc_durable_execution`). Weighed: closing the whole gate at 25 s (stops reports and heartbeats too, so a
+  short silence would fail leases whose work is done; the requests asked for capability calls only); measuring from the end
+  of the beat (a beat that waited would count from a moment after the database last saw the process); a fallback that
+  serves while a change is in progress (the open owner transaction is exactly the activation that may forbid the call);
+  checking only on arrival (a call admitted just before the window ends could hand out a secret after it).
+- **D006-099 — A hand-back from a session stored at 1.8 that this build cannot honour lapses** (Task 006-074; request (10) of
+  D006-059, round 16 of the delivery acknowledgement design). A session's stored minor is read for the lease and clamped to
+  this build's ceiling (ADR-0099 decision 9). Before this decision a session stored at 8 or more under a build whose ceiling
+  is below 8 gave an ordinary failure, because the clamped minor does not reserve the code. That happens to a binary rolled
+  back to this build while hosts registered at 1.8 hand back before they register again: each hand-back would spend its
+  attempt, and fail a one-attempt `Activity` for good, for work the host says never ran. Now `hand_back_verdict` takes the
+  stored minor before the clamp beside the clamped one: when the stored one reserves the code and the clamped one does not,
+  the verdict is `Lapse` (nothing written, `STALE_ATTEMPT`, counted `lapsed`), as for a fleet that does not withdraw
+  (D006-089); the clamped minor alone still decides `Withdraw`, so this build never withdraws a hand-back of 1.8. A session
+  stored below 8 is judged as before (the ordinary failure: the code may be a handler's there). Tested, red first: the unit
+  test of the pure verdict (stored 8 with ceiling 6 gives `Lapse`, stored 6 an ordinary failure) and
+  `a_hand_back_from_a_session_stored_at_1_8_that_this_build_cannot_honour_lapses`, root and scoped, with the build's own
+  ceiling (`contract_grpc_durable_execution`); `a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling`, which
+  asserted the ordinary failure, is replaced by it. Weighed: the ordinary failure (the regression of D006-080 after a
+  rollback); withdrawing at the stored minor (this build would honour a reservation it does not implement, the opposite of
+  ADR-0099 decision 9).
+- **D006-100 — Review round 1 of pull request #283, settled** (delegate, OD-2026-11-24-4; every finding fixed; the reports and
+  the commit of each fix are in `reviews/2026-11-25-lease-withdrawal-v2/`).
+  - **The migration of `lease-withdrawal-v2` is split.** `20270211000100` held `ACCESS EXCLUSIVE` on three registry tables
+    to its commit and then built an index over `run_events`, so every heartbeat of a large platform would have waited past
+    its timeout. The index and the guard rewrite moved to `20270211000150_lease_withdrawal_v2_floor`, which touches no
+    registry table; a crate test refuses any later up migration that does both. The downs hold `run_events` in SHARE mode
+    while they look for a `NOT_ACKNOWLEDGED` withdrawal.
+  - **The pause never outruns the window.** After any beat the heartbeat pauses at most until the last start that can
+    still renew the decision (the 25 s window less the registry's 5 s statement timeout and a 1 s margin: 19 s after it),
+    and at most a second once that has passed, so one failed beat never stops a healthy engine's capability calls (a paused
+    runtime test: without the bound the second beat starts at 22.4 s or later). A member's clocks can be given.
+  - **Two clocks.** The decision keeps the wall clock beside the monotonic one, and the window lapses on whichever says
+    so first: the monotonic clock does not advance while a machine is suspended. A wall clock set back counts as no time.
+  - **A process the full table did not take serves no capability call.** No census counts it, so neither its registration
+    nor a beat that registers it again as `FULL` decides the window; its gate still opens for the rest.
+  - **The refusal rolls back what it would have recorded.** Each capability use case (secrets, database credentials, blob
+    reads) asks the gate inside its own transaction just before it commits the audit of the resolution, the pin of a
+    database credential or the audit of a read, and refuses with the new `AppError::RegistrySilent` (`UNAVAILABLE`,
+    `REGISTRY_SILENT`, a retry hint of a second); the counter of secrets handed out moves only after the commit. The
+    transport keeps its checks, and a download asks the gate before every item, not only its first poll. This replaces the
+    sentence of D006-098 that a resolution refused at the second check was audited.
+  - **A statement timeout of 0** (no timeout to PostgreSQL) gives the registry's connection its 5 s.
+  - **`HandBack` is granted only to a session whose minor reserves the code**, judged at the build's ceiling, at the root
+    and in a scope (this narrows D006-097): below 1.8 the code may be a handler's, and a fleet below 1.8 keeps the outcome
+    it had (`STALE_ATTEMPT` from the fence of a cancelled secret step). In this build it is dormant; the tests raise the
+    ceiling.
+  - **Tests added:** a replay of a journal holding a `NOT_ACKNOWLEDGED` withdrawal (SQL fixture); the plan of the floor's
+    probe; the rollback of the follow-up compared, body digest, security and settings, with a database that only ran the
+    migrations up to `20270208000200`; a capability call held behind its run's row while the window lapses, which hands out
+    and records nothing (secrets, blob read, upload); `CompleteStep` and `FailStep` served while silent.
+  - **Starvation, measured.** Eight processes beating in a loop with no pause, while ten activations and removals run
+    under the operator's 2 s lock bound: every one recorded, and the beats went on meanwhile. A beat's share lock lasts only
+    its counts and its commit, so no change was made; the test stays (`beats_without_pause_do_not_starve_an_activation`).
+  The weighed options were the reviewers': the in-transaction check rather than a transport check alone (a refusal after
+  the commit records a hand-out that never happened); a guard of its own migration rather than a lower lock in one
+  (an `ALTER TABLE ... CHECK` takes `ACCESS EXCLUSIVE` whatever is done); a pause bounded on every beat rather than only
+  after a failed one (the same bound, with no state to track which beats renewed).
+- **G006-034 — The writer of `NOT_ACKNOWLEDGED` reads `lease-withdrawal-v2` under the lock its removal waits for in the
+  build of 1.8.** This build writes no such withdrawal, so it has no reader of the requirement under a share lock; the guard
+  of D006-096 is the half that is here. Closed by the task of the delivery acknowledgement build that writes the cause.
+- **G006-035 — A host below 1.8 does not repeat a `REGISTRY_SILENT` refusal.** `sdks/SPEC.md` §5 asks the repetition of 1.8
+  hosts; an older host turns the refusal into the handler's error, so an attempt that resolves a secret, a database or a
+  blob in the window from 25 s of silence fails retryably where it was served before. The window adds 5 s to what ADR-0082
+  decision 5 already closed at 30 s for a failure that is not a lost connection, and a lost connection leaves no database to
+  resolve from. Closed when every host of the fleet is of 1.8 or later; no SDK change is part of this follow-up.
+- **G006-036 — No alert on `worker_capability_calls_refused_total` or `instance_heartbeats_change_in_progress_total`.** The
+  silence that causes them already raises `SagatInstanceRegistrySilent` after a minute; a change left open shows on the
+  second counter only. To be added with the alerts of the delivery acknowledgement build.
+- **G006-038 — The refusal of a database credential at the commit has no end-to-end test.** The check inside
+  `resolve_database` is the one the secret resolution and the blob read use (`capability_window_holds`), tested through
+  them; the contract suite has no managed database step to hold behind its run's row. Closed with a fixture of a managed
+  database step in `contract_grpc_durable_execution` (D006-100).
+- **G006-037 — The rest of request (1) of D006-059 is behaviour of protocol 1.8.** The expiry of an acknowledged lease and the
+  lifted expiry of a lease whose mark counts read the acknowledgement marks, which this build does not write. Closed by the
+  tasks of the delivery acknowledgement build that write them.
+
+## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-069, Gap 006-040 to Gap 006-048, Owner question 006-002)
 
 Owner question 006-001 was answered "Yes, in 0.3.0" (Owner decision 2026-11-20-12), which left the variant, the protocol minor and
 the deadline to this design. All decisions below are "delegate (Owner decision 2026-11-20-6)" unless they say otherwise. The

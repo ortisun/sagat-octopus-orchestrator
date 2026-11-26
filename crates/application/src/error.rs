@@ -295,6 +295,10 @@ pub enum AppError {
     /// A dependency is temporarily unavailable; the caller may retry.
     #[error("service temporarily unavailable")]
     Unavailable,
+    /// The instance registry has been silent past the capability window, so this process hands out nothing (feature 006,
+    /// decision D006-098): retry, another replica or the next beat serves the call.
+    #[error("the instance registry has been silent; capability calls are refused")]
+    RegistrySilent,
     /// What was sent is larger than the endpoint takes.
     #[error("the payload is larger than allowed: {0}")]
     PayloadTooLarge(&'static str),
@@ -353,7 +357,10 @@ impl AppError {
     /// Whether the same request may succeed if repeated later.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Unavailable | Self::Busy { .. })
+        matches!(
+            self,
+            Self::Unavailable | Self::RegistrySilent | Self::Busy { .. }
+        )
     }
 }
 

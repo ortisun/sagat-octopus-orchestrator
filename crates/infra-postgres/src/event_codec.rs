@@ -1647,7 +1647,9 @@ mod tests {
     /// without one, is not replayed (feature 006, decision D006-003).
     #[test]
     fn a_withdrawn_lease_is_an_exact_codec_inverse() {
-        for cause in [WithdrawalCause::NotSent, WithdrawalCause::NotStarted] {
+        // every cause of the closed set, `NOT_ACKNOWLEDGED` of protocol 1.8 included (Task 006-068)
+        assert_eq!(WithdrawalCause::ALL.len(), 3);
+        for cause in WithdrawalCause::ALL {
             let event = RunEvent::StepLeaseWithdrawn {
                 node: node("charge"),
                 attempt: 3,

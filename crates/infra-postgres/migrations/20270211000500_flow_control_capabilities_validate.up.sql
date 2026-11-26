@@ -1,4 +1,4 @@
--- Feature 022: the three registry checks `20270208000300_flow_control_capabilities` added `NOT VALID` are validated, each
+-- Feature 022: the three registry checks `20270211000400_flow_control_capabilities` added `NOT VALID` are validated, each
 -- under `SHARE UPDATE EXCLUSIVE`, so reads and writes go on while a table is scanned (D043-145). Nothing else is in this
 -- transaction. Restamped with its migration from `20270130000700_flow_control_validate`, which validates the other checks
 -- of the feature (decision D006-033 of `specs/006-sdk-multilanguage/research.md`).

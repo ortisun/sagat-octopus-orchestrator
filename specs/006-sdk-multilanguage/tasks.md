@@ -163,6 +163,68 @@ ticked only with the named test and its result, or the command and its output.
 shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 006-064; the integrator, Task 006-065 to Task
 006-067. Shared files have one owner each.
 
+### Follow-up of pull request #260 (requests (1), (2) and (4) to (9) of Decision 006-059)
+
+What Architecture decision 0099 asks of the build of Architecture decision 0098 and pull request #260 left out (Decision 006-090,
+Gap 006-032). Added on 2026-11-24 by the lease-delivery lane, delegate (Owner decision 2026-11-24-4): these tasks carry no
+behaviour of 1.8 and change no guarantee of a fleet below it, so they are built first, on `feature/delivery-acknowledgement`,
+and are opened as a pull request of their own (`feature/lease-withdrawal-v2`, cut at the last of them) so they merge, and are
+released, before the tasks that wait for them. Each test is written first and seen failing; races are held with locks or
+barriers.
+
+- [ ] T006-068 The cause `NOT_ACKNOWLEDGED` (request (2)): in the closed set of `WithdrawalCause`
+  (`crates/domain/src/execution/event.rs` and its `as_str`), the codec of `step.lease_withdrawn`
+  (`crates/infra-postgres/src/event_codec.rs`), the events contract (the contract that lists
+  `step.lease_withdrawn`), the Studio's closed list (`frontend/apps/studio/src/model/events.ts`) and the counter's
+  `cause` label. Nothing writes it in this task: it is replayed only. Evidence: the codec round trip of each cause, a replay of
+  a journal holding `NOT_ACKNOWLEDGED` (`verify_run`), the domain transition test for the cause, the Studio unit test.
+- [ ] T006-069 The hand-back past a cancellation (request (1), the part of this build): a `TASK_NOT_STARTED` on a lease still
+  `LEASED` is withdrawn whatever `cancel_requested` and the stop reason say, also through the report fence of a step with
+  declared secrets (`checked_secret_report` allows a stop only for `CANCELLED` today). Evidence: a contract test for a root and
+  a scoped lease of a run whose cancellation was requested, with and without declared secrets, red first.
+- [ ] T006-070 The two functions again (requests (6) and (8)), as a new migration with `CREATE OR REPLACE FUNCTION` (migration
+  `20270208000000` may have been applied), keeping `SECURITY DEFINER` and `search_path = pg_catalog, pg_temp`: the replay-floor
+  guard's error says "of unmarked leases"; `lease_withdrawal_required()` returns the requirement as recorded only when it is
+  recorded for both kinds. The `/migration` checklist (a down that restores the old bodies), and the privilege test of
+  `prosecdef` and `proconfig` (`tests/integration/schedules-bulk-operations/instances.rs`). Evidence: a requirement recorded for
+  one kind withdraws nothing; the guard's text; the privilege test.
+- [ ] T006-071 `lease-withdrawal-v2` (request (9)): listed by every control plane and engine of this build (it means the binary
+  replays the causes of 1.8 and applies request (7)); in the three closed capability checks (the union with every other branch's
+  values, `scripts/check-architecture.py` rule of Decision 006-033); an entry of the generic `capability-activate` for both kinds
+  that refuses while `lease-withdrawal-v1` is not recorded for both kinds; the replay-floor guard refuses its removal while a
+  journal holds `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED`; the tests that assert it is not activatable
+  (`apps/control-plane/src/capability_activation.rs`, `tests/integration/schedules-bulk-operations/lease_withdrawal_activation.rs`)
+  inverted. Evidence: activation refused without v1 and recorded with it; removal refused with a `NOT_ACKNOWLEDGED` row (written
+  by SQL fixture) and allowed without; the capability parity and closed-list tests.
+- [ ] T006-072 A silent registry serves no capability call (request (7)): the beat as the new function
+  `instance_heartbeat_reporting_change(p_instance uuid, p_token bytea)` (the epoch row `FOR SHARE SKIP LOCKED`, a plain read and
+  `out_change_in_progress = true` only when an owner transaction holds it; raises when the row is missing; `EXECUTE` revoked from
+  `PUBLIC`, granted to the runtime role, `SECURITY DEFINER` and the fixed `search_path`); the registry connection's statement
+  timeout at most 5 s; an engine whose last successful beat started more than 25 s ago (the liveness window less 5 s) answers
+  every lease-token call but `Heartbeat`, `CompleteStep`, `FailStep` (and, at 1.8, `AcknowledgeTasks`) with `UNAVAILABLE`, the
+  envelope reason `REGISTRY_SILENT` and a retry hint, until a beat and the gate's decision under its epoch have both succeeded,
+  the gate checked again before the first byte of an answer that hands data out and before the write of a call that writes;
+  counted in `worker_capability_calls_refused_total{method, reason="REGISTRY_SILENT"}` and
+  `instance_heartbeats_change_in_progress_total{kind}`; the amendment of Architecture decision 0082 decision 5 and section 3 of
+  `docs/runbooks/instance-registry.md`. Evidence: a beat held behind an owner transaction reports the change and keeps the
+  decision only inside the window; a silent engine refuses `ResolveSecrets` and `ResolveDatabase` and serves `Heartbeat`; the
+  activation against a beat that holds the row (`READ COMMITTED`, census after the lock); the privilege test.
+- [ ] T006-073 The documents of the follow-up (requests (4) and (5)): ADR-0098's decisions 5 and 8 get a "Refined by
+  Architecture decision 0099" pointer; its derivation of the cap of four says the causes of 1.8 count toward it (Decision
+  006-031); the runbook `docs/runbooks/lease-withdrawal.md` gains the activation of `lease-withdrawal-v2` and its forward order;
+  Gap 006-032 closed with the merge. Evidence: the documentation checks.
+- [ ] T006-074 A hand-back from a session stored at 1.8 or later that this build cannot honour lapses (request (10) of
+  Decision 006-059, round 16 of the delivery acknowledgement design; added on 2026-11-24, delegate, Owner decision
+  2026-11-24-4): in `hand_back_verdict` (`crates/application/src/worker/withdrawal.rs`), a session whose stored minor,
+  before the clamp, is 8 or more but whose minor clamped to this build's ceiling is below 8 decides `Lapse` (`STALE_ATTEMPT`,
+  nothing written, counted `lapsed`) instead of an ordinary failure; the clamped minor still decides `Withdraw`, so this build
+  never withdraws a hand-back of 1.8. The case: a binary rolled back to this build while hosts registered at 1.8 hand back
+  before they register again; as an ordinary failure each would spend the attempt and fail a one-attempt `Activity` for good.
+  Evidence: the unit test of the pure verdict (stored minor 8 with ceiling 6 gives `Lapse`; stored 6 as today), and a
+  contract test, root and scoped, in `tests/contract/durable-execution/grpc/lease_withdrawal.rs` (the session row raised to 8
+  by SQL as `as_protocol_1_8` does, with `hand_back_ceiling` left at the build's own value): `STALE_ATTEMPT`, the step still
+  `LEASED`, no event written.
+
 ### Server
 
 - [ ] T006-043 The canonical contract in `specs/001-platform-foundation/contracts/worker.proto` ("Added in protocol 1.8"):

@@ -194,9 +194,9 @@ cancel the handler run from its own namespace.
    asked to stop.
 3. **Given** `wait_cancelled`, **then** the handler run is asked to stop and the step stays open until its
    outcome arrives, recorded as it is.
-4. **Given** a call not started by `startTimeoutMs`, **then** the start is withdrawn and the step fails
+4. **Given** a call not started by `scheduleToStartMs`, **then** the start is withdrawn and the step fails
    `OPERATION_START_TIMED_OUT` with effect class `none`. **Given** a started call not finished by
-   `timeoutMs`, **then** the handler run is asked to stop and the platform looks the outcome up for at
+   `scheduleToCloseMs`, **then** the handler run is asked to stop and the platform looks the outcome up for at
    most the outcome lookup window: the step fails `OPERATION_TIMED_OUT` with the handler's effect class,
    or `unknown` when the window passes, and an effect-possible failure goes to compensation or manual
    review (constitution III).
@@ -225,7 +225,7 @@ consumed attempts and call depth across namespaces and child runs.
 
 **Why this priority**: low-latency lookups are a common Nexus use; the mode reuses the async path.
 
-**Independent Test**: bind a flat pinned handler to a sync operation, call it from all five SDKs, then
+**Independent Test**: bind a flat pinned handler to a sync operation, call it from all six SDKs, then
 make the handler exceed the deadline.
 
 **Acceptance Scenarios**:
@@ -317,7 +317,10 @@ derived step kind and comes after the forward path is proven.
   reason and a JSON pointer: an output schema that is not closed and bounded (ADR-0031 §4); a `secret`
   level in an output schema; any classification defect of FR-016-004; a declared code with a reserved
   prefix (`OPERATION_`, `CHILD_`) or equal to a platform code; a sync `maxMs` over 60 s or an async one
-  over 60 days; a schema over 64 KiB.
+  over 60 days; a schema over 64 KiB; an `inputSchema` outside the subset of JSON Schema that design 043
+  validates (`specs/043-run-input-validation/contracts/input-schema-subset.md`), because the handler
+  workflow's `inputSchema` must equal it and that workflow's starts are checked by design 043's gate
+  (corrected 2026-11-24: design 043 landed after this draft).
 - **FR-030-003 — Immutable revisions**: Publishing MUST create the service on first use and an
   immutable revision with a canonical digest; a document equal to an existing revision returns it.
   Referenced revisions are never deleted; deleting a service is a tombstone.
@@ -339,7 +342,10 @@ derived step kind and comes after the forward path is proven.
 
 - **FR-030-007 — `serviceCall` node**: The IR MUST gain, additively (ADR-0032), `type: serviceCall`
   with `endpoint`, `service`, `operation`, a required `input` (an expression producing an object),
-  and optional `timeoutMs` (the operation's `defaultMs` when absent), `startTimeoutMs`,
+  and optional `scheduleToCloseMs` (the operation's `defaultMs` when absent), `scheduleToStartMs`
+  (corrected 2026-11-24: renamed from `timeoutMs` and `startTimeoutMs` so that a name means the same on
+  every node, design 045; the node has no `timeoutMs` and no `retry`, because an operation is never
+  retried automatically and its declared failure codes are for the `onError` route),
   `cancelPolicy` (`abandon`, `request_cancel` default, `wait_cancelled`), `contractRevision`, `next`
   and `onError`, and the required `inputDisclosure: "declared-service-input-v1"`, by which the caller
   publisher declares that the input values leave the caller namespace. Its output schema is the pinned
@@ -351,7 +357,8 @@ derived step kind and comes after the forward path is proven.
   rules (FR-030-021, FR-030-039), and pin endpoint identity and contract revision per node, immutably
   with the version. Promotion (011) resolves names again in the destination.
 - **FR-030-009 — Scheduling**: When a `serviceCall` activates, the platform MUST evaluate the input and
-  validate it against the pinned schema, check
+  validate it against the pinned schema with design 043's validator (the same subset, work budget and
+  permits; corrected 2026-11-24), check
   caller-side quotas, call depth and the publisher's current
   `service:call`, and commit together the waiting step with its deadlines, the call record, the start
   request, the journal event, the audit record and the hint. A refusal fails the step with a typed code
@@ -367,7 +374,11 @@ derived step kind and comes after the forward path is proven.
   the caller namespace is allow-listed, the pinned revision is served, the binding resolves to a
   compatible version, that the input holds no envelope (031, FR-030-039), and
   depth and handler-side limits allow it, then start the handler run through the
-  existing admission semantics (input = operation input, deadline = operation deadline, the handler
+  existing admission semantics and through design 043's run-input gate (a new creating path, creator
+  label `service`, as design 043 Technical Plan 1 requires of feature 030; corrected 2026-11-24): an
+  input the gate refuses ends the start with `START_REFUSED` and `OPERATION_INPUT_INVALID` (or
+  `RUN_INPUT_SCHEMA_UNUSABLE`), a transient refusal of the gate (no permit, interrupted) defers the
+  start like a refusal for room (input = operation input, deadline = operation deadline, the handler
   version publisher's authority, actor `system:service-operation`), record the execution and send
   `STARTED`.
 - **FR-030-012 — Refusal and deferral**: A non-retryable refusal (endpoint deleted, caller not allowed,
@@ -396,11 +407,12 @@ derived step kind and comes after the forward path is proven.
 
 **Deadlines and cancellation**
 
-- **FR-030-016 — Deadlines**: The effective timeout MUST be the minimum of `timeoutMs`, the operation's
+- **FR-030-016 — Deadlines**: The effective timeout MUST be the minimum of `scheduleToCloseMs`, the operation's
   `maxMs`, the caller run's remaining deadline and the deployment ceiling; the start timeout is at most
   the timeout; the handler run's deadline is the `deadline_at` carried by the `START`, that is the
-  caller's effective deadline. Deadlines are workflow time in 028's time-class catalog; first commit
-  wins between a deadline and a notification. When the deadline passes after admission, the caller
+  caller's effective deadline. Deadlines are workflow time in 028's time-class catalog, which is the
+  database clock outside a test deployment (ADR-0063), the clock design 045 uses for the deadlines of a
+  leased step; first commit wins between a deadline and a notification. When the deadline passes after admission, the caller
   sends `CANCEL` and waits at most the outcome lookup window (default 60 s, hard 15 min) for the
   handler outcome before settling with `unknown`.
 - **FR-030-017 — Cancellation**: Cancelling the caller step MUST withdraw a start that is not yet
@@ -487,7 +499,7 @@ derived step kind and comes after the forward path is proven.
   links to the other side; it follows the journal sequence (ADR-0016), uses design tokens, meets WCAG AA
   with table alternatives, draws no sample values (FR-007-010) and shows unknown nodes as unsupported
   (FR-014-017).
-- **FR-030-034 — SDKs and CLI**: The five SDK builders MUST emit byte-identical `serviceCall` nodes and
+- **FR-030-034 — SDKs and CLI**: The six SDK builders MUST emit byte-identical `serviceCall` nodes and
   `Service` documents for the same program, their clients and the CLI MUST cover publication, endpoint
   management and operation reads, and one shared conformance suite MUST cover builders, outcomes,
   cancellation, sync, security and faults.
@@ -514,6 +526,12 @@ derived step kind and comes after the forward path is proven.
   or handler run); any `service_call.*` event of a call still open at the reset point is `REFUSE`;
   `service_operation.cancel_requested` and `service_operation.completed` are `EXCLUDE`; the `cause`
   field of a handler run's `run.started` is copied as provenance and the reset run backs no operation.
+- **FR-030-040 — Approval of contract and endpoint changes (O1482, decided 2026-11-24)**: In a namespace
+  whose publication policy asks for approvals (FR-011-003), publishing a contract revision and saving an
+  endpoint revision (binding, served revisions, allow-list, limits) MUST go through feature 011's
+  publication-request flow, with the same separation of author and approver; pause and resume, which
+  change no binding, stay immediate and audited. In any other namespace the change applies at once and is
+  audited, as before.
 - **FR-030-039 — No encoded values across namespaces (031 D1667)**: Encoded values MUST NOT cross the
   boundary in v1, because a 031 envelope binds its tenant, namespace and location (031 D1556) and no
   platform component may re-encode. Therefore: a `Service` document's `inputSchema` and `outputSchema`
@@ -581,14 +599,14 @@ All evidence below is future evidence, not completed tests.
 | Criterion | Required automated proof | Requirements |
 |---|---|---|
 | SC-030-001 | Every contract and endpoint defect class (at least 14) is refused with its reason and pointer; an identical document returns the same revision; endpoint revision conflicts are detected | FR-030-001..006 |
-| SC-030-002 | The same async call succeeds and fails with a declared code identically in all five SDKs on the real engine, with equal normalized journals of both runs | FR-030-007..015, 034 |
+| SC-030-002 | The same async call succeeds and fails with a declared code identically in all six SDKs on the real engine, with equal normalized journals of both runs | FR-030-007..015, 034 |
 | SC-030-003 | A crash before and after each of the eight runtime commit points, a `COMPLETED` applied before its `STARTED` and a dead `STARTED` leave at most one handler run and exactly one applied caller outcome per operation, in 100% of injected cases, with no timeout of a call whose handler finished in time | FR-030-009..014, 028 |
 | SC-030-004 | Each message kind delivered twice and every hint dropped: no second effect, and every call finishes within the polling bound; settled messages are purged after their retention while pending and dead ones never are | FR-030-010, 014, 028, 029 |
 | SC-030-005 | 100 rounds each of completion-vs-timeout and cancellation-vs-admission end with exactly one winner and an audited no-op loser | FR-030-014, 016, 017 |
 | SC-030-006 | The isolation battery yields zero unauthorized handler runs and zero disclosed results | FR-030-006, 008, 011, 013, 024, 025 |
 | SC-030-007 | Secret, unmarked, undeclared-field and undeclared-code canaries appear in no projection, log, span, metric or audit of either namespace; classified fields reach only their audience; an input field looser than its caller source is refused at publication | FR-030-020..023, 030 |
 | SC-030-008 | Each quota and ceiling of both sides refuses or defers before work with its reason; deferrals consume no attempts; depth holds across namespaces and child runs | FR-030-012, 026, 027 |
-| SC-030-009 | The three cancellation policies, both deadlines and a handler-side cancel behave as specified in all five SDKs | FR-030-016..018 |
+| SC-030-009 | The three cancellation policies, both deadlines and a handler-side cancel behave as specified in all six SDKs | FR-030-016..018 |
 | SC-030-010 | A flat pinned sync handler is accepted and a waiting or floating one refused; a late sync call fails `OPERATION_TIMED_OUT` and stops its handler run | FR-030-005, 019 |
 | SC-030-011 | One exported trace spans both namespaces with reciprocal links; every metric label is in its closed set; every decision of FR-030-031 has its audit record; the Studio shows both links and the lag | FR-030-030..033 |
 | SC-030-012 | Existing workflows, runs, SDK clients and an older Studio pass unchanged; with the capability disabled publication fails `UNSUPPORTED_NODE` and calls in flight finish | FR-030-035 |
@@ -596,7 +614,7 @@ All evidence below is future evidence, not completed tests.
 | SC-030-014 | A benchmark report states environment, configuration, p50/p95/p99 and failures for NFR-030-005; no figure is published without it | NFR-030-005 |
 | SC-030-016 | For every effect-possible outcome (timeout after admission inside and outside the lookup window, revocation, invalid result, abandon, handler `PARTIAL`) the step is compensated in a saga or enters manual review outside one; never `onError`; the late outcome is visible for lookup | FR-030-015..017, 037 |
 | SC-030-017 | A reset with a finished call in its prefix replays equal to its projection and creates no call record, message or handler run; a reset point with an open call is refused | FR-030-038 |
-| SC-030-018 | In all five SDKs: an encoding annotation in a `Service` document, a binding to a handler that declares encoding and a `serviceCall` whose input maps an encoded location are refused with 031's codes; an envelope smuggled at an undeclared location is refused at admission and withheld from a result at runtime; no encoded value is ever stored in the other namespace | FR-030-039 |
+| SC-030-018 | In all six SDKs: an encoding annotation in a `Service` document, a binding to a handler that declares encoding and a `serviceCall` whose input maps an encoded location are refused with 031's codes; an envelope smuggled at an undeclared location is refused at admission and withheld from a result at runtime; no encoded value is ever stored in the other namespace | FR-030-039 |
 | SC-030-015 | An engine restart and a shard takeover during 1,000 concurrent calls finish all of them without operator action or fence violation | FR-030-011, 014, 028 |
 
 ## Assumptions
@@ -616,8 +634,14 @@ All evidence below is future evidence, not completed tests.
   008 telemetry and alerts (ADR-0017); 009 RBAC, quotas, audit; 010 shards (ADR-0020); 011 versions and
   promotion; 014 additive IR, declared disclosure, chains (ADR-0030/0031/0032/0037); 016
   classification (ADR-0033; the carrier extension needs its owner); 017 pinning pattern.
-- **Parallel drafts, by scope only**: 018 business workflow ids (attaching callers, G1482), reset-rule
-  registry and ADR-0050 lock order; 020 search attributes and content-store registry; 022 standalone
+- **Built since this draft (corrected 2026-11-24)**: 018 schedules, business ids, Signal-with-Start and
+  Update-with-Start, the reset-rule registry and ADR-0050's lock order (accepted); design 043, which makes
+  the handler run's start a checked creating path (FR-030-002, FR-030-009, FR-030-011); design 045 (in
+  review), whose deadline names and clock FR-030-007 and FR-030-016 use, and whose buffered signals apply
+  inside the handler namespace only (a signal to a handler run is an ordinary signal of that namespace;
+  this feature adds no cross-namespace signal).
+- **Parallel drafts, by scope only**: 018 business workflow ids for attaching callers (G1482, a later
+  increment); 020 search attributes and content-store registry; 022 standalone
   steps (more sync handler kinds, O1480) and draft-test-run mocks; 028 time-skipping tests and
   time-class catalog; 029 custom roles, folders and evaluator (G1488); 031 encoded-field registry,
   codes and D1667 (G1497); 032 multi-region placement (G1484).
@@ -631,7 +655,8 @@ services and endpoints; a service marketplace.
 
 ## Owner questions
 
-[research.md](research.md#owner-questions) records three choices with recommended defaults, which this
-specification applies until answered: O1480 (handler kinds for sync operations), O1481 (in-flight
-results after allow-list removal or endpoint deletion) and O1482 (publication approval for contract
-and endpoint changes in protected namespaces).
+[research.md](research.md#owner-questions) records three choices, decided on 2026-11-24 under the owner's
+delegation (Owner decision 2026-11-24-4): O1480 (a), flat handler workflows for sync operations in this
+increment; O1481 (a), fail closed after allow-list removal or endpoint deletion; O1482 (b), contract
+revisions and endpoint revisions go through the publication-request flow in a namespace whose policy
+asks for approvals (FR-030-040).

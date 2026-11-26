@@ -11,9 +11,9 @@ baselines regenerated deliberately and reviewed.
 | [workflow-encoding.md](workflow-encoding.md) | `workflow.schema.json` (description of the annotation on the carriers; no structural change), `docs/reference/workflow-document.md` | T031-006 |
 | [worker-protocol.md](worker-protocol.md) | `worker.proto`, `worker.baseline.json` | T031-007 |
 | [openapi-fragment.yaml](openapi-fragment.yaml) | `openapi.yaml`, `frontend/apps/studio/src/api/schema.d.ts` | T031-008 |
-| [errors.md](errors.md) | `openapi.yaml` (`details.reason`), `sdks/error-catalog.json` and the five embedded copies | T031-009 |
+| [errors.md](errors.md) | `openapi.yaml` (`details.reason`), `sdks/error-catalog.json` and its embedded copies (Go, .NET, Java, Rust; corrected 2026-11-24) | T031-009 |
 | [sdk-codec.md](sdk-codec.md) | `sdks/SPEC.md` (new section), `tests/contract/sdk-conformance/scenarios/` | T031-033 |
-| [codec-server.openapi.yaml](codec-server.openapi.yaml), [codec-assertion.md](codec-assertion.md) | new `specs/001-platform-foundation/contracts/codec-server.openapi.yaml`; `docs/guides/client-side-encryption.md` | T031-050 |
+| [codec-server.openapi.yaml](codec-server.openapi.yaml), [codec-assertion.md](codec-assertion.md) | new `specs/001-platform-foundation/contracts/codec-server.openapi.yaml`; `docs/guides/client-side-encryption.md`; the black-box suite `contract_codec_server` | T031-050 |
 
 `events.asyncapi.yaml` does not change: outgoing webhooks and NATS hints carry no payload values, and an event document
 that wakes a wait carries the event data as it was published (envelopes included, if the publisher encoded them).

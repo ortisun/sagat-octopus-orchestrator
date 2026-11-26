@@ -3,6 +3,11 @@
 Baseline investigation: 2026-10-26, worktree `feature/018-032-parity-specs` cut from `origin/develop` at
 `70f09435` (release 0.2.0). Nothing below is implemented; repository observations describe that revision.
 
+Corrected 2026-11-24 against `origin/develop` at `2c94064f`: what changed in the repository since the baseline, the
+decisions D019-001 to D019-014 and the gaps G019-001 to G019-005 that follow from it, and the decisions of the owner
+questions are in [Corrections and decisions of 2026-11-24](#corrections-and-decisions-of-2026-11-24). Where a
+correction changes the meaning of an entry below, the entry says "Corrected 2026-11-24".
+
 ## Repository evidence (verified paths)
 
 - **Protocol and negotiation.** `crates/application/src/worker.rs` sets `PROTOCOL_MINOR = 6`
@@ -95,7 +100,9 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
   transaction, so replay reconstructs pins. Pins live in a tenant-keyed table; repins journal
   `run.deployment_repinned`.
 - **D1045 — Behaviour precedence:** node declaration › start option › workflow-version default › namespace default.
-  The namespace default is `autoUpgrade` pending O1040.
+  The namespace default is `autoUpgrade` pending O1040. *Corrected 2026-11-24 (D019-010):* there is no namespace
+  setting to hold a default; the precedence is node declaration › start option › workflow-version default › the
+  deployment's `defaultBehavior` › `autoUpgrade` (O1040, decided).
 - **D1046 — Inheritance.** Children inherit pins and dispatch options at admission; Continue-As-New inherits by
   default and `continueAsNew.deployment: current` drops pins. The workflow version is never changed (FR-014-012).
 - **D1047 — `UNVERSIONED` is a pseudo-version row per deployment.** A new deployment's current is `UNVERSIONED`,
@@ -176,7 +183,9 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
 - **D1062 — Steps that declare secrets or carry blobs are not push-eligible.** A function has no session to call
   `ResolveSecrets` or `ReadBlob`, and sending values in the envelope would be credentials leaving the platform.
 - **D1063 — A timeout or broken connection after sending is `OUTCOME_UNKNOWN`,** reusing feature 003's
-  reconciliation and manual-review semantics; it is never retried blindly for `highRisk` steps.
+  reconciliation and manual-review semantics; it is never retried blindly for `highRisk` steps. *Corrected
+  2026-11-24 (D019-004):* since feature 037 an unknown outcome is never retried blindly for any step (FR-037-006,
+  FR-037-009; `highRisk` authorizes no exception), and a lapsed push lease (`LEASE_EXPIRED`) is an unknown outcome too.
 - **D1064 — Push capacity is exact.** The push claim takes, after the run lock and the shard fence (the order the
   scheduler already uses), the tenant, namespace and endpoint push advisory locks in that order, and counts active push
   leases through a partial index under them (bounded by the ceilings, at most 1,024 rows per tenant), so two claims for different endpoints cannot both
@@ -190,7 +199,9 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
   keyring syscalls are already denied by the engine's default seccomp profile and the suite asserts it. A warm container saves container creation and
   removal; the 005 report gives a 443 ms whole cold run against a 104 ms start (TypeScript) but does not split
   running from removal, so the saving is a measurement of this feature (NFR-019-005), not a claim. In-process
-  reuse would also save interpreter start but keeps module state between runs (O1042).
+  reuse would also save interpreter start but keeps module state between runs (O1042). *Corrected 2026-11-24
+  (D019-009):* everything above is the `reused` mode; the default warm mode is now `prepared` (a container created
+  ahead and used by one run), which needs no residue acknowledgement.
 - **D1066 — Output scanning in a warm container covers every value it was handed;** any change of a handed secret
   evicts it. *Revised 2026-10-27:* scanning also covers checkpoints; the trigger for "a change" is explicit — slot
   renewals and warm-eligible leases carry the version digest of the declared secret set and the runner evicts on a
@@ -205,18 +216,23 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
 - **D1069 — One protocol minor per wire slice:** `1.N` deployment identity and dispatch facts, `1.N+1` checkpoints,
   `1.N+2` detach; each a superset of the previous, advertised only when its slice's evidence passes and the store
   declares the path (the `protocol_ceiling` pattern). A single minor would either wait for every slice or change
-  meaning between releases, which ADR-0015 rejected. Numbers are assigned at integration (G1048).
+  meaning between releases, which ADR-0015 rejected. Numbers are assigned at integration (G1048). *Corrected
+  2026-11-24 (D019-002):* the coordinator assigned the next free minors when the contract merges, 1.10, 1.11 and 1.12
+  at the time of writing (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045).
 - **D1070 — Four new permissions:** `deployment:manage` (admin, operator), `task:complete` (admin, worker),
   `push:manage` (admin), `script:warm:manage` (admin). The catalog grows from 48 to 52; feature 029's custom roles
-  consume them.
+  consume them. *Corrected 2026-11-24:* the catalog has 53 permissions today (`Permission::ALL` in
+  `crates/domain/src/identity.rs`, after features 017 and 018); it grows to 57.
 - **D1071 — No new `Error.code`.** Reasons and durable step failure codes are listed in
-  [contracts/errors-and-events.md](contracts/errors-and-events.md).
+  [contracts/errors-and-events.md](contracts/errors-and-events.md). *Corrected 2026-11-24:* `sdks/error-catalog.json`
+  has 44 codes today; this feature still adds none.
 - **D1072 — Deployment management is REST, CLI and Studio, not SDK clients.** CI pipelines use the CLI; SDKs
   receive the worker-side identity, checkpoints, detach, async completion client, start options and verifier.
 - **D1073 — `PlatformVersion` gains an optional `features` list** so SDKs send dispatch options only to servers
   that accept them (an older server refuses unknown properties with `BAD_REQUEST`, which stays fail-closed).
 - **D1074 — Migration timestamps are allocated at implementation** after the newest migration on `develop`
-  (today `20261220000000_reveal_grants_role_change`); this draft names migrations by slug only.
+  (today `20261220000000_reveal_grants_role_change`); this draft names migrations by slug only. *Corrected
+  2026-11-24:* the newest migration on `develop` is now `20270119000000_batch_purge`.
 - **D1075 — One namespace dispatch-catalog fence.** Deployment pattern changes and push-endpoint activity changes
   take one namespace advisory fence exclusively; every claim takes it shared before the deployment fences. A pattern
   added while a claim is in flight therefore cannot let a lease commit that the committed catalog forbids, and the
@@ -262,7 +278,10 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
 - **G1047 — Static provider keys in OpenBao;** workload identity federation for AWS and Google is not built.
 - **G1048 — Protocol minor numbers** (three) collide with other 018–032 drafts: at hand-over the drafts of 020, 021,
   025 and 026 in this worktree also propose "1.7" for their own additions (as 014 and 017 collided, ADR-0036). The
-  coordinator must allocate one ordered sequence; this feature's text uses `1.N`–`1.N+2` for that reason.
+  coordinator must allocate one ordered sequence; this feature's text uses `1.N`–`1.N+2` for that reason. *Closed
+  2026-11-24 (D019-002):* the register of `sdks/SPEC.md` §9 decides; 019 takes the next free minors when its contract
+  merges (1.10 to 1.12 at the time of writing). The text keeps `1.N` to `1.N+2` so that it stays true if another feature
+  merges a minor first.
 - **G1049 — Fairness keys may still contain personal data** a start-option caller or a literal author chose (they
   are classified `internal`, not inspected); raw keys are shown only to `payload:read-internal` holders.
 - **G1050 — Insights lag by up to one monitor round;** exact counts exist only at retirement.
@@ -292,11 +311,24 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
   safe because the engine does not replay workflow code), `pinned` (safest for incompatible activity changes, but
   drains last longer), or no default (authors must declare). **Recommended: `autoUpgrade`,** with `pinned`
   declared per workflow or step.
+  **Decided 2026-11-24: `autoUpgrade`, delegate (OD-2026-11-20-6).** The engine replays no workflow code, so an
+  auto-upgrade step meets only the activity contract of the build routed at its claim, and a bad build is rolled back by
+  one routing change instead of a repin of every run it pinned; teams with incompatible activity changes say `pinned`
+  per workflow, step or deployment (`defaultBehavior`, D019-010). Design 044 (workflow as code) decides its own default
+  for code-first workflows, which replay and so need `pinned` as Temporal does (D019-012).
 - **O1041 — Token-only external completion.** Allow a serverless function or external system without a platform
   identity to complete with the task token alone? **Recommended: no;** require an authenticated principal with
   `task:complete` (D1058). A future opt-in per endpoint would need its own threat review.
+  **Decided 2026-11-24: no, delegate (OD-2026-11-20-6).** A token alone would be a bearer credential that third-party
+  systems log and forward; with an authenticated principal every completion has an accountable actor, authentication
+  fails closed (constitution principle V), and a leaked token is useless without that identity. A per-endpoint opt-in
+  would need its own threat review and is not offered (G019-005).
 - **O1042 — In-process reuse in warm containers.** Allow a mode that keeps the interpreter and module state between
   runs (Windmill-style)? **Recommended: not in this feature;** fresh process per invocation only (ADR-0052).
+  **Decided 2026-11-24: no, delegate (OD-2026-11-20-6).** Module globals, caches and timers would carry one customer's
+  data to another's run with no check able to prove otherwise; the `prepared` mode of ADR-0052 (D019-009) already takes
+  container creation off the critical path, so in-process reuse would buy only interpreter start at an isolation cost
+  the platform is built not to pay.
 
 ## Independent review (2026-10-26)
 
@@ -333,6 +365,159 @@ Every Blocking and Should-fix finding for 019 was applied; minor findings were a
 | Sec M7 Lambda `Event` retries vs window | Documented (G1058), runbook task T019-061 |
 | Sec M8 / 031 S2 fairness `{expr}` and checkpoints vs encoded fields | Fixed on the 019 side: FR-019-012 and FR-019-017 call the FR-031-006 check (031 adds the consumers) |
 | Arch minors (fence wording, pins `closed_at`, exact `task_tokens` count, registration fence, US08 wording, verifier deadline, ADR-0013 pointer task, eviction reasons, runner permission) | Fixed: plan, data model, spec, contracts, T019-001 |
+
+## Corrections and decisions of 2026-11-24
+
+The draft was checked against `origin/develop` at `2c94064f` and against the work in flight that it must compose
+with: pull request #260 (lease withdrawal, ADR-0098), pull request #264 (delivery acknowledgement at protocol 1.8,
+ADR-0099, accepted by the owner in OD-2026-11-21-5, OD-2026-11-21-6 and OD-2026-11-21-7), design 041 (step logs, protocol
+1.7, approved), design 045 (activity timeouts and non-retryable error codes, protocol 1.9, ADR-0110 proposed, being
+written), feature 022 (ADR-0088 and ADR-0089) and design 038. The agent that did it decided in the owner's place under
+OD-2026-11-24-4 and OD-2026-11-20-6.
+
+### Repository evidence today
+
+- **Protocol.** `crates/application/src/worker.rs` still has `PROTOCOL_MINOR = 6`; 1.7 is taken by design 041
+  (`AppendStepLogs`, `RegisterWorkerResponse.step_logs = 4`, server on `feature/041-step-logs-server`), 1.8 by delivery
+  acknowledgement (`AcknowledgeTasks`, `TaskLease` fields 23 and 24, `WorkerCapabilities` field 10), 1.9 by design 045
+  (`TaskLease` fields 26 and 27, `FailStepRequest` field 14). Draft 031 moved to `TaskLease` field 25 and
+  `WorkerCapabilities` field 7. The canonical `worker.proto` on `develop` still ends at `TaskLease` field 18,
+  `HeartbeatRequest` field 8, `HeartbeatResponse` field 2 and `FailStepRequest` field 12.
+- **Claim.** `crates/infra-postgres/src/workers.rs` keeps `claimable_query!`, `CLAIMABLE` and `pool_refused!` over
+  `steps_ready_idx`; design 038 added the claim's run read (`RunStore::begin_claim`, which returns a run only with a
+  ready step the session serves), the poll turn (`crates/application/src/worker/poll_order.rs`), the claim counters
+  (`claim_counters.rs`) and the statement budget of `integration_claim_transition_efficiency`.
+- **Unknown outcomes.** `FailureCode::outcome_unknown_codes()` in `crates/domain/src/execution/event.rs` lists
+  `LEASE_EXPIRED` and `ATTEMPT_TIMEOUT` among seven codes; a lapsed lease goes to reconciliation or review, never back to
+  `READY` (`docs/architecture/execution-semantics.md`, "Recovery"; feature 037).
+- **Fleet activation.** The instance registry of ADR-0082 is built (`crates/application/src/instances.rs`,
+  `apps/execution-engine/src/capabilities.rs`, `apps/control-plane/src/registry.rs`); capabilities such as
+  `schedules-v1` are recorded by the operator.
+- **Names already taken.** `crates/application/src/dispatch.rs` and `crates/infra-postgres/src/dispatch.rs` are the event
+  dispatcher of feature 004, so the draft's new domain module `dispatch.rs` would read as part of it (D019-011).
+- **Dependencies already present.** `aws-sigv4` is already a dependency of `crates/infra-connectors`, `jsonwebtoken` of
+  the workspace, and Ed25519 signing uses `ring` in `crates/application/src/script_signing.rs`; no new signing library is
+  needed.
+- **Feature 018.** `Action::Repin` exists in `crates/domain/src/batch.rs`, refused while 019 is off, and requires only
+  `run:operate` (`crates/application/src/batch.rs`); the OpenAPI `repin` parameter is an untyped object. 018's reset-rule
+  registry (`specs/018-schedules-bulk-operations/contracts/journal-and-events.md`) already lists this feature's rows.
+- **Counts.** 53 permissions (D1070), 44 error codes (D1071), newest migration `20270119000000_batch_purge` (D1074),
+  six SDKs (TypeScript, Go, Python, C#, Java and Rust, ADR-0070), not five.
+- **Paths.** The Java script host is `runners/java/api/sagat/inline/InlineScript.java` (there is no `Octopus.java`); the
+  Rust SDK's worker is `sdks/rust/src/worker.rs`; the .NET worker is `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/`.
+
+### Decisions
+
+- **D019-001 — Each capability is a fleet requirement.** `worker-deployments-v1`, `dispatch-priority-v1`,
+  `heartbeat-checkpoints-v1`, `async-completion-v1` and `push-dispatch-v1` (control planes and engines) and
+  `warm-scripts-v1` (control planes) are requirements of the instance registry (ADR-0082). Until the operator records one,
+  its REST and IR surfaces refuse it (`VALIDATION_FAILED`, reason `DISPATCH_ACTIVATION_PENDING`, with
+  `details.requirement`), its minor is not offered and `PlatformVersion.features` does not list it; once recorded, a
+  process without it serves nothing. Why: in a rolling upgrade an engine of the previous build would lease a routed step
+  without the routing predicate, or accept a gRPC report on a detached lease, which is the second authority ADR-0051
+  forbids; a per-process flag cannot prevent that (ADR-0051 decision 8; precedents ADR-0089 decision 6 and ADR-0110
+  decision 8).
+- **D019-002 — Minors and field numbers.** The three minors are the next free ones when the contract merges (1.10, 1.11,
+  1.12 at the time of writing). Minors are cumulative: a host of any of them carries the host procedures of 1.8 (it
+  acknowledges a flagged lease before it runs it) and 1.9 (the handler heartbeat of design 045), so in each SDK the work
+  of 1.8 and 1.9 comes first. Field numbers stay as drafted (`TaskLease` 19 to 22, `WorkerCapabilities` 6,
+  `HeartbeatRequest` 9 and 10, `HeartbeatResponse` 3, `FailStepRequest` 13, the `DetachStep` rpc) except
+  `RegisterWorkerResponse.deployment_version_state`, which moves from 4 (design 041's `step_logs`) to 5.
+- **D019-003 — Provisional leases of protocol 1.8.** `DetachStep` takes a lease token and is not one of `Heartbeat`,
+  `CompleteStep`, `FailStep` and `AcknowledgeTasks`, so it is a capability call (ADR-0099 decision 8): on a provisional
+  lease it is refused `FAILED_PRECONDITION` with `TASK_NOT_ACKNOWLEDGED` and changes nothing; on any other lease the
+  detach transaction itself writes `lease_capability_generation` for the lease's generation, so a detached lease can
+  never be withdrawn as "not started". A `Heartbeat` on a provisional lease is served as 1.8 says, but details it carries are not stored
+  (`DETAILS_NOT_ACKNOWLEDGED`), and details on a hand-back (`FailStep` with `TASK_NOT_STARTED`) are ignored. Therefore no
+  withdrawn lease ever owns a checkpoint, and the attempt number a withdrawal reuses never meets a stored checkpoint of
+  the withdrawn lease in the order key `(attempt, holder epoch, sequence)`. `AppendStepLogs` (1.7) joins the calls that
+  refuse a `detached` or `push` holder; `AcknowledgeTasks` answers `NOT_HELD` for such a lease.
+- **D019-004 — Detached and push lapses are unknown outcomes.** `DETACHED_TIMEOUT` (the detached heartbeat timeout or the
+  maximum detached duration passed) ends a live attempt whose external system may have applied the effect, so it joins
+  `outcome_unknown_codes()` and its parity test, and the step goes to consultation through `reconcileWith` or to review
+  (FR-037-006, FR-037-009), never to a blind retry; a lapsed push lease is `LEASE_EXPIRED` like any lease. The draft's
+  "retried under the step's retry policy" contradicted feature 037. A checkpoint is delivered to the next attempt whenever
+  there is one: after a retryable failure, after a withdrawal, after a reconciliation that settles "not applied", or
+  after an operator's retry; and the reconciliation lease carries the forward attempt's checkpoint
+  (`target_checkpoint`), which is what lets a reconciler see how far the attempt got. Temporal retries a timed-out activity
+  blindly; this keeps the checkpoint and refuses the blind retry.
+- **D019-005 — Claim cost and order with design 038.** Routing eligibility (pin, bucket route, unversioned rule) joins the
+  predicate of the claim's run read, so an ineligible candidate is dropped without a projection load (FR-038-002). The
+  claim of a step outside every deployment, with no checkpoint to deliver, adds no statement to the recorded budget: the
+  shared catalog fence is taken inside a statement the claim already runs. Every other added statement (deployment
+  fences, routing re-read, pin insert, checkpoint read) is a new budget line in the change that adds it (FR-038-001). The
+  window is fetched in claim order (priority, fairness position, `ready_at`); the poll turn of FR-038-004 rotates the start
+  point only among candidates of the same priority, so a lone poller is served strictly in claim order.
+- **D019-006 — Composition with the gates of feature 022.** A step gated by `concurrency` or `rateLimit` waits as
+  `WAITING(RATE_LIMIT)` or `WAITING(CONCURRENCY)` outside `READY` (ADR-0089 decision 1) and is no candidate of this
+  feature's claim. Its grant follows (priority, enqueue instant) (ADR-0089 decision 4, D1602 of 022, G1610); after the
+  grant it is `READY` with its effective priority and key and is ordered by this feature like any other step, its age
+  counted from that `READY`. Insights count gated steps apart (`gated`), never as ready backlog, so an operator sees that
+  work waits for a gate and not for a worker.
+- **D019-007 — Composition with design 045.** `ctx.heartbeat(details?)` is one call: design 045 (1.9) defines it without
+  details as the handler heartbeat of `heartbeatFrom: "handler"`; this feature adds the optional details from 1.N+1, so a
+  checkpoint call is a handler heartbeat. A node's `heartbeatTimeoutMs` (045) governs its leases while a session or the
+  push invoker holds them; once detached, the detached heartbeat timeout of `asyncCompletion` governs instead. The
+  maximum detached deadline is never later than the attempt's deadline (045: the earlier of the claim time plus
+  `timeoutMs` and the step's schedule-to-close deadline; before 045, the claim time plus `timeoutMs`) nor the run
+  deadline. A step waiting in `READY` behind higher priorities or other fairness keys can be ended by 045's
+  schedule-to-start deadline; this feature does not change that rule. A node with `heartbeatFrom: "handler"` is not
+  push-eligible, because the invoker cannot observe a function's progress. This feature designs none of 045's behaviour.
+- **D019-008 — A push request never written is withdrawn.** When the connection fails before the request was written
+  (connect or DNS failure), the invoker withdraws the lease as ADR-0098 decision 3 withdraws a lease never handed to the
+  transport (cause `NOT_SENT`, the step back to `READY`, no attempt spent), while `lease-withdrawal-v1` is recorded and the
+  attempt has fewer than four withdrawals; otherwise the attempt fails with the retryable `PUSH_UNAVAILABLE`. The
+  endpoint breaker counts both. Such a lease's hash is not retained in `step_ended_leases`, because its token was never
+  sent.
+- **D019-009 — Warm containers have two modes; `prepared` is the default.** A prepared container is created and started
+  ahead with only the artifact, serves exactly one run through an engine `exec` and is removed after the result is
+  reported; it needs no residue acknowledgement, reset or residue check, and keeps ADR-0013's one container per run. The
+  draft's mode becomes `reused`, acknowledged, with all of its checks. Why: the user story asks for latency, and creation
+  before the first instruction is what the prepared mode removes; reuse saves runner capacity per run, which only some
+  namespaces need (ADR-0052, revised). A container serves only runs whose resource limits equal its own.
+- **D019-010 — Behaviour precedence.** Node declaration › start option › workflow-version default › deployment
+  `defaultBehavior` › `autoUpgrade`. The draft named a namespace default that no table holds; the deployment's default,
+  already in the data model, is where a team sets it (O1040).
+- **D019-011 — The domain module is `crates/domain/src/worker_dispatch.rs`.** The pure rules (deployment names, build
+  ids, version states, routing, the bucket, behaviour precedence, dispatch options, the fairness share, the task token
+  codec, push response verdicts) live there; `dispatch` already names the event dispatcher in the application and the
+  store.
+- **D019-012 — Deployment versions are the routing unit design 044 can reuse.** Owner decision OD-2026-11-24-3 brings
+  workflow as code, replayed against the journal, for which Temporal's reason for Worker Versioning (replay determinism)
+  applies again. This feature does not design it; it keeps its deployment, version, pin and claim predicate free of
+  anything specific to activities beyond the owned patterns, so that design 044 can add owned workflow types and route
+  their tasks by the same rules, pinned by default.
+- **D019-013 — Test targets.** Following the repository's pattern, the contract target is two:
+  `contract_rest_worker_deployments_dispatch` (`tests/contract/worker-deployments-dispatch/rest/main.rs`) and
+  `contract_grpc_worker_deployments_dispatch` (`tests/contract/worker-deployments-dispatch/grpc/main.rs`); the benchmark
+  is `perf_worker_deployments_dispatch` (`tests/performance/worker-deployments-dispatch/main.rs`). All are registered in
+  the first build slice, so no later slice edits `tests/Cargo.toml`.
+- **D019-014 — 018's `REPIN` uses this feature's single-run repin.** `Action::Repin` requires `deployment:manage` and
+  `run:operate` (today only `run:operate`), and its `repin` parameter is `{deployment, target}`, `target` being a
+  `VersionRef`; the batch job's reason is the repin's reason. Each item runs the single-run repin transaction.
+
+### Gaps
+
+- **G019-001 — A lapsed attempt with a checkpoint still waits for consultation or review.** The checkpoint shows
+  progress, not that the effect did not happen, so it never authorizes an automatic retry (FR-037-021); an author who
+  wants unattended recovery declares `reconcileWith`.
+- **G019-002 — The SDK minors of this feature wait for 1.8 and 1.9 in each SDK.** Until delivery acknowledgement (feature
+  006) and design 045 have their host procedures in an SDK, that SDK cannot advertise 1.N.
+- **G019-003 — Capabilities wait for their fleet requirement.** A cluster whose operator has not recorded a requirement
+  cannot use the capability, by design (D019-001); the runbook names the command.
+- **G019-004 — Insights do not explain why a gated step waits.** They count gated steps (D019-006); the reason and the
+  key are 022's to show.
+- **G019-005 — No token-only completion.** A system without a platform identity cannot complete an attempt (O1041); a
+  future per-endpoint opt-in needs its own threat review.
+- **G019-006 — Push to AWS Lambda and Cloud Run is not tested against the real services.** The deployment-gated runs of T019-051
+  need cloud accounts, which the project does not have (Owner decision 2026-11-25-1); until then push is proven against the local
+  test doubles only, and the release notes say so. Recorded 2026-11-26 on the coordinating session's decision.
+
+### Checklist acceptance
+
+The four unticked items of `checklists/requirements.md` were accepted on 2026-11-24, delegate (OD-2026-11-24-4), with
+the reason written on each item. The coordinator records the acceptance in a row of `docs/owner-decisions.md`, as the
+transitional clause of the constitution asks.
 
 ## Cross-feature consistency (coordinator decisions, 2026-10-27)
 

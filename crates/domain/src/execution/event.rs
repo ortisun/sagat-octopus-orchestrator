@@ -467,31 +467,37 @@ pub enum ReconcileResult {
     Review(FailureCode),
 }
 
-/// Why a lease that never reached a handler was withdrawn (feature 006, decisions D006-001 and D006-005; ADR-0098).
+/// Why a lease that never reached a handler was withdrawn (feature 006, decisions D006-001 and D006-005; ADR-0098; the third
+/// cause is ADR-0099's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WithdrawalCause {
     /// The server committed the lease and never handed the frame that carried it to the transport.
     NotSent,
     /// A host received the lease and handed it back (`TASK_NOT_STARTED`) before any handler of it ran.
     NotStarted,
+    /// A provisional lease of protocol 1.8 that its host never acknowledged before its deadline (ADR-0099). This build only
+    /// replays it (Task 006-068, Decision 006-059 request (2)), so that it can be the rollback floor of a build that writes it.
+    NotAcknowledged,
 }
 
 impl WithdrawalCause {
+    /// Every cause, in the order of the closed set.
+    pub const ALL: [Self; 3] = [Self::NotSent, Self::NotStarted, Self::NotAcknowledged];
+
     /// The closed token the journal stores and the timeline shows.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NotSent => "NOT_SENT",
             Self::NotStarted => "NOT_STARTED",
+            Self::NotAcknowledged => "NOT_ACKNOWLEDGED",
         }
     }
 
     /// The cause a stored token names; `None` for any other text.
     #[must_use]
     pub fn parse(token: &str) -> Option<Self> {
-        [Self::NotSent, Self::NotStarted]
-            .into_iter()
-            .find(|cause| cause.as_str() == token)
+        Self::ALL.into_iter().find(|cause| cause.as_str() == token)
     }
 }
 

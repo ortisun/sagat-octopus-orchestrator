@@ -2,10 +2,12 @@
 
 **Branch**: `feature/019-worker-deployments-dispatch` | **Date**: 2026-10-26 | **Spec**: [spec.md](spec.md)
 
-Status: Proposed — not started.
+Status: Approved for implementation (Owner decision 2026-11-11-1) — not started. Corrected 2026-11-24 against
+`develop` at `2c94064f` and the work in flight ([research](research.md#corrections-and-decisions-of-2026-11-24)).
 
 **Input**: [spec.md](spec.md), [research.md](research.md), [data-model.md](data-model.md),
-[contracts/](contracts/), proposed [ADR-0051](../../docs/adr/ADR-0051-dispatch-modes-are-variations-of-the-attempt-lease.md)
+[contracts/](contracts/), accepted (2026-11-24, delegate (OD-2026-11-24-4))
+[ADR-0051](../../docs/adr/ADR-0051-dispatch-modes-are-variations-of-the-attempt-lease.md)
 and [ADR-0052](../../docs/adr/ADR-0052-warm-script-containers-are-an-opt-in-exception-to-one-container-per-run.md).
 
 ## Summary
@@ -17,23 +19,29 @@ considers; checkpoints ride on heartbeats; detach changes the expiry and holder 
 derived from it; push invocation is a claim made by an engine-side invoker instead of a gRPC session; warm script
 containers change only where the runner executes an attempt it leased normally. No routing table, token store,
 broker or process becomes an authority over who may report an attempt: the run row, the fence and the lease token
-remain that authority.
+remain that authority. Each capability is switched on for the whole fleet by a requirement of the instance registry
+(ADR-0082, D019-001), so no process of a rolling upgrade serves it without honouring it.
 
 ## Technical Context
 
-**Language/Version**: Rust (pinned by `rust-toolchain.toml`); TypeScript/React Studio; five SDKs (TypeScript, Go,
-Python, C#, Java).
+**Language/Version**: Rust (pinned by `rust-toolchain.toml`); TypeScript/React Studio; six SDKs (TypeScript, Go,
+Python, C#, Java, Rust; corrected 2026-11-24, the draft said five).
 
-**Primary Dependencies**: existing Tokio, Axum, tonic, SQLx, `reqwest` (inside `crates/infra-egress`), `ed25519`
-signing already used for script artifacts; new adapter-only dependencies in `crates/infra-connectors`: an AWS
-SigV4 signer and a JWT signer for Google service-account assertions (versions pinned in `Cargo.lock` at
-implementation; none enters `crates/domain`).
+**Primary Dependencies**: existing Tokio, Axum, tonic, SQLx, `reqwest` (inside `crates/infra-egress`), Ed25519
+signing through `ring` as `crates/application/src/script_signing.rs` already signs script artifacts. Corrected
+2026-11-24: no new signing library is needed — `aws-sigv4` is already a dependency of `crates/infra-connectors`
+(ADR-0025 brokers) and `jsonwebtoken` of the workspace, used there for Google service-account assertions; none
+enters `crates/domain`.
 
 **Storage**: PostgreSQL (authority). New tables and additive columns in [data-model.md](data-model.md).
 
-**Testing**: `cargo test` targets `contract_worker_deployments_dispatch`, `integration_worker_deployments_dispatch`,
-`fault_worker_deployments_dispatch`, `e2e_worker_deployments_dispatch` (new, `tests/Cargo.toml`), the shared
-`sdk_conformance` target, `contract_rest_security_multitenancy` battery, Studio Vitest/Playwright, per-SDK suites.
+**Testing**: `cargo test` targets `contract_rest_worker_deployments_dispatch`,
+`contract_grpc_worker_deployments_dispatch`, `integration_worker_deployments_dispatch`,
+`fault_worker_deployments_dispatch`, `e2e_worker_deployments_dispatch`, `perf_worker_deployments_dispatch` (new,
+`tests/Cargo.toml`; corrected 2026-11-24 to the repository's split of contract targets, D019-013), the shared
+`sdk_conformance` target, the `contract_rest_security_multitenancy` battery, the claim budget of
+`integration_claim_transition_efficiency` (design 038), `integration_inline_code_sandbox`, Studio Vitest/Playwright,
+per-SDK suites.
 
 **Target Platform**: Linux containers (engine, control plane, sandbox runner); Kubernetes chart `infra/helm`.
 
@@ -45,22 +53,24 @@ implementation; none enters `crates/domain`).
 **Constraints**: one transaction per transition; database clock; runtime role without row locks; finite ceilings;
 no tenant/run/build/endpoint/key in metric labels.
 
-**Scale/Scope**: 40 FR, 6 NFR, 13 SC, 8 user stories; three protocol minors; four permissions; twelve new tables.
+**Scale/Scope**: 42 FR, 7 NFR, 14 SC, 8 user stories; three protocol minors; four permissions; six fleet
+requirements; twelve new tables.
 
 ## Architecture and crate placement
 
 | Concern | Domain (`crates/domain`) | Application (`crates/application`) | Adapters | Apps |
 |---|---|---|---|---|
-| Deployments, versions, routing, buckets, pins | new `src/dispatch.rs`: `DeploymentName`, `BuildId`, `VersionState`, `Routing`, `bucket(run, deployment)`, `route()`, behaviour precedence | new `src/deployments.rs` (management, repin, retire); claim hooks in `src/worker.rs` | `crates/infra-postgres/src/workers.rs` (claim predicate), new `src/deployments.rs`, migration; `crates/api-http/src/routes/` new `deployments.rs`; `crates/api-grpc/src/service.rs` (registration fields) | `apps/cli/src/` new `deployments.rs` |
-| Priority, fairness | `src/dispatch.rs`: `DispatchOptions`, effective attributes at activation; weighted max-min moved from `crates/scheduler/src/fairness.rs` | claim window selection in `src/worker.rs` | `CLAIMABLE` ordering and index in `workers.rs` | — |
-| Checkpoints | `src/execution/command.rs` (`heartbeat` accepts details), events `step.*` digest fields | `src/worker.rs` heartbeat/fail; disclosure carrier in `src/payload_disclosure.rs` | new `crates/infra-postgres/src/checkpoints.rs`; `crates/infra-ir/src/` (`heartbeatSchema`) | `apps/sandbox-runner/src/host.rs` (supervisor call) |
-| Detach and task tokens | `src/execution/command.rs` (`detach`, detached expiry), `TaskToken` codec | new `src/task_completion.rs` | `crates/api-http/src/routes/` new `task_completions.rs`; `crates/api-grpc/src/service.rs` (`DetachStep`) | — |
-| Push dispatch | `src/dispatch.rs`: `PushEndpoint`, response verdicts (pure, like `sagat_domain::outbound::judge_response`) | new `src/push.rs` (claim for endpoint, report) | new `crates/infra-connectors/src/push.rs` (guarded client, SigV4, ID tokens, signing); new `crates/scheduler/src/push.rs` loop; `crates/infra-postgres/src/` new `push.rs` | `apps/execution-engine/src/{loops.rs,settings.rs}` |
-| Warm containers | `src/scripts.rs`: `WarmPolicy` bounds | `src/sandbox.rs` (policy service, runner views) | `crates/infra-sandbox/src/docker.rs` and `protocol.rs` (serve loop, residue check); `crates/api-http/src/routes/{scripts.rs,runner.rs}` | `apps/sandbox-runner/src/{lib.rs,config.rs,host.rs}` |
-| Insights | `src/dispatch.rs`: `InsightSubject` | `src/operations.rs` (list workers, insights) | `crates/scheduler/src/monitor.rs` (sampling), `crates/infra-postgres/src/workers.rs` | — |
+| Deployments, versions, routing, buckets, pins | new `src/worker_dispatch.rs` (D019-011): `DeploymentName`, `BuildId`, `VersionState`, `Routing`, `bucket(run, deployment)`, `route()`, behaviour precedence | new `src/deployments.rs` (management, repin, retire); claim hooks in `src/worker.rs` | `crates/infra-postgres/src/workers.rs` (claim predicate), new `src/deployments.rs`, migration; `crates/api-http/src/routes/` new `deployments.rs`; `crates/api-grpc/src/service.rs` (registration fields) | `apps/cli/src/` new `deployments.rs` |
+| Priority, fairness | `src/worker_dispatch.rs`: `DispatchOptions`, effective attributes at activation; weighted max-min moved from `crates/scheduler/src/fairness.rs` | claim window selection in `src/worker.rs` | `CLAIMABLE` ordering and index in `workers.rs` | — |
+| Checkpoints | `src/execution/command.rs` (`heartbeat` accepts details), events `step.*` digest fields | `src/worker.rs` heartbeat/fail; disclosure carrier in `src/payload_disclosure.rs` | new `crates/infra-postgres/src/checkpoints.rs`; `crates/infra-ir/src/` (`heartbeatSchema`); `crates/api-http/src/routes/runner.rs` (script checkpoints from the runner) | `apps/sandbox-runner/src/host.rs` (supervisor call) |
+| Detach and task tokens | `src/execution/command.rs` (`detach`, detached expiry), `TaskToken` codec; `DETACHED_TIMEOUT` in `outcome_unknown_codes()` (`src/execution/event.rs`) | new `src/task_completion.rs` | `crates/api-http/src/routes/` new `task_completions.rs`; `crates/api-grpc/src/service.rs` (`DetachStep`, holder check); `crates/scheduler/src/passes.rs` (detached expiry) | — |
+| Push dispatch | `src/worker_dispatch.rs`: `PushEndpoint`, response verdicts (pure, like `sagat_domain::outbound::judge_response`) | new `src/push.rs` (claim for endpoint, report, withdrawal of an unsent request) | new `crates/infra-connectors/src/push.rs` (guarded client, SigV4 through the existing `aws-sigv4`, ID tokens through `jsonwebtoken`, envelope canonicalization and Ed25519 signing through `ring`); new `crates/scheduler/src/push.rs` loop; `crates/infra-postgres/src/` new `push.rs` | `apps/execution-engine/src/{loops.rs,settings.rs}` |
+| Warm containers | `src/scripts.rs`: `WarmPolicy` bounds and mode | `src/sandbox.rs` (policy service, runner views, slot checks) | `crates/infra-sandbox/src/docker.rs` and `protocol.rs` (prepared and reused serve loops, residue check); `crates/api-http/src/routes/{scripts.rs,runner.rs}` | `apps/sandbox-runner/src/{lib.rs,config.rs,host.rs}` |
+| Insights | `src/worker_dispatch.rs`: `InsightSubject` | `src/operations.rs` (list workers, insights) | `crates/scheduler/src/monitor.rs` (sampling), `crates/infra-postgres/src/workers.rs` | — |
 | Telemetry, audit, permissions, quotas | `src/audit.rs`, `src/identity.rs`, `src/quota.rs` | `src/quotas.rs` | `crates/telemetry/src/{metrics.rs,redact.rs}` | — |
+| Fleet activation (D019-001) | — | `src/instances.rs` (the six capabilities and their kinds) | — | `apps/execution-engine/src/capabilities.rs`, `apps/control-plane/src/registry.rs` |
 
-`scripts/check-architecture.py` keeps the new dependencies (SigV4, JWT) in `crates/infra-connectors` only. Shared
+`scripts/check-architecture.py` keeps SigV4, JWT and outbound HTTP for push in `crates/infra-connectors` only. Shared
 types cross module boundaries without mappers; wire types (`api-grpc`, `api-http`) map only where the wire shape
 differs (task token string, envelope JSON). No serde_json value is a business type in the domain: checkpoint
 details are opaque bytes validated by the adapter, like step outputs.
@@ -84,6 +94,26 @@ occupy **slot 4**, catalog fence before deployment fence, ahead of 017/021/024/0
 run rows (slot 6), 022 semaphores (slot 7) and quota rows (slot 8). This feature's run admission takes no 019 fence
 (child pin copies are read under the parent reservation); claims, repins and Detach are transitions on an existing
 run and keep ADR-0050's rule for them: run row first, then the 019 fences, quota rows last.
+
+Corrected 2026-11-24, what the claim items below also obey (research D019-003 to D019-008):
+
+- **Claim cost (design 038).** Routing eligibility joins the predicate of the claim's run read (`RunStore::begin_claim`),
+  so an ineligible candidate is dropped without a projection load. For a step outside every deployment the shared
+  catalog fence is taken inside a statement the claim already runs, and no other 019 statement runs, so the recorded
+  budget of `integration_claim_transition_efficiency` is unchanged; every other added statement is a budget line
+  (NFR-019-007). The poll turn (FR-038-004) rotates the start point only among candidates of the same priority.
+- **Provisional leases (protocol 1.8).** A claim for a session at 1.8 or later may mark the lease provisional as ADR-0099
+  says; this feature changes nothing in that marking. `DetachStep` is a capability call (refused `TASK_NOT_ACKNOWLEDGED`
+  on a provisional lease; on any other lease the detach transaction writes `lease_capability_generation`); heartbeat
+  details on a provisional lease are not stored; details of a hand-back are ignored.
+- **Unknown outcomes (feature 037).** A detached attempt that times out ends `DETACHED_TIMEOUT` and a lapsed push lease
+  `LEASE_EXPIRED`; both go to reconciliation or review in the expiry transaction, exactly as a lapsed worker lease does.
+- **Gates of feature 022.** A gated step is not `READY`, so it is no candidate; the claim reads no semaphore or window
+  (ADR-0089 decision 1).
+- **Fleet requirements.** Each transaction that starts using a capability (a routing change to a version other than
+  `UNVERSIONED`, admission with dispatch options, a heartbeat with details, Detach, a push endpoint save, a warm policy
+  save) first checks that its requirement is recorded (the registry's epoch read the process already carries, ADR-0082
+  decision 4), and refuses `DISPATCH_ACTIVATION_PENDING` otherwise.
 
 1. **Run admission** (existing transaction): run row with dispatch options and versioning behaviour,
    `run.started` carrying them, initial steps with effective attributes, child pin copies from the parent, quota,
@@ -132,8 +162,10 @@ run and keep ADR-0050's rule for them: run row first, then the 019 fences, quota
    checkpoints that would be stored (after coalescing). Refusals record a bounded audit. No journal event per beat.
 8. **Fail with details / lease expiry** — existing transactions; the final checkpoint is stored and the ending
    event carries its digest and size.
-9. **Detach** — run lock, fence, node declares `asyncCompletion`; step marked detached, expiry =
-   now + detached heartbeat timeout (bounded by maximum duration, step timeout and run deadline), lease holder
+9. **Detach** — run lock, fence, node declares `asyncCompletion`, lease not provisional (else `TASK_NOT_ACKNOWLEDGED`,
+   nothing written), `lease_capability_generation` written for the lease's generation; step marked detached, expiry =
+   now + detached heartbeat timeout (bounded by the maximum detached deadline, which is never later than the attempt's
+   deadline or the run deadline, D019-007), lease holder
    becomes `detached`, holder epoch 1, session in-flight released, `step.detached`, audit, commit. The `task_tokens`
    quota is exact: Detach and the push `202` path take the namespace task-token advisory lock and count detached
    attempts through the partial index `steps_detached_idx` before the transition. The token is computed from the
@@ -160,7 +192,11 @@ run and keep ADR-0050's rule for them: run row first, then the 019 fences, quota
     invoker acts for owned shards; shared catalog fence; tenant, namespace and endpoint push fences, counting active push
     leases through `steps_push_leases_idx` (exact ceilings); drain fence and routing are not applicable (push activities are outside deployments);
     lease, `step.leased` with `dispatchMode: push` and
-    endpoint revision; outbox; commit. The HTTP request starts after commit.
+    endpoint revision; outbox; commit. The HTTP request starts after commit. If the connection fails before the request
+    is written, a withdrawal transaction under the run lock acts only on a step still `LEASED` with the issued generation
+    and lease-token hash, appends `step.lease_withdrawn` (cause `NOT_SENT`) and returns the step to `READY` with its attempt
+    set back by one (ADR-0098 decision 3), while `lease-withdrawal-v1` is recorded and the attempt has fewer than four
+    withdrawals; otherwise the report path fails it `PUSH_UNAVAILABLE` (D019-008).
 13. **Push report** — the invoker reports through the same application functions as a worker report, idempotency
     key `push-<task_id>`; the provider credential was resolved after the claim commit as the revision's secret
     binding, rechecked against the revision's `boundBy` principal (secret exists, its access list allows that
@@ -176,7 +212,7 @@ run and keep ADR-0050's rule for them: run row first, then the 019 fences, quota
     extend it and return the current version digest of the declared secret set (also carried by every warm-eligible
     lease); a container whose slot lease is not live, or whose digest differs, MUST NOT serve a run and is evicted.
     Each execution report carries the slot id; the control plane checks it is live and matches tenant, namespace,
-    artifact and secret set, and records `temperature` (cold or warm) with the execution and the attempt. Quotas are
+    artifact and secret set, and records `temperature` (`cold`, `prepared` or `reused`) with the execution and the attempt. Quotas are
     therefore exact across runners.
 15. **Insights sample** — leased monitor round writes the namespace's snapshot rows; no run lock.
 16. **Session activity** — conditional `UPDATE … WHERE last_x_at < now() - 5 s` in the poll and heartbeat
@@ -190,7 +226,7 @@ transaction; credentials are resolved after the claim commit and dropped when th
 
 | Registry (owner) | 019 entries | Task |
 |---|---|---|
-| Reset rules for journal events (018, `specs/018-schedules-bulk-operations/contracts/journal-and-events.md`, C1) | `run.deployment_pinned`, `run.deployment_repinned` → `REMATERIALIZE`; `run.started` dispatch, `step.leased` details, `step.detached`, ending-event checkpoint details → `COPY` ([contracts](contracts/errors-and-events.md#journal-events-additive)) | T019-068 |
+| Reset rules for journal events (018, `specs/018-schedules-bulk-operations/contracts/journal-and-events.md`, C1) | `run.deployment_pinned`, `run.deployment_repinned` → `REMATERIALIZE`; `run.started` dispatch, `step.leased` details, `step.detached`, ending-event checkpoint details → `COPY` ([contracts](contracts/errors-and-events.md#journal-events-additive)); 018's table already lists these rows (checked 2026-11-24) | T019-068 |
 | Merged admission lock order (ADR-0050, C4) | slot 4: 019 catalog fence → 019 deployment fence | T019-068 |
 | Placement rule (ADR-0055, C3) | push envelopes are case (b) | T019-068 |
 | FR-016-002 carriers (016 amendment, C6) | `heartbeatSchema` on `activity` and `script` | T019-067 |
@@ -198,7 +234,10 @@ transaction; credentials are resolved after the claim commit and dropped when th
 | Content stores (020, C8) | `step_checkpoints.details`, `runs.fairness_key` | T019-068 |
 | Key inventory (032, C11) | push signing key (`SAGAT_PUSH_SIGNING_KEY` and retired public keys) | T019-068 |
 | Time classes (028, C13) | detached-lease expiry and token validity `infrastructure`; maximum detached deadline `workflow_due` ([data model](data-model.md#time-classes-028)) | T019-068 |
-| Batch actions (018, C14) | `REPIN` uses this feature's single-run repin | T019-068 |
+| Batch actions (018, C14) | `REPIN` uses this feature's single-run repin; `Action::Repin` exists in `crates/domain/src/batch.rs` with only `run:operate`, and this feature adds `deployment:manage` and types its `repin` parameter (D019-014) | T019-025 |
+| Instance registry (ADR-0082) | requirements `worker-deployments-v1`, `dispatch-priority-v1`, `heartbeat-checkpoints-v1`, `async-completion-v1`, `push-dispatch-v1`, `warm-scripts-v1` (D019-001) | T019-069 |
+| Worker-protocol minors (`sdks/SPEC.md` §9, OD-2026-11-15-8) | the next three free minors (1.10 to 1.12 at the time of writing) | T019-003 |
+| OCSF mapping (design 040, FR-040-001) | every new audit action | T019-009 |
 | Script host calls (023, C17) | reserved `checkpoint` call | T019-032 |
 | Permit order (022, C19) | 022 grants by this priority (1 first), then enqueue time | T019-042 |
 
@@ -218,7 +257,7 @@ transaction; credentials are resolved after the claim commit and dropped when th
 | Manage warm policies | **`script:warm:manage`** | admin | residue acknowledgement |
 | Read checkpoint values | existing disclosure (`payload:read-internal`, `payload:reveal-pii` grant) | per ADR-0033 | structure-only by default |
 
-`Role::ADMIN_PERMISSIONS` gains the four new permissions; `Operator` gains `deployment:manage`; `Worker` gains
+`Role::ADMIN_PERMISSIONS` gains the four new permissions (the catalog grows from 53 to 57; corrected 2026-11-24); `Operator` gains `deployment:manage`; `Worker` gains
 `task:complete`. `Runner` and `DatabaseRunner` gain nothing: the runner's warm-slot routes require its existing
 `script:execute`, scoped to its token's tenant. Foreign resources are opaque `NOT_FOUND`; a denied
 call is audited with the existing bounded deduplication.
@@ -242,7 +281,7 @@ call is audited with the existing bounded deduplication.
 | Checkpoint bytes per heartbeat (`heartbeat_detail_bytes` policy) | 16 KiB | 64 KiB |
 | Stored checkpoint writes per attempt | 1 per second | 1 per second (final always) |
 | Detached heartbeat timeout | 5 min | 24 h |
-| Detached maximum duration | step timeout | 30 days, never past run deadline |
+| Detached maximum duration | the attempt's deadline | 30 days (2,592,000,000 ms), never past the attempt's deadline or the run deadline |
 | Detached attempts per namespace (`task_tokens` quota) | 10,000 | 100,000 |
 | External completion output | 256 KiB inline | 256 KiB |
 | Push endpoints per namespace (`push_endpoints` quota) | 20 | 100 |
@@ -256,7 +295,7 @@ call is audited with the existing bounded deduplication.
 | Push response bytes | 256 KiB | 256 KiB |
 | Push breaker | opens after 10 consecutive failures for 60 s | 100 failures / 10 min |
 | Warm containers per namespace / tenant (`script_warm_containers`, `tenant_script_warm_containers`) | 0 / 0 | 8 / 32 |
-| Warm uses per container | 100 | 1,000 |
+| Warm uses per container (`reused` mode; a `prepared` container serves exactly one) | 100 | 1,000 |
 | Warm idle / lifetime | 2 min / 10 min | 10 min / 1 h |
 | Warm slot lease TTL (renewed by the runner) | 60 s | 300 s |
 | Insights subjects returned | 200 | 500 |
@@ -276,14 +315,17 @@ published lower and the gap stays open.
 | Version retired while a session polls | retirement refused while any lease is active; after it, the version is ineligible at every claim and its sessions are closed in step (c) | binding-revocation path; stale reports `STALE_ATTEMPT` |
 | Pinned version has no live worker | steps `READY`, alert `STEP_UNCLAIMED`, insights flag | no automatic reroute; operator repins |
 | Lost Detach response | lease already detached | repeat Detach → same token, `already_applied` |
-| Detached timeout vs external completion | first commit wins | loser audited no-op |
+| Detached timeout vs external completion | first commit wins | loser audited no-op; a winning timeout is `DETACHED_TIMEOUT`, an unknown outcome: reconciliation or review |
 | Token of reclaimed attempt | `CONFLICT`/`STALE_ATTEMPT` only after its secret matches a retained ended-lease hash | secret first, then generation |
 | Forged token (known ids, guessed secret) | opaque `NOT_FOUND`, no receipt read | constant-time hash comparison before anything else |
 | Decoded token replayed on gRPC (`ResolveSecrets`, `ReadBlob`, `CompleteStep`…) | `STALE_ATTEMPT` (`DETACHED`/`PUSH_HELD`) | holder check on every lease-token call |
 | Async push function completes before the invoker records its `202` | completion commits; the invoker's later handling is a no-op | push-held async-capable attempts accept external reports |
 | Pattern change racing a routing change | serialized by catalog → deployment fences | race test in T019-020 |
 | Out-of-order checkpoints | newest sequence kept | sequence guard |
-| Push replica dies mid-request | lease expires, retried with same key | function receives duplicate; at least once |
+| Push replica dies mid-request | lease lapses `LEASE_EXPIRED`, an unknown outcome | reconciliation or review (feature 037); a later attempt keeps the idempotency key; at least once |
+| Push connection fails before the request is written | lease withdrawn, no attempt spent (cause `NOT_SENT`) | ADR-0098 withdrawal under its cap; otherwise `PUSH_UNAVAILABLE` |
+| `DetachStep` on a provisional lease (protocol 1.8) | nothing changes | `FAILED_PRECONDITION`, `TASK_NOT_ACKNOWLEDGED`; counted as a violation by 1.8 |
+| Engine of the previous build in a rolling upgrade | the capability's requirement is recorded only when every live engine has it | ADR-0082: a process without it is refused and serves nothing |
 | Push timeout after send | `OUTCOME_UNKNOWN` | reconcile or manual review (003) |
 | Push endpoint resolves to forbidden address | attempt fails `PUSH_DESTINATION_DENIED`, health `DENIED`, breaker holds claims | audited once per window |
 | OpenBao unavailable for push credentials | retryable `PUSH_UNAVAILABLE` | no fallback, no credential cache on disk |
@@ -316,8 +358,8 @@ published lower and the gap stays open.
 - `push_invocations_total{kind="https|aws_lambda", outcome="success|failure|rejected|unknown|denied|timeout"}`,
   `push_invocation_duration_seconds{kind,outcome}`, `push_inflight` (gauge), `push_breaker_open_total`
 - `script_warm_acquisitions_total{outcome="hit|miss"}`, `script_warm_evictions_total{reason="residue|limit|uses|idle|lifetime|policy|trust_key|secret|slot_lost"}`,
-  `script_warm_containers{state="idle|busy"}`; `script_start_seconds{language,temperature}` gains the value
-  `pooled`
+  `script_warm_containers{state="idle|busy"}`; `script_start_seconds{language,temperature}` gains the values
+  `prepared` and `reused`; `worker_leases_undelivered_total` (ADR-0098) counts push withdrawals under its existing labels
 
 **Logs**: structured and redacted; task tokens (`sgtt1.` prefix), provider credentials, signatures, envelopes,
 checkpoints and fairness keys (logged as digest) never appear. `crates/telemetry/src/redact.rs` learns the token
@@ -344,15 +386,19 @@ the runner, bounded).
   index is built `CONCURRENTLY` in its own migration; the runbook states lock time.
 - **Protocol**: three consecutive minors (`1.N` deployment identity and dispatch facts, `1.N+1` checkpoints,
   `1.N+2` detach), each a superset of the previous, each advertised only after its slice's evidence passes and the
-  store declares its path (`protocol_ceiling` pattern). Workers at 1.0–1.6 are served exactly as today and are unversioned.
+  store declares its path (`protocol_ceiling` pattern). Workers below `1.N` (1.0 to 1.9 at the time of writing) are served exactly as today and are unversioned. Minors are cumulative: a 019 host also carries the 1.8 and 1.9 host procedures.
 - **REST**: optional properties and new operations only; `PlatformVersion.features` (D1073).
 - **IR**: additive fields under ADR-0032; publication refuses a field whose capability the server does not enable.
 - **Runs in flight**: old runs and steps have null dispatch columns, read as priority 3, no key, auto-upgrade,
   no pin; their behaviour is unchanged. A deployment created over activities with in-flight runs routes them to
   `UNVERSIONED` until an operator changes routing.
+- **Fleet activation** (D019-001): each capability is used only after the operator records its requirement in the
+  instance registry (ADR-0082); before that its surfaces refuse `DISPATCH_ACTIVATION_PENDING` and its minor is not
+  offered, after it a process without the capability is refused and serves nothing.
 - **Rollback**: disable the capabilities (no new deployments, detach, push, warm policies); readers keep decoding
   stored pins, checkpoints and detached attempts until they drain; an older engine is not a safe reader of runs
-  with detached attempts (ADR-0032 point 8) and the runbook says so.
+  with detached attempts (ADR-0032 point 8) and the runbook says so; while a requirement is recorded the registry
+  refuses such an engine.
 
 ## Constitution Check
 
@@ -360,9 +406,9 @@ the runner, bounded).
 |---|---|---|
 | I. State and retry semantics | Pass | Pins, routing, checkpoints, detach, external and push reports commit in the run/claim transactions listed above; first commit wins; stale fences refused; terminal runs never reopen |
 | II. Ports and adapters | Pass | pure routing, bucket, fairness and verdicts in `crates/domain`; SigV4/JWT/HTTP in `crates/infra-connectors`; no mapper without semantics |
-| III. At-least-once effects | Pass | push and external completion keep idempotency keys; timeout after send is `OUTCOME_UNKNOWN`; compensation pinned to forward version |
-| IV. Versioned and pinned compatibility | Pass | workflow versions unchanged; deployment pins orthogonal; additive minor, REST, IR and AsyncAPI; five-SDK conformance |
-| V. Isolation, tenant boundary, secrets | Justified | tenant-keyed tables, opaque `NOT_FOUND`, credentials per invocation; warm containers relax per-run isolation only by opt-in (Complexity Tracking, ADR-0052) |
+| III. At-least-once effects | Pass | push and external completion keep idempotency keys; timeout after send is `OUTCOME_UNKNOWN`; a detached timeout (`DETACHED_TIMEOUT`) and a lapsed push lease (`LEASE_EXPIRED`) are unknown outcomes that go to reconciliation or review, never to a blind retry (feature 037); a checkpoint never authorizes a retry; compensation pinned to forward version |
+| IV. Versioned and pinned compatibility | Pass | workflow versions unchanged; deployment pins orthogonal; additive minor, REST, IR and AsyncAPI; six-SDK conformance; each capability switched on by a fleet requirement (ADR-0082) |
+| V. Isolation, tenant boundary, secrets | Justified | tenant-keyed tables, opaque `NOT_FOUND`, credentials per invocation; prepared warm containers keep one container per run; only the acknowledged `reused` mode relaxes per-run isolation (Complexity Tracking, ADR-0052) |
 | VI. Observability and audit | Pass | spans, closed-label metrics, redaction, audit in the decision's transaction, displayed insights lag |
 | VII. Inbox/outbox contract | Pass | hints remain optional; push invoker discovers by query; external calls deduplicated by receipts |
 | VIII. Failure tested honestly | Pass | crash points, duplicates, timeout/completion race, lost hint, failed compensation, restart, tenant and quota tests planned in `tasks.md`; benchmarks are criteria |
@@ -373,7 +419,7 @@ Re-evaluated after design: no unjustified violation.
 
 | Violation | Why needed | Simpler alternative rejected because |
 |---|---|---|
-| Warm containers reuse a container across runs (ADR-0052 supersedes ADR-0013 in part, coordinator decision C22) | measured cold run cost on the reference machine; latency-sensitive scripts | per-run containers remain the default; in-process reuse rejected for residue; ADR-0052 states the risk and an acknowledgement is required |
+| The `reused` warm mode reuses a container across runs (ADR-0052 supersedes ADR-0013 in part, coordinator decision C22) | runner capacity per run for a high rate of short scripts; the latency need is met by the `prepared` mode, which keeps one container per run | per-run containers remain the default and `prepared` is the default warm mode; in-process reuse rejected for residue (O1042); ADR-0052 states the risk and an acknowledgement is required |
 | Engine process makes outbound calls to customer functions with provider credentials | push dispatch without customer workers; a fixed, platform-defined envelope to a tenant-configured destination is case (b) of ADR-0055's placement rule (coordinator decision C3), the ADR-0025 precedent | a separate push runner (like `apps/database-runner`) duplicates the outbound delivery path; kept as the escape hatch if the security review requires it (G1044) |
 | Claim discovery gains routing and fairness predicates | routing must be decided in the claim (ADR-0051) | per-version queues would be a second authority; pre-assignment is forbidden by the worker protocol decision |
 
@@ -402,38 +448,33 @@ specs/019-worker-deployments-dispatch/
 ### Source code (real paths; new files marked)
 
 ```text
-crates/domain/src/{dispatch.rs (new),execution/command.rs,execution/event.rs,identity.rs,audit.rs,quota.rs,scripts.rs}
-crates/application/src/{worker.rs,deployments.rs (new),task_completion.rs (new),push.rs (new),operations.rs,sandbox.rs,quotas.rs,payload_disclosure.rs}
+crates/domain/src/{worker_dispatch.rs (new),execution/command.rs,execution/event.rs,identity.rs,audit.rs,quota.rs,scripts.rs}
+crates/application/src/{worker.rs,deployments.rs (new),task_completion.rs (new),push.rs (new),operations.rs,sandbox.rs,quotas.rs,payload_disclosure.rs,instances.rs,batch.rs,runs.rs,chain_progress.rs}
 crates/infra-postgres/src/{workers.rs,deployments.rs (new),checkpoints.rs (new),push.rs (new)} + migrations/
 crates/infra-connectors/src/push.rs (new); crates/infra-egress/src/lib.rs (reused)
 crates/infra-ir/src/{convert.rs,schema.rs}; crates/infra-sandbox/src/{docker.rs,protocol.rs}
-crates/scheduler/src/{fairness.rs,monitor.rs,push.rs (new)}; crates/telemetry/src/{metrics.rs,redact.rs}
+crates/scheduler/src/{fairness.rs,monitor.rs,passes.rs,push.rs (new)}; crates/telemetry/src/{metrics.rs,redact.rs}
 crates/api-grpc/src/service.rs; crates/api-http/src/routes/{operations.rs,scripts.rs,runner.rs,deployments.rs (new),task_completions.rs (new),push.rs (new)}
-apps/{execution-engine,sandbox-runner,cli}/src/
+apps/{execution-engine,control-plane,sandbox-runner,cli}/src/; runners/{go,java,dotnet}/ (script checkpoint host call)
 frontend/apps/studio/src/features/{operations,scripts,runs}/
-sdks/{typescript/src,go,python/sagat_octopus_orchestrator,dotnet/src/SagatOctopusOrchestrator.Sdk,java/sdk}/
-tests/{contract,integration,fault,e2e,performance}/worker-deployments-dispatch/ (new); tests/contract/sdk-conformance/scenarios/
+sdks/{typescript/src,go,python/sagat_octopus_orchestrator,dotnet/src/SagatOctopusOrchestrator.Sdk,java/sdk,rust/src}/
+tests/{contract,integration,fault,e2e,performance}/worker-deployments-dispatch/ (new; the contract target split into rest/ and grpc/); tests/contract/sdk-conformance/scenarios/; tests/integration/claim-transition-efficiency/; tests/integration/inline-code-sandbox/
 ```
 
-**Structure Decision**: extend existing modules where the semantics live; one new domain module (`dispatch.rs`)
+**Structure Decision**: extend existing modules where the semantics live; one new domain module (`worker_dispatch.rs`; `dispatch.rs` names the event dispatcher of feature 004)
 holds the pure rules shared by the claim, the scheduler and the invoker.
 
 ## Delivery sequence
 
-1. Foundations: contracts merged, migrations, permissions, quota resources, domain `dispatch.rs` with bucket
-   golden vectors, fairness extraction, test targets.
-2. US01 + US02 (P1): deployments, registration, routing at the claim, pins, repin, drain, retirement, CAN and
-   children; CLI; fault and race suites.
-3. US03 (P1): checkpoints in protocol, store, disclosure, runner shim; five SDKs.
-4. US04 (P2): detach, tokens, external API, expiry races; five SDKs.
-5. US05 (P2): dispatch options, claim ordering, index, benchmark.
-6. US06 (P2): push endpoints, invoker, envelope and verifiers, provider auth, emulator tests.
-7. US07 (P2): session activity, insights, Studio.
-8. US08 (P3): warm policies and runner pools after ADR-0052 is accepted, residue suite, measurements.
-9. Gates: conformance, battery, contracts, runbooks, demo, `verify` skill checklist.
+Corrected 2026-11-24: the order of delivery is the two-lane plan of [tasks.md](tasks.md#build-slices-2026-11-24). Lane A
+builds the server (domain, application, store, gRPC, REST, scheduler, IR, engine and control plane) in twelve slices,
+from the foundations through deployments and routing, inheritance, checkpoints, detach, priority, push, insights and
+the warm control plane; lane B builds, in parallel and never in a crate lane A is changing, telemetry, the push adapter,
+the six SDKs, the CLI, the Studio, the sandbox runner and the examples. The story order is kept within lane A: US01
+and US02 (P1), US03 (P1), US04, US05, US06 and US07 (P2), US08 (P3).
 
 Each slice is releasable behind its capability; a slice is not advertised (protocol, `features`, IR) until its
-fault, security and five-SDK evidence passes.
+fault, security and six-SDK evidence passes and its fleet requirement can be recorded.
 
 ## Verification plan
 
@@ -441,13 +482,17 @@ fault, security and five-SDK evidence passes.
   ten properties of `fairness.rs`), token codec, envelope canonicalization and signature, verdict mapping.
 - **Integration (real PostgreSQL, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`)**: claim predicate, pins, fences,
   checkpoints, detach, external reports, push claim capacity, insights sampling, migrations up/down, privileges.
-- **Contract**: OpenAPI/proto/IR/AsyncAPI lint and baselines; gRPC 1.0–1.6 compatibility; REST battery.
+- **Contract**: OpenAPI/proto/IR/AsyncAPI lint and baselines; gRPC compatibility of every minor below `1.N`; REST battery.
 - **Security**: cross-tenant tokens/endpoints/deployments; SSRF and metadata; canaries for tokens, credentials,
-  checkpoints and keys; warm residue suite; hostile push function responses (oversize, redirects, slow body).
+  checkpoints and keys; warm residue suite (reused mode) and single-use test (prepared mode); hostile push function
+  responses (oversize, redirects, slow body).
+- **Fleet**: each requirement unrecorded (surfaces refuse, minor not offered), recorded, and a mixed fleet with an engine
+  of the previous build (no routed lease, no gRPC call served on a detached lease); `DetachStep` and details on a
+  provisional lease of 1.8; the claim budget lines of `integration_claim_transition_efficiency`.
 - **Fault**: crash at each commit point of the transaction list; duplicate Detach/completion/push response;
   timeout vs completion race; lost NATS hint; failed compensation of push and pinned steps; full restart.
 - **E2E**: quickstart happy and failure demos with real engine, runner and a local HTTPS function.
 - **Conformance**: `deployment-versioning`, `heartbeat-details`, `async-completion`, `dispatch-priority`,
-  `push-envelope` scenarios in all five SDKs, goldens reviewed per ADR-0015.
+  `push-envelope` scenarios in all six SDKs, goldens reviewed per ADR-0015.
 - **Performance**: NFR-019-005 criteria with environment, configuration and failures reported in
   `tests/performance/reports/worker-deployments-dispatch.md` (new); no figure is published without it.

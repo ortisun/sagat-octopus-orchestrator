@@ -601,6 +601,27 @@ impl Admission {
         }
     }
 
+    /// The refusal of a capability call (`ResolveSecrets`, `ResolveDatabase`, `ReadBlob`, `WriteBlob`; feature 006, decision
+    /// D006-098): the refusal of a closed gate, or, while the registry has been silent past the capability window,
+    /// `UNAVAILABLE` with the reason `REGISTRY_SILENT` and a retry hint of one second (the heartbeat asks again every
+    /// second meanwhile), counted in `worker_capability_calls_refused_total{method, reason}`. Asked when the call arrives and
+    /// again before the first byte it hands out or the write it makes. A process with no registry refuses none.
+    pub(crate) fn capability_refusal(&self, method: &'static str) -> Option<tonic::Status> {
+        if let Some(closed) = self.shared.not_serving() {
+            return Some(crate::status::to_status(&closed));
+        }
+        let gate = self.shared.serving.get()?;
+        if !gate.capability_window_lapsed(std::time::Instant::now()) {
+            return None;
+        }
+        let reason = sagat_application::instances::REASON_REGISTRY_SILENT;
+        metrics::counter!("worker_capability_calls_refused_total", "method" => method, "reason" => reason)
+            .increment(1);
+        Some(crate::status::to_status(
+            &ApiError::unavailable_after(1).with_reason(reason),
+        ))
+    }
+
     /// Makes the admission refuse every call while `gate` is closed. The first gate set is the one that counts.
     pub(crate) fn set_serving_gate(&self, gate: Arc<sagat_application::instances::ServingGate>) {
         let _ = self.shared.serving.set(gate);

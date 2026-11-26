@@ -31,12 +31,14 @@ fn config(extra: &[(&str, &str)]) -> EngineConfig {
 #[test]
 fn the_default_engine_runs_no_schedule_pass_and_lists_run_input_validation_and_lease_withdrawal() {
     // design 043: `enforce` is the default, and an engine in `enforce` promises `run-input-validation-v1`; feature 006:
-    // every engine of this build lists `lease-withdrawal-v1`
+    // every engine of this build lists `lease-withdrawal-v1` and, since the follow-up of pull request #260,
+    // `lease-withdrawal-v2`
     assert_eq!(
         capabilities(&config(&[])),
         vec![
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ]
     );
 }
@@ -68,6 +70,7 @@ fn an_engine_lists_both_gates_with_its_keys_whatever_its_switches() {
         vec![
             Capability::RunInputValidationV1,
             Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2,
             Capability::FlowControlConcurrencyV1,
             Capability::FlowControlRateV1
         ]
@@ -78,6 +81,7 @@ fn an_engine_lists_both_gates_with_its_keys_whatever_its_switches() {
         vec![
             Capability::RunInputValidationV1,
             Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2,
             Capability::FlowControlConcurrencyV1,
             Capability::FlowControlRateV1
         ]
@@ -87,7 +91,8 @@ fn an_engine_lists_both_gates_with_its_keys_whatever_its_switches() {
         capabilities(&config(&[])),
         vec![
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ]
     );
     let engine = config(&[
@@ -185,6 +190,7 @@ fn an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_the
         vec![
             Capability::RunInputValidationV1,
             Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2,
             Capability::FlowControlConcurrencyV1,
             Capability::FlowControlRateV1
         ]
@@ -221,6 +227,7 @@ fn an_engine_in_report_mode_does_not_list_run_input_validation() {
             expected.push(Capability::RunInputValidationV1);
         }
         expected.push(Capability::LeaseWithdrawalV1);
+        expected.push(Capability::LeaseWithdrawalV2);
         assert_eq!(list, expected, "SAGAT_RUN_INPUT_VALIDATION={mode:?}");
     }
 }
@@ -270,11 +277,13 @@ fn an_engine_lists_schedules_v1_when_and_only_when_its_configuration_runs_the_sc
                     Capability::SchedulesV1,
                     Capability::RunInputValidationV1,
                     Capability::LeaseWithdrawalV1,
+                    Capability::LeaseWithdrawalV2,
                 ]
             } else {
                 vec![
                     Capability::RunInputValidationV1,
                     Capability::LeaseWithdrawalV1,
+                    Capability::LeaseWithdrawalV2,
                 ]
             },
             "SAGAT_SCHEDULES_ENABLED={flag:?}"
@@ -292,7 +301,8 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
         list,
         vec![
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ],
         "{list:?}"
     );
@@ -306,7 +316,8 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
         vec![
             Capability::SchedulesV1,
             Capability::RunInputValidationV1,
-            Capability::LeaseWithdrawalV1
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
         ]
     );
 }

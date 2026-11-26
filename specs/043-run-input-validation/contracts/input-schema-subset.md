@@ -28,6 +28,10 @@ A schema means the same when `$schema` is absent, draft-07 (`http://json-schema.
 | Ignored | `title`, `description`, `default`, `examples`, `$comment`, `format` (an annotation, never asserted); `$schema` and `$id` at the root only | the values of `enum`, `const`, `default`, `examples` and `x-sagat-classification` are data, not schemas |
 | Platform | `x-sagat-classification` | the only `x-` keyword the platform reads; inert to validation |
 
+Feature 031 (client-side encryption, approved draft; note of 2026-11-26): for a version with `encodingRules: 1` the pre-check
+receives the `inputSchema` without its `x-sagat-encoding` members, and validation uses the encoded view, in which the subschema at
+each encoded location is `true`; 031's envelope checks run first (Requirement 031-037).
+
 Out of the subset: every other keyword, among them `patternProperties`, `uniqueItems`, `not`, `if`/`then`/`else`,
 `contains`, `dependencies`, `dependentRequired`, `dependentSchemas`, `unevaluatedProperties`, `unevaluatedItems`,
 `additionalItems`, `propertyNames`, `prefixItems`, `$dynamicRef`, `$recursiveRef`, `$anchor`, `$dynamicAnchor`, a nested
