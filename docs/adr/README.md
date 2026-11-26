@@ -26,7 +26,7 @@ The handover of the cron triggers: [ADR-0083](ADR-0083-the-cron-triggers-are-han
 
 Lake sandbox API: [ADR-0079](ADR-0079-the-lake-runner-asks-the-sandbox-runner-for-an-attempt-never-for-a-container.md) — proposed; the lake runner asks a lake-mode sandbox runner for an attempt over a node-local Unix socket (attempt id, slot, budget class, deadline; never an image, mount, command or limit), with all lifecycle state in engine labels (refines ADR-0071 and ADR-0013; the Kubernetes shape stays open under T035-029).
 
-Capacity locks: [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) — proposed; the ChildRoot capacity group header is a lock nobody waits for and possession moves only through fenced commands (refines ADR-0075; leaves the creator, the sweeper's coverage and the worker's complete lock sequence open).
+Capacity locks: [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) — accepted 2026-11-26 (delegate, Owner decision 2026-11-26-140; open items decided by ADR-0154, design 039); the ChildRoot capacity group header is a lock nobody waits for and possession moves only through fenced commands (refines ADR-0075; leaves the creator, the sweeper's coverage and the worker's complete lock sequence open).
 
 Private platform nodes: [ADR-0080](ADR-0080-a-node-only-the-platform-may-write-is-a-private-document.md) — proposed; a node that only the platform may write (today the Iceberg probe) is a private document: the IR codec has a private twin of its two parse entry points over the public schema plus the private node types, the loader chooses it from `workflows.internal`, and the public schema never learns the node (refines the way ADR-0071 and feature 017 keep the platform's own runs private).
 
@@ -124,7 +124,7 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0075 | [Worker leases retain ChildRoot possession through commit](ADR-0075-worker-leases-retain-child-root-possession.md) | Accepted |
 | 0076 | [Compensation failure and uncertain effects require explicit recovery authority](ADR-0076-compensation-failure-and-uncertain-effects.md) | Accepted on 2026-11-01 for its decisions 1 to 3, 5 and 7 |
 | 0077 | [EGM design docs replace Spec Kit as the only specification workflow](ADR-0077-egm-replaces-spec-kit.md) | Proposed |
-| 0078 | [The ChildRoot capacity group header is a lock nobody waits for, and possession moves only through fenced commands](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) | Proposed |
+| 0078 | [The ChildRoot capacity group header is a lock nobody waits for, and possession moves only through fenced commands](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) | Accepted |
 | 0079 | [The lake runner asks the sandbox runner for an attempt, never for a container](ADR-0079-the-lake-runner-asks-the-sandbox-runner-for-an-attempt-never-for-a-container.md) | Proposed |
 | 0080 | [A node that only the platform may write is a private document, not a member of the public schema](ADR-0080-a-node-only-the-platform-may-write-is-a-private-document.md) | Proposed |
 | 0081 | [`CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry exists](ADR-0081-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md) | Accepted |
@@ -142,3 +142,4 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0151 | [Every signal reaches an OpenTelemetry Collector, and each process keeps one exporter per signal that never blocks the work](ADR-0151-every-signal-reaches-the-collector-and-the-platform-keeps-one-exporter-per-signal.md) | Accepted |
 | 0152 | [OpenBao Transit holds the platform's keys, secret values are sealed in PostgreSQL under tenant-derived wrapped data keys, and each custody has its own mount, token and policy](ADR-0152-openbao-transit-holds-the-platform-keys-and-each-custody-has-its-own-mount-and-token.md) | Accepted |
 | 0153 | [A trigger window is sealed only past the transaction horizon of its deadline, and trigger operators are activated through the instance registry](ADR-0153-a-window-is-sealed-only-past-the-transaction-horizon-of-its-deadline.md) | Accepted |
+| 0154 | [Nested capacity membership is created by the engine inside the admitting transaction, the sweeper serves every member state with a quantum, and the worker's lock sequence is a checked file](ADR-0154-nested-capacity-membership-is-created-by-the-engine-and-the-sweeper-serves-every-member.md) | Accepted |

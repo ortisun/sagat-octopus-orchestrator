@@ -11,7 +11,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 |---|---|---|---|
 | 015 | [OpenTelemetry for the three signals, and OpenBao as the key and secret authority](015-opentelemetry-and-openbao.md) | Draft | 0 of 22 |
 | 038 | [Claim and transition efficiency](038-claim-transition-efficiency.md) | Draft | 0 of 11 |
-| 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 1 |
+| 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 17 |
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Draft | 0 of 19 |
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 55 |
