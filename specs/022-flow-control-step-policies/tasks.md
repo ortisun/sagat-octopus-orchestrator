@@ -856,3 +856,309 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
 - US02 and US07 share T022-096 (readiness gate), T022-097 (grant) and T022-098 (timeout); T022-022 and
   T022-072 each land their invariants (D022-033); T022-099 and T022-100 after T022-096.
 - T022-101..106 after the codec (T022-069) and the gate (T022-096).
+
+## Release 0.3.0, the rest of 022 (OD-2026-11-24-1)
+
+Added on 2026-11-24. The owner put the rest of the feature in release 0.3.0 (OD-2026-11-24-1) and delegated its
+design questions (OD-2026-11-24-4); the decisions are D022-200 to D022-221 in `research.md`, the plan is the section
+"Release 0.3.0, the rest of 022" of `plan.md`, and the design is in ADR-0135, ADR-0136 and ADR-0137 (proposed). The task
+texts above are not edited and no task is ticked by this section: it orders the open tasks into slices, says how each
+reads on the as-built engine, and adds the follow-up tasks T022-200 to T022-223. A slice is one reviewed pull request;
+it closes a task only with the task's evidence and the slice's.
+
+**Evidence every behaviour slice brings**, besides what its tasks name: the named tests, run against real PostgreSQL as
+the schema owner and as `sagat_app` (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), each seen failing first for the right reason; a
+hand mutation of each new rule caught by a test; `World::assert_consistent` after every test (with the invariants the
+slice adds to `verify_run`); the hot-path budget lines of the plan's table that the slice adds, recorded in the plan
+before the test and unchanged lines for a definition without the slice's fields (`integration_claim_transition_efficiency`);
+the fault cases named, races held by locks or barriers, never sleeps; `python3 scripts/check-architecture.py` and its
+tests; the independent architecture, correctness and security reviews, their findings answered in `research.md`.
+
+### Existing tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-001 | O1160 to O1162 answered by delegation; the ADRs are 0135 to 0137, accepted or rejected by the coordinator (T022-200) | D022-200 to D022-202 |
+| T022-011 | a catalog of 56 entries (53 on the tree plus three), not 51 | D022-220 |
+| T022-016 | the lookup round of ADR-0135 (`Evaluation::CacheLookup`, before the gates), not "inside the readiness transaction" | D022-203, D022-204 |
+| T022-017 | the writer is a pass of `crates/scheduler/src/passes.rs`; the entry references the payload row | D022-205, D022-220 |
+| T022-022's creators | the four new creators admit through `Engine::start` (T022-221) | D022-211 |
+| T022-033 | the dispatcher is a pass of `crates/scheduler/src/passes.rs`, admitting through `Engine::start` | D022-211, D022-214 |
+| T022-039, T022-042 | admission through `Engine::start`, not the 017 `RunStore::create` order; T16 at the slots of D022-214 | D022-211, D022-214 |
+| T022-048 to T022-053 | six SDKs (Rust is T022-220); `sdk_conformance -- --ignored` in six languages | D022-220 |
+| T022-063 | the 022-side port and registry file (T022-212); SC-022-016 reported pending until 020 calls it | D022-217 |
+
+### Slice 1: documents (this change)
+
+Closes no task. Brings decisions D022-200 to D022-221, ADR-0135 to ADR-0137 (proposed), the amendments of `spec.md`,
+`plan.md`, `data-model.md` and `contracts/`, and dated amendments to ADR-0050 decision 7, ADR-0056 decision 2 and ADR-0094
+decision 4. Evidence: `python3 scripts/check-docs-index.py`, `check-plain-words.py`, `check-docs-first.py`,
+`check-agent-config.py` and `check-design-docs.py` pass.
+
+- [ ] T022-200 The coordinator's review and acceptance of ADR-0135, ADR-0136 and ADR-0137 and of the four ADR amendments, after independent architecture, correctness and security reviews of this slice (reports in `reviews/`); each act recorded as "delegate (OD-2026-11-24-4)"; T022-001 then ticked with the recorded answers. All FR of US01, US03 to US06. Owner-gate: every task below that builds behaviour. Evidence: the review reports, their answers in `research.md`, the ADR status lines set.
+  - *Evidence 2026-11-25 (decision D022-271; not ticked):* three review rounds recorded in `reviews/2026-11-25/` (the reviews of `14b9e40b` with `design-reviews-and-rulings.md` and `design-responses.md`; the re-reviews of `6d02632e` with `design-rereviews-and-rulings.md` and `design-reresponses.md`; the third reads of `c910345b`, no Blocker, every verdict "accept" or "accept with changes", with `design-third-reads-and-rulings.md` and `design-third-responses.md`); the status lines of ADR-0135, ADR-0136, ADR-0137 and ADR-0146 read `Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/)`, and the feature 022 amendments of ADR-0050, ADR-0056 and ADR-0094 carry the same acceptance line. The task stays open for the coordinator to tick with its own record, and T022-001 with it.
+
+### Slice 2: foundations
+
+Closes T022-011. Adds the registry capabilities, the quotas, the fixtures, the vocabulary and the two fitness rules
+every later slice needs; builds no behaviour a run can reach.
+
+- [ ] T022-201 Registry capabilities `step-cache-v1`, `early-return-v1`, `failure-handler-v1`, `step-executions-v1`, `draft-test-runs-v1` (`Capability` values, their migration, 018's rule 5 listing them, the per-process switches of the plan's table); `FLOW_CONTROL_ACTIVATION_PENDING` for each until activation; `failure-handler-v1` and `early-return-v1` refused activation while a live process lacks the finish-path routing (T022-207). FR-022-031; D022-206. Evidence: as T022-094 for each capability (activation refused while a live engine lacks it, use refused before, `503`/`BINARY_CAPABILITY_MISSING` after, a disabled switch `CAPABILITY_DISABLED`), `integration_schedules_bulk_operations -- instances`.
+- [ ] T022-202 Quota resources and ceilings of the rest (the rest of T022-013): cache entries and pending store obligations per namespace, cached nodes and `earlyReturn` nodes per definition, pending handler dispatches per namespace, active draft test runs per namespace and per actor, pins and pin bytes per test run; the OpenAPI enums and the `CHECK` lists pinned to `QuotaResource::ALL`. FR-022-034; SC-022-011. Evidence: at and over each bound, zero refuses; `contract_flow_control_step_policies::quotas`; the baseline read as T022-013 did.
+- [ ] T022-203 [P] Fixtures of the rest (the rest of T022-002): `order-intake.workflow.json` and one invalid document per publication rule of `contracts/errors.md` for `cache`, `earlyReturn` and `onFailure`, including `COLLECTION_FINISH_ROUTING`; the pending list of `ir.rs` covers each until its codec lands. FR-022-001, 008, 012, 034. Evidence: `contract_flow_control_step_policies` with each new rule listed or covered.
+- [ ] T022-204 The gate pool from the run: `GatePool::of_run` (from `runs.test_tree`, `ORDINARY` until T022-217 adds the column) threaded through every decision, grant, timeout, listing and journal event of `readiness_gate.rs`, `gate_queue.rs`, `maintenance.rs`, `event_codec.rs` and `flow_control_keys.rs`; a rule of `scripts/check-architecture.py` refusing a pool literal outside it. FR-022-020, FR-022-030; D022-212. Evidence: the flow-control suites unchanged and green; the rule's test with a negative fixture; a seeded `DRAFT_TEST` row granted only to a test-tree waiter (invariant 7).
+- [ ] T022-205 [P] A rule of `scripts/check-architecture.py` refusing a migration of feature 022 whose foreign key to `runs` omits the namespace, with its tests. D022-213. Evidence: `python3 -m unittest scripts.tests.test_check_architecture` with a negative fixture.
+- [ ] T022-206 The interim publication refusal: `cache`, `earlyReturn` or `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node is refused `UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`, until T022-207 removes it. FR-022-001, 008, 012; D022-207; gap G022-025. Evidence: the fixture of T022-203 refused before a version exists.
+- [ ] T022-222 [P] The rest of the closed telemetry vocabulary (the rest of T022-014): `step_cache_*`, `early_returns_total`, `failure_handler_*`, `standalone_steps_total`, `test_runs_total` and the spans of the plan, with the audit actions. FR-022-033. Evidence: `cargo test -p sagat-telemetry --test flow_control_vocabulary` rejects an unknown label.
+- [ ] T022-223 [P] The rest of the error rows (the rest of T022-012): every REST refusal of `contracts/errors.md` for the rest, mapped in `crates/api-http/src/error.rs`. FR-022-034. Evidence: one contract test per row; `the_error_catalog_of_the_sdks_is_unchanged`.
+
+Evidence of the slice: T022-011's catalog test (56 entries, machine roles none) and the tasks' evidence above.
+
+### Slice 3: the finish-path routing (gap G1197)
+
+- [ ] T022-207 Route the collection finish (`crates/infra-postgres/src/primitives.rs`) and the loop finish (`loop_progress.rs`, and the part of `crates/scheduler/src/passes.rs` that drives them) through the planner and `persist` (plan row T31): the successor's release decided by the rounds, the run's end written by `persist` with T8's records; remove the `RuntimeNotIntegrated` refusal of a gated successor, D022-049's refusal of a start gate with a collection or loop, and T022-206's refusal. FR-022-051; ADR-0094 decision 4 as amended; D022-207. Evidence: one test per finish path and successor kind (an `end`, a gated step, a plain step, a run end with a start permit released), `verify_run`, a crash at the finish commit (`fault_flow_control_step_policies`), the collection and loop finish budget lines recorded against today's, owner and runtime role.
+
+### Slices 4 and 5: US04, early return
+
+Slice 4 closes T022-035.
+
+- [ ] T022-208 [US4] The `earlyReturn` kind in the IR codec and the domain (placement rules, `EARLY_RETURN_PLACEMENT`), the capability `earlyReturn`, `Evaluation::EarlyResult`, the event `result.returned` with its reset rule `REMATERIALIZE`, the migration of `runs.result_source` and `result_available_at`, their classification. FR-022-008, 009, 038; D022-215. Evidence: codec tests over the fixtures; one replay test per event; the reset corpus case.
+
+Evidence of slice 4: T022-035's replay and invariant 3 in `verify_run`, a crash at T6, the budget line "a completion that reaches `earlyReturn`".
+
+Slice 5 closes T022-036, T022-037 and T022-038. Evidence: the early result disclosed while the run is `RUNNING`
+(REST, SSE), kept after a later failure and a cancellation, `run.result_returned` written in T6 and none for a test tree
+(checked again by slice 19), each placement refusal; owner and runtime role.
+
+### Slices 6 to 9: US01, the step result cache
+
+Slice 6 closes T022-015.
+
+- [ ] T022-209 [US1] The `cache` declaration in the IR codec and the domain (`CACHE_POLICY_INVALID`, `CACHE_WITH_EFFECT`, `SCOPED_CACHE`), the capability `stepCache`; the migration of `step_cache_scopes`, `step_cache_entries` (by payload reference), `step_cache_hit_provenance` and `step_cache_store_obligations` with namespaced foreign keys and their classification; the events `step.cache_hit` and `step.cache_missed` with their reset rules; the reducer's `WAITING(CACHE_LOOKUP)` and `Evaluation::CacheLookup`. FR-022-001..003, 038; ADR-0135 decisions 1, 2 and 8; D022-203, D022-205. Evidence: `crates/domain/tests/step_cache.rs` (the reducer never `READY` before a decision; asked once; a retry not looked up again); the migration's up and down (down refuses while rows exist), owner and runtime role.
+
+Slice 7 closes T022-016 and T022-018.
+
+- [ ] T022-210 [US1] The lookup round's adapter and `persist`'s rules: the hit in the releasing commit (no lease, attempt, permit or slot), a miss reaching its gates in the same commit, the task-ready hint only for a step `READY` at the end of its commit, `persist` refusing an undecided lookup except while paused, the resume asking it; invariant 11 as amended and invariant 14 in `verify_run`. FR-022-003, 004, 051; ADR-0135 decisions 3 to 6; D022-203, D022-204. Evidence: one test per readiness source; a seeded commit without a decision refused by `verify_run`; no `task.ready` delivery for a step a hit completes (red on today's hint rule); a paused run looked up on resume; the three budget lines of the plan's table.
+
+Slice 8 closes T022-017 and T022-019.
+
+- [ ] T022-211 [US1] The rule of `scripts/check-architecture.py` that only the invalidation, purge, erasure and store-writer files lock a cache row exclusively and that they lock no run, semaphore, window or counter row after one; the later lookup round of one commit tested against an invalidation holding the scope row. ADR-0135 decision 7; D022-204. Evidence: the rule's test with a negative fixture; a barrier test with a held scope lock and a `pg_blocking_pids` probe, no deadlock.
+
+Slice 9 closes T022-020 and T022-063 (SC-022-016 reported pending, not passed).
+
+- [ ] T022-212 [US1] The 022-side erasure port (application port and PostgreSQL adapter, T18): delete a source run's cache entries and pending store obligations, list the runs that received a copy (hit provenance, `fromRun` pins) by source run; `crates/infra-postgres/run-content-references.json` created in the shape of 020's data model with 022's entries; a contract test that every 022 column referencing run content is a foreign key or an entry. FR-022-037; D022-217; gap G022-021. Evidence: erasure then the next lookup misses; the contract test red with an entry removed by hand.
+
+### Slices 10 to 13: US03, failure handlers
+
+Slice 10 closes T022-030.
+
+- [ ] T022-213 [US3] The `onFailure` declaration in the IR codec and the domain (`FAILURE_HANDLER_REGION`, a root-graph region whose nodes keep the root-only rules), the capability `failureHandler`; the migration of `runs.failure_handler_state`, `pending_terminal_status` and `handler_for_run_id` (namespaced foreign key, unique), `namespace_failure_handlers` and `failure_handler_dispatches`; the events `failure_handler.started` and `failure_handler.finished` with their reset rules. FR-022-012..014, 038; ADR-0136 decisions 1 to 4; D022-210, D022-216. Evidence: domain tests per `on` status, a timed-out waiter finishing directly, the reset corpus refusing every point inside the phase.
+
+Slice 11 closes T022-031. Evidence: invariant 4 in `verify_run`; a handler step that declares `concurrency` waiting
+for its gate in the phase; the start's permit kept through the phase and released with `run.finished`; the budget lines
+"a completion that enters a handler phase" and "one that ends a run `FAILED` in a namespace with a default handler".
+
+Slice 12 closes T022-032 and T022-033.
+
+- [ ] T022-214 [US3] The dispatcher as a pass of `crates/scheduler/src/passes.rs` admitting through `Engine::start` in the slots of ADR-0050 decision 7 as amended (dispatch row 3, source identity 3R, handler head 4b, run 6, gates 7, the row's update 8a); the terminal commit's plain read of the policy row with its `config_revision`; the slot-order reference of `tests/fault/schedules-bulk-operations/slot_order.rs` extended to the dispatch. FR-022-016; ADR-0136 decision 5; D022-208, D022-214; gap G022-024. Evidence: exactly one handler run per failure; a configuration cleared in both orders against a terminal commit held by a barrier; the slot-order case without deadlock; invariants 5 and 16.
+
+Slice 13 closes T022-034.
+
+- [ ] T022-215 [US3] Recovery by a new run: a handler run that starts a reset or a rerun as new under its publisher's authority produces an audited new run with provenance and leaves the failed run's outcome unchanged; refused without `run:operate`. FR-022-014; D022-201. Evidence: an integration test per path (reset, rerun), the audit rows, the source's status unchanged.
+
+### Slices 14 and 15: US05, standalone steps
+
+Slice 14 closes T022-039.
+
+- [ ] T022-216 [US5] Standalone admission through `Engine::start` with 018's `businessId`, `businessIdConflictPolicy` and `businessIdReusePolicy`, the origin `STANDALONE_STEP` added to the run origins, the capability `step-executions-v1`, and the default gate group derived from the executable identity (its spelling fixed here, never equal to a group a published workflow can derive, within 130 characters, accepted by the listings' `group` filter). FR-022-023, 024; D022-209, D022-211; gap G1166 closed. Evidence: a second start with an open holder refused `BUSINESS_ID_IN_USE`, `USE_EXISTING` returning the holder; two actors' executions of one activity sharing one key; the collision test; the budget line "a standalone admission".
+
+Slice 15 closes T022-040 and T022-041. Evidence: as written, and `database-executions` unchanged on the shared path
+(`tests/integration/database-connections`).
+
+### Slices 16 to 19: US06, draft test runs
+
+Slice 16 closes T022-042.
+
+- [ ] T022-217 [US6] The test-tree flag: `runs.test_tree` (set at admission of a `DRAFT_TEST` run, copied by every child admission, immutable by trigger), the origin `DRAFT_TEST`, the capability `draft-test-runs-v1`, and `GatePool::of_run` reading the flag (T022-204). FR-022-026, 030; D022-212. Evidence: a child of a test run filed under `DRAFT_TEST`; an update of the flag refused; invariant 7.
+- [ ] T022-218 [US6] The `TEST_RUN_UNMOCKED_EFFECT` mechanism: an exhaustive classification of node kinds (no effect kind on the tree today) and the refusal naming the node; a test that fails to compile when a kind is added without a class. FR-022-027; D022-218; gap G022-023. Evidence: the classification test; a fixture kind classified as an effect in a test build refuses an unpinned draft.
+
+Evidence of slice 16: one test per refusal of T022-042 (`prod` refused before any row, `dev` and `staging` admitted,
+a moved draft `CONFLICT`, `INVALID_START_NODE`, `MISSING_PIN`); the draft workflow row read at slot 4b (the slot-order
+reference extended); the budget line "a draft test admission with two upstream pins".
+
+Slice 17 closes T022-043. Evidence: zero leases for pinned nodes; a downstream pin completed before any lookup or gate,
+a gated pinned node holding no permit (invariant 11 as amended, invariant 15); compensation skipping mocked steps.
+
+Slice 18 closes T022-044 and T022-046. Evidence: as written, with the tenant battery for the route (T022-058).
+
+Slice 19 closes T022-045 and T022-047.
+
+- [ ] T022-219 [US6] Secrets of unmocked steps under the actor's current `secret:use` and access lists, each resolution audited `test_run.secret_resolved` (name and version, never a value); `RESET_SOURCE_TEST_RUN` raised by 018's reset, rerun and batch admissions for a test-tree source. FR-022-030; D022-202, D022-219. Evidence: a revoked right refused at the next resolution; one audit row per resolution; the three 018 refusals; `contract_schedules_bulk_operations` with the reason raised.
+
+### The surfaces
+
+- [ ] T022-220 [P] Rust SDK builders and client calls of the rest (`cache`, `onFailure`, `earlyReturn`, `startStepExecution`, `executeStep`, `startTestRun`, `awaitResult`, `invalidateStepCache`), as T022-048..052 for the other five; the four Rust lock files moved together. FR-022-035; D022-220. Evidence: unit tests; the canonical fixture byte-identical.
+- [ ] T022-221 Run-creator conformance for the four new creators (standalone, draft test and its children, handler dispatch, the derived `onFailure~h` child) in `tests/integration/flow-control-step-policies/run_creators.rs`, each admitted through its key or queued, and failing when the creator bypasses `Engine::start`. FR-022-018; D022-211. Evidence: one case per creator; a hand mutation starting a run around the port caught.
+
+The surfaces also close T022-048 to T022-053 (six languages, the seven scenarios of `contracts/conformance.md`),
+T022-054 to T022-056 (Studio), T022-057 (CLI), T022-058 (battery and canaries for every new route), T022-059 (restart
+end to end with pending obligations, dispatches and a handler in progress), T022-060 (the fragments merged into the
+canonical contracts, baselines read before they move), T022-061 (runbook: `failure_handler_dead`, `cache_store_backlog`,
+redrive, G022-024), T022-062 (benchmark of the lookup and the dispatch) and T022-065 (final gates). Each is ticked with
+its own evidence, as written.
+
+### Order of the rest
+
+- T022-200 first (owner gate). Slice 2 next; T022-204 and T022-205 before any migration of slices 4 to 19.
+- Slice 3 (T022-207) before slices 4 to 13: every end of a run must go through the reducer first.
+- US04 (slices 4, 5) → US01 (slices 6 to 9) → US03 (slices 10 to 13) → US05 (slices 14, 15) → US06 (slices 16 to 19).
+- Surfaces after the story they show; T022-221 after slices 12, 14 and 16; T022-060 before T022-065.
+- Parallel: T022-203, T022-205, T022-222, T022-223 within slice 2; T022-220 and the SDK tasks per language.
+
+### Revision of 2026-11-25: the rulings of the design reviews
+
+The three repository reviewers read `14b9e40b`; the rulings are in `reviews/2026-11-25/design-reviews-and-rulings.md`,
+the decisions D022-222 to D022-240 in `research.md`, and where each finding lives in
+`reviews/2026-11-25/design-responses.md`. Nothing above is ticked or rewritten; this subsection says how the tasks of the
+rest read now, adds the evidence each slice must bring, and adds tasks T022-224 to T022-237. This branch merges after
+`docs/owner-delegation-2026-11-24`, which records OD-2026-11-24-4 (architecture minor 16).
+
+#### Tasks of the rest, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-200 | the ADRs are accepted once the three reviewers find no Blocker in a re-review of this revision; ADR-0146 is one of them | D022-232 |
+| T022-201 | a binary lists each capability only once every slice of it has merged (T022-235) | D022-236 |
+| T022-204 | its evidence no longer includes the seeded `DRAFT_TEST` waiter, which moves to T022-217 | D022-237 |
+| T022-207 | every site of the plan's code facts row (`primitives.rs` 3495, 4026 to 4045, 4061; `loop_progress.rs` 778, 3409 to 3449; `chain_progress.rs` 2246 to 2248 allow-listed), and a loop and a collection that end `FAILED` with `onFailure` and with a namespace handler | D022-232 |
+| T022-209 | the fingerprint of D022-226 (canonical IR with the closed exclude list), `secret_refs` and `producer_worker_id` on the entry, `steps.cache_lookup`, the obligation without lease columns, `KeyPurpose::StepCache` | D022-225, D022-226, D022-229, D022-230 |
+| T022-210 | no paused exception (a domain test that a pause releases no step); `step.cache_missed` among the hint's arms; invariant 14 admits `step.mocked` | D022-238 |
+| T022-213 | `handler_tree`, `handler_kind`, `lineage_run_id`, the two draining values of `failure_handler_state` | D022-224, D022-228 |
+| T022-214 | the revision read with the definition; the dispatch row locked through a `NewRun` field; attempts counted before admission; the ceiling on configuration | D022-223, D022-237 |
+| T022-215 | recovery through a machine identity given as a secret, audited as it; a handler run without one cannot reset; at most one dispatch per lineage, which a machine identity's rerun extends and a person's rerun does not | D022-228, D022-241 |
+| T022-216 | plus the review refusal (T022-229) and published script artifacts only | D022-227, D022-233 |
+| T022-217 | plus the seeded `DRAFT_TEST` waiter (from T022-204), the `BEFORE UPDATE OF test_tree` guard `ENABLE ALWAYS`, and the insert check against the parent's flag | D022-237 |
+| T022-061 | plus a runbook section on the draft-test pool's own load on a shared external system, and on G022-024 | D022-240 |
+| T022-062 | plus the multixact cost of `FOR SHARE` on a hot entry | D022-240 |
+
+#### Evidence each slice must bring now, added to the slices above
+
+- **Slice 2 (foundations):** T022-225 and T022-226's fitness rules with negative fixtures; T022-235's per-capability
+  test that no binary of this slice lists a capability of the rest; the publication rows `CACHE_KEY_SECRET`,
+  `CACHE_KEY_PII`, `FAILURE_HANDLER_SELF_GATE` and the `compensateWith` refusal of a region in the fixtures (T022-203).
+- **Slice 3 (routing):** T022-207 as it reads now, with T022-226's rule red before the routing (each listed site caught)
+  and green after; the crash at each finish commit.
+- **Slices 4 and 5 (US04):** a result set once across a handler phase (T022-227's domain cases with an early result).
+- **Slices 6 to 9 (US01):** the two-publisher, one-access-list test and the revoked-binding test (T022-236); the barrier
+  tests of T3 against T4 and T5, of T18 against T3, and the dead-entry replacement (T022-231); the hit over the retained
+  bytes (T022-232); the budget lines of the hit's content read and of the round's secret locks and binding check; the
+  label, counts and source-run disclosure tests for a caller without the right (T022-230).
+- **Slices 10 to 13 (US03):** every domain case of T022-227; the loop bound and the lineage index (T022-228); the
+  slot-order case of the dispatcher and a crash inside the admission reaching `DEAD` (T022-224, T022-214); the
+  configuration ceiling refusing configuration, never a terminal commit; a run cancelled in its phase not dispatched.
+- **Slices 14 and 15 (US05):** the review refusal and its setting (T022-229); a script artifact of an unpublished
+  version refused; the shared default group across actors.
+- **Slices 16 to 19 (US06):** the slot-order case of a publication of a workflow with a database node against a test
+  admission of its draft (T022-224); the upstream-pin domain test (T022-233); the floor on every disclosure; the check
+  order; a test-tree child of a published version bypassing the cache; the migrations' `NOT VALID` and refusing `down`
+  (T022-237).
+
+#### Follow-up tasks of the rulings (T022-224 to T022-237)
+
+- [ ] T022-224 Slot-order cases in `tests/fault/schedules-bulk-operations/slot_order.rs` for the new creators: the publication of a workflow with a database node against a test admission of its draft (no cycle: the draft row is read without a lock); the dispatcher's slots (dispatch row inside `create`, source identity, run, gates, update); the retained private definition where 017's `create` takes it. ADR-0050 decision 7 as amended; D022-222, D022-223, D022-240. Evidence: each case without deadlock, a reversed control that waits, both database roles.
+- [ ] T022-225 A rule of `scripts/check-architecture.py`: only the terminal path of `persist` inserts into `failure_handler_dispatches`; only the dispatcher and the redrive lock it. D022-223. Evidence: the rule's tests with negative fixtures.
+- [ ] T022-226 A rule of `scripts/check-architecture.py`: no `run.finished` journal or outbox write, no `finished_at =` and no direct `task.ready` outbox insert outside `persist`, with the one allow-listed exception of `chain_progress.rs` citing the `continueAsNew` refusals. ADR-0146 decision 2; D022-232. Evidence: red on the tree before T022-207 at every listed site, green after; negative fixtures.
+- [ ] T022-227 [US3] `crates/domain/tests/failure_handler.rs`: one test per case — a gated region step, a region step failing without `onError` (phase `FAILED`, no second phase), a cancellation during the phase, the run deadline during the phase, the handler timeout with a leased attempt (draining, then one commit of `failure_handler.finished`, the release and `run.finished`), a stop request during the phase accepted, the status equal to the pending status for every outcome, the timer cancelled by `failure_handler.finished`. FR-022-013, 014; D022-224. Evidence: each test seen failing on a planner without the phase state; hand mutations of the stop clearing and of the draining caught.
+- [ ] T022-228 [US3] Handler trees and lineages: `runs.handler_tree`, `handler_kind`, `lineage_run_id`, the dispatch rows' lineage unique index, the inheritance rules (children, resets and reruns of a handler-tree source), no dispatch of a handler-tree run, no inheritance of `handler_for`. FR-022-016; D022-228. Evidence: a handler that reruns its failed run through a machine identity is dispatched once in all (fault test, 20 rounds); invariants 16 and 17; a rerun of a handler run has no `handler_for`.
+  - *Amended 2026-11-25 (decision D022-241, O1176 answered (b)):* the lineage links only through resets and reruns whose initiator is a machine identity or a handler-tree run. Evidence added: a failed run rerun by a person, failing again, is dispatched again (a second dispatch row, a new lineage); the same rerun made by a machine identity is not dispatched (the unique index refuses a second row of the lineage); a reset by a handler-tree run extends the lineage; the initiator's principal kind recorded with the provenance.
+- [ ] T022-229 [US5] [US6] The setting `publication_policies.draft_executions_enabled` (off by default, changed through the publication-policy route, audited) and the refusals `TEST_RUN_REVIEW_REQUIRED` and `STANDALONE_STEP_REVIEW_REQUIRED` where the effective `required_approvals` is above zero; 017's database executions unchanged. FR-022-023, 026; D022-227. Evidence: one test per combination (approvals 0 or more, setting on or off, a database node); the audit row of the setting.
+- [ ] T022-230 [US1] Cache keys under the key classification rules: `CACHE_KEY_SECRET`, `CACHE_KEY_PII`, `KeyPurpose::StepCache` with its bound, and the label, counts and hit source run shown only to a caller who may disclose every location the key reads (listing, journal, provenance). FR-022-007, 057; D022-229. Evidence: codec tests over 016 carriers; REST tests with and without the right; a raw-key canary.
+- [ ] T022-231 [US1] Store correctness: entries stamped with the obligation's instant; T4 inserting an absent scope and stamping after its lock; T5 deleting the pending obligations of the scope and key; T3 skipping an obligation older than the invalidation and replacing a dead entry; T18 obligations before entries; the key digest copied from `steps.cache_lookup`; the ceilings skipped and counted; the usage-row triggers with `SET search_path`; `UPDATE (expires_at)` only. FR-022-005, 006, 037; D022-230. Evidence: barrier tests of T3 against T4 and against T5 (both orders, held locks, `pg_blocking_pids`), of T18 against T3; a dead entry replaced; a direct update of another column refused as `sagat_app`.
+- [ ] T022-232 [US1] A hit over the run's retained bytes fails the step `RUN_DATA_LIMIT` through its route in the lookup round, and the hit's bytes enter through the outputs path of `persist`. FR-022-003; D022-231. Evidence: an integration test at and over the bound; the commit is never retried for it.
+- [ ] T022-233 [US6] Upstream pins commit `step.mocked` and `step.routed` with no activation; `start_at` in `run.started`; the highest floor of the pins on every disclosure of the test run; the check order of a test-run request; published script artifacts only for a standalone script node. FR-022-027..029; D022-233. Evidence: `crates/domain/tests/test_runs.rs` with `A → X` and `A → B → C`, `startAt = C` (no release of `X`); replay of the journal reaching the same entry; disclosure tests at each floor; one test per check in its order.
+- [ ] T022-234 A domain property test that no progress emits a filed gate decision and `run.finished` in one commit, and the as-built order of ADR-0056 decision 2 (counter row before any key given back; `runs` written by `persist` after the rounds) pinned by the lock-order tests. D022-234. Evidence: `crates/domain/tests/flow_control_properties.rs` at `PROPTEST_CASES=2000`; `concurrency_locks` unchanged.
+- [ ] T022-235 Per registry capability of the rest, a test that a binary lists it only once every slice of it is in the binary (a build constant per capability, set by its last slice). FR-022-031; D022-236. Evidence: five tests, one per capability, red when the constant is set early by hand.
+- [ ] T022-236 [US1] Producer secrets and bindings: `secret_refs` in the fingerprint and on the entry, the recheck under the shared secret-access and membership locks, `producer_worker_id` and its binding check. FR-022-002, 004; D022-225, D022-226. Evidence: two publishers with one access list (the one without access misses `unauthorized`); a revoked access list between the store and the hit; a worker binding revoked between the store and the hit; the lock taken before the cache rows (a held-lock barrier).
+- [ ] T022-237 Migrations and rollback of the rest: the `origin` CHECK `NOT VALID` then `VALIDATE`; the unique index on `handler_for_run_id` in its own migration with its lock measured on the acceptance data set; every `down` refusing while rows with the new origins, flags or events exist; the runbook's rollback (switch off, never a binary downgrade). D022-239. Evidence: up and down tests, both database roles; the index build's duration recorded.
+
+### Revision of 2026-11-25 after the re-reviews: the second rulings
+
+The reviewers re-read `6d02632e`; the second rulings are in `reviews/2026-11-25/design-rereviews-and-rulings.md`, the
+decisions D022-242 to D022-259 in `research.md`, and where each finding lives in
+`reviews/2026-11-25/design-reresponses.md`. Nothing is ticked or rewritten; this subsection says how the tasks read now,
+adds evidence per slice, and adds tasks T022-238 to T022-252.
+
+#### Tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-011 | 56 permissions and a new built-in role `RunRecovery` (`run:read`, `run:start`, `run:operate`), with the refusal of a `RunRecovery`-only subject as a publication approver and an approval decider (T022-240) | D022-244 |
+| T022-215 | *The old text (a machine identity) is superseded:* recovery through a `RunRecovery` credential given as a secret; a suppressed dispatch is redrivable | D022-242, D022-244 |
+| T022-226 | the rule judged by enclosing function, with the `persist` family, the body iteration announcements and the chain hand-off and finalization allow-listed, `finished_at` only in `UPDATE runs`, negative fixtures | D022-251 |
+| T022-227 | plus the cases of D022-248: a parallel region with one branch failing while the other is leased; a storage-quota stop in the phase; paused, then the timeout; `on: [TIMED_OUT]`; a cancellation during `TIMEOUT` draining and a timeout during `CANCELLED` draining, both orders; the state rebuilt from the journal after each commit | D022-246 to D022-248 |
+| T022-228 | the lineage extended by every reset and rerun; `lineage_first` and `SUPPRESSED_LINEAGE` (T022-238); the D022-241 evidence (a person's rerun dispatched again) withdrawn | D022-242 |
+| T022-231 | the lease-instant stamp, the per-key tombstone, one usage row for both counts (T022-246) | D022-252 |
+| T022-235 | the manifest of artefacts, not a build constant (T022-249) | D022-256 |
+| T022-237 | plus the `BEFORE INSERT` lineage trigger and the guards of `handler_tree` and `handler_kind` (T022-241) | D022-245 |
+
+#### Evidence each slice must bring now, added
+
+- **Slice 2:** T022-249's manifest test red with any artefact removed; the `FLOW_CONTROL_COMBINATION` fixtures for
+  `cache`, `onFailure` and `earlyReturn` with `continueAsNew` (T022-244); T022-226's rule red on the tree before the
+  routing, green after, and its negative fixtures.
+- **Slice 3:** a chain head failing in a namespace with a handler dispatched (T022-245); T022-247's mixed-version and
+  held-lock tests.
+- **Slices 6 to 9:** T2 held open across T5 (a value leased before the invalidation not stored); two hits in one round
+  against the retained limit; a barrier held after T3's delete against T18; a cacheable admission against a revocation
+  (`slot_order.rs`); a `namespace`-scope store by an undeclared workflow skipped; the disclosure nulls for a caller
+  without the right (T022-246, T022-248, T022-251).
+- **Slices 10 to 13:** two failing runs of one lineage committing at once (one live and one suppressed row, both runs
+  terminal); a suppressed row redriven; a handler starting fresh runs deferred by the budget; the overdue pass skipping a
+  run in its phase; every draining case (T022-238, T022-239, T022-242, T022-243, T022-252).
+- **Slices 14 to 19:** the `prod` refusal of a standalone code step and its setting; a rerun of a standalone run checked
+  again; a continue-as-new successor of a test-tree run refused (T022-244, T022-250).
+
+#### Follow-up tasks of the second rulings (T022-238 to T022-252)
+
+- [ ] T022-238 [US3] Dispatch by lineage: `lineage_first`, the partial unique index, the two-statement insert (`ON CONFLICT ... WHERE lineage_first DO NOTHING`, then a `SUPPRESSED_LINEAGE` row counted `skipped_lineage` and journaled as `run.finished`'s `namespace_dispatch`), the listing filter and the redrive of a suppressed row. FR-022-016; D022-242. Evidence: two failing runs of one lineage commit concurrently (a held commit), both reach their terminal status, one live and one suppressed row; no unique violation is ever raised to the terminal commit (a hand mutation that drops the `ON CONFLICT` is caught); a redrive admits once.
+- [ ] T022-239 [US3] The namespace dispatch budget (quota resources: dispatches per window, per-workflow share), deferring beyond it and alerting. FR-022-016; D022-243. Evidence: a handler that starts fresh failing runs is deferred at the budget, nothing dropped, the alert raised; at and over each bound.
+- [ ] T022-240 The built-in role `RunRecovery` and the refusals `RECOVERY_ROLE_MAY_NOT_APPROVE` in the publication approval and approval decision paths. FR-022-032; D022-244. Evidence: the role's permissions in the catalog test; a `RunRecovery`-only subject refused in both deciders; a handler recovering through such a credential, audited as it.
+- [ ] T022-241 Database guards of `lineage_run_id` (nullable, `coalesce`, the `BEFORE INSERT` trigger from the reset or rerun source, immutable), `handler_tree` and `handler_kind` (`BEFORE UPDATE OF`, `ENABLE ALWAYS`; a child's `handler_tree` equal to its parent's). D022-245. Evidence: an update of each refused as `sagat_app` and as the owner; an older binary's insert gets its lineage; the chain insert unchanged.
+- [ ] T022-242 [US3] `failure_handler.draining {cause}`: the reducer maps every stop source of the phase to it (never to the run's stop), the first cause wins, later ones in its detail, draining overrides a pause, the recovery sweep selects draining runs, the codec's closed set of six causes. FR-022-013, 014; D022-246. Evidence: `crates/domain/tests/failure_handler.rs` cases per cause; a decoder test that pins the six causes; the state rebuilt from the journal after each commit.
+- [ ] T022-243 [US3] The run deadline does not apply during the phase: the overdue pass (`overdue_runs`) excludes `failure_handler_state IS NOT NULL`; the `timeoutMs` ceiling. FR-022-013; D022-247. Evidence: a `TIMED_OUT` run's handler is not cancelled by the next overdue pass (red on today's pass); a deadline before the phase opens stops the run and the phase opens.
+- [ ] T022-244 Continue-as-new refusals: publication refuses `continueAsNew` with `cache`, `onFailure` or `earlyReturn` (`FLOW_CONTROL_COMBINATION`); `refuse_gated_successor` refuses a successor of a test-tree or handler-tree run. FR-022-031; D022-249. Evidence: codec fixtures; an integration case per tree.
+- [ ] T022-245 [US3] A chain's finalization writes its terminal status through `persist`'s terminal path for the namespace dispatch. FR-022-016; D022-250. Evidence: a failing chain head dispatched once; the chain's other writes unchanged.
+- [ ] T022-246 [US1] The cache store completed: the lease-instant stamp, `step_cache_key_invalidations`, cumulative hits per round, one usage row for both counts, the obligations' guarded column `UPDATE` grant, `404` for an underivable invalidation target, `ON CONFLICT DO NOTHING` for two writers of one dead entry. FR-022-003, 005, 006; D022-252. Evidence: T2 held open across T5; two hits in one round; a barrier held after T3's delete against T18; `FOR UPDATE SKIP LOCKED` on an obligation as `sagat_app`; invariant 18 as restated, red with a seeded dead-entry hit.
+- [ ] T022-247 The tests of ADR-0146: an older binary replays a journal the routed finish wrote; a held-lock test against concurrent feature 014 iteration transactions. D022-251. Evidence: both tests, both database roles.
+- [ ] T022-248 [US1] The cache's security completed: secret ids on the fingerprint and entry, the producing subject, the binding advisory lock shared and the membership check (and the runner's for a script), the disclosure nulls and the minute cut, the closed span and metric attributes, `step_cache_names` with its administrator's route and audit, the lookup locks at slot 5 for an admission. FR-022-002, 004, 007; D022-254. Evidence: a revoked membership and a revoked binding each turn a hit `unauthorized`; a reader without the right sees `bypassed` and nulls; an undeclared writer of a `namespace`-scope name skipped; a `slot_order.rs` case of a cacheable admission against a revocation.
+- [ ] T022-249 The per-capability manifest of artefacts and its serving test, and the rollback order (`platform_requirement_remove`, then the switch). FR-022-031; D022-256. Evidence: five manifests; each test red when the serving constant is true with an artefact removed by hand.
+- [ ] T022-250 [US5] [US6] Draft executions completed: the setting read inside the admission transaction under the publication policy's lock; `STANDALONE_STEP_PRODUCTION_NAMESPACE`; a rerun of a standalone run checked again; the policy row created with the environment's approval default. FR-022-023, 026; D022-257. Evidence: one test per case; a run admitted before the setting is turned off continues.
+- [ ] T022-251 [US1] `step.cache_missed` re-materialized by a reset (the source step's `steps.cache_lookup` copied). FR-022-038; D022-253. Evidence: the reset corpus case; the reset run's next completion writes its store obligation with the key digest.
+- [ ] T022-252 The order as built: the handler configuration read by a left join in the statement that locks the run (`FOR UPDATE OF runs`), and the lock-order tests of the restated order (counter row in `persist` after the rounds; cache rows before it). D022-255. Evidence: the budget line of a failing run without a handler unchanged; a held-lock test that the configuration row is never locked by a terminal commit.
+
+### Revision of 2026-11-25 after the third reads: the third rulings
+
+The third rulings are in `reviews/2026-11-25/design-third-reads-and-rulings.md`, the decisions D022-260 to D022-271 in
+`research.md`, and where each lives in `reviews/2026-11-25/design-third-responses.md`. Nothing is ticked.
+
+#### Tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-238 | plus: each run's `run.finished.namespace_dispatch` equals its dispatch row's state in the held-commit case; the terminal path updates no `run_events` row | D022-260 |
+| T022-239 | plus: a dispatch deferred more than 12 times stays `PENDING` and is admitted once (a deferral counts no attempt) | D022-264 |
+| T022-240 | plus: the namespace binding of a `RunRecovery` subject (T022-253), `definition:read`, `RECOVERY_ROLE_MAY_NOT_REDRIVE`, no assignment before `failure-handler-v1` is activated, the widened `memberships_role_valid` and OpenAPI role enum; a tenant-battery case (bound to A, cannot touch B); a fault test (a handler that reruns and then tries to redrive: exactly one handler run) | D022-266 |
+| T022-242 | one cause: a further stop while draining refused `409`, region failures settling into the drain; cancellation and timeout in both orders, the dispatch row and the rebuilt state agreeing | D022-261 |
+| T022-243 | plus: the barrier test with the overdue pass held between pick and apply while the phase opens (a typed no-op counted skipped, no `failure_handler.draining`) | D022-262 |
+| T022-244 | plus: refusals at admission (a dispatch's `CONTINUE_AS_NEW_REFUSED`, a child step's, a draft test's `422`), the runtime check ending the run through a typed finalization; no run non-terminal at the boundary | D022-263 |
+| T022-248 | plus: the unlocked pre-read of `producer_subject`, its locks, the re-check on the entry (a change `unauthorized`), at slots 5 and 7 for an admission (T022-254, T022-255) | D022-265 |
+| T022-250 | the setting's advisory key per namespace, shared at slot 4a by admissions, exclusive in `set_policy` | D022-269 |
+| T022-226 | lands in slice 3, its pull request's first commit showing it red, with a test that a chain finalization goes through `persist`'s terminal path | D022-267 |
+| T022-225 | lands in slice 10 | D022-267 |
+| T022-245, T022-207 (its handler cases) | their evidence lands in slices 11 and 12 | D022-267 |
+
+#### Follow-up tasks of the third rulings (T022-253 to T022-255)
+
+- [ ] T022-253 The namespace binding of `RunRecovery` subjects: `run_recovery_namespaces`, the administrator's audited route, the check first on every route that authorizes the role (the opaque `404` outside), the migration widening `memberships_role_valid` with a refusing `down`, the activation gate on `failure-handler-v1`, the OpenAPI role enum. FR-022-032; D022-266. Evidence: the tenant battery (bound to namespace A, refused on namespace B as `404`); an assignment refused before activation; the `down` refused while a membership exists.
+- [ ] T022-254 A `slot_order.rs` case: a binding replacement against a lease-expiry pass that releases a cacheable successor, the lookup's producer locks taken in the order of ADR-0056 decision 2(a). D022-265. Evidence: no deadlock; a reversed control that waits; both database roles.
+- [ ] T022-255 A rule of `scripts/check-architecture.py`: no deciding path locks a `steps` or `worker_sessions` row before its lookup round. ADR-0056 decision 2(a); D022-265. Evidence: the rule's tests with negative fixtures.

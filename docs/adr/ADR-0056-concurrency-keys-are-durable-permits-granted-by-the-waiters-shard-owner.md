@@ -51,11 +51,15 @@ ceiling above the proposed defaults is published.
    pool and never share a row with ordinary runs.
 2. **Semaphores follow the path's entity locks; only listed transition rows and usage rows come after.**
    Every transaction that touches a semaphore MUST already hold (or be creating) the run whose permit
-   changes and MUST have written that run's `runs` row first (so the `run_active_counts` trigger rows
-   precede the semaphore). It MUST lock semaphore rows in `(pool, scope, group, key_digest)` order, after
+   changes, holding that run's row lock; a commit that ends the run MUST lock its active-run counter row
+   (`run_active_counts_lock_slot`) before it gives back any key; the `runs` row is written by `persist` after
+   the evaluation rounds (ADR-0094). *(Replaced 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decision D022-234):
+   accepted 2026-11-25 with the amendments, decision D022-271; the sentence read "and MUST have written that run's `runs` row first (so the `run_active_counts` trigger rows
+   precede the semaphore)", which the build since ADR-0094 does not do; what it protected, the counter row before
+   the key, is kept by the explicit lock.)* It MUST lock semaphore rows in `(pool, scope, group, key_digest)` order, after
    every entity lock the path takes before it acquires, releases or grants a permit. After a semaphore it
    MAY lock only (a) the transition rows this ADR lists for that path — on the terminal path the namespace
-   failure-handler policy row (`FOR SHARE`) — and (b) quota, rate and usage rows, which always come last
+   failure-handler policy row (~~`FOR SHARE`~~, struck 2026-11-25: read without a lock) — and (b) quota, rate and usage rows, which always come last
    (ADR-0050 slot 8b, ADR-0027 deferred content flush). It MUST NOT lock another existing run, an aggregate
    count or an activity-quota row after a semaphore. The failure-handler policy row and the cache scope and
    entry rows of feature 022 are the transition rows that ADR-0050 decision 7 lets each ADR list for
@@ -73,6 +77,46 @@ ceiling above the proposed defaults is published.
      (`FOR SHARE`) → usage;
    - claim: run → drain fence → worker session → sorted activity-quota rows → sorted semaphores → usage;
    - attempt end (completion, failure, cancellation, lease expiry): run → step → semaphore → usage.
+
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decisions D022-204 and D022-208, ADR-0135 and ADR-0136
+   proposed):* the as-built order. Since ADR-0094 a transition on an existing run decides its keys in evaluation rounds
+   before `persist`: the path's entity locks (chain, run; a shard fence only where a pass already holds one) → the run's
+   active-run counter row when the commit ends a run that holds a permit (T022-022) → the lookup round's cache scope and
+   entry rows, `FOR SHARE` (feature 022 US01) → the gates round's semaphores, then windows, each sorted → `persist`, which
+   writes the `runs` row, the journal and the projections → usage rows last. The terminal path reads the namespace
+   failure-handler policy row without a lock and records its `config_revision` on the dispatch row, so that row is no
+   longer a transition row of this decision. A cacheable step released after the gates round of the same commit (by a
+   key failure's route) is looked up in a later round, after the semaphores; this is allowed because the only exclusive
+   takers of cache rows (invalidation, purge, erasure, the store writer's insert) lock nothing after one but usage rows
+   (ADR-0135 decision 7). *Revised 2026-11-25 (decisions D022-225, D022-234, D022-237):* the lookup round takes the
+   secret-access and membership locks of the step's secrets, shared, before the cache rows; the namespace handler's
+   revision is read with the run's definition, not on the terminal path; a domain property test checks that no progress
+   emits a filed gate decision and `run.finished` in one commit (task T022-234).
+
+   *Struck and restated 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-254 and D022-255; ADR-0094 is
+   the authority):* in the per-path orders above, the clauses "→ `runs` update → semaphore" and "namespace
+   failure-handler policy row (`FOR SHARE`)" no longer describe any path, and the first order of the amendment of
+   2026-11-24 put the counter row before the rounds, which the build does not do. The order of every transition on an
+   existing run is: entity locks (the statement that locks the run also reads the namespace handler configuration by a
+   left join, `FOR UPDATE OF runs`) → the rounds (lookup, then gates) → `persist`: the active-run counter row when the
+   commit ends the run, the give-backs, the rest (the `runs` row, the journal, the projections, the dispatch insert) →
+   usage rows. The counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive
+   taker of a cache row takes the counter row.
+
+   2(a). *Added 2026-11-25 (decision D022-254); rewritten 2026-11-25 on its true premise (decision D022-265):* the
+   transition rows this decision lists for feature 022's lookup round are the secret-access and membership locks of a
+   cacheable step's secret ids (`sagat_lock_secret_access`, `sagat_lock_memberships`, shared, ascending), then, after an
+   unlocked pre-read of the entry's immutable `producer_subject`, that subject's membership lock and the activity's
+   binding advisory lock (shared), all before the cache rows, the entry read `FOR SHARE` re-checking the subject; at an
+   admission the locks and the pre-read are at slot 5 of ADR-0050 decision 7 and the re-check at slot 7. The binding
+   lock is not a leaf: a binding replacement takes it exclusively and then locks `worker_sessions` and `steps` rows
+   (`crates/infra-postgres/src/bindings.rs`). The rule that keeps it safe is: no decider locks a step or a
+   `worker_sessions` row before its lookup round; it is stated here and checked by `scripts/check-architecture.py` and a
+   `slot_order.rs` case (a binding replacement against a lease-expiry pass that releases a cacheable successor).
+
+   *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
+   specs/022-flow-control-step-policies/reviews/2026-11-25/ (decision D022-271):* the feature 022 amendments of this
+   decision dated 2026-11-24 and 2026-11-25.
 3. **Every run creator acquires at admission.** Run admission MUST either acquire a run permit or enqueue
    the new run in its admission transaction, through one application port that every run creator calls:
    the start API, event and cron triggers, child nodes (including `onFailure` children), reruns, 017 ad hoc

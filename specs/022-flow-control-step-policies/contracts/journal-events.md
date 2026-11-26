@@ -10,10 +10,12 @@ shows it as an unsupported event, never an error). `verify_run` replays them.
 | Event | Transaction | `detail` (closed) | Reducer effect |
 |---|---|---|---|
 | `step.cache_hit` | T1 | `entry_id`, `source_run_id`, `source_node`, `source_attempt`, `expires_at_us`; `payload_ref` set | followed by `step.completed` with `source: "CACHE"`, attempt 0; no lease; a `step_cache_hit_provenance` row is written with it |
+| `step.cache_missed` | T1 (added 2026-11-24, decision D022-203) | `outcome` ∈ `miss`, `expired`, `invalidated`, `unauthorized`, `bypassed` | the step leaves `WAITING` (`CACHE_LOOKUP`) for `READY`, or for its gates' round in the same commit; no payload |
 | `step.mocked` | T16 or when reached | `source` ∈ `MOCK`, `RUN_PIN`; `source_run_id`, `floor_level` (both optional); `payload_ref` set | step `SUCCEEDED` with origin `MOCK`; excluded from compensation/reconciliation planning |
 | `result.returned` | T6 | `result_source: "EARLY_RETURN"`; `payload_ref` set | sets the run result once; status unchanged |
 | `end.reached` (existing) | existing | adds optional `result_already_returned: true` | no second result |
 | `failure_handler.started` | T7 | `pending_status`, `form` ∈ `NODE`, `CHILD`; `failure_kind`, `failure_code` | enters handler phase |
+| `failure_handler.draining` | T32 (added 2026-11-25, decision D022-246) | `cause` ∈ `CANCELLED`, `TIMEOUT`, `REGION_FAILED`, `STORAGE_QUOTA`, `RUN_DATA_LIMIT`, `EXPRESSION_ERROR` (one cause: ~~`later_causes`~~ removed 2026-11-25, decision D022-261; a further stop request while draining is refused `409`) | the phase drains: `failure_handler_state` `TIMING_OUT` for `TIMEOUT`, `CANCELLING` otherwise; the region's attempts and the child asked to stop; every stop source of the phase maps here, never to the run's stop |
 | `failure_handler.finished` | T8 | `outcome` ∈ `SUCCEEDED`, `FAILED`, `FAILURE_HANDLER_TIMEOUT`, `CANCELLED` | followed by `run.finished` with the pending status |
 | `concurrency.queued` | T10 | `pool`, `scope: "RUN"`, `group`, `key_label`, `queue_deadline_us` | run `WAITING` (wait kind `CONCURRENCY`) |
 | `concurrency.acquired` | T10, T11, T13 | `pool`, `scope`, `group`, `key_label`, `generation` (step scope) | holder open |
@@ -36,6 +38,31 @@ T28), not at its claim; `concurrency.released` is also written by T29.
 The four `rate_limit.*` rows belong to the release 0.3.0 slice (US07, D022-012). A rate slot has no
 release event: it stops counting by time, which replay never needs to know (FR-022-045).
 
+*Amended 2026-11-24 (decisions D022-203 to D022-216; ADR-0135, ADR-0136 and ADR-0137 proposed):* the transaction
+numbers refer to the as-built table of `plan.md` ("Transactions, as built"). `step.cache_hit` follows the lookup round
+(`Evaluation::CacheLookup`), asked before the gates; its `payload_ref` is the entry's payload row, referenced, not copied.
+A step of a node that declares `cache` waits `WAITING` (`CACHE_LOOKUP`) between its first `step.released` and its
+`step.cache_hit` or `step.cache_missed`. `step.mocked` of a downstream pin is written in the commit that releases the
+node, before any lookup or gate. `failure_handler.started` replaces `run.finished` until `failure_handler.finished`, which
+commits with the start's `concurrency.released` and `run.finished`. `result.returned` follows the round
+`Evaluation::EarlyResult`.
+
+*Revised 2026-11-25 (decisions D022-224, D022-228, D022-230, D022-233, D022-238):* `step.cache_missed` is one of the
+task-ready hint's arms and writes the lookup's key digest and version on the step projection (`steps.cache_lookup`), never
+in `detail`; no step is released while its run is paused, so no lookup waits across a commit. An upstream pin commits
+`step.mocked` and the existing `step.routed` with no activation, which releases no successor. `failure_handler.started`
+moves the stop into `pending_terminal_status` and clears it; a cancellation, the run deadline or the handler's timer
+during the phase drains it (`failure_handler_state` `CANCELLING` or `TIMING_OUT`) before `failure_handler.finished`, whose
+`outcome` `FAILURE_HANDLER_TIMEOUT` the column records as `TIMED_OUT`; a phase never opens a second one. `run.started`
+also carries `start_at` (a draft test's start node), `handler_tree` and `handler_kind` (`DISPATCHED`, `REGION_CHILD`).
+
+*Revised 2026-11-25 after the re-reviews (decisions D022-242, D022-246, D022-253), and after the third reads (decision
+D022-260: the `run.finished` row is appended after the two dispatch statements, its detail taken from what they did; the
+reducer ignores it; the terminal path updates no `run_events` row):* `run.finished` gains an optional
+`namespace_dispatch` detail (`PENDING` or `SUPPRESSED_LINEAGE`) when its commit inserted a dispatch row, so a suppressed
+dispatch is on the run's journal; `failure_handler.finished`'s `outcome` is `FAILED` after a draining cause other than
+`CANCELLED` and `TIMEOUT`; a reset run's lineage is always its source's.
+
 `run.started` (existing) gains optional provenance `handler_for`, `origin` and `test_tree`. `key_label` is
 the 12-hex-character prefix of the keyed digest (D1168), never the key value.
 
@@ -57,6 +84,8 @@ including ADR-0056's holder count, skip them. Rules for this feature's event typ
 | Event | Rule | What the reset transaction does, or which points are refused |
 |---|---|---|
 | `step.cache_hit` | `REMATERIALIZE` | inserts a `step_cache_hit_provenance` row for the reset run (same source run, entry and payload), so 020 erasure still finds the copy; no cache read |
+| `step.cache_missed` | `REMATERIALIZE` | *Revised 2026-11-25 (decision D022-253; was `COPY`):* the reset copies `steps.cache_lookup` from the source step, so the reset run's next completion can write its store obligation |
+| `failure_handler.draining` | `REFUSE` | added 2026-11-25 (decision D022-246): a point inside the handler phase, as the phase's other events |
 | `step.mocked` | `REFUSE` | only test-tree runs carry it and they are not reset sources (`RESET_SOURCE_TEST_RUN`) |
 | `result.returned` | `REMATERIALIZE` | sets `runs.result_digest`, `result_source = EARLY_RETURN` and `result_available_at` on the reset run from the restored event; no `run.result_returned` delivery or hint is sent again |
 | `failure_handler.started` | `REFUSE` | every reset point after it is inside the handler phase or its terminal tail and is refused; reset to a point before the failure instead |
@@ -68,6 +97,7 @@ including ADR-0056's holder count, skip them. Rules for this feature's event typ
 | `rate_limit.granted` | `REMATERIALIZE` | restored rows are history and create no grant row; after `run.reset` the reset transaction takes a fresh run-scope slot through the admission port and never waits, else the reset is refused (`409 CONFLICT`, `RATE_LIMIT_SLOT_UNAVAILABLE`, 018's contract; rate first when the start also takes a permit, D022-069); a point with a step waiting for a slot or granted and not yet completed is not eligible (no attempt in flight, ADR-0050 decision 5) |
 | `rate_limit.wait_timed_out`, `rate_limit.dequeued` | `REFUSE` | run scope: points after them lie in a terminal tail of a run that never started work; step scope: reset to a point before the step asked for its slot |
 | `rate_limit.returned` | `REMATERIALIZE` | history; it creates no grant row, and a point between it and the step's next grant is not eligible (no attempt in flight) |
+| `run.started` provenance (`handler_tree`, `handler_kind`, `start_at`; added 2026-11-25) | `REMATERIALIZE` | a reset of a handler-tree source is a handler-tree run and inherits no `handler_kind`; `lineage_run_id` is the source's, whoever starts the reset (decision D022-242, which reverses D022-241); `start_at` is copied with the test tree, which is refused as a source anyway |
 | `run.started` provenance (`handler_for`) | `REMATERIALIZE` | the reset run does not inherit `handler_for` (exactly one handler run per failure, unique index); its link to the source is 018's reset provenance; `origin` and `test_tree` are copied (test trees are refused as sources) |
 
 ## Spans

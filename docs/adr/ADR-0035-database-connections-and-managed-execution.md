@@ -63,3 +63,5 @@ Hyper's response buffers bound slow consumers as well as backend I/O. See the
 [managed executor contract](../../specs/017-database-connections/contracts/managed-executor.md#audited-result-disclosure)
 for the precise authorization and delivery boundary and
 [verification](../../specs/017-database-connections/verification.md) for executed tests.
+
+Note (2026-11-24, feature 022): decision 9 is extended by [ADR-0137](ADR-0137-standalone-and-draft-test-runs-are-ordinary-runs-of-private-definitions.md) (proposed) to standalone activity, script and database steps and to draft test runs, admitted through the one admission port `Engine::start`.

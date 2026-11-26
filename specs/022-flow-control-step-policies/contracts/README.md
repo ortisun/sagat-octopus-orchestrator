@@ -17,6 +17,15 @@ purpose.
 **Worker protocol (`worker.proto`): no change.** Cache hits, mocks, early results and permits are decided
 by the server; a step waiting for a step permit stays `READY` and is not leased, like a step whose activity
 quota is exhausted. No protocol minor is negotiated by this feature.
+*Corrected 2026-11-24 (decision D022-220):* a step waiting for a permit, a rate slot or its cache lookup is not `READY`:
+it waits outside it (`WAITING`, wait kind `CONCURRENCY`, `RATE_LIMIT` or `CACHE_LOOKUP`; ADR-0089 decision 1, ADR-0135
+decision 1), so no claim ever considers it.
+
+**The rest of 022 (2026-11-24, OD-2026-11-24-1).** The fragments now serve release 0.3.0 whole. Changed with the
+decisions D022-203 to D022-221: the journal event `step.cache_missed` and its reset rule; the refusal reasons of the
+registry capabilities and of a standalone step's business identifier; the interim dependency
+`COLLECTION_FINISH_ROUTING`; the standalone request's business-identifier fields; six SDKs in the conformance
+scenarios. Everything merges into the canonical contracts with the slice that builds it (task T022-060).
 
 **Release 0.3.0 slice (US02 and US07).** The fragments carry the rate-limit additions next to the
 concurrency ones: `rateLimitPolicy` in the IR fragment, `Run.rateLimit` and `GET

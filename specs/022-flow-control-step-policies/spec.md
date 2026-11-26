@@ -23,6 +23,26 @@ decisions 3 and 5 (accepted) is proposed as
 [ADR-0089](../../docs/adr/ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
 and needs the owner. ADR-0056 and ADR-0088 were accepted on 2026-11-13 (OD-2026-11-13-17).
 
+**Release 0.3.0, the rest of 022 (2026-11-24)**: the owner put the whole feature in release 0.3.0 (OD-2026-11-24-1)
+and delegated its open questions and ADR acceptances (OD-2026-11-24-4). O1160, O1161 and O1162 are answered as
+recommended (decisions D022-200 to D022-202); the requirements below that the as-built slice or the new decisions change
+carry dated amendment lines (decisions D022-203 to D022-221; proposed ADR-0135, ADR-0136 and ADR-0137). What the rest
+takes and in which order is in [Release 0.3.0, the rest of 022](#release-030-the-rest-of-022). Nothing of it is
+implemented.
+
+**Revision after the reviews of 2026-11-25**: the three repository reviewers read the design of the rest
+([reviews/2026-11-25/](reviews/2026-11-25/)); the coordinating session's rulings are decisions D022-222 to D022-240,
+written below as amendment lines dated 2026-11-25, with a new proposed ADR-0146 (every end of a run goes through the
+reducer). Where a line of 2026-11-25 and one of 2026-11-24 disagree, the later one wins.
+
+**Revision after the re-reviews of 2026-11-25**: the reviewers re-read `6d02632e`; the second rulings are decisions
+D022-242 to D022-259 ([reviews/2026-11-25/design-rereviews-and-rulings.md](reviews/2026-11-25/design-rereviews-and-rulings.md)),
+written below as lines marked "after the re-reviews", which win over the earlier lines of the same day.
+
+**Third reads and acceptance (2026-11-25)**: no Blocker in the third reads of `c910345b`; the third rulings are decisions
+D022-260 to D022-270, written below as lines marked "after the third reads"; ADR-0135, ADR-0136, ADR-0137 and ADR-0146
+and the amendments of ADR-0050, ADR-0056 and ADR-0094 are Accepted (D022-271, delegate OD-2026-11-24-4).
+
 **Input**: Bring Windmill/Temporal flow control to the platform without changing its execution model: a
 declared **step result cache** (key = canonical input digest + pinned identity + scope, TTL, retained and
 classified entries, journaled hits, explicit invalidation); **early return** of a workflow's declared
@@ -71,6 +91,10 @@ policies for standalone executions are 018; priority/fairness keys are 019 (gran
 then); run-and-wait and Streams are 026 (they consume the early result); the time-skipping clock is 028;
 encrypted fields (031) are opaque to keys (FR-022-036).
 
+*Amended 2026-11-24 (decisions D022-211 and D022-217):* the one admission port is `Engine::start` (D022-049), not
+017's `RunStore::create`: standalone steps, draft test runs, namespace handler dispatch and derived `onFailure~h` children
+admit through it. Feature 020 is not on the tree: erasure acts through a 022-side port that 020 will call (gap G022-021).
+
 Rate limits (US07, added on 2026-11-13) reuse the same pieces as concurrency keys: the key expression, the
 keyed digest and its label, groups, the one admission port, the queue ceilings and the shard-fenced grant
 (ADR-0056). What differs is that a rate slot is freed by time, not by a holder finishing, so the count is a
@@ -106,6 +130,8 @@ second run leases nothing; run after expiry and after invalidation — both leas
    database node, **when** it declares `cache`, **then** publication fails with `CACHE_WITH_EFFECT`.
 4. **Given** a completed miss and a full content quota, **when** the entry would be stored, **then** step and
    run are unaffected and the skipped store is only counted.
+   *Amended 2026-11-25 (decision D022-240):* an entry charges no content (it references the producer's payload, D022-205):
+   read "a full cache-entries ceiling, or a full pending-obligations ceiling" for "a full content quota".
 
 ---
 
@@ -383,33 +409,96 @@ Added after the review of 2026-11-13:
   `version` an author separator. Publication MUST refuse `cache` with `compensateWith`, `reconcileWith`,
   `irreversible` or `highRisk`, on database or other node kinds (`CACHE_WITH_EFFECT`,
   `CACHE_POLICY_INVALID`), and in bodies (`UNSUPPORTED_NODE`, dependency `SCOPED_CACHE`).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-207):* until the collection- and loop-finish paths are routed through
+  the reducer (task T022-207), publication also refuses `cache`, `earlyReturn` and `onFailure` in a definition with a
+  `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`).
 - **FR-022-002 — Cache identity**: An entry MUST be identified by tenant, namespace, scope identity (pinned
   version, workflow or cache name), node fingerprint and key digest. The fingerprint MUST cover the
   executable identity (activity name or artifact digest), the canonical key expression, the author
   `version`, the `outputSchema` carrier digest and the classification rules version. The key digest MUST
   be a keyed digest of the canonical key value; the raw key MUST NOT be persisted outside the run's data.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-225, D022-226, D022-229; security Blocker 1 and Major 1):* the
+  fingerprint covers the node's whole canonical IR except a closed list of fields that cannot change what runs (`next`,
+  `onError`, `cache.ttlSeconds`, `cache.name`, `concurrency`, `rateLimit`, `retry`, `timeoutMs`, `compensationRetry`,
+  `compensationTimeoutMs`), so the producing node's sorted logical secret references, an input mapping or a binding a
+  later feature adds enter it by construction; plus the classification rules version. The key digest is keyed under its
+  own purpose (`KeyPurpose::StepCache`, 1 KiB by default, 4 KiB at most).
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-254):* the fingerprint and the entry carry secret ids, not names; the
+  entry records the producing worker's subject; in the `namespace` scope the key's classification is the producer's.
 - **FR-022-003 — Hit semantics**: When a cacheable step becomes ready, the engine MUST evaluate the key over
   committed run data and, on a hit, in the same transaction copy the entry's output into the run's
   retained payloads (charged like any output), journal `step.cache_hit` (entry, source run/node/attempt,
   payload digest, expiry) and the ordinary completion, and continue scheduling, with no lease or attempt.
   Replay MUST reach the same state from the journal and the run's payloads without reading the cache.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-203, D022-204, D022-205; ADR-0135 proposed):* a cacheable step does
+  not become `READY` before its lookup: its first `step.released` leaves it `WAITING` (`CACHE_LOOKUP`) and the lookup
+  is an evaluation round asked before the gates round, in the commit that released it; the outcome is journaled as
+  `step.cache_hit` (with `step.completed`) or `step.cache_missed {outcome}` (`miss`, `expired`, `invalidated`,
+  `unauthorized`, `bypassed`). A hit takes no permit and no slot. "Copy the entry's output" reads "reference the
+  entry's payload": no payload row is written, and the consumer run is charged the output's logical bytes like any
+  completion. No task-ready hint is written for a step a hit completes. While its run is paused a cacheable step waits
+  for its lookup undecided and is looked up on resume. *(Revised 2026-11-25, decision D022-238: no root step is released
+  while its run is paused, so that case does not arise and the sentence is withdrawn.)*
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-231):* a hit whose payload would exceed the run's retained bytes fails the
+  step `RUN_DATA_LIMIT` through its route, decided in the lookup round; the hit's bytes enter through the outputs path
+  of `persist` (one charge, digest and projection).
 - **FR-022-004 — Liveness and authorization of a hit**: A hit MUST require a matching entry whose expiry is
   later than the database clock in that transaction and whose scope was not invalidated after its
   creation. For a step declaring secrets, the publisher MUST currently be allowed to use them (metadata
   check, no value resolved); otherwise it is a miss. A key error or oversized key MUST bypass the cache.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-203):* a step is looked up once per run; a retry is an attempt of the
+  miss. An unanswered lookup fails closed (the transaction is refused and retried), never a miss.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-225, D022-226):* a hit also requires the consumer's publisher to be
+  able to use now every secret reference the entry records (the producer's, equal to the node's by the fingerprint),
+  checked under the shared secret-access and membership locks (`sagat_lock_secret_access`, `sagat_lock_memberships`),
+  and the producing worker identity the entry records to hold now a binding that covers the activity; otherwise the
+  outcome is `unauthorized`.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-252, D022-254):* the hit also reads the key's tombstone; the binding
+  check takes the binding advisory lock shared and checks the producing subject's membership (for a script, the
+  producing runner's subject and its binding profile); hits staged in one round count cumulatively against the
+  retained-output limit; to a run reader who may not see the producer an `unauthorized` outcome reads as `bypassed`.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-265):* the producing subject is pre-read without a lock, its locks are
+  taken, and it is checked again on the entry read; a change is `unauthorized`.
 - **FR-022-005 — Storing an entry**: A successful completion of a miss with an inline output MUST write a
   store obligation in its completion transaction; a leased writer MUST insert the entry from the run's
   immutable retained output, insert-if-absent, with expiry from the database clock. Storing MUST NOT fail,
   delay or roll back the step or run: quota exhaustion, blob output, a full backlog and an existing entry
   are counted outcomes. Failures, cancelled attempts and outputs refused by secret scanning are never stored.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-205):* the obligation and the entry reference the completed attempt's
+  payload row (`payloads (tenant_id, digest)`); the writer inserts no copy.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-230):* only the outcomes `miss`, `expired` and `invalidated` write a
+  store obligation, which copies the key digest and key version the lookup kept on the step; a full pending-obligations
+  ceiling skips it, counted. The entry's `created_at` is the producing completion's instant and its expiry runs from it;
+  the writer skips an obligation created at or before its scope's invalidation, replaces a dead entry under its lock,
+  and takes no lease or fence.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-252; supersedes the stamp above):* the entry is stamped with the
+  database instant of the producing attempt's lease (`step.leased`) and expires from it; the writer skips an obligation
+  whose attempt was leased at or before the scope's invalidation or the key's tombstone; two writers replacing one dead
+  entry use `ON CONFLICT DO NOTHING`; one usage row holds the counts of entries and store obligations.
 - **FR-022-006 — Invalidation and retention**: An authorized principal MUST be able to invalidate by
   workflow and node (optionally one version), by key value (sent in the body, digested server-side), or by
   shared cache name. Invalidation and expiry purge MUST release bytes in the deleting transaction and MUST
   NOT change any run that already hit. Listings MUST NOT return values or raw keys.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-230):* an invalidation by scope inserts the scope row when absent
+  and stamps `invalidated_at` with the database clock read after its lock; an invalidation by key also deletes the
+  pending store obligations of that scope and key; entries release no bytes (they hold none), only their count.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-252):* an invalidation by key writes a per-key tombstone; a scope row
+  is inserted only for a scope a published version can derive, and any other target is `404`.
 - **FR-022-007 — Classification and retained content**: Entries MUST be retained content charged to
   `tenant_content_bytes` (ADR-0027) and in the storage classification manifest. A consuming run discloses
   a copied output only through its own pinned carrier, identical to the producer's by FR-022-002. Cache APIs
   MUST NOT disclose a value.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-205):* an entry's value is the producer's payload row, already charged
+  to `tenant_content_bytes`; an entry adds a fixed-size row, counted against the cache-entries ceiling, and is
+  classified in the storage classification manifest. The capability is activated as `step-cache-v1` (FR-022-031).
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-226, D022-229):* a run of an internal definition (a standalone step,
+  a test tree) uses only the `version` scope of its own private version; a cache key follows FR-022-057
+  (`CACHE_KEY_SECRET` refused, `CACHE_KEY_PII` warned), and a key's label, the entry counts and a hit's source run are
+  shown only to a caller who may disclose every location the key reads.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-254):* for any other caller `entry_id`, the expiry and
+  `entriesDeleted` are null and listing instants are cut to the minute; spans and metrics carry no key, label or source
+  run. A `namespace`-scope cache name is a declared resource of the namespace (an administrator's setting lists the
+  workflows that may write it; any workflow of the namespace may read it).
 
 #### Early return (US04)
 
@@ -417,10 +506,16 @@ Added after the review of 2026-11-13:
   `result` and `next`. Publication MUST refuse it outside the root graph, in a saga body, parallel branch,
   body or handler region, reachable from another `earlyReturn`, with `continueAsNew`, or when an `end` with
   `outputExpr` is reachable from it (`EARLY_RETURN_PLACEMENT`).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-207):* and, until task T022-207, in a definition with a `forEach`,
+  `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`).
 - **FR-022-009 — Early-return transition**: Reaching it MUST, in one transaction, evaluate `result`, store it
   under the run-result bounds (256 KiB, content quota), set `runs.result_digest`, journal `result.returned`,
   write the `run.result_returned` outbox and delivery records, and schedule `next`. Evaluation failure MUST
   fail the run with `EXPRESSION_ERROR`, an oversized value with `RUN_DATA_LIMIT`. The status MUST NOT change.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-215; ADR-0136 proposed):* `result` is evaluated by the round
+  `Evaluation::EarlyResult`, and `persist` writes the rest in that commit; a test tree writes no `run.result_returned`
+  delivery (FR-022-030). The result is set once, before the run is terminal, and nothing after it changes it.
+  Activated as `early-return-v1`.
 - **FR-022-010 — Visibility of an early result**: The run resource MUST expose `resultSource`
   (`EARLY_RETURN` | `END`) and `resultAvailableAt`. The existing result disclosure MUST serve an early
   result before the run is terminal, with its existing permissions. The SSE stream and journal MUST show
@@ -438,6 +533,11 @@ Added after the review of 2026-11-13:
   default) and `timeoutMs`. A region MUST be disjoint from the graph reachable from the entrypoint, hold
   only activity, script, condition, switch, timer, parallel, child and end nodes, and its ends MUST NOT
   declare `outputExpr` (`FAILURE_HANDLER_REGION`). `onFailure` with `continueAsNew` MUST be refused.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-210):* the region is a region of the root graph, not a named body;
+  its nodes are root nodes for every root-only rule (they may declare `cache`, `concurrency` and `rateLimit`).
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-224):* a region refuses `compensateWith` (`FAILURE_HANDLER_REGION`);
+  a child form whose workflow's start permit shares the parent's group and a key that can coincide is refused
+  (`FAILURE_HANDLER_SELF_GATE`).
 - **FR-022-013 — Handler ordering and context**: When a run would finish with a status in `on`, the engine
   MUST first complete the existing stop (cancel unstarted work, settle in-flight attempts, finish
   compensation and reconciliation), then journal `failure_handler.started` with the pending status and
@@ -446,14 +546,48 @@ Added after the review of 2026-11-13:
   ends before it ever acquired its run permit (queue timeout, key error at admission) MUST finish directly,
   without its workflow handler, because the handler would run outside the key limit; the namespace handler
   still applies. A run holding a permit keeps it through its handler phase.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-216; ADR-0136 proposed):* `failure_handler.started` replaces
+  `run.finished`; the child form is created through `Evaluation::Child` and admitted through `Engine::start`; the
+  start's `concurrency.released` and `run.finished` are written in the commit of `failure_handler.finished`. "Acquired
+  its run permit" reads "was granted every gate of its start".
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-224; ADR-0136):* `failure_handler.started` moves the stop into
+  `pending_terminal_status` and clears it, so the run reads `RUNNING` or `WAITING` and plans only the handler's work; a
+  region step failing without `onError` ends the phase `FAILED`; there is never a second phase.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-246 to D022-248):* every stop source during the phase maps to one
+  journaled `failure_handler.draining {cause}` (`CANCELLED`, `TIMEOUT`, `REGION_FAILED`, `STORAGE_QUOTA`,
+  `RUN_DATA_LIMIT`, `EXPRESSION_ERROR`; the first wins), never to the run's stop; draining overrides a pause. The run
+  deadline does not apply during the phase: only the handler's own timer bounds it, and the overdue pass skips a run in
+  its phase. The runs of a region's `child` nodes are handler-tree runs; the `onFailure~h` node cancels and awaits its
+  child.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decisions D022-261, D022-262):* there is one cause: while the run drains a further
+  stop request is refused `409`, and region step failures settle into the drain; an overdue pass that picked a run
+  which then opened its phase is a typed no-op.
 - **FR-022-014 — Handler outcome**: A handler MUST NOT change the outcome: when it ends (succeeded, failed,
   timed out, cancelled) the engine MUST journal `failure_handler.finished` and finish the run with the
   pending status in the same transaction. A handler's failure MUST NOT re-invoke it. Cancellation during the
   handler MUST stop its work and finish with the pending status. `CANCELLED` runs MUST NOT start a handler.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-201, O1161 answered):* recovery is a handler that starts a reset or a
+  rerun as new under its own authority: an audited new run, never a change of the failed run's outcome.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-224, D022-228; supersedes "under its own authority" above):* a
+  handler holds no authority of its own: a handler that recovers calls the public API with a machine identity it is
+  given as a secret, audited as that identity. A cancellation or the run deadline during the phase is a handler
+  cancellation and the handler's timer a timeout: a draining sub-state (`CANCELLING`, `TIMING_OUT`) stops the region's
+  attempts and the child, then commits `failure_handler.finished`, the permit's release and `run.finished` with the
+  pending status. The timeout is `FAILURE_HANDLER_TIMEOUT` in the journal and `TIMED_OUT` in the column.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-244; supersedes "a machine identity"):* the credential is of the
+  built-in role `RunRecovery` (`run:read`, `run:start`, `run:operate`; no publication, approval, version or secret
+  permission); a subject whose only role is `RunRecovery` may not approve a publication or decide an approval. "A
+  cancellation or the run deadline during the phase is a handler cancellation" reads "a cancellation during the phase"
+  (D022-247).
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-266):* a `RunRecovery` subject is bound to named namespaces (an
+  audited administrator's setting) and answers `404` outside them, holds `definition:read`, may not redrive a dispatch
+  (`RECOVERY_ROLE_MAY_NOT_REDRIVE`), and cannot be assigned until `failure-handler-v1` is activated.
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose
   handler did not succeed.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-223):* the pending-dispatch ceiling refuses a new or re-enabled
+  configuration and raises an alert; it never refuses a terminal commit.
 - **FR-022-016 — Dispatch through the outbox**: A qualifying terminal transaction MUST insert one dispatch
   obligation keyed by the failed run, using the configuration read under its policy lock there. A
   shard-fenced dispatcher MUST admit the handler run (closed failure context and source identity as input;
@@ -462,6 +596,32 @@ Added after the review of 2026-11-13:
   MUST retry with bounded backoff, then become `DEAD`, alerted and redrivable. Handler runs (dispatched or
   `onFailure` children), test-tree runs and cancelled runs MUST NOT be dispatched; a failed `onFailure`
   child is covered by its parent's dispatch.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-208, D022-211, D022-214):* the configuration is read without a lock
+  in the terminal commit and its `config_revision` is recorded on the dispatch row; there is no policy lock.
+  *(Revised 2026-11-25, decisions D022-222, D022-223, D022-228, D022-237: the revision is read with the run's
+  definition; the handler workflow's head is read without a lock; see the line below.)* The
+  dispatcher admits through `Engine::start`, in ADR-0050's slots (dispatch row slot 3, the source run's identity guard
+  3R, the handler workflow's head 4b, the run 6, its gates 7). Activated as `failure-handler-v1`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-223, D022-228):* the terminal commit always inserts its dispatch
+  row (a recorded deviation of ADR-0050 decision 7); a run qualifies when no workflow handler phase of it ended
+  `SUCCEEDED`, it is not a handler-tree run, not a test tree and not cancelled; a namespace handler is dispatched at
+  most once per lineage (the source chain of resets and reruns). Handler runs form a tree (`handler_tree`, inherited by
+  children and by resets and reruns of them) and carry `handler_kind` (`DISPATCHED`, `REGION_CHILD`); `handlerFor` is a
+  dispatched run's only, and a rerun or reset of a handler run inherits it not. Each dispatch attempt is counted in its
+  own commit before the admission, so a crash in the admission still reaches `DEAD`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-241, O1176 answered (b); reversed by the next line):* a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own, so a
+  person's rerun of a failed run is dispatched again when it fails, and a handler's rerun through a machine identity is
+  not.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-242, D022-243, D022-248, D022-250, D022-255; reverses D022-241,
+  O1176 answered (a)):* every reset and rerun extends its source's lineage, whoever starts it; a dispatch the lineage
+  suppresses is written as a `SUPPRESSED_LINEAGE` row, counted, listed and redrivable by an operator, and the terminal
+  commit never fails on it. A namespace dispatch budget (per window, with a per-workflow share) defers dispatches beyond
+  it and alerts. A run qualifies when no workflow handler phase ended `SUCCEEDED` and no operator asked to cancel it.
+  The configuration is read by a left join in the statement that locks the run. A chain's finalization reaches the
+  dispatch through `persist`'s terminal path.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decisions D022-260, D022-263, D022-264):* `run.finished` is journaled after the
+  dispatch statements with its `namespace_dispatch` outcome; a deferral by the budget is not an attempt; a dispatch or
+  a child admission under a handler or test tree whose definition continues as new fails `CONTINUE_AS_NEW_REFUSED`.
 
 #### Concurrency limits by key (US02)
 
@@ -486,6 +646,9 @@ Added after the review of 2026-11-13:
   it); when 019 is present, by (019 priority 1 first, enqueue time ascending) among those waiters; creating
   the waiter's first tasks and outbox; a grant and the queue timeout MUST be decided by first
   commit (ADR-0056).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-211):* the one admission port is `Engine::start` (D022-049); the
+  creators "022 standalone, draft-test and handler dispatch" and the derived `onFailure~h` child call it, each with a
+  run-creator conformance case (task T022-221).
   *Amended 2026-11-25 (decision D022-087, task T022-109):* a Signal-with-Start whose new run queues MUST create the
   run and hold the signal with it (`held: true`, nothing delivered); the grant MUST deliver it in its transaction as
   `signalRun` would, or drop it with an audit when no step waits for it; a queued run that ends instead MUST drop it
@@ -536,6 +699,20 @@ Added after the review of 2026-11-13:
   node's; retain or reuse it per tenant, namespace, actor and digest; and admit a run with origin
   `STANDALONE_STEP` in the existing admission transaction. Same key and body MUST replay after
   reauthorization; changed content MUST be `CONFLICT`.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-209, D022-211; ADR-0137 proposed):* admission goes through
+  `Engine::start`, not "the existing admission transaction". The start MAY carry 018's `businessId` with
+  `businessIdConflictPolicy` and `businessIdReusePolicy` (FR-018-018..020; gap G1166 closed). The default group of the
+  node's `concurrency` or `rateLimit` is derived from the activity name or the script artifact's digest, never from the
+  private definition. Activated as `step-executions-v1`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-227, D022-233):* in a namespace whose effective
+  `required_approvals` is above zero, a standalone activity or script step is refused (`FORBIDDEN`,
+  `STANDALONE_STEP_REVIEW_REQUIRED`) unless its publication policy enables draft executions; a script node accepts only
+  the artifact of a published script version; the derived default group is one key space for every actor.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-257):* in a `prod` namespace a standalone activity or script step is
+  refused (`STANDALONE_STEP_PRODUCTION_NAMESPACE`) unless the setting is enabled; the setting is read inside the
+  admission transaction under the publication policy's lock; a rerun of a standalone run is checked again.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-269):* the setting's lock is an advisory key per namespace, shared by
+  admissions at slot 4a and exclusive in the policy writer.
 - **FR-022-024 — Standalone semantics**: The node's retry, timeout, secrets, idempotency template,
   `reconcileWith`, `cache` and node `concurrency` MUST behave as in a workflow; `compensateWith` MUST be
   refused. A database node MUST keep every 017 rule; when feature 021 exists, its typed managed operation
@@ -543,6 +720,8 @@ Added after the review of 2026-11-13:
 - **FR-022-025 — Standalone operations**: Standalone runs MUST be listed (`GET /runs?origin=STANDALONE_STEP`),
   inspected, cancelled, retried and disclosed through existing routes; the five SDKs MUST offer start and
   execute-and-wait; the Studio MUST offer a start form and a list filter.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* "the five SDKs" reads "the six SDKs" (TypeScript, Go, Python,
+  C#, Java, Rust).
 
 #### Test mode for drafts (US06)
 
@@ -551,6 +730,15 @@ Added after the review of 2026-11-13:
   revision with publication rules and enabled capabilities; retain a private definition (origin
   `DRAFT_TEST`, publisher the actor); and admit a run. A moved draft MUST be `CONFLICT`; nothing is
   published. A `prod` namespace MUST refuse (`FORBIDDEN`, `TEST_RUN_PRODUCTION_NAMESPACE`).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-200, D022-211, D022-214; O1160 answered):* `dev` and `staging`
+  namespaces allow test runs; admission goes through `Engine::start`; the draft's workflow row is read `FOR SHARE` at
+  slot 4b of ADR-0050's order. Activated as `draft-test-runs-v1`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-222, D022-227, D022-233; supersedes "`FOR SHARE` at slot 4b"):* the
+  draft row is read without a lock and its `draft_revision` compared (a moved draft is `CONFLICT`); what was read is
+  copied into the immutable private definition. A namespace whose effective `required_approvals` is above zero refuses
+  test runs (`FORBIDDEN`, `TEST_RUN_REVIEW_REQUIRED`) unless its publication policy enables draft executions. The
+  checks run in this order: the namespace from the authenticated context, `404` for the workflow, the `prod` or review
+  `403`, then a `fromRun` `404` before `PIN_NOT_DISCLOSABLE`.
 - **FR-022-027 — Pins and mocks**: A pin MUST be `{mock}` or `{fromRun, fromNode?}` on an activity, script,
   child or waitEvent node, or, when those features exist, on a 021 `resourceOperation`, 024 data, 025 agent
   or 030 `serviceCall` node; it is held only in the request and the run's data, never in a definition. A
@@ -559,6 +747,13 @@ Added after the review of 2026-11-13:
   MUST complete (at admission for upstream pins, else when reached) with `step.mocked` (source, payload
   digest), without lease, attempt, cache lookup, child run or wait, and MUST be excluded from compensation
   and reconciliation planning.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-204, D022-214, D022-218):* a downstream pin completes in the commit
+  that releases its node, before any lookup or gate is asked, and invariant 11 admits `step.mocked` in place of grants.
+  Upstream pins (payload rows, `test_run_pins` rows, `step.mocked`) are written at slot 6 with the run. The four effect
+  kinds are not on the tree: the refusal is built as an exhaustive classification of node kinds with no effect member
+  yet (gap G022-023).
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-233):* an upstream pin commits `step.mocked` and a `step.routed` with no
+  activation, so it releases no successor; `startAt` is recorded in `run.started` so replay reaches the same entry.
 - **FR-022-028 — Start from a chosen node**: `startAt` MUST be a root node outside saga bodies, parallel
   branches, bodies and handler regions. Each node reachable from it that references an output of a node not
   reachable from it MUST have that node pinned (`MISSING_PIN`); upstream pins MUST commit in the admission
@@ -568,6 +763,8 @@ Added after the review of 2026-11-13:
   under the source carrier at pin time (`secret` refuses; `pii` needs the reveal grant and is audited). The
   pin MUST record the strictest level found as a floor; the test run MUST disclose that output at the
   stricter of floor and draft carrier.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-233):* the highest floor among a test run's pins applies to every
+  disclosure of that test run.
 - **FR-022-030 — Isolation of test runs**: A test run and its child runs (test tree) MUST NOT create
   outbound deliveries, dispatch namespace handlers, fire triggers, or read/write `workflow`/`namespace`
   cache scopes; they MUST acquire permits only in the draft-test semaphore pool, never blocking or being
@@ -576,6 +773,16 @@ Added after the review of 2026-11-13:
   ordinary semantics; declared secrets resolve under the actor's current `secret:use` and access lists
   (O1162). Features 026 (no approval notifications) and 020 (no export of `DRAFT_TEST` runs) apply their
   own rules to test trees.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-202, D022-212, D022-219; O1162 answered):* `runs.test_tree` is set at
+  admission and copied by every child admission; every gate decision takes its pool from that flag through one function
+  (`GatePool::of_run`), never a literal; each secret resolution of an unmocked step is audited
+  (`test_run.secret_resolved`); `RESET_SOURCE_TEST_RUN` is raised by 018's reset, rerun and batch admissions in the
+  slice that adds the flag.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-226, D022-237):* a test-tree run whose version is not its own private
+  one bypasses the cache; `test_tree` is immutable (`BEFORE UPDATE OF test_tree`, `ENABLE ALWAYS`) and the database
+  checks at insert that a child's flag equals its parent's.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-245, D022-249):* a continue-as-new successor of a test-tree or
+  handler-tree run is refused; `handler_tree`, `handler_kind` and `lineage_run_id` have the guards `test_tree` has.
 
 #### Rate limits with buffering (US07)
 
@@ -694,6 +901,12 @@ Added after the review of 2026-11-13:
   or `*.queued` in the same commit; a commit that leaves a gated step released with neither is an invariant
   breach (`verify_run`). The task-ready outbox hint MUST NOT be written for a step that ends the
   transaction `WAITING`.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-203, D022-204):* a gated step may also leave its readiness completed
+  by a `step.cache_hit` (asked before its gates) or a `step.mocked` (a draft test's pin), without any grant; the
+  invariant reads "its grants, a `*.queued`, a `step.cache_hit` or a `step.mocked`". The task-ready hint is written only
+  for a step that is `READY` when its commit ends.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-232, D022-238):* `step.cache_missed` is one of the hint's arms; every
+  path that ends a run or announces a task goes through `persist` (ADR-0146), checked by `scripts/check-architecture.py`.
 - **FR-022-052 — One grant routine and one timeout routine**: Every waiter, run or step, whatever its
   gates, MUST be granted by one routine and timed out by one routine. The grant routine is driven by key: a
   scheduler pass selects keys that have waiters and may have room (FR-022-047), under the fence of the
@@ -745,6 +958,9 @@ Added after the review of 2026-11-13:
   `database`, `forEach` or `while` node, or a path that cannot be followed) MUST take the strictest level of every
   carrier of the document, never less than `pii`; a carrier whose classification walk did not complete MUST count as
   `secret`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-229; security Major 4):* the rule extends to `cache.key`: a key over a
+  `secret` location is refused (`CACHE_KEY_SECRET`), over `pii` warned (`CACHE_KEY_PII`), and the label rule applies to
+  every surface that shows a cache key, its counts or a hit's source run.
 - **FR-022-058 — Namespace counters**: `queued_runs` and live keys per namespace MUST be usage rows of
   ADR-0050 slot 8b, sharded like `run_active_counts` (16 slots), changed in the transaction that changes
   what they count and maintained by `SECURITY DEFINER` triggers; the runtime role reads them only. A run
@@ -757,6 +973,9 @@ Added after the review of 2026-11-13:
   inserts into `runs`, the continue-as-new successors of `crates/infra-postgres/src/chain_progress.rs`,
   MUST assert that their definition declares no run-level gate (refused at publication, FR-022-017,
   FR-022-039). `scripts/check-architecture.py` MUST fail when `INSERT INTO runs` appears elsewhere.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-211):* the gate runs in `Engine::start`, as D022-049 decided for the
+  slice ("inside `PgRunStore::create`" is superseded); `run_start_errors` of `scripts/check-architecture.py` refuses a
+  domain start call outside it, and `PgRunStore::create` still refuses a gated definition a process does not serve.
 - **FR-022-060 — A grant does not re-authorize**: Admission authorizes a start; a grant from the buffer
   MUST NOT re-check the initiator's permissions (a buffered run is an admitted run, like one waiting on a
   timer), and cancelling it is the remedy for a revoked initiator. The run keeps its original initiator in
@@ -772,10 +991,27 @@ Added after the review of 2026-11-13:
   (ADR-0032). `stepCache`, `earlyReturn`, `failureHandler` and `concurrencyKeys` MUST be separately enabled;
   using a disabled one MUST fail before a version exists; disabling MUST stop new publications and starts
   while existing runs drain with compatible readers.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-206):* each of `stepCache`, `earlyReturn` and `failureHandler`, and the
+  surfaces of standalone steps and draft test runs, is also a capability of 018's instance-capability registry
+  (`step-cache-v1`, `early-return-v1`, `failure-handler-v1`, `step-executions-v1`, `draft-test-runs-v1`, required of
+  `CONTROL_PLANE` and `EXECUTION_ENGINE`), activated as FR-022-053 says; until activation their use is refused
+  `VALIDATION_FAILED`, `FLOW_CONTROL_ACTIVATION_PENDING`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-236, D022-239):* a binary lists a registry capability only once every
+  behaviour slice of it has merged (and, for `step-cache-v1`, `early-return-v1` and `failure-handler-v1`, the routing of
+  ADR-0146). Once a journal holds a new event an older binary cannot decode the run: rollback is switching a capability
+  off, never a binary downgrade.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-256; supersedes "once every behaviour slice of it has merged"):* a
+  binary serves a capability only when its manifest of artefacts (event types, `Evaluation` variants, migrations,
+  routes, the acceptance test present and not ignored) is complete; rollback is `platform_requirement_remove`, then the
+  switch, and a switch never stops a phase or an obligation in flight. Publication refuses `continueAsNew` with `cache`,
+  `onFailure` or `earlyReturn` (`FLOW_CONTROL_COMBINATION`).
 - **FR-022-032 — Authorization and tenant boundary**: Operations MUST follow the plan's matrix (new
   `cache:invalidate`, `failure-handler:manage`, `step:standalone`; test runs need `definition:write` and
   `run:start`). Tenant and namespace come from the authenticated context; foreign resources MUST be opaque
   `NOT_FOUND`; replays MUST reauthorize; authorization MUST fail closed.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* the catalog holds 53 permissions today
+  (`crates/domain/src/identity.rs`); the three new ones make 56; machine roles hold none.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-244):* the built-in roles gain `RunRecovery`.
 - **FR-022-033 — Observability and audit**: Each capability MUST emit the plan's spans and fixed-label
   metrics, journal events in the run transaction, and audit in the decision transaction (invalidation,
   handler configuration and redrive, standalone and test admission, pin disclosure). Metric labels MUST
@@ -789,6 +1025,7 @@ Added after the review of 2026-11-13:
   fields and offer standalone, test-run, result-wait and invalidation calls, passing shared conformance.
   The Studio MUST author the same IR, show hits, mocks, early results, handler phases and waits from the
   journal, and show unknown capabilities as unsupported, never with sample values (FR-007-010).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* "the five SDKs" reads "the six SDKs", as FR-022-050 says.
 - **FR-022-036 — Encrypted payloads**: With feature 031, this feature's positions and write paths are
   entries of 031's encoded-field registry (`specs/031-client-side-encryption/contracts/workflow-encoding.md`,
   shared check §5): publication MUST refuse a cache key over an encoded location with
@@ -806,12 +1043,22 @@ Added after the review of 2026-11-13:
   020 erases a run, every cache entry whose `source_run_id` is that run and every pending store obligation
   of it MUST be deleted (no later hit may copy it), and the runs that already received a copy (hit
   provenance, `fromRun` pins) MUST be discoverable by source run for 020's erasure to act on.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-205, D022-213, D022-217):* cache entries hold no inline copy: they
+  reference the producer's payload row by foreign key, so 020's discovery finds them; their `source_run_id` (no foreign
+  key, archival must not cascade) is registered with the hook "delete by `source_run_id`". 020 is not on the tree: a
+  022-side port deletes a source run's entries and pending obligations and lists the runs that received a copy, and
+  022 creates the registry file with its own entries; SC-022-016 stays pending until 020 calls the port (gap G022-021).
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-223, D022-230):* payload foreign keys are `ON DELETE RESTRICT`;
+  erasure locks a source run's store obligations before its entries; erasing bytes shared by several runs, and ordering
+  a run's deletion against the dispatcher, are feature 020's obligations (gap G022-021).
 - **FR-022-038 — Reset rules**: Every journal event type this feature adds MUST declare its reset rule in
   018's reset-rule registry (`COPY`, `REMATERIALIZE`, `EXCLUDE`, `REFUSE`), as listed in
   `contracts/journal-events.md`: permit events and `result.returned` are re-materialized by the reset
   transaction, cache hits re-create their provenance row, and every reset point inside a failure-handler
   phase (after `failure_handler.started`) or after a queue timeout or dequeue is refused; a reset run never
   inherits `handler_for`.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-253):* `step.cache_missed` is `REMATERIALIZE` (the reset copies
+  `steps.cache_lookup` from the source step); `failure_handler.draining` is `REFUSE`, as the phase's other events.
 
 ### Non-functional requirements
 
@@ -866,6 +1113,8 @@ All criteria are future evidence; none is satisfied by this document.
   state; listings never contain a value or raw key. (FR-022-001..006)
 - **SC-022-002**: A full content quota, a blob output and a full backlog never change a step or run outcome;
   every skipped store is counted. (FR-022-005, FR-022-007)
+  *Amended 2026-11-25 (decision D022-240):* "a full cache-entries ceiling" for "a full content quota"; and a store over an
+  invalidation, a store against erasure and a dead entry each behave as FR-022-005 as amended says, in barrier tests.
 - **SC-022-003**: In 20 rounds of grant-versus-timeout races and 20 rounds of crash-during-release, every
   waiter ends in one outcome and holders equal the journals' open acquisitions after each round.
   (FR-022-018, FR-022-020)
@@ -880,6 +1129,7 @@ All criteria are future evidence; none is satisfied by this document.
   unadmittable handler becomes `DEAD`, alerts and can be redriven. (FR-022-015, FR-022-016)
 - **SC-022-007**: In all five SDKs an early result is disclosed while the run runs and remains the result
   after a later failure or cancellation. (FR-022-008..011)
+  *Amended 2026-11-24 (decision D022-220):* in all six SDKs.
 - **SC-022-008**: Standalone activity, script and database steps survive a lost response, duplicate request,
   worker crash and cancellation, and their results equal a one-node published workflow's. (FR-022-023..025)
 - **SC-022-009**: A draft test from a chosen node creates zero leases for pinned nodes, refuses missing pins,
@@ -890,6 +1140,8 @@ All criteria are future evidence; none is satisfied by this document.
 - **SC-022-011**: Every ceiling has a test at and over its bound; zero refuses. (FR-022-034)
 - **SC-022-012**: The five SDKs emit byte-identical canonical IR for the shared fixtures and identical
   normalized observations for the six conformance scenarios. (FR-022-035)
+  *Amended 2026-11-24 (decision D022-220):* the six SDKs, for the seven scenarios of `contracts/conformance.md`
+  (the slice added `flow-rate-limit`).
 - **SC-022-013**: Old fixture corpora publish and replay unchanged with each capability enabled and disabled;
   disabling refuses new publication while active runs finish. (FR-022-031, FR-022-036)
 - **SC-022-014**: The benchmark report states environment, measured latencies and failures, with no number
@@ -903,6 +1155,8 @@ All criteria are future evidence; none is satisfied by this document.
 - **SC-022-016**: After 020 erases a source run, no cache entry or pending store obligation from it
   remains, the next lookup misses, the manifest-driven reference check reports no unregistered
   referencing column, and every consumer copy is listed by source run. (FR-022-037)
+  *Amended 2026-11-24 (decision D022-217):* pending until feature 020 calls the 022-side port (gap G022-021); until
+  then the evidence is the port's own test against the registry file and the next lookup's miss.
 
 - **SC-022-017**: With `limit: 10, per: second` and 1,000 same-key starts, across an engine restart, no
   one-second interval of the journals holds more than 10 grants of the key, grants follow admission order,
@@ -962,6 +1216,8 @@ All criteria are future evidence; none is satisfied by this document.
 - A failure handler never changes the outcome (O1161) and does not run for `CANCELLED`.
 - Draft test runs never run in `prod` namespaces (O1160); unmocked steps are real executions with real
   effects in the chosen non-production namespace.
+- *Amended 2026-11-24:* O1160, O1161 and O1162 are answered as these assumptions say (decisions D022-200 to D022-202,
+  delegate, OD-2026-11-24-4). The business-ID policies of 018 exist: a standalone step accepts them (D022-209).
 - The idempotency key identifies a standalone execution until 018 adds business-ID policies; grants are
   oldest first until 019 adds priority.
 - A rate limit bounds when work becomes eligible (a run's start, a step's lease), not how long the work
@@ -1000,6 +1256,8 @@ O1162 (secrets in draft test runs), each with a recommended default. For the 0.3
 window" means), O1164 (what the buffer guarantees), O1165 (a full buffer), O1166 (whether a retry takes a
 slot), O1167 (rate limits inside collections), O1168 (whether a reset may wait), each with options and a
 recommendation; the owner accepted all six recommendations on 2026-11-13 (OD-2026-11-13-16).
+*Amended 2026-11-24:* O1160, O1161 and O1162 are answered by delegation (OD-2026-11-24-4), each with its
+recommended option (a) (decisions D022-200 to D022-202).
 
 ## Release 0.3.0 slice
 
@@ -1022,3 +1280,36 @@ writer; the rule "no workflow handler without a permit" (D1197) has nothing to a
 permissions `cache:invalidate`, `failure-handler:manage` and `step:standalone` are not added. The tasks of
 the slice are listed in [tasks.md](tasks.md#release-030-slice-us02-and-us07) and its plan in
 [plan.md](plan.md#release-030-slice).
+
+*Amended 2026-11-24 (OD-2026-11-24-1):* the stories and requirements this section leaves out are now in release 0.3.0
+too; see the next section.
+
+## Release 0.3.0, the rest of 022
+
+Decided by the owner on 2026-11-24 (OD-2026-11-24-1, "Inclua tudo na 0.3.0"), with the design questions delegated
+(OD-2026-11-24-4). The approved requirements above stand, as amended on 2026-11-24.
+
+| In release 0.3.0 now | Requirements | Success criteria | Design |
+|---|---|---|---|
+| US01 — the step result cache | FR-022-001..007 | SC-022-001, SC-022-002 | ADR-0135 (proposed) |
+| US03 — failure handlers | FR-022-012..016 | SC-022-005, SC-022-006 | ADR-0136 (proposed) |
+| US04 — early return | FR-022-008..011 | SC-022-007 | ADR-0136 (proposed) |
+| US05 — standalone steps | FR-022-023..025 | SC-022-008 | ADR-0137 (proposed) |
+| US06 — draft test runs | FR-022-026..030 | SC-022-009 | ADR-0137 (proposed) |
+| Cross-cutting for these stories | FR-022-031..035, FR-022-037, FR-022-038 | SC-022-010..016 | decisions D022-206, D022-211..213, D022-217 |
+
+What the rest of the feature changes in the as-built engine, in order of the commit:
+
+1. **Admission** goes through the one port `Engine::start` for every new creator (standalone, draft test, handler
+   dispatch, the derived handler child), in the slots of ADR-0050 decision 7 as amended (D022-211, D022-214).
+2. **Evaluation rounds before `persist`**, in this order: the lookup round (`Evaluation::CacheLookup`, D022-203), then
+   the gates round (`Evaluation::Gates`, ADR-0094), each asked once the planner has nothing else to emit; the early
+   result (`Evaluation::EarlyResult`) and a handler child (`Evaluation::Child`) are asked where the planner reaches them.
+   A hit or a mock completes a step before its gates are asked, so it takes no permit and no slot (D022-204).
+3. **`persist`** writes the transition, the result, the handler phase's events and the namespace dispatch row (the
+   policy row read without a lock, D022-208), and announces only a step that is `READY` when the commit ends.
+4. **Every end of a run** goes through the reducer: the collection- and loop-finish paths are routed (D022-207).
+
+Still pending on another feature: FR-022-036 (031, gap G022-022), SC-022-016 (020, gap G022-021), and the effect kinds
+of `TEST_RUN_UNMOCKED_EFFECT` (021, 024, 025, 030; gap G022-023). The plan is in
+[plan.md](plan.md#release-030-the-rest-of-022) and the slices in [tasks.md](tasks.md#release-030-the-rest-of-022-od-2026-11-24-1).

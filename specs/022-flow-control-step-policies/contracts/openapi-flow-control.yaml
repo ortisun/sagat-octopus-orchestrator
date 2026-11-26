@@ -22,6 +22,17 @@ paths:
         node's `outputSchema`), retains or reuses it per tenant, namespace, actor and canonical digest, and
         admits an ordinary run with origin `STANDALONE_STEP`. The same key and body return the same run after
         current authorization; a changed body under the key is 409. `compensateWith` is refused (422).
+        Amended 2026-11-24 (decisions D022-206, D022-209, D022-211): admitted through the one admission port
+        (`Engine::start`), so the node's `concurrency` and `rateLimit` gate it like a workflow's, with a default group
+        derived from the activity name or the script artifact's digest; an optional `businessId` with 018's conflict
+        and reuse policies; refused 422 `FLOW_CONTROL_ACTIVATION_PENDING` until `step-executions-v1` is activated.
+        Revised 2026-11-25 (decisions D022-227, D022-233): an activity or script step is refused 403
+        STANDALONE_STEP_REVIEW_REQUIRED in a namespace whose effective required approvals are above zero unless its
+        publication policy enables draft executions; a script node accepts only the artifact of a published script
+        version; a run of this private definition uses only its own version scope of the cache.
+        Revised 2026-11-25 (decision D022-257): in a prod namespace an activity or script step is refused 403
+        STANDALONE_STEP_PRODUCTION_NAMESPACE unless the publication policy enables draft executions; the setting is read
+        inside the admission transaction; a rerun of a standalone run is checked again.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -60,6 +71,15 @@ paths:
         the publication rules (409 if the draft moved), retains a private definition (origin DRAFT_TEST,
         publisher the actor) and admits a run. Nothing is published. A test run produces no outbound
         delivery, fires no trigger and starts no namespace failure handler.
+        Revised 2026-11-25 (decisions D022-222, D022-227, D022-233): the draft row is read without a lock and its
+        revision compared (409 if it moved); a namespace whose effective required approvals are above zero refuses
+        (403 TEST_RUN_REVIEW_REQUIRED) unless its publication policy enables draft executions; checks run in the order:
+        namespace from the authenticated context, 404 for the workflow, the prod or review 403, then a fromRun 404
+        before PIN_NOT_DISCLOSABLE. Upstream pins route without activating; the highest floor of the pins applies to
+        every disclosure of the test run.
+        Amended 2026-11-24 (decisions D022-200, D022-206, D022-211, D022-212): `dev` and `staging` namespaces allow it;
+        admitted through `Engine::start`; the run and every child it starts are a test tree whose gates use the
+        `DRAFT_TEST` pool; refused 422 `FLOW_CONTROL_ACTIVATION_PENDING` until `draft-test-runs-v1` is activated.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/WorkflowId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -90,7 +110,7 @@ paths:
       summary: List cache entry metadata (never values or raw keys)
       tags: [Governance]
       x-proposed: '022'
-      description: Needs `ops:read`. Filters by workflow, node or shared cache name. Keys appear only as a 12-hex-character label of their keyed digest.
+      description: Needs `ops:read`. Filters by workflow, node or shared cache name. Keys appear only as a 12-hex-character label of their keyed digest. Revised 2026-11-25 (decisions D022-229, D022-240) the label, the counts and `sourceRunId` only to a caller who may disclose every location the key reads (null otherwise); the listing shows to `ops:read` the ids of private (internal) workflows whose version scope holds entries, which name no content.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: workflowId, in: query, schema: {type: string, format: uuid}}
@@ -119,6 +139,9 @@ paths:
       description: |
         Needs `cache:invalidate`. A key value, when given, is in the body, digested server-side and never
         logged. Runs that already hit keep their journaled completion. Audited with the justification.
+        Revised 2026-11-25 (decision D022-252): a target that names no scope a published version of the namespace
+        can derive is 404 (no scope row is created for it); an invalidation by key writes a per-key tombstone, so a value
+        computed by an attempt leased before it is never stored as live.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -224,6 +247,11 @@ paths:
         Needs `failure-handler:manage` (administrators). `expectedRevision` is required when a handler
         exists (409 otherwise). The workflow must exist in this namespace; a pinned version must be
         published. Applies to failures committed after this change. Audited with `reason`.
+        Revised 2026-11-25 (decisions D022-223, D022-240): a workflow that is missing, foreign or internal (a
+        private definition) is the same opaque 404; a pinned version that is not published is 422
+        INVALID_FAILURE_HANDLER. While the namespace's pending dispatches are at their ceiling a new or re-enabled
+        handler is refused 429 QUOTA_EXCEEDED with FLOW_CONTROL_LIMIT (an alert is raised); a terminal commit is never
+        refused.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
       requestBody:
@@ -273,7 +301,7 @@ paths:
       description: Needs `ops:read`. Metadata only; the failure context is closed and payload-free.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
-        - {name: state, in: query, schema: {type: string, enum: [PENDING, ADMITTED, DEAD]}}
+        - {name: state, in: query, schema: {type: string, enum: [PENDING, ADMITTED, DEAD, SUPPRESSED_LINEAGE]}, description: 'SUPPRESSED_LINEAGE added 2026-11-25 (decision D022-242): a dispatch its lineage suppressed, listed so an operator can redrive it.'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
       responses:
@@ -292,7 +320,7 @@ paths:
       summary: Try a dead handler dispatch again
       tags: [Governance]
       x-proposed: '022'
-      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch; resets attempts. Audited with `reason`.
+      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch, or since 2026-11-25 a SUPPRESSED_LINEAGE one (decision D022-242), which becomes PENDING and stays outside its lineage's unique first row; resets attempts. Subject to the namespace dispatch budget (decision D022-243). Refused 403 RECOVERY_ROLE_MAY_NOT_REDRIVE for a subject whose role is RunRecovery (decision D022-266). Audited with `reason`.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: sourceRunId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -327,6 +355,9 @@ components:
         input: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/JsonObject'}
         timeoutMs: {type: integer, minimum: 1, maximum: 3600000, default: 300000}
         correlationId: {type: string, maxLength: 160}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'Added 2026-11-24 (decision D022-209): feature 018''s business identifier (FR-018-018); at most one open execution holds it at any commit. Claimed at slot 3 of the admission order.'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL, description: 'Added 2026-11-24 (decision D022-209): FR-018-019, as for startRun.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'Added 2026-11-24 (decision D022-209): FR-018-020, as for startRun.'}
     StartDraftTestRunRequest:
       type: object
       additionalProperties: false
@@ -347,7 +378,7 @@ components:
           additionalProperties: false
           required: [mock]
           properties:
-            mock: {description: 'The output the node completes with (any JSON, at most 256 KiB).'}
+            mock: {description: 'The output the node completes with (any JSON, at most 256 KiB, the pin bound of the plan, nested at most to the platform''s JSON depth limit; bounded 2026-11-25, decision D022-240).'}
         - type: object
           additionalProperties: false
           required: [fromRun]
@@ -359,7 +390,7 @@ components:
       additionalProperties: false
       required: [entryId, scope, node, keyLabel, createdAt, expiresAt, sizeBytes, sourceRunId]
       properties:
-        entryId: {type: string, format: uuid}
+        entryId: {type: [string, 'null'], format: uuid, description: 'Null for a caller who may not disclose every location the key reads (decision D022-254); so are expiresAt and sourceRunId, and createdAt is cut to the minute.'}
         scope: {type: string, enum: [VERSION, WORKFLOW, NAMESPACE]}
         workflowId: {type: [string, 'null'], format: uuid}
         versionId: {type: [string, 'null'], format: uuid}
@@ -367,9 +398,9 @@ components:
         node: {type: string}
         keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
         createdAt: {type: string, format: date-time}
-        expiresAt: {type: string, format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time}
         sizeBytes: {type: integer, minimum: 0, maximum: 262144}
-        sourceRunId: {type: string, format: uuid}
+        sourceRunId: {type: [string, 'null'], format: uuid, description: 'Null for a caller who may not disclose every location the key reads (revised 2026-11-25, decision D022-229); with keyLabel and the counts.'}
     StepCacheEntryPage:
       type: object
       required: [items]
@@ -390,20 +421,20 @@ components:
                 workflowId: {type: string, format: uuid}
                 versionNumber: {type: integer, minimum: 1, description: 'Only VERSION-scope entries of this version; every scope of the node when absent.'}
                 node: {type: string, maxLength: 64}
-                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged).'}
+                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged). Bounded 2026-11-25 (decision D022-240): its canonical form at most 4096 bytes, nested at most to the platform''s JSON depth limit (422 otherwise).'}
             - type: object
               additionalProperties: false
               required: [cacheName]
               properties:
                 cacheName: {type: string, pattern: '^[a-z][a-z0-9.-]{0,63}$'}
-                keyValue: {}
+                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged). Bounded 2026-11-25 (decision D022-240): its canonical form at most 4096 bytes, nested at most to the platform''s JSON depth limit (422 otherwise).'}
         reason: {type: string, minLength: 8, maxLength: 2000}
     StepCacheInvalidationResult:
       type: object
       required: [scopesInvalidated, entriesDeleted]
       properties:
         scopesInvalidated: {type: integer, minimum: 0}
-        entriesDeleted: {type: integer, minimum: 0, description: 'Entries deleted now; the rest of an invalidated scope is purged in the background and is already dead for lookups.'}
+        entriesDeleted: {type: [integer, 'null'], minimum: 0, description: 'Entries deleted now; the rest of an invalidated scope is purged in the background and is already dead for lookups. Null for a caller who may not disclose every location the key reads (decision D022-254).'}
     ConcurrencyKey:
       type: object
       additionalProperties: false
@@ -529,7 +560,7 @@ components:
       required: [sourceRunId, state, attempts, createdAt]
       properties:
         sourceRunId: {type: string, format: uuid}
-        state: {type: string, enum: [PENDING, ADMITTED, DEAD]}
+        state: {type: string, enum: [PENDING, ADMITTED, DEAD, SUPPRESSED_LINEAGE], description: 'SUPPRESSED_LINEAGE: a dispatch its lineage suppressed (every reset and rerun extends a lineage, decision D022-242); redrivable.'}
         attempts: {type: integer, minimum: 0, maximum: 12}
         nextAttemptAt: {type: [string, 'null'], format: date-time}
         handlerRunId: {type: [string, 'null'], format: uuid}

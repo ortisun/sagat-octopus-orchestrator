@@ -89,9 +89,9 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    | 3 | run-creating aggregates: 018 schedule row or pending-reset row → 018 business-id row; 030 `START` operation message. A pass reads its shard fence in the same transaction; the lease row is a leaf lock, outside this order (below) | ADR-0050 order (a) |
    | 3R | existing runs the transaction acts on: chain before run (014); the parent reservation of a child admission; the ADR-0039 source identity guard of a rerun or reset; an existing run commanded for an aggregate (018 Signal-/Update-with-Start holder) | implemented order: 017 and ADR-0039 take these before the catalog lock and memberships |
    | 4 | 4a namespace fences and authority: 017 namespace secret/catalog lock → 021 variable fence (writers) → 024 data-catalog fence (writers) → memberships `FOR SHARE` (017 helpers) → 029 access fences (shared) → namespace row; 4b catalog heads and pins (`FOR SHARE` on admission): 019 dispatch-catalog fence → 019 deployment fences (id order) → 017 connection heads → 021 resource heads → 021 variable heads → 024 asset heads → 025 provider and MCP-server heads → 030 service-endpoint head → 030 allow-list entries | ascending id within each kind |
-   | 5 | secret rows (ascending) → secret ACL rows | |
-   | 6 | new run rows: retained definition (017) → tree and active-run admission → payload rows → run insert with journal, steps, tasks, timers, outbox, audit (parent before child) → run pins (017 connections, 019 deployment, 021 bindings, 024 data assets) | |
-   | 7 | 022 semaphores by (pool, scope, group, key) | ADR-0056 decision 2 |
+   | 5 | secret rows (ascending) → secret ACL rows | *2026-11-25 (feature 022 decision D022-254):* a cacheable entry step's lookup locks (secret-access, membership, then the binding advisory lock, shared) |
+   | 6 | new run rows: retained definition (017) → tree and active-run admission → payload rows → run insert with journal, steps, tasks, timers, outbox, audit (parent before child) → run pins (017 connections, 019 deployment, 021 bindings, 024 data assets) | *2026-11-25 (feature 022 decision D022-235):* the journal, step, task and outbox rows are written by `persist` after slot 7; the slot names the lock order, and those inserts lock nothing another transaction waits for |
+   | 7 | 022 semaphores by (pool, scope, group, key) | ADR-0056 decision 2. *2026-11-25 (feature 022 decision D022-235):* run-scope semaphores and windows, then the cache scope, then the cache entry (`FOR SHARE`, ADR-0135), then step-scope semaphores and windows |
    | 8 | 8a bookkeeping rows of a transaction whose subject is one existing run (018 batch job → item, obligation, pending-reset insert); 8b quota, rate and usage rows last, including 025 `ai_usage_daily` and the deferred content flush (ADR-0027) | usage rows are always last |
 
    **The lease row is a leaf lock, outside the slots (D2083).** A row of `scheduler_shards` is taken `FOR SHARE` by every fence (`holds_shard`, `check_fence`) and `FOR UPDATE SKIP LOCKED` by the keeper (acquire, renew and release: one autocommit statement each, which never waits for a row and takes no other row). A shared lock never conflicts with a shared lock, and the only exclusive taker never waits and holds nothing else, so no transaction waits for the lease row while holding another lock, and none holding it waits for another: it can be in no cycle, and its position relative to the run rows and the aggregate rows is immaterial. The passes of the aggregates take the fence before their aggregate row and the passes that act on one run (timer, lease, deadline, release of a delayed start) after the run's row, and both are correct for that reason. What would break it is a statement that locks the row more strongly (`FOR UPDATE`, `FOR NO KEY UPDATE`, `UPDATE`) outside the keeper, a keeper statement that waits (no `SKIP LOCKED`), or a keeper that reads a run: `scripts/check-architecture.py` refuses each of them. (The deadlock the first slot test met, against a reference that took the lease `FOR UPDATE` and then a run row, was the reference's: it modelled a keeper that does not exist.)
@@ -99,6 +99,42 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    Recorded deviation (aligned, T018-057): the `CANCEL_SOURCE` request takes its source row (3R), then the pending-resets quota lock (8b), then inserts the entry (8a), then writes the receipt it read in slot 2; no cycle, argued in ADR-0081 decision 5.
 
    Recorded deviation (D2223, 2026-11-13): a batch `RERUN` item that keeps its business identifier takes the business-id row (slot 3, order (a)) and, after the new run (6), its job and item rows (8a), in the one transaction decision 2 asks for; order (a) otherwise never locks a job or an item. No cycle: no transaction that holds a job or an item row locks a business-id row or a run, and the other transactions that take a business-id row first lock no job or item.
+
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decision D022-214, ADR-0136 and ADR-0137 proposed):* the
+   slots of feature 022's new creators. A namespace failure-handler dispatch takes its dispatch row (`FOR UPDATE SKIP
+   LOCKED`) in slot 3, as a run-creating aggregate like a pending-reset row; the failed source run's identity guard
+   (`KEY SHARE`, ADR-0039) in 3R; the handler workflow's head in 4b; the handler run in 6; and updates its dispatch row
+   (already locked) in 8a. A draft test run takes the `fromRun` source runs (`KEY SHARE`, ascending id) in 3R and the
+   draft's workflow row (`FOR SHARE`, the revision check) in 4b, never before slot 1 as feature 022's plan row T16 first
+   said; its pin payload rows, `test_run_pins` rows and the upstream pins' `step.mocked` events are new run rows of slot
+   6, written with the run. A standalone step takes 018's business-id row in slot 3. Every one of them then takes its
+   gates in slot 7 through `Engine::start`.
+   *Revised 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-222, D022-223, D022-240):* the draft's
+   workflow row and the handler workflow's head are read without a lock (a moved draft is compared by its revision),
+   because publication and activation lock the workflow row before the namespace's secrets; nothing of the two is in
+   slot 4b any more. The dispatcher locks its dispatch row inside `RunStore::create` through a `NewRun` field, as a
+   pending reset does. The private definition of a standalone step or a draft test is retained where 017's `create`
+   retains it today, `ad_hoc::retain` with its workflows quota lock before the slot-4a locks, not in slot 6: a deviation
+   inherited from 017, proved by the slot-order case of feature 022's task T022-224.
+
+   Recorded deviation (feature 022 decision D022-223, 2026-11-25): the terminal commit of a run that qualifies for the
+   namespace failure handler inserts its dispatch row, a slot-3 run-creating aggregate, on a transition of an existing
+   run. No cycle: the row is new, so no transaction can wait for it before the commit makes it visible; its key is the
+   failed run, whose lock serializes every writer of it; and the dispatcher locks only committed rows (`SKIP LOCKED`).
+   `scripts/check-architecture.py` refuses an insert into `failure_handler_dispatches` outside the terminal path of
+   `persist`, and a lock of one outside the dispatcher and the redrive.
+   *Extended 2026-11-25 (feature 022 decision D022-242):* to the lineage key. The insert is `ON CONFLICT (tenant_id,
+   namespace_id, lineage_run_id) WHERE lineage_first DO NOTHING`, followed when it inserted nothing by a second insert of
+   a `SUPPRESSED_LINEAGE` row; both are the last statements of the run's own commit before usage rows. The first may
+   wait for another run's uncommitted first row of the same lineage; that wait is a leaf wait, because after it the
+   waiting commit takes only rows of its own run and usage rows, and the other commit takes nothing of this run.
+
+   *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
+   specs/022-flow-control-step-policies/reviews/2026-11-25/ (feature 022 decision D022-271):* the feature 022 amendments
+   of this decision dated 2026-11-24 and 2026-11-25 (the new creators' slots, the slot-5 lookup locks with the pre-read
+   of the producer, the slot-7 cache rows and re-check, the slot-6 note, the recorded deviation of the dispatch insert
+   and its lineage key). *Added 2026-11-25 (decision D022-269):* an admission that reads the draft-executions setting
+   holds the namespace's advisory key for it shared in slot 4a.
 
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists
