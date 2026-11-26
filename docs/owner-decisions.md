@@ -76,6 +76,18 @@ question as asked, then the answer, then what it means.
 | OD-2026-11-20-19 | Asked: "041 Major A-2 (constitution principle V, gap G041-018): a reader with the logs permission but without a namespace's PII grant can watch the tenant's step-log quota usage move, a side channel on what other runs log. How should it be closed?" Answer: "Hide it without the grant". Step-log quota usage is shown only to callers holding the PII grant; others see that a quota exists, not its live usage (fail-closed): `used` of `tenant_step_log_bytes` needs `run:logs:read` and the PII reveal grant in every namespace of the tenant. Gap G041-018 and review finding D-4 are closed by it; the contract and Studio follow, and a test shows that a caller without the grant gets no usage figure | owner | Decided | O041-044, G041-018, D041-133 of specs/041-step-logs/research.md; specs/041-step-logs/contracts.md (Quota.used); docs/designs/041-step-logs.md T041-3, T041-4, T041-39 (D041-141, the grant and the usage in one snapshot) |
 
 
+## 2026-11-26 — Design 045: the gate of its cross-feature tasks and the review findings it settles
+
+Taken by the agent of the Temporal-parity readiness under Owner decision 2026-11-24-4, on the coordinating session's decisions of
+2026-11-26 (pull request #279). Each row gives its reasoning; the owner may overrule any of them.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-26-560 | Design 045 may build into feature 006 (protocol 1.8 and lease withdrawal: the withdrawal's start deadline and `ready_at`, the 1.9 host procedure on top of 1.8) and feature 022 (the close cutoff as a waiter's deadline in its timeout routine), at the tasks named here. Reasoning: both features are in release 0.3.0 (OD-2026-11-24-1), the composition must be built by whichever lands second, and a separate task in each feature would duplicate the rules this design states once | delegate (OD-2026-11-24-4) | Decided | T045-1, T045-7, T045-10, T045-13, T045-16, T045-19 |
+| OD-2026-11-26-561 | Design 045 keeps the names of functions, statements and constraints in its Technical Plan. Reasoning: the implementation-readiness and codebase-details reviews of rounds 2 and 3 failed the plan without them; the contracts stay at the altitude of the requirements | delegate (OD-2026-11-24-4) | Decided | docs/designs/045-activity-timeouts.reviews/2026-11-26/zoom_out_stage8.md#2 |
+| OD-2026-11-26-562 | Design 045 defines how a code version's `timeoutLevel` maps to its level and owns `steps.min_protocol_minor`. Reasoning: the coordinating session asked it to (Gaps 044-020 and 044-026); one owner of the column and the mapping avoids two definitions | delegate (OD-2026-11-24-4) | Decided | docs/designs/045-activity-timeouts.reviews/2026-11-26/zoom_out_stage8.md#4 |
+| OD-2026-11-26-563 | Design 045 states its publication refusals in prose and in one shared refusal fixture, not also as a table. Reasoning: the fixture is the single source the tests read; a third copy would drift | delegate (OD-2026-11-24-4) | Decided | docs/designs/045-activity-timeouts.reviews/2026-11-26/zoom_out_stage8.md#6 |
+
 ## 2026-11-24 — Delegated decisions of the Temporal-parity readiness (features 019, 020, 030, 031 and design 045)
 
 Taken by the agent that the coordinating session briefed for the Temporal-side parity features, under the owner's delegations
@@ -91,7 +103,6 @@ The owner may overrule any of them.
 | OD-2026-11-24-702 | Feature 030: O1480 (a) flat handler workflows for sync operations; O1481 (a) fail closed after revocation; O1482 (b) contract and endpoint revisions through the publication-request flow in protected namespaces; Architecture decision 0065 accepted; the `serviceCall` carrier accepted for feature 016; G1496 accepted for 0.3.0; the four checklist items accepted | delegate | Decided; not built | specs/030-cross-namespace-services/research.md, checklists/requirements.md, docs/adr/ADR-0065 |
 | OD-2026-11-24-703 | Feature 031: O1520 (a) OpenBao Transit and a test-only provider; O1521 (a) the customer's identity provider authenticates; O1522 (a) the reference codec server is an example; Architecture decision 0066 revised and accepted; the four checklist items accepted | delegate | Decided; not built | specs/031-client-side-encryption/research.md, checklists/requirements.md, docs/adr/ADR-0066 |
 | OD-2026-11-24-704 | Design 045: Owner questions 045-001 to 045-009 decided (no retry after a timeout that ends a live attempt; `SCHEDULE_TO_START_TIMEOUT` final; `error_code` as the error type; host and handler heartbeats; a retry policy per code; `activity` and `script` nodes); buffered signals belong to a design of their own, whose proposal is Architecture decision 0111 (proposed, to be numbered by the coordinating session) | delegate | Decided; not built | specs/045-activity-timeouts/research.md, docs/designs/045-activity-timeouts.md |
-| OD-2026-11-26-560 | Design 045 may build into features 006 (protocol 1.8, lease withdrawal) and 022 (gates) at the tasks named here, on the coordinating session's decision of 2026-11-26 relayed under the delegation | delegate | Decided | docs/designs/045-activity-timeouts.md T045-1, T045-7, T045-10, T045-13, T045-16, T045-19 |
 
 ## 2026-11-20 — Documentation first, words in full, identifiers as words
 

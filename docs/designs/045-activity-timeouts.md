@@ -391,9 +391,9 @@ Properties added to `$defs/retry` and `$defs/bodyRetry`, which keep `additionalP
 
 The schema cannot express the cross-field rules of Requirements 045-001 and 045-002. The domain's constructors own them and their
 closed reasons (`TIMEOUT_OUT_OF_RANGE`, `TIMEOUTS_CONTRADICT`, `HEARTBEAT_SOURCE_NEEDS_TIMEOUTS`, `TIMEOUT_NOT_ALLOWED_ON_NODE`,
-`RETRY_CODE_RESERVED`, `RETRY_CODE_DUPLICATED`, `RETRY_CODES_TOO_MANY`, `RETRY_OVERRIDE_INVALID`, and `DOCUMENT_NEEDS_REPUBLISH` of
-Technical Plan 13); `crates/infra-ir` parses and maps
-each refusal to the field's pointer. The reasons, and `ACTIVITY_TIMEOUTS_NOT_ACTIVE` (Technical Plan 13), are listed in
+`RETRY_CODE_RESERVED`, `RETRY_CODE_DUPLICATED`, `RETRY_CODES_TOO_MANY`, `RETRY_OVERRIDE_INVALID`); `crates/infra-ir` parses and maps
+each refusal to the field's pointer. The reasons, and the application's publication refusals `ACTIVITY_TIMEOUTS_NOT_ACTIVE` and
+`DOCUMENT_NEEDS_REPUBLISH` (Technical Plan 13), which depend on the registry and on the stored version, are listed in
 `specs/045-activity-timeouts/contracts/errors.md`, written by Task 045-1.
 
 In the domain (`crates/domain/src/workflow.rs`): `Node` gains `StepTimeouts` (the two schedule durations, and the heartbeat timeout
@@ -434,8 +434,9 @@ statement, the scoped statement of a full-run transaction (`crates/infra-postgre
 (`execution/path.rs`), and the statements that insert a step `READY` outside them: `insert_ready_activity` and `route_loop_successor`
 (`loop_progress.rs`), the collection admission and `finish_collection` (`primitives.rs`), and the entry step of a continue-as-new
 successor (`chain_progress.rs`). Those store-side paths write their `step.released` (or admission) event themselves: there the
-store computes each deadline once, from the transition's `db_now` and the definition it already holds, and writes the same value to
-the event and the column in one statement; they are the named exceptions of the static check (Task 045-20). The row-shape predicates at the top of
+store calls the same pure domain function the domain commands use, `StepTimeouts::release_deadlines(db_now)`, and only binds its
+output to the event and the column in one statement, so the close floor and cutoff are derived in one place; they are in the
+allowlist of the static check (Task 045-20). The row-shape predicates at the top of
 `execution.rs` (the conditions that say a row holds no work) include the new columns. The loaders that restore a step (the root load,
 `RUN_FOR_CLAIM` in `execution.rs`, the path snapshot reader) select them, and `StepState` gains `start_deadline`, `start_window`,
 `close_deadline`, `close_cutoff` and, at levels 1 and 2, the attempt deadline and its cause, with `StepState::restore` taking them. `min_protocol_minor` is not domain state: this design owns the column (design 044 depends on it, Gap 044-020; any later
@@ -449,8 +450,11 @@ level of `workflow_versions`, the `CHECK` constraints `NOT VALID`, the two capab
 `serving_instances_capabilities_known`, `platform_requirements_capability_known` and
 `platform_requirement_history_capability_known`, as design 043's migration did), the hold function and the replay-floor rule (Technical Plan 13), the partial index on the level, and the two
 indexes. It is timestamped after the latest migration on `develop` and on the branches it composes with when it merges (feature 022,
-Architecture decision 0098's `20270208` and `20270211` migrations), and it restates the capability lists in force; a
-platform-foundation test asserts every feature's capability and refusal after all migrations. The second validates the
+Architecture decision 0098's `20270208` and `20270211` migrations), and it restates the capability lists in force; the existing check of Architecture decision 0098's build
+(`crates/infra-postgres/tests/capability_lists.rs` and its rule in `scripts/check-architecture.py`) is extended to the two
+capabilities. The hold function is shared with designs 044, 020, 029 and 031: the migration that finds it already present compares
+its security, configuration, owner and normalized body with the body given here and fails on any difference (Decision 044-206), and
+no down migration drops it. The second validates the
 constraints. The down migration refuses while a column holds a non-default value or the requirement history names either capability,
 and restores the closed lists. Each variable-size column is classified in `crates/infra-postgres/storage-classification.json`. The
 indexes, in the pattern of `20261017000000_scheduler_shards.up.sql` (`IF NOT EXISTS`, then a check that refuses an index a failed
@@ -468,10 +472,11 @@ step waiting for reconciliation or review has no close cutoff. A paused run's ro
 
 ### 3. The claim, the start deadline, a pause and a withdrawal
 
-**The lease decision is the domain's.** One predicate, `leasable(step, db_now, host)`, where `host` is the session's features (for
+**The lease decision is the domain's.** One predicate, `leasable(node, step, db_now, host)`, where `host` is the session's features (for
 example "reads the time-to-live as a duration and sources heartbeats from the handler", mapped from its accepted minor by the
-application), says whether a step may be leased: its start deadline and its close cutoff are absent or after `db_now`, and its
-`min_protocol_minor` is met. `claim_root_run` and `claim_path` (`crates/application/src/worker.rs` and `worker/scoped_claims.rs`)
+application), says whether a step may be leased: its start deadline and its close cutoff are absent or after `db_now`, and the
+node's required host features (`StepTimeouts::required_host_features()`) are among the session's; one application function maps a
+feature to a minor, used by the column's writer and by the parity test. `claim_root_run` and `claim_path` (`crates/application/src/worker.rs` and `worker/scoped_claims.rs`)
 apply it where they build the list of steps to lease, beside the managed-kind check and before any audit, quota or input work, so a
 skipped step never aborts the run's other leases and leaves no misleading record; each skip is counted
 (`worker_claim_skipped_total{reason}`, an existing family). The lease commands (`lease_step`, `lease_instance`, `lease_path_instance`) check it again and
@@ -501,7 +506,7 @@ The close deadline is not moved and is enforced during the pause, by every path,
 
 **A withdrawal** (Architecture decision 0098 decision 3, Architecture decision 0099 decision 5) sets the step back to `READY` without
 spending an attempt. Its event, `step.lease_withdrawn`, gains `startDeadlineUs`: the later of the old deadline and the withdrawal's
-`db_now` plus the full start window, and the withdrawal keeps the step's `ready_at` (the projection statement, which today resets `ready_at` when a step goes from
+`db_now` plus the full start window, and, at levels 1 and 2, the withdrawal keeps the step's `ready_at` (the projection statement, which today resets `ready_at` when a step goes from
 `LEASED` back to `READY`, keeps it for a withdrawal; this refines Architecture decision 0098 decision 3), so the step is not sent
 behind a backlog; a silent host may claim it again up to the four withdrawals per attempt, after which the next lease is not
 provisional (a test re-claims from one silent host). A lease
@@ -803,6 +808,11 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 
 Each rule below is stated once, here.
 
+- **Design 044's workflow-task step** (`WORKFLOW_TASK`) is not a leased step of this design: it gets no deadline, the lost-lease
+  pass records no `deadline` cause for it, `step_deadlines` never reads it, and the static check does not cover it; a named test
+  asserts it (Gap 044-020).
+- **Closed values of the existing metric families**: `worker_claim_skipped_total{reason}` gains `start_deadline`, `close_cutoff` and
+  `host_features`; `scheduler_actions_total{kind}` gains `step_deadline`.
 - **The worker's delay** is the longer of the worker's delay and the policy's computed delay including its jitter sample; at level 0 it
   is ignored; the fingerprint carries it as a tagged part whenever it is present, at every level.
 - **Counting.** A `SCHEDULE_TO_CLOSE_TIMEOUT` decided at row 6 after a worker's delay is counted under `step_retry_decisions_total` only;
@@ -811,7 +821,7 @@ Each rule below is stated once, here.
 - **Reserved codes** are the codes decided before row 3 or reported only by the platform: the seven outcome-unknown codes, `CANCELLED`,
   `TASK_NOT_STARTED`, `SECRET_IN_OUTPUT`, `WORKER_ERROR`, `WAIT_TIMED_OUT`, `CONCURRENCY_WAIT_TIMEOUT`, `RATE_LIMIT_WAIT_TIMEOUT`, the
   `CHILD_*` codes and the two schedule timeouts; a domain test asserts the set contains `outcome_unknown_codes()`. One fixture of every
-  refusal and its reason, under `tests/contract/sdk-conformance/`, is read by the domain tests, the six SDKs and the Studio.
+  refusal and its reason, `tests/contract/sdk-conformance/fixtures/activity-timeouts-refusals.json`, is read by the domain tests, the six SDKs and the Studio.
 - **The overlay** is the domain's (`RetryRules`), not `retry_at`'s, which would default an absent `strategy` to exponential; `RetryRules`
   replaces the `RetryPolicy` fields of `NodeKind::Activity` and of the effect policy, and `Node::retry_rules()` returns it by reference.
 - **Gates.** A step whose cutoff is at or before `db_now` is ended before it is enqueued at a gate (022's waiter `CHECK` requires a
@@ -934,12 +944,12 @@ changes every caller of a signature it changes, so the workspace builds after ea
   `worker.baseline.json` re-pinned after reading its diff); `openapi.yaml` (`RuntimeNode`, `RuntimeGraph.serverTime`, the reasons);
   `sdks/SPEC.md` (§6.4 the heartbeat source, the interval and the fixed-interval rule, §6.5 `nextRetryDelay`, the exception map and
   the two codes a worker cannot send, §9 the register row for 1.9 and the field register); `docs/architecture/execution-semantics.md`
-  (the deadlines and the retry table); the "Refined by" pointers in Architecture decisions 0082, 0029 and, on their branches, 0099;
+  (the deadlines and the retry table); the "Refined by" pointers in Architecture decisions 0082, 0029 and, on their branches, 0098 (decisions 3 and 8) and 0099;
   and the rows of `docs/engineering/architecture-principles.md` for the checks of Task 045-20. The contract suites fail on the new
   baselines until slices 2 and 3.
   Refs: Requirement 045-001, Requirement 045-002, Requirement 045-014, Non-functional requirement 045-004
   Owner-gate: OD-2026-11-26-560
-- [ ] T045-2 Domain types: `StepTimeouts` on `Node`, `RetryRules` with `for_code` and `CodeRule`, the effective policies built through
+- [ ] T045-2 Domain types (their tests read the shared refusal fixture): `StepTimeouts` on `Node`, `RetryRules` with `for_code` and `CodeRule`, the effective policies built through
   `RetryPolicy::new` with the overlay rule, `activity_timeouts_level`, and their validation (bounds, contradictions, the close floor
   plus 1,000 ms, reserved and duplicated codes, invalid overrides). Unit tests first, one per refusal and per boundary value (10,000
   and 9,999; 31,622,400,000 and one more; 18,000 and 17,999; 86,400,000 and one more; the close floor plus 1,000 ms and one less; 32 and
@@ -962,8 +972,8 @@ changes every caller of a signature it changes, so the workspace builds after ea
   carries the keys, and a republication of the same bytes refused `DOCUMENT_NEEDS_REPUBLISH`.
   Refs: Requirement 045-001, Requirement 045-002, Requirement 045-017
 - [ ] T045-6 The two migrations of Technical Plan 2 (the columns, the checks and their validation, the indexes with their validity
-  check, the capabilities in the three closed lists, the hold function with its grant and the replaced operator functions, the down
-  migration's refusals, the storage classification) and the event codec of the new fields; the capability variants in
+  check, the capabilities in the three closed lists, the hold function with its grant and its compare-or-create rule, the replay-floor rule, the down
+  migration's refusals (it never drops the shared hold function), the storage classification) and the event codec of the new fields; the capability variants in
   `crates/application/src/instances.rs`, with its test that keeps the schema and `specs/018-schedules-bulk-operations/data-model.md`
   equal. `integration_platform_foundation` (migrations as the runtime role, the privilege audit, the registry's privilege test updated)
   first.
@@ -1010,7 +1020,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   `nextRetryDelayMs`, 1.9 only).
   Refs: Requirement 045-006, Requirement 045-016
   Owner-gate: OD-2026-11-26-560
-- [ ] T045-14 The Studio: the inspector's fields, validation and two warnings, the map of timeout codes to sentences, the deadlines on a
+- [ ] T045-14 The Studio: the inspector's fields, validation (read from the shared refusal fixture) and two warnings, the map of timeout codes to sentences, the deadlines on a
   run's step against the view's server time; component tests first, then the journeys.
   Refs: Requirement 045-014
 - [ ] T045-15 Documents for people: a guide page on timeouts and retries with the Temporal comparison, the unknown-outcome rule and the
@@ -1041,9 +1051,11 @@ changes every caller of a signature it changes, so the workspace builds after ea
   Refs: Requirement 045-006, Requirement 045-008, Requirement 045-016, Requirement 045-017, Non-functional requirement 045-004
   Owner-gate: OD-2026-11-26-560
 - [ ] T045-20 The fitness checks: a parity test of claim eligibility (the candidate query's hint against the domain's predicate over the
-  same rows, at a fixed clock); a rule in `scripts/check-architecture.py`, with its fixtures, that the columns `start_deadline_at`,
-  `close_deadline_at`, `close_cutoff_at`, `attempt_deadline_cause` and, for level-1 and level-2 versions, `attempt_deadline_at` are
-  assigned only from event values or by the pause and resume rule, and never by a withdrawal statement other than from its event.
+  same rows, at a fixed clock); a rule in `scripts/check-architecture.py`, with fixtures that pass and fail, that no interval or
+  clock arithmetic is assigned to `start_deadline_at`, `close_deadline_at`, `close_cutoff_at` or `attempt_deadline_at` outside a named
+  allowlist: the resume statement (the start window from the resume's time) and the level-0 attempt deadline's statement until the
+  domain's value replaces it; every other assignment binds a parameter (an event's value, `LeaseGrant`'s, or the output of
+  `StepTimeouts::release_deadlines`).
   Refs: Requirement 045-003, Requirement 045-013
 
 #### Follow-up tasks

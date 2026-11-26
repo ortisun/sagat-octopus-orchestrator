@@ -109,7 +109,7 @@ place. Every owner question below was decided under the owner's delegation (Owne
   button useless after the budget and (b) invents a budget nobody wrote. The new attempt keeps `timeoutMs` and gets a start deadline.
   The same rule clears the deadline when a reconciliation, a review or an operator's hold takes over: from then on a person or a
   reconciliation decides (correctness review, Blocker 1).
-- **Decision 045-019 — A pause suspends the start deadline, not the close deadline** (revised in round 2, correctness review Major 3,
+- **Decision 045-019 — A pause suspends the start deadline, not the close deadline** (current text: Requirement 045-021 and Technical Plan 3 of the design, the fresh full window at the resume and the close cutoff enforced during the pause; what follows is the history) (revised in round 2, correctness review Major 3,
   security review Major 5, architecture review Major 9: the pause removes the claimable steps' start deadlines and the resume gives
   each a full window from `db_now`, in one statement each, with the window kept on the row; a shift by the paused time was wrong for
   steps that became claimable during the pause and needed a payload per step; the close deadline is enforced during the pause by
@@ -127,7 +127,7 @@ place. Every owner question below was decided under the owner's delegation (Owne
   the floor plus 1,000 ms) (correctness review, Major 3; design review, Major 2): an attempt is not leased, and a retry
   not scheduled, with less than the earlier of `timeoutMs` and 6,000 ms left before the close deadline, so that running out of budget
   is a known failure and not a review.
-- **Decision 045-022 — `heartbeatFrom: "handler"` requires `scheduleToStartMs`, and has its own requirement** (round 2: the requirement
+- **Decision 045-022 — `heartbeatFrom: "handler"` requires `scheduleToStartMs`, and has its own requirement** (current text: every level-2 node requires `scheduleToStartMs`, and the requirement is `activity-timeouts-protocol-v1`; what follows is the history) (round 2: the requirement
   is `activity-timeouts-protocol-v1` and also covers a `heartbeatTimeoutMs` below 30,000 ms, which only a 1.9 host is given,
   architecture review Major 4) (security review,
   Major 3; architecture review, Blocker 1 and Major 7): such a step waits for a 1.9 host, and only a bounded wait keeps it from
@@ -140,7 +140,7 @@ place. Every owner question below was decided under the owner's delegation (Owne
   on the wire, and such a loss becomes an unknown outcome and a review for work that never ran; detecting a dead worker in 18 s
   instead of 10 s is the smaller cost. Decided before the schema merges, because raising a minimum later would tighten a published
   schema (Architecture decision 0032 decision 2). This closes Gap 045-004.
-- **Decision 045-025 — A withdrawal gives the attempt a fresh receive bound** (correctness review round 2, Major 6). Options: (a) keep
+- **Decision 045-025 — A withdrawal gives the attempt a fresh receive bound** (superseded in round 3: a full window from the withdrawal, keeping `ready_at` at levels 1 and 2; what follows is the history) (correctness review round 2, Major 6). Options: (a) keep
   the start deadline, so a lease lost on the wire past it fails the step; (b) write the later of the old deadline and the withdrawal's
   `db_now` plus the shorter of the window and 6,000 ms. Chosen (b), delegate (Owner decision 2026-11-24-4): a withdrawal is not a
   missing worker, and (a) would run a failure route, or a saga's compensations, after a delivery loss that protocol 1.8 exists to
@@ -160,6 +160,13 @@ place. Every owner question below was decided under the owner's delegation (Owne
   `ENCODING_READ_BY_CONCURRENCY_KEY`", add "and a rate-limit key with `ENCODING_READ_BY_RATE_LIMIT_KEY`" (feature 031's readiness
   review, Decision 031-009). Also from this design: Task 045-10 builds the close cutoff into 022's waiter deadline, its one timeout
   routine and its grant (Requirement 045-011), once 022's gates land.
+
+## Gaps handed over by design 044 (2026-11-26)
+
+- **Gap 044-020** (design 044's register): answered; this design accepts a code version's `timeoutLevel` as its level, owns
+  `steps.min_protocol_minor`, and excludes design 044's workflow-task step from its deadlines (Technical Plan 15).
+- **Gap 044-026** (design 044's register): answered; the shared hold function has no capability list in its body, and a migration that
+  finds it compares and fails on a difference, and none drops it (Technical Plan 2).
 
 ## Gaps
 
