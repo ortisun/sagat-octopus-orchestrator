@@ -15,7 +15,8 @@ approved.
   `409` "the run is not waiting for that signal". The chain path (`signal` in `crates/application/src/chain_progress.rs`) repeats
   the same selection on the chain's head. A body wait is never a signal's target.
 - The payload is JSON of at most 256 KiB (`MAX_PAYLOAD_BYTES`), and a delivery that would take the run's retained step outputs over
-  4 MiB (`MAX_RUN_OUTPUT_BYTES`, `crates/application/src/execution.rs`) is refused `429 QUOTA_EXCEEDED`; 17 files name the constant.
+  4 MiB (`MAX_RUN_OUTPUT_BYTES`, `crates/application/src/execution.rs`) is refused `429 QUOTA_EXCEEDED`; 15 source files name
+  the constant.
 - Signal-with-Start delivers after the initial reduction in the creation transaction and rolls back with
   `SIGNAL_NOT_ACCEPTED_AT_START` when nothing waits (`runs.rs`); reset reapply ends the reapply of signals at the first one nobody
   waits for (`runs/reset.rs`), its candidates being `wait.satisfied` events of `via: signal` (`runs/reapply.rs`).
@@ -51,8 +52,10 @@ approved.
   every later wait. Chosen (b), delegate (Owner decision 2026-11-24-4): under (a) the number of waits a signal satisfies depends on
   whether it arrived before or after them, which no author can reason about; (c) makes a queue impossible and a pending signal
   unbounded in effect. (b) is a queue, as a Temporal channel is; an author who wants a copy each leaves the name undeclared. The
-  first waiter is the one with the earliest entry time (the step row's `event_since` plus its node's `lookbackMs`), a tie going to
-  the lower node id.
+  first waiter is the one with the earliest entry time, a tie going to the lower node id. *Revised 2026-11-26 after the stage 5
+  zoom-out (its Nit 6):* the entry time is derived by the domain from the wait's deadline less its node's `timeoutMs` (both already
+  in its state and definition), not from feature 004's `event_since`. A root graph is acyclic, so two waits of one name wait at
+  once only in parallel branches.
 - **Decision 054-004 — The table holds pending rows only** (Owner question 054-004). Options: (a) the first draft's rows with a state
   (`PENDING`, `CONSUMED`, `MOVED`, `DISCARDED`) and a partial index of pending rows; (b) a row exists while its signal is pending,
   each settlement deletes it and is journaled. Chosen (b), delegate (Owner decision 2026-11-24-4): under (a) the table grows with a
@@ -73,15 +76,19 @@ approved.
   are pending; (b) discard them with a journaled count; (c) keep them readable after the end. Chosen (b), delegate (Owner decision
   2026-11-24-4): (a) lets a sender keep a run alive; (c) promises a consumer that cannot exist (a terminal run never returns to
   running, principle I). A signal for a run that ended or is stopping is refused, so nothing is buffered after the discard.
-- **Decision 054-008 — Pending payloads count in the run's retained bytes, through one method** (Owner question 054-008). Options:
-  (a) a separate budget for pending payloads; (b) one total of outputs and pending payloads. Chosen (b), delegate (Owner decision
-  2026-11-24-4): under (a) a consumption could take a run over its 4 MiB and would need a failure mode at a wait's entry; under (b)
-  a consumption moves bytes within the total and never fails, at the cost of routing every check through one method, which a
-  fitness rule keeps.
+- **Decision 054-008 — Pending payloads count in the run's retained bytes** (Owner question 054-008). Options: (a) a separate
+  budget for pending payloads; (b) one total of outputs and pending payloads. Chosen (b), delegate (Owner decision 2026-11-24-4):
+  under (a) a consumption could take a run over its 4 MiB and would need a failure mode at a wait's entry; under (b) a consumption
+  moves bytes within the total and never fails. *Revised 2026-11-26 after the stage 5 zoom-out (its Major 2):* the first text added
+  a counter on `runs`, a new method and a fitness rule; the run already has a byte ledger (`run_instance_usage.logical_output_bytes`,
+  migration `20261204000000_logical_output_byte_ledger`, read by `RunTx::logical_output_bytes()`), so pending bytes are a sibling
+  column of that row, under one database check of the sum, and only the three sites that sum `RunData.outputs` themselves change.
 - **Decision 054-009 — `buffered` is required and `true`.** The first draft's `buffered` meant nothing when false (zoom-out Nit 9
   of design 045's review of 2026-11-24). It is kept, as a constant, because design 044 declares signals in this shape and a later
   design may declare unbuffered signals (with a schema, say) beside them; a document never carries a field that says nothing
-  without failing publication. Delegate (Owner decision 2026-11-24-4).
+  without failing publication. Delegate (Owner decision 2026-11-24-4). *Revised 2026-11-26 after the stage 5 zoom-out (its Nit 5):*
+  `buffered` is optional; a listed name is buffered; the field, when present, must be `true`, so that design 044's documents, which
+  write it, stay valid, and no author has to write a field that says nothing.
 - **Decision 054-010 — Code versions are consumers** (Gap 044-017). Architecture decision 0111 decision 1 is refined: the consumer
   of a code version's signal is the workflow function, consuming by sequence through design 044's command; `SIGNAL_WITHOUT_CONSUMER`
   applies to graph documents. Delegate (Owner decision 2026-11-24-4): one inbox and one lifecycle for both models (principle IV),
@@ -91,6 +98,9 @@ approved.
   (`Evaluation::BufferedSignal`); (c) the store satisfies waits after the domain's reduction. Chosen (b), delegate (Owner decision
   2026-11-24-4): (a) reads up to 1,000 rows on every transition; (c) puts a transition outside the domain; (b) keeps the domain pure,
   as the correlation of a wait is resolved today, and costs one statement per entry only when the run has pending signals.
+  *Revised 2026-11-26 after the stage 5 zoom-out (its Nit 8):* no new evaluation; the existing `Evaluation::Correlation` of the
+  wait carries `take_buffered`, and `Resolution::Correlation` the taken signal, since the correlation already is the one store
+  round trip of a wait's entry.
 - **Decision 054-012 — No refusal by the look-back or by a timeout.** A signal of a declared name that arrives after its wait timed
   out is buffered for a later wait of that name, never refused for that reason; this is what principle IV states for code runs
   ("a signal that arrives after the wait timed out is not dropped but kept"), applied to graph runs that opt in. Delegate (Owner
@@ -108,6 +118,14 @@ approved.
   buffer them (the run exists and has a lock).
 - **Gap 054-005** No operator action deletes one pending signal; cancelling or resetting the run is the way. A later design may add
   an audited removal.
+
+- **Gap 054-006** Design 044 writes "the inbox rows marked consumed" (its table of command records) and refuses an undeclared name
+  on a code run (`SIGNAL_NOT_DECLARED`). Design 054 states the inbox's contract for it (Technical Plan 10: rows are deleted on
+  consumption, `consume_pending_signals` all or nothing) and defers code runs' undeclared names to it (Requirement 054-003); design
+  044's owner is to cite that contract in its next revision.
+- **Gap 054-007** Designs 044, 045 and 054 share `platform_requirement_hold` and the floor's trigger. Design 054's Task 054-18 makes
+  them one prerequisite change, landed once by whichever design builds first; designs 044 and 045 are to name it as their
+  dependency in their next revisions (stage 5 zoom-out, its Major 4).
 
 ## Owner questions
 

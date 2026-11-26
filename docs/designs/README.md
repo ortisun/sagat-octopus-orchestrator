@@ -16,7 +16,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Draft | 0 of 20 |
-| 054 | [Buffered signals](054-buffered-signals.md) | Draft | 0 of 17 |
+| 054 | [Buffered signals](054-buffered-signals.md) | Draft | 0 of 18 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |
 
 The status is the `Status` line of each doc on `develop`. A task of a doc that is not `Approved` stays unticked even when
