@@ -60,7 +60,7 @@ line below disagree, this section is right.
    regions needs one HA cluster stretched across the regions (Patroni with an etcd of three regions, or CloudNativePG on
    a Kubernetes cluster that spans them); Task T032-003's harness decides which reference it uses and records the gap's
    answer. Design 048 relies on the HA manager's failover quorum for in-region promotion (its Requirement 048-001); FR-032-010's verification of the highest synchronous flush position stays this feature's.
-9. **Rolling upgrades follow design 048.** This feature's migration is expand-only (inert lease triggers, a down that
+9. **Rolling upgrades follow design 053** (split from design 048 on 2026-11-25). This feature's migration is expand-only (inert lease triggers, a down that
    refuses once a cell is initialized); the epoch-aware behaviour waits for the `region-v1` capability (item 5).
 10. **Journal partitioning (design 049) and the epoch column.** `run_events.region_epoch` is added on the partitioned
     parent if 049 lands first, or carried by 049's partitioning if this lands first; the divergence report's head scan

@@ -31,8 +31,9 @@ have one, and makes the per-run path cheap for every run created after it:
 6. **`runs`, `steps` and the audit trail are not partitioned in release 0.3.0**, for the reasons in the Technical Plan.
 
 Deleting journal rows, by month or by run, changes an obligation of principle I (the journal is append-only); that
-amendment is constitution 5.1.0, pending (Owner decision 2026-11-24-511). The partitioning needs none and is built first;
-only the deleting tasks wait for it.
+amendment is constitution 5.1.0, approved by the owner (Owner decision 2026-11-25-3, point 1: the retirement of a whole
+month partition once every run in it is purged, after a verified archive) and drafted by the coordinating session. The
+partitioning needs none and is built first; only the deleting tasks wait for 5.1.0 to merge.
 
 The cost on the hot path is measured by design 038's statement budget, which gains a count of the relations each lease
 and completion locks and of its round trips.
@@ -112,7 +113,7 @@ From the code on `develop` at `546d5aa5`:
   partition.
 - **Requirement 049-004 Online.** The partitioning of `run_events` MUST NOT copy its rows and MUST NOT build an index or
   scan the table while it holds a lock that blocks inserts. A statement that takes such a lock MUST wait for it under a
-  `lock_timeout` of 2 s (design 048) and be retried, and run only catalog work while it holds it. The concurrent
+  `lock_timeout` of 2 s (design 053) and be retried, and run only catalog work while it holds it. The concurrent
   operations (`CREATE INDEX CONCURRENTLY`, `DETACH ... CONCURRENTLY`) run with no `lock_timeout`, because they wait for
   older snapshots through lock waits by design.
 - **Requirement 049-005 Run payloads for new runs, owned by the run tree.** For a run with a dated bucket, every payload
@@ -302,12 +303,12 @@ record is under Owner decision 2026-11-24-4 (pull request 274).
 
 ## Owner decisions needed
 
-- **The amendment of principle I, pending constitution 5.1.0.** Retirement deletes journal rows, as feature 020's purge
-  does. Decided by the coordinating session (Owner decision 2026-11-24-511): it is not part of 5.0.0; it is a 5.1.0
-  amendment written once this design and feature 020's retention design are approved, so that its text follows the
-  approved mechanisms and names both audited privileged paths (feature 020's per-run purge and the retirement of a whole
-  month; Architecture decision 0054's proposed text says "one audited privileged path"), and has its own review. Task
-  049-18 writes this design's part of it. Gates Tasks 049-11 and 049-14.
+- **The amendment of principle I: decided.** Retirement deletes journal rows, as feature 020's purge does. The
+  coordinating session kept it out of 5.0.0 (Owner decision 2026-11-24-511), and the owner approved it for constitution
+  5.1.0 (Owner decision 2026-11-25-3, point 1): two audited ways to delete journal rows, only after a verified archive,
+  feature 020's per-run purge under a namespace retention policy and the retirement of a whole month partition of this
+  design once every run in it is purged. The coordinating session drafts the text and three reviewers read it; nothing is
+  left for the owner. Its merge gates Tasks 049-11 and 049-14; Task 049-18 checks the merged text against this design.
 - **Scope.** Owner decision 2026-11-24-1 (pull request 273) names "partitioning of the journal tables" among the new
   designs of release 0.3.0; the delegation covers its open questions. The rows of Owner decisions 2026-11-24-1, -2 and -4
   are in pull requests 273 and 274, which merge before this design.
@@ -361,7 +362,7 @@ Partition names are `<table>_b<YYYYMM>` and `<table>_legacy`.
 
 ### `run_events`, online
 
-The migrations, marked `expand` (design 048). Each statement that takes a lock blocking inserts runs in a transaction
+The migrations, marked `expand` (design 053). Each statement that takes a lock blocking inserts runs in a transaction
 of its own (files run without a transaction, `-- no-transaction` first, retried statement by statement), so that no
 transaction accumulates exclusive locks on several tables, and waits under `lock_timeout` 2 s. Each step has a `down`
 that restores the previous schema (the foreign keys recreated `NOT VALID` and validated), refused once a dated row
@@ -375,8 +376,8 @@ exists:
    `run_events`; the reference triggers of Requirement 049-006 (`UPDATE OF` their columns, enabled always); then drop,
    one per statement, the foreign keys they replace (the 20 to `payloads` and `run_events`' to `runs`). The triggers
    raise SQLSTATE 23503, so the previous release sees the same error as before. Dropping a constraint in an expand
-   migration is an exception to design 048's lint (Architecture decision 0131, decision 2), recorded in the migration's
-   header in the allow-list form of design 048's Task 048-12, which Architecture decision 0132 names as a refinement of
+   migration is an exception to design 053's lint (Architecture decision 0131, decision 2), recorded in the migration's
+   header in the allow-list form of design 053's Task 053-2, which Architecture decision 0132 names as a refinement of
    0131.
 2. Without a transaction: `DROP INDEX CONCURRENTLY IF EXISTS run_events_bucket_key`, then `CREATE UNIQUE INDEX
    CONCURRENTLY run_events_bucket_key ON run_events (tenant_id, run_id, seq, journal_bucket)`, with no `lock_timeout`;
@@ -396,8 +397,8 @@ exists:
    the current month and the next two. Only catalog statements run under the `ACCESS EXCLUSIVE` lock of the rename.
 
 A step 2 index stopped by a timeout or a crash is invalid; step 2 drops and rebuilds it. A failed step 5 rolls back
-whole. The rename is the second recorded exception to design 048's lint. The upgrade from 0.2.x to 0.3.0 is a stopped
-upgrade (Architecture decision 0131, decision 6), so in it these steps run with writers stopped and Requirement 049-004
+whole. The rename is the second recorded exception to design 053's lint. The upgrade from 0.2.x to 0.3.0 is a stopped
+upgrade (Architecture decision 0131, decision 8), so in it these steps run with writers stopped and Requirement 049-004
 protects nothing but the time they take, which is reported; from 0.3.x on they run while the platform serves. While the
 previous release still runs, its statements carry no bucket and lock every partition; Task 049-3 records that cost for
 the upgrade window.
@@ -464,8 +465,8 @@ check that shared payloads need, and the partition is detached and dropped once 
 - **Feature 032** adds `run_events.region_epoch` (Architecture decision 0067, decision 9). A column added to the
   partitioned parent is added to every partition; whichever design lands second writes its migration against the
   other's schema; `ensure_journal_buckets()` runs only in the active region.
-- **Design 048**'s rules apply to every migration here, with the two recorded exceptions (the constraint drops of step
-  1, the rename of step 5). The lint (design 048's Task 048-12) and the retrying `migrate` are prerequisites of Task
+- **Design 053**'s rules apply to every migration here, with the two recorded exceptions (the constraint drops of step
+  1, the rename of step 5). The lint (design 053's Task 053-2) and the retrying `migrate` (its Task 053-4) are prerequisites of Task
   049-8; until they exist, Task 049-8 retries by hand and the exceptions are written in the migrations' headers.
 - **Designs 051 and 052.** Design 051's driver measures Tasks 049-8 and 049-14; design 052's queue is not partitioned.
 
@@ -487,7 +488,7 @@ check that shared payloads need, and the partition is detached and dropped once 
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass with conditions | The partitioning keeps the journal append-only with a monotonic per-run sequence and a run's rows together; retirement deletes journal rows and waits for the constitution 5.1.0 amendment of principle I (Owner decision 2026-11-24-511) |
+| I. State and retry semantics are explicit and durable | Pass with conditions | The partitioning keeps the journal append-only with a monotonic per-run sequence and a run's rows together; retirement deletes journal rows and waits for the merge of constitution 5.1.0, whose principle I admits it (Owner decision 2026-11-25-3) |
 | II. Modular domain, ports and adapters | Pass | `journal_bucket` stays in `infra-postgres`'s row types and never enters the domain's run type; the application, scheduler and control-plane changes (Tasks 049-9 and 049-13) only call the store |
 | III. External effects are at-least-once; sagas compensate | n/a | No effect changes |
 | IV. Compatibility is versioned and pinned | Pass | Expand migrations whose triggers raise the same SQLSTATE as the keys they replace; old binaries write the legacy bucket; the switch is a registry activation |
@@ -556,21 +557,21 @@ are named; the test suites are those of the Verification Plan.
   Refs: Requirement 049-005, Requirement 049-006
 - [ ] T049-11 After Task 049-3's measurement, build the partial legacy reference indexes concurrently and give feature 020's legacy purge its reference check on them, with the re-check after the delete.
   Refs: Requirement 049-007
-  Owner-gate: pending, the constitution 5.1.0 amendment of principle I (Owner decision 2026-11-24-511; Owner decisions needed)
+  Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
 - [ ] T049-12 Write the per-run copy rules for children, resets, reruns, the chain's next segment and cross-namespace operations, with a test per path that the new run references only its own payloads.
   Refs: Requirement 049-005, Requirement 049-014
 - [ ] T049-13 Write `control-plane journal switch` in `apps/control-plane/src/cli.rs` on the registry's activation (`crates/application/src/instances.rs`), with a suite that runs after it across a month boundary with two dated partitions.
   Refs: Requirement 049-002, Requirement 049-010
 - [ ] T049-14 Write `control-plane journal retire`, `journal_retirements`, `sagat_quota_release_bytes`, the mark-only form and the chart's scheduled job, with the crash test at every step and inside a detach cancelled while it waits, the races with an append and with a per-run purge, and the quota reconciliation test.
   Refs: Requirement 049-009, Requirement 049-014, Success criterion 049-002, Success criterion 049-004
-  Owner-gate: pending, the constitution 5.1.0 amendment of principle I (Owner decision 2026-11-24-511; Owner decisions needed)
+  Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
 - [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge has the key and the mark-only form of Requirement 049-014.
   Refs: Requirement 049-014, Requirement 049-015
 - [ ] T049-16 Measure the scheduler's passes with `steps` partitioned by bucket after design 052's queue, and record the decision.
   Refs: Requirement 049-012
 - [ ] T049-17 Write the retention section of `docs/runbooks/database-recovery.md` and the bucket runbook.
   Refs: User story 049-01
-- [ ] T049-18 Once this design and feature 020's retention design are approved, draft with feature 020 the text of the constitution 5.1.0 amendment of principle I that admits the two audited deletion paths, for its own review.
+- [ ] T049-18 When constitution 5.1.0 merges, check that its principle I admits the retirement of Requirement 049-009 and the purge key of Requirement 049-014 as written, record the merge commit here, and raise any difference with the coordinating session before Tasks 049-11 and 049-14 start.
   Refs: Requirement 049-009, Requirement 049-014
 
 #### Follow-up tasks

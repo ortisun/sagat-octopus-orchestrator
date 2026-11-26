@@ -331,7 +331,7 @@ holds 60 × 2,000 = 120,000 transitions, so a million cost 0.162 ÷ 120,000 × 1
 example of the arithmetic, not a measurement.
 
 **Order of the build.** Design 048's development topology (its Task 048-2) comes before Task 051-7; the driver (Task
-051-2) before design 048's mixed-writer test and Compose drill (its Tasks 048-15 and 048-17), which reuse it.
+051-2) before design 053's mixed-writer test and design 048's Compose drill (Tasks 053-6 and 048-13), which reuse it.
 
 ## Risks and Mitigations
 

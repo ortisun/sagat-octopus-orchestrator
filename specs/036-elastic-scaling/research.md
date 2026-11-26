@@ -122,7 +122,7 @@ and the slice 3 items.
 - **D036-003 — The database budget reuses the chart's existing check** (`database.maxConnections`,
   `database.serverMaxConnections`) and adds only `reserveConnections`. Refines D1722.
 - **D036-004 — The rank share of connector partitions waits for the fleet** through a registry capability
-  `connector-rank-share` (Architecture decision 0082; design 048, Requirement 048-034), which answers G1715 for a
+  `connector-rank-share` (Architecture decision 0082; design 053, Requirement 053-007), which answers G1715 for a
   released old binary and removes the unbalanced rolling upgrade as a consequence. Refines D1708.
 - **D036-005 — The operator audience is a second verification configuration,** not a change of the tenant's: the API holds
   one audience per process today (`crates/api-http/src/auth/verifier.rs`), so the operator listener builds its own

@@ -32,7 +32,7 @@ Where this section and an older line below disagree, this section is right.
 5. **Mixed versions use the instance registry.** Architecture decision 0082 (accepted) gives a per-process capability
    gate and a fleet census. The keeper of balanced partitions (D1708, G1715) uses a capability
    `connector-rank-share`: the rank share is switched on only when the census shows no process without it, which
-   removes the unbalanced rolling upgrade that Architecture decision 0073 names as a consequence. Design 048's rule for
+   removes the unbalanced rolling upgrade that Architecture decision 0073 names as a consequence. Design 053's rule for
    rolling upgrades applies to every migration of this feature.
 6. **The operator listener needs a second audience.** Token verification holds one audience per process
    (`crates/api-http/src/auth/verifier.rs`) and so does the development identity provider. Task T036-065 adds the
@@ -51,7 +51,7 @@ Where this section and an older line below disagree, this section is right.
    `research.md`, section "Readiness, 2026-11-24"; the facts they support still hold.
 10. **Other features.** 019 is approved and not built (0 of 68); 022's throughput slice is on its branch; 010 is built
     (gaps 239, 243, 246 and 249 still open); 038's budget suite is merged; 032 is in 0.3.0 and still out of scope here;
-    designs 048 (standby reads, rolling upgrades) and 049 (journal partitioning) are new and change nothing here except
+    designs 048 (standby reads), 053 (rolling upgrades) and 049 (journal partitioning) are new and change nothing here except
     item 5.
 
 **Decisions taken on 2026-11-24** (delegate, Owner decision 2026-11-20-6 and Owner decision 2026-11-24-4; the reasons

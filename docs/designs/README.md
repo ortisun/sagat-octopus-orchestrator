@@ -15,10 +15,11 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
-| 048 | [A reference high-availability topology for PostgreSQL, and rolling upgrades with N and N-1 writers](048-high-availability-and-rolling-upgrades.md) | Draft | 0 of 17 |
+| 048 | [A reference high-availability topology for PostgreSQL, and the platform's side of a failover](048-high-availability.md) | Draft | 0 of 13 |
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Draft | 0 of 18 |
 | 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Draft | 0 of 14 |
 | 052 | [Hot-path dispatch: a lean ready queue, wake on commit, the next step in a completion, and a throughput gate](052-hot-path-dispatch.md) | Draft | 0 of 15 |
+| 053 | [Rolling upgrades with old and new writers on one database](053-rolling-upgrades.md) | Draft | 0 of 6 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |
 
 The status is the `Status` line of each doc on `develop`. A task of a doc that is not `Approved` stays unticked even when
