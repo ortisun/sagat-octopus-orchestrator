@@ -11,8 +11,10 @@ A person who must approve a step today has to know which run waits for them. The
 run (`GET /runs/{runId}/approvals`) and decide one by id (`POST /approvals/{approvalId}/decisions`); there is no list
 across runs. Temporal's Web UI has no inbox either (a person signals the workflow); Windmill sends an approval link per
 suspended step. An inbox is the place a person goes to find what waits for them, so it must answer "which approvals may
-I decide", and it must not become a way to learn who else may decide, or who started the run: the per-run list omits
-those on purpose.
+I decide". It must add no disclosure: the policy of an approval is already readable in the workflow version
+(`definition:read`) and the initiator and deciders are actors of the journal (`run:read`), so withholding them from
+the item is not a confidentiality boundary; the inbox keeps the per-run list's field set and adds only the caller's
+own eligibility.
 
 The eligibility rule lives in `crates/domain/src/execution/approval.rs` (`authorize_decision`: the caller holds
 `approval:decide`, is named by subject or role in the policy snapshot, and is not the initiator when the policy
@@ -36,7 +38,8 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
    what `listRunApprovals` carries, the workflow's identifier and name and the run's business identifier; feature 026
    adds its summary flag additively.
 4. When feature 029 is enabled, the listing MUST omit approvals of runs the caller cannot see (the evaluator's
-   `visibleFolders`), like every other listing; `youMayDecide` stays the decision rule.
+   `visibleFolders`), like every other listing, as a predicate of the scan itself, so a row the caller may not see is
+   never scanned and never named by a cursor (decision 5); `youMayDecide` stays the decision rule.
 5. A page MUST read a bounded number of pending rows; when the bound is reached before the page is full, the answer
    returns what it found and a cursor to continue, never an error and never an unbounded scan; the cursor is the key of
    the last row scanned, so it is null only when no row remains.
