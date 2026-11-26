@@ -857,3 +857,12 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
 - US02 and US07 share T022-096 (readiness gate), T022-097 (grant) and T022-098 (timeout); T022-022 and
   T022-072 each land their invariants (D022-033); T022-099 and T022-100 after T022-096.
 - T022-101..106 after the codec (T022-069) and the gate (T022-096).
+
+### Phase 13: follow-up task of 2026-11-26
+
+- [ ] T022-116 Fold `control-plane flow-control-activate` into the generic `control-plane capability-activate <token>`
+  (decision D022-136; decision D006-034 of feature 006): the two flow-control capabilities become `ACTIVATABLE`
+  entries of `capability_activation`, with the same checks (`--expect-live`, `--dry-run`, the operator, the audit);
+  `flow-control-activate` is removed; `docs/runbooks/flow-control.md` (sections 1 and 7), `docs/releases/unreleased.md`
+  and every test that runs the old command follow. Blocks release 0.3.0. Evidence: the activation tests of both
+  capabilities pass through `capability-activate`; the old command is refused as unknown.

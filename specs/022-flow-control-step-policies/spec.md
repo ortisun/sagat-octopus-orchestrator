@@ -797,6 +797,9 @@ Added after the review of 2026-11-13:
   (`ENCODING_CARRIAGE_MISMATCH`); mocks, `fromRun` pins, standalone inputs and cache copies are write paths
   validated by 031. Encoded values are cached, mocked or returned early only as opaque bytes; this feature
   never decodes them and invents no encrypted-field code of its own.
+  *Amended 2026-11-26, delegate (OD-2026-11-24-4; decision D022-120; feature 031's readiness review, Decision
+  031-009):* publication MUST also refuse a rate-limit key over an encoded location with
+  `ENCODING_READ_BY_RATE_LIMIT_KEY` (registered by 031).
 - **FR-022-037 — Erasure and payload references**: Cache entries (inline copies of a run's output) and
   cache hit provenance MUST be registered in 020's content-store registry
   (`crates/infra-postgres/run-content-references.json`, 020 data model "Reference discovery") with the

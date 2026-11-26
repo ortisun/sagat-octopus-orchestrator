@@ -119,6 +119,10 @@ Each row needs a test that fails when the creator bypasses it (T022-064).
 | Schedule firing, batch reruns, Signal-with-Start, Update-with-Start | 018 | acquire or queue at admission; with a start delay, at the delay's release |
 | Reset to a point | 018 | acquire a fresh permit in the reset admission transaction or refuse (`CONCURRENCY_PERMIT_UNAVAILABLE`); never queue; copied `concurrency.*` rows are 018-`restored` history; reset rules per event in `contracts/journal-events.md` (D1600) |
 | Continue-As-New successors | 014 | not applicable: `concurrency` with `continueAsNew` is refused |
+| Studio generated form (added 2026-11-26, D022-120) | 026 | as `startRun`: acquire or queue; a queued or buffered run is not terminal, so a waiter answers `202` |
+| `executeRun` (added 2026-11-26, D022-120) | 026 | as `startRun`, a second entry to `start_with_options`: acquire or queue |
+| Public-link submission (added 2026-11-26, D022-120) | 026 | acquire or queue through `start_with`, after design 043's run input gate |
+| Synchronous custom route, with feature 021 (added 2026-11-26, D022-120) | 021, 026 | as the dispatcher's trigger row: acquire or queue; pending retry |
 | Any future creator (for example 030 handler runs) | owner feature | MUST call the same port; enforced by T022-064 |
 
 ## Authorization

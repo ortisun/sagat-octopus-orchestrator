@@ -2333,6 +2333,29 @@ taken after `git grep D022-04` on every `origin/*` branch.
   says which. Neither is a property of the test that a held lock or a barrier can remove, and a retry would hide the
   next one: the test is left as it is, and its next failure's report is to be recorded here.
 
+- **D022-120 — Notes of the other features for this one (2026-11-26; delivered by the coordinating session).**
+  Delegate (OD-2026-11-24-4). Three notes, each written where it lives:
+  1. *A rate-limit key over an encoded location* (feature 031's readiness review, Decision 031-009; design 045's
+     research). FR-022-036 named only the cache and concurrency keys; a rate-limit key reads the same run data, so
+     publication refuses it with `ENCODING_READ_BY_RATE_LIMIT_KEY`, a code 031 registers (the ninth
+     `ENCODING_READ_BY_*`). Amended in FR-022-036 and `contracts/errors.md`; the code is wired by task T031-020.
+  2. *The run creators of feature 026* (Decision 026-017 of its research, pull request 277): the Studio generated
+     form, `executeRun`, the public-link submission and, with feature 021, the synchronous custom route each call
+     this feature's admission port; they are rows of the plan's "Run creators" table, and task T022-064's rule (a
+     test per creator that fails when it bypasses the port) applies to each when it is built.
+  3. *Design 045's close cutoff* (Requirement 045-011, task 045-10): it will be built into a waiter's deadline, the
+     one timeout routine and the grant. Those three stay in one place each, so that 045 changes one text of each:
+     the deadline as the eligibility predicate's one text (`eligible_gate_waiter!`, task T022-112), the timeout as
+     the timeout routine of tasks T022-098 and T022-073, and the grant as the grant pass of T022-097; no second
+     copy of either may be added.
+- **D022-136 — One operator command activates every capability (2026-11-26; decision D006-034 of feature 006;
+  delivered by the coordinating session).** Delegate (OD-2026-11-24-4). `control-plane flow-control-activate`
+  (D022-062) and the generic `control-plane capability-activate <token>` (feature 006, ADR-0098) both record a
+  fleet requirement. An operator command is public surface that is hard to remove once released, and the
+  lease-withdrawal design planned one generic command for this feature to adopt. Chosen: the two flow-control
+  capabilities become entries of `capability-activate`, and `flow-control-activate` is removed before release 0.3.0
+  ships (task T022-116, which blocks the release). The runbook and the release notes name only the generic command.
+
 ## Gaps
 
 | ID | Gap | Status |
