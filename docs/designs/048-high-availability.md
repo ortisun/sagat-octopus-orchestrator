@@ -231,11 +231,13 @@ From the code and documents on `develop` at `546d5aa5`:
   `DATABASE_NOT_SYNCHRONOUS`; design 053 adds two); it is open only when the registry's state allows it and the set is
   empty. Each owner clears only its own reason; a re-registration does not reopen a gate another reason holds. Readiness
   checks the gate before it pings storage. The reasons are added to `specs/001-platform-foundation/contracts/openapi.yaml`,
-  `sdks/SPEC.md` as reasons an operator reads. Every refusal of a closed gate that a client can reach before
-  authentication shows only `UNAVAILABLE` with `Retry-After` of 2 s, whatever the cause and with no reason at all,
-  `BINARY_CAPABILITY_MISSING` included, so that an anonymous caller learns nothing of the cause: the HTTP router's
-  `require_serving` and the public readiness `/v1/ready` (`crates/api-http/src/limits.rs`, `routes/health.rs`) and the
-  gRPC admission (`crates/api-grpc/src/limits.rs`). The reasons are given only to operators: the metric
+  `sdks/SPEC.md` as reasons an operator reads. Every `UNAVAILABLE` that a client can reach before authentication is one
+  constant answer, `Retry-After` of 2 s and no reason, whatever the cause (a closed gate, `BINARY_CAPABILITY_MISSING`
+  included, a failed storage ping, a silent registry), so that an anonymous caller learns nothing of the cause: the
+  HTTP router's `require_serving` and the public readiness `/v1/ready` (`crates/api-http/src/limits.rs`,
+  `routes/health.rs`), and the gRPC admission and capability refusal, whose `REGISTRY_SILENT` moves after
+  authentication (`crates/api-grpc/src/limits.rs`, `service.rs`). This changes Architecture decision 0082's decision 3,
+  which shows `BINARY_CAPABILITY_MISSING` to every caller; Architecture decision 0130 records it. The reasons are given only to operators: the metric
   `serving_gate_closed{reason}`, the log, and the engine's readiness on its admin listener (`/readyz`). The registry's
   `registry_error` classifies `CommitOutcomeUnknown` and an `after_connect` refusal as a failed connection (Architecture
   decision 0082, decision 5).
@@ -300,8 +302,11 @@ From the code and documents on `develop` at `546d5aa5`:
   that acknowledgment missing. In the isolation fault, the drill revokes a test principal's grant on the new primary
   and checks that every request with that principal that starts after both 22 s from the isolation and the
   revocation's commit is refused or answered `UNAVAILABLE` (Technical Plan, "Why one waited write protects what came
-  before it"). On Compose this fault runs one extra control plane, the probe, on a network `db-probe` shared only with
-  the primary's node, through which it reaches that node's client port, so that the check exercises the bound when
+  before it"). On Compose this fault runs one extra control plane, the probe, on a network `db-probe` (`internal: true`)
+  shared only with the primary's node, through which it reaches that node's client port; the network and its one
+  `pg_hba` line (`sagat_app`, `scram-sha-256`, that subnet only) live in a file of the drill
+  (`infra/dr/compose.ha-probe.yaml`), never in the development reference, and `ha-drill.sh` attaches the current primary
+  to it at the fault's start, so that the check exercises the bound when
   the fault disconnects the node from `db-access` and `db-control` but not from `db-probe`; the probe is started for
   this fault only, stopped after the check, and not counted among the processes that must be ready again. The
   Kubernetes drill asserts the bound too. Reports go to
@@ -458,7 +463,8 @@ comes within 12 s (10 s jittered) and waits for a standby the isolated server ca
 10 s makes the outcome unknown and closes the gate (12 + 10 = 22 s; raising the commit deadline lengthens it by as
 much). A request already running keeps its connection until it ends, within the HTTP request timeout of 15 s
 (`crates/api-http/src/lib.rs`), so no HTTP request reads from that server more than 22 + 15 = 37 s after the isolation;
-a blob transfer and a gRPC call are bounded by their own timeouts, and a server-sent stream ends when the gate closes. `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
+a gRPC call is bounded by its own deadline; a blob transfer has none and runs until it ends, reading only the blob it
+was authorized for at its start; a server-sent stream ends when the gate closes. `smartShutdownTimeout: 5` and HAProxy's session shutdown end those sessions sooner where they
 apply, and the isolation drill asserts the bound.
 
 ### The drills
@@ -567,7 +573,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-012
 - [ ] T048-8 Move every write of `crates/infra-postgres` and `crates/scheduler` to `WriteTx`, one pull request per module group; then the startup options (`synchronous_commit=on`, `default_transaction_read_only=on`), the `25006` classification and the architecture rules of Requirements 048-011 and 048-012, with `a_write_outside_write_tx_fails_at_once` and `a_role_setting_of_synchronous_commit_local_is_refused`.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
-- [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, make every refusal before authentication (`crates/api-http/src/limits.rs`, the public readiness, `crates/api-grpc/src/limits.rs`) answer `UNAVAILABLE` with `Retry-After` of 2 s and no reason, with a test of each, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
+- [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, make every `UNAVAILABLE` before authentication (`crates/api-http/src/limits.rs`, the public readiness, `crates/api-grpc/src/limits.rs` and `service.rs`, `REGISTRY_SILENT` moved after authentication) one constant answer, `Retry-After` of 2 s and no reason, with one test asserting identical status, headers and body for each cause, and amend what states the old public reason (`docs/runbooks/instance-registry.md`, `specs/001-platform-foundation/contracts/openapi.yaml`, `tests/contract/schedules-bulk-operations/errors.rs`, `tests/integration/schedules-bulk-operations/instances_rest.rs`, `tests/support/api.rs`), readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
   Refs: Requirement 048-014
 - [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate`, `a_connection_to_a_superseded_server_is_refused`, `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
   Refs: Requirement 048-011, Requirement 048-013, Requirement 048-014
@@ -577,7 +583,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-016
 - [ ] T048-13 Add the two alerts with one rule file per manager, their rule tests in CI's `promtool` step, and the exporters' allow-list in the observability contract test.
   Refs: Requirement 048-012, Requirement 048-013
-- [ ] T048-14 Extend `dr_acked_workload` and `dr_verify` with the ledger's key and content and the open-loop rate, write `infra/dr/ha-drill.sh` with the six faults, the negative control and the revocation check, the `ha-drill` job on a free standard runner in the release workflow, replace `drill.sh`'s constant, and publish its section of the report with the runner named.
+- [ ] T048-14 Extend `dr_acked_workload` and `dr_verify` with the ledger's key and content and the open-loop rate, write `infra/dr/ha-drill.sh` with the six faults, the negative control and the revocation check (with the probe's `infra/dr/compose.ha-probe.yaml`), the `ha-drill` job on a free standard runner in the release workflow, replace `drill.sh`'s constant, and publish its section of the report with the runner named.
   Refs: Requirement 048-040, Requirement 048-041, Requirement 048-042, Requirement 048-043, Success criterion 048-001, Success criterion 048-002, Success criterion 048-003
 - [ ] T048-15 Write `tests/e2e/high-availability/smoke.sh` on three kind nodes and run it on a free runner, publishing its result as a smoke.
   Refs: Requirement 048-041
