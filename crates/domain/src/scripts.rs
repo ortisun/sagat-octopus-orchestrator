@@ -775,8 +775,10 @@ pub fn redact(text: &str, secrets: &[&str]) -> String {
 }
 
 /// Replaces the shapes of credentials that are recognisable without knowing the value: an AWS access
-/// key id, a PEM private key block, and a bearer token in an `Authorization` header.
-fn redact_credentials(text: &str) -> String {
+/// key id, a PEM private key block, and a bearer token in an `Authorization` header. Public so that the step-log
+/// ingest (design 041, task T041-6) scrubs a line with the same shapes as a script's log.
+#[must_use]
+pub fn redact_credentials(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;

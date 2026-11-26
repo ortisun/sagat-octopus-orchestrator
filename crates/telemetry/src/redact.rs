@@ -64,15 +64,23 @@ fn is_word_char(c: char) -> bool {
 }
 
 fn scrub_shapes(text: &str) -> Cow<'_, str> {
-    let without_userinfo = hide_userinfo(text);
-    match scrub_words(&without_userinfo) {
+    scrub_shapes_with(text, REDACTED)
+}
+
+/// Every credential-shaped part of `text` (a URL's user information, a bearer token, a credential-shaped word) replaced
+/// by `placeholder`, with nothing cut: the shapes [`scrub`] applies, for a caller with a placeholder and a length limit
+/// of its own (design 041, task T041-6: a step log writes `[REDACTED]` and cuts at 8 KiB). No second list of shapes.
+#[must_use]
+pub fn scrub_shapes_with<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
+    let without_userinfo = hide_userinfo(text, placeholder);
+    match scrub_words(&without_userinfo, placeholder) {
         Cow::Owned(done) => Cow::Owned(done),
         Cow::Borrowed(_) => without_userinfo,
     }
 }
 
 /// `scheme://user:pass@host/...`: what stands before the `@` of the authority.
-fn hide_userinfo(text: &str) -> Cow<'_, str> {
+fn hide_userinfo<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
     let mut out = String::new();
     let mut rest = text;
     let mut changed = false;
@@ -83,7 +91,7 @@ fn hide_userinfo(text: &str) -> Cow<'_, str> {
             .find(['/', '?', '#', ' ', '"', '\''])
             .unwrap_or(tail.len());
         if let Some(userinfo_end) = tail[..authority_end].rfind('@') {
-            out.push_str(REDACTED);
+            out.push_str(placeholder);
             out.push_str(&tail[userinfo_end..authority_end]);
             changed = true;
         } else {
@@ -98,7 +106,7 @@ fn hide_userinfo(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-fn scrub_words(text: &str) -> Cow<'_, str> {
+fn scrub_words<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
     let mut out = String::with_capacity(text.len());
     let mut changed = false;
     let mut previous_word = "";
@@ -113,7 +121,7 @@ fn scrub_words(text: &str) -> Cow<'_, str> {
         let end = rest.find(|c: char| !is_word_char(c)).unwrap_or(rest.len());
         let word = &rest[..end];
         if is_credential_word(word) || follows_scheme(previous_word, word) {
-            out.push_str(REDACTED);
+            out.push_str(placeholder);
             changed = true;
         } else {
             out.push_str(word);
@@ -161,4 +169,36 @@ fn is_credential_word(word: &str) -> bool {
             && word
                 .bytes()
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod scrub_shapes_with_tests {
+    use super::{REDACTED, scrub, scrub_shapes_with};
+
+    /// Design 041, task T041-6: the public entry point equals what it replaces. With the logs' placeholder it is
+    /// exactly `scrub` on a value short enough not to be cut, for each shape (a URL's user information, a bearer
+    /// word, a credential-shaped word) and for text with none.
+    #[test]
+    fn scrub_shapes_with_the_logs_placeholder_is_scrub_below_the_cut() {
+        for text in [
+            "postgres://admin:hunter2@db.internal:5432/app",
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+            "key AKIAIOSFODNN7EXAMPLE in the log",
+            "nothing secret here",
+            "",
+        ] {
+            assert_eq!(scrub_shapes_with(text, REDACTED), scrub(text), "{text}");
+        }
+    }
+
+    /// The placeholder is the caller's (a step log writes `[REDACTED]`), and nothing is cut, however long the text.
+    #[test]
+    fn scrub_shapes_with_uses_the_callers_placeholder_and_cuts_nothing() {
+        assert_eq!(
+            scrub_shapes_with("postgres://admin:hunter2@db/app", "[REDACTED]"),
+            "postgres://[REDACTED]@db/app"
+        );
+        let long = "x ".repeat(5_000);
+        assert_eq!(scrub_shapes_with(&long, "[REDACTED]"), long);
+    }
 }
