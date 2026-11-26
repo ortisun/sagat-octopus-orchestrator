@@ -21,6 +21,13 @@ impl PathExecutionTx for PgPathExecutionTx {
         self.now
     }
 
+    fn claim_mark(
+        &self,
+        instance: &ExecutionInstanceId,
+    ) -> Option<sagat_application::execution::ClaimMark> {
+        self.claim_marks.get(instance).copied()
+    }
+
     async fn lease_deadlines(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -1260,7 +1267,26 @@ impl PgPathExecutionTx {
                     event_type=CASE WHEN $30='waitEvent' THEN $35 ELSE s.event_type END, \
                     correlation_key=CASE WHEN $30='waitEvent' THEN $36 ELSE s.correlation_key END, \
                     event_since=CASE WHEN $30='waitEvent' THEN $37 ELSE s.event_since END, \
-                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END \
+                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END, \
+                    lease_hand_back_generation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN CASE WHEN $44 THEN $8 END \
+                      ELSE s.lease_hand_back_generation END, \
+                    lease_claimed_at=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN CASE WHEN $44 THEN clock_timestamp() END \
+                      ELSE s.lease_claimed_at END, \
+                    lease_claim_incarnation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 \
+                      THEN CASE WHEN $44 THEN (SELECT pg_postmaster_start_time()) END \
+                      ELSE s.lease_claim_incarnation END, \
+                    lease_offered_generation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 \
+                      THEN CASE WHEN $44 AND $45 AND s.provisional_withdrawn_attempt IS DISTINCT FROM $7 \
+                                 AND LEAST($20, COALESCE($21, $20)) >= $46 THEN $8 END \
+                      ELSE s.lease_offered_generation END, \
+                    lease_acknowledged_at=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN NULL ELSE s.lease_acknowledged_at END, \
+                    lease_capability_generation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN NULL ELSE s.lease_capability_generation END \
              WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND step_id=$4 AND namespace_id=$5 \
                AND s.node_kind IN ('legacyControl',$30) \
                AND instance_path_nodes=$17 AND instance_path_indices=$18 \
@@ -1274,7 +1300,11 @@ impl PgPathExecutionTx {
               AND s.status=$33 AND s.routed=$34)) \
                AND ($30<>'waitEvent' OR (s.due_at IS NOT DISTINCT FROM $38 AND s.status=$39 AND s.routed=$40 \
                  AND s.event_type IS NOT DISTINCT FROM $41 AND s.correlation_key IS NOT DISTINCT FROM $42 \
-                 AND s.event_since IS NOT DISTINCT FROM $43))",
+                 AND s.event_since IS NOT DISTINCT FROM $43)) \
+             RETURNING s.lease_offered_generation IS NOT DISTINCT FROM s.generation AS provisional, \
+               s.lease_expires_at, s.attempt_deadline_at, \
+               CASE WHEN s.provisional_withdrawn_attempt IS NOT DISTINCT FROM $7 THEN 'flagged_before' \
+                    WHEN LEAST($20, COALESCE($21, $20)) < $46 THEN 'short_deadline' END AS skipped",
         ))
         .bind(self.snapshot.info.tenant_id.as_uuid())
         .bind(self.snapshot.info.run_id.as_uuid())
@@ -1319,12 +1349,19 @@ impl PgPathExecutionTx {
         .bind(old_event_type.as_deref())
         .bind(old_event.as_ref().and_then(|read|read.key.as_ref()).map(CorrelationKey::as_str))
         .bind(old_event_since)
-        .execute(&mut *self.tx)
+        .bind(claim_binds(fresh_grant).0)
+        .bind(claim_binds(fresh_grant).1)
+        .bind(micros(sagat_application::execution::MARK_MINIMUM_DEADLINE))
+        .fetch_optional(&mut *self.tx)
         .await
-        .map_err(store_error)?
-        .rows_affected();
-        if updated != 1 {
+        .map_err(store_error)?;
+        let Some(updated) = updated else {
             return Err(corrupt("bounded step identity"));
+        };
+        // what the claim marked, read back from the statement that wrote the lease (Task 006-047)
+        if let Some(grant) = fresh_grant {
+            self.claim_marks
+                .insert(instance.clone(), claim_mark_of(grant.marking, &updated)?);
         }
         if node_kind == "timer" {
             self.timer_read_states

@@ -55,9 +55,10 @@ use crate::definitions::{DefinitionStore, Idempotency};
 use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
-    Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, PoolCheck,
-    ReportedLease, RunTx, instance_compensation_key, instance_reconciliation_key, instance_step_id,
+    Actor, ClaimMark, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseMarking,
+    LeaseRenewal, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, MarkOutcome, MarkSkip,
+    PathExecutionStore, PathExecutionTx, PoolCheck, ReportedLease, RunTx,
+    instance_compensation_key, instance_reconciliation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -459,6 +460,13 @@ pub struct ClaimedTask {
     /// For a compensation or a reconciliation: the forward step it is about, and the idempotency
     /// key that step's own attempts carried, which is what identifies the effect at the provider.
     pub target: Option<TaskTarget>,
+    /// What the claim marked (protocol 1.8, Task 006-047): `Provisional` sets `acknowledge_before_start` on the lease.
+    /// Counted once the claim's transaction commits, never before. `None`: the store wrote no mark (an adapter without
+    /// them).
+    pub mark: Option<MarkOutcome>,
+    /// The attempt deadline of a provisional lease, when it comes before its expiry (`attempt_deadline_epoch_ms`); the
+    /// stored expiry is not shortened.
+    pub attempt_deadline: Option<OffsetDateTime>,
 }
 
 /// What a task is for.
@@ -489,6 +497,12 @@ pub struct TaskTarget {
 }
 
 impl ClaimedTask {
+    /// The lease is provisional until its host acknowledges it (`acknowledge_before_start`, protocol 1.8).
+    #[must_use]
+    pub fn acknowledge_before_start(&self) -> bool {
+        self.mark == Some(MarkOutcome::Provisional)
+    }
+
     /// The legacy identifier a worker echoes back: `run/node/generation`.
     /// Protocol 1.5 carries the complete logical identity in the separate `instance` field.
     #[must_use]
@@ -559,6 +573,25 @@ pub(crate) async fn roll_back_for_a_gone_consumer(
         metrics::counter!("worker_claim_skipped_total", "reason" => "consumer_gone").increment(1);
     }
     gone
+}
+
+/// Counts what the claims of `tasks` marked (protocol 1.8): `worker_lease_marks_total` for a provisional lease, and
+/// `worker_lease_marks_skipped_total{reason}` for a lease of a session at 1.8 or later that was not. Called only after the
+/// claim's transaction committed, so a transaction rolled back for a consumer gone before its commit counts nothing (decision
+/// D006-092).
+pub(crate) fn count_marks(tasks: &[ClaimedTask]) {
+    for task in tasks {
+        match task.mark {
+            Some(MarkOutcome::Provisional) => {
+                metrics::counter!("worker_lease_marks_total").increment(1)
+            }
+            Some(MarkOutcome::Skipped(reason)) => {
+                metrics::counter!("worker_lease_marks_skipped_total", "reason" => reason.as_str())
+                    .increment(1);
+            }
+            Some(MarkOutcome::Unreserved) | None => {}
+        }
+    }
 }
 
 /// A claim whose consumer never goes away: [`WorkerService::poll`].
@@ -695,7 +728,8 @@ pub struct WorkerService<S, C, E, R> {
     capability_gate: Option<Arc<crate::instances::ServingGate>>,
     /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
     lease_withdrawal_disabled: bool,
-    /// The highest session minor a hand-back is judged by: this build's own ceiling (ADR-0099 decision 9).
+    /// The highest session minor a lease is judged by, at its claim (the marks of protocol 1.8, Task 006-047) and at its
+    /// hand-back: this build's own ceiling (ADR-0099 decision 9). A session stored above it is read at it.
     hand_back_ceiling: u32,
 }
 
@@ -1610,6 +1644,8 @@ where
             return Ok(Vec::new());
         }
         tx.commit().await?;
+        // the marks are counted once they are durable: a transaction rolled back above counts nothing (D006-092)
+        count_marks(&leased);
         // A failed transaction contributes neither leases nor bytes to this response.
         *bytes += run_bytes;
         Ok(leased)
@@ -1801,6 +1837,7 @@ where
             worker_id: session.id.to_string(),
             ttl: self.settings.lease_ttl,
             attempt_timeout: timeout,
+            marking: self.lease_marking(session),
         });
         // A lake write that takes the result a SQL step retained reads it for the run: audited once with the lease, as reading it through
         // the API is, naming the node, the write, its connection and who started the run, and no value (D035-145). The lease is the one place
@@ -1883,6 +1920,7 @@ where
             self.task_identity(template, data, &info, instance)?;
         let run_id = info.run_id;
         let version = info.version_id;
+        let mark = tx.claim_mark(instance);
         Ok(ClaimedTask {
             run_id,
             step_id: instance_step_id(version, run_id, instance),
@@ -1897,7 +1935,38 @@ where
             trace_id: info.trace_id,
             kind,
             target,
+            mark: mark.map(|mark| mark.outcome),
+            attempt_deadline: mark.as_ref().and_then(ClaimMark::attempt_deadline),
         })
+    }
+
+    /// What the claim of a lease for `session` asks its statement to mark (protocol 1.8, Task 006-047, decision D006-106).
+    /// A session is judged at this build's ceiling, so no lease is reserved before 1.8 negotiates; the engine's reasons come
+    /// from the requirements as its gate last read them, its switch and the session's word.
+    pub(crate) fn lease_marking(&self, session: &SessionRecord) -> LeaseMarking {
+        if session.accepted_protocol_minor.min(self.hand_back_ceiling)
+            < DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR
+        {
+            return LeaseMarking::Unreserved;
+        }
+        let gate = self.lease_withdrawal.as_deref();
+        let requires = |capability, kinds: &[crate::instances::InstanceKind]| {
+            gate.is_some_and(|gate| gate.requires(capability, kinds))
+        };
+        LeaseMarking::Reserved {
+            skipped: MarkSkip::of_engine(
+                requires(
+                    crate::instances::Capability::DeliveryAcknowledgementV1,
+                    &[crate::instances::InstanceKind::ExecutionEngine],
+                ),
+                requires(
+                    crate::instances::Capability::LeaseWithdrawalV2,
+                    &crate::instances::InstanceKind::ALL,
+                ),
+                !self.lease_withdrawal_disabled,
+                session.declines_acknowledgement,
+            ),
+        }
     }
 
     fn task_template(
@@ -3369,11 +3438,11 @@ mod tests {
             negotiate_protocol_details("1.999", raised),
             Some(("1.8".to_owned(), 8))
         );
+        // this build answers its own minor, below 1.8 (the compile-time assert of `withdrawal.rs` keeps it there)
         assert_eq!(
             negotiate_protocol("1.8"),
             Some(format!("1.{PROTOCOL_MINOR}"))
         );
-        assert!(PROTOCOL_MINOR < DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR);
     }
 
     #[test]
@@ -3412,7 +3481,6 @@ mod tests {
             negotiate_protocol_details("1.5", ROOT_PROTOCOL_MINOR),
             Some(("1.4".to_owned(), ROOT_PROTOCOL_MINOR))
         );
-        // this build answers its own minor, below 1.8 (the compile-time assert of `withdrawal.rs` keeps it there)
         assert_eq!(
             negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),
             Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))

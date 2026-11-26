@@ -589,7 +589,9 @@ session upsert sets it from the registration, so one that does not decline clear
   not marked, the flag is false, and `worker_lease_marks_skipped_total{reason}` counts it with the first reason that holds, in this
   order: `not_activated`, `requirement_missing`, `switch_off`, `declined`, `flagged_before`, `short_deadline`. Like
   `worker_lease_marks_total`, it is incremented only after the claim's transaction commits, so a run's transaction rolled back
-  because its consumer went before the commit (D006-092) moves neither counter (round 15).
+  because its consumer went before the commit (D006-092) moves neither counter (round 15); a claim of a session below 1.8 is
+  counted by neither. The engine's four reasons travel with the grant; the statement judges the last two from the row it
+  writes and returns, with whether it marked, the lease's two deadlines (Decision 006-106).
 - No statement assigns a column of the marks from a value it read earlier. The allowed forms are: the claim's, in SQL conditioned
   on a new lease (the stored `generation` differs from the one written), never on a bound flag alone; the engine's other statements
   keep them (`ELSE` the column) or clear them with the lease; the acknowledgement sets `lease_acknowledged_at = clock_timestamp()`

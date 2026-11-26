@@ -2772,6 +2772,7 @@ async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member()
         worker_id: "bounded-script-test".into(),
         ttl: Duration::from_secs(30),
         attempt_timeout: None,
+        marking: sagat_application::execution::LeaseMarking::Unreserved,
     });
     tx.persist_addressed(&[leased], &[], effects)
         .await

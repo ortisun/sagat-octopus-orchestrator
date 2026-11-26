@@ -12,6 +12,7 @@ mod faults;
 mod flows;
 mod hardening;
 mod isolation;
+mod lease_marks;
 mod nats;
 mod outbox;
 mod routing;

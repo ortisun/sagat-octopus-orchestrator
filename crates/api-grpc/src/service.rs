@@ -1726,6 +1726,8 @@ mod identity_tests {
             trace_id: None,
             kind: sagat_application::worker::TaskKind::Forward,
             target: None,
+            mark: None,
+            attempt_deadline: None,
         };
 
         let encoded = lease(&task);
@@ -1771,9 +1773,9 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
             .unwrap_or_default(),
         instance,
         target_instance,
-        // protocol 1.8: no lease is marked provisional before the claim writes the marks (Task 006-047)
-        acknowledge_before_start: false,
-        attempt_deadline_epoch_ms: 0,
+        // protocol 1.8 (Task 006-047): a lease the claim marked provisional, and its attempt deadline when that comes first
+        acknowledge_before_start: task.acknowledge_before_start(),
+        attempt_deadline_epoch_ms: task.attempt_deadline.map_or(0, epoch_ms),
     }
 }
 

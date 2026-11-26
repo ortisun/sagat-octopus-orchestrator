@@ -82,6 +82,8 @@ pub use definitions::{
 /// The scan of the pending resets whose source did not end within the window, exposed so a test can check its plan.
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
+#[doc(hidden)]
+pub use execution::lease_marks;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
 pub use instances::{

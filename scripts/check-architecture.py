@@ -30,6 +30,14 @@ Reads `cargo metadata` and fails when:
     anywhere but a `[dev-dependencies]` entry (FR-043-016);
   * a `CheckedRunInput` is built (a struct expression or an associated function call) outside
     `crates/application/src/run_input.rs` and the tests, or has a `Default` or a `Deserialize` anywhere (FR-043-016, D043-045).
+  * a column of the marks of protocol 1.8 on `steps` is assigned, in `crates/infra-postgres/src` or its migrations, in a form
+    other than the allowed ones (`stream-completion.md` of feature 006, "The marks"; Task 006-047, decision D006-107): the
+    claim's, in the three lease statements only, conditioned in SQL on a new lease (the old row's `generation IS DISTINCT FROM`
+    the one written, in a conjunction) and never on a bound flag alone; the acknowledgement's `clock_timestamp()`; the
+    capability record's `generation`; the withdrawal's pair, `withdrawn_lease_token_hash` from the row's `lease_token_hash` with
+    `withdrawn_on_hand_back` bound, never one without the other; or the column kept. An `INSERT` names no mark. The attempt's
+    flag `provisional_withdrawn_attempt` is named only in the three lease statements (`upsert_step`, `upsert_scoped_instance`,
+    `upsert_path_instance`), in its one fenced form, once per statement; and each of the three writes every mark of the claim.
 
 Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR] [--run-input-src DIR] [--rust-root DIR]
   --metadata FILE     read a saved `cargo metadata --format-version 1` JSON instead of
@@ -558,6 +566,253 @@ def gate_wiring_errors(root):
     return errors
 
 
+# Feature 006, Task 006-047 (decisions D006-042, D006-066 and D006-107; `stream-completion.md`, "The marks"): no statement assigns
+# a column of the marks from a value it read earlier. The marks are lease data written by the claim in the statement that
+# writes the lease; every later writer either keeps them or writes the one value its path owns. The attempt's flag is attempt
+# data with one fenced form, written by the three lease statements alone.
+CLAIM_MARKS = (
+    "lease_hand_back_generation",
+    "lease_claimed_at",
+    "lease_claim_incarnation",
+    "lease_offered_generation",
+    "lease_acknowledged_at",
+    "lease_capability_generation",
+)
+WITHDRAWN_PAIR = ("withdrawn_lease_token_hash", "withdrawn_on_hand_back")
+ATTEMPT_FLAG = "provisional_withdrawn_attempt"
+LEASE_STATEMENTS = ("upsert_step", "upsert_scoped_instance", "upsert_path_instance")
+MARK_NAMES = CLAIM_MARKS + WITHDRAWN_PAIR + (ATTEMPT_FLAG,)
+MARK_MENTION = re.compile(r"\b(" + "|".join(MARK_NAMES) + r")\b")
+STEPS_UPDATE = re.compile(
+    r"\bUPDATE\s+(?:ONLY\s+)?(?:public\.)?steps\b(?:\s+(?:AS\s+)?(?!SET\b)([A-Za-z_]\w*))?\s+SET\b", re.IGNORECASE
+)
+STEPS_INSERT = re.compile(r"\bINSERT\s+INTO\s+(?:public\.)?steps\s*\(([^)]*)\)", re.IGNORECASE)
+STEPS_UPSERT_SET = re.compile(r"\bDO\s+UPDATE\s+SET\b", re.IGNORECASE)
+# The value the claim writes for each mark, after its new-lease condition; `G` is the generation the statement writes.
+CLAIM_VALUES = {
+    "lease_hand_back_generation": r"CASE WHEN \$\d+ THEN \$G END",
+    "lease_claimed_at": r"CASE WHEN \$\d+ THEN clock_timestamp\(\) END",
+    "lease_claim_incarnation": r"CASE WHEN \$\d+ THEN \(SELECT pg_postmaster_start_time\(\)\) END",
+    "lease_offered_generation": (
+        r"CASE WHEN \$\d+ AND \$\d+ AND (?:A\.)?provisional_withdrawn_attempt IS DISTINCT FROM \$\d+ "
+        r"AND LEAST\(\$\d+,COALESCE\(\$\d+,\$\d+\)\)>=\$\d+ THEN \$G END"
+    ),
+    "lease_acknowledged_at": r"NULL",
+    "lease_capability_generation": r"NULL",
+}
+# The one value each later path owns (Tasks 006-049, 006-050 and 006-052 write them).
+OWNED_VALUES = {
+    "lease_acknowledged_at": r"clock_timestamp\(\)",
+    "lease_capability_generation": r"(?:A\.)?generation",
+}
+
+
+def sql_normal(text):
+    """SQL with its whitespace collapsed and no space inside brackets or around `=` and `,`."""
+    text = re.sub(r"\b(THEN|ELSE|WHEN|AND|OR|END|CASE|NOT|IS|DISTINCT|FROM|SELECT|NULL)\b", lambda m: m.group(1).upper(), text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s*([=,<>])\s*", r"\1", text)
+    return re.sub(r"\s+\)", ")", re.sub(r"\(\s+", "(", text))
+
+
+def set_assignments(sql, start):
+    """The `(column, value)` pairs of the SET list that starts at `start` of `sql`: split at commas outside brackets, `CASE` and
+    quotes, up to `WHERE`, `RETURNING`, `FROM` or `;` at the top level. A column is returned without its qualifier."""
+    items, depth, case, i, begin, n = [], 0, 0, start, start, len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            j = sql.find("'", i + 1)
+            i = n if j < 0 else j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                break
+        elif c == "," and depth == 0 and case == 0:
+            items.append(sql[begin:i])
+            begin = i + 1
+        elif c == ";" and depth == 0:
+            break
+        elif c.isalpha() and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] in "_$.")):
+            word = re.match(r"[A-Za-z_]\w*", sql[i:]).group(0)
+            upper = word.upper()
+            if upper == "CASE":
+                case += 1
+            elif upper == "END" and case > 0:
+                case -= 1
+            elif upper in ("WHERE", "RETURNING", "FROM") and depth == 0 and case == 0:
+                break
+            i += len(word)
+            continue
+        i += 1
+    items.append(sql[begin:i])
+    pairs = []
+    for item in items:
+        m = re.match(r"\s*(\(?[^=]*?\)?)\s*=(?!=)(.*)$", item, re.DOTALL)
+        if not m:
+            continue
+        for column in re.split(r"\s*,\s*", m.group(1).strip("() \n")):
+            pairs.append((column.split(".")[-1].strip().lower(), m.group(2), m.group(1).strip().startswith("(")))
+    return pairs
+
+
+def assignment_errors(column, value, alias, where, function, tuple_form):
+    """What is wrong with `column = value` (one SET item), or nothing."""
+    a = rf"(?:{re.escape(alias)}\.)?" if alias else ""
+    v = sql_normal(value)
+    keep = re.fullmatch(rf"{a}{column}", v, re.IGNORECASE)
+    if tuple_form:
+        return [f"{where}: `{column}` is assigned in a list of columns: a mark is written column by column, in an allowed form"]
+    if keep:
+        return []
+    if column == ATTEMPT_FLAG:
+        return attempt_flag_errors(v, a, where, function)
+    if column in WITHDRAWN_PAIR:
+        allowed = rf"{a}lease_token_hash" if column == WITHDRAWN_PAIR[0] else r"\$\d+"
+        if re.fullmatch(allowed, v, re.IGNORECASE):
+            return []
+        return [
+            f"{where}: `{column}` is assigned `{v}`: the withdrawal writes the hash from the row it holds (`lease_token_hash`) "
+            f"and the flag bound from its cause, nothing else (D006-042)"
+        ]
+    owned = OWNED_VALUES.get(column)
+    if owned and re.fullmatch(owned.replace("(?:A\\.)?", a), v, re.IGNORECASE):
+        return []
+    claim = re.fullmatch(rf"CASE WHEN (?P<cond>.+?) THEN (?P<value>.+) ELSE {a}{column} END", v, re.IGNORECASE)
+    if claim:
+        cond = claim.group("cond")
+        new_lease = re.search(rf"(?:^|AND ){a}generation IS DISTINCT FROM \$(\d+)(?: AND|$)", cond, re.IGNORECASE)
+        if not new_lease or re.search(r"\bOR\b|(?<!IS )\bNOT\b", cond, re.IGNORECASE):
+            return [
+                f"{where}: `{column}` is assigned on a bound flag alone (`{v}`): the claim's assignment is conditioned in SQL on a "
+                f"new lease, the old row's `generation IS DISTINCT FROM` the one written, in a conjunction (D006-042)"
+            ]
+        expected = CLAIM_VALUES[column].replace("$G", "$" + new_lease.group(1)).replace("(?:A\\.)?", a)
+        if not re.fullmatch(expected, claim.group("value"), re.IGNORECASE):
+            return [
+                f"{where}: `{column}` gets `{claim.group('value')}` on a new lease: the claim writes it as `{expected}` and nothing "
+                f"read earlier (D006-042)"
+            ]
+        if function not in LEASE_STATEMENTS:
+            return [
+                f"{where}: the claim's form of `{column}` is written outside the three lease statements "
+                f"({', '.join(LEASE_STATEMENTS)}): the claim writes the marks in the statement that writes the lease"
+            ]
+        return []
+    return [
+        f"{where}: `{column}` is assigned `{v}`, which is not an allowed form: a mark is never written from a value read earlier "
+        f"or bound (a read-back form); it is the claim's, the path's own value, or kept (D006-042)"
+    ]
+
+
+def attempt_flag_errors(v, a, where, function):
+    """The attempt's flag has one form, in the three lease statements (D006-066)."""
+    if function not in LEASE_STATEMENTS:
+        return [
+            f"{where}: `{ATTEMPT_FLAG}` is assigned outside the three lease statements ({', '.join(LEASE_STATEMENTS)}): no "
+            f"other statement names the attempt's flag (D006-066)"
+        ]
+    if re.search(r"\bNULL\b", v, re.IGNORECASE) or not re.search(r" ELSE ", v, re.IGNORECASE):
+        return [f"{where}: a branch of `{ATTEMPT_FLAG}` yields NULL (`{v}`): nothing ever clears the attempt's flag (D006-066)"]
+    if re.search(r" THEN \$\d+", v, re.IGNORECASE):
+        return [
+            f"{where}: `{ATTEMPT_FLAG}` is given a bound attempt (`{v}`): it takes the old row's `attempt`, the withdrawn lease's "
+            f"(D006-066)"
+        ]
+    form = rf"CASE WHEN \$\d+ AND {a}status='LEASED' AND {a}generation=\$\d+ THEN {a}attempt ELSE {a}{ATTEMPT_FLAG} END"
+    if re.fullmatch(form, v, re.IGNORECASE):
+        return []
+    return [
+        f"{where}: `{ATTEMPT_FLAG}` is assigned `{v}` without the old-row fence: its one form is `CASE WHEN $flag AND status = "
+        f"'LEASED' AND generation = $fence THEN attempt ELSE {ATTEMPT_FLAG} END` (D006-066)"
+    ]
+
+
+def statement_errors(sql, where, function, written):
+    """The errors of one SQL text (a literal, or a migration) at `where`, inside `function` (`None` for a migration); the claim
+    marks each lease statement writes are added to `written`."""
+    errors = []
+    for m in STEPS_INSERT.finditer(sql):
+        named = sorted(set(MARK_MENTION.findall(m.group(1))))
+        if named:
+            errors.append(f"{where}: an `INSERT INTO steps` names {', '.join(named)}: the INSERTs leave the marks out")
+    starts = [(m.end(), m.group(1) if m.group(1) and m.group(1).upper() != "SET" else None) for m in STEPS_UPDATE.finditer(sql)]
+    if STEPS_INSERT.search(sql):
+        starts += [(m.end(), None) for m in STEPS_UPSERT_SET.finditer(sql)]
+    for start, alias in starts:
+        seen = {}
+        for column, value, tuple_form in set_assignments(sql, start):
+            if column not in MARK_NAMES:
+                continue
+            seen[column] = seen.get(column, 0) + 1
+            errors.extend(assignment_errors(column, value, alias, where, function, tuple_form))
+            if function in LEASE_STATEMENTS and column in CLAIM_MARKS and not tuple_form:
+                v = sql_normal(value)
+                if v.upper().startswith("CASE WHEN") and "IS DISTINCT FROM" in v.upper():
+                    written.add((function, column))
+        if seen.get(ATTEMPT_FLAG, 0) > 1:
+            errors.append(f"{where}: `{ATTEMPT_FLAG}` is assigned twice in one statement: it has one form, once (D006-066)")
+        pair = [seen.get(c, 0) for c in WITHDRAWN_PAIR]
+        if (pair[0] == 0) != (pair[1] == 0):
+            errors.append(
+                f"{where}: one of `{WITHDRAWN_PAIR[0]}` and `{WITHDRAWN_PAIR[1]}` is assigned without the other: the withdrawal "
+                f"writes them together, in one statement (D006-042)"
+            )
+    return errors
+
+
+def mark_assignment_errors(src):
+    """The errors of the rule of the marks over the PostgreSQL adapter's source directory `src` and its sibling `migrations`."""
+    errors, written, found = [], set(), {}
+    root = pathlib.Path(src)
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        masked, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for name in LEASE_STATEMENTS:
+            if function_span(masked, name):
+                found.setdefault(name, []).append(rel)
+        for offset, sql in literals:
+            if not MARK_MENTION.search(sql):
+                continue
+            where = f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}"
+            enclosing = enclosing_function(masked, offset)
+            function = enclosing[0] if enclosing else None
+            if function not in LEASE_STATEMENTS and ATTEMPT_FLAG in MARK_MENTION.findall(sql):
+                errors.append(
+                    f"{where}: `{ATTEMPT_FLAG}` is named outside the three lease statements ({', '.join(LEASE_STATEMENTS)}): no "
+                    f"other statement names the attempt's flag (D006-066)"
+                )
+            errors.extend(statement_errors(sql, where, function, written))
+    migrations = root.parent / "migrations"
+    if migrations.is_dir():
+        for path in sorted(migrations.glob("*.sql")):
+            sql = re.sub(r"--[^\n]*", "", path.read_text())
+            where = f"crates/infra-postgres/migrations/{path.name}"
+            for line in sql.splitlines():
+                if ATTEMPT_FLAG in line and not re.search(r"\b(ADD|DROP)\s+COLUMN\b", line, re.IGNORECASE):
+                    errors.append(f"{where}: `{ATTEMPT_FLAG}` is named outside the three lease statements: no other statement names it (D006-066)")
+            errors.extend(statement_errors(sql, where, None, written))
+    for name in LEASE_STATEMENTS:
+        files = found.get(name, [])
+        if len(files) != 1:
+            errors.append(
+                f"`{name}` is named by the rule of the marks and is found {len(files)} times in {src}: the rule would check "
+                f"nothing (rename it in LEASE_STATEMENTS)"
+            )
+            continue
+        for column in CLAIM_MARKS:
+            if (name, column) not in written:
+                errors.append(
+                    f"`{name}` ({files[0]}) does not write `{column}` in the claim's form: the claim writes the marks in each of "
+                    f"the three lease statements (Task 006-047)"
+                )
+    return errors
+
+
 # Feature 006, decisions D006-008, D006-092 and D006-093: the delivery probe and the commit probe hold a claim (the commit probe
 # inside its open run transaction, with the run's locks) until a test lets it go. They are for the tests only: no production
 # source may call them; the tests package and a crate's own test modules may.
@@ -788,6 +1043,7 @@ def main(argv):
 
     errors.extend(lease_row_errors(postgres_src))
     errors.extend(run_finished_errors(postgres_src))
+    errors.extend(mark_assignment_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
@@ -826,7 +1082,7 @@ def main(argv):
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
-          f"the capability checks list the code's capabilities, no test probe in production)")
+          f"the capability checks list the code's capabilities, no test probe in production, every mark of 1.8 written in an allowed form)")
     return 0
 
 

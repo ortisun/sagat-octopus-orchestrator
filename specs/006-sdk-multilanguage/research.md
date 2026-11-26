@@ -1711,3 +1711,83 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   is false (D006-105); Task 006-057 raises the compiled minor and names no store proof, so after it the server would still
   answer 1.6 (1.7 once design 041 merges). Closed when Task 006-057, or the last task that builds a store path of 1.8 (Task
   006-052), turns the constant on with a test that a raised ceiling then answers 8 against the real store.
+- **D006-106 — The claim asks for the marks in the lease it already writes, and counts them after its commit** (Task
+  006-047; delegate, OD-2026-11-24-4). `LeaseGrant` carries `LeaseMarking`: `Unreserved` for a session below 1.8, or
+  `Reserved` with the first of the engine's own reasons not to mark (`not_activated`: `delivery-acknowledgement-v1` not
+  recorded for engines in the gate the engine keeps; `requirement_missing`: `lease-withdrawal-v2` not recorded for both kinds;
+  `switch_off`; `declined`), decided in one place, `WorkerService::lease_marking`, for the root and the path claim alike. A
+  session is judged at the one ceiling the hand-back reads (`hand_back_ceiling`, which the `test-support` feature raises), so
+  no lease of this build is reserved before 1.8 negotiates. Each of the three lease statements writes, on a new lease only
+  (the grant's token bound, the status written `LEASED`, and the old row's `generation IS DISTINCT FROM` the one written):
+  the reservation (`lease_hand_back_generation` = the generation, `lease_claimed_at` = `clock_timestamp()`,
+  `lease_claim_incarnation` = `(SELECT pg_postmaster_start_time())`) when the session is reserved and null otherwise, so a
+  1.7 lease after a 1.8 one carries none; `lease_offered_generation` when the engine has no reason and the row's own conditions
+  hold (`provisional_withdrawn_attempt IS DISTINCT FROM` the attempt written, and the earlier of the time-to-live and
+  `timeoutMs` at least `MARK_MINIMUM_DEADLINE`, 18 s); and clears `lease_acknowledged_at` and `lease_capability_generation`.
+  It leaves the withdrawn pair and the attempt's flag alone. The same statement returns whether the lease is provisional, its
+  two deadlines and the first of its own reasons (`flagged_before`, then `short_deadline`), which the transaction keeps
+  (`RunTx::claim_mark`, `PathExecutionTx::claim_mark`); the task carries `acknowledge_before_start` and, for a provisional lease
+  whose attempt deadline comes before its expiry, `attempt_deadline_epoch_ms`, the stored expiry unchanged.
+  `worker_lease_marks_total` and `worker_lease_marks_skipped_total{reason}` are incremented after `commit()` returns, in the
+  root and the path claim alike, so a transaction rolled back because its consumer went before the commit (D006-092) counts
+  nothing; a session below 1.8 is counted by neither. No statement is added: the `LEASE` line of the budget is unchanged.
+  Options weighed: (a) a ceiling of the claim's own beside the hand-back's — rejected: two ceilings would let a build mark a
+  lease whose hand-back it judges below 1.8, the inconsistency ADR-0099 decision 9 exists to prevent; (b) a second read of the
+  row after the write, for the outcome — rejected: a statement more on every claim, the cost line Task 006-055 pins; (c) the
+  short deadline judged in the application, which knows both durations — rejected: the contract orders `flagged_before`, a row
+  value, before it, and the statement is the one place both are known without reading the row first; (d), chosen, the
+  statement's own `RETURNING`. Tested: `the_claim_writes_the_marks_of_each_case_and_counts_them_after_its_commit`,
+  `a_scoped_instance_leased_in_a_full_run_transaction_is_marked_by_the_same_rules`,
+  `a_lease_written_afterwards_with_the_old_column_list_is_not_marked`,
+  `a_claim_that_would_mark_whose_consumer_goes_before_its_commit_marks_and_counts_nothing`,
+  `a_flagged_lease_carries_its_attempt_deadline_only_when_it_comes_first` (`integration_durable_execution`), the unit tests of
+  `crates/application/src/execution/lease_marks_tests.rs`, and the unchanged
+  `a_lease_and_a_completion_cost_what_the_budget_says` (`integration_claim_transition_efficiency`).
+- **D006-107 — The allowed forms of a mark are a rule of `scripts/check-architecture.py`** (Task 006-047; delegate,
+  OD-2026-11-24-4). Every `UPDATE steps ... SET` and `INSERT INTO steps` of the string literals of `crates/infra-postgres/src`
+  and of its migrations is read; an assignment to a mark is allowed only as the claim's form (in the three lease statements,
+  conditioned on a new lease in a conjunction with no `OR` and no negation, the value the contract gives, the generation the one
+  the condition names), the acknowledgement's `clock_timestamp()`, the capability record's `generation`, the withdrawal's pair
+  (`withdrawn_lease_token_hash` from the row's `lease_token_hash` and `withdrawn_on_hand_back` bound, never one without the
+  other), or the column kept; an `INSERT` names no mark; `provisional_withdrawn_attempt` is named only in the three lease
+  statements, in its one fenced form (`CASE WHEN $flag AND status = 'LEASED' AND generation = $fence THEN attempt ELSE
+  provisional_withdrawn_attempt END`, unqualified or with the statement's alias), once per statement; and each of the three
+  writes every mark of the claim, so a statement that drops one fails too. Options weighed: a trigger or a `CHECK` that refuses
+  a bad write — rejected: it costs every write of `steps`, an older binary must still be able to write the row, and the forms
+  are a property of the statements, not of the values; a SQL parser — rejected: a dependency for a few fixed patterns. Tested:
+  the class `MarksOfProtocol18HaveAllowedForms` of `scripts/tests/test_check_architecture.py` (a bound-flag form, a read-back
+  form, a value read earlier, one of the withdrawn pair without the other, the flag outside the three statements and in a
+  migration, a bound attempt, each branch that yields `NULL`, each form without the old-row fence, a second assignment, an
+  `INSERT`, the claim's form outside the three statements, a statement that drops a mark or is gone) and this repository
+  passing it.
+- **D006-108 — The condition of a mark is one macro of the adapter in two named forms and one pure function** (Task 006-047;
+  delegate, OD-2026-11-24-4). `lease_mark_counts!()` (held, the reservation's generation the step's, claimed on this server)
+  and `lease_mark_counts_since_recording!($since)` (and claimed strictly after the recording), over the row aliased `s`, both
+  built on `lease_claimed_on_this_server!()`, the one place the incarnation is compared; `LeaseMarks` of
+  `crates/application/src/execution.rs` holds the row's `LeaseDeadlines` with the marks, takes "claimed on this server" as the
+  boolean the adapter computes, and answers `counts()` and `counts_since(required_since)`. The adapter's `COLUMNS` and
+  `decode` (`sagat_infra_postgres::lease_marks`, hidden from the documentation) are the read the withdrawals of Task 006-050
+  re-read the row with. Options weighed: the macro taking the alias as an argument — rejected for now: every statement that
+  will use it names the step `s`, and a second alias can be added with its first user. Tested:
+  `the_macro_of_the_marks_and_the_pure_function_agree_on_every_row` (108 rows: three statuses, three reservations, three
+  incarnations, four claim times).
+- **D006-109 — Where the evidence of the claim's marks runs** (Task 006-047; delegate, OD-2026-11-24-4). The matrix runs in
+  `integration_durable_execution` on the platform of the contract suites, with a worker service the test builds on the same
+  store (the gate, the switch, the time-to-live and the raised ceiling of each case), each case on its own activity so no other
+  run is a candidate, under a recorder local to the test's thread so the counters are the test's own. It varies one dimension
+  of the contract at a time from the case that marks, and adds the cases where two reasons hold, to prove their order; the
+  full product of the dimensions is the unit test of the order (16 combinations of the engine's reasons) and the statement's
+  conditions. A scoped instance is leased through `upsert_scoped_instance` at the store: no claim of this build reaches that
+  statement (the claim of a full-run transaction takes root steps only), so the matrix drives it as the scoped branch of
+  `lease_one` would. A session of 1.4 is a row of the root only (a scoped instance needs 1.5). The acknowledgement of the
+  barrier test is the statement Task 006-049 will run, written by SQL. Options weighed: the full product of the dimensions on
+  the database (about 5,000 claims, minutes of a shared machine for no property the unit test of the order does not already
+  give).
+- **G006-043 — What the rule of the marks does not see.** It reads the `SET` list of a statement within one string literal:
+  an assignment to a mark in a later piece of a `concat!` is not judged (each lease statement keeps its marks in its first
+  piece). It does not yet know which statement uses which form of the macro, since none uses either outside the parity test;
+  Tasks 006-050 (the withdrawals, the form with the recording) and 006-054 (the gauges, the form without) add that knowledge
+  with their first users.
+- **G006-044 — The barrier test of the marks writes the acknowledgement by SQL**, and the claim of a full-run transaction no
+  longer reaches `upsert_scoped_instance`, so that statement's marks are proven at the store only (D006-109). Closed by Task
+  006-051, whose barrier tests run the acknowledgement of Task 006-049 against a run transaction loaded before it.

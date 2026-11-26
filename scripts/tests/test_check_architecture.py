@@ -222,6 +222,11 @@ def run_lease_check(files):
         src = pathlib.Path(tmp) / "src"
         src.mkdir()
         for name, source in files.items():
+            if name.startswith("../"):
+                (pathlib.Path(tmp) / name[3:]).parent.mkdir(parents=True, exist_ok=True)
+                (pathlib.Path(tmp) / name[3:]).write_text(source)
+                continue
+            (src / name).parent.mkdir(parents=True, exist_ok=True)
             (src / name).write_text(source)
         metadata = {
             "workspace_root": "/r",
@@ -252,16 +257,62 @@ WRITER = """
 """
 
 
-def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
-    """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
-    return {
+# The claim's marks of protocol 1.8, as the three lease statements write them (Task 006-047): `{a}` is the statement's alias.
+CLAIM_MARKS_SQL = """ \\
+    lease_hand_back_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8 \\
+        THEN CASE WHEN $34 THEN $8 END ELSE {a}lease_hand_back_generation END, \\
+    lease_claimed_at = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8 \\
+        THEN CASE WHEN $34 THEN clock_timestamp() END ELSE {a}lease_claimed_at END, \\
+    lease_claim_incarnation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8 \\
+        THEN CASE WHEN $34 THEN (SELECT pg_postmaster_start_time()) END ELSE {a}lease_claim_incarnation END, \\
+    lease_offered_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8 \\
+        THEN CASE WHEN $34 AND $35 AND {a}provisional_withdrawn_attempt IS DISTINCT FROM $7 \\
+                       AND LEAST($23, COALESCE($24, $23)) >= $36 THEN $8 END \\
+        ELSE {a}lease_offered_generation END, \\
+    lease_acknowledged_at = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8 \\
+        THEN NULL ELSE {a}lease_acknowledged_at END, \\
+    lease_capability_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8 \\
+        THEN NULL ELSE {a}lease_capability_generation END"""
+ATTEMPT_FLAG_SQL = (
+    "provisional_withdrawn_attempt = CASE WHEN $40 AND {a}status = 'LEASED' AND {a}generation = $41 "
+    "THEN {a}attempt ELSE {a}provisional_withdrawn_attempt END"
+)
+
+
+def lease_statement(name, alias="", flag=ATTEMPT_FLAG_SQL, marks=CLAIM_MARKS_SQL, extra=""):
+    """One lease statement as the rule of the marks wants it, with the claim's marks and the attempt's flag."""
+    a = f"{alias}." if alias else ""
+    table = f"steps AS {alias}" if alias else "steps"
+    sets = ", ".join(part.format(a=a) for part in (marks, flag, extra) if part)
+    return f"""
+    async fn {name}() {{
+        sqlx::query("INSERT INTO steps (tenant_id, run_id, status, generation) VALUES ($1, $2, $3, $4)");
+        sqlx::query("UPDATE {table} SET status = $6, generation = $8, {sets} \\
+             WHERE tenant_id = $1 AND run_id = $2");
+    }}
+"""
+
+
+LEASE_STATEMENTS_FILES = {
+    "execution.rs": FENCE + lease_statement("upsert_step") + lease_statement("upsert_scoped_instance", "s"),
+    "execution/path.rs": lease_statement("upsert_path_instance", "s"),
+}
+
+
+def tree(keeper=KEEPER, execution=None, schedules=CHECK_FENCE, **more):
+    """A valid tree: the lease row as the rule wants it, one `run.finished` writer that says its schedule, and the three lease
+    statements writing the marks of protocol 1.8 in their allowed forms."""
+    files = {
         "partitioning.rs": keeper,
-        "execution.rs": execution,
+        **LEASE_STATEMENTS_FILES,
         "schedules.rs": schedules,
         "outbound.rs": ORIGIN,
         "writer.rs": WRITER,
-        **more,
     }
+    if execution is not None:
+        files["execution.rs"] = execution
+    files.update(more)
+    return files
 
 
 class LeaseRowIsALeafLock(unittest.TestCase):
@@ -856,3 +907,154 @@ class CapabilityListsFollowTheCode(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarksOfProtocol18HaveAllowedForms(unittest.TestCase):
+    """Feature 006, Task 006-047 (decisions D006-042, D006-066, D006-107): no statement assigns a mark from a value it read
+    earlier; the attempt's flag has one fenced form, in the three lease statements only."""
+
+    def check(self, **files):
+        return run_lease_check(tree(**files))
+
+    def refused(self, needle, **files):
+        code, out = self.check(**files)
+        self.assertEqual(code, 1, out)
+        self.assertIn(needle, out)
+        return out
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("every mark of 1.8 written in an allowed form", result.stdout)
+
+    def test_the_allowed_forms_pass(self):
+        later = """
+    async fn acknowledge() {
+        sqlx::query("UPDATE steps SET lease_acknowledged_at = clock_timestamp() WHERE lease_offered_generation = generation");
+    }
+    async fn record_capability() {
+        sqlx::query("UPDATE steps s SET lease_capability_generation = s.generation WHERE s.lease_capability_generation IS NULL");
+    }
+    async fn withdraw() {
+        sqlx::query("UPDATE steps SET status = 'READY', withdrawn_lease_token_hash = lease_token_hash, \
+            withdrawn_on_hand_back = $5 WHERE tenant_id = $1");
+    }
+    async fn heartbeat() {
+        sqlx::query("UPDATE steps SET lease_expires_at = $3, lease_acknowledged_at = lease_acknowledged_at WHERE tenant_id = $1");
+    }
+"""
+        code, out = self.check(**{"later.rs": later, "../migrations/1_marks.up.sql": "ALTER TABLE steps ADD COLUMN provisional_withdrawn_attempt integer;\n-- provisional_withdrawn_attempt = $1 in a comment\n"})
+        self.assertEqual(code, 0, out)
+
+    def test_a_bound_flag_form_is_refused(self):
+        bound = lease_statement(
+            "upsert_path_instance", "s",
+            marks=CLAIM_MARKS_SQL.replace(
+                "lease_offered_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND {a}generation IS DISTINCT FROM $8",
+                "lease_offered_generation = CASE WHEN $35",
+            ),
+        )
+        self.refused("is assigned on a bound flag alone", **{"execution/path.rs": bound})
+        # a condition that only looks like a new lease, the generation test or'ed with a flag, is a bound flag too
+        ored = lease_statement(
+            "upsert_path_instance", "s",
+            marks=CLAIM_MARKS_SQL.replace(
+                "lease_claimed_at = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' AND",
+                "lease_claimed_at = CASE WHEN $35 OR",
+            ),
+        )
+        self.refused("`lease_claimed_at` is assigned on a bound flag alone", **{"execution/path.rs": ored})
+
+    def test_a_read_back_form_is_refused(self):
+        for statement in (
+            "UPDATE steps SET lease_acknowledged_at = $3 WHERE tenant_id = $1",
+            "UPDATE steps SET lease_claimed_at = COALESCE($30, lease_claimed_at) WHERE tenant_id = $1",
+            "UPDATE steps s SET lease_capability_generation = $4 WHERE s.tenant_id = $1",
+        ):
+            with self.subTest(statement=statement):
+                source = f'async fn later() {{ sqlx::query("{statement}"); }}'
+                self.refused("(a read-back form)", **{"later.rs": source})
+
+    def test_a_claim_value_read_earlier_is_refused(self):
+        stale = lease_statement(
+            "upsert_step",
+            marks=CLAIM_MARKS_SQL.replace("THEN CASE WHEN $34 THEN clock_timestamp() END", "THEN $37"),
+        )
+        self.refused("`lease_claimed_at` gets `$37` on a new lease", **{"execution.rs": FENCE + stale + lease_statement("upsert_scoped_instance", "s")})
+
+    def test_one_of_the_withdrawn_pair_without_the_other_is_refused(self):
+        for statement in (
+            "UPDATE steps SET status = 'READY', withdrawn_lease_token_hash = lease_token_hash WHERE tenant_id = $1",
+            "UPDATE steps SET status = 'READY', withdrawn_on_hand_back = $5 WHERE tenant_id = $1",
+        ):
+            with self.subTest(statement=statement):
+                source = f'async fn withdraw() {{ sqlx::query("{statement}"); }}'
+                self.refused("is assigned without the other", **{"later.rs": source})
+        bound_hash = 'async fn withdraw() { sqlx::query("UPDATE steps SET withdrawn_lease_token_hash = $4, withdrawn_on_hand_back = $5"); }'
+        self.refused("the withdrawal writes the hash from the row it holds", **{"later.rs": bound_hash})
+
+    def test_the_attempt_flag_outside_the_three_lease_statements_is_refused(self):
+        source = (
+            'async fn withdraw() { sqlx::query("UPDATE steps SET provisional_withdrawn_attempt = CASE WHEN $3 AND '
+            "status = 'LEASED' AND generation = $4 THEN attempt ELSE provisional_withdrawn_attempt END\"); }"
+        )
+        self.refused("is assigned outside the three lease statements", **{"later.rs": source})
+        read = 'async fn gauge() { sqlx::query("SELECT count(*) FROM steps WHERE provisional_withdrawn_attempt = attempt"); }'
+        self.refused("is named outside the three lease statements", **{"later.rs": read})
+        migration = "UPDATE steps SET provisional_withdrawn_attempt = attempt WHERE status = 'LEASED';\n"
+        self.refused("is named outside the three lease statements", **{"../migrations/2_flag.up.sql": migration})
+
+    def flag(self, form):
+        statement = lease_statement("upsert_scoped_instance", "s", flag=form)
+        return {"execution.rs": FENCE + lease_statement("upsert_step") + statement}
+
+    def test_a_bound_attempt_is_refused(self):
+        self.refused(
+            "is given a bound attempt",
+            **self.flag("provisional_withdrawn_attempt = CASE WHEN $40 AND {a}status = 'LEASED' AND {a}generation = $41 THEN $7 ELSE {a}provisional_withdrawn_attempt END"),
+        )
+
+    def test_a_branch_that_yields_null_is_refused(self):
+        for form in (
+            "provisional_withdrawn_attempt = CASE WHEN $40 AND {a}status = 'LEASED' AND {a}generation = $41 THEN {a}attempt END",
+            "provisional_withdrawn_attempt = CASE WHEN $40 AND {a}status = 'LEASED' AND {a}generation = $41 THEN {a}attempt ELSE NULL END",
+            "provisional_withdrawn_attempt = NULL",
+        ):
+            with self.subTest(form=form):
+                self.refused("yields NULL", **self.flag(form))
+
+    def test_a_form_without_the_old_row_fence_is_refused(self):
+        for form in (
+            "provisional_withdrawn_attempt = CASE WHEN $40 THEN {a}attempt ELSE {a}provisional_withdrawn_attempt END",
+            "provisional_withdrawn_attempt = CASE WHEN $40 AND {a}generation = $41 THEN {a}attempt ELSE {a}provisional_withdrawn_attempt END",
+            "provisional_withdrawn_attempt = CASE WHEN $40 AND {a}status = 'LEASED' THEN {a}attempt ELSE {a}provisional_withdrawn_attempt END",
+        ):
+            with self.subTest(form=form):
+                self.refused("without the old-row fence", **self.flag(form))
+
+    def test_a_second_assignment_in_one_statement_is_refused(self):
+        twice = ATTEMPT_FLAG_SQL + ", " + ATTEMPT_FLAG_SQL
+        self.refused("is assigned twice in one statement", **self.flag(twice))
+
+    def test_an_insert_that_names_a_mark_is_refused(self):
+        source = 'async fn copy() { sqlx::query("INSERT INTO steps (tenant_id, lease_claimed_at) VALUES ($1, $2)"); }'
+        self.refused("an `INSERT INTO steps` names lease_claimed_at", **{"later.rs": source})
+
+    def test_a_mark_assigned_in_a_migration_from_a_value_is_refused(self):
+        migration = "CREATE FUNCTION f(p bigint) RETURNS void LANGUAGE sql AS $$ UPDATE steps SET lease_offered_generation = p $$;\n"
+        self.refused("(a read-back form)", **{"../migrations/3_f.up.sql": migration})
+
+    def test_the_claims_form_outside_the_lease_statements_is_refused(self):
+        source = (
+            'async fn reclaim() { sqlx::query("UPDATE steps SET lease_acknowledged_at = CASE WHEN $22::bytea IS NOT NULL '
+            "AND generation IS DISTINCT FROM $8 THEN NULL ELSE lease_acknowledged_at END\"); }"
+        )
+        self.refused("is written outside the three lease statements", **{"later.rs": source})
+
+    def test_a_lease_statement_that_does_not_write_a_mark_or_is_gone_is_an_error(self):
+        missing = lease_statement(
+            "upsert_path_instance", "s",
+            marks=CLAIM_MARKS_SQL.split(", \\\n    lease_capability_generation")[0],
+        )
+        self.refused("`upsert_path_instance` (execution/path.rs) does not write `lease_capability_generation`", **{"execution/path.rs": missing})
+        self.refused("`upsert_path_instance` is named by the rule of the marks and is found 0 times", **{"execution/path.rs": "async fn other() {}"})
