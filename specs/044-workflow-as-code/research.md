@@ -1051,3 +1051,24 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
   the same activity inside another scope (or outside any) replays with the same kinds, targets and chain, while the
   engine would compensate it differently. Reported to the coordinating session for the server lane: the scope belongs
   in the hashed body of `activity` and `script`.
+- **D044-314** (2026-11-26) The bundler package `@sagat-octopus-orchestrator/workflows-bundler`
+  (`sdks/typescript-workflows-bundler/`) bundles with esbuild as one IIFE script (`platform: 'neutral'`, ES2022,
+  `keepNames`, no legal comments, the condition `sagat-workflow`): a synthetic entry imports the SDK's runtime first,
+  then the entry module, then registers its exported functions; built-in modules (with or without `node:`), the SDK's
+  activity side and the caller's `--refuse` prefixes are refused by a resolve hook; module paths are relative to the
+  project's `package.json`, so two builds of the same tree are the same bytes; the workflow types are the bundle's own
+  list, read on a workflow thread. The digest and the manifest are the SDK's (`manifest.ts`), so that a worker
+  recomputes them from the file it loads under its own Node and SDK, and refuses a manifest of another runtime, SDK
+  version or content. delegate (OD-2026-11-24-4): the digest is only worth its name if the worker checks it, and a
+  digest made under another Node would register a code version no run is pinned to.
+- **G044-012** (2026-11-26, later state: the supply-chain review of Task 044-10) esbuild `0.28.2`, the newest release,
+  published on 2026-08-08: an exact version in `sdks/typescript-workflows-bundler/package.json`; the `integrity` of
+  all 27 esbuild entries of its `package-lock.json` (the package and its 26 platform binaries, optional dependencies)
+  checked by `npm ci`; `npm audit signatures` verified the registry signatures and the attestations of the installed
+  packages, esbuild's being SLSA provenance published from GitHub Actions; licence MIT (the platform binaries too);
+  one maintainer, the author; one install script (`postinstall: node install.js`), which only checks that the platform
+  binary of its optional dependency is there and is never run (`npm ci --ignore-scripts` in CI, in the packaging smoke
+  and in the documented commands), the bundler working without it; the platform binaries are native executables,
+  verified by their integrity and provenance. Every advisory known for esbuild concerns its development server
+  (fixed in 0.25.0), which the bundler does not start. The gap closes with this review; the CI step
+  `TypeScript workflows bundler` runs `npm audit signatures` on each change.
