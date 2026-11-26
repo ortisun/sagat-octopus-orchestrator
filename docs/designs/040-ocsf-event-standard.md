@@ -104,9 +104,9 @@ stream is a reason for a regulated customer to choose this platform.
   payload, no business identifier, no secret value, no field of another tenant, no value parsed out of the free-text
   reason. The reason MUST be scrubbed as `GET /audit` scrubs it (`sagat_telemetry::scrub`), and MUST be left out of an
   event sent to a sink whose ceiling is below `pii` (Requirement 040-010).
-- **Requirement 040-006** A platform fact that OCSF has no attribute for (the dotted action name; the resource type when
-  OCSF has no equivalent) MUST go in `unmapped`, as OCSF prescribes for a producer without a registered extension, with
-  keys that are closed per action and documented in the generated reference.
+- **Requirement 040-006** The platform facts that OCSF has no attribute for MUST go in `unmapped`, as OCSF prescribes
+  for a producer without a registered extension, as one nested object `{"sagat": {"action": <dotted action>,
+  "region_epoch": <integer>}}` and nothing else; the resource type is `resources[0].type`.
 - **Requirement 040-007** Sandbox violations (`script.violation`), egress denials (`egress.denied`) and denied attempts
   to reach another tenant's resource (`access.denied.cross_tenant`) MUST map to Detection Finding (2004) with the
   `security_control` profile: `status_id` 1 (New), `action_id` 2 (Denied), `disposition_id` 2 (Blocked),
@@ -169,8 +169,8 @@ stream is a reason for a regulated customer to choose this platform.
   and without a reason, under both ceilings, with a `system:` actor) are projected and validated against the vendored
   JSON Schema, and pass: 134 of 134 when this design is built, and every action added later; an unknown action string
   projects and validates too.
-- **Success criterion 040-002** A sample of each class used (API Activity, User Management, Entity Management, Datastore
-  Activity, Detection Finding) is accepted by the validation API of the pinned OCSF server image, run by digest in the
+- **Success criterion 040-002** A sample of each class used (API Activity, User Management, Entity Management, Detection
+  Finding) is accepted by the validation API of the pinned OCSF server image, run by digest in the
   contract job.
 - **Success criterion 040-003** Commit order, forced: transaction T1 inserts an audit record and is held open behind a
   barrier; T2, with a higher transaction id, commits; a full pass runs and its cursor stays below T1 and T2's record is
@@ -222,9 +222,9 @@ stream is a reason for a regulated customer to choose this platform.
 
 None for the owner; the seven are decided below. Technical gaps, registered in `specs/040-ocsf-event-standard/research.md`:
 
-- **Gap 040-001** The audit record does not store the caller's network address, so `src_endpoint` (required by API
-  Activity and Datastore Activity) carries the platform surface that served the act (`svc_name` `rest`, `grpc` or
-  `engine`). Storing the address is a privacy decision of its own, not taken here.
+- **Gap 040-001** The audit record stores neither the caller's network address nor the surface that served the act, so
+  `src_endpoint` (required by API Activity) carries the constant `svc_name: "sagat"`. Storing the address is a privacy
+  decision of its own, not taken here.
 - **Gap 040-002** Authentication failures are logged and counted, not audited, so OCSF Authentication (3002) events
   come only when design 013 (federated login) audits sign-ins.
 - **Gap 040-003** Amazon Security Lake takes OCSF as Parquet in a bucket; the object-store sink is a follow-up.
@@ -301,16 +301,18 @@ The domain gains only `AuditAction::ALL`, `AuditAction::parse` and the seven new
 `crates/application/src/audit_ocsf.rs`, which already may use `serde` and `serde_json` (`crates/application/Cargo.toml`):
 
 ```rust
-enum OcsfClass { ApiActivity, UserManagement, EntityManagement, DatastoreActivity, DetectionFinding }
-enum EventStatus { Success, Failure }               // `status_id` of an activity class
-enum FindingStatus { New }                          // `status_id` of a finding, a different OCSF enum
+enum OcsfClass { ApiActivity, UserManagement, EntityManagement, DetectionFinding }
+enum EventStatus { Unknown = 0, Success = 1, Failure = 2 }   // `status_id` of an activity class
+enum FindingStatus { New = 1 }                                // `status_id` of a finding, a different OCSF enum
+enum Status { Event(EventStatus), Finding(FindingStatus) }
+enum OcsfSeverity { Unknown = 0, Informational = 1, Low = 2, Medium = 3 }
 struct OcsfMapping { class: OcsfClass, activity: u8, severity: OcsfSeverity, status: Status }
 const fn mapping(action: AuditAction) -> OcsfMapping { match action { /* one arm per action, no wildcard */ } }
 const UNKNOWN: OcsfMapping = /* API Activity 99, severity Unknown, status Unknown */;
 #[derive(Serialize)] struct OcsfEvent { /* the attributes the five classes use */ }
 ```
 
-`OcsfClass` gives `class_uid` and `category_uid` (6003/6, 3007/3, 3004/3, 6005/6, 2004/2); `type_uid` is
+`OcsfClass` gives `class_uid` and `category_uid` (6003/6, 3007/3, 3004/3, 2004/2); `type_uid` is
 `class_uid * 100 + activity_id`, as OCSF defines it. A clippy lint (`clippy::wildcard_enum_match_arm`, denied in this
 module) keeps the arms total. `OcsfEvent` serializes itself; there is no encoder port and no adapter mapping, because
 the event has no meaning apart from its JSON. The vendored schema and the validation test sit in
@@ -323,17 +325,28 @@ filled from structured fields only, never from the reason:
 
 | Class | Required object | Filled from |
 |---|---|---|
-| API Activity 6003 | `api`, `actor`, `src_endpoint` | `api.operation` the dotted action, `api.service.name` "sagat-octopus-orchestrator"; `actor.user.uid` the subject (`type_id` 3 Service for a `system:` subject); `src_endpoint.svc_name` the surface (Gap 040-001) |
+| API Activity 6003 | `api`, `actor`, `src_endpoint` | `api.operation` the dotted action, `api.service.name` "sagat-octopus-orchestrator"; `actor.user.uid` the subject (`type_id` 3 Service for a `system:` subject); `src_endpoint.svc_name` the constant `sagat` (Gap 040-001) |
 | User Management 3007 | `user` | the subject in the resource id: the whole id of a `membership` resource; the part after the namespace of a `payload_reveal_grant` resource (`<namespace>/<subject>`) |
 | Entity Management 3004 | `entity` | `type` the resource type, `uid` the resource id |
-| Datastore Activity 6005 | `actor`, `src_endpoint`, one of `database` | `database.name` the connection's resource id, `type_id` 99 |
 | Detection Finding 2004 | `finding_info` and the `security_control` attributes | `uid` the record id, `title` from a closed table per action, `analytic` `{type_id: 1, name: sandbox, egress or tenant-boundary}`; `evidences[0].actor` the subject; `status_id` 1, `action_id` 2, `disposition_id` 2 |
 
 The role of a membership and the grantee of a secret access exist only in the reason, so they are not filled: the
 membership event names the user and not the role, and `secret.access_granted` and `secret.access_revoked` map to API
 Activity Update with the secret as resource (appendix). `unmapped` holds `sagat.action` and `sagat.region_epoch`
-(always) and, per action, the closed keys the appendix lists. `metadata.profiles` lists `trace` when the event has a
-trace id, and `security_control` on findings.
+and nothing else. `metadata.profiles` lists `trace` when the event has a trace id, and `security_control` on findings.
+The projection is `project(row: &AuditRow, ceiling: Ceiling, epoch: u64) -> OcsfEvent`, where `AuditRow` is the stored
+record with its tenant id; the read passes the `pii` ceiling (it shows the scrubbed reason, as `GET /audit` does), and
+the product version is the binary's `CARGO_PKG_VERSION` cut to major and minor. The reason is scrubbed by `scrub`,
+whose own cut and marker (`…[N characters cut]`) apply. One event, as sent:
+
+```json
+{"class_uid": 3007, "category_uid": 3, "activity_id": 16, "type_uid": 300716, "severity_id": 1, "status_id": 1,
+ "time": 1795651200000, "metadata": {"uid": "<record id>", "tenant_uid": "<tenant id>", "version": "1.10.0",
+ "product": {"name": "Sagat Octopus Orchestrator", "vendor_name": "Sagat", "version": "0.3"}, "profiles": ["trace"]},
+ "actor": {"user": {"uid": "<subject>"}}, "user": {"uid": "<member subject>"},
+ "resources": [{"type": "membership", "uid": "<member subject>"}], "trace": {"uid": "<trace id>"},
+ "unmapped": {"sagat": {"action": "membership.granted", "region_epoch": 1}}}
+```
 
 ### 3. The read
 
@@ -346,11 +359,11 @@ open (`additionalProperties: true`), because the vendored OCSF schema, not OpenA
 
 Two migrations. The first adds `audit_records.tx_id xid8`, nullable, then `SET DEFAULT pg_current_xact_id()`; neither
 rewrites a row (rows written before stay `NULL`, Gap 040-004), and it replaces the runtime role's table-wide `INSERT`
-on `audit_records` by a column grant that leaves `tx_id` out, so no writer can choose its own position. The second runs
-outside a transaction (sqlx's `-- no-transaction` marker; Task 040-9 verifies the repository's migrator honours it, and
-otherwise the two indexes are built by a checked start-up step) and builds, `CONCURRENTLY`, two partial indexes where
-`tx_id` is not null: `(tenant_id, tx_id, id)` for tenant sinks and `(tx_id, id)` for the operator sink; it then checks
-`pg_index.indisvalid` and fails if either is invalid. Every insert gets the id of its transaction at no extra statement;
+on `audit_records` by a column grant that leaves `tx_id` out, so no writer can choose its own position. Three more
+migration files follow, each one statement marked `-- no-transaction` (sqlx sends a file as one query, and PostgreSQL
+refuses `CREATE INDEX CONCURRENTLY` in a query of several statements): the partial index `(tenant_id, tx_id, id)` where
+`tx_id` is not null, for tenant sinks; the partial index `(tx_id, id)`, for the operator sink; and a `DO` block that
+fails unless both are valid in `pg_index.indisvalid`. Every insert gets the id of its transaction at no extra statement;
 each insert adds two index entries (Non-functional requirement 040-001).
 
 A transaction id below the snapshot's `xmin` belongs to a transaction that has ended, so a tenant sink reads:
@@ -369,8 +382,8 @@ record can later appear below a position this query passed: every transaction be
 and an aborted one's rows are invisible. A long transaction anywhere in the cluster holds `xmin` back; that delays every
 stream and loses nothing (section 6 shows it). `xid8` is 64 bits and does not wrap around within one cluster.
 
-**Where the cursor moves.** To the `(tx_id, id)` of the last record placed in the body sent; when every record read was
-withheld, to the last record read. The byte bound (1 MiB) counts the uncompressed body.
+**Where the cursor moves.** To the `(tx_id, id)` of the last record placed in the body sent (withheld records are not
+read, so they never hold it back). The byte bound (1 MiB) counts the uncompressed body.
 
 **Where a sink starts.** At creation, the cursor is `(pg_snapshot_xmin(pg_current_snapshot()), 00000000-…-0000)` read
 then: the sink receives every record committed after its creation, and also those of transactions still running at that
@@ -427,8 +440,8 @@ most 8 sinks at once. A sink is due when it is `ACTIVE` or `STALLED`, its `next_
 any, has expired. For each due sink:
 
 1. **Look.** A read-only statement (no transaction id assigned) checks whether a record of its scope exists above the
-   cursor and below `xmin`. When none does, the sink's `next_attempt_at` moves 5 seconds ahead in a small update batched
-   for all idle sinks of the tick, and nothing else is written.
+   cursor and below `xmin`. When none does, the replica remembers in memory not to look again at that sink for 5
+   seconds, and nothing is written.
 2. **Claim.** One short transaction takes the sink `FOR UPDATE SKIP LOCKED`, sets a fresh claim token with an expiry of
    30 seconds, and reads the revision and the cursor. A sink another task holds is skipped.
 3. **Check.** The egress rule of the home namespace (or the operator's allowed hosts), the authorizing subject's
@@ -437,18 +450,27 @@ any, has expired. For each due sink:
 4. **Read and send.** Up to 500 records after the cursor (section 4). Encode NDJSON up to 1 MiB uncompressed, gzip when
    asked; sign the bytes sent (compressed) with the platform's delivery scheme (`crates/application/src/signing.rs`, a new
    direction `AuditExport` whose label is `octopus-audit-export-v1`), with the current and, during a rotation, the
-   previous signing key, as webhook deliveries sign with two secret versions (`crates/scheduler/src/deliveries.rs`); send
-   through the egress port of the home namespace (`crates/infra-egress`) with the headers of the wire contract
-   (`specs/040-ocsf-event-standard/contracts/audit-export.asyncapi.yaml`): `x-octopus-signature`,
-   `x-octopus-timestamp`, `x-octopus-event-id` and `x-octopus-delivery-id` (one new UUIDv7 per attempt) and
-   `x-octopus-event-type` (`ocsf.batch`), with a 10-second timeout, redirects and proxies disabled. A receiver drops
+   previous signing key, as webhook deliveries sign with two secret versions (`crates/scheduler/src/deliveries.rs`). The
+   covered fields of `signing::Covered` are: the event id, the attempt's delivery id (a new UUIDv7); the event type,
+   `ocsf.batch`; the subject, the tenant id; the correlation key, empty. A tenant sink sends through the existing port
+   `WebhookSender` (`crates/application/src/outbound.rs`, `OutboundRequest` with the tenant and the home namespace,
+   implemented by `sagat-infra-connectors` over the egress client); the operator sink through a new port
+   `AuditExportSender` that takes an egress policy built from the operator's allowed hosts, implemented in the same
+   adapter; both map the answer onto `SendFailure` as section 5's step 6 classes it. The headers are those of the wire
+   contract (`specs/040-ocsf-event-standard/contracts/audit-export.asyncapi.yaml`, written before the code, Task
+   040-20): `x-octopus-signature`, `x-octopus-timestamp`, `x-octopus-event-id` and `x-octopus-delivery-id` (both the
+   attempt's delivery id) and `x-octopus-event-type` (`ocsf.batch`); a 10-second timeout, redirects and proxies
+   disabled. A receiver drops
    duplicates by `metadata.uid` only; the batch and delivery ids are new on every attempt, because a retried batch can
    hold more records than the first try. Before each request the claim is renewed (its expiry moved 30 seconds ahead,
    `WHERE claim_token = $t`); a failed renewal ends the work and sends nothing more.
 5. **Commit after each accepted request.** On a `2xx`, one transaction, rechecking the `pii` grant, runs
    `UPDATE audit_sinks SET cursor = $new, last_delivered = … WHERE id = $id AND revision = $r AND claim_token = $t
    AND cursor = $old AND state IN ('ACTIVE','STALLED')`; when no row is updated (the sink was paused, changed or deleted
-   meanwhile, or the claim was lost) the work is discarded and nothing is written. The collapsed record
+   meanwhile, or the claim was lost) the work is discarded and nothing is written. The `pii` recheck is a new store
+   function, `holds_reveal_grant_in_every_namespace(tx, tenant, subject)`, one statement on one snapshot with no fence,
+   as the step-log quota's `step_log_usage_if_revealed` reads; when it fails, the same transaction still advances the
+   cursor (the batch has left), sets `PAUSED_GRANT_REVOKED` and writes `audit.sink_paused`. The collapsed record
    `audit.sink_delivered` (no count, one per sink and minute) is written in this transaction and is never itself
    exported; counts go to metrics.
 6. **Failures.**
@@ -462,7 +484,10 @@ any, has expired. For each due sink:
      the cursor past it, and `GET /audit/sinks/{sinkId}/refused` lists it. When no half was accepted the batch is a
      failure of the destination, as above.
 
-**The operator sink.** It reads all tenants; order is promised per tenant, not across tenants. A batch is split into
+**The operator sink.** Its row in `audit_operator_export` has the same claim token and expiry, state,
+`next_attempt_at`, revision and cursor as a tenant sink, and the same compare-and-set; it leaves a paused state on a
+change of its configuration or a restart of the engine, which the runbook says. It reads all tenants; order is promised
+per tenant, not across tenants. A batch is split into
 one group per tenant, each group sent in cursor order as one message; the cursor moves to the end of the longest prefix
 of the batch, in `(tx_id, id)` order, whose records were all in acknowledged messages; a later pass sends the rest again
 (duplicates, never gaps).
@@ -470,13 +495,42 @@ of the batch, in `(tx_id, id)` order, whose records were all in acknowledged mes
 The pass holds no lock across an HTTP call. A crash between a receiver's `2xx` and the commit sends that request's
 records again on a later pass, under a new delivery id.
 
-**Credentials.** The URL, the collector credential and the signing keys of a tenant sink are sealed through the
-platform's `SecretCipher` (the key ring under the `local` key authority; design 015's envelope under `transit`) with the
-associated data `tenant id || sink id || column name`, so a sealed value cannot be moved to another sink or column. The
-sealed columns of `audit_sinks` are part of design 015's rewrap, re-key and re-seal inventory (an order point: slice 2
-of this design follows Task 015-10). The operator sink's URL, credential and signing key come from the engine's
-configuration under `local` and, under `transit`, from the KV path `secret/data/sagat/audit/operator-sink` through the
-OpenBao Agent (a row of design 015's custody table), so that no platform key sits outside OpenBao.
+**Credentials.** The URL, the collector credential and the signing keys of a tenant sink are sealed through today's
+`SecretCipher::seal` and `open` (`crates/domain/src/secrets.rs`), each with its own key id, nonce and ciphertext
+columns, and the associated data `"sagat/audit-sink/v1"`, then the tenant id, the sink id and the column name, each
+preceded by its length in four bytes, so a sealed value cannot be moved to another sink or column. Slice 2 needs nothing
+of design 015; the sealed columns of `audit_sinks` join design 015's re-seal inventory, and when design 015's `transit`
+authority is built they move to it with its re-seal (Task 040-22, after Task 015-11). The operator sink's URL,
+credential and signing key come from the engine's configuration; under design 015's `transit` they come from the KV path
+`secret/data/sagat/audit/operator-sink` through the OpenBao Agent (Task 040-22).
+
+**Storage, as the builders share it.**
+
+```sql
+CREATE TABLE audit_sinks (
+  tenant_id uuid NOT NULL, id uuid NOT NULL, slot smallint NOT NULL CHECK (slot BETWEEN 1 AND 4),
+  home_namespace_id uuid NOT NULL, kind text NOT NULL CHECK (kind = 'https'),
+  url_host text NOT NULL, url_path_fingerprint text NOT NULL,          -- first 16 hex of SHA-256 of the path
+  url_sealed bytea NOT NULL, credential_sealed bytea NOT NULL, signing_key_sealed bytea NOT NULL,
+  previous_signing_key_sealed bytea, previous_signing_key_expires_at timestamptz,
+  seal_key_id text NOT NULL,                                          -- the ring key id of the four sealed columns
+  format text NOT NULL CHECK (format = 'ndjson'), gzip boolean NOT NULL, ceiling text NOT NULL CHECK (ceiling IN ('internal','pii')),
+  state text NOT NULL CHECK (state IN ('ACTIVE','STALLED','PAUSED','PAUSED_GRANT_REVOKED','PAUSED_AUTHORITY_LOST',
+                                       'PAUSED_DESTINATION_REFUSED','CURSOR_INVALID')),
+  revision bigint NOT NULL, cursor_tx xid8 NOT NULL, cursor_id uuid NOT NULL,
+  last_delivered_id uuid, last_delivered_at timestamptz, failures integer NOT NULL, next_attempt_at timestamptz NOT NULL,
+  authorizing_subject text NOT NULL, claim_token uuid, claim_expires_at timestamptz, last_test_at timestamptz,
+  PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, slot),
+  FOREIGN KEY (tenant_id, home_namespace_id) REFERENCES namespaces (tenant_id, id));
+-- audit_operator_export: one row (id = 1) with state, revision, cursor_tx, cursor_id, failures, next_attempt_at,
+-- claim_token, claim_expires_at, last_delivered_id, last_delivered_at; no destination column.
+```
+
+Each sealed column holds the nonce and the ciphertext of `SealedSecret`, framed as `nonce || ciphertext`. The ports:
+`AuditSinkStore` (`create`, `change`, `set_state`, `list`, `get`, `refused`) for the API and `AuditExportStore`
+(`look`, `claim`, `renew`, `read_batch`, `commit_cursor`, `record_refused`, `pause`) for the loop, in
+`crates/application/src/audit_export.rs`, implemented in `crates/infra-postgres/src/audit_sinks.rs`; the loop is
+`crates/scheduler/src/audit_export.rs`, run by `apps/execution-engine/src/loops.rs`.
 
 **After a failover that lost work.** Every event carries the region epoch (`unmapped.sagat.region_epoch`; feature
 032's epoch, 1 until feature 032 is built). After an activation whose failover report states a window of possibly lost
@@ -499,7 +553,9 @@ epoch, so that a SIEM can mark the events of the lost window as not on the survi
   tenant's row. A sink shows `scheme://host`, the path fingerprint, the state, the id and time of the last delivered
   record and the age of the oldest undelivered one; never the cursor, the URL path, the credential or a key. Typed
   errors with `code`, `retryable`, `traceId`.
-- Audit actions (seven, each with its mapping in the appendix): `audit.sink_created`, `audit.sink_changed`,
+- Audit actions (seven, each with its mapping in the appendix; each record names the resource type `audit_sink` and the
+  sink's id as its resource, its actor is the administrator or, for the pass, `system:engine`, and its reason is a closed
+  value: the state, or for `audit.sink_record_refused` the refused record's id): `audit.sink_created`, `audit.sink_changed`,
   `audit.sink_deleted`, `audit.sink_paused` (an administrator's pause and every move of the pass to a state other than
   `ACTIVE`, with the state as a closed reason: `PAUSED`, `STALLED`, `PAUSED_GRANT_REVOKED`, `PAUSED_AUTHORITY_LOST`,
   `PAUSED_DESTINATION_REFUSED`, `CURSOR_INVALID`), `audit.sink_resumed` (an administrator's resume and the pass's
@@ -599,52 +655,66 @@ Three slices, each a pull request, in this order.
 - **Slice 2, the stream:** `crates/infra-postgres` (migrations and statements), `crates/application` (the sink service,
   `signing.rs`), `crates/api-http` (the sink resource), `crates/domain` (`Permission::AuditSinkManage`,
   `ResourceType::AuditSink`), `crates/scheduler` and `apps/execution-engine` (the export loop),
-  `infra/observability`, `.github/workflows/ci.yml` (the rule-test step) and the wire contract. Tasks 040-9 to 040-17 and
-  040-20. It follows design 015's Task 015-10 (the key authority port that seals the sink's credentials).
-- **Slice 3, the surfaces and the documents:** the Studio and the documents. Tasks 040-18 and 040-19. Task 040-21
-  follows feature 032.
+  `infra/observability`, `.github/workflows/ci.yml` (the rule-test step) and the wire contract. Tasks 040-25 and 040-20
+  first (the contracts), then 040-9, 040-10, 040-11, 040-23, 040-24 and 040-12 to 040-17. It needs nothing of design
+  015 (the credentials use today's `SecretCipher`).
+- **Slice 3, the surfaces and the documents:** the Studio and the documents. Tasks 040-18 and 040-19. The follow-up
+  tasks wait for feature 032 (Task 040-21) and for design 015's Task 015-11 (Task 040-22).
 
 - [ ] T040-1 Decide Owner questions 040-001 to 040-007 and write the design out; record the delegate rows.
-  Refs: Requirement 040-001
+  Refs: Requirement 040-002, Requirement 040-009, Requirement 040-011
 - [ ] T040-2 Vendor the JSON Schema the OCSF 1.10.0 server exports for each class used with the declared profiles under
   `crates/application/ocsf/1.10.0/` with a `SHA256SUMS` file and a test that the files match it.
   Refs: Requirement 040-004
-- [ ] T040-3 Add `AuditAction::ALL`, `parse` (from the enum's macro, with a round-trip test) and the seven new actions to
-  the domain; add the mapping of every action (the appendix) with no wildcard arm and the unknown mapping in
+- [ ] T040-3 Write a declarative macro that generates `AuditAction`, its doc comments, `as_str`, `ALL` and `parse` (with a
+  round-trip test), add the seven new actions through it, grow `Permission::ALL` by `AuditSinkManage`, and give
+  `audit.sink_delivered` a 60-second repeat window in `collapses_repeats`; add the mapping of every action (the appendix) with no wildcard arm and the unknown mapping in
   `crates/application/src/audit_ocsf.rs`.
   Refs: Requirement 040-001, Requirement 040-007
 - [ ] T040-4 Add the projection with the disclosure rules (scrubbed reason; reason left out below `pii`; caps and the
   truncation marker; required objects from structured fields only; `unmapped` keys closed per action; the region epoch)
   and unit tests per class.
   Refs: Requirement 040-003, Requirement 040-005, Requirement 040-006
-- [ ] T040-5 Serialize `OcsfEvent` and validate the events of every action (the fixture variants of Success criterion
+- [ ] T040-5 Serialize `OcsfEvent` and validate (with `jsonschema` as a dev-dependency of `sagat-application`) the events
+  of every action (the fixture variants of Success criterion
   040-001) against the vendored schema, with the `at_least_one` constraints checked in code; a hand mutation that drops
   one required object fails it.
   Refs: Requirement 040-003, Success criterion 040-001, Success criterion 040-005
-- [ ] T040-6 Validate one sample per class with the validation API of the OCSF 1.10.0 server, run as a Testcontainers
-  fixture pinned by digest with its schema bundled in the image (no fetch at run time), in the contract job.
+- [ ] T040-6 Add `infra/docker/ocsf-server/Dockerfile`, pinned to a released `ocsf-server` tag and to the `ocsf-schema`
+  tag `v1.10.0` by digest, and a test target `contract_ocsf_event_standard` (declared in `tests/Cargo.toml`, run by the
+  contract suites) that starts it as a Testcontainers fixture and validates one sample per class with its validation
+  API; Task 040-2's files are exported from this same image.
   Refs: Success criterion 040-002
 - [ ] T040-7 Add `GET /audit/ocsf` with the OpenAPI operation and schema, the same permission, filters, withheld actions
-  and self-audit as `GET /audit`, and the contract baseline.
-  Refs: Requirement 040-002
-- [ ] T040-8 Generate `docs/reference/ocsf-mapping.md` from the table and a test that fails when it is behind.
+  and self-audit as `GET /audit`, the contract baseline, and a test that a page issues one query.
+  Refs: Requirement 040-002, Non-functional requirement 040-002
+- [ ] T040-8 Generate `docs/reference/ocsf-mapping.md` from the table, blessed as `contract_developer_experience` blesses
+  the reference (`SAGAT_DOCS_BLESS=1`), and a test that fails when it is behind.
   Refs: Requirement 040-012, Success criterion 040-005
 - [ ] T040-9 Write the two migrations: `audit_records.tx_id` (nullable, then the default, no rewrite, `lock_timeout`
   set) with the column grant that leaves it out; the two partial indexes built concurrently outside a transaction with
   the `indisvalid` check (verify the migrator's `-- no-transaction` support first; otherwise the owner's command of
-  section 7); `audit_sinks` with `tenant_id NOT NULL` and the slot, `audit_operator_export`, grants, classification
-  entries (the sealed columns as `secret`), and a down migration that refuses while a sink exists.
+  section 7); `audit_sinks` with `tenant_id NOT NULL` and the slot, `audit_operator_export`, grants, entries in
+  `crates/infra-postgres/storage-classification.json` (the sealed columns as `secret`), and a down migration that refuses
+  while a sink exists.
   Refs: Requirement 040-008, Requirement 040-009, Non-functional requirement 040-001
 - [ ] T040-10 Add `Permission::AuditSinkManage` (admin) and `ResourceType::AuditSink`, and the sink resource to the REST
   API (create with `startFrom`, change, pause, resume, rotate, test, delete, refused records) with the egress check, the
   sealed credentials and their associated data, the signing key returned once with `no-store`, the `pii` and authority
   checks, the four slots, the `404` of another tenant's sink, and the audit actions.
   Refs: Requirement 040-008, Requirement 040-010, Requirement 040-013
-- [ ] T040-11 Add the export loop: look, claim, renewal, checks, the cursor query below `xmin` with the withheld
-  actions, the batch and byte bounds, the direction `AuditExport` in `signing.rs`, two signing keys during a rotation,
-  new delivery ids per attempt, the commit after each accepted request, the failure classes (retryable, destination,
-  batch), halving and refused records, every state of section 5, and the operator sink's grouping by tenant.
-  Refs: Requirement 040-009, Requirement 040-010, Requirement 040-013
+- [ ] T040-11 The export store: `look`, `claim`, `renew`, `read_batch` (the cursor query below `xmin` with the withheld
+  actions), `commit_cursor` with its compare-and-set and the `pii` recheck, `record_refused`, `pause`, and
+  `holds_reveal_grant_in_every_namespace`, with tests of each guard.
+  Refs: Requirement 040-009, Requirement 040-010
+- [ ] T040-23 The export loop: the batch and byte bounds, the direction `AuditExport` in `signing.rs` with the covered
+  fields of section 5, two signing keys during a rotation, a delivery id per attempt, a commit after each accepted
+  request, the three failure classes with halving and refused records, the states of section 5, the in-memory idle
+  back-off; Task 040-20 merged first.
+  Refs: Requirement 040-009, Requirement 040-013
+- [ ] T040-24 The operator sink's grouping by tenant with the longest acknowledged prefix, its row in
+  `audit_operator_export`, and the port `AuditExportSender` with its egress policy from the allowed hosts.
+  Refs: Requirement 040-011
 - [ ] T040-12 Add the operator sink from the engine's configuration (or the KV path under `transit`), its allowed hosts,
   its cursor row and its evidence in logs and metrics, and document its configuration.
   Refs: Requirement 040-011
@@ -659,7 +729,8 @@ Three slices, each a pull request, in this order.
   including the probe of Success criterion 040-004 and an insert that names `tx_id` refused by the column grant.
   Refs: Success criterion 040-004
 - [ ] T040-16 Metrics, spans, the three alert rules with their rule tests, the CI step changed to run every rule test,
-  and the capability `audit-export-v1` in the instance registry with the `422` before activation.
+  and the capability `audit-export-v1` (kinds `EXECUTION_ENGINE` and `CONTROL_PLANE`) added to the closed checks of the
+  registry's tables and to `Capability` in `crates/application/src/instances.rs`, with the `422` before activation.
   Refs: Requirement 040-009, Non-functional requirement 040-004
 - [ ] T040-17 Measure Non-functional requirement 040-003 (tenant and operator sinks) on a stated environment and write
   the dated report in `specs/040-ocsf-event-standard/validation-report.md`.
@@ -673,13 +744,23 @@ Three slices, each a pull request, in this order.
   the signed string, the body, the status codes and what each means, deduplication by `metadata.uid`) with known
   signature vectors, its baseline and a compatibility test that the slice-2 code reads.
   Refs: Requirement 040-009
-- [ ] T040-21 The tombstone after a failover that lost work, from feature 032's region epoch and failover report, with
-  a test on feature 032's failover drill.
-  Refs: Requirement 040-009
+- [ ] T040-25 The sink contract in OpenAPI, before Task 040-10: the `/audit/sinks*` operations and schemas, the fields
+  `PATCH` may change (URL, credential, home namespace, ceiling, format, gzip), the `startFrom` body, the answers (host,
+  path fingerprint, state, last delivered record, oldest undelivered age), the refused-records page, and the error codes
+  `AUDIT_SINK_LIMIT` (`409`), `EGRESS_NOT_ALLOWED` (`422`), `PII_CEILING_NOT_PERMITTED` (`403`),
+  `START_FROM_TOO_OLD` (`422`), `START_FROM_TIMEOUT` (`503`, retryable), `SINK_TEST_RATE_LIMITED` (`429`) and
+  `AUDIT_EXPORT_NOT_ACTIVATED` (`422`), with the contract baseline.
+  Refs: Requirement 040-008
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T040-21 The tombstone after a failover that lost work, from feature 032's region epoch and failover report, with
+  the OCSF Base Event (class 0) schema vendored, and a test on feature 032's failover drill. Depends on feature 032.
+  Refs: Requirement 040-009
+- [ ] T040-22 Move the sink's sealed columns and the operator sink's credentials to design 015's `transit` authority with
+  its re-seal, after Task 015-11.
+  Refs: Requirement 040-008, Requirement 040-011
+
 
 ### Verification Plan
 
@@ -691,7 +772,7 @@ barriers and fault hooks, never sleeps.
 - Slice 1: the domain and projection unit tests; the validation of every action against the vendored schema (Success
   criterion 040-001); the OCSF server samples; the OpenAPI baseline; the reference drift test; the hand mutation of Task
   040-5.
-- Slice 2: a new target `integration_ocsf_export` on real PostgreSQL with a local HTTPS receiver; the tests of Task
+- Slice 2: a new target `integration_ocsf_export`, declared in `tests/Cargo.toml`, on real PostgreSQL with a local HTTPS receiver; the tests of Task
   040-13; the budget of Task 040-14; the cross-tenant battery as both roles; the migrations' up, down and privilege
   audit; the hand mutation `pg_snapshot_xmin` into `pg_snapshot_xmax`.
 - Slice 3: the Studio's `npm run api && npm run check:api` and its unit tests; the quickstart run end to end including
@@ -702,8 +783,7 @@ barriers and fault hooks, never sleeps.
 The column "Class, activity" uses short labels, each standing for one OCSF class: "API" for API Activity 6003
 (activities 1 Create, 2 Read, 3 Update, 4 Delete, 99 Other; 5 List is not used); "UM" for User Management 3007 (14 Assign
 Privileges, 15 Remove Privileges, 16 Assign Roles); "EM" for Entity Management 3004 (1 Create, 3 Update, 4 Delete, 6
-Enroll, 7 Unenroll, 8 Enable, 9 Disable, 99 Other); "DS" for Datastore Activity 6005 (1 Read, 5 Write, 8 List, 99
-Other); "DF" for Detection Finding 2004 (1 Create, with the attributes of Requirement 040-007). Severity is Informational (1) unless the row says Low (2) or Medium (3). Status is Success (1) unless the row
+Enroll, 7 Unenroll, 8 Enable, 9 Disable, 99 Other); "DF" for Detection Finding 2004 (1 Create, with the attributes of Requirement 040-007). Severity is Informational (1) unless the row says Low (2) or Medium (3). Status is Success (1) unless the row
 says Failure (2); a finding's status is New (1). Every event carries `unmapped.sagat.action`.
 
 | Actions | Class, activity | Severity, status |
@@ -730,11 +810,11 @@ says Failure (2); a finding's status is New (1). Every event carries `unmapped.s
 | Deletions: `script.deleted`, `schedule.deleted`, `blob.deleted`, `secret.deleted`, `run.logs_deleted`, `secret.provider_retired` | API 4 | |
 | `run.queried`, `run.logs_read`, `payload.inspected`, `payload.disclosed`, `secret.resolved`, `blob.read`, `schedule.input_disclosed`, `audit.read` | API 2 | |
 | `payload.pii_revealed` | API 2 | Low |
-| `database.result_read` | DS 1 | |
-| `database.catalog_browsed` | DS 8 | |
-| `iceberg.write_committed` | DS 5 | |
-| `destination.decided` | DS 99 | |
-| `database.denied` | DS 99 | Low, Failure |
+| `database.result_read` | API 2 | |
+| `database.catalog_browsed` | API 2 | |
+| `iceberg.write_committed` | API 3 | |
+| `destination.decided` | API 99 | |
+| `database.denied` | API 99 | Low, Failure |
 | `run.started`, `run.continued`, `run.rerun`, `run.reset`, `run.reset_requested`, `schedule.triggered`, `schedule.backfill_requested`, `event.published` | API 1 | |
 | `run.cancel_requested`, `schedule.backfill_cancelled`, `batch.cancelled`, `approval.cancelled`, `publication.withdrawn` | API 4 | |
 | `run.finished`, `batch.finished`, `run.signalled`, `run.marked_for_review`, `approval.opened`, `approval.decided`, `approval.expired`, `publication.approved`, `publication.superseded`, `saga.step_retried`, `saga.step_skipped`, `saga.step_resolved`, `script.tested`, `webhook.delivery_redriven`, `broker.delivery_redriven`, `connector.message_redriven`, `connector.message_discarded`, `capacity.member.finished`, `capacity.member.vacated`, `capacity.member.acquired`, `collection.leaf_success_certified`, `secret.provisioning_started`, `secret.provider_abandoned`, `secret.attempt_pins_released`, `business_id.conflict` | API 99 | |
