@@ -24,13 +24,15 @@ The registers of design 015 (`docs/designs/015-opentelemetry-and-openbao.md`). A
 | D015-001 | Logs go over OTLP from the process through a queue of 8,192 records drained in batches of at most 512 records or every 2 seconds; standard output keeps its lines. | 2026-11-26 |
 | D015-002 | Metrics reach the Collector by scrape; the processes keep one metrics implementation. | 2026-11-26 |
 | D015-003 | `OTEL_EXPORTER_OTLP_HEADERS_FILE` extends the standard variables so a token is read from a file. | 2026-11-26 |
-| D015-004 | Two key authorities, `local` and `openbao`, both supported in production; `openbao` recommended. | 2026-11-26 |
+| D015-004 | Two key authorities, `local` and `transit` (renamed by D015-011), both supported in production; `transit` recommended. | 2026-11-26 |
 | D015-005 | Envelope encryption: a data key per secret version from `transit/datakey/plaintext/sagat-secrets` with the tenant id as context; the wrapped key in `secret_versions.wrapped_key`; `key_id` `bao-<version>`. | 2026-11-26 |
 | D015-006 | Rewrap and re-seal passes select by `key_id` and update with the old `key_id` in the predicate, in batches of 250 (Transit `batch_input`). | 2026-11-26 |
-| D015-007 | The unwrapped-key cache holds at most 4,096 keys for at most 300 seconds each (4,096 times 32 bytes is 131,072 bytes, 128 KiB, of key material), wiped on eviction. | 2026-11-26 |
-| D015-008 | Transit calls: 5-second timeout, at most 2 retries with jitter on a transport error or `5xx`, typed error `KEY_AUTHORITY_UNAVAILABLE` (retryable). | 2026-11-26 |
+| D015-007 | The unwrapped-key cache holds at most 4,096 keys, 512 per tenant, for at most 300 seconds each after the unwrap, refreshed after 240 seconds while OpenBao answers (4,096 times 32 bytes is 131,072 bytes, 128 KiB, of key material), wiped on eviction. | 2026-11-26 |
+| D015-008 | Transit calls: 2 seconds per attempt, at most 3 attempts with jitter within 5 seconds, typed error `KEY_AUTHORITY_UNAVAILABLE` (retryable); counted in the existing `secret_provider_requests_total`. | 2026-11-26 |
 | D015-009 | Transit keys are created with `exportable=false`, `allow_plaintext_backup=false`, `deletion_allowed=false`; `auto_rotate_period` 90 days for `sagat-secrets` and `sagat-intent`; `sagat-scripts` rotated by the operator. | 2026-11-26 |
 | D015-010 | The per-tenant HMAC key of design 042's trigger chains stays in the database, because it is used per event on the dispatcher's path. | 2026-11-26 |
+| D015-011 | Revision after the first security review (2026-11-26, `docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-26/round-1/security.md`): the authority is named `transit` (feature 017 already gives `openbao` to KV custody), a third custody `transit` beside `local` and `openbao`; the associated data names the custody, never the key version, so a rewrap leaves it valid; the version in an integer column; per-item rewrap with a cursor and failure counts; `retire-key-versions` with a recount; `secrets rekey`; script signing over the full message; intent binding over metadata and a digest, binding version 2; the output scan fails closed; runners get public keys from the control plane; one Agent per custody; exact allow-list policies; Raft snapshots and a paired restore; customer keys outside the platform's OpenBao; the cache refreshed in the background and bounded per tenant; header only over `https` or loopback; `redact.rs` extended; core dumps disabled. | 2026-11-26 |
+| D015-012 | The derivation context is `base64("sagat/secret/v1" || the tenant id's 16 bytes)`, fixed for ever once used. | 2026-11-26 |
 
 ## Gaps
 
@@ -39,7 +41,8 @@ The registers of design 015 (`docs/designs/015-opentelemetry-and-openbao.md`). A
 | G015-001 | OTLP over gRPC or protobuf is not spoken; the Collector translates JSON. | Open; follow-up |
 | G015-002 | TLS certificates are not issued by OpenBao's PKI engine. | Open; follow-up |
 | G015-003 | A revoked platform token leaves cached data keys usable for at most 300 seconds. | Accepted; stated in the runbook |
-| G015-004 | Rolling back from `openbao` to `local` is a manual re-seal procedure. | Accepted; documented |
+| G015-004 | Rolling back from `transit` to `local` is a manual re-seal procedure. | Accepted; documented |
+| G015-005 | A compromised process holds every token it uses; custodies are separated between process kinds and code paths, not inside one process. | Accepted; stated in the design |
 
 ## Owner questions
 

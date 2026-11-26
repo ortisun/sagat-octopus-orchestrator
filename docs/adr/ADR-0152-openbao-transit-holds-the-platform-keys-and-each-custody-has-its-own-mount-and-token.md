@@ -4,34 +4,43 @@
 **Decided by:** agent proposal with design 015, accepted by the agent preparing design 015 for build under the owner's
 delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-119. The owner may overrule it.
 **Refines / supersedes:** refines ADR-0006 (secrets are references resolved at execution time), ADR-0033 (the wrapped
-key is classified `secret`), ADR-0035 (feature 017's OpenBao mount is one custody among several) and ADR-0066 decision 1
-(the platform's policies may grant no path of a mount that holds feature 031's client keys); supersedes none.
-**Enforced by:** the cross-tenant unwrap test, the rotation and rewrap test, the migration test under load and the
-outage test on a real OpenBao (Task 015-19); the policy test that refuses a grant outside the platform's mounts (Task
+key is classified `secret`), ADR-0035 (feature 017's OpenBao mount is one custody among several) and applies ADR-0066 decision 1 (feature
+031's customer keys live outside the platform's OpenBao); supersedes none.
+**Enforced by:** the cross-tenant unwrap test, the rotation and rewrap test, the migration test under load, the
+outage test and the paired restore test on a real OpenBao (Tasks 015-19, 015-24); the signature-binding tests (Task 015-15); the exact allow-list policy test (Task
 015-17); the canary test (Task 015-20); the start-up refusals of Requirement 015-010 (Task 015-18). Until they exist:
 review only.
 
 ## Context
 
-Today a key ring in an environment variable seals every secret, an Ed25519 key in another signs scripts, and a 32-byte
-file authenticates feature 017's receipts with no rotation; OpenBao holds only feature 017's database credentials
-(design 015, The Problem).
+Today a key ring in an environment variable seals the secrets stored in PostgreSQL, an Ed25519 key in another signs
+scripts, and a 32-byte file binds feature 017's provisioning intents with no rotation; OpenBao's KV engine holds the
+values of feature 017's `openbao` custody (design 015, The Problem).
 
 ## Decision
 
-1. A deployment MUST choose a key authority, `local` or `openbao`; both are supported. Under `openbao` no platform key
+1. A deployment MUST choose a key authority, `local` or `transit`; both are supported. Under `transit` no platform key
    MAY exist outside OpenBao, and a process MUST refuse to start if a local key is also configured, except in the
    `migrating` mode.
-2. Under `openbao` a secret version MUST be sealed with a fresh data key from Transit key `sagat-secrets`, derived with
-   the tenant id as context, and stored with its wrapped data key in PostgreSQL. The value MUST NOT be sent to OpenBao.
+2. Under `transit` a secret version of `transit` custody MUST be sealed with a fresh data key from Transit key
+   `sagat-secrets`, derived with the tenant's context, and stored with its wrapped data key and the key's version in
+   PostgreSQL. The value MUST NOT be sent to OpenBao. The associated data MUST name the custody and never the Transit
+   key's version. Feature 017's KV custody stays as it is.
 3. Rotation MUST need no restart: new seals use the newest key version; a bounded, resumable pass rewraps stored data
-   keys with `transit/rewrap`; raising `min_decryption_version` is the operator's step.
-4. Scripts MUST be signed with Transit key `sagat-scripts` and verified by runners with its public keys; feature 017's
-   receipts MUST be authenticated with Transit key `sagat-intent` and name the key version.
-5. Each custody MUST have its own mount, token and policy (`sagat-transit`, `secret/sagat/credentials`, design 047's
-   OAuth mount). No platform policy MAY grant a path outside these mounts; the bootstrap refuses one that does.
-6. Without OpenBao nothing is sealed or opened by other means. Opening MAY use an unwrapped data key from a cache of at
-   most 4,096 keys held at most 300 seconds each.
+   keys with `transit/rewrap` and reports every row it could not rewrap; raising `min_decryption_version` is a command
+   that refuses while a row, a failure or a seal in flight remains below it. A re-key command issues new data keys after
+   a compromise of a token.
+4. Scripts MUST be signed with Transit key `sagat-scripts` over the message that binds the tenant, the digest and the
+   language; runners MUST get the public keys from the control plane, never from OpenBao. Feature 017's intents MUST be
+   bound with Transit key `sagat-intent` over their metadata and the digest of the value, never the value.
+5. Each custody MUST have its own mount and policy, and each process kind its own token per custody it uses. Every
+   policy MUST be an exact allow-list; the bootstrap and a test refuse any other grant. Feature 031's customer keys MUST
+   live outside the platform's OpenBao.
+6. Without OpenBao nothing is sealed or opened by other means, on every read path including the scan of a step's
+   output. Opening MAY use an unwrapped data key from a cache of at most 4,096 keys, 512 per tenant, each at most 300
+   seconds after its unwrap.
+7. Under `transit`, OpenBao MUST be backed up by scheduled encrypted snapshots, and a restore pairs a PostgreSQL backup
+   with a later snapshot.
 
 ## Considered options
 
