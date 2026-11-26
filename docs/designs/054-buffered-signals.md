@@ -464,7 +464,7 @@ a version that declares signals and exhaust the tenant's content quota, making o
 (Architecture decision 0027). This design adds two resources to Architecture decision 0027's policies: the namespace resource
 `pending_signal_bytes` (namespace setting, then tenant default, then the operator's ceiling; provisional default 64 MiB; a setting
 is capped at the tenant's `tenant_content_bytes`) and the tenant aggregate `tenant_pending_signal_bytes` (provisional default
-1 GiB, at most a tenth of the tenant's content quota by default), so that many namespaces together cannot exhaust the tenant's
+the smaller of 1 GiB and a tenth of the tenant's `tenant_content_bytes`), so that many namespaces together cannot exhaust the tenant's
 content either. A delta trigger on `run_signal_inbox`, in the pattern of `payloads_quota_delta` (`sagat_quota_row_delta` with its
 deferred flush), charges each row's `bytes` to both usages and releases them when the row is deleted, and the buffering's
 transaction reads both limits after acquiring the policy fences, last (slot 8b of Architecture decision 0050), as every
@@ -818,7 +818,7 @@ refusals in six languages. The worker protocol does not change.
 ### 14. Telemetry and audit
 
 - Metrics, closed labels only: `signals_total{outcome}` with `delivered`, `buffered`, `not_waiting` (`NOT_WAITING`), `refused_full`
-  (`SIGNAL_INBOX_FULL`), `refused_pending_bytes` (`SIGNAL_PENDING_BYTES_FULL`), `refused_size` (`SIGNAL_TOO_LARGE`), `refused_bytes` (the run's `429`), `refused_namespace` (`PENDING_SIGNAL_BYTES`), `refused_quota` (the tenant's content
+  (`SIGNAL_INBOX_FULL`), `refused_pending_bytes` (`SIGNAL_PENDING_BYTES_FULL`), `refused_size` (`SIGNAL_TOO_LARGE`), `refused_bytes` (the run's `429`), `refused_pending_quota` (`PENDING_SIGNAL_BYTES`, the namespace's or the tenant's), `refused_quota` (the tenant's content
   quota), `refused_ended` (`RUN_ENDED`), `refused_stopping` (`RUN_STOPPING`), `refused_no_consumer` (`NO_CONSUMER_AHEAD`); `signal_inbox_settled_total{how}` with `consumed`, `moved`, `discarded`;
   `signal_inbox_wait_seconds` (a histogram from a signal's buffering to its consumption, at the consumption).
 - Spans: the signal's transaction carries `sagat.signal.outcome` and, as spans may (principle V), the tenant and run
@@ -827,7 +827,7 @@ refusals in six languages. The worker protocol does not change.
   transitions, journaled and not audited, as a wait's satisfaction is today. Publishing a version with `signals` is audited as every
   publication.
 - Logs: closed values only (an outcome, a cause), with the tenant and run identifiers in the authorized log fields for a refusal
-  (`SIGNAL_INBOX_FULL`, the run's bytes, the tenant's quota, the namespace's pending bytes), so that whoever fills inboxes can be
+  (`SIGNAL_INBOX_FULL`, the run's bytes, the tenant's quota, the namespace's or the tenant's pending bytes, the scope named), so that whoever fills inboxes can be
   traced; the name and the payload stay in the journal and the audit record. Refusals are not audited one by one, so that a flood
   cannot amplify the audit log.
 
@@ -1087,7 +1087,8 @@ caller of a signature it changes, so the workspace builds after each.
   Refs: Requirement 054-002
   Owner-gate: OD-2026-11-26-540
 - [ ] T054-4 The migration of Technical Plan 2 and its validating companion (the table with its `version_id`, `namespace_id`,
-  `moves` and index, the delta trigger of pending bytes and the namespace resource `pending_signal_bytes` in the quota policies, the new columns and their checks, the
+  `moves` and index, the delta trigger of pending bytes charging both usages, the namespace resource `pending_signal_bytes` and the
+  tenant aggregate `tenant_pending_signal_bytes` in the quota policies, the new columns and their checks, the
   check on `runs` that a terminal status has no pending signal, the ledger's replaced check, the capability in the three closed
   lists, the comparison guard of the hold function, the floor's row and its function `signal_inbox_floor_holds`, the grants, the classification, the down migration's
   refusals). `integration_platform_foundation` first: migrations as the runtime role, the privilege audit, the registry's privilege
@@ -1125,7 +1126,8 @@ caller of a signature it changes, so the workspace builds after each.
   lists (`tests/integration/platform-foundation/migrations.rs`) and the registry tests (`apps/control-plane/src/registry.rs`,
   `apps/execution-engine/src/settings.rs`), but not yet listed as offered (Task 054-9 lists it); the readers of a `#` receipt in
   both scopes, `parse_nodes` of the chain path included. Contract tests first (`contract_rest_durable_execution`), then a test per refusal and
-  its order (`NO_CONSUMER_AHEAD` and `PENDING_SIGNAL_BYTES` included), the list read without a run lock and its size withheld
+  its order (`NO_CONSUMER_AHEAD` and `PENDING_SIGNAL_BYTES` included, with a test of two namespaces of one tenant, each under its
+  own ceiling and together over the tenant's, the second refused), the list read without a run lock and its size withheld
   from a viewer, the journal read's null `payloadRef` for `signal.buffered` and inspection and disclosure answering
   `NoRetainedPayload` for it (contract and selector tests), the idempotency answer and its `#` receipt (with-start replay included), and a wait's
   entry per entry path.
