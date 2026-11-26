@@ -23,7 +23,8 @@ one, under load. It has four parts:
 4. **A test** that runs N-1 and N writers on one database under load and gates every release.
 
 The in-region topology and the platform's side of a failover are [design 048](048-high-availability.md); this design was
-split from it by the coordinating session on 2026-11-25, under Owner decision 2026-11-24-4 (`docs/owner-decisions.md`).
+split from it on 2026-11-25 by the coordinating session (the session that runs this
+release's design work for the owner), under Owner decision 2026-11-24-4 (`docs/owner-decisions.md`).
 
 **Terms used below.**
 
@@ -102,8 +103,9 @@ From the code and documents on `develop` at `546d5aa5`:
   2 s and its hold by the catalog changes and one commit, and validates them in the next migration; widening them in separate migrations would let a binary register a token its activation then refuses.
   On a hot table a migration MUST NOT build an index, a unique constraint or a primary key except concurrently. A
   migration without a transaction (sqlx's first-line header `-- no-transaction`) MUST hold one concurrent statement only,
-  `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, and name its index in a header `-- index: <name>`; it runs with no lock or
-  statement timeout, since it never blocks inserts, and is bounded by `migrate`'s deadline (Requirement 053-004).
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, and name its index in a header `-- index: <name>`; it runs without the 2 s
+  timeouts, since it never blocks inserts, its statement timeout being the time left before `migrate`'s deadline
+  (Requirement 053-004).
   Constraints are added `NOT VALID` and validated in a later migration (the existing static test
   `a_constraint_added_not_valid_is_validated_by_a_later_migration` stays the one owner of that rule). A migration MUST
   NOT rewrite a table, change a column's type in place, rename, add a column with a volatile default or a `NOT NULL`
@@ -123,7 +125,7 @@ From the code and documents on `develop` at `546d5aa5`:
   | `definer-public` | a definer function not revoked from `PUBLIC` in its migration; any `GRANT ... TO PUBLIC` on a function; `ALTER DEFAULT PRIVILEGES` | the cut-off |
   | `dynamic-ddl` | `EXECUTE` in a `DO` block or a function body of anything but `format()` with a literal template from the closed list of statement kinds in the toml file (design 049's partition statements at first) whose placeholders are `%I` or `%L`, never `%s` | the cut-off |
   | `expand-only` | a refusal of Requirement 053-001 outside its three exceptions; `-- phase: contract` | the online rules' start |
-  | `hot-lock` | a missing first `lock_timeout`; a second blocking lock on a hot table, or one not last, or without its `statement_timeout`, or without the `-- blocks: <table>` header naming its table; a non-concurrent index, unique constraint or primary key on a hot table; each statement's lock level taken from PostgreSQL 16's "Table-Level Locks" and its `ALTER TABLE` subcommand list, kept as a table in the lint | the online rules' start |
+  | `hot-lock` | a missing first `lock_timeout`; a second blocking lock on a hot table, or one not last, or without its `statement_timeout`, or without the `-- blocks: <table>` header naming its table, except the locks a `capability-list-widening` migration takes (its header names `platform_requirements`); a non-concurrent index, unique constraint or primary key on a hot table; each statement's lock level taken from PostgreSQL 16's "Table-Level Locks" and its `ALTER TABLE` subcommand list, kept as a table in the lint | the online rules' start |
   | `no-transaction` | a migration without a transaction holding more or other than one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, or without its `-- index:` header | the online rules' start |
   | `partitioned-index` | an index on a partitioned parent listed in the toml file, outside the procedure of Requirement 053-004 | the online rules' start |
   | `no-rewrite` | a rewrite, a type change in place, a rename, a volatile default, an undefaulted `NOT NULL` column, `CREATE OR REPLACE` or `DROP` of an object an earlier migration created | the online rules' start |
@@ -202,7 +204,8 @@ From the code and documents on `develop` at `546d5aa5`:
   until every present partition has a valid attached index (a partition created meanwhile by `ensure_journal_buckets()`
   receives the index at its creation), judged per partition, since the parent's flag is not revalidated when the last
   missing partition is detached rather than attached; only then is the file applied through `Migrate::apply`; otherwise
-  the loop exits naming the partition.
+  the loop exits naming the partition. Each attach blocks inserts into its partition for at most 2 s plus one commit,
+  and the whole procedure is bounded by the deadline.
 
 ### The schema check
 
@@ -230,7 +233,7 @@ From the code and documents on `develop` at `546d5aa5`:
   this check into the registry member, and each one-run command of `control-plane` except `migrate` only through
   `connect_command(capabilities)`, which, on the connection design 048 admits for the wait, calls this check with the
   binary's migration versions and then design 048's `command_await_durability(capabilities)`, with its kind taken as
-  `CONTROL_PLANE` and `capabilities` the `control-plane` binary's own registered list, and returns the pool only when
+  `CONTROL_PLANE` and `capabilities` the full capability list a `control-plane` process registers, and returns the pool only when
   both pass; `scripts/check-architecture.py` refuses `sagat_infra_postgres::connect` and `open_pool`
   in `apps/` outside these two constructors and `migrate` (the commands' `open_pool` calls of `cleanup.rs`,
   `capability_activation.rs`, `handover.rs`, `inventory.rs` and `lib.rs` move to `connect_command`), with a negative
@@ -303,11 +306,11 @@ From the code and documents on `develop` at `546d5aa5`:
 
     | Reader | A `draining` row |
     |---|---|
-    | `instance_register` and `missing_for` | still required: no process lacking it registers, so a rollback waits for phase 2 |
+    | `instance_register` and `missing_for` (the application's pure copy of registration's rule) | still required: no process lacking it registers, so a rollback waits for phase 2 |
     | `requirements()`, `Requirement` | carried with its `state` |
     | `ServingGate::uses` | inactive: no new use |
     | `platform_requirement_activate` | refused, outcome `DRAINING` (use `capability-undrain`) |
-    | `requirement_recorded`, `census_step`'s order | not recorded: a capability that follows it cannot be activated |
+    | `requirement_recorded`, `census_step`'s order (feature 006's check that a capability another one follows is already recorded) | not recorded: a capability that follows it cannot be activated |
     | `schedule_trigger_handover_complete`, `lease_withdrawal_required()` | inactive (`state = 'active'` added in 0.3.0) |
     | history | `DRAINED`, `UNDRAINED` join `ACTIVATED` and `REMOVED` |
 
@@ -326,7 +329,7 @@ From the code and documents on `develop` at `546d5aa5`:
     run under a 1 s lock timeout and its statements under a 2 s statement timeout, as the existing function does; a
     `55P03` or `57014` is retried like `NOT_APPLIED`. A process reports what it applied through the heartbeat
     `instance_heartbeat_applied(instance, token, applied_epoch)`, which replaces `instance_heartbeat_reporting_change`
-    (decision D006-098) for the binaries of 0.3.0 on and does what it does, and records in `serving_instances.applied_epoch`
+    (the beat that never waits for the epoch lock, decision D006-098 of feature 006) for the binaries of 0.3.0 on and does what it does, and records in `serving_instances.applied_epoch`
     the lesser of the epoch sent and the current epoch, refusing a negative or null one; a row has applied it when
     `applied_epoch >= draining_epoch`; the process sends the lesser of its gate's epoch and the epoch of the requirements
     it keeps, so a failed read after a re-registration never reports
@@ -335,10 +338,10 @@ From the code and documents on `develop` at `546d5aa5`:
     30 s more, so the command retries `NOT_APPLIED` for up to 60 s and then exits with code 1 ("retry later"); it exits
     with 0 on `REMOVED` and with 2 on a refusal that waiting cannot clear. `capability-drain`, `capability-undrain` and
     `instance-evict` exit with 0 on their success or already-done outcome (`DRAINED`, `ALREADY_DRAINING`, `UNDRAINED`, an
-    eviction recorded), with 2 on `REFUSED`, `NOT_RECORDED`, `NOT_DRAINING` or `CAPABILITY_MISSING`, and with 1 on a
+    `EVICTED`, `ALREADY_EVICTED`), with 2 on `REFUSED`, `NOT_RECORDED`, `NOT_DRAINING` or `CAPABILITY_MISSING`, and with 1 on a
     timeout. A row that never advances (a process whose
     requirements read keeps failing, or a compromised one) is named by the refusal, and the owner-only
-    `instance_evict(instance, actor)` (`control-plane instance-evict`) deletes it and records the instance in
+    `instance_evict(instance, actor)` (`control-plane instance-evict`; outcomes `EVICTED`, `ALREADY_EVICTED`) deletes it and records the instance in
     `serving_instance_evictions (instance_id uuid primary key, actor text, evicted_at timestamptz)`, the audit of the
     act, which `instance_register` reads to refuse that instance for good (outcome `EVICTED`, a closed gate);
     `instance_evict` takes the epoch row `FOR UPDATE`, which registration takes `FOR SHARE`, so an eviction and a
@@ -362,12 +365,13 @@ From the code and documents on `develop` at `546d5aa5`:
   that the latency window always holds a migration; roll the processes one at a time; activate N's capabilities; drain
   and remove those that can be removed, then, when every capability N added was removed, roll one process back to N-1
   and require it to open its gate and lease work, then roll it forward and activate them again; otherwise (an N-1
-  process could not register), the run drains and undrains the others and records "rollback not applicable". It passes when the integrity oracle passes, no start of a run is refused, the completion rate never falls to
+  process could not register), the run drains and undrains every capability that cannot be removed, activates again
+  those it removed, and records "rollback not applicable". It passes when the integrity oracle passes, no start of a run is refused, the completion rate never falls to
   zero for more than 10 s, every run started during the test reaches a terminal state within 120 s after the load ends
   (a run N-1 ignores stays stuck, which the oracle alone does not see), and the 99th percentile transition latency
   during the migrations is no more than 2 s above a baseline run (the same run without migrations). Each capability's
-  design adds a scenario: state written while it is active, then processed by N-1 after its removal, and state written
-  by N-1 processed by N. The test builds both releases' `control-plane` and `execution-engine` from their verified
+  design adds a scenario: state written while it is active, then processed by N-1 after its removal (for one that
+  cannot be removed, processed after its phase 1), and state written by N-1 processed by N. The test builds both releases' `control-plane` and `execution-engine` from their verified
   trees by the released-tree build of `scripts/test-release-upgrade-profile.py`, factored into a module that takes the
   tag or commit (the script is fixed to v0.2.0 today). Release N MUST NOT be published unless it passes against N-1
   (job `mixed-writers` of `.github/workflows/release.yml`). It first gates a release when 0.3.0 is N-1, since 0.2.x
@@ -376,7 +380,8 @@ From the code and documents on `develop` at `546d5aa5`:
   `mixed-writers-fixture` feature, whose test-only capability the run activates, drains, removes and activates again;
   this proves the harness, the oracle and the capability flow but not the migration rules (the online rules start with
   0.3.0) nor a real N-1, and the schema check is proved by tests on a fixed pair of migration sets (Task
-  053-3). The run names its runner, a free standard runner (Owner decision 2026-11-25-1).
+  053-3). The run on the 0.3.0 release branch is informational and does not block the `v0.3.0` tag. The run names its
+  runner, a free standard runner (Owner decision 2026-11-25-1).
 - **Requirement 053-009 A hotfix upgrades forward.** A hotfix release adds expand migrations only, and each is merged
   forward to `develop` before the next minor release is cut: the release workflow refuses to cut a release whose tree
   lacks a migration file present in the tree of any earlier release tag, taking only tags that match
@@ -581,7 +586,9 @@ online rules start with 0.3.0, so no 0.3.0 migration needs a waiver for them.
   guards, and each capability's design states which. Phase 2 of a form (b) capability holds new writes of its table for
   at most its 1 s lock wait, the 2 s drain check and one commit; the runbook says so.
 - **Non-functional requirement 053-002 Migration impact.** One attempt of a migration blocks inserts on a hot table for
-  at most 2 s plus one commit, and a migration for at most ten such attempts within about 171 s (Requirement 053-004),
+  at most 2 s plus one commit, and a transactional migration for at most ten such attempts within about 171 s
+  (Requirement 053-004); a concurrent build blocks no insert, and the partitioned-index procedure blocks each partition
+  for at most 2 s plus one commit per attach, within the deadline;
   measured by the mixed-writer test on a database holding the partitions of Requirement 053-008.
 
 --------------------------------------------------------------------------------

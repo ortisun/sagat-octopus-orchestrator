@@ -29,4 +29,4 @@ Full round: the Blocker, Majors 1 to 4, 6, 7, 9, 11 and 13, and Nits 1 to 8 reso
 
 Counts: Blocker 0, Major 2, Nit 6
 
-All eight were fixed at the next commit.
+All eight were fixed at c0536d9f (the commit after the one that recorded this re-read).
