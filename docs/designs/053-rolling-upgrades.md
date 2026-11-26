@@ -79,7 +79,9 @@ From the code and documents on `develop` at `546d5aa5`:
   cut-off (recorded in `scripts/check-migrations.toml`, the newest migration on `develop` when the lint merges) that
   breaks Requirement 053-001 or 053-002, by rules on its statements, with a negative fixture per rule under
   `scripts/tests/`; `.down.sql` files are checked only for the security rules. `control-plane migrate` MUST confirm the
-  database as design 048's one-run commands do, then apply migrations one by one through its own loop over sqlx's
+  database as design 048's one-run commands do (Requirement 048-013: on a database that has ever been confirmed, it
+  waits for a live registry row carrying the server's confirmed identity, so some process, N-1's or N's, must be running;
+  Requirement 053-005 lets an N process confirm with its gate closed for the schema), then apply migrations one by one through its own loop over sqlx's
   migrator, which refuses an applied migration missing from the binary (sqlx's default, kept). It retries a migration
   that failed with `55P03` (lock not available) after 1 s, doubling to at most 30 s, at most 10 attempts, so it gives up
   after 1 + 2 + 4 + 8 + 16 + 30 × 4 = 151 s of waiting and exits non-zero naming the lock's table. After each migration
@@ -107,8 +109,9 @@ From the code and documents on `develop` at `546d5aa5`:
   heartbeat, so that a gate it closed reopens within one heartbeat once the schema is right. The process sets the gate's
   reason `SCHEMA_TOO_OLD` when an expand migration it was built with is not applied (its own contract migrations are
   never required, since a contract runs only after the fleet is on N), or `BINARY_TOO_OLD` when its release is older
-  than the effective oldest compatible release; it then writes nothing but its registry heartbeat and the release of its
-  shards, and answers 503. The registry's functions in their new versions, `instance_register_v2` and
+  than the effective oldest compatible release; it then writes nothing but its registry rows (registration, design 048's confirmation and the heartbeat)
+  and the release of its shards, and answers 503. A process closed only by `SCHEMA_TOO_OLD` still registers and
+  confirms, so that `migrate` has a confirmed process to wait for when no N-1 process runs. The registry's functions in their new versions, `instance_register_v2` and
   `instance_heartbeat_v2`, return the requirement set with the epoch when a registration succeeds or the epoch differs
   from the one the process sends with its heartbeat (the gate's own, so a lost answer is asked again), and the gate
   keeps it (design 049's Task 049-5), and refuse such a process in the transaction that already reads the requirement
@@ -240,6 +243,12 @@ Each was decided under the delegation of Owner decision 2026-11-20-6, with its r
 
 Rollback before step 3 rolls the binaries back onto N's schema; after it, the two-phase deactivation comes first.
 
+When no process runs (an upgrade the operator chose to stop, or a start after a restore), the order is: start N's
+processes, which register and confirm with their gate closed by `SCHEMA_TOO_OLD`; apply N's migrations; the gates open
+within one heartbeat. `migrate` on a database that has been confirmed and has no live confirmed process exits with code
+1 ("retry later") and says so. The 0.2.x to 0.3.0 upgrade is the exception: the migration that creates design 048's wait
+runs in it, before any process can confirm, and the wait admits a database never confirmed (Requirement 048-013).
+
 | Change | Files | Requirement |
 |---|---|---|
 | The lint, its fixtures, the merge-base and checksum checks | `scripts/check-migrations.py`, `scripts/check-migrations.toml`, `scripts/tests/`, `tests/integration/platform-foundation/migrations.rs`, `crates/infra-postgres/migration-checksums.txt`, CI | 053-001, 053-002, 053-003 |
@@ -284,7 +293,7 @@ registration) and 049-14 (the handshake granted to the retirement role); design 
 | VI. Observability and audit are part of the feature | Pass | `serving_gate_closed{reason}` with the two reasons; the activation and deactivation recorded in the registry's history |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | Unchanged |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Negative fixtures per rule, the injected failed index build, the mixed-writer test; what it cannot prove before 0.3.0 is said |
-| Delivery Constraints | Pass | Constitution 5.0.0 |
+| Delivery Constraints | Pass | Constitution 5.1.0 (Owner decision 2026-11-25-3): its throughput regression gate (point 3) is design 052's and runs in CI; the mixed-writer test is the upgrade gate of each release beside it; nothing here deletes journal rows (point 1) |
 
 ## Complexity Tracking
 
@@ -324,7 +333,7 @@ Each task names its files and tests.
   Refs: Requirement 053-001, Requirement 053-002, Requirement 053-003, Success criterion 053-002
 - [ ] T053-3 Move `develop`'s version in `scripts/release-version.sh`, write `releases.toml` and the compatibility row, the refusal of a release missing an earlier migration; add `schema_compatibility`, `sagat_schema_handshake()`, `instance_register_v2` and `instance_heartbeat_v2`, the handshake at start, at confirmation and with each heartbeat in every entry point with its architecture check, the gate reasons in the registry contract of feature 018, with the tests `a_binary_before_its_migrations_serves_within_one_heartbeat_after_them` and `a_release_below_the_oldest_compatible_is_refused_at_registration` on fixed versions, as the runtime role.
   Refs: Requirement 053-004, Requirement 053-005, Success criterion 053-003
-- [ ] T053-4 Write `control-plane migrate`'s own loop (the confirmation, the bounded retry on `55P03`, the bounded invalid-index check, the contract refusals, the release check) in `apps/control-plane/src/lib.rs` and `crates/infra-postgres/src/lib.rs`, with the tests `a_failed_concurrent_index_build_is_retried_three_times_then_named` and `a_lock_held_longer_than_the_retries_ends_migrate_naming_the_table`.
+- [ ] T053-4 Write `control-plane migrate`'s own loop (the confirmation, the bounded retry on `55P03`, the bounded invalid-index check, the contract refusals, the release check) in `apps/control-plane/src/lib.rs` and `crates/infra-postgres/src/lib.rs`, with the tests `a_failed_concurrent_index_build_is_retried_three_times_then_named`, `a_lock_held_longer_than_the_retries_ends_migrate_naming_the_table` and `migrate_with_no_process_running_proceeds_once_a_new_process_confirms_with_its_gate_closed`.
   Refs: Requirement 053-003
 - [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, the column `permanent` with its check, the guard's single allowed update and its refusal of a permanent row's delete or drain, the epoch moved by the first phase, `activate_v2` writing `permanent` (the check written `permanent = false` while no capability is permanent), with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation`, `the_second_phase_waits_for_every_live_process_to_heartbeat` and `a_draining_capability_stops_new_uses_at_the_next_heartbeat` and `a_permanent_capability_refuses_both_deactivation_phases` (which also calls `platform_requirement_remove`) run here against a test-only capability added to the lists in a disposable database, and again by design 049's Task 049-13 against `journal-buckets-v1`, held by barriers.
   Refs: Requirement 053-006, Requirement 053-007, Requirement 053-008
