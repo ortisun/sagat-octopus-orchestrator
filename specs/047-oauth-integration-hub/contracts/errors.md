@@ -22,7 +22,8 @@ feature 021's step vocabulary.
 | `CONFLICT` | `OAUTH_CREDENTIAL_TERMINAL` | a connection or callback for a disconnecting or disconnected credential |
 | `CONFLICT` | `HUB_DIGEST_CONFLICT` | an item version already imported with another digest |
 | `CONFLICT` | `IDEMPOTENCY_KEY_REUSED` | an import key reused with another body |
-| `UNAVAILABLE` (502 or 503) | `OAUTH_PROVIDER_ERROR` | another provider error; `details.error` from the closed list `invalid_request`, `invalid_client`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`, `other` |
+| `UNAVAILABLE` (502 or 503) | `OAUTH_PROVIDER_ERROR` | a transient provider error; `details.error` from the closed list `server_error`, `temporarily_unavailable`, `other` (a transport failure or `429`) |
+| `FAILED_PRECONDITION` (422) | `OAUTH_PROVIDER_REFUSED` | a permanent provider answer, not retryable; `details.error` from the closed list `invalid_request`, `invalid_client`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope` |
 
 ## Step failures, per executor path
 
@@ -36,4 +37,4 @@ design adds there.
 | Credential disconnecting or disconnected; authority revoked; a hub version under a `security` revocation | `RESOURCE_UNAVAILABLE` | no | all three |
 | Granted scopes do not cover the declaration; `invalid_scope` | `OAUTH_SCOPE_INSUFFICIENT` (added) | no | all three |
 | Delivery budget spent | `RESOURCE_ASK_LIMIT` (added) | yes | scripts, activities |
-| A test run's `resource` call | `SCRIPT_DENIED`, reason `RESOURCES_IN_TEST_RUN` | no | scripts |
+| A test run's `resource` call | `SCRIPT_DENIED` (the existing code of `crates/domain/src/scripts.rs`), reason `RESOURCES_IN_TEST_RUN` | no | scripts |
