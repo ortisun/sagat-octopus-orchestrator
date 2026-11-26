@@ -1127,8 +1127,12 @@ async fn the_marks_of_1_8_are_added_and_roll_back_only_while_no_provisional_mark
     assert_eq!(found.len(), 10, "{found:?}");
     for (table, column, data_type) in &found {
         let expected = match column.as_str() {
-            "lease_hand_back_generation" | "lease_offered_generation" | "lease_capability_generation" => "bigint",
-            "lease_claimed_at" | "lease_claim_incarnation" | "lease_acknowledged_at" => "timestamp with time zone",
+            "lease_hand_back_generation"
+            | "lease_offered_generation"
+            | "lease_capability_generation" => "bigint",
+            "lease_claimed_at" | "lease_claim_incarnation" | "lease_acknowledged_at" => {
+                "timestamp with time zone"
+            }
             "provisional_withdrawn_attempt" => "integer",
             "withdrawn_lease_token_hash" => "bytea",
             _ => "boolean",
@@ -1172,7 +1176,11 @@ async fn the_marks_of_1_8_are_added_and_roll_back_only_while_no_provisional_mark
         .expect("release the migration lock");
     drop(connection);
     assert!(refused.contains("holds a provisional mark"), "{refused}");
-    assert_eq!(columns().await.len(), 10, "a refused rollback keeps the columns");
+    assert_eq!(
+        columns().await.len(),
+        10,
+        "a refused rollback keeps the columns"
+    );
     // the lease moved on: the mark no longer counts (the same fixture rules)
     let mut tx = db.pool.begin().await.expect("a transaction");
     for statement in [
