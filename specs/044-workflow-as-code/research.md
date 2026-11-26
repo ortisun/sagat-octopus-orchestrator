@@ -1120,3 +1120,28 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
   replay with every event's evaluation under a deadline); within the 97.65625 µs of Non-functional requirement 044-001
   but without much room. Task 044-25 measures it on the reference host; the first lever is fewer timed evaluations per
   activation.
+- **D044-316** (2026-11-26) The independent correctness review of pull request 290 (1 Blocker, 7 Major, 7 Minor and
+  Nits) is fixed, every finding first seen failing by a test of `sdks/typescript/test/workflows/review.test.ts` or by a
+  hand mutation; none is contested. delegate (OD-2026-11-24-4) for the choices each fix makes:
+  - Blocker: a side effect whose computation drew from the run's generator left a live run one draw ahead of its
+    replay, so a cold worker's later bodies differed (`CHAIN_MISMATCH`). The generator's state is put back after the
+    computation, which may make no command.
+  - Major: a signal handler that waited for another buffered signal gave it twice; each signal now leaves the buffer
+    before it is given. Aborting a scope left its open nested scopes open; the region is aborted, and their bodies can
+    schedule nothing more. The function's metadata bound is 48 KiB (Requirement 044-012), not the completion's 64 KiB.
+    A withheld value now keeps a replay inconclusive in every later activation, side-effect markers included. The live
+    activation applies only events up to its start. The test environment checks commands as the server does (command
+    numbers, a re-emission against its deferral, consumed signals, scopes, update decisions), lets a test journal events
+    during a task, and settles aborted regions as a whole. The corpus test compares every vector once it is enabled.
+  - Minor: a cancelled wait or approval rejects with `CommandCancelled`, a cancelled child with `ChildWorkflowError`;
+    cancelling a timer that fired makes `timer_cancel`; a failure's message is at most 4,096 characters and a wait's
+    correlation key and a child's business identifier count as inline values; a terminal command thrown in an update
+    handler ends the run, a validator that sets the state or consumes a signal fails `VALIDATOR_COMMAND`, and a
+    validator that answers a promise rejects its update (`VALIDATION_REJECTED`); `carriedState()` returns the state a
+    predecessor carried (Requirement 044-005 delivers it and the API of Technical Plan 1.12 named no reader; Task 044-1
+    names it in `sdks/SPEC.md`); a call's command bounds are judged before its values and a refused call records no
+    value; the SDK's share is 146 commands besides one re-emitted terminal command; an activation closes or aborts at
+    most 16 scopes and a run has at most 16 open, the call beyond either throwing `CommandBatchLimitExceeded`.
+  - Left to the server lane, reported to the coordinating session: the protocol has no cancelled outcome for a wait or
+    an approval (the runtime takes a step outcome `cancelled`); and Update-with-Start must journal `run.started` before
+    the `update.admitted` it creates, or the update meets no handler (`HANDLER_NOT_REGISTERED`).

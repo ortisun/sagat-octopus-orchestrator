@@ -23,6 +23,7 @@ exported histories and the test environment. [context.ts:WorkflowContext] [run.t
 - Every value is taken at its call as canonical text; the host checks every field of the context's answer and the bounds again, and fails the workflow task `NONDETERMINISM_RISK` on an answer it refuses. [context.ts:snapshot] [run.ts:checkResult] [run.ts:prepareChecked]
 - A replay compares each command's kind and target with the record of its number, and a deferred terminal command with its deferral; a difference fails `NONDETERMINISM` with the command number and the actual kind and target, or answers `INCONCLUSIVE_REDACTED` once a withheld value was given. [context.ts:Run.issue]
 - An activation's commands come in the order of `research.md` Decision 044-305; bodies follow the corpus table of Decision 044-232; the bounds of Requirement 044-012 and Non-functional requirement 044-006 throw `CommandBatchLimitExceeded` or `InlineValuesExceeded` at the same call live and in replay. [context.ts:Run.finishActivation] [context.ts:Run.admitInlineValue]
+- A side effect's computation runs live only, makes no command, and leaves the run's generator where a replay finds it; a handler, a validator and a nested scope follow `research.md` Decision 044-316. [context.ts:sideEffect]
 - Loading the host entry point checks Node 22.8 or later; registering workflow types needs the process time zone UTC. [preconditions.ts:checkWorkflowRuntime]
 
 ## Side Effects
