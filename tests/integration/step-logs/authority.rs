@@ -425,3 +425,49 @@ async fn authority_is_answered_when_t3_meets_a_held_lock() {
     })
     .await;
 }
+
+/// T4: a stream whose final mark is recorded (by the attempt's carry, task T041-36; set here by the owner) answers
+/// `STOP_ATTEMPT` (`FINAL_RECORDED`) with the stream's mark and stores nothing; a caller whose binding is gone gets
+/// `AUTHORITY` there instead (D041-050).
+#[tokio::test]
+async fn a_recorded_final_mark_answers_final_recorded_with_the_mark_unless_authority_is_due() {
+    bounded::within("final recorded", LIMIT, async {
+        let w = world().await;
+        let ingest = ingest(&w);
+        let session = member_session(&w, "w-final", Role::Worker, "act.a").await;
+        let run = w
+            .start(
+                crate::support::step_logs::one_activity(&w, "a").await,
+                &json!({}),
+            )
+            .await;
+        let task = w.one_task(&session).await;
+        let a = Attempt { session, task, run };
+        send(&ingest, &a, records([1, 2])).await;
+        sqlx::query("UPDATE step_log_streams SET final_at = now() WHERE run_id = $1")
+            .bind(a.run.as_uuid())
+            .execute(&w.db.pool)
+            .await
+            .expect("the final mark");
+        assert_eq!(
+            send(&ingest, &a, records([3])).await,
+            BatchAnswer {
+                verdict: StepLogVerdict::StopAttempt(StopReason::FinalRecorded),
+                stored_through_sequence: 2
+            }
+        );
+        assert_eq!(lines_of(&w, &a).await.len(), 2);
+        assert_eq!(stream_of(&w, &a).await.expect("a stream").last_sequence, 2);
+        owner(
+            &w,
+            "DELETE FROM worker_bindings WHERE tenant_id = $1 AND subject = $2",
+            &a,
+        )
+        .await;
+        assert_eq!(
+            send(&ingest, &a, records([3])).await,
+            stopped(StopReason::Authority)
+        );
+    })
+    .await;
+}

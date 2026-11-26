@@ -48,7 +48,7 @@ fn a_charge_over_the_limit_answers_retry_later_and_the_resend_counts_tenant_quot
             let b = leased(&w, "b").await;
             let (held, gate) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterAuthority);
             let first = spawn_send(&held, &a, gapped());
-            gate.reached().await;
+            let holder = gate.reached().await;
             assert_eq!(
                 send(&ingest(&w), &b, vec![record(1, &"z".repeat(2_000))]).await,
                 BatchAnswer {
@@ -58,6 +58,17 @@ fn a_charge_over_the_limit_answers_retry_later_and_the_resend_counts_tenant_quot
             );
             gate.release();
             assert_eq!(first.await.expect("the batch").expect("answered"), RETRY);
+            // The refused batch's transaction ended before its answer: its backend holds no lock any more (the
+            // correctness review of task T041-6; a transaction left to its drop is rolled back later).
+            let (state, locks): (Option<String>, i64) = sqlx::query_as(
+                "SELECT (SELECT state FROM pg_stat_activity WHERE pid = $1), \
+                        (SELECT count(*) FROM pg_locks WHERE pid = $1 AND locktype <> 'virtualxid')",
+            )
+            .bind(holder)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("pg_stat_activity");
+            assert_eq!((state.as_deref(), locks), (Some("idle"), 0));
             assert_eq!(
                 stream_of(&w, &a).await,
                 None,
@@ -129,7 +140,7 @@ fn a_charge_over_the_limit_answers_retry_later_and_the_resend_counts_tenant_quot
 /// (ii) The last room held by another open transaction's quota lease: A stores 134 bytes (its refill grants its
 /// quota lease ⌊4,096 / 2⌋ = 2,048) and commits; A's next batch charges 134 more into that quota lease and is held
 /// after T8, holding it. B's batch (2,256 bytes) reads room at T6 (4,096 − 134), and its refill cannot take A's quota
-/// lease back: F = 4,096 − 2,048 = 2,048 < 2,256 ≤ 2,048 + (2,048 − 268), so it raises `tenant_step_log_quota_held`:
+/// lease back: F = 4,096 − 2,048 = 2,048 < 2,256 ≤ 2,048 + (2,048 − 134) (A's second charge is not visible to the refill's snapshot), so it raises `tenant_step_log_quota_held`:
 /// `RETRY_LATER`, `cause="held"`, nothing stored. Once A's transaction has ended, B's resend takes A's room back (S =
 /// 268, F = 3,828) and is stored and charged 2,256; a later batch of 134 bytes is stored (2 + 1 + 0 = 3, then 4).
 #[test]

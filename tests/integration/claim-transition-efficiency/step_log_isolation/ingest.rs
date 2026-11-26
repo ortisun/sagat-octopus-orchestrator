@@ -122,41 +122,97 @@ async fn three_batches_commit_while_a_fourth_holds_its_quota_lease_and_none_refi
     .await;
 }
 
+/// What `body` counts, on a runtime of one thread with a recorder of its own (as `step-logs/counted.rs`).
+fn counted<F: std::future::Future<Output = ()>>(body: F) -> String {
+    let (metrics, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    metrics::with_local_recorder(&recorder, || runtime.block_on(body));
+    metrics.render()
+}
+
+fn value(page: &str, line_start: &str) -> Option<f64> {
+    page.lines()
+        .find(|line| line.starts_with(line_start))
+        .and_then(|line| line.rsplit(' ').next())
+        .and_then(|value| value.parse().ok())
+}
+
 /// A batch held after a T8 that refilled holds the tenant's usage row (the fixture empties every quota lease first, so
 /// that its charge refills): a batch whose quota lease has room commits meanwhile, and a batch that needs a refill
-/// waits for the usage row at most its budget and answers `RETRY_LATER`; once the refill commits, the resend is
-/// stored.
+/// waits for the usage row at most its budget and answers `RETRY_LATER`, counted as a lock timeout and not as a quota
+/// refusal; once the refill commits, the resend is stored.
+#[test]
+fn a_held_refill_delays_only_a_charge_that_needs_a_refill() {
+    let page = counted(async {
+        bounded::within("held refill", LIMIT, async {
+            let w = world().await;
+            let a = leased(&w, "a").await;
+            let b = leased(&w, "b").await;
+            let c = leased(&w, "c").await;
+            empty_quota_leases(&w).await;
+            let with_room = ingest_on_own_pool(&w, 1).await;
+            assert_eq!(send(&with_room, &b, records([1])).await, continued(1));
+            let (held, gate) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterInsert);
+            let refilling = spawn_send(&held, &a, records([1]));
+            let holder = gate.reached().await;
+            let locks: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
+                  WHERE l.pid = $1 AND c.relname = 'tenant_retained_usage' AND l.mode = 'RowShareLock'",
+            )
+            .bind(holder)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("pg_locks");
+            assert_eq!(locks, 1, "the held batch refilled: it locked the usage row");
+            assert_eq!(send(&with_room, &b, records([2])).await, continued(2));
+            let needs_refill = ingest_on_own_pool(&w, 1).await;
+            assert_eq!(send(&needs_refill, &c, records([1])).await, RETRY);
+            gate.release();
+            assert_eq!(refilling.await.expect("the batch").expect("answered"), continued(1));
+            assert_eq!(send(&needs_refill, &c, records([1])).await, continued(1));
+        })
+        .await;
+    });
+    assert_eq!(value(&page, "step_log_lock_timeouts_total "), Some(1.0));
+    assert_eq!(value(&page, "step_log_quota_refusals_total"), None);
+}
+
+/// L3b is only ever tried: with another transaction holding a writer's own quota lease (only a quota reclaim does),
+/// the writer's charge passes over it and its refill takes its quota lease `NOWAIT`, so the batch answers `RETRY_LATER`
+/// at once, while the lease is still held, although its own lock timeout is a minute.
 #[tokio::test]
-async fn a_held_refill_delays_only_a_charge_that_needs_a_refill() {
-    bounded::within("held refill", LIMIT, async {
+async fn a_writer_never_waits_for_its_own_quota_lease_held_elsewhere() {
+    bounded::within("quota lease tried", LIMIT, async {
         let w = world().await;
         let a = leased(&w, "a").await;
-        let b = leased(&w, "b").await;
-        let c = leased(&w, "c").await;
-        empty_quota_leases(&w).await;
-        let with_room = ingest_on_own_pool(&w, 1).await;
-        assert_eq!(send(&with_room, &b, records([1])).await, continued(1));
-        let (held, gate) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterInsert);
-        let refilling = spawn_send(&held, &a, records([1]));
-        let holder = gate.reached().await;
-        let locks: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
-              WHERE l.pid = $1 AND c.relname = 'tenant_retained_usage' AND l.mode = 'RowShareLock'",
-        )
-        .bind(holder)
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("pg_locks");
-        assert_eq!(locks, 1, "the held batch refilled: it locked the usage row");
-        assert_eq!(send(&with_room, &b, records([2])).await, continued(2));
-        let needs_refill = ingest_on_own_pool(&w, 1).await;
-        assert_eq!(send(&needs_refill, &c, records([1])).await, RETRY);
-        gate.release();
-        assert_eq!(
-            refilling.await.expect("the batch").expect("answered"),
-            continued(1)
+        let pool = pool_of(&w, 1).await;
+        let writer = sagat_application::step_logs::StepLogIngest::new(
+            sagat_infra_postgres::PgStepLogStore::new(pool.clone())
+                .with_lock_timeout(HELD_LOCK_TIMEOUT),
+            sagat_application::clock::SystemClock,
+            true,
         );
-        assert_eq!(send(&needs_refill, &c, records([1])).await, continued(1));
+        assert_eq!(send(&writer, &a, records([1])).await, continued(1));
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&pool)
+            .await
+            .expect("the writer's backend");
+        let mut holder = sqlx::PgConnection::connect(&w.db.url)
+            .await
+            .expect("a holder");
+        let mut tx = holder.begin().await.expect("a transaction");
+        sqlx::query("SELECT 1 FROM step_log_quota_leases WHERE writer = $1 FOR UPDATE")
+            .bind(pid)
+            .execute(&mut *tx)
+            .await
+            .expect("the writer's quota lease");
+        assert_eq!(send(&writer, &a, records([2])).await, RETRY);
+        tx.rollback().await.expect("release");
+        assert_eq!(send(&writer, &a, records([2])).await, continued(2));
     })
     .await;
 }

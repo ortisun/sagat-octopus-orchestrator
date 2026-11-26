@@ -12,6 +12,7 @@ mod budget;
 mod counted;
 mod ingest;
 mod locks;
+mod metrics;
 mod quota;
 mod retention;
 mod scrubbing;

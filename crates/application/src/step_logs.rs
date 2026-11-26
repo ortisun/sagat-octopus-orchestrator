@@ -20,7 +20,9 @@ use std::time::Instant;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::binding::{ActivityPattern, first_uncovered};
-use sagat_domain::execution::{ExecutionInstanceId, Fence, RunId};
+use sagat_domain::execution::{
+    ExecutionInstanceId, Fence, ReportFence, RunId, report_fence_allows,
+};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, TenantId};
 use sagat_domain::step_logs::{
     AttemptCeilings, BatchInvalid, DropReason, Drops, FieldValue, MAX_TEXT_BYTES, MarkerReason,
@@ -510,7 +512,11 @@ pub fn prepare(record: &StepLogRecordIn) -> PreparedRecord {
         row: LineRow {
             sequence: record.sequence,
             level: record.level.unwrap_or(StepLogLevel::Info),
-            worker_time: record.worker_time,
+            // A time PostgreSQL cannot store (outside the years 1 to 9999, protobuf's range) is dropped, never refused:
+            // the record keeps its server time (the correctness review of task T041-6).
+            worker_time: record
+                .worker_time
+                .filter(|time| (1..=9_999).contains(&time.year())),
             message,
             exception,
             fields,
@@ -524,20 +530,18 @@ pub fn prepare(record: &StepLogRecordIn) -> PreparedRecord {
 
 // ---------------------------------------------------------------------------------- the stop rule
 
-/// Whether a report of the attempt would pass its fence now (OD-2026-11-16-11): the step not cancel-requested, the run
-/// not finished, and the run not stopping unless the node is a compensation or a reconciliation node. T2 applies the
-/// rule `attempt_authority_fence` applies to a report.
-///
-/// Pending decision (D041-146 (1)): this is the rule of `attempt_authority_fence`
-/// (`crates/application/src/worker.rs`) for a report that does not ask for the cancellation path; design 041 makes
-/// it one domain function, `report_fence_allows` in `crates/domain/src/execution/state.rs`, which both call. Those two
-/// files belong to pull request #260 until it merges, so the function lands with the merge of develop and this one
-/// is then replaced by it.
-#[must_use]
-pub fn report_fence_allows(lease: &LeaseRead, instance: &ExecutionInstanceId) -> bool {
-    !lease.cancel_requested
-        && !lease.run_finished
-        && (!lease.run_stopping || instance.node().is_derived())
+/// T2's stop rule: the domain's `report_fence_allows`, the rule `attempt_authority_fence` applies to a report, for a
+/// batch, which is never a cancellation report (OD-2026-11-16-11).
+fn fence_allows(lease: &LeaseRead, instance: &ExecutionInstanceId) -> bool {
+    report_fence_allows(
+        ReportFence {
+            cancel_requested: lease.cancel_requested,
+            run_stopping: lease.run_stopping,
+            run_finished: lease.run_finished,
+            derived_node: instance.node().is_derived(),
+        },
+        false,
+    )
 }
 
 // ---------------------------------------------------------------------------------- the service
@@ -672,7 +676,9 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         }
     }
 
-    /// T1 to T10. A failure after `begin` drops the transaction, which rolls it back.
+    /// T1 to T10, in one transaction this function owns: it commits or rolls the transaction back before any answer
+    /// is given, so that no lock of a refused or failed batch outlives its answer (the correctness review of task
+    /// T041-6).
     async fn transact(
         &self,
         principal: &Principal,
@@ -681,8 +687,62 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
     ) -> Result<Transacted, TxFailure> {
         let tenant = principal.tenant_id();
         let subject = principal.subject().as_str();
-        let lease_token_hash = Token::hash_of(&batch.lease_token);
         let mut tx = self.store.begin().await?;
+        let within = self.within(&mut tx, principal, batch, prepared).await;
+        match within {
+            Ok(Within::Commit(done)) => {
+                tx.commit().await?;
+                Ok(done)
+            }
+            Ok(Within::RollBack(done)) => {
+                tx.rollback().await?;
+                Ok(done)
+            }
+            Ok(Within::NoLease) => {
+                tx.rollback().await?;
+                let cross_tenant = match self.store.run_exists_outside(tenant, batch.run_id).await {
+                    Ok(found) => found,
+                    Err(error) => {
+                        tracing::warn!(
+                            kind = error.kind(),
+                            sqlstate = error.sqlstate(),
+                            "the cross-tenant check of a step-log batch failed"
+                        );
+                        metrics::counter!("step_log_cross_tenant_check_failures_total")
+                            .increment(1);
+                        false
+                    }
+                };
+                Ok(Transacted {
+                    cross_tenant,
+                    ..Transacted::answer(BatchAnswer::stop(StopReason::Lease))
+                })
+            }
+            Ok(Within::Failed { lease, failure }) => {
+                // A lock timeout or a store error at T3 or T4 still answers a revoked caller `AUTHORITY` (D041-050):
+                // the transaction is rolled back, and T7's two reads run in one of their own.
+                roll_back(tx).await;
+                self.authority_before(tenant, subject, &lease, failure)
+                    .await
+            }
+            Err(failure) => {
+                roll_back(tx).await;
+                Err(failure)
+            }
+        }
+    }
+
+    /// T1 to T9 inside `tx`, which the caller ends as the answer says.
+    async fn within(
+        &self,
+        tx: &mut S::Tx,
+        principal: &Principal,
+        batch: &StepLogBatch,
+        prepared: &[PreparedRecord],
+    ) -> Result<Within, TxFailure> {
+        let tenant = principal.tenant_id();
+        let subject = principal.subject().as_str();
+        let lease_token_hash = Token::hash_of(&batch.lease_token);
         tx.assign_transaction_id().await?;
         // T2
         let attempt = AttemptRef {
@@ -694,20 +754,13 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             lease_token_hash: &lease_token_hash,
         };
         let lease = match tx.lease(&attempt).await? {
-            Some(lease) if report_fence_allows(&lease, &batch.instance) => lease,
-            found => {
-                tx.rollback().await?;
-                let cross_tenant = found.is_none()
-                    && self
-                        .store
-                        .run_exists_outside(tenant, batch.run_id)
-                        .await
-                        .unwrap_or(false);
-                return Ok(Transacted {
-                    cross_tenant,
-                    ..Transacted::answer(BatchAnswer::stop(StopReason::Lease))
-                });
+            Some(lease) if fence_allows(&lease, &batch.instance) => lease,
+            Some(_) => {
+                return Ok(Within::RollBack(Transacted::answer(BatchAnswer::stop(
+                    StopReason::Lease,
+                ))));
             }
+            None => return Ok(Within::NoLease),
         };
         // T3 to T6, unless an answer is noted on the way; T7 runs either way.
         let session_token_hash = Token::hash_of(&batch.session_token);
@@ -722,7 +775,7 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         };
         let staged = self
             .stage(
-                &mut tx,
+                tx,
                 &SessionRef {
                     tenant,
                     namespace: lease.namespace,
@@ -736,14 +789,7 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             .await;
         let staged = match staged {
             Ok(staged) => staged,
-            Err(failure) => {
-                // A lock timeout or a store error at T3 or T4 still answers a revoked caller `AUTHORITY` (D041-050):
-                // the transaction is dropped, which rolls it back, and T7's two reads run in one of their own.
-                drop(tx);
-                return self
-                    .authority_before(tenant, subject, &lease, failure)
-                    .await;
-            }
+            Err(failure) => return Ok(Within::Failed { lease, failure }),
         };
         // T7
         let patterns = tx
@@ -751,14 +797,12 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             .await?;
         let role = tx.membership_role(tenant, subject).await?;
         if !authorized(&AuthorityRead { patterns, role }, lease.activity.as_deref()) {
-            tx.rollback().await?;
-            return Ok(Transacted::answer(BatchAnswer::stop(StopReason::Authority)));
+            return Ok(Within::RollBack(Transacted::answer(BatchAnswer::stop(
+                StopReason::Authority,
+            ))));
         }
         let (stream, plan) = match staged {
-            Staged::Noted(answer) => {
-                tx.rollback().await?;
-                return Ok(Transacted::answer(answer));
-            }
+            Staged::Noted(answer) => return Ok(Within::RollBack(Transacted::answer(answer))),
             Staged::Planned { stream, plan } => (stream, plan),
         };
         // T8
@@ -777,6 +821,14 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             InsertOutcome::Inserted(inserted) => inserted,
             InsertOutcome::Refused(refusal) => return Err(TxFailure::Quota(refusal)),
         };
+        // The stream lock (L1b) and the stream row (L2) are held and every kept sequence is above the stream's mark, so
+        // the insert stores every planned row; were one skipped, the counters would no longer add up, so the batch is
+        // refused rather than counted.
+        if inserted.len() != rows.lines.len() + usize::from(rows.marker.is_some()) {
+            return Err(TxFailure::Store(StoreError::Internal {
+                detail: "a step-log insert stored fewer rows than planned".into(),
+            }));
+        }
         // T9
         let counters = counters_after(&stream.counters, &plan, &inserted);
         tx.record_counters(&CounterUpdate {
@@ -786,13 +838,12 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             stored: !inserted.is_empty(),
         })
         .await?;
-        // T10
-        tx.commit().await?;
         let verdict = match plan.verdict {
             PlanVerdict::Continue => StepLogVerdict::Continue,
             PlanVerdict::FinalOnly => StepLogVerdict::FinalOnly,
         };
-        Ok(Transacted {
+        // T10 is the caller's.
+        Ok(Within::Commit(Transacted {
             answer: BatchAnswer {
                 verdict,
                 stored_through_sequence: counters.last_sequence,
@@ -800,7 +851,7 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             dropped: saturated_drops(&stream.counters, &counters, &plan.drops),
             stored: inserted,
             cross_tenant: false,
-        })
+        }))
     }
 
     /// T3 to T6: the session, the policies and the stream lock, the stream row, the plan and the tenant allowance. An
@@ -869,14 +920,24 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         failure: TxFailure,
     ) -> Result<Transacted, TxFailure> {
         let mut tx = self.store.begin().await?;
-        let patterns = tx
-            .binding_patterns(tenant, lease.namespace, subject)
-            .await?;
-        let role = tx.membership_role(tenant, subject).await?;
-        tx.rollback().await?;
-        if authorized(&AuthorityRead { patterns, role }, lease.activity.as_deref()) {
+        // T1 again, for its lock timeout: the two reads take only the table locks of a read.
+        let read = async {
+            tx.assign_transaction_id().await?;
+            let patterns = tx
+                .binding_patterns(tenant, lease.namespace, subject)
+                .await?;
+            let role = tx.membership_role(tenant, subject).await?;
+            Ok::<_, StoreError>(AuthorityRead { patterns, role })
+        }
+        .await;
+        roll_back(tx).await;
+        if authorized(&read?, lease.activity.as_deref()) {
             Err(failure)
         } else {
+            if matches!(failure, TxFailure::LockTimeout) {
+                // data-model.md §7: a batch's 55P03 is counted whatever it is answered.
+                metrics::counter!("step_log_lock_timeouts_total").increment(1);
+            }
             Ok(Transacted::answer(BatchAnswer::stop(StopReason::Authority)))
         }
     }
@@ -894,6 +955,33 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         if let Err(error) = self.store.record_denial(&record).await {
             tracing::error!(%error, action = %record.action(), "failed to record audit entry");
         }
+    }
+}
+
+/// How the work inside a batch's transaction ended, for the owner of the transaction to end it before it answers.
+enum Within {
+    /// T10: commit, then answer.
+    Commit(Transacted),
+    /// Roll back, then answer.
+    RollBack(Transacted),
+    /// T2 found no row holding this lease: roll back, then look for a run of another tenant (`LEASE`).
+    NoLease,
+    /// T3 or T4 failed: roll back, then read the authority in a transaction of its own.
+    Failed {
+        lease: LeaseRead,
+        failure: TxFailure,
+    },
+}
+
+/// Rolls `tx` back before an answer is given; a failure is logged by kind and SQLSTATE only (the pool then closes the
+/// connection, which ends the transaction).
+async fn roll_back<T: StepLogTx>(tx: T) {
+    if let Err(error) = tx.rollback().await {
+        tracing::warn!(
+            kind = error.kind(),
+            sqlstate = error.sqlstate(),
+            "the rollback of a step-log batch failed"
+        );
     }
 }
 
@@ -1093,7 +1181,10 @@ mod tests {
     };
     use sagat_domain::workflow::NodeId;
 
-    use super::{LeaseRead, StepLogRecordIn, prepare, report_fence_allows, saturated_drops, scrub};
+    use super::{
+        LeaseRead, StepLogRecordIn, fence_allows as report_fence_allows, prepare, saturated_drops,
+        scrub,
+    };
 
     fn record(message: &str) -> StepLogRecordIn {
         StepLogRecordIn {
@@ -1274,6 +1365,19 @@ mod tests {
         for hidden in ["171", "205", "worker-subject-name"] {
             assert!(!printed.contains(hidden), "{printed}");
         }
+    }
+
+    /// A worker time PostgreSQL cannot store is dropped and the record kept.
+    #[test]
+    fn a_worker_time_outside_the_years_one_to_9999_is_dropped() {
+        let mut input = record("m");
+        // About the year −4368, which `time` holds and PostgreSQL's `timestamptz` refuses.
+        input.worker_time =
+            Some(time::OffsetDateTime::from_unix_timestamp(-200_000_000_000).expect("a time"));
+        assert_eq!(prepare(&input).row.worker_time, None);
+        let kept = time::OffsetDateTime::from_unix_timestamp(1_795_000_000).expect("a time");
+        input.worker_time = Some(kept);
+        assert_eq!(prepare(&input).row.worker_time, Some(kept));
     }
 
     /// The shared counter rises by the stream's saturated rise, split by reason (D041-140 (7)).

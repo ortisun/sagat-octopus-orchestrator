@@ -510,6 +510,8 @@ Server, each metric with exactly one producer (decision D041-128):
   script service (task T041-13).
 - `step_log_ingest_seconds`, `step_log_lock_timeouts_total` (a batch's `55P03`, whatever lock it met), and
   `step_log_quota_retries_total`: the ingest.
+- `step_log_cross_tenant_check_failures_total` (no label): the ingest, when the check for a run of another tenant after
+  a `LEASE` answer fails, so that a skipped cross-tenant audit is never silent (decision D041-148 (9)).
 - `step_log_quota_top_ups_total{outcome}` (`room`, `made`, `limit`, `busy`, `contended`, `error`): the store,
   one per top-up, from its answer (task T041-36).
 - `step_log_quota_fallbacks_total` (no label): the store, one per carry that returned `path = refill` (task T041-36).

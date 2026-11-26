@@ -214,19 +214,37 @@ async fn a_malformed_batch_is_refused_and_stores_nothing() {
         unknown.level = None;
         let mut too_large = batch(&a, records([1]));
         too_large.encoded_len = 192 * 1024 + 1;
-        for bad in [
-            batch(&a, Vec::new()),
-            batch(&a, records([2, 1])),
-            batch(&a, records([1, 1])),
-            batch(&a, records([0])),
-            batch(&a, records([1 << 62])),
-            batch(&a, vec![unknown]),
-            batch(&a, records(1..=501)),
-            too_large,
+        for (bad, named) in [
+            (batch(&a, Vec::new()), "a step-log batch holds no record"),
+            (
+                batch(&a, records([2, 1])),
+                "step-log sequences are not strictly increasing",
+            ),
+            (
+                batch(&a, records([1, 1])),
+                "step-log sequences are not strictly increasing",
+            ),
+            (
+                batch(&a, records([0])),
+                "a step-log sequence is outside 1 to 2^62-1",
+            ),
+            (
+                batch(&a, records([1 << 62])),
+                "a step-log sequence is outside 1 to 2^62-1",
+            ),
+            (
+                batch(&a, vec![unknown]),
+                "a step-log record has an unknown level",
+            ),
+            (
+                batch(&a, records(1..=501)),
+                "a step-log batch holds more than 500 records",
+            ),
+            (too_large, "a step-log batch is larger than 192 KiB"),
         ] {
             let refused = ingest.append(&a.session.principal, &bad).await;
             assert!(
-                matches!(refused, Err(AppError::NotAllowed(_))),
+                matches!(&refused, Err(AppError::NotAllowed(message)) if *message == named),
                 "{bad:?}: {refused:?}"
             );
         }

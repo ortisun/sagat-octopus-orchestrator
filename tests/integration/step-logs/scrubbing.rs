@@ -76,19 +76,30 @@ async fn each_shape_of_both_scrubbers_is_scrubbed_from_every_part_of_a_line() {
     bounded::within("shapes", LIMIT, async {
         let w = world().await;
         let a = leased(&w, "a").await;
+        // One record for the shape in the message, the exception and a string value under a neutral key, and one for
+        // the shape in a key: a key holding a sensitive name hides its value whatever value-scrubbing does, so the two
+        // are kept apart.
         let batch: Vec<StepLogRecordIn> = SHAPES
             .iter()
-            .zip(1..)
-            .map(|((shape, _), sequence)| {
-                line(
-                    sequence,
-                    format!("m {shape} m"),
-                    format!("e {shape} e"),
-                    vec![(
-                        format!("k {shape}"),
-                        FieldValue::String(format!("v {shape} v")),
-                    )],
-                )
+            .zip((1..).step_by(2))
+            .flat_map(|((shape, _), sequence)| {
+                [
+                    line(
+                        sequence,
+                        format!("m {shape} m"),
+                        format!("e {shape} e"),
+                        vec![(
+                            "note".to_owned(),
+                            FieldValue::String(format!("v {shape} v")),
+                        )],
+                    ),
+                    line(
+                        sequence + 1,
+                        format!("m {shape} m"),
+                        format!("e {shape} e"),
+                        vec![(format!("k {shape}"), FieldValue::Int(1))],
+                    ),
+                ]
             })
             .collect();
         send(&ingest(&w), &a, batch).await;
@@ -101,27 +112,32 @@ async fn each_shape_of_both_scrubbers_is_scrubbed_from_every_part_of_a_line() {
         .fetch_all(&w.db.pool)
         .await
         .expect("the lines");
-        assert_eq!(rows.len(), SHAPES.len());
-        for ((sequence, message, exception, fields), (shape, secret)) in rows.iter().zip(SHAPES) {
-            for (part, text) in [
-                ("message", message),
-                ("exception", exception),
-                ("fields", fields),
-            ] {
-                assert!(
-                    !text.contains(secret),
-                    "{sequence} {part}: {shape:?} stored as {text:?}"
-                );
-                assert!(text.contains("[REDACTED]"), "{sequence} {part}: {text:?}");
+        assert_eq!(rows.len(), 2 * SHAPES.len());
+        for (pair, (shape, secret)) in rows.chunks(2).zip(SHAPES) {
+            for (sequence, message, exception, fields) in pair {
+                for (part, text) in [("message", message), ("exception", exception)] {
+                    assert!(
+                        !text.contains(secret),
+                        "{sequence} {part}: {shape:?} stored as {text:?}"
+                    );
+                    assert!(text.contains("[REDACTED]"), "{sequence} {part}: {text:?}");
+                }
+                assert!(!fields.contains(secret), "{sequence}: {fields:?}");
             }
-            let object: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(fields).expect("canonical JSON");
-            let (key, value) = object.iter().next().expect("one field");
-            let value = value.as_str().expect("a string value");
-            for (part, text) in [("key", key.as_str()), ("value", value)] {
-                assert!(!text.contains(secret), "{sequence} {part}: {text:?}");
-                assert!(text.contains("[REDACTED]"), "{sequence} {part}: {text:?}");
-            }
+            let value: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&pair[0].3).expect("canonical JSON");
+            let value = value["note"].as_str().expect("the value");
+            assert!(
+                value.contains("[REDACTED]") && value.starts_with("v "),
+                "{shape:?}: {value:?}"
+            );
+            let key: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&pair[1].3).expect("canonical JSON");
+            let (key, _) = key.iter().next().expect("one field");
+            assert!(
+                key.contains("[REDACTED]") && key.starts_with("k "),
+                "{shape:?}: {key:?}"
+            );
         }
     })
     .await;

@@ -2968,14 +2968,21 @@ where
         // Binding authority precedes session/catalog/membership locks, matching revocation.
         self.ensure_bound(principal, tx, task).await?;
         let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
-        let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
+        let run = tx.parts().1;
+        // The stop rule is one domain function, which the step-log ingest's T2 applies too (OD-2026-11-16-11).
+        let valid_step = run.instance(task.instance).is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)
                 && s.generation() == task.fence.generation
-                && (allow_cancellation_report || !s.cancel_requested())
-        }) && (allow_cancellation_report
-            || tx.parts().1.stop_reason().is_none()
-            || task.instance.node().is_derived())
-            && !tx.parts().1.is_finished();
+                && sagat_domain::execution::report_fence_allows(
+                    sagat_domain::execution::ReportFence {
+                        cancel_requested: s.cancel_requested(),
+                        run_stopping: run.stop_reason().is_some(),
+                        run_finished: run.is_finished(),
+                        derived_node: task.instance.node().is_derived(),
+                    },
+                    allow_cancellation_report,
+                )
+        });
         if !valid_step
             || !tx
                 .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
