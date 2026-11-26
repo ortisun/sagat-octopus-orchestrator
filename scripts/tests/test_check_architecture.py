@@ -723,11 +723,6 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertIn("feature `testing` enables", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-
 class TheRuntimeRoleCannotDeleteTheJournal(unittest.TestCase):
     """Constitution 5.1.0, principle I: journal rows leave only by two audited paths, and the runtime role holds no DELETE
     on runs, steps, the journal or payloads (architecture review of 5.1.0, Major 6)."""
@@ -750,16 +745,34 @@ class TheRuntimeRoleCannotDeleteTheJournal(unittest.TestCase):
                     'GRANT DELETE ON "payloads" TO sagat_app, sagat_other;',
                     "GRANT DELETE ON ALL TABLES IN SCHEMA public TO sagat_app;",
                     "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT DELETE ON TABLES TO sagat_app;",
-                    "GRANT DELETE ON runs TO PUBLIC;"):
+                    "GRANT DELETE ON runs TO PUBLIC;",
+                    "GRANT DELETE ON runs TO sagat_app WITH GRANT OPTION;",
+                    "GRANT DELETE ON runs TO sagat_app GRANTED BY sagat_owner;",
+                    "GRANT DELETE ON run_payloads TO sagat_app;",
+                    "GRANT sagat_owner TO sagat_app;",
+                    "ALTER TABLE runs OWNER TO sagat_app;",
+                    "DO $$ BEGIN EXECUTE format('GRANT DELETE ON %I TO sagat_app', 'runs'); END $$;"):
             with self.subTest(sql=sql):
                 code, out = creator_check(creator_tree(**{self.MIGRATION: "-- a comment\n" + sql + "\n"}))
                 self.assertEqual(code, 1, out)
                 self.assertIn(f"{self.MIGRATION}:2", out)
                 self.assertIn("principle I", out)
 
+    def test_a_down_migration_is_read_too(self):
+        down = self.MIGRATION.replace(".up.sql", ".down.sql")
+        code, out = creator_check(creator_tree(**{down: "GRANT TRUNCATE ON steps TO sagat_app;\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{down}:1", out)
+
     def test_a_grant_on_another_table_or_a_comment_passes(self):
         for sql in ("GRANT DELETE ON runs_archive TO sagat_app;", "-- GRANT DELETE ON runs TO sagat_app;",
-                    "GRANT DELETE ON runs TO sagat_owner;", "REVOKE DELETE ON runs FROM sagat_app;"):
+                    "GRANT DELETE ON runs TO sagat_owner;", "REVOKE DELETE ON runs FROM sagat_app;",
+                    "REVOKE GRANT OPTION FOR SELECT ON runs FROM sagat_app;\nGRANT SELECT ON steps TO sagat_app;"):
             with self.subTest(sql=sql):
                 code, out = creator_check(creator_tree(**{self.MIGRATION: sql + "\n"}))
                 self.assertEqual(code, 0, out)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

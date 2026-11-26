@@ -19,28 +19,38 @@ Journal rows are deleted on two audited paths only, and only after a verified ar
   terminal with its whole tree terminal and, for a chain, the chain final, with its effects settled
   (no unresolved unknown outcome or review, and a run that ended `PARTIAL` or `COMPENSATION_FAILED`
   only after an authorized, audited human resolution under Principle III), and under the further
-  conditions its design sets. Its archive is written and read back with matching size and SHA-256
-  before anything is deleted. One privileged database function then works in bounded
-  transactions: the first takes the run's lock, checks eligibility again and turns the run row
-  into a stub that points to the archive and accepts no further write; the others remove the run's
-  journal and content, or, in the mark-only form, leave them in their month's partition for the
-  second path to drop; an interrupted purge resumes until nothing of the journal is left; and a
-  value-free audit record commits with the last of them.
+  conditions its design sets. A change that shortens the retention or moves the archive's
+  destination applies only after a notice period announced to the namespace's administrators. The
+  archive is written and read back with matching size and SHA-256 before anything is deleted. One
+  privileged database function, executable only by a retention role that the runtime role neither
+  is nor can become and that alone records an archive as verified, then works in bounded
+  transactions: the first takes the run's lock, checks eligibility again, checks that the archive
+  covers the run's journal up to the last sequence it finds (otherwise it deletes nothing and the
+  run is archived again), turns the run row into a stub that carries the archive's location, size
+  and SHA-256 and accepts no further write, and commits a value-free audit record with the policy
+  revision and the archive's digest; the others remove the run's journal and content, or, in the
+  mark-only form, leave them in their month's partition for the second path to drop; an
+  interrupted purge resumes until nothing of the journal is left; and a second audit record
+  commits with the last of them.
 - **Partition retirement** (design 049). The operator, with a credential that no platform process
-  holds, drops a month's partitions of the journal tables only when every run in them has been
-  purged on the first path, in full or in its mark-only form, and only after checking that the
-  detached partitions hold no row of a run that is not purged. The drop commits with the
-  retirement's audit record and one per affected tenant; every step is recorded, so that a crash
-  resumes from where it stopped.
+  holds or can obtain, drops a month's partitions of the journal tables only when every run in
+  them has been purged on the first path, in full or in its mark-only form, and only after
+  checking that the detached partitions hold no row of a run that is not purged. The drop commits
+  with the retirement's audit record and one per affected tenant; every step is recorded, so that
+  a crash resumes from where it stopped; and a partition that is missing without a completed
+  retirement record is detected and alarmed.
 
 Nothing else deletes or rewrites a journal entry: never an entry of a run that can still change,
 never without a verified archive (a policy that keeps no archive is not admitted), and a journal
 whose purge has started is removed in full; the runtime role holds no `DELETE` or `TRUNCATE` on
 runs, steps, the journal or payloads. After a purge the verified archive is the only copy of that
-run's transitions, outside the database's transactions and backups: it is deleted only by an
-audited act under its namespace's policy, and an archive in a customer's own store is as durable
-as that store, which the platform does not promise. These paths and that copy are the only
-exceptions to the first and third sentences of this principle.
+run's transitions, outside the database's transactions and backups: every read of it is checked
+against the size and SHA-256 its stub carries before it is served or used; it is deleted only by
+an audited act under its namespace's policy; and an archive in a customer's own store is as
+durable as that store, which the platform does not promise. For a run that ended `PARTIAL` or
+`COMPENSATION_FAILED`, that archive is the step and history evidence that Principle III retains.
+These paths and that copy are the only exceptions to the first and third sentences of this
+principle.
 
 *Rationale:* a transition lost after the commit, or applied twice, cannot be repaired afterwards;
 history is removed only by a deliberate, audited act once nothing can depend on it any more.
@@ -153,7 +163,8 @@ decides:
   applied in one transaction with the run locked, only while no workflow task is leased and the
   run has not completed an activation past the one that was verified, and only when the server
   finds that a replay of the run's own history against the target code reproduces the journaled
-  commands and every outstanding step fits the target's envelope; events committed after that
+  commands, every outstanding step fits the target's envelope and the target admits every accepted
+  signal, update and cancellation that the function has not yet seen; events committed after that
   activation and not yet seen by the function are delivered in the next activation, on the target
   code. Each move is journaled and audited, a refused move leaves the run unchanged, a completion
   from a session of the former pin is stale, and no policy moves runs by itself; that is not an
@@ -202,9 +213,11 @@ executor-read exception is limited to three declared sets:
   exception does not itself authorize database execution or relax the isolation rule above.
 - A declared resource may disclose, to the executor of a step whose immutable task definition
   declares it, the non-secret settings of its pinned revision and, for an OAuth credential, only
-  its current access token, never a refresh token, a client secret or a private or signing key. A
-  secret that one of its slots binds reaches an executor only as a declared secret of the first
-  set. The authenticated caller's current
+  its current access token, never a refresh token, a client secret or a private or signing key. An
+  access token so disclosed is a secret value under this principle, and one with no expiry is
+  disclosed only to a managed integration runner. Any other secret that one of its slots binds
+  reaches an executor only as a declared secret of the first set, bound like managed delivery when
+  that executor is a managed integration runner. The authenticated caller's current
   membership, worker/activity binding and pool-delivery policy, the publisher's and initiator's
   permission to use the resource and to cause effects through it, and the secret-access rules of
   its slots MUST authorize that disclosure. Delivery to a managed integration runner is bound like
@@ -409,7 +422,7 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   files it changes) and the integration suites that it changes, and, when it changes the code that
   runs a lease or a completion, the suite that budgets what they cost the database and, once
   design 052 has built it, the throughput regression gate (the base and the head of the pull
-  request run the same scenarios, alternated, on the standard hosted runner, and the gate fails
+  request run the base's scenarios, alternated, on the standard hosted runner, and the gate fails
   on a slowdown larger than the minimum detectable effect that its recorded pilot measured on that
   runner, by the rule design 052 states), and, when it
   changes the code that captures, sends, stores or serves step logs (the server's step-log modules,

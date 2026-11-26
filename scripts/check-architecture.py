@@ -514,20 +514,37 @@ def run_creator_errors(root):
 
 
 # Constitution 5.1.0, principle I: journal rows leave only by two audited paths (feature 020's per-run purge, design 049's
-# partition retirement), both privileged, and the runtime role holds no DELETE on runs, steps, the journal or payloads.
-# A migration is where such a grant would come from, so every GRANT of DELETE, TRUNCATE or ALL on one of those tables
-# (named, or through ALL TABLES or default privileges) to the runtime role or to PUBLIC is refused.
-JOURNAL_TABLES = {"runs", "steps", "run_events", "payloads"}
+# partition retirement), both privileged, and the runtime role holds no DELETE or TRUNCATE on runs, steps, the journal
+# or payloads. A migration (up or down) is where such a grant would come from, so every way of giving it is refused: a
+# GRANT of DELETE, TRUNCATE or ALL on one of those tables (named, or through ALL TABLES or default privileges) to the
+# runtime role or to PUBLIC, with or without GRANT OPTION or GRANTED BY; any role granted to the runtime role; a table
+# given to the runtime role as owner; and such a GRANT built as dynamic SQL. A runtime check of the privileges the role
+# really has (through memberships too) is feature 020's privilege sweep.
+JOURNAL_TABLES = {"runs", "steps", "run_events", "payloads", "run_payloads"}
 RUNTIME_GRANTEES = {"sagat_app", "public"}
 GRANT_STATEMENT = re.compile(r"\bgrant\s+(?P<privs>.*?)\s+on\s+(?P<target>.*?)\s+to\s+(?P<grantees>[^;]*);", re.I | re.S)
+ROLE_GRANT = re.compile(r"\bgrant\s+(?P<roles>[\w\"]+(?:\s*,\s*[\w\"]+)*)\s+to\s+(?P<grantees>[^;]*);", re.I)
+OWNER_TO_RUNTIME = re.compile(r"\bowner\s+to\s+\"?sagat_app\"?\b", re.I)
+SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
+DYNAMIC_GRANT = re.compile(r"\bgrant\b.*\b(delete|truncate|all)\b.*\bto\s+\"?sagat_app\b", re.I | re.S)
+GRANTEE_TAIL = re.compile(r"\b(with\s+grant\s+option|granted\s+by)\b.*$", re.I | re.S)
+
+
+def grantee_set(text):
+    return {g.strip().strip('"').lower() for g in GRANTEE_TAIL.sub("", text).split(",") if g.strip()}
 
 
 def journal_delete_grant_errors(root):
     errors = []
     base = pathlib.Path(root)
-    for path in sorted(base.glob("crates/infra-postgres/migrations/*.up.sql")):
+    for path in sorted(base.glob("crates/infra-postgres/migrations/*.sql")):
         text = path.read_text()
+        rel = path.relative_to(base).as_posix()
+        # comments and REVOKE statements carry no grant ("REVOKE GRANT OPTION FOR ..." is not one)
         masked = re.sub(r"--[^\n]*", lambda m: " " * len(m.group(0)), text)
+        masked = re.sub(r"\brevoke\b[^;]*;", lambda m: re.sub(r"[^\n]", " ", m.group(0)), masked, flags=re.I)
+        line = lambda offset: text.count(chr(10), 0, offset) + 1
+        why = "journal rows leave only by the two audited privileged paths of principle I (constitution 5.1.0)"
         for m in GRANT_STATEMENT.finditer(masked):
             if not re.search(r"\b(delete|truncate|all)\b", m.group("privs"), re.I):
                 continue
@@ -538,14 +555,23 @@ def journal_delete_grant_errors(root):
                 names = {n.strip().strip('"').split(".")[-1].strip('"')
                          for n in re.sub(r"^table\s+", "", target).split(",")}
                 hit = ", ".join(sorted(names & JOURNAL_TABLES))
-            grantees = {g.strip().strip('"').lower() for g in m.group("grantees").split(",")}
-            if hit and grantees & RUNTIME_GRANTEES:
+            if hit and grantee_set(m.group("grantees")) & RUNTIME_GRANTEES:
                 privileges = re.sub(r"\s+", " ", m.group("privs").strip())
-                errors.append(
-                    f"{path.relative_to(base).as_posix()}:{text.count(chr(10), 0, m.start()) + 1}: a migration grants "
-                    f"{privileges} on {hit} to the runtime role: journal rows leave only by the "
-                    f"two audited privileged paths of principle I (constitution 5.1.0)"
-                )
+                errors.append(f"{rel}:{line(m.start())}: a migration grants {privileges} on {hit} to the runtime role: {why}")
+        for m in ROLE_GRANT.finditer(masked):
+            if re.search(r"\bon\b", m.group(0), re.I):
+                continue
+            if grantee_set(m.group("grantees")) & RUNTIME_GRANTEES:
+                errors.append(f"{rel}:{line(m.start())}: a migration grants the role {m.group('roles')} to the runtime role, "
+                              f"which would carry that role's privileges: {why}")
+        for m in OWNER_TO_RUNTIME.finditer(masked):
+            errors.append(f"{rel}:{line(m.start())}: a migration makes the runtime role the owner of a relation, which may "
+                          f"delete from it: {why}")
+        for m in SQL_LITERAL.finditer(masked):
+            if not DYNAMIC_GRANT.search(m.group(0)):
+                continue
+            errors.append(f"{rel}:{line(m.start())}: a migration builds a GRANT of DELETE, TRUNCATE or ALL to the runtime role "
+                          f"as dynamic SQL: {why}")
     return errors
 
 

@@ -73,10 +73,13 @@ checks. The managed database capability delivers only its pinned connection cred
 authorized lease-owning database-runner. Ordinary delivery is token-capability plus current caller
 authority, not an additional original-worker-session ownership check. Since constitution 5.1.0 a third declared set
 exists (features 021 and 047, not built): a declared resource may disclose to the executor of a step that declares it
-the settings of its pinned revision and the values its slots bind, secrets included, and for an OAuth credential only
-the current access token, never a refresh token, a client secret or a private or signing key; a managed integration
-runner is bound like the database-runner, an ordinary worker or sandbox runner like ordinary delivery, and a workflow
-task of design 044 is never such an executor. Every path revalidates identity/lease and selected
+the non-secret settings of its pinned revision and, for an OAuth credential, only its current access token, never a
+refresh token, a client secret or a private or signing key. That access token is a secret value (it never reaches the
+journal, logs, audit or telemetry), and a token with no expiry goes only to a managed integration runner. Any other
+secret a slot binds (an API key, a password) reaches an executor only as a declared secret of the first set, bound like
+managed delivery when the executor is a managed integration runner. A managed integration runner is bound like the
+database-runner, an ordinary worker or sandbox runner like ordinary delivery, and a workflow task of design 044 is never
+such an executor. Every path revalidates identity/lease and selected
 input/revision after provider I/O and commits a value-free audit before returning values. These
 disclosure exceptions authorize neither database execution nor general/classified-secret reads. See the
 [amendment impact record](../governance/constitution-3.0.0-sync-impact.md) and the
