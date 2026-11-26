@@ -865,3 +865,170 @@ async fn blocked_behind_waiters(w: &World, holder: i32) -> i64 {
     .await
     .expect("activity")
 }
+
+/// Decision D022-156 as amended (security check of 2026-11-26, Low 1): the hand-back of the last step of a run being
+/// cancelled ends the run, whose commit locks the active-run counter row and gives back the run's own permit. The
+/// withdrawal takes the counter row first, then the semaphores (the run's own among them), then the windows, as ADR-0050
+/// orders them. A transaction holding the counter row and the run's semaphore, as an admission of the namespace would, then
+/// takes the step's window: it finishes without a deadlock, and so does the hand-back, which withdraws the lease and ends
+/// the run.
+#[tokio::test]
+async fn a_hand_back_that_ends_a_cancelling_run_takes_the_counter_row_before_the_keys() {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let mut doc = document("withdrawn-ends-run", "g", vec![slot(activity("g"))]);
+    doc["concurrency"] = json!({"key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let session = w.session(&["act.g"]).await;
+    let run = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let task = lease(&w, &session, run, 1).await;
+    w.operate_run(run, RunOperation::Cancel).await;
+    sqlx::query("UPDATE worker_sessions SET accepted_protocol_minor = 8 WHERE id = $1")
+        .bind(session.worker_id)
+        .execute(&w.db.pool)
+        .await
+        .expect("a host of protocol 1.8");
+    let tenant = w.admin.tenant_id().as_uuid();
+    let mut holder = w.db.pool.begin().await.expect("a transaction");
+    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *holder)
+        .await
+        .expect("the holder's backend");
+    sqlx::query("SELECT run_active_counts_lock_slot($1, $2)")
+        .bind(tenant)
+        .bind(run.as_uuid())
+        .execute(&mut *holder)
+        .await
+        .expect("the counter row is held");
+    sqlx::query("SELECT 1 FROM concurrency_semaphores WHERE tenant_id = $1 AND permit_scope = 'RUN' FOR UPDATE")
+        .bind(tenant)
+        .execute(&mut *holder)
+        .await
+        .expect("the run's semaphore is held");
+    let service = withdrawing(&w);
+    let principal = session.principal.clone();
+    let handed = task.clone();
+    let hand_back = tokio::spawn(async move {
+        service
+            .fail(
+                &principal,
+                &crate::support::engine::task_ref(&handed),
+                "TASK_NOT_STARTED",
+                true,
+                "hand-back-ends-run",
+            )
+            .await
+    });
+    crate::support::bounded::within(
+        "the hand-back waits for the counter row",
+        std::time::Duration::from_secs(120),
+        async {
+            while blocked_count(&w, holder_pid).await < 1 {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    sqlx::query("SET LOCAL lock_timeout = '10s'")
+        .execute(&mut *holder)
+        .await
+        .expect("a bound");
+    sqlx::query(
+        "SELECT 1 FROM rate_limit_windows WHERE tenant_id = $1 AND limit_scope = 'STEP' FOR UPDATE",
+    )
+    .bind(tenant)
+    .execute(&mut *holder)
+    .await
+    .expect("the window, after the counter row and the semaphore, without a deadlock");
+    holder.commit().await.expect("committed");
+    hand_back
+        .await
+        .expect("the hand-back ended")
+        .expect("the hand-back is withdrawn");
+    assert_eq!(count(&w, run, "step.lease_withdrawn").await, 1);
+    assert_eq!(w.run_status(run).await.as_str(), "CANCELLED");
+    assert_eq!(count(&w, run, "rate_limit.returned").await, 1);
+    assert_eq!(rows(&w, run, "g").await, (0, 0, 0, 0));
+    w.assert_consistent(run).await;
+}
+
+/// Decision D022-157, its boundary (security check of 2026-11-26): another grant decided at exactly the withdrawn lease's
+/// instant plus that grant's window no longer counted the slot (the count is half-open), so the withdrawal is refused; one
+/// microsecond earlier the slot still counted for it, so the withdrawal is honoured. The other grant's instant is moved by
+/// hand, so only the journal is checked afterwards.
+#[tokio::test]
+async fn a_grant_at_exactly_the_end_of_the_window_refuses_the_withdrawal_and_one_microsecond_earlier_does_not()
+ {
+    let w = gated_world().await;
+    require_lease_withdrawal(&w).await;
+    let hourly = publish(&w, shared("withdrawn-edge-h", 3, "hour")).await;
+    let secondly = publish(&w, shared("withdrawn-edge-s", 1, "second")).await;
+    let session = w.session(&["act.g"]).await;
+    let account = json!({"accountId": "acct-1"});
+    let held = w.start(hourly, &account).await;
+    let task = lease(&w, &session, held, 1).await;
+    assert_eq!(
+        w.scheduler.record_rate_leases().await.rate_leases_recorded,
+        1
+    );
+    let leased = leased_at(&w, held).await.expect("recorded");
+    let other = w.start(secondly, &account).await;
+    crate::support::flow_control::until_past(&w.db.pool, leased + 1_000_000).await;
+    crate::support::flow_control::keys_due(&w.db.pool).await;
+    for _ in 0..8 {
+        if rows(&w, other, "g").await.2 == 1 {
+            break;
+        }
+        w.scheduler.tick().await;
+    }
+    granted(&w, other, "g", (false, true)).await;
+    let place = |offset_us: i64| {
+        let pool = w.db.pool.clone();
+        async move {
+            let mut tx = pool.begin().await.expect("a transaction");
+            for statement in [
+                "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
+                "UPDATE rate_limit_grants o SET granted_at = (SELECT g.leased_at FROM rate_limit_grants g \
+                    WHERE g.run_id = $1 AND g.node = 'g') + interval '1 second' + $3 * interval '1 microsecond' \
+                  WHERE o.run_id = $2 AND o.node = 'g'",
+                "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
+                    .bind(held.as_uuid())
+                    .bind(other.as_uuid())
+                    .bind(offset_us)
+                    .execute(&mut *tx)
+                    .await
+                    .expect(statement);
+            }
+            tx.commit().await.expect("placed");
+        }
+    };
+    let withdraw_once = || {
+        let service = withdrawing(&w);
+        let lease_of = UndeliveredLease::of(w.admin.tenant_id(), &task);
+        async move {
+            service
+                .withdraw_undelivered(vec![lease_of], WithdrawalCause::NotSent)
+                .await
+        }
+    };
+    place(0).await;
+    assert_eq!(
+        withdraw_once().await,
+        [WithdrawalOutcome::SlotSpent],
+        "exactly at the end"
+    );
+    assert_eq!(leased_at(&w, held).await, Some(leased), "nothing changed");
+    place(-1).await;
+    assert_eq!(
+        withdraw_once().await,
+        [WithdrawalOutcome::Withdrawn],
+        "one microsecond earlier"
+    );
+    assert_eq!(leased_at(&w, held).await, None);
+    w.store
+        .verify_run(w.admin.tenant_id(), held)
+        .await
+        .expect("the journal replays");
+}

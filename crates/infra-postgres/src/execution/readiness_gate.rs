@@ -1681,8 +1681,9 @@ impl PgRunTx {
     }
 
     /// Locks, in one sorted pass, every key row the withdrawals of `leases` (root steps and the attempts their leases
-    /// carry) may touch: the semaphore of each permit the attempt holds, then the window of each rate grant, each table
-    /// sorted (slot 7 before slot 8b, D022-038), then the grants themselves; and says of each lease whether its rate slot is
+    /// carry) may touch: the run's active-run counter row (slot 6: a withdrawal in a stopping run can end it), the semaphore
+    /// of each permit the attempts hold and of the run's own permit, then the window of each rate grant, each table sorted
+    /// (slot 6, then 7, then 8b, ADR-0050 and D022-038), then the grants themselves; and says of each lease whether its rate slot is
     /// spent (decisions D022-156 and D022-157). Called before the first withdrawal command of the transaction, so the commits
     /// that follow take no key row they do not hold, and nothing can change the judgement before the commit. A rate-gated
     /// root step `LEASED` at the attempt whose grant is gone is a corrupt projection.
@@ -1693,6 +1694,44 @@ impl PgRunTx {
         let (mut semaphores, mut windows): (Vec<ExistingKey>, Vec<ExistingKey>) =
             (Vec::new(), Vec::new());
         let mut rated = Vec::with_capacity(leases.len());
+        let gated = leases.iter().any(|(node, _)| {
+            self.def
+                .node(node)
+                .is_some_and(|declared| declared.flow_control().is_gated())
+        });
+        if gated {
+            // a withdrawal that ends a stopping run locks the counter row in its commit, before any key (slot 6 of
+            // ADR-0050): taken here first, whatever the run's state (security check of 2026-11-26, Low 1)
+            sqlx::query("SELECT run_active_counts_lock_slot($1, $2)")
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+            // and the run's own permit, which the end of the run gives back
+            if self.def.run_flow_control().concurrency().is_some() {
+                let row: Option<(String, String, Vec<u8>)> = sqlx::query_as(
+                    "SELECT pool, group_name, key_digest FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 \
+                        AND holder_scope = 'RUN'",
+                )
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .fetch_optional(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+                if let Some((pool, group, digest)) = row {
+                    semaphores.push(ExistingKey {
+                        tenant: self.info.tenant_id,
+                        namespace: self.info.namespace_id,
+                        pool: GatePool::parse(&pool).ok_or_else(|| corrupt("gate pool"))?,
+                        level: GateLevel::Run,
+                        group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                            .map_err(|_| corrupt("gate group"))?,
+                        digest: digest.try_into().map_err(|_| corrupt("gate key"))?,
+                    });
+                }
+            }
+        }
         for (node, attempt) in leases {
             let Some(declared) = self.def.node(node) else {
                 rated.push(false);
