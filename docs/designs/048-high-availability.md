@@ -140,7 +140,8 @@ From the code and documents on `develop` at `546d5aa5`:
   fail within 10 s (Requirement 048-005); a statement to a live server is bounded by its `statement_timeout` (5 s). Idle
   connections are tested before reuse (sqlx's `test_before_acquire`, its default).
 - **Requirement 048-011 Every connection is checked, and writes are explicit.** Every database connection of the
-  platform (the pools of the control plane and the engine, the registry's, and every command of `control-plane`) MUST
+  platform (the pools of the control plane and the engine, the registry's, and every command of `control-plane` but the
+  read-write profile of `migrate` and `seed-dev`, Requirement 048-013) MUST
   send, as startup options, `synchronous_commit=on` and `default_transaction_read_only=on`, which outrank a role's or a
   database's setting; `scripts/check-architecture.py` refuses `synchronous_commit`, `set_config` and
   `default_transaction_read_only` in any statement of `crates/infra-postgres`, `apps/` and the migrations. Its
@@ -164,7 +165,8 @@ From the code and documents on `develop` at `546d5aa5`:
   does for `BEGIN`) and waits for it at most the commit deadline (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at
   least twice the statement timeout, the name feature 032 also uses). The outcome is applied when `COMMIT` succeeds. It
   is not applied when the server answers `COMMIT` with an error and then, within the deadline, with ReadyForQuery whose
-  status is idle (the task waits for it, a ping if need be): PostgreSQL raises every error of a commit (deferred
+  status is idle (the task waits for it, a ping if need be; after an error to `COMMIT` the transaction is over, so any
+  ReadyForQuery that follows is idle, and a successful ping is enough, with no change to the vendored crates): PostgreSQL raises every error of a commit (deferred
   constraints, a serialization failure, the deferred quota triggers' `54000`, which keeps today's mapping to
   `QuotaExceeded`) before it writes the commit record, while an error after the commit record becomes a `PANIC` that
   never reaches ReadyForQuery. This generalizes `confirmed_abort` (`capacity_finish.rs`) for the commit itself. Every
@@ -223,8 +225,11 @@ From the code and documents on `develop` at `546d5aa5`:
   and, the first time any process confirms, into the one-row `registry_first_confirmation`, and returns it. It is
   committed through `commit_safely` with no deadline (the keepalive bounds a dead peer, and an answer that comes late is
   still used). When it is applied, the process clears the reason, under the gate's lock, only if its read showed the
-  server not in recovery, `synchronous_commit` on and, when required, synchronous standby names present, and no report
-  with a later ticket has shown a different identity; it then sets the returned identity as confirmed. Since a standby
+  server not in recovery, `synchronous_commit` on and, when required, synchronous standby names present, only the reasons
+  set before its ticket (a null token counts as a different identity), and no report
+  with a later ticket has shown a different identity; it then sets the returned identity as confirmed and removes it from
+  the superseded set, where a stale null report may have put it. A pass that commits but does not clear waits 1 s before
+  the next. Since a standby
   receives WAL in order, everything committed before that write is then on a standby. Then the process sends a registry
   heartbeat at once, so that readiness returns. Pools are built lazily (`connect_lazy_with`); a process starts by
   registering, a write that waits for a standby, then confirms before it serves; the test support builds its pools
@@ -239,7 +244,8 @@ From the code and documents on `develop` at `546d5aa5`:
   `schedule-trigger-handover`, `capability-activate`) uses the serving profile and `WriteTx`; it waits, up to 60 s, on
   one connection admitted for that purpose, until a live registry row carries the server's current identity as
   confirmed, and otherwise exits with code 1 ("retry later"); it then adopts that identity as its own confirmed one. It
-  proceeds without waiting only on a database where `registry_first_confirmation` is empty (a fresh one, which no
+  proceeds without waiting only on a database where `registry_first_confirmation` is empty or missing (`42P01`, before
+  its migration) (a fresh one, which no
   process has ever confirmed), not on one whose processes are merely down or deregistered. `migrate` waits in the same
   way before a migration that is not its first (design 053's Task 053-4). `script-key`, `healthcheck`, `help` and
   `version` open no database connection.
@@ -280,8 +286,8 @@ From the code and documents on `develop` at `546d5aa5`:
   and 90 s leaves 19 s for latency and the clocks. After its confirmation, an engine's lost-lease pass waits 30 s before
   it reclaims a lease, so that retried reports land first: a control plane confirms within about 1 s of the engine (the
   confirmation's retry cap), turns ready within 5 s, the load balancer follows within E (at most 10 s in the reference),
-  a worker retries within its 5 s backoff and its request takes at most 3 s; 1 + 5 + 10 + 5 + 3 = 24 s, and 30 s leaves
-  6 s of margin. A claim whose commit outcome was unknown may have leased an attempt that no
+  a worker retries within its 5 s backoff and its request takes at most 3 s; with the control plane's 3 s connect,
+  1 + 3 + 5 + 10 + 5 + 3 = 27 s, and 30 s leaves 3 s of margin. A claim whose commit outcome was unknown may have leased an attempt that no
   worker received; that lease expires and, without a `reconcileWith` lookup (feature 037), becomes a review item; the
   drills count these apart, and the delivery acknowledgement of protocol 1.8 (reserved by Owner decision 2026-11-21-6,
   pull request 264) is what lets such a lease be retried without a person. The SDK releases that carry Tasks 048-11 are
@@ -301,7 +307,7 @@ From the code and documents on `develop` at `546d5aa5`:
   sends its heartbeat at once and turns ready at the next probe, within 5 s; a worker's next retry comes within its 5 s
   backoff cap. So a worker's report reaches a committed transition within P + R + 1 + 3 + 5 + E + 5 = P + R + E + 14 s,
   and the target leaves P + R + E at most 60 − 14 = 46 s. An
-  engine holds its shards again within P + R + 3 s plus one keeper wait of 3.6 s and its round; a dead engine's shards are
+  engine holds its shards again within P + R + 1 + 3 = P + R + 4 s plus one keeper wait of 3.6 s and its round; a dead engine's shards are
   free once their 15 s lease, renewed last before the fault, has expired on the database's clock.
 - **Requirement 048-041 The drills.** The Compose drill (`infra/dr/ha-drill.sh`) MUST inject, three times each: (1) the
   primary's container stopped; (2) the primary's container and the platform's containers that share its host label
@@ -335,7 +341,8 @@ From the code and documents on `develop` at `546d5aa5`:
   to it at the fault's start, so that the check exercises the bound when
   the fault disconnects the node from `db-access` and `db-control` but not from `db-probe`; the probe is started for
   this fault only, stopped after the check, and not counted among the processes that must be ready again. The
-  Kubernetes drill asserts the bound too. Reports go to
+  Kubernetes drill asserts the bound too. For fault (3) the report window of Requirement 048-015 (310 s) counts from the fault while its gate
+  counts from the standbys' return 60 s later, so reports that gave up are counted apart for that fault. Reports go to
   `tests/performance/reports/high-availability.md` with the runner (Owner decision 2026-11-25-1), the environment and
   every failure.
 - **Requirement 048-043 The drills gate the release.** A drill MUST exit non-zero when any repetition breaks the
@@ -354,10 +361,11 @@ From the code and documents on `develop` at `546d5aa5`:
   work lost is 0, every process is ready again within 300 s, and the negative control is found.
 - **Success criterion 048-002** The median time to the first committed transition is reported for each fault; for the
   primary's container stopped and a node lost on Compose, it is within 60 s.
-- **Success criterion 048-003** In the Compose drill, a failover whose outage is under 15 s (the 19 s of Requirement 048-016 less 4 s for
-  a request's latency and the clocks) expires no delivered lease,
-  repeats no completed activity, and creates no review item except for a claim whose commit outcome was unknown, for
-  workers on SDKs that carry Task 048-11; this is reported, and gates the release from the first release that ships
+- **Success criterion 048-003** In the Compose drill, no delivered lease expires whose worker's longest gap between
+  successful heartbeats is under 15 s (the 19 s of Requirement 048-016 less 4 s for a request's latency and the clocks),
+  no completed activity is repeated, and no review item is created except for a claim whose commit outcome was unknown,
+  for workers on SDKs that carry Task 048-11; at least one repetition of each fault but (3) must have every worker's gap
+  under 15 s, or the drill says so. Longer gaps are reported. This gates the release from the first release that ships
   those SDKs.
 
 ### User stories
@@ -603,11 +611,11 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
 - [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, make every `UNAVAILABLE` before authentication (`crates/api-http/src/limits.rs`, the public readiness, the authenticator's mapping in `crates/api-http/src/error.rs` and `extract.rs` at those call sites only, since `unavailable()` also serves after authentication, the webhook ingress in `routes/events.rs` and `auth/webhooks.rs`, `crates/api-grpc/src/limits.rs` and `service.rs`, `REGISTRY_SILENT` moved after authentication) one constant answer, `Retry-After` of 2 s and no reason, with one test asserting identical status, headers and body for each cause (a closed gate, a failed storage ping, a silent registry, a failed fetch of the identity provider's keys, a failed session lookup, a webhook whose verifier cannot fetch keys), and amend what states the old public reason (`docs/runbooks/instance-registry.md`, `docs/runbooks/control-plane.md`, `specs/001-platform-foundation/contracts/openapi.yaml`, `specs/018-schedules-bulk-operations/contracts/errors.md`, `specs/022-flow-control-step-policies/contracts/errors.md`, `tests/contract/schedules-bulk-operations/errors.rs`, `tests/integration/schedules-bulk-operations/instances_rest.rs`, `tests/integration/schedules-bulk-operations/instances_process.rs`, `tests/support/api.rs`, the doc comments of `crates/api-http/src/lib.rs` and `limits.rs`, and the hint branch of `crates/api-http/src/error.rs` that becomes dead), with a back-link in Architecture decision 0082 once Architecture decision 0130 is accepted, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
   Refs: Requirement 048-014
-- [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate`, `a_connection_to_a_superseded_server_is_refused`, `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
+- [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate`, `a_connection_to_a_superseded_server_is_refused`, `a_stale_null_read_does_not_supersede_a_fresh_confirmation` (a barrier between the read and its report), `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
   Refs: Requirement 048-011, Requirement 048-013, Requirement 048-014
 - [ ] T048-11 Add the report retry window, the heartbeat retry within the lease's remainder and the register of SDK releases to `sdks/SPEC.md` and the six SDKs, the fault action `unavailableForMs` and the field `reportRetryWindowMs` in the six fault engines, and the scenario `report-through-failover` with its negative case.
   Refs: Requirement 048-015, Requirement 048-016
-- [ ] T048-12 Hold the lost-lease pass for 15 s after a confirmation (`crates/scheduler`), with `the_lost_lease_pass_waits_after_a_confirmation`, and the HA examples' lease time to live.
+- [ ] T048-12 Hold the lost-lease pass for 30 s after a confirmation (`crates/scheduler`), with `the_lost_lease_pass_waits_after_a_confirmation`, and the HA examples' lease time to live.
   Refs: Requirement 048-016
 - [ ] T048-13 Add the two alerts with one rule file per manager, their rule tests in CI's `promtool` step, and the exporters' allow-list in the observability contract test.
   Refs: Requirement 048-012, Requirement 048-013
