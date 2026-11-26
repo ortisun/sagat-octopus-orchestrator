@@ -64,12 +64,13 @@ service WorkerService {
   //   this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
   rpc WriteBlob(stream WriteBlobRequest) returns (WriteBlobResponse);
   rpc ReadBlob(ReadBlobRequest) returns (stream ReadBlobResponse);
-  // Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
-  // records are committed; a record is stored at most once (attempt, generation, sequence).
+  // Added in 1.7 (feature 041). Stores log records of one leased attempt that is still running. Answered
+  // only after the records are committed; a record is stored at most once (attempt, generation, sequence).
+  // The attempt's last records and its final mark travel on its report instead (StepLogCarry).
   //   Verdicts, not errors, say what the worker does next (StepLogVerdict).
   //   Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
   //   token); INVALID_ARGUMENT a malformed
-  //   batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
+  //   batch (no record, more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
   //   above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
   //   by admission; UNAVAILABLE the database or the serving gate.
   rpc AppendStepLogs(AppendStepLogsRequest) returns (AppendStepLogsResponse);
@@ -156,6 +157,10 @@ message CompleteStepRequest {
   string idempotency_key = 7; string output_json = 8; string output_blob_ref = 9;
   string output_sha256 = 10; string traceparent = 11;
   ExecutionInstanceIdentity instance = 12;
+  // Added in 1.7 (feature 041): the attempt's last log records and its final mark. Absent when the attempt
+  // assigned no sequence, when capture is off for the session, or after STOP_ATTEMPT or STOP_CAPTURE. An API
+  // replica older than 1.7 ignores it as an unknown field.
+  StepLogCarry step_logs = 13;
 }
 message FailStepRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;
@@ -163,6 +168,8 @@ message FailStepRequest {
   string idempotency_key = 7; string error_code = 8; string safe_message = 9;
   bool retryable = 10; string traceparent = 11;
   ExecutionInstanceIdentity instance = 12;
+  // Added in 1.7 (feature 041): as CompleteStepRequest.step_logs.
+  StepLogCarry step_logs = 13;
 }
 message ResolveSecretsRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;
@@ -349,10 +356,21 @@ message AppendStepLogsRequest {
   string step_id = 7;
   int32 attempt = 8;
   ExecutionInstanceIdentity instance = 9;
-  repeated StepLogRecord records = 10;        // 0 to 500, sequences strictly increasing
-  bool final_batch = 11;                      // the attempt's last batch, sent before CompleteStep/FailStep
-  uint64 highest_sequence = 12;               // with final_batch: the highest sequence the logger assigned (at most
-                                              // 2^62-1, else INVALID_ARGUMENT); else 0
+  repeated StepLogRecord records = 10;        // 1 to 500, sequences strictly increasing
+  reserved 11, 12;                            // final_batch and highest_sequence until 2026-11-19: the final mark
+  reserved "final_batch", "highest_sequence"; // is the report's StepLogCarry
+}
+
+// Added in 1.7. The last records of an attempt and its final mark, carried by the attempt's own
+// CompleteStepRequest or FailStepRequest (field 13) and stored by the transaction that records the report.
+// Sent by an attempt that assigned at least one sequence, unless it was answered STOP_ATTEMPT or STOP_CAPTURE or
+// its session's capture is off. A carry the server cannot check is ignored (or kept as a final mark with no line)
+// and never makes the report fail; a carry from a runner or database-runner token, or on a managed step, is
+// ignored; nothing about the carry is in the report's answer.
+message StepLogCarry {
+  repeated StepLogRecord records = 1;         // 0 to 64, sequences strictly increasing; the whole message at most 16 KiB
+  uint64 highest_sequence = 2;                // the highest sequence the attempt's logger assigned: 1 to 2^62-1, and at
+                                              // least the last record's
 }
 
 enum StepLogLevel {
@@ -387,7 +405,8 @@ message StepLogField {
 enum StepLogVerdict {
   STEP_LOG_VERDICT_UNSPECIFIED = 0;
   STEP_LOG_VERDICT_CONTINUE = 1;              // keep sending
-  STEP_LOG_VERDICT_FINAL_ONLY = 2;            // a ceiling was met: send no more records; still send the empty final batch
+  STEP_LOG_VERDICT_FINAL_ONLY = 2;            // a ceiling was met: send no more records; the report still carries the
+                                              // final mark (a StepLogCarry with no record)
   STEP_LOG_VERDICT_STOP_ATTEMPT = 3;          // send nothing more for this attempt (stop_reason says why)
   STEP_LOG_VERDICT_STOP_CAPTURE = 4;          // send nothing more on this session (stop_reason says why)
   STEP_LOG_VERDICT_RETRY_LATER = 5;           // nothing stored; send the same batch again after retry_after_ms
@@ -395,7 +414,8 @@ enum StepLogVerdict {
 
 enum StepLogStopReason {
   STEP_LOG_STOP_REASON_UNSPECIFIED = 0;
-  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the final batch is already stored (a resend of it gets this)
+  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the attempt's report recorded its final mark after this batch
+                                              // read the lease (a batch that reads it later gets LEASE)
   STEP_LOG_STOP_REASON_LEASE = 2;             // STOP_ATTEMPT: the lease is not this attempt's or has expired, or a report of
                                               // the attempt would be refused (run finished, step cancelled, run
                                               // stopping and the node not a compensation)
