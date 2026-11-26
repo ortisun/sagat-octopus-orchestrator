@@ -515,10 +515,11 @@ graph declares, and the versioning rules that keep code and history together.
   (`steps.unavailable_at`, a one-row update fenced by the lease's attempt, generation and token hash, cleared when the
   next lease is taken), so the expiry pass of any process records that lease's expiry, and only that lease's, as not
   counted, setting `next_attempt_at` to `unavailable_at` plus 1,000 ms (the fixed `retry-after-ms` of this answer);
-  `steps.uncounted_expiries` counts consecutive uncounted expiries after a `tenant_share` refusal (an expiry after a
-  `semaphore_full` or `command_value_ceiling` refusal, which other runs cause, never counts), reset by a committed completion or a counted
+  `steps.unavailable_reason` stores the refusal's reason beside `unavailable_at` (written and cleared together);
+  `steps.uncounted_expiries` counts consecutive uncounted expiries after a `tenant_share` or `run_command_value_ceiling`
+  refusal (an expiry after a `semaphore_full` or `command_value_ceiling` refusal, which other runs cause, never counts), reset by a committed completion or a counted
   failure, and its fifth counts as one failure; the next attempt may name, by descriptor, an uncommitted command-value blob of an earlier lease
-  of the run that is not yet released, so nothing is uploaded or charged again, and `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share, command_value_ceiling}` counts the refusals; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
+  of the run that is not yet released, so nothing is uploaded or charged again, and `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share, command_value_ceiling, run_command_value_ceiling}` counts the refusals; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
   (at most 6 MiB) once; a `PollTasks` answer at most 3.5 MiB in all, leaving room for framing below the clients' 4 MiB (it carries fewer
   tasks when they do not fit); a replay-check task at most 16 runs, each
   read by pages under its own capability; a registration at most 64 workflow types; a worker query's arguments at most
@@ -1222,9 +1223,11 @@ version (Requirement 044-026).
      generation, which the `blobs_owner_valid` arm records) are uploaded and not yet committed at once, counted under a
      lock of the workflow-task step's row so parallel uploads cannot pass it, a blob held by a deferral not counted; one
      run holds at most 32 uncommitted command-value blobs across its attempts plus its one held blob, counted under the
-     same lock, and an upload beyond that answers `UNAVAILABLE` (reason `command_value_ceiling`, never counted) until the
-     blob pass releases the run's earlier leases' blobs, which a later attempt may also name by descriptor; an upload
-     beyond the lease's 16 fails the workflow task with the cause `COMMAND_VALUE_LIMIT`, counted with its backoff. The
+     same lock after the lease's 16; an upload beyond the lease's 16 fails the workflow task with the cause
+     `COMMAND_VALUE_LIMIT`, counted with its backoff, and one beyond the run's 32 answers `UNAVAILABLE` with the reason
+     `run_command_value_ceiling`, which the run itself causes and which therefore feeds `uncounted_expiries` (its fifth
+     counting as one failure), until the blob pass releases the run's earlier leases' blobs, which a later attempt may
+     also name by descriptor. The
      counts take `UPLOADING`, `UPLOADED` and not yet confirmed `DELETING` rows, as today's count does. Blobs of the purpose `COMMAND_VALUE`, uploaded
      or held, leave the tenant's count of uploaded blobs (`DEFAULT_MAX_PENDING_BLOBS`) and have a ceiling of their own
      per tenant, 1,024, of which one namespace holds at most a quarter, counted by purpose under the tenant's advisory
@@ -1234,7 +1237,8 @@ version (Requirement 044-026).
      `UNAVAILABLE` with `retry-after-ms` and is never counted (reason `command_value_ceiling`): it records
      `steps.unavailable_at` with the same fenced one-row update as the semaphore's refusals, so the lease's expiry after
      it is not counted either. A deferral holds a blob by the same conditional update of an `UPLOADED` row as the
-     commit, so it never holds a row the sweep has taken. The blob pass's sweep of
+     commit, so it never holds a row the sweep has taken; a completion whose hold finds no such row is refused as a
+     counted workflow-task failure, so the next attempt uploads the value again. The blob pass's sweep of
      uploaded rows (`claim_expired`) skips a blob held by a deferral; it moves a row it deletes to `DELETING`, and the
      completion's in-transaction ownership check is the conditional commit of an `UPLOADED` row, so a deleted blob
      cannot be named. Ownership and
@@ -2220,7 +2224,7 @@ New tables, each with tenant scope and foreign keys within the tenant:
 | `code_step_nodes (tenant_id, run_id, node, command_number, accepted_version_id, scope, root_scope, issued_seq, spec bytea)`, primary key `(tenant_id, run_id, node)`, indexes on `(tenant_id, run_id, command_number)` and `(tenant_id, run_id, root_scope) WHERE root_scope IS NOT NULL` | The node overlay, a projection of the command records (at most 1 KiB per spec), append-only | `SELECT`, `INSERT` | `protected_system` (names, numbers, options; no payload) |
 | `code_update_transitions (tenant_id, namespace_id, address_scope, target_id, run_id, admitted_by, update_key, state, reason, args_digest, result_digest, at)`, unique `(tenant_id, namespace_id, address_scope, target_id, admitted_by, update_key, state)`, `address_scope` closed by a check as `operation_update_receipts_scope` is, `run_id` the resolved run | The code update lifecycle, append-only, one row per state, keys scoped by the address the client used and the admitting principal | `SELECT`, `INSERT` | `protected_system` (references only) |
 | `code_query_requests (tenant_id, namespace_id, run_id, id, query_name, args bytea, answer bytea, committed_through_seq, status, lease_token_hash, expires_at)`, arguments at most 64 KiB and answer at most 256 KiB inline | Worker queries (Task 044-29) | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `args` and `answer` `content`, measured by `octet_length` as `payloads.content` is; the other columns `protected_system` |
-| `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, verifying_subject, verifying_session_id, verifying_token_hash, verifying_namespace_id, read_token_hash, lease_token_hash, created_at, expires_at, expiries, busy_checks, first_difference integer)`, primary key `(tenant_id, job_id, ordinal)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
+| `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, verifying_subject, verifying_session_id, verifying_token_hash (32 bytes by a check, classified with evidence, never returned), verifying_namespace_id, read_token_hash, lease_token_hash, created_at, expires_at, expiries, busy_checks, first_difference integer)`, primary key `(tenant_id, job_id, ordinal)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
 | `worker_binding_workflow_types (tenant_id, namespace_id, subject, workflow_type, profile, bound_by)`, primary key `(tenant_id, namespace_id, subject, workflow_type)` | The workflow types of a binding, modelled on `worker_binding_pools`, with the binding's profile constrained to the ordinary one | today's grants of `worker_binding_pools` | `protected_system` |
 
 Other changes:
@@ -2264,7 +2268,7 @@ Other changes:
   `code_update_transitions` among the append-only tables its startup check verifies.
 - `steps` gains `code_step boolean NOT NULL DEFAULT false` (set by every statement that creates a step of a code run,
   compensations and reset rematerializations included; `verify_run` checks `every_step_of_a_code_run_has_code_step`),
-  `unavailable_at timestamptz`, `uncounted_expiries smallint NOT NULL DEFAULT 0` and `outcome_seq bigint` (the journal sequence of the step's outcome); `run_saga_entries` gains
+  `unavailable_at timestamptz`, `unavailable_reason text` (closed by a check), `uncounted_expiries smallint NOT NULL DEFAULT 0` and `outcome_seq bigint` (the journal sequence of the step's outcome); `run_saga_entries` gains
   `issued_seq` and `outcome_seq` for code scopes, whose `after` stays empty; `approval_requests` also gains
   `issuing_identity` and `issuing_binder`.
 - 044's own trigger on `platform_requirements` refuses removing `code-workflows-v1` while a code version exists; design
@@ -2314,7 +2318,7 @@ Other changes:
   `workflow_task_latency_seconds{cached: true, false}`, `workflow_task_reviews_total{cause}` (the causes of section 6.3),
   `workflow_tasks_unserved{reason: no_digest, paused}`, `workflow_task_pending_repaired_total`,
   `code_moves_total{verdict: matched, mismatched, envelope_mismatch, run_busy, run_not_mutable, no_target_worker, replay_check_abandoned, forbidden}`,
-  `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share, command_value_ceiling}`,
+  `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share, command_value_ceiling, run_command_value_ceiling}`,
   `worker_queries_total{outcome: answered, timed_out, refused}`; in each SDK `sagat_workflow_cache_runs`,
   `sagat_workflow_replay_seconds`, `sagat_workflow_nondeterminism_total` and `sagat_workflow_abandoned_activations`, with
   no labels.
@@ -3158,7 +3162,9 @@ a replaying worker derives from `ReadHistory`.
   `...::a_held_blob_survives_the_upload_sweep`, `...::a_re_registered_verifier_session_fails_the_move` (registered again
   without being revoked), `...::a_ceiling_refusal_leaves_the_following_lease_expiry_uncounted`,
   `...::one_namespace_holds_at_most_a_quarter_of_the_command_value_ceiling`,
-  `...::no_read_returns_a_body_digest_risk_metadata_or_the_seed` (the gated entry names its one allowed exception), `...::a_workflow_failure_message_never_reaches_a_viewer`,
+  `...::a_run_stops_at_32_uncommitted_command_value_blobs`, `...::a_leases_seventeenth_upload_counts_even_at_the_run_ceiling`,
+  `...::a_runs_own_ceiling_refusals_count_on_the_fifth`, `...::a_deferral_cannot_hold_a_blob_the_sweep_has_taken`,
+  `...::no_read_returns_a_body_digest_risk_metadata_or_the_seed` (nor a verifying token hash; the gated entry names its one allowed exception), `...::a_workflow_failure_message_never_reaches_a_viewer`,
   `...::a_signal_over_its_max_bytes_is_refused`, `...::a_classification_annotation_in_state_or_update_schemas_is_refused`,
   `...::no_history_event_carries_an_actor_subject`, and in `apps/execution-engine/tests/code_workflow_sites.rs` the
   source-text tests `server_side_fields_reach_no_projection` and `api_crates_do_not_call_the_classifier_directly`; and
