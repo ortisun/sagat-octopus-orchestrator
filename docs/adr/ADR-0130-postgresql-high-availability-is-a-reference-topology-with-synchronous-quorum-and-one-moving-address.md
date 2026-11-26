@@ -3,7 +3,7 @@
 **Status:** Proposed (2026-11-24; revised 2026-11-26 after design 048's full review round)
 **Decided by:** agent proposal (design 048), to be accepted under Owner decision 2026-11-24-4 once design 048's review is complete
 **Refines / supersedes:** refines [ADR-0009](ADR-0009-single-region-first.md) (in-region high availability, now specified), [ADR-0082](ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md) (the serving gate gains a set of reasons; the registry's row carries the confirmed server identity; its decision 3's `details.reason` is no longer shown before authentication, where every `UNAVAILABLE` is one constant answer, and reasons go to operators), [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) (one `CommitOutcomeUnknown` and one rule for a definite rollback) and [ADR-0014](ADR-0014-transactions-begin-where-nothing-can-cut-them-off.md) (writes open `BEGIN READ WRITE` in `WriteTx`); supersedes in part [ADR-0067](ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md): the waited write on every replay path and the barrier on reconnect of its decision 6, as feature 032's FR-032-009 (b) and (d) state them, are replaced by this decision's 4 and 5; its "no unlogged tables" consequence admits `server_incarnation`, which holds no state of record; its decision 4's guard of a read-only runtime role, which `WriteTx`'s `BEGIN READ WRITE` overrides, moves into the confirmation, which refuses a process without `region-v1` once a cell is initialized; and its decision 3's typed `REGION_*` reasons stay visible before authentication, the one exception to this decision's constant answer
-**Enforced by (pending until built):** design 048's dead-peer test and `scripts/check-vendor.py` (Task 048-5); the proving test (Task 048-6); the commit tests (Task 048-7); the read-only sessions, the `synchronous_commit` test and the architecture rules (Task 048-8); the gate's reasons (Task 048-9); the proving test of the unlogged marker and the identity tests (Task 048-10); the conformance scenario (Task 048-11); the lost-lease pass's wait (Task 048-12); the reference checks (Tasks 048-3 and 048-4); and the Compose drill that gates every release (Task 048-14)
+**Enforced by (pending until built):** design 048's dead-peer test and `scripts/check-vendor.py` (Task 048-5); the proving test (Task 048-6); the commit tests (Task 048-7); the read-only sessions, the `synchronous_commit` test and the architecture rules (Task 048-8); the gate's reasons and the constant answer before authentication (Task 048-9); the passive observer's test (Task 048-10); the proving test of the unlogged marker and the identity tests (Task 048-10); the conformance scenario (Task 048-11); the lost-lease pass's wait (Task 048-12); the reference checks (Tasks 048-3 and 048-4); and the Compose drill that gates every release (Task 048-14)
 
 ## Context
 
@@ -25,7 +25,7 @@ next one; worker leases last 30 s. Design 048 has the references; rolling upgrad
 2. The platform MUST connect through one address that the HA manager moves at promotion, and MUST NOT elect, choose or
    fence a primary itself.
 3. Every database socket MUST set keepalive (4 s idle, 2 s interval, 3 probes) and, on Linux, `TCP_USER_TIMEOUT` of
-   10 s. Every connection MUST start read-only with `synchronous_commit=on`, and refuse a server in recovery, one whose
+   10 s. Every connection MUST start read-only with `synchronous_commit=on`, and refuse (except a passive observer of feature 032) a server in recovery, one whose
    `synchronous_commit` is weaker, or, when required, one without synchronous standby names.
 4. Every write MUST be a `WriteTx`, whose only commit has a deadline. The outcome is applied on success, not applied when the
    server answers with an error and then an idle ReadyForQuery (PostgreSQL raises a commit's errors before its commit
@@ -42,6 +42,8 @@ next one; worker leases last 30 s. Design 048 has the references; rolling upgrad
    last attempt at the window's end.
 8. No statement that serves work runs on a standby; a passive observer of feature 032 may read one, and never confirms or
    serves.
+9. Every `UNAVAILABLE` a client can reach before authentication is one constant answer (`Retry-After` 2 s, no reason),
+   except feature 032's `REGION_*` reasons, checked before the serving gate; the gate's reasons go to operators.
 
 ## Considered options
 
