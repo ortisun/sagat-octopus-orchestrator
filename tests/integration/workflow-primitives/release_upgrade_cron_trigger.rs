@@ -331,7 +331,13 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         let env = default_engine_env(&db, &idp);
         let mut engine = RunningEngine::start(env.clone()).await;
         let capabilities: Vec<String> = sqlx::query_scalar("SELECT capabilities FROM serving_instances WHERE kind = 'EXECUTION_ENGINE'").fetch_one(&pool).await.expect("registered");
-        assert_eq!(capabilities, ["run-input-validation-v1", "schedules-v1"], "the default engine runs the schedule pass and, in enforce (design 043), validates run input");
+        // the registry stores the list sorted by name; feature 006 (ADR-0098, decision D006-004): every engine of this build
+        // lists `lease-withdrawal-v1` and, since the follow-up of pull request #260, `lease-withdrawal-v2`, whatever it runs
+        assert_eq!(
+            capabilities,
+            ["lease-withdrawal-v1", "lease-withdrawal-v2", "run-input-validation-v1", "schedules-v1"],
+            "the default engine runs the schedule pass, in enforce (design 043) validates run input, and replays the withdrawal of a lease (feature 006)"
+        );
         until("the reconciliation converges every trigger", || async {
             let made: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules WHERE origin = 'TRIGGER'").fetch_one(&pool).await.expect("schedules");
             let unconverged: i64 = sqlx::query_scalar("SELECT count(*) FROM schedule_trigger_drift").fetch_one(&pool).await.expect("drift");
@@ -433,7 +439,8 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         // the reconciliation made the schedules of the released triggers: its marks hold the job a horizon after them
         let marked: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules WHERE reconciled_at IS NOT NULL").fetch_one(&pool).await.expect("marks");
         assert!(marked > 0, "the upgrade's backlog leaves the reconciliation's marks");
-        // the scenario runs no control-plane process: one is registered, by the runtime role, as a control plane of this release does
+        // the scenario runs no control-plane process: one is registered, by the runtime role, as a control plane of this release
+        // does, with what one in the default `enforce` mode lists (design 043, feature 006)
         use sagat_application::instances::InstanceStore as _;
         let token = sagat_application::instances::InstanceToken::from_bytes([5; 32]);
         let control_plane = Uuid::new_v4();
@@ -444,7 +451,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
                 kind: sagat_application::instances::InstanceKind::ControlPlane,
                 scheduler_owner: None,
                 binary_version: "0.3.0-scenario",
-                capabilities: &[],
+                capabilities: &sagat_control_plane::registry::capabilities(sagat_application::run_input::InputValidationMode::Enforce),
             })
             .await
             .expect("a control plane registers");
