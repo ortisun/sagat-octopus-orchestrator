@@ -385,8 +385,6 @@ class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
         self.assertIn("`add_schedule_origin` is named by the `run.finished` rule and is not defined", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 def run_input_check(files, packages=None):
@@ -661,6 +659,26 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         }))
         self.assertEqual(code, 0, out)
 
+    def test_a_test_probe_of_the_worker_api_is_refused_outside_the_tests(self):
+        """Feature 006, D006-093 (security round 4 Minor 2): the probes hold claims until a test releases them."""
+        for probe in ("with_delivery_probe", "with_commit_probe"):
+            with self.subTest(probe=probe):
+                code, out = creator_check(creator_tree(**{
+                    "apps/execution-engine/src/lib.rs": f"fn build() -> G {{\n    WorkerGrpc::new(a, b)\n        .{probe}(p)\n}}\n",
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn("apps/execution-engine/src/lib.rs:3: ", out)
+                self.assertIn(probe, out)
+        code, out = creator_check(creator_tree(**{
+            "crates/api-grpc/src/service.rs": (
+                "/// set it with `WorkerGrpc::with_commit_probe`\n"
+                "pub fn with_commit_probe(mut self, probe: P) -> Self { self }\n"
+                "pub fn with_delivery_probe(mut self, probe: P) -> Self { self }\n"
+                "#[cfg(test)]\nmod tests { fn t() { let _ = g.with_commit_probe(p); } }\n"
+            ),
+        }))
+        self.assertEqual(code, 0, out)
+
     def test_a_checked_input_built_outside_the_gate_is_refused(self):
         for source in (
             "fn f() -> X { CheckedRunInput { version: 1 } }\n",
@@ -783,6 +801,116 @@ class TheRuntimeRoleCannotDeleteTheJournal(unittest.TestCase):
                 self.assertEqual(code, 0, out)
 
 
+
+CAPABILITY_SOURCE = '''
+impl Capability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SchedulesV1 => "schedules-v1",
+            Self::RunInputValidationV1 => crate::run_input::CAPABILITY,
+            Self::LeaseWithdrawalV1 => "lease-withdrawal-v1",
+        }
+    }
+}
+'''
+RUN_INPUT_SOURCE = 'pub const CAPABILITY: &str = "run-input-validation-v1";\n'
+
+
+def capability_migration(values):
+    listed = ", ".join(f"'{v}'" for v in values)
+    return (
+        "ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_known,\n"
+        f"    ADD CONSTRAINT serving_instances_capabilities_known CHECK (capabilities <@ ARRAY[{listed}]::text[]\n"
+        "    AND cardinality(capabilities) <= 32) NOT VALID;\n"
+        "ALTER TABLE platform_requirements DROP CONSTRAINT platform_requirements_capability_known,\n"
+        f"    ADD CONSTRAINT platform_requirements_capability_known CHECK (capability IN ({listed})) NOT VALID;\n"
+        "ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_known,\n"
+        f"    ADD CONSTRAINT platform_requirement_history_capability_known CHECK (capability IN ({listed}));\n"
+    )
+
+
+def run_capability_check(migrations, source=CAPABILITY_SOURCE):
+    """The capability-list rule over a tree: `migrations` maps a file name to its text."""
+    with tempfile.TemporaryDirectory() as root:
+        base = pathlib.Path(root)
+        (base / "crates/application/src").mkdir(parents=True)
+        (base / "crates/application/src/instances.rs").write_text(source)
+        (base / "crates/application/src/run_input.rs").write_text(RUN_INPUT_SOURCE)
+        folder = base / "crates/infra-postgres/migrations"
+        folder.mkdir(parents=True)
+        for name, text in migrations.items():
+            (folder / name).write_text(text)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--capability-root", root], capture_output=True, text=True
+        )
+        return result.returncode, result.stdout
+
+
+ALL_THREE = ["schedules-v1", "run-input-validation-v1", "lease-withdrawal-v1"]
+
+
+class CapabilityListsFollowTheCode(unittest.TestCase):
+    """Feature 006, decision D006-033: the newest definition of each capability check lists exactly `Capability::ALL`."""
+
+    def test_the_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("the capability checks list the code's capabilities", result.stdout)
+
+    def test_the_newest_migration_listing_every_capability_passes(self):
+        code, out = run_capability_check({
+            "20270101000000_a.up.sql": capability_migration(["schedules-v1"]),
+            "20270102000000_b.up.sql": capability_migration(ALL_THREE),
+            # the down of b restores the list before b, and a down is never the newest definition
+            "20270102000000_b.down.sql": capability_migration(["schedules-v1"]),
+        })
+        self.assertEqual(code, 0, out)
+
+    def test_a_newer_migration_that_drops_a_capability_fails(self):
+        # the merge order of two branches: the older-numbered one lands second and is applied last by nobody, but the
+        # newest by version is the one a fresh database ends with
+        code, out = run_capability_check({
+            "20270102000000_b.up.sql": capability_migration(ALL_THREE),
+            "20270103000000_c.up.sql": capability_migration(["schedules-v1", "run-input-validation-v1"]),
+        })
+        self.assertEqual(code, 1, out)
+        self.assertIn("lease-withdrawal-v1", out)
+        self.assertIn("serving_instances_capabilities_known", out)
+
+    def test_a_list_with_a_capability_the_code_does_not_know_fails(self):
+        code, out = run_capability_check({
+            "20270102000000_b.up.sql": capability_migration(ALL_THREE + ["flow-control-rate-v1"]),
+        })
+        self.assertEqual(code, 1, out)
+        self.assertIn("flow-control-rate-v1", out)
+
+    def test_a_down_that_restores_another_list_than_the_one_before_its_up_fails(self):
+        # decision D006-083: the rollback of c must restore b's list, or it erases b's capability
+        code, out = run_capability_check({
+            "20270101000000_a.up.sql": capability_migration(["schedules-v1"]),
+            "20270102000000_b.up.sql": capability_migration(["schedules-v1", "run-input-validation-v1"]),
+            "20270102000000_b.down.sql": capability_migration(["schedules-v1"]),
+            "20270103000000_c.up.sql": capability_migration(ALL_THREE),
+            "20270103000000_c.down.sql": capability_migration(["schedules-v1"]),
+        })
+        self.assertEqual(code, 1, out)
+        self.assertIn("20270103000000_c.down.sql", out)
+        self.assertNotIn("20270102000000_b.down.sql", out)
+
+    def test_a_down_that_does_not_restore_the_list_at_all_fails(self):
+        code, out = run_capability_check({
+            "20270101000000_a.up.sql": capability_migration(["schedules-v1"]),
+            "20270102000000_b.up.sql": capability_migration(ALL_THREE),
+            "20270102000000_b.down.sql": "SELECT 1;\n",
+        })
+        self.assertEqual(code, 1, out)
+        self.assertIn("20270102000000_b.down.sql", out)
+
+    def test_a_tree_without_the_checks_is_an_error_and_not_a_pass(self):
+        code, out = run_capability_check({"20270102000000_b.up.sql": "SELECT 1;\n"})
+        self.assertEqual(code, 1, out)
+        self.assertIn("would check nothing", out)
+
+
 if __name__ == "__main__":
     unittest.main()
-

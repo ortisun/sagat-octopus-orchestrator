@@ -42,6 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+The worker host hands back a lease it received and will not run (it arrived while the host was stopping, beyond the
+tasks the host asked for or has room for, in the rest of a frame over the input budget of a receive window, or the host
+could not start it) at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back instead of
+leaving the lease to lapse into a review, from protocol 1.8; below it the lease lapses. A duplicate lease is ignored
+(sdks/SPEC.md section 6.2). `stop` waits for those reports with the tasks in flight.
+
 Feature 018 adds schedules, business identifiers, batch jobs, the with-start calls and resets to the
 client: `client.schedules()`, `client.batch()` and `client.business_ids()` return light handles, and
 `signal_with_start`, `update_with_start`, `reset_points`, `preview_reset`, `reset`, `list_resets` and

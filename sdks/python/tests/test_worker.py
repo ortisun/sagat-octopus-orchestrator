@@ -657,10 +657,11 @@ async def test_a_stream_that_exceeds_capacity_runs_bounded_work_and_is_cancelled
     await host.stop(0.05)
 
 
-async def test_a_stream_cannot_make_the_host_own_more_than_the_aggregate_input_budget(
+async def test_a_stream_cannot_make_the_host_own_more_than_the_aggregate_input_budget_and_hands_the_lease_back(
     fake: FakeWorkerService, make_host: MakeHost
 ) -> None:
-    fake.accepted_version = "1.4"
+    # The hand-back is made from protocol 1.8 (decision D006-080).
+    fake.accepted_version = "1.8"
     fake.stream_batches = [[lease(input_json="x" * (8 * 1024 * 1024 + 1))]]
     handled = False
 
@@ -668,12 +669,13 @@ async def test_a_stream_cannot_make_the_host_own_more_than_the_aggregate_input_b
         nonlocal handled
         handled = True
 
-    host = make_host(max_inflight=1)
+    host = make_host(protocol_version="1.8", max_inflight=1)
     host.register_activity("charge", charge, blocking=False)
     await host.start()
-    await asyncio.sleep(0.15)
+    await until(lambda: len(fake.of("FailStep")) == 1, "the lease over the budget to be handed back")
     assert handled is False
-    assert len(fake.of("CompleteStep")) + len(fake.of("FailStep")) == 0
+    assert fake.of("CompleteStep") == []
+    assert [call.request.error_code for call in fake.of("FailStep")] == ["TASK_NOT_STARTED"]
 
 
 async def test_an_empty_stream_hint_is_followed_by_a_wait_never_by_another_receive_at_once(
