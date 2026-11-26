@@ -76,16 +76,17 @@ versions in force at start, switched on or off. A child run that a draining run 
 1. Make the ring (1.1) and give it to every control plane and engine, with `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true`;
    restart them.
 2. `SELECT * FROM flow_control_key_activate(1::smallint, '<your name>');` (expect `ACTIVATED`), as the schema owner.
-3. `control-plane flow-control-activate --capability concurrency-keys --operator <you>`: refused, naming the instances,
-   while a live process does not list the capability (section 7).
+3. `control-plane capability-activate flow-control-concurrency-v1 --operator <you> --expect-live <n>`: refused, naming
+   the instances, while a live process does not list the capability, and refused while no digest key version is active
+   (section 7).
 
 ### 1.3 What the digest-key commands do not have yet (gaps G022-006, G1196 and G1193)
 
 The digest-key commands of sections 1.2, 2 and 3 are SQL functions of the schema owner, and only that. Plainly:
 
 - **No API, no CLI command, no span, no metric** runs or watches them (gap G022-006). `control-plane
-  flow-control-activate` activates a capability for the fleet (section 7); it does not activate a key version. Run the
-  functions with `psql` from your own login, as a script.
+  capability-activate` activates a capability for the fleet (section 7); it does not activate a key version, it only
+  refuses while none is active. Run the functions with `psql` from your own login, as a script.
 - **No record in the platform's audit trail.** An activation keeps only what its version row says:
   `SELECT version, state, activated_at, activated_by, activated_role, retired_at FROM flow_control_key_versions ORDER BY
   version;` (`activated_by` is the name you typed, `activated_role` the database role of the session; a version is
@@ -322,9 +323,22 @@ family its start declares, not only in the gate that refused it. Finish the roll
 replica's quota listing refuses a name it does not know, G1192); rolling back migration `20270206000000` refuses while one
 is set.
 
+**A withdrawn lease (feature 006, ADR-0098) keeps what its step was granted** (decision D022-138). A lease the server
+never handed to a worker goes back to `READY` at the same attempt: the step keeps its concurrency permit and its rate
+slot, is leased again without queueing, and takes no second slot. The slot counts from the lease that reached a
+worker: the withdrawal clears the lease instant the scheduler may have copied, so the slot counts as unleased until the
+next lease is recorded (D022-139). A withdrawal is refused when another grant of the same key was decided after this
+slot had stopped counting for it, under that grant's own window (D022-157; a key whose definitions declare different
+`per` included): a lease that was not sent lapses and spends its attempt at its time to live, and a host's hand-back is
+an ordinary failure, which on a last attempt fails the step though nothing ran (gap G022-042). It is counted
+`slot_spent` in `worker_leases_undelivered_total`. The decision is taken before the withdrawal, under the key's lock, so
+it cannot change before the commit (D022-156). The scheduler's purge never deletes the grant of a step still leased at
+it (D022-146). *Corrected 2026-11-26, twice:* the first text called the case rare (gap G022-041), and the second judged
+by the grant's own window, which a key of several windows defeated; the gap is closed by D022-157.
+
 A process with the ring lists `flow-control-rate-v1` beside the concurrency gate. Turn it on as 1.2, with
-`SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED=true` and `control-plane flow-control-activate --capability rate-limits --operator <you>`
-(section 7).
+`SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED=true` and `control-plane capability-activate flow-control-rate-v1 --operator <you>
+--expect-live <n>` (section 7).
 
 **The deployment files (decision D022-118).** Each gate has its own switch, set alike on the control plane and the
 engine:
@@ -365,10 +379,10 @@ Concurrency keys and rate limits are two capabilities of the fleet, each recorde
 of feature 018 ([instance registry runbook](instance-registry.md)) and required of every control plane and every
 execution engine (FR-022-053, ADR-0089 decision 6):
 
-| Command name | Registry capability | Switch of each process |
+| Capability | Registry token (what the command names) | Switch of each process |
 |---|---|---|
-| `concurrency-keys` | `flow-control-concurrency-v1` | `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED` |
-| `rate-limits` | `flow-control-rate-v1` | `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED` |
+| concurrency keys | `flow-control-concurrency-v1` | `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED` |
+| rate limits | `flow-control-rate-v1` | `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED` |
 
 Both switches are off when unset (`true`, `1` or `yes` turn one on; anything but a boolean stops the process at start).
 A process lists both capabilities whenever it holds the key ring of section 1.1, whatever its switches (D022-062), so a
@@ -385,19 +399,29 @@ What a definition that declares `concurrency` or `rateLimit` meets, in this orde
    `503 UNAVAILABLE`, `BINARY_CAPABILITY_MISSING` (the [instance registry runbook](instance-registry.md), section 2).
 
 To activate, after the ring and the switch are on every process and the digest key version is active (section 1.2,
-steps 1 and 2), run as the schema-owning database role:
+steps 1 and 2), run the one operator command of every fleet requirement (decisions D022-136 and D022-137; ADR-0098
+decision 4) as the schema-owning database role. `--expect-live` is the number of live control planes and execution
+engines together; a dry run checks everything and changes nothing:
 
 ```sh
-control-plane flow-control-activate --capability concurrency-keys --operator <your name>
-control-plane flow-control-activate --capability rate-limits --operator <your name>
+control-plane capability-activate flow-control-concurrency-v1 --operator <your name> --expect-live <n> --dry-run
+control-plane capability-activate flow-control-concurrency-v1 --operator <your name> --expect-live <n>
+control-plane capability-activate flow-control-rate-v1 --operator <your name> --expect-live <n>
 ```
 
 | It prints | Meaning |
 |---|---|
-| `<capability> is activated for the fleet (requirement epoch <n>).` | recorded and audited; every process learns it within one heartbeat |
-| `<capability> was activated before; nothing was done.` | already recorded |
-| `<n> live control plane(s) or engine(s) do not run the <capability> gate (instance ids: ...). ... Nothing was changed.` | a live process lacks the ring or is of an older build: give it the ring, or upgrade or stop it, and run the command again |
+| `activated: <token> is required of every control plane and execution engine (<n> live process(es) list it, requirement epoch <e>). ...` | recorded, with your name and the database role in the requirement's history; every process learns it within one heartbeat |
+| `already active: <token> is a recorded requirement; nothing was changed` | already recorded |
+| `dry run: nothing stops the activation (...). Nothing was changed.` | the dry run found nothing in the way |
+| `<n> live process(es) do not list <token> (instance ids: ...). ... Nothing was changed.` | a live process lacks the ring or is of an older build: give it the ring, or upgrade or stop it, and run the command again |
+| `<token> requires at least one live process (...) of each kind it covers, and none of <kinds> is live. ...` | start a control plane and an engine that hold the ring first |
+| `<n> control plane(s) and execution engine(s) are live (...) and --expect-live says <m>. ...` | one has not registered yet, is down, or is not yours; count again |
+| `<token> needs a digest key version in force, and none is active. Activate one first ... Nothing was changed.` | run step 2 of section 1.2 (`flow_control_key_activate`) first |
 | `permission denied: the activation calls functions the runtime role may not execute. ...` | run it with the schema-owning role, not `sagat_app` |
+
+*2026-11-26 (task T022-116):* the command `flow-control-activate` of earlier 0.3.0 builds is gone (it was never
+released): the control plane answers `unknown command 'flow-control-activate'`.
 
 An activation of an empty fleet is refused too: with no live process, nothing would serve after it. **Do not activate in
 production before the gates of sections 1.2 and 6 are closed.** To take a capability back, switch it off and keep the key

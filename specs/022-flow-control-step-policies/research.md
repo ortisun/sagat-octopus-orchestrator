@@ -2289,6 +2289,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
      into a failure with a message. The oracle is `20270215000000`, this branch's last migration.
      *Amended 2026-11-26 (merge of the re-read fix-ups):* the fix-ups add `20270216000000_flow_control_grant_failures`
      (D022-124) after it, so the oracle of the three tests is now `20270216000000`, as the check requires.
+     *Amended again 2026-11-26 (merge of the activation slice):* `20270217000000` and `20270217000100` (D022-137,
+     D022-138) come after that, so the oracle is now `20270217000100`.
   2. *The volatile clock in `maintenance.rs`.* `contract_scalability_ha::no_candidate_query_bounds_an_index_range_with_a_volatile_clock`
      refuses any comparison with `clock_timestamp()` in `maintenance.rs` and `operations.rs`, because the planner
      cannot use it as the bound of an index range (FR-010-003). The rest of a key's window (D022-064, commit
@@ -2820,6 +2822,189 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
   the place read reads `flow_control_grant_failures`, so another transaction holds that table locked; a Viewer's read
   returns within 1 s with no place and the effective limit, while the revealer's read waits out the place read's 2 s
   timeout and is shown without a place (red before: the Viewer's read waited too). No sleep: a held lock.
+- **D022-137 — How the two flow-control capabilities are entries of `capability-activate` (2026-11-26; task
+  T022-116; decisions D022-136, D022-062, D006-034, D006-082; ADR-0089 decision 6, ADR-0098 decision 4).** Delegate
+  (OD-2026-11-24-4, OD-2026-11-20-6). Every check that `flow-control-activate` made is kept, and each now lives in the
+  generic command:
+  1. *The tokens:* the command line names the registry tokens `flow-control-concurrency-v1` and `flow-control-rate-v1`
+     (`concurrency-keys` and `rate-limits` go with the old command). Each entry covers both kinds
+     (`InstanceKind::ALL`), sets `empty_fleet: false` and `each_kind_live: true`, and follows no other requirement.
+  2. *The operator* is required and checked as a subject (the old command's `Subject::parse`, plus the generic check of
+     unprintable characters); a dry run may omit it.
+  3. *The live fleet:* the old feature step `live_capable_step` (the SQL function
+     `flow_control_kinds_without_capable_process`: each required kind has a live process that lists the capability)
+     is the generic census with `each_kind_live` and no process lacking the capability, judged before the activation
+     and again under the epoch lock. Both are removed: the function by the migration
+     `20270217000100_flow_control_activation_function_drop` (its down creates it again), and its runtime-privilege
+     allowance with it.
+  4. *The refusals of the registry itself* (a live process lacks the capability, the requirement is recorded for
+     other kinds, the runtime role may not run the functions) are the generic command's, with the same "Nothing was
+     changed" sentences; the audit record is the registry's history row with the operator and the database role, as
+     before.
+  5. *What the generic command adds:* `--expect-live N` and `--dry-run`, which the old command lacked.
+  6. *A check the old command did not make, added as a generic hook:* the entry field `prerequisite`, a state of the
+     platform the requirement needs, read before the census (a dry run included) and again under the epoch lock. The
+     flow-control entries require an `ACTIVE` digest key version (`flow_control_key_versions`). Without one every gated
+     decision is refused as unavailable (`readiness_gate.rs`, "no digest key version is active"), so activating the
+     capability first would make every gated publication and start fail with `503` while the runbook's order (key
+     version, then capability) was only prose. Weighed: leaving the order to the runbook (the old behaviour; a
+     mistake there is an outage of the gated workflows); a flow-control step closure passed to the generic command (a
+     second shape of feature step beside `follows`, which D006-034 meant to avoid). The hook is an enum of named
+     prerequisites, so a later entry adds a variant, not a closure.
+  `control-plane flow-control-activate` is then an unknown command (`unknown command 'flow-control-activate'`), with no
+  alias: it was never released.
+- **D022-138 — A withdrawn lease of a gated step keeps its permit and its slot (2026-11-26; ADR-0098 decision 3,
+  ADR-0089, ADR-0094, ADR-0096; FR-022-019, FR-022-040, FR-022-046; delegate OD-2026-11-20-6).** A lease the server
+  never handed to the transport is withdrawn (`step.lease_withdrawn`): the step goes back to `READY` at the attempt it
+  had, nothing ran, and the next lease reuses the attempt with the next generation. Facts read in the code: a step's
+  gates are filed for the attempt they admit (`attempt() + 1`, D022-029), and the withdrawal changes neither the
+  attempt the slots name nor their phase (`StepState::withdraw_lease`), so the step is again what ADR-0096 calls
+  *granted and not leased*. Options: (a) the step gives its permit and its slot back and asks again (a second decision:
+  it may queue behind its key, and a rate key may take a second slot for an attempt that ran once); (b) the step keeps
+  both, and the next lease is admitted without a decision. Chosen: **(b)**. The permit and the slot were granted to
+  this attempt and no handler used them; asking again would put a granted step behind waiters that came later, and
+  count one attempt twice in a key's window. So:
+  1. the concurrency permit stays held by the attempt until the attempt ends, and is released once
+     (`concurrency.released`), as for an attempt that was never withdrawn;
+  2. the rate slot stays granted to the attempt and is never asked for again; a pause, a hold for review, a
+     cancellation or the end of the run gives it back as any granted, unleased slot (ADR-0096), whatever lease instant
+     the withdrawn lease had recorded;
+  3. the slot counts from the lease that reached a handler, not from the withdrawn one: the withdrawal's commit clears
+     the lease instant the scheduler may have copied onto the grant (`leased_at`), so the slot counts again without
+     end, as an unleased grant does, until the lease pass records the attempt's next lease (D022-139). A slot thus
+     never stops counting while its step is granted and unleased (invariant 13), and never counts from a lease that
+     did not run.
+  Before this decision the code kept the permit and the slot (so (b) held for the decision), but the grant kept the
+  withdrawn lease's instant: the slot stopped counting one window after a lease that never ran while the step still
+  held it, the pass never recorded the lease that ran, and a pause, a cancellation or the end of the run refused to
+  give back a slot whose row looked leased (`the row a flow-control event gives back`).
+- **D022-139 — The lease pass records the last lease of the attempt, and a row a withdrawal changed is not written
+  (2026-11-26; D022-064 item 4, D022-138).** The pass (transaction T23) copied the instant of the *first*
+  `step.leased` of the granted attempt journaled after the grant; with withdrawals an attempt has several, and only the
+  last can have reached a handler. It now copies the last one, and only while the step's projection is at that attempt
+  (a withdrawn step is one attempt behind, so nothing is recorded until it is leased again). The withdrawal clears
+  `leased_at` with a write that always makes a new row version, and the pass writes a row only when its version is the
+  one the pass read (`xmin`): a pass that read the step as leased before a withdrawal committed, and then waited for the
+  row, finds a new version on its recheck and skips it, instead of recording the withdrawn lease. The row guard
+  (`rate_limit_rows_guard`) allows that clear and nothing else beside the recording: every other column must be
+  unchanged (migration `20270217000000_flow_control_withdrawn_lease`; its down restores the guard of
+  `20270130000100`). Weighed: locking the step row from the pass (the pass then waits for run transactions, and
+  D022-064 item 4 keeps it to the grant rows); a column counting withdrawals (a schema change for what the row's
+  version already says).
+  *Amended 2026-11-26 by D022-146 to D022-149 (the reviews of `efabe42d..d70a60940`,
+  `reviews/2026-11-26/activation-review-*.md`):* the clear runs in the sorted lock pass of the commit's gate returns,
+  under the window's lock, and is refused when the slot has stopped counting (D022-148); a give-back keeps
+  `leased_at IS NULL` except for an attempt the same commit withdraws (D022-147), which replaces item 2's "whatever lease
+  instant the withdrawn lease had recorded" of D022-138.
+- **D022-146 — The purge and the reclaim keep the grant of a step still leased at it (2026-11-26; correctness review of
+  `efabe42d..d70a60940`, Major 1; D022-064 item 6, D022-066 item 1; delegate OD-2026-11-20-6).** The purge (transaction
+  T25) and a decision's reclaim delete a step grant once its window row's longest period and a minute have passed since
+  its lease instant. Nothing bounds a lease by the window (`require_lease` checks no expiry), so a lease that lives longer
+  than its window plus a minute lost its grant while its step was still `LEASED` at that attempt; a withdrawal then left
+  the step granted with no row, and every later pause, cancellation or end of the run failed on the missing row (the run
+  stuck). Chosen: the one predicate of both (`purgeable_grant!`) keeps a step grant whose root step is `LEASED` at the
+  grant's attempt. A withdrawal takes the grant's window lock before it changes the grant (D022-148), and the purge and
+  the reclaim hold that lock while they delete, so a purge never judges a row a withdrawal is changing: no recheck on a
+  stale snapshot. And a withdrawal whose grant row is missing fails (`corrupt`) unless the same commit gives that attempt
+  back. Weighed: bounding a lease by its window (a lease time to live is the worker's contract, not the gate's); keeping
+  every leased grant until its attempt ends (a running attempt cannot be withdrawn, so only `LEASED` matters, and the purge
+  of a running or finished attempt's grant stays as D022-064 item 6 decided).
+- **D022-147 — A give-back still refuses a grant whose lease instant is recorded, except an attempt the same commit
+  withdraws (2026-11-26; correctness minor 1, security minor 1 of the same reviews; ADR-0096 decision 6).** D022-138
+  dropped `AND leased_at IS NULL` from the read and the delete of `rate_limit.returned`, so a mistake of the domain would
+  free a slot that still counts. Restored: the read and the delete of a step's give-back match `leased_at IS NULL`, or an
+  attempt this transaction withdraws (`step.lease_withdrawn` of that node and attempt among the commit's events); the run's
+  own grants are never given back. A return of a recorded grant whose lease was not withdrawn fails as before (`corrupt`).
+- **D022-148 — A withdrawal is refused while it would make a stopped slot count again (2026-11-26; security minor 2 of
+  the same reviews; closes gap G022-041; ADR-0098 decision 3; delegate OD-2026-11-20-6).** A tenant's host on protocol
+  1.8 can hold a lease past its window and hand it back (`TASK_NOT_STARTED`); with D022-138 the step was then leased again
+  in the window of another grant, at any period, at will. Options: (a) document it (the gap as it stood); (b) count the
+  slot again (a second grant for one attempt, which D022-138 refused, and a new decision in a transaction that has no gate
+  round); (c) refuse the withdrawal. Chosen: **(c)**, the outcome of an attempt withdrawn as often as it may be
+  (`capped`): a lease that was not sent lapses as before, and a hand-back is the ordinary failure, so the retry, a new
+  attempt, asks the gate for a new slot. A slot has stopped counting when its lease instant is recorded and its window has
+  passed (`leased_at <= now - per`); an unrecorded slot counts without end, so its withdrawal is kept. The check is made
+  twice: before the command, in the withdrawal's transaction (`RunTx::withdrawal_slot_spent`, for the outcome), and,
+  authoritative, when the commit clears the instant, under the window's lock taken in the commit's sorted pass of gate
+  returns (D022-038): every decision that counts the window holds that lock, so none can grant in between. A withdrawal
+  that loses that race fails its transaction, and the lease lapses (outcome `error`). Weighed: (b) and (a) above.
+  The cost, gap G022-042: a host's word that nothing ran spends the attempt when the slot has stopped counting.
+  *Amended 2026-11-26 by D022-156 to D022-158 (the re-reads of `343bbe406..0f04b4429`):* "stopped counting" judged by the
+  grant's own period was wrong for a key whose grants have different periods, so G022-041 was not closed; the rule is now
+  D022-157's, decided before the command under the window's and the grant's locks (D022-156), and the refusal has its own
+  outcome, `slot_spent` (D022-158). G022-041 is closed by D022-157.
+- **D022-149 — The digest key version is read under a share lock, and the smaller fixes (2026-11-26; security nits 3
+  and 4, correctness minor 2, minor 3, nits 1 and 2 of the same reviews).** (1) `ActivationPrerequisite::holds` reads the
+  active version `FOR SHARE`, before the census and under the epoch lock, so a command that changes the version row
+  (`flow_control_key_activate`, or a later one that would deactivate it) waits for the activation, and the activation
+  waits for it; the test proves the wait. (2) The comment of `20270217000000` says the guard is a defence against bugs
+  (the runtime role already holds `DELETE` on the grants). (3) The down's comment says what a rollback does: the older
+  build's lease pass records the attempt's first lease, the withdrawn one, so a slot may stop counting early. (4) The
+  consistency check (`key_consistency`) checks that a step grant's lease instant is empty or the attempt's last lease
+  (none withdrawn after it), and that every granted, unleased step slot has its grant row. (5) The pause test is reworded;
+  the same-commit give-back is the cancellation test's. (6) The race test's barrier waits for the pass to be blocked by
+  the holder's backend (`pg_blocking_pids`).
+
+- **D022-156 — A withdrawal locks every key its commit may touch in one sorted pass, and decides there (2026-11-26;
+  correctness re-read of `343bbe406..0f04b4429`, Major 1 and minors 2 and 3; D022-038; delegate OD-2026-11-20-6).** The
+  withdrawal of a run's leases runs one command per lease in one transaction, and each command's commit locked its keys,
+  sorted within that commit only: leases on keys X1 < X2 handed over as (X2, X1) locked X2 then X1, and a pause of another
+  run waiting on both, which locks X1 then X2, deadlocked with it. Chosen: before the first command (`withdraw_root`, and
+  the hand-back's verdict for its one lease), `RunTx::lock_withdrawn_gates` locks, in one call, the semaphore rows of every
+  permit and then the window rows of every rate grant the leases' attempts hold, each table sorted (slot 7 before slot 8b,
+  D022-038), then the grant rows themselves (`FOR UPDATE`), and judges each lease's slot there (D022-157). Those are every
+  key a withdrawal's commit can touch (its step, cancelled at once in a stopping run, gives back only its own permit and
+  slot), so the commits that follow take no key row they do not hold already. Because nothing can change the judgement
+  between this lock and the commit, the check before the command is the decision: a refused hand-back is the ordinary
+  failure and a refused lease not sent lapses, each counted (D022-158), instead of the `409` and the rolled-back group a
+  refusal at the commit produced. The commit's own check stays, as a defence. A rate-gated root step `LEASED` at the
+  attempt whose grant is gone is a corrupt projection (`corrupt`), no longer counted as a refusal; a withdrawn attempt whose
+  grant is gone at the commit is corrupt too (the branch that skipped it when the commit gave the attempt back could not be
+  reached and is removed).
+  *Amended 2026-11-26 (security check of `59a10d3d3..472a1c9cf`, Low 1):* a withdrawal in a stopping run cancels its step
+  and, when that was the run's last active step, ends the run, whose commit locks the active-run counter row (slot 6) and
+  gives back the run's own permit (slot 7). So the pass begins with the run's counter row (`run_active_counts_lock_slot`)
+  and its semaphores include the run's own holder's; slot 6, then 7, then 8b, as ADR-0050 orders them. It is taken
+  whenever the leases include a gated step, stopping run or not: one row per run slot, in a transaction that already
+  holds the run, and simpler to prove than a guess at whether the commit will end the run.
+- **D022-157 — A withdrawn slot counts again unless another grant used the room it left (2026-11-26; security re-read,
+  Medium 1, and correctness re-read, minors 1 and 4; D022-009, D022-148; closes gap G022-041; delegate OD-2026-11-20-6).**
+  D022-148 refused a withdrawal when the grant's lease instant plus the grant's own period had passed. Every decision
+  counts a grant over the deciding acquirer's period (D022-009 allows several periods in one group), so an hourly grant
+  leased at T had stopped counting for a per-second waiter at T + 1 s; that waiter could be granted at T + 1.5 s and the
+  hourly grant, handed back at T + 2 s, was accepted and ran again: two calls in one second on a key limited to one.
+  And the own-period rule refused far more than it had to: any hand-back more than one window after the recorded lease,
+  even on a key nobody else used. Options: (a) judge against the shortest period the key counts with (a `min_period_ms`
+  beside `max_period_ms`: a new counter to keep, and still refuses when nobody used the room); (b) exact: the slot is spent
+  when another grant `o` of the same key was decided at an instant for which this grant no longer counted under `o`'s own
+  period, `o.granted_at >= g.leased_at + o.period` (the half-open window of the count: a grant counts for a decision at
+  `t` over `p` when its lease instant is after `t - p`). Chosen: **(b)**, decided under the window's lock, which every
+  decision that counts the key holds, so no such grant can be made between the judgement and the commit. When no such
+  grant exists, every decision since the recorded lease counted this grant, so clearing its instant (it counts again,
+  without end, until the next lease is recorded, D022-138) never lets a key grant beyond what its decisions allowed; the
+  attempt is kept. A grant the purge has deleted is not needed: the purge deletes a grant a minute after its window row's
+  longest period, so no window of any acquirer holds both it and the next lease. An unrecorded lease instant counts
+  without end, so its withdrawal is never refused. The rule is the one text of the check before the command and of the
+  commit's defence.
+  *Amended 2026-11-26 (security check, note 2):* exact for the lease instant as recorded, not as it was when each decision
+  read it. The lease pass records the instant late and back in time (the journal's lease instant, without the window
+  lock), so a decision made before the recording counted the grant as unleased while the rule judges it against the
+  earlier instant: it can refuse a withdrawal whose slot every decision counted. It only refuses more, never less, so no
+  limit is exceeded; the cost is G022-042's.
+- **D022-158 — The refusal has its own outcome, and its cost is stated (2026-11-26; correctness re-read, minor 4;
+  D006-018).** A withdrawal refused by D022-157 is counted `slot_spent` in `worker_leases_undelivered_total` (the closed
+  vocabulary of D006-018 gains the value), apart from `capped`, the cap of four withdrawals of one attempt. What it costs is
+  gap G022-042. Weighed: making the step ask the gate again for the same attempt (as a resume does over a slot given back,
+  ADR-0096 decision 4): the refused slot is leased and may still count for an acquirer with a longer period, so it cannot
+  be given back, and the withdrawal's transaction has no gate round to decide a new one; that is a design of its own,
+  left with the gap.
+- **D022-159 — The tests and the smaller fixes of the re-reads (2026-11-26).** (1) The refusal tests reach the refusal
+  without editing rows by hand (two definitions of one key, per hour and per second), run `assert_consistent`, and check
+  that the retry's attempt gets exactly one `rate_limit.granted`; the give-back refusal test asserts the error. (2) The
+  lease-pass race test's barrier waits until the pass's own backend is blocked by the holder. (3) The share-lock test
+  blocks the activation at the read under the epoch lock and changes the version with `flow_control_key_activate`. (4)
+  The privilege allowance names `ActivationPrerequisite::holds`. (5) The ordering test: one run's two leases on keys
+  X1 < X2 handed over as (X2, X1) while X1 is held complete without a deadlock.
 
 ## Gaps
 
@@ -2889,6 +3074,8 @@ outcome below is delegate (OD-2026-11-24-4), written before or with its code, ea
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G022-036 | The deployment files cannot turn the rate gate on: the Helm chart has one switch, `flowControl.concurrencyKeys` (`infra/helm/values.yaml`, `templates/_helpers.tpl` `sagat.flowControl.env`), and no value for `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its comment still says "The rate gate is not served by this release"; the overlay `infra/docker/compose.flow-control.yaml` sets the concurrency switch only. The runbook (section 6) says so and gives the local workaround (found 2026-11-26, task T022-088). | Closed by D022-118 (2026-11-26) |
 | G022-037 | An orphaned waiter (alert `FLOW_CONTROL_WAITER_ORPHANED`) is removed by a hand `DELETE` as the schema owner, with no API, command or audit record, while NFR-022-005 asks an audited API for every operator action; the same holds for the digest-key commands (G022-006). The runbook (section 14) tells the operator what to keep in the change record (found 2026-11-26, task T022-061). | Open; with G022-006's operator role |
+| G022-041 | A withdrawal whose grant had recorded the withdrawn lease, and whose window had already passed when the lease was withdrawn, makes the slot count again from the withdrawal (D022-138). Between the end of that window and the withdrawal the slot did not count, so the key may have granted another step meanwhile; when both attempts then run within one window the downstream sees one call more than the limit, once per such withdrawal. It needs a lease that waited longer than its window before it was withdrawn (most likely with `per: second`). Not measured; no alert says it happened (found 2026-11-26, decision D022-138). | Closed by D022-157 (2026-11-26; first said closed by D022-148, which judged by the grant's own period and missed a key of several periods, security re-read Medium 1): a withdrawal is refused only when another grant used the room it left. *Corrected by the security review of 2026-11-26:* it was not rare; a host on protocol 1.8 could reach it at will by handing a lease back after its window |
+| G022-042 | A withdrawal refused by D022-157 (another grant of the key was decided after this slot stopped counting for it) spends the attempt, though nothing ran: a host's hand-back (`TASK_NOT_STARTED`) becomes the ordinary failure, which for a last attempt or a step that does not retry fails the step, and through its route maybe the run; a lease that was not sent lapses and spends its attempt at its time to live. It happens only on a key another acquirer used meanwhile; on a busy key with `per: second` that is most hand-backs made more than about a second after the lease was recorded. It can also happen on a key whose other grants all counted this slot, when the lease pass recorded the slot's lease instant late and back in time (D022-157, amended): the rule then refuses more than it must. Counted `slot_spent` (D022-158), apart from `capped`. A rule that asks the gate again for the same attempt is the open way out (D022-158). *Rewritten 2026-11-26 after the correctness re-read (minor 4): the first text understated the cost.* | Accepted for 0.3.0; delegate (OD-2026-11-20-6) |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 
 ## Owner questions

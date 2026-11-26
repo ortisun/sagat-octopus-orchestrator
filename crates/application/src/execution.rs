@@ -1786,6 +1786,15 @@ pub trait RunTx: Send {
         &mut self,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Locks, in one sorted pass, every flow-control key row the withdrawals of `leases` (root steps and the attempts their
+    /// leases carry) may touch, and says of each whether its rate slot is spent (feature 022, decisions D022-156 and
+    /// D022-157): another grant of its key used the room it left, so withdrawing it would let it run in that grant's window.
+    /// Called once, before the first withdrawal command of the transaction. A step without a rate limit is never spent.
+    fn lock_withdrawn_gates(
+        &mut self,
+        leases: &[(NodeId, u32)],
+    ) -> impl Future<Output = Result<Vec<bool>, StoreError>> + Send;
+
     /// The result stored by an earlier command with the same idempotency key, if any. A different
     /// request under the same key is [`StoreError::IdempotencyKeyReused`].
     fn replay(

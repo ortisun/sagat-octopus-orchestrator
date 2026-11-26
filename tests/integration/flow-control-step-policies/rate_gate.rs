@@ -720,6 +720,8 @@ async fn the_purge_keeps_a_short_grant_for_the_longest_period_its_window_has_see
     assert_eq!(task.run_id, first);
     w.scheduler.record_rate_leases().await;
     let leased = step_lease(&w, first).await.0.expect("a lease instant");
+    // the attempt ends: the purge keeps the grant of a step still leased at it (decision D022-146)
+    w.complete(&session, &task, &json!({})).await.expect("done");
     let at = |micros: i64| {
         OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000).expect("an instant")
     };

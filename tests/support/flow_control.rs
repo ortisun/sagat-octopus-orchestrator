@@ -625,6 +625,35 @@ pub async fn key_consistency(
                 .to_owned(),
         ),
         (
+            // decisions D022-139 and D022-149 item 4: a step grant's lease instant is empty (unleased, withdrawn, or not
+            // recorded yet) or its attempt's last `step.leased`, never a lease withdrawn after it
+            "a step grant whose lease instant is not its attempt's last lease",
+            "SELECT g.run_id::text || '/' || g.node || '/' || g.attempt FROM rate_limit_grants g \
+              WHERE g.tenant_id = $1 AND g.limit_scope = 'STEP' AND g.leased_at IS NOT NULL \
+                AND NOT EXISTS (SELECT 1 FROM (SELECT e.seq, e.occurred_at FROM run_events e \
+                                  WHERE e.tenant_id = g.tenant_id AND e.run_id = g.run_id AND e.node = g.node \
+                                    AND e.event_type = 'step.leased' AND e.attempt = g.attempt \
+                                    AND NOT coalesce((e.detail ->> 'restored')::boolean, false) \
+                                  ORDER BY e.seq DESC LIMIT 1) l \
+                    WHERE g.leased_at = greatest(l.occurred_at, g.granted_at) \
+                      AND NOT EXISTS (SELECT 1 FROM run_events x WHERE x.tenant_id = g.tenant_id \
+                            AND x.run_id = g.run_id AND x.node = g.node AND x.event_type = 'step.lease_withdrawn' \
+                            AND x.attempt = g.attempt AND x.seq > l.seq))"
+                .to_owned(),
+        ),
+        (
+            // decision D022-149 item 4: a step granted a slot for its next attempt and not leased has its grant row
+            "a granted, unleased step slot without its grant row",
+            "SELECT s.run_id::text || '/' || s.node FROM steps s WHERE s.tenant_id = $1 \
+                AND s.flow_control_gates IS NOT NULL AND cardinality(s.instance_path_nodes) = 0 \
+                AND s.flow_control_gates -> 'rate' ->> 'phase' = 'HELD' \
+                AND (s.flow_control_gates -> 'rate' ->> 'attempt')::int = s.attempt + 1 \
+                AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g WHERE g.tenant_id = s.tenant_id \
+                    AND g.run_id = s.run_id AND g.limit_scope = 'STEP' AND g.node = s.node \
+                    AND g.attempt = s.attempt + 1)"
+                .to_owned(),
+        ),
+        (
             // invariant 9: `grants_total` grows by one per grant of the row's life, so it is at least its rows and at
             // most the key's journaled grants (a window emptied and created again starts a new life below them)
             "a window's grants_total outside its rows and its journaled grants",

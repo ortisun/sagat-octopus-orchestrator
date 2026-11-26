@@ -9,7 +9,10 @@ use sqlx::migrate::Migrator;
 /// The predicate of a rate-limit grant (alias `$g`, its window row `$w`) that the purge may delete at the instant `$now`
 /// (FR-022-056: once its window row's longest period and one minute more have passed since its lease; exactly at that
 /// instant it is kept). One text for the purge (transaction T25) and for a decision's reclaim of its namespace's windows
-/// (decision D022-066 item 1), so the purge's boundary test holds for both.
+/// (decision D022-066 item 1), so the purge's boundary test holds for both. A step grant whose root step is still `LEASED` at
+/// the grant's attempt is kept, however old its lease instant (decision D022-146): its lease may still be withdrawn and its
+/// slot given back. Both callers hold the grant's window row, which a withdrawal also locks before it changes the grant
+/// (decision D022-148), so the step's status is not read across a withdrawal in flight.
 macro_rules! purgeable_grant {
     ($g:literal, $w:literal, $now:literal) => {
         concat!(
@@ -19,7 +22,53 @@ macro_rules! purgeable_grant {
             ".leased_at + make_interval(secs => ",
             $w,
             ".max_period_ms / 1000.0 + 60) < ",
-            $now
+            $now,
+            " AND NOT (",
+            $g,
+            ".limit_scope = 'STEP' AND EXISTS (SELECT 1 FROM steps leased WHERE leased.tenant_id = ",
+            $g,
+            ".tenant_id AND leased.run_id = ",
+            $g,
+            ".run_id AND leased.node = ",
+            $g,
+            ".node AND leased.instance_path_nodes = '{}' AND leased.instance_path_indices = '{}' \
+               AND leased.status = 'LEASED' AND leased.attempt = ",
+            $g,
+            ".attempt))"
+        )
+    };
+}
+
+/// The rate grant (alias `$g`) of a withdrawn lease whose slot may not count again (decision D022-157): its lease instant
+/// is recorded and another grant of its key was decided at an instant for which this one no longer counted under that
+/// grant's own window (a grant counts for a decision at `t` over `p` while its lease instant is after `t - p`). Every decision
+/// that counts the key holds its window row, and the callers hold it too, so no such grant appears before their commit. One
+/// text for the decision before a withdrawal and the commit's defence.
+macro_rules! spent_rate_slot {
+    ($g:literal) => {
+        concat!(
+            $g,
+            ".leased_at IS NOT NULL AND EXISTS (SELECT 1 FROM rate_limit_grants other WHERE other.tenant_id = ",
+            $g,
+            ".tenant_id AND other.namespace_id = ",
+            $g,
+            ".namespace_id AND other.pool = ",
+            $g,
+            ".pool AND other.limit_scope = ",
+            $g,
+            ".limit_scope AND other.group_name = ",
+            $g,
+            ".group_name AND other.key_digest = ",
+            $g,
+            ".key_digest AND NOT (other.run_id = ",
+            $g,
+            ".run_id AND other.node = ",
+            $g,
+            ".node AND other.attempt = ",
+            $g,
+            ".attempt) AND other.granted_at >= ",
+            $g,
+            ".leased_at + make_interval(secs => other.period_ms / 1000.0))"
         )
     };
 }
@@ -165,9 +214,9 @@ pub use flow_control::{
 };
 pub use identity::PgIdentityStore;
 pub use instances::{
-    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep, OperatorBounds, PgInstanceStore,
-    capability_census, census_step, live_capable_step, may_activate, no_feature_step,
-    requirement_recorded,
+    ActivationPrerequisite, CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep,
+    OperatorBounds, PREREQUISITE_MISSING, PgInstanceStore, capability_census, census_step,
+    may_activate, no_feature_step, requirement_recorded,
 };
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;

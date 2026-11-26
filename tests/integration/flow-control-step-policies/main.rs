@@ -7,6 +7,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod activation;
 mod admission;
 mod alerts;
 mod ceilings;
@@ -31,3 +32,4 @@ mod rotation;
 mod run_admission;
 mod run_creators;
 mod window_model;
+mod withdrawn_leases;

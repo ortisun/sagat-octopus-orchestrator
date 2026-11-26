@@ -402,13 +402,17 @@ impl MaintenanceStore for PgRunStore {
         // Major 2 of 2026-11-20: a grant no worker leased costs no journal probe); a lease counts only when it is the
         // granted attempt's and was journaled after the grant (D022-029); the instant is the lease's, or the grant's when
         // the lease's transaction read its clock first (a later instant only keeps a slot longer: under-delivery, never an
-        // early grant, plan "Failure and recovery")
+        // early grant, plan "Failure and recovery"). With withdrawals an attempt has several leases and only the last can
+        // have reached a handler, so the last is recorded; a withdrawn step is one attempt behind its grant, so nothing is
+        // recorded until it is leased again; and a row is written only in the version this statement read (`xmin`), so a
+        // withdrawal that committed while this statement waited for the row is not overwritten (D022-139)
         let recorded = sqlx::query(
             "UPDATE rate_limit_grants g SET leased_at = greatest(d.leased_at, g.granted_at) \
-               FROM (SELECT c.tenant_id, c.run_id, c.node, c.attempt, c.leased_at \
+               FROM (SELECT c.tenant_id, c.run_id, c.node, c.attempt, c.leased_at, c.row_version \
                        FROM unnest($2::smallint[]) AS sh(s) \
                       CROSS JOIN LATERAL ( \
-                        SELECT u.tenant_id, u.run_id, u.node, u.attempt, l.occurred_at AS leased_at \
+                        SELECT u.tenant_id, u.run_id, u.node, u.attempt, l.occurred_at AS leased_at, \
+                               u.xmin AS row_version \
                           FROM rate_limit_grants u \
                           JOIN steps st ON st.tenant_id = u.tenant_id AND st.run_id = u.run_id \
                                        AND st.instance_path_nodes = '{}' AND st.instance_path_indices = '{}' \
@@ -421,12 +425,12 @@ impl MaintenanceStore for PgRunStore {
                                             WHERE gr.tenant_id = u.tenant_id AND gr.run_id = u.run_id \
                                               AND gr.instance_id = st.step_id AND gr.event_type = 'rate_limit.granted' \
                                               AND gr.attempt = u.attempt) \
-                            ORDER BY e.seq LIMIT 1) l \
+                            ORDER BY e.seq DESC LIMIT 1) l \
                          WHERE u.shard = sh.s AND u.leased_at IS NULL AND u.limit_scope = 'STEP' \
                            AND u.tenant_id <> ALL($3::uuid[]) \
                          ORDER BY u.granted_at LIMIT $1) c) d \
               WHERE g.tenant_id = d.tenant_id AND g.run_id = d.run_id AND g.node = d.node AND g.attempt = d.attempt \
-                AND g.leased_at IS NULL \
+                AND g.leased_at IS NULL AND g.xmin = d.row_version \
              RETURNING g.tenant_id, g.namespace_id, g.pool, g.limit_scope, g.group_name, g.key_digest, g.leased_at",
         )
         .bind(limit)

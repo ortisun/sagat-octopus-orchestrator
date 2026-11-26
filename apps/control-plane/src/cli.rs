@@ -22,11 +22,6 @@ pub enum Command {
     /// Hand the cron triggers over from the legacy cron pass to the schedule pass (feature 018), then exit. Needs the
     /// schema-owning database role.
     ScheduleTriggerHandover(HandoverArgs),
-    /// Activate a flow-control capability for the fleet (feature 022), then exit. Needs the schema-owning database role.
-    FlowControlActivate {
-        capability: sagat_application::flow_control::FlowControlCapability,
-        operator: String,
-    },
     /// Record a fleet requirement of the instance-capability registry (feature 006, decision D006-034), then exit. Needs the
     /// schema-owning database role.
     CapabilityActivate(crate::capability_activation::ActivationArgs),
@@ -70,9 +65,6 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     let first = args.next();
     if first == Some("schedule-trigger-handover") {
         return parse_handover(args);
-    }
-    if first == Some("flow-control-activate") {
-        return parse_flow_control_activate(args);
     }
     if first == Some("capability-activate") {
         return parse_activation(args);
@@ -154,42 +146,6 @@ fn parse_handover<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command
     Ok(Command::ScheduleTriggerHandover(parsed))
 }
 
-fn parse_flow_control_activate<'a>(
-    mut args: impl Iterator<Item = &'a str>,
-) -> Result<Command, UsageError> {
-    let (mut capability, mut operator) = (None, None);
-    while let Some(flag) = args.next() {
-        let value = args
-            .next()
-            .filter(|value| !value.starts_with('-'))
-            .ok_or_else(|| UsageError(format!("{flag} needs a value")))?;
-        match flag {
-            "--capability" => {
-                capability = Some(crate::flow_control::capability_of(value).ok_or_else(|| {
-                    UsageError(format!(
-                        "--capability is concurrency-keys or rate-limits, not '{value}'"
-                    ))
-                })?);
-            }
-            "--operator" => operator = Some(value.to_owned()),
-            other => {
-                return Err(UsageError(format!(
-                    "unexpected argument '{other}' for flow-control-activate"
-                )));
-            }
-        }
-    }
-    match (capability, operator) {
-        (Some(capability), Some(operator)) => Ok(Command::FlowControlActivate {
-            capability,
-            operator,
-        }),
-        _ => Err(UsageError(
-            "flow-control-activate needs --capability concurrency-keys|rate-limits and --operator NAME".to_owned(),
-        )),
-    }
-}
-
 fn parse_activation<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command, UsageError> {
     let mut parsed = crate::capability_activation::ActivationArgs::default();
     match args.next() {
@@ -262,13 +218,12 @@ COMMANDS:
     cleanup-secrets  Retire expired unreferenced OpenBao credentials (one batch; 60 second deadline)
     quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
     scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
-    flow-control-activate  Activate concurrency keys or rate limits for the fleet (feature 022); audited, with the owner role:
-                  flow-control-activate --capability concurrency-keys|rate-limits --operator NAME
     schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
                   owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
     capability-activate  Record a fleet requirement of the instance-capability registry (lease-withdrawal-v1: the engines
                   withdraw the leases they never handed to a host; lease-withdrawal-v2, after it: the floor of protocol
-                  1.8); with the owner role:
+                  1.8; flow-control-concurrency-v1 and flow-control-rate-v1: concurrency keys and rate limits, once a
+                  digest key version is active and a process of each kind lists them); audited, with the owner role:
                   capability-activate <capability> --operator NAME [--expect-live N] [--dry-run]
     input-schema-inventory [--all]  List the stored workflow versions whose inputSchema is outside the supported subset (every
                   start of them is refused in enforce mode), and for information those with an inputSchema and a trigger;

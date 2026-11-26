@@ -116,6 +116,34 @@ struct GateReturn {
     key: ExistingKey,
 }
 
+/// A withdrawn attempt's rate grant and its window (decisions D022-146 and D022-148).
+struct WithdrawnGrant {
+    node: NodeId,
+    attempt: u32,
+    /// Whether this transaction also gives the attempt back (`rate_limit.returned`).
+    returned: bool,
+    key: ExistingKey,
+}
+
+/// The marker of a withdrawn attempt handled in `gate_returns_applied`.
+const WITHDRAWN: &str = "step.lease_withdrawn";
+
+/// Whether `events` withdraw the lease of `node`'s attempt `attempt`.
+fn withdraws(events: &[RunEvent], node: &NodeId, attempt: u32) -> bool {
+    events.iter().any(|event| {
+        matches!(event, RunEvent::StepLeaseWithdrawn { node: n, attempt: a, .. } if n == node && *a == attempt)
+    })
+}
+
+/// Whether `events` give back the rate slot of `node`'s attempt `attempt`.
+fn gives_back(events: &[RunEvent], node: &NodeId, attempt: u32) -> bool {
+    events.iter().any(|event| {
+        matches!(event, RunEvent::Gate(gate)
+            if matches!(gate.change, GateChange::RateReturned)
+                && matches!(&gate.target, GateTarget::Step { node: n, attempt: a } if n == node && *a == attempt))
+    })
+}
+
 impl GateReturn {
     /// The `node` column of its row: the node, or `''` for a run's own row.
     fn node_column(&self) -> &str {
@@ -207,6 +235,8 @@ impl PgRunTx {
         // a pause or a resume makes the keys of the run's queued steps due after this round: they are locked here, in
         // the same sorted pass (correctness review M1 of 2026-11-20)
         let rearmed = self.rearmed_keys(pending_events).await?;
+        // a withdrawn lease's window too, before its grant is changed (decision D022-148)
+        let withdrawn = self.withdrawn_grants(pending_events).await?;
         let returned = |table: KeyTable| -> Vec<ExistingKey> {
             returns
                 .iter()
@@ -217,6 +247,12 @@ impl PgRunTx {
                         .iter()
                         .filter(|(t, _)| *t == table)
                         .map(|(_, key)| key.clone()),
+                )
+                .chain(
+                    withdrawn
+                        .iter()
+                        .filter(|_| table == KeyTable::Windows)
+                        .map(|grant| grant.key.clone()),
                 )
                 .collect()
         };
@@ -234,6 +270,7 @@ impl PgRunTx {
             &returned(KeyTable::Windows),
         )
         .await?;
+        self.clear_withdrawn_grants(withdrawn).await?;
         self.apply_returns(returns).await?;
         let decisions = self
             .decide_filed(pending, &filed_semaphores, &filed_windows, None, &ceilings)
@@ -1164,7 +1201,8 @@ impl PgRunTx {
     ) -> Result<(), StoreError> {
         let returns = self.pending_returns(events).await?;
         let rearmed = self.rearmed_keys(events).await?;
-        if returns.is_empty() && rearmed.is_empty() {
+        let withdrawn = self.withdrawn_grants(events).await?;
+        if returns.is_empty() && rearmed.is_empty() && withdrawn.is_empty() {
             return Ok(());
         }
         // the returns and the keys a pause or a resume makes due, in one sorted pass, before any of them is written
@@ -1180,11 +1218,18 @@ impl PgRunTx {
                         .filter(|(t, _)| *t == table)
                         .map(|(_, key)| key.clone()),
                 )
+                .chain(
+                    withdrawn
+                        .iter()
+                        .filter(|_| table == KeyTable::Windows)
+                        .map(|grant| grant.key.clone()),
+                )
                 .collect();
             if !rows.is_empty() {
                 lock_existing(&mut self.tx, table, &rows).await?;
             }
         }
+        self.clear_withdrawn_grants(withdrawn).await?;
         self.apply_returns(returns).await?;
         if !rearmed.is_empty() {
             self.rearm_queued_keys().await?;
@@ -1273,10 +1318,12 @@ impl PgRunTx {
                     "SELECT key_digest FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 \
                      AND permit_scope = $5 AND node = $3 AND attempt = $4",
                 ),
+                // a slot given back is not leased; its row may carry a lease instant only when this commit withdraws that
+                // attempt, and the clear runs before the delete (decision D022-147, ADR-0096 decision 6)
                 GateChange::RateReturned => (
                     KeyTable::Windows,
                     "SELECT key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
-                     AND limit_scope = $5 AND node = $3 AND attempt = $4 AND leased_at IS NULL",
+                     AND limit_scope = $5 AND node = $3 AND attempt = $4 AND (leased_at IS NULL OR $6)",
                 ),
                 GateChange::RateDequeued | GateChange::RateWaitTimedOut => (
                     KeyTable::Windows,
@@ -1294,12 +1341,22 @@ impl PgRunTx {
                 continue;
             }
             let attempt_column = i32::try_from(attempt).map_err(|_| corrupt("attempt"))?;
-            let digest: Option<Vec<u8>> = sqlx::query_scalar(read)
+            let query = sqlx::query_scalar(read)
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
                 .bind(node.as_ref().map_or("", NodeId::as_str))
                 .bind(attempt_column)
-                .bind(level.as_str())
+                .bind(level.as_str());
+            // a give-back's read also matches the attempt this commit withdraws (decision D022-147)
+            let query = if matches!(gate.change, GateChange::RateReturned) {
+                query.bind(
+                    node.as_ref()
+                        .is_some_and(|node| withdraws(events, node, attempt)),
+                )
+            } else {
+                query
+            };
+            let digest: Option<Vec<u8>> = query
                 .fetch_optional(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
@@ -1337,6 +1394,7 @@ impl PgRunTx {
                     "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = $5 \
                      AND node = $3 AND attempt = $4"
                 }
+                // strict: a withdrawn attempt's instant was cleared before this delete (decision D022-147)
                 GateChange::RateReturned => {
                     "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 \
                      AND node = $3 AND attempt = $4 AND leased_at IS NULL"
@@ -1611,6 +1669,247 @@ impl PgRunTx {
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
+        }
+        Ok(())
+    }
+
+    /// Whether `event` withdraws the lease of a rate-gated step (decisions D022-138 and D022-148): its commit locks the
+    /// grant's window and clears or refuses the grant's lease instant.
+    pub(super) fn withdraws_a_rate_slot(&self, event: &RunEvent) -> bool {
+        matches!(event, RunEvent::StepLeaseWithdrawn { node, .. }
+            if self.def.node(node).is_some_and(|declared| declared.flow_control().rate_limit().is_some()))
+    }
+
+    /// Locks, in one sorted pass, every key row the withdrawals of `leases` (root steps and the attempts their leases
+    /// carry) may touch: the run's active-run counter row (slot 6: a withdrawal in a stopping run can end it), the semaphore
+    /// of each permit the attempts hold and of the run's own permit, then the window of each rate grant, each table sorted
+    /// (slot 6, then 7, then 8b, ADR-0050 and D022-038), then the grants themselves; and says of each lease whether its rate slot is
+    /// spent (decisions D022-156 and D022-157). Called before the first withdrawal command of the transaction, so the commits
+    /// that follow take no key row they do not hold, and nothing can change the judgement before the commit. A rate-gated
+    /// root step `LEASED` at the attempt whose grant is gone is a corrupt projection.
+    pub(super) async fn lock_withdrawn_gates(
+        &mut self,
+        leases: &[(NodeId, u32)],
+    ) -> Result<Vec<bool>, StoreError> {
+        let (mut semaphores, mut windows): (Vec<ExistingKey>, Vec<ExistingKey>) =
+            (Vec::new(), Vec::new());
+        let mut rated = Vec::with_capacity(leases.len());
+        let gated = leases.iter().any(|(node, _)| {
+            self.def
+                .node(node)
+                .is_some_and(|declared| declared.flow_control().is_gated())
+        });
+        if gated {
+            // a withdrawal that ends a stopping run locks the counter row in its commit, before any key (slot 6 of
+            // ADR-0050): taken here first, whatever the run's state (security check of 2026-11-26, Low 1)
+            sqlx::query("SELECT run_active_counts_lock_slot($1, $2)")
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+            // and the run's own permit, which the end of the run gives back
+            if self.def.run_flow_control().concurrency().is_some() {
+                let row: Option<(String, String, Vec<u8>)> = sqlx::query_as(
+                    "SELECT pool, group_name, key_digest FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 \
+                        AND holder_scope = 'RUN'",
+                )
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .fetch_optional(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+                if let Some((pool, group, digest)) = row {
+                    semaphores.push(ExistingKey {
+                        tenant: self.info.tenant_id,
+                        namespace: self.info.namespace_id,
+                        pool: GatePool::parse(&pool).ok_or_else(|| corrupt("gate pool"))?,
+                        level: GateLevel::Run,
+                        group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                            .map_err(|_| corrupt("gate group"))?,
+                        digest: digest.try_into().map_err(|_| corrupt("gate key"))?,
+                    });
+                }
+            }
+        }
+        for (node, attempt) in leases {
+            let Some(declared) = self.def.node(node) else {
+                rated.push(false);
+                continue;
+            };
+            let flow = declared.flow_control().clone();
+            let attempt_column = i32::try_from(*attempt).map_err(|_| corrupt("attempt"))?;
+            let reads = [
+                (
+                    flow.concurrency().is_some(),
+                    "SELECT pool, group_name, key_digest FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 \
+                        AND holder_scope = 'STEP' AND node = $3 AND attempt = $4",
+                ),
+                (
+                    flow.rate_limit().is_some(),
+                    "SELECT pool, group_name, key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
+                        AND limit_scope = 'STEP' AND node = $3 AND attempt = $4",
+                ),
+            ];
+            for (index, (declared, read)) in reads.into_iter().enumerate() {
+                if !declared {
+                    continue;
+                }
+                let row: Option<(String, String, Vec<u8>)> = sqlx::query_as(read)
+                    .bind(self.info.tenant_id.as_uuid())
+                    .bind(self.info.run_id.as_uuid())
+                    .bind(node.as_str())
+                    .bind(attempt_column)
+                    .fetch_optional(&mut *self.tx)
+                    .await
+                    .map_err(store_error)?;
+                let Some((pool, group, digest)) = row else {
+                    // a rate grant is the leased attempt's until the attempt ends (the purge keeps it, D022-146)
+                    let leased_here = self.state.step(node).is_some_and(|step| {
+                        step.status() == StepStatus::Leased && step.attempt() == *attempt
+                    });
+                    if index == 1 && leased_here {
+                        return Err(corrupt("the grant of a leased rate-gated step"));
+                    }
+                    continue;
+                };
+                let key = ExistingKey {
+                    tenant: self.info.tenant_id,
+                    namespace: self.info.namespace_id,
+                    pool: GatePool::parse(&pool).ok_or_else(|| corrupt("gate pool"))?,
+                    level: GateLevel::Step,
+                    group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                        .map_err(|_| corrupt("gate group"))?,
+                    digest: digest.try_into().map_err(|_| corrupt("gate key"))?,
+                };
+                let rows = if index == 0 {
+                    &mut semaphores
+                } else {
+                    &mut windows
+                };
+                if !rows.contains(&key) {
+                    rows.push(key);
+                }
+            }
+            rated.push(flow.rate_limit().is_some());
+        }
+        if !semaphores.is_empty() {
+            lock_existing(&mut self.tx, KeyTable::Semaphores, &semaphores).await?;
+        }
+        if !windows.is_empty() {
+            lock_existing(&mut self.tx, KeyTable::Windows, &windows).await?;
+        }
+        let mut spent = Vec::with_capacity(leases.len());
+        for ((node, attempt), rated) in leases.iter().zip(rated) {
+            if !rated {
+                spent.push(false);
+                continue;
+            }
+            let judged: Option<bool> = sqlx::query_scalar(concat!(
+                "SELECT ",
+                spent_rate_slot!("g"),
+                " FROM rate_limit_grants g WHERE g.tenant_id = $1 AND g.run_id = $2 AND g.limit_scope = 'STEP' \
+                    AND g.node = $3 AND g.attempt = $4 FOR UPDATE OF g"
+            ))
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(node.as_str())
+            .bind(i32::try_from(*attempt).map_err(|_| corrupt("attempt"))?)
+            .fetch_optional(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            spent.push(judged.unwrap_or(false));
+        }
+        Ok(spent)
+    }
+
+    /// The rate grants of the lease withdrawals among `events` not handled yet in this transaction, each with its window
+    /// (decisions D022-146 and D022-148), to be locked in the transaction's one sorted pass of key rows (D022-038). A
+    /// withdrawn attempt whose grant is gone is corrupt, unless this transaction gives that attempt back.
+    async fn withdrawn_grants(
+        &mut self,
+        events: &[RunEvent],
+    ) -> Result<Vec<WithdrawnGrant>, StoreError> {
+        let mut grants = Vec::new();
+        for event in events {
+            let RunEvent::StepLeaseWithdrawn { node, attempt, .. } = event else {
+                continue;
+            };
+            if !self.withdraws_a_rate_slot(event)
+                || self
+                    .gate_returns_applied
+                    .contains(&(Some(node.clone()), *attempt, WITHDRAWN))
+            {
+                continue;
+            }
+            let row: Option<(String, String, Vec<u8>)> = sqlx::query_as(
+                "SELECT pool, group_name, key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
+                    AND limit_scope = 'STEP' AND node = $3 AND attempt = $4",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(node.as_str())
+            .bind(i32::try_from(*attempt).map_err(|_| corrupt("attempt"))?)
+            .fetch_optional(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            let returned = gives_back(events, node, *attempt);
+            let Some((pool, group, digest)) = row else {
+                return Err(corrupt("the grant of a withdrawn lease"));
+            };
+            grants.push(WithdrawnGrant {
+                node: node.clone(),
+                attempt: *attempt,
+                returned,
+                key: ExistingKey {
+                    tenant: self.info.tenant_id,
+                    namespace: self.info.namespace_id,
+                    pool: GatePool::parse(&pool).ok_or_else(|| corrupt("grant pool"))?,
+                    level: GateLevel::Step,
+                    group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                        .map_err(|_| corrupt("grant group"))?,
+                    digest: digest.try_into().map_err(|_| corrupt("grant key"))?,
+                },
+            });
+        }
+        Ok(grants)
+    }
+
+    /// Clears the lease instant of each withdrawn grant, under its window's lock, before any give-back of this transaction
+    /// is applied (decisions D022-138, D022-147 and D022-157): the slot counts as unleased again, without end, until the
+    /// lease pass records the attempt's next lease. Refused, failing the transaction, when the slot is spent
+    /// ([`spent_rate_slot!`]) and the attempt is not given back here; the decision before the command
+    /// ([`Self::lock_withdrawn_gates`]) has refused such a withdrawal already, so this is a defence. The
+    /// write always makes a new row version, so a lease pass that read the row before this commit does not write the
+    /// withdrawn lease on its recheck (D022-139).
+    async fn clear_withdrawn_grants(
+        &mut self,
+        grants: Vec<WithdrawnGrant>,
+    ) -> Result<(), StoreError> {
+        for grant in grants {
+            // the defence behind the decision taken before the command (D022-156): the same rule, under the same locks
+            let cleared = sqlx::query(concat!(
+                "UPDATE rate_limit_grants g SET leased_at = NULL WHERE g.tenant_id = $1 AND g.run_id = $2 \
+                   AND g.limit_scope = 'STEP' AND g.node = $3 AND g.attempt = $4 AND ($5 OR NOT (",
+                spent_rate_slot!("g"),
+                "))"
+            ))
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(grant.node.as_str())
+            .bind(i32::try_from(grant.attempt).map_err(|_| corrupt("attempt"))?)
+            .bind(grant.returned)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?
+            .rows_affected();
+            if cleared != 1 {
+                return Err(StoreError::StateConflict(
+                    "the rate slot of a withdrawn lease has stopped counting",
+                ));
+            }
+            self.gate_returns_applied
+                .insert((Some(grant.node), grant.attempt, WITHDRAWN));
         }
         Ok(())
     }

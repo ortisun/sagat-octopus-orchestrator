@@ -5530,6 +5530,13 @@ impl RunTx for PgRunTx {
         lease_withdrawal_required(&mut self.tx).await
     }
 
+    async fn lock_withdrawn_gates(
+        &mut self,
+        leases: &[(NodeId, u32)],
+    ) -> Result<Vec<bool>, StoreError> {
+        PgRunTx::lock_withdrawn_gates(self, leases).await
+    }
+
     async fn reported_by(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -5593,7 +5600,7 @@ impl RunTx for PgRunTx {
             matches!(
                 event,
                 RunEvent::Gate(_) | RunEvent::RunPaused | RunEvent::RunResumed
-            )
+            ) || self.withdraws_a_rate_slot(event)
         }) {
             // a commit that ends the run sets `finished_at`, whose trigger locks the run's active-run counter row (slot 6
             // of ADR-0050's merged order): it is locked first, before any key, as an admission locks it (correctness

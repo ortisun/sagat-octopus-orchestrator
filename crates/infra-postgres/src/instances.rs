@@ -46,34 +46,6 @@ pub fn no_feature_step(_: &mut sqlx::PgConnection) -> FeatureStep<'_> {
     Box::pin(async { Ok(()) })
 }
 
-/// The feature step of a flow-control activation (feature 022, T022-094): the registry records a requirement whenever no
-/// live process lacks it, an empty fleet included, and then no process of an older build serves. This step refuses unless
-/// at least one live process (seen within 30 seconds) of each required kind lists the capability, under the epoch's lock.
-pub fn live_capable_step(
-    capability: Capability,
-    kinds: &[sagat_application::instances::InstanceKind],
-) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send + use<> {
-    let kinds: Vec<String> = kinds.iter().map(|kind| kind.as_str().to_owned()).collect();
-    move |conn| {
-        Box::pin(async move {
-            let lacking: i64 = sqlx::query_scalar(
-                "SELECT flow_control_kinds_without_capable_process($1, $2::text[])",
-            )
-            .bind(capability.as_str())
-            .bind(&kinds)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(store_error)?;
-            if lacking > 0 {
-                return Err(StoreError::StateConflict(
-                    "no live process of a required kind runs the gate: nothing would serve after the activation",
-                ));
-            }
-            Ok(())
-        })
-    }
-}
-
 /// How long the operator's transaction may hold the requirement epoch. The processes that wait for it run with a
 /// statement timeout of 5 s by default, so the defaults are shorter than that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -501,14 +473,47 @@ pub async fn requirement_recorded(
 pub const FOLLOWED_REQUIREMENT_MISSING: &str =
     "the requirement this one follows is not recorded for every kind";
 
+/// The refusal of [`census_step`] when the prerequisite of the activation does not hold under the lock.
+pub const PREREQUISITE_MISSING: &str = "the prerequisite of the requirement does not hold";
+
+/// A state of the platform a requirement needs before it may be recorded (feature 022, decision D022-137): an entry of
+/// `control-plane capability-activate` names it, and the command reads it before its census and again under the epoch
+/// lock ([`census_step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationPrerequisite {
+    /// A flow-control digest key version is `ACTIVE` (`flow_control_key_versions`): without one, every gated decision is
+    /// refused as unavailable, so a gate required of the fleet would serve nothing.
+    ActiveDigestKeyVersion,
+}
+
+impl ActivationPrerequisite {
+    /// Whether the prerequisite holds, read on `conn` under a share lock of the row it reads (decision D022-149 item 1): a
+    /// transaction that changes that row waits for this one's end, and this read waits for it and judges what it committed.
+    ///
+    /// # Errors
+    /// The store's.
+    pub async fn holds(self, conn: &mut sqlx::PgConnection) -> Result<bool, StoreError> {
+        match self {
+            Self::ActiveDigestKeyVersion => sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM flow_control_key_versions WHERE state = 'ACTIVE' FOR SHARE)",
+            )
+            .fetch_one(conn)
+            .await
+            .map_err(store_error),
+        }
+    }
+}
+
 /// The feature step of an activation that only checks the fleet again under the epoch lock: `judge` is handed the census and
 /// says whether to refuse (keeping its own reasons). With `follows`, the step first reads that requirement again, under the
 /// same lock its removal takes, and refuses with [`FOLLOWED_REQUIREMENT_MISSING`] unless it is recorded for every kind
-/// (decision D006-096).
+/// (decision D006-096); with `prerequisite`, it then reads that state again and refuses with [`PREREQUISITE_MISSING`]
+/// unless it holds (feature 022, decision D022-137).
 pub fn census_step<J>(
     capability: Capability,
     kinds: &'static [InstanceKind],
     follows: Option<Capability>,
+    prerequisite: Option<ActivationPrerequisite>,
     judge: J,
 ) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send
 where
@@ -520,6 +525,11 @@ where
                 && !requirement_recorded(conn, follows, &InstanceKind::ALL).await?
             {
                 return Err(StoreError::StateConflict(FOLLOWED_REQUIREMENT_MISSING));
+            }
+            if let Some(prerequisite) = prerequisite
+                && !prerequisite.holds(conn).await?
+            {
+                return Err(StoreError::StateConflict(PREREQUISITE_MISSING));
             }
             let census = capability_census(conn, capability, kinds).await?;
             if judge(&census) {

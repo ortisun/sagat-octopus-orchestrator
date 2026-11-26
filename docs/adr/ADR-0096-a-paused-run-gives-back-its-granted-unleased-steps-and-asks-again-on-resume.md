@@ -39,6 +39,20 @@ Facts the design rests on:
    back unleased (`ENDED`). An operator's retry after a hold for review asks the same way.
 5. A pause or a resume locks every key it touches (the returns and the keys the run's waiters are on) in one sorted pass,
    semaphores then windows, before any of them is written (D022-038).
+6. *Added 2026-11-26, delegate (OD-2026-11-20-6; feature 022 decisions D022-138 and D022-139; ADR-0098 decision 3):* a
+   step whose lease is withdrawn (`step.lease_withdrawn`, nothing ran) is again granted and not leased: it keeps its
+   permit and its slot, is leased again without a new decision, and is given back by decisions 1 to 4 like any other.
+   Its rate grant MUST count as unleased again: the withdrawal's commit clears the lease instant the scheduler may have
+   recorded, the scheduler records the attempt's last lease, and a give-back deletes the grant whatever lease instant a
+   withdrawn lease had left on it.
+   *Amended 2026-11-26, delegate (OD-2026-11-20-6; decisions D022-146 to D022-148, after the reviews of that day):* a
+   give-back deletes a recorded grant only for an attempt the same commit withdraws, and fails on any other; the clear runs
+   under the window's lock and is refused when the slot has stopped counting (the withdrawal is then refused, counted
+   `capped`); the purge keeps the grant of a step still leased at it.
+   *Amended again 2026-11-26 (decisions D022-156 to D022-158, after the re-reads):* a withdrawal is refused only when
+   another grant of the key was decided after the slot stopped counting for it under that grant's own window; the
+   decision is taken before the command, under the key's and the grant's locks taken for all the run's leases in one sorted
+   pass; it is counted `slot_spent`.
 
 ## Considered options
 
