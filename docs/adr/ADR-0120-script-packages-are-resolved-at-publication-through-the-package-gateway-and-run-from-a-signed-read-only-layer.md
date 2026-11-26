@@ -1,7 +1,7 @@
 # ADR-0120: TypeScript and Python packages are resolved at publication through the platform's package gateway and run from a signed, read-only, content-addressed layer
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 046, 2026-11-24, revised after review rounds 1 to 3 and the re-reads of 2026-11-26), to be accepted or rejected under Owner decision 2026-11-24-4 when design 046 completes its review
+**Status:** Accepted (2026-11-26, delegate (OD-2026-11-24-4), Owner decision 2026-11-24-312), with the approval of design 046; proposed 2026-11-24
+**Decided by:** agent proposal (design 046, 2026-11-24, revised after review rounds 1 to 3 and the re-reads of 2026-11-26), accepted on 2026-11-26 under Owner decision 2026-11-24-4 with the approval of design 046 at `cd82af93` (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2
 **Refines / supersedes:** supersedes ADR-0013 **in part**: a run container of a bundle version 5 has one added mount, a read-only dependency layer that is not `noexec` (every other rule of ADR-0013 stays, including "no network" for every sandbox container). Narrows ADR-0057 decision 4 to C#, Rust and PHP: for TypeScript and Python a resolve container's requests reach, through its runner, only the package gateway's public routes and the control plane's private document, metadata and file routes for the tenant's reserved names. Refines ADR-0023: private packages use its tenant payload store; the gateway's public files use a store of their own. Supersedes Decision 105 of feature 005 for TypeScript and Python only.
 **Enforced by:** planned tests of design 046 (`docs/designs/046-script-dependencies.md`, Verification Plan): the lock validator fixtures in `crates/infra-packages` (including `a_relabelled_file_is_refused`); the hostile battery `integration_script_dependencies_containers` (`a_resolve_container_reaches_only_the_forwarded_routes`, `a_reserved_name_never_reaches_the_public_registry`, `a_script_cannot_write_the_layer`, `two_tenants_with_one_lock_get_two_volumes`, `an_unmarked_volume_is_never_mounted`, `unpacker_refuses_*`); `the_digest_is_recomputed_by_a_fresh_container`; `layer_digest_is_identical_on_two_hosts`; the tamper tests; the Helm test `only_the_gateway_leaves_the_cluster`; and four rules of `scripts/check-architecture.py` with negative tests: no network mode other than `none` in `crates/infra-sandbox` (`docker.rs`, `lake.rs`); exactly one added read-only mount on a run container; no token or secret in a resolve or install container; only `apps/package-gateway` names the public store's settings, and its dependency allow-list keeps it away from the database, application and sandbox crates. Until they exist: review only.
 
@@ -88,5 +88,6 @@ The forces:
 
 ## Evidence
 
-None yet: this is a proposal. Required before acceptance: the tests named under "Enforced by", the probe of design 046's
-Task 046-12, and the benchmark of design 046.
+None yet. The direction is accepted with design 046's approval (Owner decision 2026-11-24-312); the build owes the tests
+named under "Enforced by", the probe of design 046's Task 046-12 and the benchmark of design 046, and a result of the
+probe or the benchmark that contradicts a decision above reopens it.

@@ -1,8 +1,14 @@
 # Package dependencies for TypeScript and Python scripts
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** In Review
-*   **Date:** 2026-11-24
+*   **Status:** Approved
+*   **Date:** 2026-11-26
+*   **Reviewed-commit:** cd82af9376ce4a8d40196f11541a3ca1ac754207
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/046-script-dependencies.reviews/2026-11-26/round-4/egm-review.md sha256:f17039467f09fc9714590ada6586db8b8c65e8516a6e251c791fe4106d68d0f5; docs/designs/046-script-dependencies.reviews/2026-11-26/round-4/architecture.md sha256:ea1d4438479c3b2e5d4a5279a5ac0d767b8889f136cdaf13946eb35b33643ac2; docs/designs/046-script-dependencies.reviews/2026-11-26/round-4/security.md sha256:f905da8057beb50b1a50c94bbe96dd87e39213b5174ebaa031aa22258bda6f32; docs/designs/046-script-dependencies.reviews/2026-11-26/round-4/correctness.md sha256:9dfdaa9d363fda33e206e4167531c51c61f21dd0ce52c93f8ffd94bdc666232e
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 7; OD-2026-11-24-313, OD-2026-11-24-314, OD-2026-11-24-315, OD-2026-11-24-316, OD-2026-11-24-317, OD-2026-11-24-318, OD-2026-11-24-319
 
 --------------------------------------------------------------------------------
 
@@ -1097,7 +1103,41 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T046-27 Restate Technical Plan 6's page rule: a re-evaluation page never removes a block whose reason is malware,
+  whatever its source, as the data model's trigger and ADR-0121 decision 6 already say; before Task 046-11.
+  Refs: Requirement 046-010
+- [ ] T046-28 Restate Technical Plan 7 as the data model's lock order now reads: the barrier and the switch wait with a
+  2 s `lock_timeout` (not 30 s), retried, with the alert at 10 minutes; a decision cancelled while queued takes the
+  retryable path (`503 SCRIPT_POLICY_BUSY` for a publication); the switch joins matched pairs to `artifact_digest` under
+  the lock; Task 046-5's held-writer test holds the advisory snapshot lock shared, not a row lock, and a new test
+  `a_writer_held_open_does_not_fail_queued_publications_with_500` is added; before Task 046-5.
+  Refs: Requirement 046-009
+- [ ] T046-29 The test-run path: `script_test_runs` gains the lock, its digest and the report; the test-run runnable
+  check evaluates the stored lock against the current snapshot's malicious records and the namespace's blocks by
+  package; a builder-B task for the runner side (the extended claim, resolve and install of a test run,
+  `/dependencies`, the runnable call) with its tests; before Tasks 046-14 and 046-16.
+  Refs: Requirement 046-016
+- [ ] T046-30 Give an npm document over the 64 MiB cap its own answer (`422 PACKAGE_DOCUMENT_TOO_LARGE`), mapped by the
+  runner to `RESOLUTION_FAILED`, so it is not taken for a retryable `502`; in Technical Plans 3 and 4,
+  `package-gateway.md`, `runner-protocol.md` and `errors.md`; before Task 046-6.
+  Refs: Requirement 046-004
+- [ ] T046-31 Give the block pass, the advisory refresh pass, the re-evaluation pass and the layer-wait check each a
+  cadence, a lease, an owning task and a test; define a registered target as one of `SAGAT_SCRIPT_DEPENDENCY_TARGETS`
+  and the 10 minutes as from the step becoming ready; add the route that lists the pinned image digests at a runner's
+  registration to `runner-protocol.md`; before Tasks 046-11 and 046-17.
+  Refs: Requirement 046-009, Requirement 046-020
+- [ ] T046-32 Add the operator and read surfaces to the contracts and to tasks with tests: the forced import parameter,
+  the start of the backfill pass, the removal of an offline-bundle pin, the `control-plane advisories import` and
+  `control-plane packages pin --bundle` commands (builder A), and `GET .../versions/{n}/packages` and `.../sbom`; before
+  Tasks 046-5, 046-15 and 046-20.
+  Refs: Requirement 046-008, Requirement 046-018, Requirement 046-019
+- [ ] T046-33 Task and contract bookkeeping: Tasks 046-1 and 046-26 in the schedule table and `scripts/` and `docs/`
+  given an owner; `crates/infra-blobstore` removed from builder B's crates; the Helm render test in one task; each test
+  named in exactly one task, the acceptance tests of Requirements 046-001 and 046-005 and the error-contract tests
+  included; Task 046-14 after Task 046-17's `fail_ready_step`; the fetch budget and pins in the phase that ships resolve
+  claims; the materialization row's `DONE` and lease expiry; `compileFailures` removed; the 300 s resolve grant in
+  `package-gateway.md`; the author lock's fetch-budget charge stated; before Task 046-1.
+  Refs: Requirement 046-021
 
 ### Verification Plan
 
