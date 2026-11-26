@@ -122,8 +122,8 @@ stream is a reason for a regulated customer to choose this platform.
   returns it once, at creation and at each rotation. The API answers a sink by `scheme://host` and a fingerprint of the
   path. At most 4 sinks per tenant, held by four slots (Technical Plan 6). Every act is audited.
 - **Requirement 040-009** A sink MUST receive every record of its scope (its tenant's records less the withheld
-  actions and the `audit.sink_delivered` records; for the operator sink every tenant's records less
-  `audit.sink_delivered`) that commits after the sink's start, at least once, in the order of the export cursor, with
+  actions, the `audit.sink_delivered` records and the sink's own `audit.sink_record_refused` records; for the operator
+  sink every tenant's records less `audit.sink_delivered`) that commits after the sink's start, at least once, in the order of the export cursor, with
   `metadata.uid` stable across redeliveries so that a receiver drops a duplicate by it. A sink that keeps failing MUST
   NOT skip records: it backs off and becomes `STALLED`, and a refusal by the destination as a whole (`401`, `403`,
   `404`, `405`, `410`, an egress refusal) pauses it with no record passed. A record the receiver refuses permanently,
@@ -194,8 +194,10 @@ stream is a reason for a regulated customer to choose this platform.
   lets a second replica send the same range while the first still renews (the claim made to lapse by a fault hook
   between the renewal and the send); a `401` on 1,000 records passes none, and nor does a `400` on 1,000 records after an
   earlier `2xx`; a failure write and a renewal racing an administrator's pause leave the sink paused.
-- **Success criterion 040-007** A restore into a fresh container with the epoch step of the runbook delivers a record
-  written after the sink's last delivery and before the dump; without the step, every sink reports `CURSOR_INVALID`.
+- **Success criterion 040-007** After a logical restore into a fresh container every sink, operator stream and the
+  discovery cursor is `CURSOR_INVALID`; without the epoch step `rebase` and a `startFrom` creation refuse; with it,
+  `rebase` delivers a record written after the sink's last delivery and before the dump, a record written after the
+  restore, and the records of a tenant created after the restore.
   Idle sinks consume no transaction id: N idle sinks over M ticks, measured.
 
 ### User stories
@@ -242,7 +244,9 @@ None for the owner; the seven are decided below. Technical gaps, registered in `
 - **Gap 040-006** `trace.uid` may be chosen by the caller (`traceparent`), so unrelated events can share it; the
   reference says so.
 - **Gap 040-007** On a managed service where `pg_resetwal` is not available, only a physical restore keeps the export;
-  after a logical restore there, sinks are recreated with `startFrom`.
+  after a logical restore there the export stays `CURSOR_INVALID` and new sinks refuse `startFrom` until the counter
+  passes the restored maximum, after which the guard can no longer tell a missing epoch step: the runbook requires the
+  step before any write reaches a logically restored cluster.
 - **Gap 040-008** `startFrom` and `rebase` read a 10-minute window; a record of a transaction that lived longer than 10
   minutes can fall below the cursor. The platform's pools bound statements, not transactions; the oldest
   transaction-id holder is alerted at 5 minutes. A stated residual risk.
@@ -386,6 +390,7 @@ SELECT ... FROM audit_records
    AND tx_id < pg_snapshot_xmin(pg_current_snapshot())
    AND (tx_id, id) > ($cursor_tx, $cursor_id)
    AND NOT (action = ANY($withheld))           -- WITHHELD_FROM_TENANT and audit.sink_delivered
+   AND NOT (action = 'audit.sink_record_refused' AND resource_id = $sink_id)
  ORDER BY tx_id, id LIMIT 500
 ```
 
@@ -400,12 +405,12 @@ read, so they never hold it back). The byte bound (1 MiB) counts the uncompresse
 
 **Where a sink starts.** At creation, the cursor is `(pg_snapshot_xmin(pg_current_snapshot()), 00000000-…-0000)` read
 then: the sink receives every record committed after its creation, and also those of transactions still running at that
-moment, which at most the longest open transaction of the cluster bounds. With `startFrom: {createdAt: t}` on creation
+moment, which the longest open transaction of the cluster bounds. With `startFrom: {createdAt: t}` on creation
 (it needs `audit:read`, which the creator holds, and is audited; `t` is at most 90 days back), the cursor is set below
-the smallest `tx_id` of the tenant's records whose `created_at` lies in `[t, t + 10 minutes]`, a window longer than any
-transaction the platform lets live (the oldest transaction-id holder is alerted at 5 minutes), read through the
-`(tenant_id, created_at)` index over that window only, or below the first record after `t` when the window is empty:
-the sink also receives some records created slightly before `t` (at least once, never fewer).
+the smallest `tx_id` below `xmin` of the tenant's records whose `created_at` lies in `[t, t + 10 minutes]`, read through
+the `(tenant_id, created_at)` index over that window only, or below the first record after `t` when the window is
+empty: the sink also receives some records created slightly before `t`. A record of a transaction that lived longer than
+10 minutes can fall below the cursor (Gap 040-008). A `startFrom` creation refuses under `rebase`'s guard below.
 
 **A cluster whose transaction ids went back.** A logical restore (`pg_dump` and `pg_restore`, the procedure of
 `docs/runbooks/control-plane.md`) or a move by logical replication copies `tx_id` and the cursors as data, while the new
@@ -509,25 +514,29 @@ any, has expired. For each due sink:
      refuses alone, it is passed as refused only if a sibling part of the same split was accepted (Requirement 040-009):
      `audit.sink_record_refused` (the record id) commits in the transaction that moves the cursor past it, and
      `GET /audit/sinks/{sinkId}/refused` lists it; the pass then goes on with the rest. When no part of a split is
-     accepted, or a sink has refused 10 records within an hour, the sink becomes `PAUSED_DESTINATION_REFUSED`. A sink's
-     own `audit.sink_*` records (resource the sink itself) are left out of that sink's scope, so a refusal never feeds
-     itself.
+     accepted, or a sink has refused 10 records within an hour (`refused_window_start`, `refused_in_window`), the sink
+     becomes `PAUSED_DESTINATION_REFUSED`. A sink's own `audit.sink_record_refused` records are left out of that sink's
+     scope (Requirement 040-009), so a refusal never feeds itself; its other `audit.sink_*` records (a change of URL or
+     ceiling, a pause, a resume) reach it like any record.
    - `SendFailure::Invalid` (the request could not be built for the destination) is a failure of the destination; a
      `Retry-After` on `429` or `503` is honoured within the 5-minute cap.
 
 **The operator sink.** It is one destination served as one stream per tenant. `audit_operator_config`, one row, holds a
-fingerprint of the configured destination (SHA-256 of the URL and of the credential, never either itself), a configuration revision and a global
-discovery cursor; `audit_operator_export` holds one row per tenant, each with the claim token and expiry, state,
+fingerprint of the configured destination (an HMAC-SHA-256 of the URL and the credential keyed by the configured signing
+key, so that the stored row reveals nothing guessable), the configured revision and `start`, and a global discovery
+cursor with its cluster; `audit_operator_export` holds one row per tenant, each with the claim token and expiry, state,
 `next_attempt_at`, revision and cursor of a tenant sink and the same compare-and-set, halving and refusal. A message
 holds one tenant's records, so messages keep tenant scope, and order is promised per tenant; up to 8 tenants' streams
 are sent at once per replica. Discovery reads the cursor query of section 4 without the tenant predicate from the
 discovery cursor; for a tenant that has no row yet it creates one whose cursor stands just below the first record found,
 so no record of a new tenant (a newly provisioned attacker's probes included) is skipped, and the writers of audit
-records gain nothing. At start, an engine compares its configured destination's fingerprint with the stored one under
-a lock of the configuration row: only a different fingerprint is a change, which raises the revision once, keeps the
-cursors and lets every stream paused for its destination resume; the configured `start` (`now`, or a time) is stored
-too and applies once, only when its own value changes; a restart or a rolling deploy with the same configuration changes
-nothing. The discovery cursor records its cluster like every other cursor.
+records gain nothing. The operator's configuration carries a revision number the operator raises with each change. At
+start, under a lock of the configuration row, an engine whose configured revision is higher than the stored one stores
+its fingerprint, revision and `start`, keeps the cursors, lets every stream paused for its destination resume, and
+applies `start` (`now`, or a time) once; an engine whose configured revision is lower, or equal with another
+fingerprint, does not serve the operator sink (logged and alerted), so that a rolling deploy cannot flip the destination
+back. Every write of an operator stream also compares the stored configuration revision with the one its engine read,
+so a replica on an older configuration commits nothing.
 
 The pass holds no lock across an HTTP call. A crash between a receiver's `2xx` and the commit sends that request's
 records again on a later pass, under a new delivery id.
@@ -560,7 +569,8 @@ CREATE TABLE audit_sinks (
   authorizing_subject text NOT NULL, claim_token uuid, claim_expires_at timestamptz, last_test_at timestamptz,
   PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, slot),
   FOREIGN KEY (tenant_id, home_namespace_id) REFERENCES namespaces (tenant_id, id));
--- audit_operator_config: one row with destination_fingerprint, revision, discovery_cursor_tx, discovery_cursor_id.
+-- audit_operator_config: one row with destination_fingerprint, config_revision, start_at, discovery_cursor_cluster,
+-- discovery_cursor_tx, discovery_cursor_id. audit_sinks also has refused_window_start and refused_in_window.
 -- audit_operator_export: one row per tenant (tenant_id primary key) with state, revision, cursor_cluster, cursor_tx,
 -- cursor_id, failures, next_attempt_at, claim_token, claim_expires_at, last_delivered_id, last_delivered_at; no
 -- destination column. audit_sinks also has cursor_cluster bigint NOT NULL beside its cursor.
@@ -568,7 +578,7 @@ CREATE TABLE audit_sinks (
 
 Each sealed column holds the nonce and the ciphertext of `SealedSecret`, framed as `nonce || ciphertext`. The ports:
 `AuditSinkStore` (`create`, `change`, `set_state`, `list`, `get`, `refused`) for the API and `AuditExportStore`
-(`look`, `claim`, `renew`, `read_batch`, `commit_cursor`, `record_refused`, `pause`) for the loop, in
+(`look`, `claim`, `renew`, `read_batch`, `commit_cursor`, `record_refused`, `pause`, `release`) for the loop, in
 `crates/application/src/audit_export.rs`, implemented in `crates/infra-postgres/src/audit_sinks.rs`; the loop is
 `crates/scheduler/src/audit_export.rs`, run by `apps/execution-engine/src/loops.rs`.
 
@@ -703,7 +713,7 @@ Three slices, each a pull request, in this order.
   `signing.rs`), `crates/api-http` (the sink resource), `crates/domain` (`Permission::AuditSinkManage`,
   `ResourceType::AuditSink`), `crates/scheduler` and `apps/execution-engine` (the export loop),
   `infra/observability`, `.github/workflows/ci.yml` (the rule-test step) and the wire contract. Tasks 040-25 and 040-20
-  first (the contracts), then 040-9, 040-10, 040-11, 040-23, 040-24 and 040-12 to 040-17. It needs nothing of design
+  first (the contracts), then 040-9, 040-10, 040-11, 040-23, 040-24, 040-26 and 040-12 to 040-17. It needs nothing of design
   015 (the credentials use today's `SecretCipher`).
 - **Slice 3, the surfaces and the documents:** the Studio and the documents. Tasks 040-18 and 040-19. The follow-up
   tasks wait for feature 032 (Task 040-21) and for design 015's Task 015-11 (Task 040-22).
@@ -741,7 +751,7 @@ Three slices, each a pull request, in this order.
 - [ ] T040-9 Write the two migrations: `audit_records.tx_id` (nullable, then the default, no rewrite, `lock_timeout`
   set) with the column grant that leaves it out; the two partial indexes built concurrently outside a transaction with
   the `indisvalid` check (verify the migrator's `-- no-transaction` support first; otherwise the owner's command of
-  section 7); `audit_sinks` with `tenant_id NOT NULL` and the slot, `audit_operator_export`, grants, entries in
+  section 7); `audit_sinks` with `tenant_id NOT NULL` and the slot, `audit_operator_config`, `audit_operator_export`, grants, entries in
   `crates/infra-postgres/storage-classification.json` (the sealed columns as `secret`), and a down migration that refuses
   while a sink exists.
   Refs: Requirement 040-008, Requirement 040-009, Non-functional requirement 040-001
@@ -799,8 +809,9 @@ Three slices, each a pull request, in this order.
   `AUDIT_EXPORT_NOT_ACTIVATED` (`422`), with the contract baseline.
   Refs: Requirement 040-008
 
-- [ ] T040-26 Extend `control-plane reseal-secrets` to the sealed columns of `audit_sinks` (each with its key id), with a
-  test that rotates the key ring, re-seals, removes the old key and still delivers.
+- [ ] T040-26 Extend `control-plane reseal-secrets` to the sealed columns of `audit_sinks` (each with its key id),
+  updating `WHERE` the old key id still holds, as `replace_sealed` does, so it cannot overwrite a concurrent change; a
+  test rotates the key ring, re-seals, removes the old key and still delivers.
   Refs: Requirement 040-008
 
 #### Follow-up tasks
