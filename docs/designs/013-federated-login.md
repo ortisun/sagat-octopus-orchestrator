@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the `cli-refresh`
-string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, `read_versioned` or `write_cas`, names a `rings/` path or implements `RingPurpose`, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
+string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, nothing outside that module calls `derive_purpose_key`, `read_versioned` or `write_cas`, names a `rings/` path or implements `RingPurpose`, the OpenBao client's private request helpers stay private, and that module and its submodules expose, in any non-private form, only the allowlisted types, operations and trait implementations of Technical Plan 12 (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -1444,7 +1444,7 @@ activate|remove`, which records or removes the `identity-federation-v1` requirem
 11). Its stored document, which the attempt ring shares, holds each key's id (a positive integer, the highest id ever
 written plus one, never reused, the highest also kept in the document), material, state (`PENDING`, `ACTIVE`,
 `RETAINED`; `PENDING` verifies or opens and never mints or seals), time added and time activated. One module of `crates/infra-secrets`,
-`identity_ring`, owns everything that touches the material of either ring, so the two-step code is written once and
+`openbao::identity_ring` (a child of the OpenBao client's module, its public items re-exported), owns everything that touches the material of either ring, so the two-step code is written once and
 `KeyRing`, `SecretCipher` and every other module never see it:
 - *Types.* `IdentityKeyRing<P>` holds its key bytes by id itself (it does not wrap `KeyRing`, whose code does not
   change) and is typed by its purpose, `CliRefresh` or `SigninAttempt`, through the trait `RingPurpose`, sealed by a
@@ -1470,23 +1470,29 @@ written plus one, never reused, the highest also kept in the document), material
   operations.
 - *Transport.* The OpenBao client of `crates/infra-secrets/src/openbao.rs` reads only version 1 of credential paths
   and writes only with `cas: 0`, so the ring documents get their own transport, in the submodule
-  `identity_ring::transport`: `read_versioned(path: RingPath) -> Result<(u32, Zeroizing<Vec<u8>>), RingError>` and
-  `write_cas(path: RingPath, version: u32, body: Zeroizing<Vec<u8>>) -> Result<u32, RingError>`, built on the client's
-  request helper and its bounded body, never putting a body in an error. `RingPath` is constructible only inside the
-  module, from `P::PATH`, so no other code can name a ring document to these functions.
+  `identity_ring::transport`: `read_versioned(path: RingPath) -> Result<(u32, RingDocument), RingError>` and
+  `write_cas(path: RingPath, version: u32, body: RingDocument) -> Result<u32, RingError>`. Because `identity_ring` is a
+  child of `openbao`, the transport uses the client's private request helper, `bounded_body` and fields as they are:
+  none of them is widened, so no other module of the crate, `TokenSigner` and `IdentitySecrets` included, gains a raw
+  read of the identity mount; no body ever reaches an error. `RingPath` is constructible only inside the module, from
+  `P::PATH`, so no other code can name a ring document to these functions. `RingDocument` is a module-private newtype
+  over `Zeroizing<Vec<u8>>` with no `Clone` and a hand-written `Debug` printing `[REDACTED]`.
 - *Errors and printing.* The module parses the document with its own code, not a `Deserialize` on `RingKey`; every failure is a `RingError` of fixed text that never contains input: `Unreadable`, `Malformed { key_id,
   rule }` (a material that is not base64 or not 32 bytes is `Malformed` with the rule `material`), `Conflict {
   version }` and `Cancelled { version }`. The audited "rotation cancelled" and the conflict failure of `revoke` record
   only a `RingChange` or a `RingError`. `IdentityKeyRing`, `RingChange` and `RingError` have hand-written `Debug`
   showing only key ids, states, versions and rules, as `KeyRing`'s does, and the adapters' `Debug` show only the ring's
-  (`an_identity_key_ring_never_prints_key_material` formats with `{:?}` the ring, both adapters, a `RingKey`, and the
+  (`an_identity_key_ring_never_prints_key_material` formats with `{:?}` the ring, both adapters, a `RingKey`, a
+  `RingDocument`, and the
   errors, audit rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of
   31 bytes, and of a cancelled rotation and a `revoke` that loses five check-and-sets).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
   in the module as `P::LABEL`, refuses outside it any string literal containing `rings/`, any call of `read_versioned`
-  or `write_cas` and any `impl RingPurpose`, and is an allowlist over the module and its submodules: in any form other than private
+  or `write_cas` and any `impl RingPurpose`, refuses any widening of the visibility of `openbao.rs`'s request helper,
+  `bounded_body`, `url` and fields, and is an allowlist over the module and its submodules: in any form other than private
   (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose`, the two
-  purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError` and, to the module itself only, `RingPath`; the operations above
+  purpose markers, `KeyId`, `KeyState`, `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError` and, to the module itself only, `RingPath`
+  and `RingDocument`; the operations above
   and the key-id and state accessors; and the trait implementations `Debug` (hand-written), `Drop` and `Zeroize`. Task
   013-8 adds them with the `hmac` and `hkdf` crates.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
@@ -1780,15 +1786,15 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
   `IdentityKeyRing<P>` read by the one loader from its purpose's path, `a_ring_loads_only_from_its_own_path`);
-  the module `identity_ring` of Technical Plan 12 (`IdentityKeyRing<P>`, `RingPurpose`, the private `RingKey`,
-  `PurposeKey` and `derive_purpose_key`, the sealed `RingPurpose`, the submodule `transport` with `RingPath`, the
+  the module `openbao::identity_ring` of Technical Plan 12 (`IdentityKeyRing<P>`, `RingPurpose`, the private `RingKey`,
+  `PurposeKey` and `derive_purpose_key`, the sealed `RingPurpose`, the submodule `transport` with `RingPath` and `RingDocument`, the
   serving operations, the command operations `rotate_begin`,
   `rotate_finish`, `revoke` and `drop_retained`, `RingChange` and `RingError`; `KeyRing` unchanged), which the commands
   call;
   the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
   `"cli-refresh"`, a call outside the module, a `pub(crate) fn` returning `Hmac<Sha256>`, a
-  `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a `pub(crate) fn` in
-  `openbao.rs` returning the raw body of an identity-mount path, a `"rings/cli-refresh"` literal and an
+  `pub(crate) fn material(&self, id: KeyId) -> Option<&[u8]>`, an `AsRef<[u8]>` on `RingKey`, a `pub(crate)` request or
+  body helper in `openbao.rs`, a `"rings/cli-refresh"` literal and an
   `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
