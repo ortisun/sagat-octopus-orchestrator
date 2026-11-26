@@ -854,9 +854,11 @@ finding was answered.
 
 - **G044-021, G044-024, G044-025** (2026-11-26, later state) Answered by constitution 5.1.0, which the owner approved
   (OD-2026-11-25-3) to word the pin, the deferred terminal command and the move clause as this design needs; they close
-  when 5.1.0 merges, and nothing waits on them.
+  when 5.1.0 merges; Tasks 044-9 and 044-13 merge only after it (OD-2026-11-25-3 is recorded with the 5.1.0 pull
+  request).
 - **G044-017** (2026-11-26, later state) The buffered-signals design 054 takes Architecture decision 0111's inbox and its
-  refinement for code versions; Task 044-21 waits for it.
+  refinement for code versions, and its inbox row carries the version that buffered each signal (Decision 044-228);
+  Task 044-21 waits for it.
 - **G044-020, G044-026** (2026-11-26, later state) Handed to design 045's owner by the coordinating session.
 
 ## 4. Owner questions (all delegated)
