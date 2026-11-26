@@ -106,7 +106,8 @@ stream is a reason for a regulated customer to choose this platform.
   event sent to a sink whose ceiling is below `pii` (Requirement 040-010).
 - **Requirement 040-006** The platform facts that OCSF has no attribute for MUST go in `unmapped`, as OCSF prescribes
   for a producer without a registered extension, as one nested object `{"sagat": {"action": <dotted action>,
-  "region_epoch": <integer>}}` and nothing else; the resource type is `resources[0].type`.
+  "region_epoch": <integer>}}`, with a third key `tombstone` only on the class-0 tombstone event; the resource type is
+  `resources[0].type`.
 - **Requirement 040-007** Sandbox violations (`script.violation`), egress denials (`egress.denied`) and denied attempts
   to reach another tenant's resource (`access.denied.cross_tenant`) MUST map to Detection Finding (2004) with the
   `security_control` profile: `status_id` 1 (New), `action_id` 2 (Denied), `disposition_id` 2 (Blocked),
@@ -138,7 +139,8 @@ stream is a reason for a regulated customer to choose this platform.
   metrics and every pause audited; `secret` never leaves. The operator sink's ceiling is `internal`, fixed.
 - **Requirement 040-011** The operator of the deployment MAY configure one operator sink through the execution
   engine's configuration (never through the API): its URL, collector credential, signing key and allowed hosts are held
-  in memory from that configuration, and only its cursor is persisted. Each message it sends holds the records of one
+  in memory from that configuration; it persists a fingerprint of that configuration and its cursors, never the
+  destination or a credential. Each message it sends holds the records of one
   tenant, naming it in `metadata.tenant_uid`, so that messages keep tenant scope (Principle V). Its own evidence
   (deliveries, stalls, refusals) goes to the engine's logs and metrics, never into a tenant's trail.
 - **Requirement 040-012** The mapping MUST be published as reference documentation generated from the table
@@ -189,7 +191,9 @@ stream is a reason for a regulated customer to choose this platform.
 - **Success criterion 040-006** Each sink state change races an in-flight batch in both orders (pause, grant revoked,
   authority lost, delete), held by barriers: the batch's commit changes nothing when the sink moved, and no batch leaves
   after the change committed except the one already in flight. An endpoint held longer than the claim's expiry never
-  lets a second replica send the same range while the first still renews; a `401` on 1,000 records passes none.
+  lets a second replica send the same range while the first still renews (the claim made to lapse by a fault hook
+  between the renewal and the send); a `401` on 1,000 records passes none, and nor does a `400` on 1,000 records after an
+  earlier `2xx`; a failure write and a renewal racing an administrator's pause leave the sink paused.
 - **Success criterion 040-007** A restore into a fresh container with the epoch step of the runbook delivers a record
   written after the sink's last delivery and before the dump; without the step, every sink reports `CURSOR_INVALID`.
   Idle sinks consume no transaction id: N idle sinks over M ticks, measured.
@@ -237,6 +241,11 @@ None for the owner; the seven are decided below. Technical gaps, registered in `
   window of its failover report; until feature 032 is built there is one region, epoch 1, and nothing to tombstone.
 - **Gap 040-006** `trace.uid` may be chosen by the caller (`traceparent`), so unrelated events can share it; the
   reference says so.
+- **Gap 040-007** On a managed service where `pg_resetwal` is not available, only a physical restore keeps the export;
+  after a logical restore there, sinks are recreated with `startFrom`.
+- **Gap 040-008** `startFrom` and `rebase` read a 10-minute window; a record of a transaction that lived longer than 10
+  minutes can fall below the cursor. The platform's pools bound statements, not transactions; the oldest
+  transaction-id holder is alerted at 5 minutes. A stated residual risk.
 
 ## Owner decisions needed
 
@@ -404,12 +413,17 @@ cluster's counter starts lower: new records would sort below every cursor. Every
 was read on (`cursor_cluster`, the cluster's `system_identifier`, read through a `SECURITY DEFINER` function of the
 owner role that returns only that number, so that the runtime role needs no grant on `pg_control_system()`). When the pass finds a cursor of another
 cluster, the sink becomes `CURSOR_INVALID` (audited, alerted; for the operator sink, logged), and stays so, whatever the
-counter does, until the operator runs `control-plane audit-export rebase`: it sets each such cursor from the time of its
-last delivered record minus 10 minutes, with `startFrom`'s rule, on the new cluster, so that nothing is skipped and some
-records are sent twice. Where the operator can, the runbook also advances the new cluster's transaction-id epoch above
-the largest `tx_id` before loading (`pg_resetwal --epoch`, not available on managed services), which keeps the restored
-records' order. A test restores into a fresh container, sees `CURSOR_INVALID` hold after the counter passes the restored
-maximum, runs `rebase`, and sees a record written after the last delivery and before the dump arrive.
+counter does, until the operator runs `control-plane audit-export rebase`. A logical restore MUST advance the new
+cluster's transaction-id epoch above the largest `tx_id` before loading (`pg_resetwal --epoch`, on the stopped, empty
+cluster), so that every new record sorts above every restored one; `rebase` refuses while
+`max(tx_id) >= pg_snapshot_xmax(pg_current_snapshot())`, which catches a restore without the step. Then `rebase` sets
+each invalid cursor, the sinks', the operator streams' and the operator's discovery cursor, from the time of its last
+delivered record minus 10 minutes (or the sink's creation time when it has delivered nothing), with `startFrom`'s rule,
+and records the new cluster: nothing is skipped and some records are sent twice. On a managed service where
+`pg_resetwal` is not available, only a physical restore (which keeps the counter) keeps the export (Gap 040-007). A test
+restores into a fresh container with the epoch step, sees `CURSOR_INVALID` until `rebase`, runs it, and sees a record
+written after the last delivery and before the dump arrive, and a record written after the restore arrive; without the
+step, `rebase` refuses.
 
 **Who serves which sink, and what makes a commit correct.** A tenant sink is served by the replica that holds the shard
 of its tenant (`Shard::of` keyed by the tenant: ADR-0020 keys run work by run, and tenant keying is acceptable here
@@ -423,8 +437,8 @@ fence, because a pass that lost its shard still holds a claim that only expiry c
 credential, the sealed signing keys (current and, for 24 hours after a rotation, previous), the URL's `scheme://host` and
 path fingerprint, format, gzip, ceiling, state, revision, cursor, the time and id of the last delivered record, failures,
 `next_attempt_at`, the authorizing subject, the claim token and its expiry) holds tenant sinks. The operator sink's
-destination and keys live only in the engine's configuration; its cursor is one row of `audit_operator_export`, keyed by a
-constant, inserted if absent and never reset by a start; a change of its configured URL keeps the cursor, and removing
+destination and keys live only in the engine's configuration; its fingerprint and discovery cursor live in
+`audit_operator_config` and its per-tenant cursors in `audit_operator_export` (section 5, "The operator sink"); removing
 its configuration stops it.
 
 **States and who moves them.**
@@ -470,7 +484,11 @@ any, has expired. For each due sink:
    disabled. A receiver drops
    duplicates by `metadata.uid` only; the batch and delivery ids are new on every attempt, because a retried batch can
    hold more records than the first try. Before each request the claim is renewed (its expiry moved 30 seconds ahead,
-   `WHERE claim_token = $t`); a failed renewal ends the work and sends nothing more.
+   `WHERE claim_token = $t AND revision = $r AND state IN ('ACTIVE','STALLED')`); a failed renewal ends the work and
+   sends nothing more. Every write of the pass (renewal, cursor commit, failure count, stall, the paused states,
+   `record_refused`, the release) carries the same predicate on the claim token, the revision and the state; every act
+   of an administrator raises the revision and clears the claim, so that no write of a pass begun earlier can undo it;
+   at the end of its work the pass releases its claim (`claim_token = NULL WHERE claim_token = $t`).
 5. **Commit after each accepted request.** On a `2xx`, one transaction, rechecking the `pii` grant, runs
    `UPDATE audit_sinks SET cursor = $new, last_delivered = … WHERE id = $id AND revision = $r AND claim_token = $t
    AND cursor = $old AND state IN ('ACTIVE','STALLED')`; when no row is updated (the sink was paused, changed or deleted
@@ -487,16 +505,18 @@ any, has expired. For each due sink:
    - `401`, `403`, `404`, `405`, `410` and an egress refusal are failures of the destination, not of a record: the sink
      becomes `PAUSED_DESTINATION_REFUSED`, audited and alerted, and no record is passed.
    - `400`, `413` and `422` are failures of the batch: the pass splits it, left half first, depth first, and commits the
-     cursor only over a contiguous accepted prefix. When the leftmost unresolved part is one record and the receiver
-     refuses it alone, the record is passed as refused if this sink has ever had a `2xx` (so the destination works):
+     cursor only over a contiguous accepted prefix. When the leftmost unresolved part is one record that the receiver
+     refuses alone, it is passed as refused only if a sibling part of the same split was accepted (Requirement 040-009):
      `audit.sink_record_refused` (the record id) commits in the transaction that moves the cursor past it, and
-     `GET /audit/sinks/{sinkId}/refused` lists it; the pass then goes on with the rest. A sink that has never had a `2xx`
-     treats the refusal as a failure of the destination, as above.
+     `GET /audit/sinks/{sinkId}/refused` lists it; the pass then goes on with the rest. When no part of a split is
+     accepted, or a sink has refused 10 records within an hour, the sink becomes `PAUSED_DESTINATION_REFUSED`. A sink's
+     own `audit.sink_*` records (resource the sink itself) are left out of that sink's scope, so a refusal never feeds
+     itself.
    - `SendFailure::Invalid` (the request could not be built for the destination) is a failure of the destination; a
      `Retry-After` on `429` or `503` is honoured within the 5-minute cap.
 
 **The operator sink.** It is one destination served as one stream per tenant. `audit_operator_config`, one row, holds a
-fingerprint of the configured destination (SHA-256 of the URL, never the URL), a configuration revision and a global
+fingerprint of the configured destination (SHA-256 of the URL and of the credential, never either itself), a configuration revision and a global
 discovery cursor; `audit_operator_export` holds one row per tenant, each with the claim token and expiry, state,
 `next_attempt_at`, revision and cursor of a tenant sink and the same compare-and-set, halving and refusal. A message
 holds one tenant's records, so messages keep tenant scope, and order is promised per tenant; up to 8 tenants' streams
@@ -504,9 +524,10 @@ are sent at once per replica. Discovery reads the cursor query of section 4 with
 discovery cursor; for a tenant that has no row yet it creates one whose cursor stands just below the first record found,
 so no record of a new tenant (a newly provisioned attacker's probes included) is skipped, and the writers of audit
 records gain nothing. At start, an engine compares its configured destination's fingerprint with the stored one under
-a lock of the configuration row: only a different fingerprint is a change, which raises the revision once and applies
-the configured `start` (`now`, or a time) once; a restart or a rolling deploy with the same destination changes
-nothing, and a stream paused for its destination leaves that state only at such a change.
+a lock of the configuration row: only a different fingerprint is a change, which raises the revision once, keeps the
+cursors and lets every stream paused for its destination resume; the configured `start` (`now`, or a time) is stored
+too and applies once, only when its own value changes; a restart or a rolling deploy with the same configuration changes
+nothing. The discovery cursor records its cluster like every other cursor.
 
 The pass holds no lock across an HTTP call. A crash between a receiver's `2xx` and the commit sends that request's
 records again on a later pass, under a new delivery id.
@@ -776,6 +797,10 @@ Three slices, each a pull request, in this order.
   `AUDIT_SINK_LIMIT` (`409`), `EGRESS_NOT_ALLOWED` (`422`), `PII_CEILING_NOT_PERMITTED` (`403`),
   `START_FROM_TOO_OLD` (`422`), `START_FROM_TIMEOUT` (`503`, retryable), `SINK_TEST_RATE_LIMITED` (`429`) and
   `AUDIT_EXPORT_NOT_ACTIVATED` (`422`), with the contract baseline.
+  Refs: Requirement 040-008
+
+- [ ] T040-26 Extend `control-plane reseal-secrets` to the sealed columns of `audit_sinks` (each with its key id), with a
+  test that rotates the key ring, re-seals, removes the old key and still delivers.
   Refs: Requirement 040-008
 
 #### Follow-up tasks

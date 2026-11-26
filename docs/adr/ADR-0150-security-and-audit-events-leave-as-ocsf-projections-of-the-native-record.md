@@ -31,12 +31,14 @@ before a commit that can land after a later one's.
    filled by a column default that the runtime role cannot set, and only below `pg_snapshot_xmin(pg_current_snapshot())`.
    The writers MUST NOT gain a statement. Delivery is at least once with `metadata.uid` the record id; a failing sink
    stalls, it never skips, except a single record its receiver refuses permanently, which is recorded as refused and
-   stays in the audit table. The cursor is never shown outside the platform. A restore into another cluster MUST advance its
-   transaction-id epoch above the largest stored `tx_id`; until then the export refuses (`CURSOR_INVALID`).
+   stays in the audit table. The cursor is never shown outside the platform. Every cursor records its cluster; after a logical restore,
+   which MUST advance the transaction-id epoch above the largest stored `tx_id`, the export holds (`CURSOR_INVALID`)
+   until an operator's `rebase`, which refuses without that step.
 5. A tenant sink MUST carry only its tenant's records less the withheld actions, under the current authority of its
    authorizing subject, rechecked per batch; its URL and credentials are sealed in the sink and never delivered to
    anything else. Only the deployment's configuration may define the operator sink, which carries every tenant's records
-   one tenant per message and persists only its cursor.
+   one tenant per message and persists a fingerprint of its configuration and its cursors, never a destination or a
+   credential.
 6. What leaves through a sink follows the uniform `pii`-egress rule: `internal` by default; `pii` only under the reveal
    grant held in every namespace of the tenant, checked per batch and at the cursor's commit; `secret` never. The
    operator sink is `internal`.

@@ -430,7 +430,7 @@ secret's logical identity, not its sealed bytes (Requirement 015-022).
 | Command | What it does | Guard |
 |---|---|---|
 | `key-authority begin-migration` | sets `migrating` | the requirement `key-authority-transit-v1` is recorded for the control plane and the execution engine (instance registry, ADR-0082) |
-| `reseal-secrets --to transit` (existing, extended) | re-seals `local` rows, one per transaction, audited | the mode is `migrating`; without `--to` it keeps today's behaviour for `local` rows only |
+| `reseal-secrets --to transit` (existing, extended) | re-seals `local` rows, one per transaction, audited, and the sealed columns of design 040's `audit_sinks` | the mode is `migrating`; without `--to` it keeps today's behaviour for `local` rows and those columns |
 | `scripts resign` | re-signs every artifact at the newest published script-key version | per artifact, `WHERE key_id = $old` |
 | `key-authority finish-migration` | sets `transit` | zero `local` rows, zero pending version-1 intents, zero artifacts signed by the local key, in one transaction |
 | `secrets rotate` | rotates `sagat-secrets` in Transit, then advances `seal_version` | an OpenBao snapshot (and a standby, for a cell with standby regions) holds the new version |
