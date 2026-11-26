@@ -293,7 +293,7 @@ graph declares, and the versioning rules that keep code and history together.
   most 60,000 ms); a request without it MUST wait up to 60,000 ms and answer `200` with the result or
   `409 UPDATE_PENDING`. An `updateKey` MUST be scoped by the address the client used (the run or the chain, section 8.2)
   and the admitting principal, so that another principal's identical key is another update;
-  `GET /runs/{runId}/update-receipts/{updateKey}`, `GET /chains/{chainId}/update-receipts/{updateKey}` and a repeated `POST`
+  `GET /runs/{runId}/update-receipts/{updateKey}`, `GET /namespaces/{namespaceId}/chains/{chainId}/update-receipts/{updateKey}` and a repeated `POST`
   MUST answer only within that scope (a principal with `run:operate` reads the list of every principal's update under
   that key, each with its admitting principal), after authorization is checked again, and an unknown key MUST answer the
   same `404` as a missing one. An update that has not completed when the run ends or continues as new MUST be finished
@@ -514,8 +514,9 @@ graph declares, and the versioning rules that keep code and history together.
   its quarter, answers `UNAVAILABLE` with `retry-after-ms`, recorded durably on the workflow-task step
   (`steps.unavailable_at`, a one-row update fenced by the lease's attempt, generation and token hash, cleared when the
   next lease is taken), so the expiry pass of any process records that lease's expiry, and only that lease's, as not
-  counted, setting `next_attempt_at` to `unavailable_at` plus the advised delay; five consecutive uncounted expiries
-  count as one failure; the next attempt may name, by descriptor, an uncommitted command-value blob of an earlier lease
+  counted, setting `next_attempt_at` to `unavailable_at` plus 1,000 ms (the fixed `retry-after-ms` of this answer);
+  `steps.uncounted_expiries` counts consecutive uncounted expiries, reset by a committed completion or a counted
+  failure, and its fifth counts as one failure; the next attempt may name, by descriptor, an uncommitted command-value blob of an earlier lease
   of the run that is not yet released, so nothing is uploaded or charged again, and `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share}` counts the refusals; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
   (at most 6 MiB) once; a `PollTasks` answer at most 3.5 MiB in all, leaving room for framing below the clients' 4 MiB (it carries fewer
   tasks when they do not fit); a replay-check task at most 16 runs, each
@@ -1218,8 +1219,10 @@ version (Requirement 044-026).
      a gated activity's input or an approval's subject), charged at upload to the tenant's content quota only (the
      run's bound is judged at commit under the completion's rules); at most 16 such blobs of one lease (its attempt and
      generation, which the `blobs_owner_valid` arm records) are uploaded and not yet committed at once, a blob held by a
-     deferral not counted, so a crashed lease's uploads never count against the next attempt, apart from the tenant's count of uploaded blobs
-     (`DEFAULT_MAX_PENDING_BLOBS`), counted under a lock of the workflow-task step's row so parallel uploads cannot pass
+     deferral not counted, so a crashed lease's uploads never count against the next attempt; blobs of the purpose
+     `COMMAND_VALUE`, uploaded or held, leave the tenant's count of uploaded blobs (`DEFAULT_MAX_PENDING_BLOBS`: its
+     count query in `crates/infra-postgres/src/blobs.rs` excludes the purpose), being bounded by the lease's 16 and by
+     one held blob per deferral of a run instead, counted under a lock of the workflow-task step's row so parallel uploads cannot pass
      it; a refused upload fails the workflow task with the cause `COMMAND_VALUE_LIMIT`, counted with its backoff. Ownership and
      the `secret` refusal are checked read-only before a blob's bytes are read, and again in the transaction. A command
      may name a blob only if it was written under that run's workflow lease (a value taken from the history is uploaded
@@ -1681,7 +1684,8 @@ new version never applies to an open run by itself. The version list (`GET /name
 {workflowId}/code-versions`, under `definition:read`) shows, per code version, the open runs, the sessions that serve its
 digest and the age of its oldest run. A run whose digest no session serves waits, counted by
 `workflow_tasks_unserved{reason="no_digest"}` and alerted by the in-app alert kind `WORKFLOW_TASK_UNSERVED` (subject the
-workflow type, threshold 60 s, severity warning, runbook anchor `docs/runbooks/workflow-as-code.md#unserved`;
+workflow type, threshold 60 s, severity warning, runbook anchor `#workflow-task-unserved` in `docs/runbooks/alerts.md`, a section that links to
+`docs/runbooks/workflow-as-code.md`;
 `STEP_UNCLAIMED` excludes the reserved `sagat.workflow` names) when a run has waited more than 60 s (the tenant in the span,
 not the metric).
 
@@ -1708,9 +1712,9 @@ on a running run only through a verified move (section 7.3), which proves per ru
   runs.
 - **The check.** For each item the server creates a replay-check lease (`code_replay_checks`: the job, the item's
   ordinal, the read token's hash, the expiry) claimed through `PollTasks` as a `REPLAY_CHECK` task by a session of the
-  target digest, at most 16 items per task, each item leased for 300 s from its first page read (so an item queued
-  behind a sibling loses no expiry), each history page read and each answer range extending the item's lease up to
-  3,600 s, an expiry incrementing `expiries` and resetting `created_at`; the reconciler re-announces leases whose hint was lost;
+  target digest, at most 16 items per task; the claim sets every item's `expires_at` to the claim's time plus 300 s,
+  each history page read and each answer range of any item of the task extends every item of the task to now plus
+  300 s (so an item queued behind a sibling loses no expiry), never past 3,600 s after the claim, an expiry incrementing `expiries` and resetting `created_at`; the reconciler re-announces leases whose hint was lost;
   an item whose lease expired is offered alone in a task of its own, and after three expiries it ends `FAILED` with
   `REPLAY_CHECK_ABANDONED`; `NO_TARGET_WORKER` counts 3,600 s from the creation of the item's latest check while that
   check is unclaimed, an item whose check is leased or has a recorded verdict exempt; recording a verdict
@@ -1759,8 +1763,8 @@ on a running run only through a verified move (section 7.3), which proves per ru
   workflow task or a moved `S(k)` defers the item with the new defer cause `RUN_BUSY`, which ends `FAILED` with the error
   code `RUN_BUSY` after the third check; `NO_TARGET_WORKER` and `FORBIDDEN` end `FAILED` with that error code. The fit
   covers the declarations too: the target must declare every signal name with pending inbox signals and every update
-  with an update not yet completed, accept the committed state against its `state.schema`, and keep the source's
-  gated entries and `state.maxBytes` (on which the SDK's inline throws depend, so a different target would replay
+  with an update not yet completed, accept the committed state against its `state.schema`, and have gated entries and
+  a `state.maxBytes` equal to the source's (on which the SDK's inline throws depend, so a different target would replay
   differently), or the item is `ENVELOPE_MISMATCH`. `sagat_move_code_run` refuses an item of a dry-run job; `BatchItem` gains an optional `firstDifference` integer for `MOVE_CODE_VERSION` items, read by
   the job's item listing and `sagat workflow move`; `code_replay_checks` rows live as long as their batch items.
   `toVersion` is a version number of the run's own workflow, and a missing or unpublished one answers the same
@@ -1852,7 +1856,7 @@ against the declared `resultSchema` by the platform's validator of design 043, o
 `RESULT_SCHEMA_VIOLATION` when the result does not fit. The `updateKey` is scoped by the address the client used (the
 run, or the chain, `address_scope` and `target_id` as graph receipts have them) and the admitting principal, so a
 chain-addressed key is found across the chain's segments and a retry after continue-as-new answers its receipt
-(`GET /chains/{chainId}/update-receipts/{updateKey}` reads it); a code run's chain-addressed signals keep the scope
+(`GET /namespaces/{namespaceId}/chains/{chainId}/update-receipts/{updateKey}` reads it); a code run's chain-addressed signals keep the scope
 `chain.signal:{chain}`. The REST call waits up to `waitMs` (at most 60,000) by
 re-reading the transitions outside any transaction, at most 64 reads in 60 s (the schedule is in the contract), counted against the
 API process's 256 waits; it answers `200` with the result, or, with `acceptPending: true`, `202` with `ADMITTED` or
@@ -2131,7 +2135,7 @@ tree builds while the server lane fills them in.
 | `GET /runs/{runId}/history` | `run:read`, `history:export` | `200`, `application/x-ndjson`, paged by `from_seq` | `404` |
 | `POST /runs/{runId}/updates/{operationName}` | `run:update` | `200` or `202` | `409 UPDATE_PENDING`, `409 IDEMPOTENCY_KEY_REUSED`, `429 UPDATE_BACKLOG`, `409 HISTORY_HEADROOM`, `409 RUN_CLOSING`, `409 RUN_NOT_MUTABLE` |
 | `GET /runs/{runId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update; for `run:operate`, the list of every principal's update under the key | `404` (also for another principal's key) |
-| `GET /chains/{chainId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update under the chain's scope, across its segments; for `run:operate`, the list of every principal's update under the key | the same `404` for an unknown key, an unknown chain, another tenant's chain or another principal's key |
+| `GET /namespaces/{namespaceId}/chains/{chainId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update under the chain's scope, across its segments; for `run:operate`, the list of every principal's update under the key | the same `404` for an unknown key, an unknown chain, another tenant's chain or another principal's key |
 | `POST /runs/{runId}/signals/{signalName}` (code runs) | `run:signal` | `202` | `409 SIGNAL_NOT_DECLARED`, `409 SIGNAL_INBOX_FULL`, `409 HISTORY_HEADROOM`, `409 RUN_CLOSING` |
 | `POST /runs/{runId}/worker-queries/{queryName}` (Task 044-29) | `run:read`, `run:query` | `200` | `504 QUERY_TIMEOUT`, `422 QUERY_COMMAND`, `409 QUERY_UNAVAILABLE`, `429`; `404` for a graph run or an undeclared query |
 | `PUT /namespaces/{namespaceId}/code-workflows/pause` and `DELETE` it | `run:operate`, `worker:manage` | `204` | `404` |
@@ -2242,7 +2246,7 @@ Other changes:
   `code_update_transitions` among the append-only tables its startup check verifies.
 - `steps` gains `code_step boolean NOT NULL DEFAULT false` (set by every statement that creates a step of a code run,
   compensations and reset rematerializations included; `verify_run` checks `every_step_of_a_code_run_has_code_step`),
-  `unavailable_at timestamptz` and `outcome_seq bigint` (the journal sequence of the step's outcome); `run_saga_entries` gains
+  `unavailable_at timestamptz`, `uncounted_expiries smallint NOT NULL DEFAULT 0` and `outcome_seq bigint` (the journal sequence of the step's outcome); `run_saga_entries` gains
   `issued_seq` and `outcome_seq` for code scopes, whose `after` stays empty; `approval_requests` also gains
   `issuing_identity` and `issuing_binder`.
 - 044's own trigger on `platform_requirements` refuses removing `code-workflows-v1` while a code version exists; design
@@ -2525,7 +2529,8 @@ a replaying worker derives from `ReadHistory`.
   profiles, the code variants of `update` and the `workerQueries` entry), `worker.proto` and `worker.baseline.json`
   (Technical Plan 13.1, the deferrable tasks' fields reserved) with an `UNIMPLEMENTED` stub per new RPC in
   `crates/api-grpc`, `openapi.yaml` (Technical Plan 13.2, each new operation `x-planned: '044'` and listed in `not_built`
-  of `tests/contract/security-multitenancy/rest/battery.rs`), `events.asyncapi.yaml` (the workflow task hint, and the `CancelOrigin` of `run.cancel_requested` in its baseline test),
+  of `tests/contract/security-multitenancy/rest/battery.rs`), `events.asyncapi.yaml` (the workflow task hint), the `CancelOrigin` of `run.cancel_requested` and `run.stop_requested`
+  in their `HistoryEvent` bodies of `worker.proto` and in `crates/domain/src/execution/event.rs`,
   `sdks/error-catalog.json` and its six copies (Technical Plan 13.3), the permission `history:export`
   (`crates/domain/src/identity.rs`, admin role, and its entry in
   `specs/029-custom-roles-folders/contracts/permission-catalog.json`, not assignable to a custom role in 0.3.0), the register row of the new minor, the reset rules of every new kind in
@@ -2657,7 +2662,8 @@ a replaying worker derives from `ReadHistory`.
   `...::runtime_privileges::every_statement_the_stores_issue_is_within_the_runtime_roles_privileges` extended.
   Refs: Requirement 044-001, Requirement 044-002, Requirement 044-004, Requirement 044-023
   Owner-gate: OD-2026-11-24-3
-- [ ] T044-3 Publication of a code version (after Tasks 044-4, 044-5 and 044-6): the `code` object, the digest form,
+- [ ] T044-3 Publication of a code version (after Tasks 044-4, 044-5 and 044-6): the refusal of a children entry whose
+  `outputSchema` drops a `secret` annotation of its listed child version, the `code` object, the digest form,
   the uniqueness of the workflow type in its namespace, the envelope (exact entries for secrets, precedence, schemas,
   risk metadata whose names are entries, flow control, the timeout level, approval rules, script entries, children with
   versions, events whose types are not signal names, the reserved prefixes refused), the signals in Architecture decision
@@ -2783,13 +2789,14 @@ a replaying worker derives from `ReadHistory`.
   `...::a_tenant_under_4_mib_passes_three_tenants_at_their_quarter`, `...::an_unavailable_of_one_lease_does_not_exempt_the_next_leases_expiry`,
   `...::every_step_writer_sets_code_step`, `...::an_unavailable_answer_survives_an_expiry_in_another_scheduler`,
   `...::a_changed_branch_after_a_deferral_uploads_sixteen_values`, `...::parallel_uploads_cannot_pass_the_leases_sixteen`,
-  `...::a_republished_envelope_that_gates_an_activity_reaches_a_running_worker`,
+  `...::a_republished_envelope_that_gates_an_activity_reaches_a_running_worker` (a new version with the same code digest
+  and an envelope that gates the activity),
   `...::a_cold_replay_of_a_blob_carried_input_keeps_the_chain`, `...::a_deferred_blob_output_re_emitted_by_another_worker_is_accepted`,
   `...::a_deferred_inline_output_re_emitted_as_a_blob_is_accepted`,
   `...::a_completion_naming_one_large_blob_256_times_reads_it_once_within_the_budget`,
   `integration_claim_transition_efficiency::work_budget::a_workflow_task_claim_stays_within_42_statements_and_2_transactions`
   (a new entry beside `LEASE`: its 38 statements plus the binder's row, the pause lock, the window check and the started
-  event's wake),
+  event's wake; its rows written pinned at the first measurement, as `LEASE`'s were),
   `...::outcome_seq_is_set_by_every_writer_of_an_outcome`, `...::replay_paths_receive_the_gated_entries_and_the_state_reserve`
   (the lease, a replay check, a worker query and an export, each replaying an activation that caught a gated throw),
   `...::update_results_over_the_validation_bound_fail_locally_in_command_order`,
@@ -3149,7 +3156,8 @@ a replaying worker derives from `ReadHistory`.
   Files: modify `crates/telemetry/src/metrics.rs`, `crates/application/src/telemetry.rs`, `crates/domain/src/audit.rs`,
   `crates/domain/src/operations.rs` and `crates/infra-postgres/src/operations.rs` (the alert kind and its detection,
   `STEP_UNCLAIMED` excluding the reserved names), `crates/api-http/src/routes/code_workflows.rs`,
-  `docs/runbooks/workflow-as-code.md` (create, the `#unserved` anchor).
+  `docs/runbooks/workflow-as-code.md` (create), `docs/runbooks/alerts.md` (its section), `crates/application/src/operations.rs`
+  (`Thresholds` and `Thresholds::of`), `apps/execution-engine/src/settings.rs` (`SAGAT_ALERT_WORKFLOW_TASK_UNSERVED_SECONDS`).
   Red tests: `crates/telemetry` `the_code_metric_labels_are_closed`, `integration_workflow_as_code::telemetry::each_audit_action_is_written_once`,
   `...::the_version_list_counts_open_runs_and_sessions_per_digest`, `...::the_attempts_of_a_code_run_close_every_workflow_task`, `...::an_unserved_run_raises_the_alert_after_60_seconds`.
   Refs: Requirement 044-028

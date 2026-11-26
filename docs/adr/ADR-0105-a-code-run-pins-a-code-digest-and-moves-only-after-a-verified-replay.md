@@ -32,7 +32,7 @@ workflow-task step waiting.
    run's history up to its last completed activation with the same command chain, that activation is still the last
    completed one, the workflow-task step is not leased, and every step that can still act (outstanding steps and the succeeded members of scopes not yet settled)
    fits the target version's envelope (its covering entry has the same secrets, schemas, risk metadata and approval rule,
-   and the target keeps the source's gated entries and `state.maxBytes`).
+   and the target's gated entries and `state.maxBytes` equal the source's).
    The move MUST be a domain command persisted by the ordinary run transaction; only the `SECURITY DEFINER`
    function `sagat_move_code_run`, which checks the pin's integrity, that the item's replay check records a matching
    verdict for the run at its current `S(k)`, and that the appended `run.code_version_moved` names the target, MAY change
