@@ -515,7 +515,8 @@ graph declares, and the versioning rules that keep code and history together.
   (`steps.unavailable_at`, a one-row update fenced by the lease's attempt, generation and token hash, cleared when the
   next lease is taken), so the expiry pass of any process records that lease's expiry, and only that lease's, as not
   counted, setting `next_attempt_at` to `unavailable_at` plus 1,000 ms (the fixed `retry-after-ms` of this answer);
-  `steps.uncounted_expiries` counts consecutive uncounted expiries, reset by a committed completion or a counted
+  `steps.uncounted_expiries` counts consecutive uncounted expiries after a `tenant_share` refusal (an expiry after a
+  `semaphore_full` refusal, which other tenants cause, never counts), reset by a committed completion or a counted
   failure, and its fifth counts as one failure; the next attempt may name, by descriptor, an uncommitted command-value blob of an earlier lease
   of the run that is not yet released, so nothing is uploaded or charged again, and `workflow_task_validation_refusals_total{reason: semaphore_full, tenant_share}` counts the refusals; the lease token is checked read-only before the blob pre-checks, the semaphore and the chain lock), except the stop drain and the planning of a saga scope, which read the rows they act on
   (at most 6 MiB) once; a `PollTasks` answer at most 3.5 MiB in all, leaving room for framing below the clients' 4 MiB (it carries fewer
@@ -1220,9 +1221,11 @@ version (Requirement 044-026).
      run's bound is judged at commit under the completion's rules); at most 16 such blobs of one lease (its attempt and
      generation, which the `blobs_owner_valid` arm records) are uploaded and not yet committed at once, a blob held by a
      deferral not counted, so a crashed lease's uploads never count against the next attempt; blobs of the purpose
-     `COMMAND_VALUE`, uploaded or held, leave the tenant's count of uploaded blobs (`DEFAULT_MAX_PENDING_BLOBS`: its
-     count query in `crates/infra-postgres/src/blobs.rs` excludes the purpose), being bounded by the lease's 16 and by
-     one held blob per deferral of a run instead, counted under a lock of the workflow-task step's row so parallel uploads cannot pass
+     `COMMAND_VALUE`, uploaded or held, leave the tenant's count of uploaded blobs (`DEFAULT_MAX_PENDING_BLOBS`) and have
+     a ceiling of their own per tenant, 1,024, counted by purpose under the same advisory lock (Task 044-9 changes the
+     count query of `crates/infra-postgres/src/blobs.rs`), so a deferral never blocks a step output and a tenant cannot
+     grow the shared blob pass without bound; the blob pass marks a row it is about to delete unnameable, and the
+     completion's ownership check refuses that state, counted under a lock of the workflow-task step's row so parallel uploads cannot pass
      it; a refused upload fails the workflow task with the cause `COMMAND_VALUE_LIMIT`, counted with its backoff. Ownership and
      the `secret` refusal are checked read-only before a blob's bytes are read, and again in the transaction. A command
      may name a blob only if it was written under that run's workflow lease (a value taken from the history is uploaded
@@ -1719,7 +1722,8 @@ on a running run only through a verified move (section 7.3), which proves per ru
   `REPLAY_CHECK_ABANDONED`; `NO_TARGET_WORKER` counts 3,600 s from the creation of the item's latest check while that
   check is unclaimed, an item whose check is leased or has a recorded verdict exempt; recording a verdict
   sets the item's `next_attempt_at` to now; a verdict is applied only if the verifying identity's binding still lists
-  the type, which `sagat_move_code_run` re-reads `FOR SHARE` inside the move's transaction. While its check is
+  the type and its session is not revoked, which `sagat_move_code_run` re-reads `FOR SHARE` inside the move's
+  transaction. While its check is
   outstanding an item is deferred with the new defer cause `REPLAY_PENDING`, which is not a refusal (it moves neither
   `attempts` nor the first refusal's time, so feature 018's exhaustion does not end it); a check-creation step creates the
   checks of up to 64 upcoming items of the job ahead of their rate slots; `code_replay_checks.created_at` measures the
@@ -2110,7 +2114,8 @@ that SDK. Field numbers are the next free ones of each message, fixed by `worker
 | `WorkerCapabilities` | `workflow_types` (repeated `WorkflowTypeOffer{workflow_type string, code_digest string}`, at most 64), `offers_workflow_as_code bool` |
 | `TaskLease.task_kind` | new values `WORKFLOW`, `QUERY`, `REPLAY_CHECK` |
 | Placement | `WorkflowTaskLease`, `QueryTask` and `ReplayCheckTask` are a `oneof` of `TaskLease` beside today's fields, selected by `task_kind`, so `PollTasksResponse` and the stream frames carry them unchanged; each new RPC has its own `...Request` and `...Response` messages |
-| `WorkflowTaskLease` | `run_id`, `attempt`, `generation`, `lease_token`, `expires_at_epoch_ms`, `seed bytes`, `started_at_us int64`, `window_start_seq int64`, `gated_entries repeated string` (the gated activity names of the run's current version), `state_max_bytes int64`, `first_page repeated HistoryEvent`, `visible_count int64`, `continue_as_new_suggested bool`, `history_limit_reached bool`, `traceparent` |
+| `WorkflowTaskLease` | `run_id`, `attempt`, `generation`, `lease_token`, `expires_at_epoch_ms`, `seed bytes`, `started_at_us int64`, `window_start_seq int64`, `gated_entries repeated string` (the activity names of the run's current version whose published envelope entry
+carries `requiresApproval`, and nothing else; an allowed exception of the server-side fields), `state_max_bytes int64`, `first_page repeated HistoryEvent`, `visible_count int64`, `continue_as_new_suggested bool`, `history_limit_reached bool`, `traceparent` |
 | `HistoryEvent` | `seq int64`, `kind HistoryEventKind` (an enumeration of the visible kinds), `origin HistoryEventOrigin`, `command_number int64`, `at_us int64`, `oneof body` (one typed message per kind: activity outcome, timer fired, wait outcome, child finished, approval decided, saga outcome, signal, update admitted, cancellation requested, marker, command record, run started with the input and the carried state, workflow task started with its two flags, workflow task completed with a deferral's kind and target), payloads as `bytes` (at most 256 KiB) or a blob reference |
 | `Command` | `command_number int64`, `kind CommandKind`, `fragment_json bytes` for work commands, `oneof typed` (cancel, saga open, close, abort, marker, set state, update decision, update result, consume signals, complete, fail, continue as new, acknowledge cancellation) |
 | `CompleteWorkflowTask` | request: fence fields, `idempotency_key`, `applied_through_seq`, `replayed_chain bytes`, `commands` (the consumption of signals is one of them), `deferred_command` (a `Command` without a number: the terminal or continue-as-new command the SDK re-emits), `eager_activity_slots`, reserved `behaviour_flags`; answer: outcome (`ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, `REVIEW` with its cause), eager provisional activity leases |
@@ -2135,7 +2140,7 @@ tree builds while the server lane fills them in.
 | `GET /runs/{runId}/history` | `run:read`, `history:export` | `200`, `application/x-ndjson`, paged by `from_seq` | `404` |
 | `POST /runs/{runId}/updates/{operationName}` | `run:update` | `200` or `202` | `409 UPDATE_PENDING`, `409 IDEMPOTENCY_KEY_REUSED`, `429 UPDATE_BACKLOG`, `409 HISTORY_HEADROOM`, `409 RUN_CLOSING`, `409 RUN_NOT_MUTABLE` |
 | `GET /runs/{runId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update; for `run:operate`, the list of every principal's update under the key | `404` (also for another principal's key) |
-| `GET /namespaces/{namespaceId}/chains/{chainId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update under the chain's scope, across its segments; for `run:operate`, the list of every principal's update under the key | the same `404` for an unknown key, an unknown chain, another tenant's chain or another principal's key |
+| `GET /namespaces/{namespaceId}/chains/{chainId}/update-receipts/{updateKey}` | `run:update` | `200`: the caller's update under the chain's scope, across its segments; for `run:operate`, the list of every principal's update under the key | the same `404` for an unknown key, an unknown chain, a chain of another namespace or tenant, or another principal's key; the lookup filters by tenant and namespace |
 | `POST /runs/{runId}/signals/{signalName}` (code runs) | `run:signal` | `202` | `409 SIGNAL_NOT_DECLARED`, `409 SIGNAL_INBOX_FULL`, `409 HISTORY_HEADROOM`, `409 RUN_CLOSING` |
 | `POST /runs/{runId}/worker-queries/{queryName}` (Task 044-29) | `run:read`, `run:query` | `200` | `504 QUERY_TIMEOUT`, `422 QUERY_COMMAND`, `409 QUERY_UNAVAILABLE`, `429`; `404` for a graph run or an undeclared query |
 | `PUT /namespaces/{namespaceId}/code-workflows/pause` and `DELETE` it | `run:operate`, `worker:manage` | `204` | `404` |
@@ -2200,7 +2205,7 @@ New tables, each with tenant scope and foreign keys within the tenant:
 |---|---|---|---|
 | `code_run_pins (tenant_id, run_id, code_version_id, moved_at)`, primary key `(tenant_id, run_id)` | The current code version; at insert it must equal the run's start version (a trigger with no setting that bypasses it) | `SELECT`, `INSERT`; `EXECUTE` on `sagat_move_code_run` only, a `SECURITY DEFINER` function owned by the migration role, `REVOKE ALL ... FROM PUBLIC`, `SET search_path = pg_catalog, pg_temp`, schema-qualified names | `protected_system` |
 | `code_step_nodes (tenant_id, run_id, node, command_number, accepted_version_id, scope, root_scope, issued_seq, spec bytea)`, primary key `(tenant_id, run_id, node)`, indexes on `(tenant_id, run_id, command_number)` and `(tenant_id, run_id, root_scope) WHERE root_scope IS NOT NULL` | The node overlay, a projection of the command records (at most 1 KiB per spec), append-only | `SELECT`, `INSERT` | `protected_system` (names, numbers, options; no payload) |
-| `code_update_transitions (tenant_id, namespace_id, address_scope, target_id, run_id, admitted_by, update_key, state, reason, args_digest, result_digest, at)`, unique `(tenant_id, address_scope, target_id, admitted_by, update_key, state)`, `address_scope` closed by a check as `operation_update_receipts_scope` is, `run_id` the resolved run | The code update lifecycle, append-only, one row per state, keys scoped by the address the client used and the admitting principal | `SELECT`, `INSERT` | `protected_system` (references only) |
+| `code_update_transitions (tenant_id, namespace_id, address_scope, target_id, run_id, admitted_by, update_key, state, reason, args_digest, result_digest, at)`, unique `(tenant_id, namespace_id, address_scope, target_id, admitted_by, update_key, state)`, `address_scope` closed by a check as `operation_update_receipts_scope` is, `run_id` the resolved run | The code update lifecycle, append-only, one row per state, keys scoped by the address the client used and the admitting principal | `SELECT`, `INSERT` | `protected_system` (references only) |
 | `code_query_requests (tenant_id, namespace_id, run_id, id, query_name, args bytea, answer bytea, committed_through_seq, status, lease_token_hash, expires_at)`, arguments at most 64 KiB and answer at most 256 KiB inline | Worker queries (Task 044-29) | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `args` and `answer` `content`, measured by `octet_length` as `payloads.content` is; the other columns `protected_system` |
 | `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, verifying_subject, read_token_hash, lease_token_hash, created_at, expires_at, expiries, busy_checks, first_difference integer)`, primary key `(tenant_id, job_id, ordinal)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
 | `worker_binding_workflow_types (tenant_id, namespace_id, subject, workflow_type, profile, bound_by)`, primary key `(tenant_id, namespace_id, subject, workflow_type)` | The workflow types of a binding, modelled on `worker_binding_pools`, with the binding's profile constrained to the ordinary one | today's grants of `worker_binding_pools` | `protected_system` |
@@ -2761,6 +2766,7 @@ a replaying worker derives from `ReadHistory`.
   Files: create `crates/infra-postgres/src/execution/crash_point.rs`, `crates/infra-postgres/src/execution/code_completion.rs`
   (the batched path of `PgRunTx`) and `scripts/test-workflow-as-code-process-faults.sh`; modify
   `crates/infra-postgres/src/execution.rs`, `crates/infra-postgres/src/maintenance.rs` (the reconciler),
+  `crates/infra-postgres/src/blobs.rs` (the count by purpose and the unnameable mark),
   `crates/api-grpc/src/service.rs` (the completion handler), `crates/application/src/workflow_tasks.rs` (create: the use
   case `complete_workflow_task`, calling the new `RunTx::complete_workflow_task`), `scripts/select-test-targets.py` and
   `scripts/tests/test_select_test_targets.py` (the budget pattern gains `workflow_tasks.rs`), `crates/infra-postgres/Cargo.toml` and
@@ -3133,8 +3139,10 @@ a replaying worker derives from `ReadHistory`.
   `...::a_move_never_declassifies_an_in_flight_activity_output`, `...::a_move_never_declassifies_an_in_flight_child_output`,
   `...::a_handoff_never_declassifies_a_carried_signals_secret_field`,
   `...::a_children_entry_dropping_a_childs_secret_annotation_is_refused`, `...::a_moved_child_never_declassifies_its_output_to_the_parent`,
-  `...::the_chain_receipt_route_answers_404_for_another_tenants_chain_or_another_principals_key`,
-  `...::no_read_returns_a_body_digest_risk_metadata_or_the_seed`, `...::a_workflow_failure_message_never_reaches_a_viewer`,
+  `...::the_chain_receipt_route_answers_404_for_another_namespaces_or_tenants_chain_or_another_principals_key`,
+  `...::the_gated_entry_names_are_the_only_risk_data_a_lease_carries`, `...::a_blob_marked_for_deletion_cannot_be_named`,
+  `...::command_value_blobs_stop_at_the_tenants_1024`,
+  `...::no_read_returns_a_body_digest_risk_metadata_or_the_seed` (the gated entry names its one allowed exception), `...::a_workflow_failure_message_never_reaches_a_viewer`,
   `...::a_signal_over_its_max_bytes_is_refused`, `...::a_classification_annotation_in_state_or_update_schemas_is_refused`,
   `...::no_history_event_carries_an_actor_subject`, and in `apps/execution-engine/tests/code_workflow_sites.rs` the
   source-text tests `server_side_fields_reach_no_projection` and `api_crates_do_not_call_the_classifier_directly`; and
