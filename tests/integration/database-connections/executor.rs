@@ -553,17 +553,34 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "put back, the same runner resolves again"
     );
     // The rollback is refused while a role other than `primary` is pinned (on a connection of its own: a refused revert leaves
-    // sqlx's migration lock behind, and the next rollback would wait for it).
-    let mut connection = w.db.pool.acquire().await.unwrap();
+    // sqlx's migration lock behind, and the next rollback would wait for it). The probe runs in a transaction that is rolled
+    // back: a rollback to before this migration reverts every later migration first, each committed on its own, and the rest
+    // of this scenario needs them. Until 2026-11-26 it ran outside one, so the rest ran on a schema without the later
+    // features: with feature 022 the step loader's `steps.flow_control_gates` was gone, the next resolution failed before it
+    // read the provider, and the paused read below waited for it until its 10-second bound (pull request #237).
+    let mut probe = w.db.pool.begin().await.unwrap();
     let refused = sagat_infra_postgres::MIGRATOR
-        .undo(&mut *connection, 20_270_109_000_000)
+        .undo(&mut *probe, 20_270_109_000_000)
         .await
         .expect_err("a pinned catalog secret blocks the rollback");
     sqlx::query("SELECT pg_advisory_unlock_all()")
-        .execute(&mut *connection)
+        .execute(&mut *probe)
         .await
         .unwrap();
-    drop(connection);
+    probe.rollback().await.unwrap();
+    let latest = sagat_infra_postgres::MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap();
+    let applied: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        applied, latest,
+        "the refused rollback leaves every migration applied"
+    );
     assert!(
         refused
             .to_string()

@@ -588,7 +588,7 @@ pub(crate) async fn batch_state(w: &World) -> String {
 }
 
 /// Creates a batch job that reruns the namespace's succeeded runs and steps it until `workflow` has `runs_after` runs (or
-/// two minutes passed).
+/// two minutes passed). The job is stepped from its own first slot ([`reach_slot`]).
 pub(crate) async fn rerun_the_succeeded_by_a_batch(
     w: &Arc<World>,
     workflow: WorkflowId,
@@ -626,13 +626,14 @@ pub(crate) async fn rerun_the_succeeded_by_a_batch(
         store,
         Runs(Arc::clone(w)),
         PgIdentityStore::new(w.db.pool.clone()),
-        clock,
+        clock.clone(),
         ExecutorSettings::default(),
     );
     let due = DueJob {
         tenant_id: job.tenant_id,
         id: job.id,
     };
+    reach_slot(w, &clock, &due).await;
     let give_up = std::time::Instant::now() + std::time::Duration::from_secs(120);
     // bounded by `give_up` only: under a loaded machine the wait for older transactions outlasts any count of steps
     loop {
@@ -649,8 +650,31 @@ pub(crate) async fn rerun_the_succeeded_by_a_batch(
                 }
                 // the selection waits for transactions open at the job's creation (another test's)
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                reach_slot(w, &clock, &due).await;
             }
         }
+    }
+}
+
+/// Moves the clock of the executor to the job's next slot when it is behind it, so that the job's items are due.
+///
+/// The database stamps the first slot when the job is created (`clock_timestamp()`, the database's clock), and the
+/// executor compares it with this clock (`now < next_slot_at` is `Idle`). Until 2026-11-26 the clock was set once, two
+/// seconds after the wall clock of the test process, before the job was created: a database whose clock runs more than
+/// two seconds ahead of the process's (a virtual machine's clock that drifted), or a creation that waited longer than
+/// that, left the slot ahead of the clock, every step `Idle` and the item `PENDING` until the two minutes passed. The same
+/// cause and the same helper as feature 018's batch rerun test (pull request #293, `batch_executor::reach_slot`, in
+/// another test binary).
+async fn reach_slot(w: &World, clock: &TestClock, due: &DueJob) {
+    let slot: OffsetDateTime =
+        sqlx::query_scalar("SELECT next_slot_at FROM batch_jobs WHERE tenant_id = $1 AND id = $2")
+            .bind(due.tenant_id.as_uuid())
+            .bind(due.id)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the job's slot");
+    if clock.now() < slot {
+        clock.set(slot);
     }
 }
 
