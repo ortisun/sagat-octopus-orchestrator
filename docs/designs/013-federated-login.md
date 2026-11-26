@@ -1483,13 +1483,20 @@ written plus one, never reused, the highest also kept in the document), material
   when `development` is true, that is under `SAGAT_ENV=dev`), and builds the client itself; no other constructor and
   no conversion from an `OpenBao` or an `OpenBaoConfig` exists. The settings cannot point it at the wrong token
   either. The client's private token check, which re-reads the token file and runs lookup-self before every request,
-  takes a policy rule held in a private field of the client: the secrets-mount client keeps today's rule, and the
-  identity client, which only `from_lookup` builds, also requires the policies to be exactly `identity` and `default`.
-  A token file shared with the secrets mount is therefore refused before any ring or identity-mount request is sent,
-  at start, in every operator command and after the token file changes
+  takes a policy rule held in a private field of the client. The identity client, which only `from_lookup` builds,
+  requires lookup-self's `policies` to be exactly `["sagat-identity"]`, the one policy the bootstraps install from
+  `identity.hcl`, whose role, like the others, is created with `token_no_default_policy` (the policy grants
+  `auth/token/lookup-self` itself), and its `identity_policies` and `external_namespace_policies` to be absent or empty,
+  so no policy inherited from the token's entity or groups widens it. The secrets-mount client keeps today's rule and
+  also refuses a token whose `policies` or `identity_policies` include `sagat-identity`, so no engine or management
+  process holds a token that reaches the identity mount. A token file shared between the two mounts is therefore
+  refused by both, before any request is sent, at start, in every operator command and after the token file changes
   (`an_identity_client_refuses_a_token_without_only_the_identity_policy`: the control plane's start, `rotate_begin`
-  driven with a secrets-policy token file, where only lookup-self reaches the server, and a token file swapped to a
-  secrets-policy token after one successful request, whose next `write_cas` is refused). A development client, which
+  driven with a secrets-policy token file, where only lookup-self reaches the server, a token file swapped to a
+  secrets-policy token after one successful request, whose next `write_cas` is refused, a token carrying `default`,
+  and a token whose entity carries `sagat-management`; `a_secrets_client_refuses_a_token_with_the_identity_policy`,
+  directly and through the entity; both run against the pinned OpenBao container, which also confirms that entity
+  policies appear in `identity_policies` and not in `policies`). A development client, which
   skips lookup-self, exists only under the gate above. The transport goes through the client's private `measured` wrapper with the closed operations `ring_read` and
   `ring_write`, so ring reads appear in `secret_provider_requests_total`. Because `identity_ring` is a
   child of `openbao`, the transport uses the client's private request helper, `bounded_body` and fields as they are:
@@ -1849,7 +1856,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   with a plain `OpenBao`, a non-private `IdentityOpenBao` constructor taking an `OpenBao` or an `OpenBaoConfig`, an
   `impl From<OpenBao> for IdentityOpenBao`, a non-private field of `IdentityOpenBao`;
   `identity_openbao_never_reads_the_secrets_mount_settings`,
-  `an_identity_client_refuses_a_token_without_only_the_identity_policy`, a non-private function returning `RingKey`, `PurposeKey` or `RingDocument`; the shared table
+  `an_identity_client_refuses_a_token_without_only_the_identity_policy`,
+  `a_secrets_client_refuses_a_token_with_the_identity_policy`, a non-private function returning `RingKey`, `PurposeKey` or `RingDocument`; the shared table
   `tests/fixtures/sealed_envelope_malformed.json` run against the attempt cookie's codec; the alert test covering the
   three values of `key`; a `"rings/cli-refresh"` literal and an
   `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
