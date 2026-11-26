@@ -1,9 +1,14 @@
 # ADR-0054: Run content leaves the hot store only through a verified archive under a namespace retention policy, and the run row stays as a stub
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26). Deleting customer data is
-irreversible; the default (no policy, nothing deleted) and the stub rule are owner questions O1080 and
-O1082 of feature 020.
+**Status:** Accepted (2026-11-24); its implementation waits for the principle-I amendment below
+**Decided by:** agent proposal of 2026-10-26, accepted by an agent, delegate (Owner decision 2026-11-24-4),
+after the readiness review of feature 020 on 2026-11-24 (`specs/020-visibility-analytics-archival/research.md`
+§5a, Decision 020-014). Deleting customer data is irreversible; the default (no policy, nothing deleted)
+and the stub rule were owner questions O1080 and O1082 of feature 020, decided on 2026-11-24 as this
+record proposed (delegate, Owner decision 2026-11-24-4). Accepting the record fixes the design; it does
+not amend the constitution, which a delegate may not do, so no code of it merges before the amendment.
+Refined with the acceptance: archive destinations (decision 1), step logs of feature 041 (decision 6),
+the instance registry for rollback (Consequences), and the journal-partitioning note (Considered option 3).
 **Refines / supersedes:** refines ADR-0023 (proposes the decision of its open G69 for run-purpose blobs
 only: `STEP_OUTPUT` and `RUN_INPUT` follow the run's retention; `DATA_SNAPSHOT_PART` blobs of feature 024
 are excluded and their retention is ADR-0058's), ADR-0027 (purge releases content counters through the
@@ -13,7 +18,7 @@ refuse a purged source) and the append-only enforcement of `run_events` and `pay
 **Requires a constitution amendment:** retention changes an obligation of principle I, so it is a MINOR
 amendment, not a clarification (see "Required amendment of principle I" below). This ADR proposes the
 text; it does not edit the constitution. Nothing in it may be implemented before that amendment's pull
-request is accepted and the owner answers O1080 and O1082.
+request is accepted (O1080 and O1082 were answered on 2026-11-24).
 **Enforced by:** planned checks of feature 020 — the runtime-role privilege sweep (the runtime role still
 cannot `DELETE` from `runs`, `steps`, `run_events` or `payloads`), the append-only trigger test with and
 without a purge authorization, the reference-registry migration test (every catalog foreign key to
@@ -52,8 +57,11 @@ materially expanded; Sync Impact Report and dependent documents in the same pull
 
 1. **Opt-in policy.** A namespace without a retention policy MUST keep every run (today's behavior). A
    policy sets `hotRetentionDays` (clamped to the operator ceiling), `archive` (`REQUIRED` or `NONE`),
-   `archiveValues` (`METADATA_ONLY`, `UP_TO_INTERNAL`, `UP_TO_PII`; `secret` never) and a destination
-   (platform blob store or a customer object store by secret reference). `UP_TO_PII` requires a principal
+   `archiveValues` (`METADATA_ONLY`, `UP_TO_INTERNAL`, `UP_TO_PII`; `secret` never) and a destination:
+   the platform blob store, written and verified by the engine, or (revised 2026-11-24) an
+   `object_storage` connection of feature 035, pinned by the policy revision and written create-only,
+   read back and reported by the `lake` profile of the managed executor under a lease of the job, so the
+   engine never holds a customer storage credential. `UP_TO_PII` requires a principal
    holding the reveal grant. Every change is audited, and the purge MUST refuse to apply a policy
    revision that is not an audited change by a human principal holding `retention:manage` (this raises
    the bar against an automated or compromised writer; it does not defend against a compromised runtime
@@ -83,7 +91,10 @@ materially expanded; Sync Impact Report and dependent documents in the same pull
    carrying run provenance, each with its purge and erasure rule: feature 020 owns this content-store
    registry (`run-content-references.json`), covering 018 retained Update arguments, 019 checkpoints, 022
    cache entries (invalidated by `source_run_id`, found through its hit-provenance table), 025
-   transcripts and request staging blobs, 026 stream events and 030 operation messages; each draft
+   transcripts and request staging blobs, 026 stream events and 030 operation messages, and (added
+   2026-11-24) feature 041's step-log streams and lines, which have no foreign key to `runs` and are
+   deleted in the run's purge; an archive holds their text only under `UP_TO_PII`, because log text is
+   read as `pii` in every namespace; each draft
    registers its store with a pointer to feature 020. A test fails on an unregistered referencing column. A payload or blob
    still referenced by a retained row MUST survive; it is reported, not hidden. Only run-purpose blobs
    (`STEP_OUTPUT`, `RUN_INPUT`) follow the run to ADR-0023's deletion path (this proposes closing G69 for
@@ -101,7 +112,10 @@ materially expanded; Sync Impact Report and dependent documents in the same pull
    delete existing customer data at upgrade. It remains available as a namespace setting (O1080).
 3. **Partition and drop by time (detach journal partitions).** Rejected for v1: partitions do not align
    with run lifecycles (a long run spans many), it needs the journal re-keyed (G241), and it cannot
-   verify an archive per run before dropping.
+   verify an archive per run before dropping. *2026-11-24:* the partitioning of the journal tables now
+   gets its own design (owner decision of 2026-11-24, OD-2026-11-24-1). The purge here is defined per
+   run and assumes no layout; if that design partitions by time, it may drop a partition whose runs
+   are all `PURGED` instead of deleting row by row, never bypassing decisions 2 and 3.
 4. **Delete runs completely (no stub).** Rejected for v1: it breaks tree, chain and rerun foreign keys
    (ADR-0039 guards rely on them) and audit references; stubs cost a small row per run (G1089, O1082).
 
@@ -115,13 +129,20 @@ materially expanded; Sync Impact Report and dependent documents in the same pull
 - Audit records keep identifiers after purge; audit retention is outside this decision.
 - Rollback: removing a policy stops new eligibility; jobs already `PURGING` finish, others block. Purged
   content is recoverable only from its archive. Rolling engines back below feature 020 after a purge is
-  supported with degraded reads only (stubs show no history); it is tested.
+  supported with degraded reads only (stubs show no history); it is tested. While the `retention-v1`
+  capability is a recorded requirement of the instance registry (ADR-0082), an older engine or control
+  plane stays up with a closed gate, so a rollback first removes the requirement (revised 2026-11-24).
 - 018 must allow the purge function to clear `business_id` and must write attribute rows for the
-  `search_attributes.upserted` events a reset restores (feature 020 G1103).
+  `search_attributes.upserted` events a reset restores (feature 020 G1103). 018 is built: its reset
+  registry lists the rows, its guard `runs_business_id_guard` does not consult a purge authorization yet,
+  so feature 020's retention migration replaces that function, and `RUN_PURGED` is `CONFLICT` in both.
 
 ## Evidence
 
-None yet. Required: the accepted amendment PR of principle I, crash at each job transition, corrupted and missing archive objects, concurrent
+The design was accepted on 2026-11-24 against the code it relies on (the append-only triggers and
+grants of `20261009000100_execution`, the ADR-0039 guard in `PgRunStore::create`, the blob deletion path
+of `crates/infra-postgres/src/blobs.rs`, 018's guard and reset registry); nothing of it is built.
+Required before the implementation is accepted: the accepted amendment PR of principle I, crash at each job transition, corrupted and missing archive objects, concurrent
 digest reuse, tree/chain eligibility, sink hold, runtime-role privilege sweep, erasure report and the
 purge benchmark. Specification: [specs/020-visibility-analytics-archival](../../specs/020-visibility-analytics-archival/spec.md),
-research D1112–D1118.
+research D1112–D1118 and Decisions 020-007, 020-011, 020-012 and 020-014.

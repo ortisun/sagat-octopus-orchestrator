@@ -2,7 +2,7 @@
 
 **Nothing here runs today.** This is the reproducible demonstration the implementing delivery must make work
 (Definition of Done: happy and failure scenario). Commands marked *(new)* do not exist yet; every other command
-exists at `70f09435`. The demo uses the local development stack of
+exists at `70f09435` and still at `2c94064f` (checked 2026-11-24). The demo uses the local development stack of
 [docs/quickstarts/README.md](../../docs/quickstarts/README.md), which is **not for production**.
 
 ## 0. Prerequisites
@@ -15,7 +15,11 @@ cargo install --path apps/cli --locked
 export SAGAT_SERVER=http://127.0.0.1:18080/v1 SAGAT_GRPC=http://127.0.0.1:19000 SAGAT_NAMESPACE=payments
 sagat dev token --out .sagat-token && export SAGAT_TOKEN_FILE=.sagat-token   # dev-admin of tenant dev
 sagat doctor                     # must report a worker protocol maximum of 1.N+2 and the `features` list (new)
+# the operator records the fleet requirements once (ADR-0082; command of docs/runbooks/instance-registry.md):
+#   worker-deployments-v1 dispatch-priority-v1 heartbeat-checkpoints-v1 async-completion-v1 push-dispatch-v1 warm-scripts-v1
 ```
+
+`1.N+2` is 1.12 at the time of writing (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045).
 
 Example workers live in `examples/worker-deployments/` *(new)*: a TypeScript worker for `payments.charge` and
 `payments.refund` whose build id comes from `SAGAT_BUILD_ID`, a pinned `settlement` workflow, an auto-upgrade
@@ -56,6 +60,8 @@ Expected evidence:
 
 ```sh
 sagat workflow run chunked-import --input '{"rows": 100000}'   # kill the worker mid-way, restart it
+# the lapse is an unknown outcome (feature 037): chunked-import declares reconcileWith, whose lease carries the
+# checkpoint; its answer "not applied" releases attempt 2
 sagat workflow inspect <run>          # attempt 2 lists checkpoint {attempt: 1, size}; values only with disclosure
 sagat workflow run review --input '{"doc": "d-1"}'             # the worker detaches and prints the token to the demo console
 node examples/worker-deployments/external/complete.mjs <token>   # authenticates as a principal with task:complete
@@ -74,13 +80,15 @@ key `B` (weight 3) and 10 priority-1 runs, and asserts the claim order recorded 
 | Crash during a routing change | `cargo test -p sagat-tests --test fault_worker_deployments_dispatch --locked -- routing_change_crash` *(new)* | no lease to an unrouted version; one routing revision |
 | Retire a version with open pins | `sagat deployments retire payments 2026.10.1 --reason x…` before drain | `409 VERSION_NOT_DRAINED` with counts; nothing changes |
 | Oversized checkpoint | worker records 100 KiB | lease renewed, `details_status = REFUSED_SIZE`, `heartbeat_details_total{outcome="refused_size"}` incremented, previous checkpoint kept |
-| Token of a reclaimed attempt | let the detached timeout expire, then complete | `409 STALE_ATTEMPT`; audit `task.token.denied`; step retried |
+| Token of a reclaimed attempt | let the detached timeout expire, then complete | `409 STALE_ATTEMPT`; audit `task.token.denied`; the step went to reconciliation or review with `DETACHED_TIMEOUT` (an unknown outcome), never straight to a new attempt |
 | Foreign or forged token | complete with a token from tenant `other`, or one built from known ids with a guessed secret | `404`, indistinguishable from a missing one; no receipt or status disclosed |
 | Token replayed on gRPC | call `ResolveSecrets` or `CompleteStep` with the decoded lease | `ABORTED STALE_ATTEMPT` (`DETACHED`) |
 | Async function faster than the invoker | the function completes through REST before the invoker records its `202` | completion applied once; the invoker records nothing |
 | Push function times out after receiving | function sleeps past `requestTimeoutMs` | `OUTCOME_UNKNOWN`; reconciliation or manual review |
 | Push endpoint to the metadata address | create with `https://169.254.169.254/` | `422 PUSH_DESTINATION_DENIED`, audited |
-| Engine restart with detached and pushed attempts | `docker compose restart execution-engine` | detached attempts keep their expiry; in-flight push leases expire and are retried with the same key |
+| Engine restart with detached and pushed attempts | `docker compose restart execution-engine` | detached attempts keep their expiry; in-flight push leases lapse as `LEASE_EXPIRED` and go to reconciliation or review; a later attempt keeps the same idempotency key |
+| Detach before the acknowledgement (protocol 1.8) | a test host calls `DetachStep` on a flagged lease before `AcknowledgeTasks` | `FAILED_PRECONDITION TASK_NOT_ACKNOWLEDGED`; nothing changes |
+| A capability before its fleet requirement | create a deployment before `worker-deployments-v1` is recorded | `422 DISPATCH_ACTIVATION_PENDING` with `details.requirement` |
 
 ## 4. Tests that close the demo
 
@@ -88,7 +96,9 @@ key `B` (weight 3) and 10 priority-1 runs, and asserts the claim order recorded 
 cargo test -p sagat-tests --test e2e_worker_deployments_dispatch --locked          # (new)
 cargo test -p sagat-tests --test fault_worker_deployments_dispatch --locked        # (new)
 cargo test -p sagat-tests --test integration_worker_deployments_dispatch --locked  # (new)
-cargo test -p sagat-tests --test contract_worker_deployments_dispatch --locked     # (new)
+cargo test -p sagat-tests --test contract_rest_worker_deployments_dispatch --locked   # (new)
+cargo test -p sagat-tests --test contract_grpc_worker_deployments_dispatch --locked   # (new)
+cargo test -p sagat-tests --test integration_claim_transition_efficiency --locked      # claim budget lines
 cargo test -p sagat-tests --test sdk_conformance --locked -- deployment-versioning heartbeat-details \
   async-completion dispatch-priority push-envelope                                  # new scenarios
 cargo test -p sagat-tests --test contract_rest_security_multitenancy --locked       # battery incl. new routes

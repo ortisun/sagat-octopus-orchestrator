@@ -6,6 +6,8 @@ compatibility, browser, SDK and release evidence is recorded in
 [the release-gate record](../../specs/016-payload-classification/release-gates-2026-10-25.md).
 ADR-0040 preserves the eight unfinished feature-014 tasks and the existing runtime boundaries.
 
+**Refined by:** the one `pii`-egress rule of feature 020 (Decision D1617, decided under O1081 on 2026-11-24, delegate (OD-2026-11-24-4)): a `pii` value may leave the platform (a 020 sink or archive, a 025 model provider or tool server, a 026 channel, a 031 codec endpoint) only to a destination whose revision declares a ceiling at or above `pii`, set by an administrator who holds the reveal grant; the grant is checked again at each delivery or batch; a revocation pauses the destination; each delivery or batch is audited; `secret` never leaves.
+
 **Refines:** ADR-0028 (authorized structural payload inspection). It does not change ADR-0031,
 which already discloses the declared result of a Query or Update, nor the secret model of feature
 009. **Closes as decided:** G42 (classification part), G80 (classification part), and the value

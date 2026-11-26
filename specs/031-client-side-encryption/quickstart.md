@@ -13,8 +13,9 @@ docker compose -f infra/docker/compose.yaml -f infra/docker/compose.encryption.y
 #   SAGAT_STUDIO_CODEC_ORIGINS=http://localhost:8099
 #   SAGAT_CODEC_ASSERTION_KEYS=<ES256 PKCS#8, base64>   SAGAT_CODEC_ASSERTION_ISSUER=http://localhost:8080
 #   SAGAT_CODEC_ASSERTION_TTL_SECS=60
-# Activate once every engine and control-plane replica reports the capability (T031-068):
-control-plane payload-encoding activate
+# Activate once every engine and control-plane replica reports the capability (T031-068). It records the requirement
+# payload-encoding-v1 in the instance registry, so it runs with the schema-owning role, as migrate does:
+control-plane payload-encoding-activate --operator demo-operator
 # Customer side: a Transit key the platform never sees.
 export BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=<dev token printed by the overlay>
 bao secrets enable transit && bao write -f transit/keys/orders-pii
@@ -35,7 +36,7 @@ codec server.
      "$API/workflows/$WORKFLOW/versions/1/payload-plan"                 # tenantId, namespaceId, the two locations
    ```
 
-2. Run a TypeScript worker and client configured with `Encryption(OpenBaoTransitKeyProvider({keyName: "orders-pii"}))`
+2. Run a TypeScript worker and client (any of the six SDKs works the same way) configured with `Encryption(OpenBaoTransitKeyProvider({keyName: "orders-pii"}))`
    (`examples/payment-encrypted/ts/`). Expected: the run succeeds; the worker log shows plaintext only inside the
    handler; `psql -c "select convert_from(content,'UTF8') from payloads ..."` shows `{"$encoded": ...}` at `/card` and
    `/token`, each with `ctx` naming the demo tenant, namespace and its own pointer, and no card number.
@@ -70,8 +71,16 @@ codec server.
 8. **Codec-server outage.** Stop the reference codec server → the Studio shows "codec unavailable" on each encoded node
    and the rest of the run view keeps working; the CLI exits with a typed error.
 9. **Publication refusal.** Add a `condition` on `input.card.brand` → `422`, `details.reason = ENCODING`,
-   `ENCODING_READ_BY_EXPRESSION` at `/nodes/.../expression`; deactivate the feature and publish any document with
-   `x-sagat-encoding` → `ENCODING_NOT_ACTIVATED`.
+   `ENCODING_READ_BY_EXPRESSION` at `/nodes/.../expression`. On a fresh database, before the activation, publish any
+   document with `x-sagat-encoding` → `ENCODING_NOT_ACTIVATED`; after a version with encoding is published,
+   `control-plane payload-encoding-deactivate --operator demo-operator` is refused and changes nothing (corrected
+   2026-11-24, Decision D031-005).
+10. **KMS blip before the handler.** Stop OpenBao after a codec worker has claimed a planned task and before it decodes
+   (the `payload-encryption-faults` scenario holds the worker at that point with a barrier), then restart it → the lease
+   is handed back with `TASK_NOT_STARTED`, `listRunAttempts` shows the attempt number unchanged, and the next lease
+   completes the step (protocol 1.8 or later, Decision D031-004).
+11. **A decoded value in a step log.** A handler that logs the decoded card number → the stored step-log line shows
+   `[REDACTED]` in its place (FR-031-038).
 
 ## What this demo does not prove
 

@@ -33,11 +33,18 @@ the root to the annotation may use only `properties` and `items`. Refused (`ENCO
 `additionalProperties`, `patternProperties`, `prefixItems`, `allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/`else`,
 `dependentSchemas`, `$defs`, a `$ref` target or a path through a `$ref`, and a property literally named `*`. An annotation
 under an encoded location is `ENCODING_NESTED`. Bounds: at most 64 locations per carrier, 4 `*` and 16 segments per
-location (`ENCODING_TOO_COMPLEX`).
+location, and a pointer pattern of at most 512 bytes in its JSON-escaped form (`ENCODING_TOO_COMPLEX`; the last bound
+added 2026-11-24, D031-013).
 
 The subschema at an encoded location describes the **plaintext** (SDKs may validate it before encoding and after
 decoding). The server replaces it by [envelope.schema.json](envelope.schema.json) when it validates a payload (the
 "encoded view"), and 016 classification annotations inside it collapse to the location's level (FR-031-003).
+
+Run input validation (design 043, FR-031-037, D031-006): the plaintext subschema must be inside 043's subset, checked
+by 043's pre-check on the `inputSchema` with every `x-sagat-encoding` member removed; at a start, 031's strict envelope
+check runs first and 043 then validates the encoded view, in which the subschema at each encoded location is the schema
+`true`. An encoded location cannot sit inside the `anyOf` that a schema uses to accept both manual starts and the
+trigger shape `{event, data}`.
 
 Example:
 
@@ -99,6 +106,8 @@ An envelope is bound to a tenant, a namespace and a pointer pattern (`ctx`, [env
 | 020 analytics `project` (carriage included) | `ENCODING_READ_BY_ANALYTICS` |
 | 022 cache key (or whole-input digest) | `ENCODING_READ_BY_CACHE_KEY` |
 | 022 concurrency key | `ENCODING_READ_BY_CONCURRENCY_KEY` |
+| 022 rate-limit key (added 2026-11-24, D031-009) | `ENCODING_READ_BY_RATE_LIMIT_KEY` |
+| 042 stage expressions (registry kind I) | `ENCODING_READ_BY_EXPRESSION` |
 | 019 fairness `{expr}` key | `ENCODING_READ_BY_FAIRNESS_KEY` |
 | 026 forms, summaries, public-link presets | `ENCODING_READ_BY_FORM` |
 | 014 Query/Update | `ENCODING_READ_BY_DECLARED_OPERATION` |
@@ -111,7 +120,7 @@ message}` (at most 20, messages from a closed table, no document excerpt beyond 
 | Code | Severity |
 |---|---|
 | `ENCODING_INVALID_VALUE`, `ENCODING_NOT_APPLICABLE`, `ENCODING_NOT_PRODUCIBLE`, `ENCODING_UNSUPPORTED_LOCATION`, `ENCODING_NESTED`, `ENCODING_TOO_COMPLEX`, `ENCODING_NOT_ACTIVATED` | error |
-| the eight `ENCODING_READ_BY_*` codes of section 5, `ENCODING_CARRIAGE_MISMATCH` | error |
+| the nine `ENCODING_READ_BY_*` codes of section 5 (corrected 2026-11-24 from eight), `ENCODING_CARRIAGE_MISMATCH` | error |
 | `ENCODING_LEVELS_COLLAPSED`, `ENCODING_CARRIAGE_UNVERIFIED`, `ENCODING_TRIGGER_UNVERIFIED`, `ENCODING_INERT_VERSION` | warning |
 | `ENCODING_ADDED`, `ENCODING_REMOVED` | diff attention findings |
 

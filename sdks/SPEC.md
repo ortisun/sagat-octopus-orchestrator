@@ -827,7 +827,9 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
-  | next | Drafts 019, 020, 021, 023, 024, 025, 026, 031, 032 and 035 each name a minor; each takes the next free one (1.9 or later) when its contract merges, and its SDKs carry the 1.8 host procedure first | |
+  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` and `heartbeat_from_handler`, `FailStepRequest.next_retry_delay_ms`) | design 045 (named; taken when its contract merges) |
+  | 1.10 to 1.12 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges) |
+  | next | Design 044's workflow tasks (Architecture decision 0109), draft 031's codec minor (`TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7) and drafts 020, 021, 023, 024, 025, 026, 032 and 035 each name a minor; each takes the next free one when its contract merges, and a host of a later minor carries 1.7, the 1.8 host procedure and 1.9 | |
 
 ## 10. Observability and safety
 
