@@ -63,3 +63,17 @@ re-read tests: 13 passed, 4 failed, the four below).
 `integration_flow_control_step_policies` whole target 262 passed, 0 failed as the owner and 262 passed, 0 failed with
 `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation -- runtime_privileges migrations` 70 passed; clippy exit
 0; `cargo fmt --check` clean.
+
+## The security check of the mixed-period fix (`activation-fixes-2-check-security-reviewer.md`)
+
+| Finding | Fix | Test |
+|---|---|---|
+| Low 1: a withdrawal that ends a stopping run locks the counter row and the run's semaphore after the step's window | D022-156 amended: `lock_withdrawn_gates` begins with the run's counter row (`run_active_counts_lock_slot`) whenever a lease's step is gated, and its sorted pass of semaphores includes the run's own permit; slot 6, then 7, then 8b | `withdrawn_leases::a_hand_back_that_ends_a_cancelling_run_takes_the_counter_row_before_the_keys`: a transaction holds the counter row and the run's semaphore; the hand-back of the cancelling run's last step waits; the holder takes the step's window (bounded) and commits; the hand-back is withdrawn and the run is cancelled with its slot given back. Red first: the hand-back was the deadlock's victim (`Unavailable`) |
+| Note 2: D022-157 overstates exactness | D022-157 and G022-042 amended: exact for the lease instant as recorded; a late recording only refuses more | `withdrawn_leases::a_grant_at_exactly_the_end_of_the_window_refuses_the_withdrawal_and_one_microsecond_earlier_does_not` (the boundary; it passed at once: the rule was right, the case guards it) |
+
+Evidence of the check's fixes: the whole `integration_flow_control_step_policies` target 264 passed, 0 failed as the
+owner. With `SAGAT_TEST_AS_RUNTIME_ROLE=1` the first run had 4 failures, three of them in the test database's own
+connection (`fresh_db`'s "admin connection", `until_past`'s "clock") and one at `the_purge_keeps_...`'s lease read; the
+four passed alone in a fresh process, and the whole target run again passed 264, 0 failed. `integration_platform_foundation
+-- runtime_privileges migrations` 70 passed; `sagat-control-plane`, `sagat-application`, `sagat-infra-postgres` passed;
+clippy exit 0.
