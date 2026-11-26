@@ -256,8 +256,8 @@ Rollback before step 3 rolls the binaries back onto N's schema; after it, the tw
 | `schema_compatibility` | as Requirement 053-004 | none; read through `sagat_schema_handshake()` |
 | `platform_requirements` (new columns) | `state text` (`active`, `draining`), `introduced_in text`, `draining_since timestamptz`, `permanent boolean not null default false` | as the table today (read) |
 
-**Order of the build.** Design 048's Tasks 048-9 and 048-10 (the gate's reasons and the confirmation) before Task
-053-3; Task 053-2 (the lint) before any other migration of designs 048, 049 and 052; Task 053-5 before
+**Order of the build.** Design 048's Tasks 048-9 and 048-10 (the gate's reasons and the confirmation) before Tasks
+053-3 and 053-4; Task 053-2 (the lint) before any other migration of designs 048, 049 and 052; Task 053-5 before
 design 049's Task 049-13 (the permanent column) and Task 053-3 before its Tasks 049-5 (the requirement set returned at
 registration) and 049-14 (the handshake granted to the retirement role); design 051's driver (its Task 051-2) before Task
 053-6.

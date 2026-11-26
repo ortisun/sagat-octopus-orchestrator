@@ -141,11 +141,15 @@ From the code and documents on `develop` at `546d5aa5`:
   fail within 10 s (Requirement 048-005); a statement to a live server is bounded by its `statement_timeout` (5 s). Idle
   connections are tested before reuse (sqlx's `test_before_acquire`, its default).
 - **Requirement 048-011 Every connection is checked, and writes are explicit.** Every database connection of the
-  platform (the pools of the control plane and the engine, the registry's, and every command of `control-plane` but the
-  read-write profile of `migrate` and `seed-dev`, Requirement 048-013) MUST
+  platform (the pools of the control plane and the engine, the registry's, and every command of `control-plane`) MUST
   send, as startup options, `synchronous_commit=on` and `default_transaction_read_only=on`, which outrank a role's or a
-  database's setting; `scripts/check-architecture.py` refuses `synchronous_commit`, `set_config` and
-  `default_transaction_read_only` in any statement of `crates/infra-postgres`, `apps/` and the migrations. Its
+  database's setting; the read-write profile of `migrate` and `seed-dev` differs only in sending
+  `default_transaction_read_only=off`, and the passive observer's profile (Requirement 048-020) only in being admitted
+  in recovery. `scripts/check-architecture.py` refuses the protected names `synchronous_commit`,
+  `default_transaction_read_only` and `transaction_read_only`, in any form (`SET`, `set_config`), in the statements of
+  `crates/infra-postgres` and `apps/` and in the migrations after design 053's cut-off. `transaction_timeout` is set to
+  0 in `after_connect` (in `pool.rs`) only when `server_version_num` shows a server that has it, since a startup option
+  PostgreSQL 16 does not know is refused. Its
   `after_connect` calls `sagat_server_identity()` (Requirement 048-013) and refuses the connection when the server is in
   recovery, when `synchronous_commit` is not `on`, or, when `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY` is true, when
   `synchronous_standby_names` is empty. That setting defaults to true in the binary; `infra/docker/compose.yaml`, which
@@ -162,7 +166,9 @@ From the code and documents on `develop` at `546d5aa5`:
 - **Requirement 048-012 Commits.** `WriteTx`, in `crates/infra-postgres/src/pool.rs`, owns a `PoolConnection`, sends
   `BEGIN READ WRITE`, and runs statements only through its own `execute` and `fetch` methods (it never hands out the
   connection), which mark it failed on any error; a failed `WriteTx` can only roll back, and the caller gets that error,
-  a definite failure. Its only commit is `commit_safely`, which sends `COMMIT` in a task it spawns (as `begin_safely`
+  a definite failure. A `WriteTx` dropped before it commits or rolls back (a request timed out, a deadline passed)
+  closes its connection (`close_on_drop`) rather than return an open transaction to the pool, which the next `BEGIN`
+  would join. Its only commit is `commit_safely`, which sends `COMMIT` in a task it spawns (as `begin_safely`
   does for `BEGIN`) and waits for it at most the commit deadline (`SAGAT_DB_COMMIT_DEADLINE_MS`, default 10,000, at
   least twice the statement timeout, the name feature 032 also uses). The outcome is applied when `COMMIT` succeeds. It
   is not applied when the server answers `COMMIT` with an error and then, within the deadline, with ReadyForQuery whose
@@ -177,14 +183,16 @@ From the code and documents on `develop` at `546d5aa5`:
   waits for a standby is different again: PostgreSQL answers success with a `WARNING`, the commit written locally
   only; the platform never sends one (the rules below), Task 048-6 establishes whether its statement timeout can (and if
   it can, `commit_safely` sends `SET LOCAL statement_timeout = 0` and `COMMIT` in one message), and an operator's cancel
-  is the residual of the Technical Plan. After an unknown outcome the task keeps the connection, and its slot, until the
-  server answers or the socket fails, and the process closes its serving gate (Requirement 048-013), so that no new
+  is the residual of the Technical Plan. After an unknown outcome the spawned task, not the caller (which a timeout may
+  have dropped), classifies it, keeps the connection and its slot until the server answers or the socket fails, and
+  closes the process's serving gate (Requirement 048-013), so that no new
   write starts and the slots held are those of the commits in flight. The API answers `UNAVAILABLE` with the reason
   `COMMIT_OUTCOME_UNKNOWN` (after authentication; Requirement 048-014); `AppError::Unavailable` gains a reason field
   for it and for the reasons of Requirement 048-014; whether to retry is the client's, which retries only an operation
   that carries an idempotency key or a command identifier (the SDKs always send one on reports). The platform never
   cancels or terminates a backend that waits for a standby: the sessions set `client_connection_check_interval` to 0
-  and, where the server has it, `transaction_timeout` to 0, and `scripts/check-architecture.py` refuses, in
+  and `transaction_timeout` to 0 where the server has it (Requirement 048-011), and `scripts/check-architecture.py`
+  refuses, in
   `crates/infra-postgres` and `apps/`, `pg_cancel_backend`, `pg_terminate_backend`, a `sqlx::Transaction` or `.begin()`
   outside `pool.rs`, a raw `BEGIN`, `START TRANSACTION`, `COMMIT`, `END`, `ABORT`, `ROLLBACK`, `READ WRITE`, `SESSION
   CHARACTERISTICS` or `transaction_read_only` outside `pool.rs` and `migrate`'s loop (design 053's Task 053-4), and
@@ -242,7 +250,7 @@ From the code and documents on `develop` at `546d5aa5`:
   set, every path checks the gate before acquiring a connection (requests, gRPC worker calls, readiness, the passes and
   the keeper), and only the registry's connection connects.
   Each command of `control-plane` has one of three connection profiles. `migrate` uses the owner's role on sessions
-  that are read-write by default, runs each migration in its own `BEGIN READ WRITE` (a concurrent index in its own
+  that are read-write by default (and keep `synchronous_commit=on` and the checks of Requirement 048-011), runs each migration in its own `BEGIN READ WRITE` (a concurrent index in its own
   statement), and accepts, in its `after_connect`, a missing `sagat_server_identity()` (`42883`) only while the
   migration that creates it is not applied. `seed-dev`, for development only, uses the same profile. Every other command
   that writes (`cleanup-secrets`, `provision-tenant`, `reseal-secrets`, `quota-ceiling`, `scheduling-weight`,
@@ -260,7 +268,8 @@ From the code and documents on `develop` at `546d5aa5`:
   empty. Each owner clears only its own reason; a re-registration does not reopen a gate another reason holds. Readiness
   checks the gate before it pings storage. The reasons are added to `specs/001-platform-foundation/contracts/openapi.yaml`,
   `sdks/SPEC.md` as reasons an operator reads. Every `UNAVAILABLE` that a client can reach before authentication is one
-  constant answer, `Retry-After` of 2 s and no reason, whatever the cause (a closed gate, `BINARY_CAPABILITY_MISSING`
+  constant answer, `Retry-After` of 2 s and no reason, whatever the cause (feature 032's typed `REGION_*` reasons, which
+  route a client to its active region, are the one exception, Architecture decision 0067's decision 3) (a closed gate, `BINARY_CAPABILITY_MISSING`
   included, a failed storage ping, a silent registry, the authenticator's failure to fetch the identity provider's keys or
   to look up a session), so that an anonymous caller learns nothing of the cause: the authenticator's refusals
   (`crates/api-http/src/error.rs`'s `AuthError` arm and `extract.rs`, shared by both transports), the webhook ingress
@@ -297,7 +306,9 @@ From the code and documents on `develop` at `546d5aa5`:
   drills count these apart, and the delivery acknowledgement of protocol 1.8 (reserved by Owner decision 2026-11-21-6,
   pull request 264) is what lets such a lease be retried without a person. The SDK releases that carry Tasks 048-11 are
   recorded in `sdks/SPEC.md`'s register; older SDKs keep today's retries.
-- **Requirement 048-020 Standbys serve nothing.** No statement of the platform runs on a standby.
+- **Requirement 048-020 Standbys serve nothing.** No statement that serves work runs on a standby. The one exception is
+  a fourth connection profile, the passive observer, for feature 032's role watcher and replication monitor on a
+  passive region's standby: read-only, admitted in recovery, it never confirms, opens no gate and serves no request.
 
 ### Evidence
 
@@ -601,7 +612,7 @@ gates Success criterion 048-003.
 
 Each task names its files and tests; the metrics of a behaviour come with it.
 
-- [ ] T048-1 Revise Architecture decision 0130 to this text, with its supersession in part of Architecture decision 0067 (decision 6(b) and (d), the bullet on unlogged tables) and its refinement notes in Architecture decisions 0082, 0078 and 0014; write the topology in `docs/architecture/storage-and-events.md`, `docs/runbooks/disaster-recovery.md` (with the Secret's copy and rotation) and the lease rule in `docs/runbooks/scaling.md`; amend feature 032's plan, tasks and contracts so that they use this design's reason `DATABASE_UNCONFIRMED`, its `SAGAT_DB_COMMIT_DEADLINE_MS` and Task 048-7's commit (T032-024), allow `server_incarnation` by name in T032-009, and key T032-058's durability lease on the registry's confirmed identity.
+- [ ] T048-1 Revise Architecture decision 0130 to this text, with its supersession in part of Architecture decision 0067 (decision 6(b) and (d), the bullet on unlogged tables) and its refinement notes in Architecture decisions 0082, 0078 and 0014; write the topology in `docs/architecture/storage-and-events.md`, `docs/runbooks/disaster-recovery.md` (with the Secret's copy and rotation) and the lease rule in `docs/runbooks/scaling.md`; amend feature 032's specification (FR-032-009 (b), (c) and (d)), plan, tasks (the bodies of T032-009, T032-010, T032-023, T032-024 and T032-058) and contracts (`errors.md`, `worker-protocol.md`, `sdk-conformance.md`, `rest.openapi.yaml`) so that they use this design's reason `DATABASE_UNCONFIRMED` (shown to operators only; a client sees the constant answer), its `SAGAT_DB_COMMIT_DEADLINE_MS` and metric, and Task 048-7's commit, allow `server_incarnation` by name in T032-009, key T032-058's durability lease on the registry's confirmed identity, use the passive observer's profile for the role watcher and the replication monitor, and move ADR-0067 decision 4's guard into `instance_confirm_durability()`, which refuses to confirm a process without `region-v1` once a cell is initialized (a `WriteTx`'s `BEGIN READ WRITE` overrides a read-only role); amend ADR-0067's "Enforced by" and its sentence on a commit per replay.
   Refs: Requirement 048-001, Requirement 048-013, Requirement 048-016
 - [ ] T048-2 Add `tests/support/replicated_postgres.rs` (a primary and a synchronous standby, PostgreSQL 16 and 17 by a parameter, the bridge address, a helper that blocks replication) and the target `fault_high_availability` in `tests/Cargo.toml`, with a test that the standby is synchronous.
   Refs: Requirement 048-010
@@ -613,7 +624,7 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-005, Requirement 048-010
 - [ ] T048-6 The proving test `does_a_server_timeout_cancel_a_commit_waiting_for_a_standby` in `fault_high_availability`, with the standby blocked, on PostgreSQL 16 and 17, asserting that `COMMIT` has not returned at the timeout plus 2 s; record its result in this design.
   Refs: Requirement 048-012
-- [ ] T048-7 Add `WriteTx` and `commit_safely` in `pool.rs` with the outcome rule (`confirmed_abort` moved there), `StoreError::CommitOutcomeUnknown` replacing the five module variants, the reason on `AppError::Unavailable` and its HTTP and gRPC mapping and contracts, with `a_commit_past_its_deadline_is_unknown_and_invisible`, `an_unlisted_failure_after_commit_was_sent_is_unknown` and `a_failed_statement_rolls_back_definitely`, and `database_commit_outcome_unknown_total`.
+- [ ] T048-7 Add `WriteTx` and `commit_safely` in `pool.rs` with the outcome rule (`confirmed_abort` moved there), `StoreError::CommitOutcomeUnknown` replacing the five module variants, the reason on `AppError::Unavailable` and its HTTP and gRPC mapping and contracts, with `a_commit_past_its_deadline_is_unknown_and_invisible`, `an_unlisted_failure_after_commit_was_sent_is_unknown` and `a_failed_statement_rolls_back_definitely`, `a_dropped_write_tx_does_not_return_an_open_transaction`, and `database_commit_outcome_unknown_total`.
   Refs: Requirement 048-012
 - [ ] T048-8 Move every write of `crates/infra-postgres` and `crates/scheduler` to `WriteTx`, one pull request per module group; then the startup options (`synchronous_commit=on`, `default_transaction_read_only=on`), the `25006` classification and the architecture rules of Requirements 048-011 and 048-012, with `a_write_outside_write_tx_fails_at_once` and `a_role_setting_of_synchronous_commit_local_is_refused`.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
