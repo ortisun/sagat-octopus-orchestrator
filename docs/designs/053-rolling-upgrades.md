@@ -116,7 +116,7 @@ From the code and documents on `develop` at `546d5aa5`:
   |---|---|---|
   | `definer-search-path` | a `SECURITY DEFINER` function (created, or altered to it) without `SET search_path = pg_catalog, pg_temp`; `RESET search_path` or `SET search_path FROM CURRENT` on one | the cut-off |
   | `definer-public` | a definer function not revoked from `PUBLIC` in its migration; any `GRANT ... TO PUBLIC` on a function; `ALTER DEFAULT PRIVILEGES` | the cut-off |
-  | `dynamic-ddl` | `EXECUTE` of built text in a `DO` block or a function body that creates or alters a function, a grant or a default privilege | the cut-off |
+  | `dynamic-ddl` | `EXECUTE` in a `DO` block or a function body of anything but `format()` with a literal template from the closed list of statement kinds in the toml file (design 049's partition statements at first) | the cut-off |
   | `expand-only` | a refusal of Requirement 053-001 outside its three exceptions; `-- phase: contract` | the online rules' start |
   | `hot-lock` | a missing first `lock_timeout`; a second blocking lock on a hot table, or one not last, or without its `statement_timeout`; a non-concurrent index, unique constraint or primary key on a hot table | the online rules' start |
   | `no-transaction` | a migration without a transaction holding more or other than one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, or without its `-- index:` header | the online rules' start |
@@ -125,23 +125,29 @@ From the code and documents on `develop` at `546d5aa5`:
   | `capability-list-widening` | a change of a closed capability list that is not a same-name superset `NOT VALID` of all three in one migration | the online rules' start |
   | `order` | a migration file absent at the merge base whose version is not above the newest version at the merge base | the cut-off |
 
-  `scripts/check-migrations.toml` records two boundaries, both compared by "file present at the boundary's commit", not
-  by version number. The *cut-off* is the merge commit of the lint itself: the security rules (`definer-search-path`,
-  `definer-public`, `dynamic-ddl`) and `order` apply to every migration file absent there, `.up.sql` and `.down.sql`
-  alike, and design 048's protected-names rule uses it. The *online rules' start* is the commit of release 0.3.0: while
-  the key is absent, the online rules apply to no migration; the 0.3.0 release pull request sets it, and the release
-  workflow refuses to tag `v0.3.0` or later while it is absent. Every migration of 0.3.0 runs in the stopped upgrade
+  `scripts/check-migrations.toml` records two boundaries as migration versions, which the `order` rule makes safe to
+  compare (no new file can carry an older version). The *cut-off* is the newest migration on `develop` when the lint
+  merges: the security rules (`definer-search-path`, `definer-public`, `dynamic-ddl`) and `order` apply to every
+  migration after it, `.up.sql` and `.down.sql` alike, and design 048's protected-names rule uses it. The *online
+  rules' start* is the last migration of release 0.3.0: while the key is absent, the online rules apply to no
+  migration; the 0.3.0 release pull request sets it, and the release workflow refuses to tag `v0.3.0` unless it equals
+  the newest migration of the tagged tree, and any later tag unless it equals its value in `v0.3.0`'s tree. Every migration of 0.3.0 runs in the stopped upgrade
   from 0.2.x, where the rules that assume running writers protect nothing. A waiver is a line `-- lint-allow: <rule>
   <reason>` in the file's leading comment block, naming a rule of the table and a reason of at least one word; the
   security rules cannot be waived; before the online rules' start any waiver naming another rule, or a rule unknown to
   the table (design 049's `stopped-upgrade`), is accepted and printed. The merge-base check also refuses a pull request
-  that moves either boundary, removes a table from the hot list or a rule from the table, except the 0.3.0 release pull
-  request's setting of the online rules' start; `CODEOWNERS` names the owner for `crates/infra-postgres/migrations/`
-  and the toml file. What a parse cannot see is checked on the catalog: one test after every migration lists every
-  `prosecdef` function of `public` and requires `proconfig` to pin `search_path=pg_catalog, pg_temp`, the effective
-  grants (`aclexplode(coalesce(proacl, acldefault('f', proowner)))`) to hold no `PUBLIC` and no grant option, and the
-  grantees to equal a hand-written allowlist (design 049's `sagat_retirer` set and this design's four functions among
-  them).
+  that moves either boundary, removes a table from the hot list, a rule from the table or a kind from the closed list
+  of dynamic statements, except the 0.3.0 release pull request's setting of the online rules' start; it and the
+  boundary checks run the base branch's copy of the lint, so a pull request is never judged by rules it edits itself.
+  `CODEOWNERS` names the owner for `crates/infra-postgres/migrations/`, `scripts/check-migrations.py`,
+  `scripts/check-migrations.toml`, `scripts/requirements-lint.txt`, `scripts/tests/check-migrations/` and the
+  workflow that runs them, a job with `permissions: contents: read`. What a parse cannot see is checked on the catalog:
+  one test after every migration lists every `prosecdef` function of every schema but `pg_catalog` and
+  `information_schema`, and requires `proconfig` to pin `search_path=pg_catalog, pg_temp`, `proowner` to be the
+  migrations' owner role, the effective grants (`aclexplode(coalesce(proacl, acldefault('f', proowner)))`) to hold no
+  `PUBLIC` and no grant option, and the definer functions and their grantees to equal a hand-written allowlist in both
+  directions (a function that is listed but missing or no longer a definer fails it too); the allowlist holds design
+  049's `sagat_retirer` set, this design's functions and each capability's fence functions.
 - **Requirement 053-004 The runner.** `sagat_infra_postgres::migrate()` MUST become the loop below, and
   `scripts/check-architecture.py` refuses a direct `MIGRATOR.run` outside it, so that the integration suites exercise
   it; `control-plane migrate` calls `migrate_online()`, which is the same loop with design 048's confirmation before each
@@ -228,10 +234,11 @@ From the code and documents on `develop` at `546d5aa5`:
   - **Deactivation.** A write of the capability's state MUST be fenced in the database, conditional on the capability's
     row being `active`, so that no write lands after phase 2 of Requirement 053-007, whatever process or command makes
     it (one-run commands never register, and a process outside the census is not counted by phase 2). The fence takes
-    one of two forms, named by the capability's design: (a) the writing transaction takes the capability's row
-    `FOR KEY SHARE` and refuses when it is absent or not `active` (decision D006-032's pattern, which
-    `lease_withdrawal_required()` follows with `FOR SHARE`; the key share lets phase 1's update proceed), for a write of
-    moderate rate; or (b) for a write on the hot path's rate, a
+    one of two forms, named by the capability's design: (a) the writing transaction calls an owner-owned definer function of
+    the capability that takes the capability's row `FOR KEY SHARE` and answers whether it is `active` (decision
+    D006-032's pattern, which `lease_withdrawal_required()` follows with `FOR SHARE`; the runtime role cannot lock the
+    row itself, having only `SELECT`; the key share lets phase 1's update proceed), and refuses the write when it is
+    not, for a write of moderate rate; the function is in the catalog test's allowlist; or (b) for a write on the hot path's rate, a
     trigger on the written table refuses the write when the row is absent or not `active` (a plain read in a volatile
     trigger function, which takes a new snapshot), and the drain check runs after phase 2 has taken that table
     `IN SHARE MODE`, which waits for every write in flight and holds new ones for the check's length, under the 2 s
@@ -295,8 +302,12 @@ From the code and documents on `develop` at `546d5aa5`:
     30 s more, so the command retries `NOT_APPLIED` for up to 60 s and then exits with code 1 ("retry later"); it exits
     with 0 on `REMOVED` and with 2 on a refusal that waiting cannot clear. A row that never advances (a process whose
     requirements read keeps failing, or a compromised one) is named by the refusal, and the owner-only
-    `instance_evict(instance, actor)` (`control-plane instance-evict`) deletes it with a history row, by a step of the
-    runbook. Only after phase 2 may the binaries roll back to N-1.
+    `instance_evict(instance, actor)` (`control-plane instance-evict`) deletes it and records the instance in
+    `serving_instance_evictions (instance_id uuid primary key, actor text, evicted_at timestamptz)`, the audit of the
+    act, which `instance_register` reads to refuse that instance for good (outcome `EVICTED`, a closed gate). The
+    runbook's step stops the process first: a benign one is restarted and registers under a new instance; for a
+    compromised one the `sagat_app` credential is rotated, since a holder of it could register under another
+    instance. Only after phase 2 may the binaries roll back to N-1.
   - **A capability that cannot be removed** is one whose drain check cannot pass once used: design 049's
     `journal-buckets-v1` once a dated run exists (its phase 1 allowed: new roots are then legacy, which every release
     processes), and feature 006's `lease-withdrawal-v1` and `lease-withdrawal-v2` once a withdrawal is journaled (phase
@@ -454,6 +465,7 @@ classification:
 | `sagat_schema_missing(bigint[])` | returns `bigint[]` | execute |
 | `instance_heartbeat_applied(uuid, bytea, bigint)` | as `instance_heartbeat_reporting_change` | execute |
 | `platform_requirement_drain(text, text)`, `platform_requirement_undrain(text, text)`, `instance_evict(uuid, text)` | as `platform_requirement_remove` | none |
+| `serving_instance_evictions` | `instance_id uuid primary key`, `actor text`, `evicted_at timestamptz` | none; read by `instance_register` |
 | `platform_requirements_guard`, the handover and replay-floor guards, `platform_requirement_remove`, `schedule_trigger_handover_complete`, `lease_withdrawal_required()` | replaced in the stopped upgrade as Requirement 053-007 says | as today |
 
 **Order of the build.** Design 048's Tasks 048-9 and 048-10 (the gate's reasons and the confirmation) before Tasks
@@ -544,7 +556,7 @@ Each task names its files and tests.
   Refs: Requirement 053-005, Success criterion 053-003
 - [ ] T053-4 Make `sagat_infra_postgres::migrate()` the loop and add `migrate_online()` (the migration lock with its bound, the validation of applied migrations and of their indexes, the lock and statement timeouts, the bounded retry with an injectable backoff, the concurrent build checked before its version is recorded, the deadline, the architecture check against a direct `MIGRATOR.run`), with the tests `a_failed_concurrent_index_build_is_retried_three_times_then_named`, `an_invalid_index_is_never_recorded_as_applied`, `a_lock_held_longer_than_the_retries_ends_migrate_naming_the_table`, `a_lock_released_within_the_retries_lets_migrate_proceed`, `concurrent_runners_do_not_corrupt_or_fail` (kept) and `migrate_with_no_process_running_proceeds_once_a_new_process_confirms_with_its_gate_closed` (whose new process carries a capability its schema does not yet list).
   Refs: Requirement 053-004
-- [ ] T053-5 Add `state`, `draining_since` and `draining_epoch`, the history actions, `serving_instances.applied_epoch`, `instance_heartbeat_applied`, `platform_requirement_drain`, `platform_requirement_undrain` and `instance_evict` with their commands and outcomes, the guards' rules of Requirement 053-007, `state = 'active'` in `schedule_trigger_handover_complete` and `lease_withdrawal_required()`, `ServingGate::uses` and the state in `requirements()`, phase 2's locks, checks and outcomes with `ChangeRefused::NotApplied` and `ChangeRefused::DrainCheckRefused`, the drain checks beside `ACTIVATABLE`, the call sites that remove an active row moved to a `drain_then_remove` fixture, with the tests `phase_two_refuses_a_process_paused_between_its_beat_and_its_refresh_then_removes_after_its_next_beat`, `phase_two_waits_for_a_use_that_began_before_phase_one_and_then_sees_it` (a barrier inside the use, for both fence forms), `phase_two_removes_once_every_live_process_applied_and_the_drain_check_passes`, `phase_two_runs_the_drain_check`, `an_applied_epoch_above_the_current_one_is_stored_as_the_current_one`, `a_failed_requirements_read_after_a_re_registration_reports_the_older_epoch`, `a_process_outside_its_capability_window_uses_no_capability`, `a_draining_capability_stops_new_uses_at_the_next_heartbeat`, `an_active_row_cannot_be_deleted`, `draining_schedules_after_the_handover_is_refused`, `a_capability_an_active_one_follows_cannot_be_drained`, `activating_a_draining_capability_is_refused`, `an_undrained_capability_is_active_again_after_its_census` and `an_evicted_row_no_longer_holds_phase_two`, and one test per reader of the table of Requirement 053-007, as the runtime role where the runtime role calls them.
+- [ ] T053-5 Add `state`, `draining_since` and `draining_epoch`, the history actions, `serving_instances.applied_epoch`, `instance_heartbeat_applied`, `platform_requirement_drain`, `platform_requirement_undrain` and `instance_evict` with their commands and outcomes, the guards' rules of Requirement 053-007, `state = 'active'` in `schedule_trigger_handover_complete` and `lease_withdrawal_required()`, `ServingGate::uses` and the state in `requirements()`, phase 2's locks, checks and outcomes with `ChangeRefused::NotApplied` and `ChangeRefused::DrainCheckRefused`, the drain checks beside `ACTIVATABLE`, the call sites that remove an active row moved to a `drain_then_remove` fixture, with the tests `phase_two_refuses_a_process_paused_between_its_beat_and_its_refresh_then_removes_after_its_next_beat`, `phase_two_waits_for_a_use_that_began_before_phase_one_and_then_sees_it` (a barrier inside the use, for both fence forms), `phase_two_removes_once_every_live_process_applied_and_the_drain_check_passes`, `phase_two_runs_the_drain_check`, `an_applied_epoch_above_the_current_one_is_stored_as_the_current_one`, `a_failed_requirements_read_after_a_re_registration_reports_the_older_epoch`, `a_process_outside_its_capability_window_uses_no_capability`, `a_draining_capability_stops_new_uses_at_the_next_heartbeat`, `an_active_row_cannot_be_deleted`, `draining_schedules_after_the_handover_is_refused`, `a_capability_an_active_one_follows_cannot_be_drained`, `activating_a_draining_capability_is_refused`, `an_undrained_capability_is_active_again_after_its_census`, `an_evicted_row_no_longer_holds_phase_two` (its process kept running) and `an_evicted_running_process_cannot_re_register_under_its_id`, and one test per reader of the table of Requirement 053-007, as the runtime role where the runtime role calls them.
   Refs: Requirement 053-006, Requirement 053-007, Success criterion 053-004
 - [ ] T053-6 Write `scripts/test-mixed-writers.py`, its fixture migrations under `scripts/tests/mixed-writers/` and the module factored out of `scripts/test-release-upgrade-profile.py`, and add the job `mixed-writers` to `.github/workflows/release.yml` on a free standard runner, with every pass condition of Requirement 053-008, the assertions that a capability was removed (or "rollback not applicable" recorded) and that the rolled-back process served, and the database at the partitions of Requirement 053-008; it uses design 051's driver (Task 051-2) and publishes its run with the runner named. Add the release workflow's forward-merge check of hotfix migrations.
   Refs: Requirement 053-008, Requirement 053-009, Success criterion 053-001
