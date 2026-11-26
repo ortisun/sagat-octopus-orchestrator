@@ -54,40 +54,41 @@ From the code and documents on `develop` at `546d5aa5`:
 ### Migrations
 
 - **Requirement 053-001 Expand and contract.** Every migration after the lint's cut-off MUST declare its phase on the
-  line after an optional `-- no-transaction`: `-- phase: expand` or `-- phase: contract`, and a contract names its expand
-  and the capability that must be active before it runs (`-- contract-of: <version> <capability>`). An expand migration
-  leaves the schema usable by release N-1; a contract migration removes only what N-1 no longer uses and ships in a
-  release after its expand. A unique index or a unique or exclusion constraint on an existing table is a contract change,
-  since N-1 does not expect its refusal, unless its columns include all those of a unique constraint the table already
-  has (it then refuses nothing new). A migration on `develop` is never edited: CI compares each migration file a pull
-  request touches with the same file at its merge base and refuses a change, and a test compares the applied migrations'
-  checksums with `crates/infra-postgres/migration-checksums.txt`, written when a release is cut.
+  line after an optional `-- no-transaction`: `-- phase: expand` or `-- phase: contract`, and a contract names its
+  expand and the capability that must be active before it runs (`-- contract-of: <version> <capability>`). An expand
+  migration leaves the schema usable by release N-1; a contract migration removes only what N-1 no longer uses and ships
+  in a release after its expand. A unique index or a unique or exclusion constraint on an existing table is a contract
+  change, since N-1 does not expect its refusal, unless its columns include all those of a unique constraint the table
+  already has (it then refuses nothing new). A migration on `develop` is never edited: CI compares each migration file a
+  pull request touches with the same file at its merge base and refuses a change, and a test compares the applied
+  migrations' checksums with `crates/infra-postgres/migration-checksums.txt`, written when a release is cut.
 - **Requirement 053-002 Migrations do not block the hot path.** A transactional migration MUST take at most one lock
   that blocks inserts on a hot table, in its last statement, and every lock under `SET LOCAL lock_timeout = '2s'`; the
   lock is held through the migration's own commit, which waits for a standby (design 048), so the blocking time is the
-  lock timeout plus one commit. A migration without a transaction MUST hold one concurrent statement only (an index built
-  concurrently, preceded in its own earlier migration by `DROP INDEX CONCURRENTLY IF EXISTS` of the same name) and be
-  idempotent; constraints are added `NOT VALID` and validated in a later migration; a migration MUST NOT rewrite a table,
-  change a column's type in place, rename, add a column with a volatile default or a `NOT NULL` column without a default,
-  run `SET NOT NULL` except after a validated check in a contract migration, or replace a function, trigger, policy or view
-  in an expand migration (a changed function gets a new name; a security fix replaces in place under a waiver). A definer
-  function pins `search_path` and is revoked from `PUBLIC`. A waiver is a header line `-- lint-allow: <rule> <reason>`,
-  printed by the lint; the rule `stopped-upgrade` waives, for a migration that runs only in a stopped upgrade, every
-  rule that assumes running writers (the lock rules, the concurrent-index rule, the contract rule for unique indexes,
-  renames, and replaced constraints, triggers and functions), never the security rules.
+  lock timeout plus one commit. A migration without a transaction MUST hold one concurrent statement only (an index
+  built concurrently, preceded in its own earlier migration by `DROP INDEX CONCURRENTLY IF EXISTS` of the same name) and
+  be idempotent; constraints are added `NOT VALID` and validated in a later migration; a migration MUST NOT rewrite a
+  table, change a column's type in place, rename, add a column with a volatile default or a `NOT NULL` column without a
+  default, run `SET NOT NULL` except after a validated check in a contract migration, or replace a function, trigger,
+  policy or view in an expand migration (a changed function gets a new name; a security fix replaces in place under a
+  waiver). A definer function pins `search_path` and is revoked from `PUBLIC`. A waiver is a header line `-- lint-allow:
+  <rule> <reason>`, printed by the lint; the rule `stopped-upgrade` waives, for a migration that runs only in a stopped
+  upgrade, every rule that assumes running writers (the lock rules, the concurrent-index rule, the contract rule for
+  unique indexes, renames, and replaced constraints, triggers and functions), never the security rules.
 - **Requirement 053-003 The lint and the runner.** `scripts/check-migrations.py` MUST refuse a migration after the
-  cut-off (recorded in `scripts/check-migrations.toml`, the newest migration on `develop` when the lint merges) that breaks
-  Requirement 053-001 or 053-002, by rules on its statements, with a negative fixture per rule under `scripts/tests/`;
-  `.down.sql` files are checked only for the security rules. `control-plane migrate` MUST confirm the database as design
-  048's one-run commands do, then apply migrations one by one through its own loop over sqlx's migrator, which refuses an
-  applied migration missing from the binary (sqlx's default, kept). It retries a migration that failed with `55P03` (lock
-  not available) after 1 s, doubling to at most 30 s, at most 10 attempts, so it gives up after 1 + 2 + 4 + 8 + 16 + 30 ×
-  4 = 151 s of waiting and exits non-zero naming the lock's table. After each migration without a transaction it checks
-  `pg_index.indisvalid` of every index the migration names and, on an invalid one, drops it concurrently and retries, at
-  most 3 times, then exits non-zero naming the index. It sets `transaction_timeout` to 0 for its session where the server
-  has it; refuses a contract migration unless its named capability is `active` (Requirement 053-006) and the census shows
-  no process older than the release before it; and refuses to run from an older release than the database's newest row
-  of `schema_compatibility` (a database without the table, fresh or 0.2.x, is migrated from the start).
+  cut-off (recorded in `scripts/check-migrations.toml`, the newest migration on `develop` when the lint merges) that
+  breaks Requirement 053-001 or 053-002, by rules on its statements, with a negative fixture per rule under
+  `scripts/tests/`; `.down.sql` files are checked only for the security rules. `control-plane migrate` MUST confirm the
+  database as design 048's one-run commands do, then apply migrations one by one through its own loop over sqlx's
+  migrator, which refuses an applied migration missing from the binary (sqlx's default, kept). It retries a migration
+  that failed with `55P03` (lock not available) after 1 s, doubling to at most 30 s, at most 10 attempts, so it gives up
+  after 1 + 2 + 4 + 8 + 16 + 30 × 4 = 151 s of waiting and exits non-zero naming the lock's table. After each migration
+  without a transaction it checks `pg_index.indisvalid` of every index the migration names and, on an invalid one, drops
+  it concurrently and retries, at most 3 times, then exits non-zero naming the index. It sets `transaction_timeout` to 0
+  for its session where the server has it; refuses a contract migration unless its named capability is `active`
+  (Requirement 053-006) and the census shows no process older than the release before it; and refuses to run from an
+  older release than the database's newest row of `schema_compatibility` (a database without the table, fresh or 0.2.x,
+  is migrated from the start).
 
 ### Versions and the handshake
 
@@ -95,43 +96,44 @@ From the code and documents on `develop` at `546d5aa5`:
   `X.Y.Z` is cut, `scripts/release-version.sh` MUST also move `develop` to `X.(Y+1).0-dev`, so that no build from
   `develop` carries a released version; a hotfix branch carries its own patch version. The script writes
   `crates/infra-postgres/releases.toml` (`version`, `last_migration`, `oldest_compatible`) and a migration that inserts
-  that release's row into `schema_compatibility (release text primary key, last_migration bigint, oldest_compatible text,
-  recorded_at timestamptz)`. A hotfix release adds expand migrations only, and each is merged forward to `develop` before
-  the next release is cut: the script refuses to cut a release whose tree lacks a migration listed in an earlier
+  that release's row into `schema_compatibility (release text primary key, last_migration bigint, oldest_compatible
+  text, recorded_at timestamptz)`. A hotfix release adds expand migrations only, and each is merged forward to `develop`
+  before the next release is cut: the script refuses to cut a release whose tree lacks a migration listed in an earlier
   release's checksum file.
 - **Requirement 053-005 A binary refuses a schema it cannot use.** A process calls `sagat_schema_handshake()`
   (owner-defined, `SECURITY DEFINER`, `search_path` pinned, executable by `sagat_app` and by design 049's
-  `sagat_retirer` only), which returns the applied
-  migration versions and the effective oldest compatible release (Requirement 053-006), at start, at each confirmation of
-  design 048 (Requirement 048-013), and with each registry heartbeat, so that a gate it closed reopens within one
-  heartbeat once the schema is right. The process sets the gate's reason `SCHEMA_TOO_OLD` when an expand migration it was
-  built with is not applied (its own contract migrations are never required, since a contract runs only after the fleet
-  is on N), or `BINARY_TOO_OLD` when its release is older than the effective oldest compatible release; it then writes
-  nothing but its registry heartbeat and the release of its shards, and answers 503. The registry's functions in their
-  new versions, `instance_register_v2` and `instance_heartbeat_v2`, return the requirement set with the epoch when a
-  registration succeeds or the epoch has moved (the gate keeps it, design 049's Task 049-5), and refuse such a process in
-  the transaction that already
-  reads the requirement epoch, so that an activation and a registration cannot race. Every entry point that opens the
-  database calls the handshake: the control plane, the engine, each command of `control-plane` (the `secret-cleanup` job
-  included) and `migrate`, checked by `scripts/check-architecture.py`. The handshake tests run as the runtime role.
-  `BINARY_TOO_OLD` wins over `BINARY_CAPABILITY_MISSING` when both apply. A 503 shows no version to the caller; the
-  versions go to the log.
+  `sagat_retirer` only), which returns the applied migration versions and the effective oldest compatible release
+  (Requirement 053-006), at start, at each confirmation of design 048 (Requirement 048-013), and with each registry
+  heartbeat, so that a gate it closed reopens within one heartbeat once the schema is right. The process sets the gate's
+  reason `SCHEMA_TOO_OLD` when an expand migration it was built with is not applied (its own contract migrations are
+  never required, since a contract runs only after the fleet is on N), or `BINARY_TOO_OLD` when its release is older
+  than the effective oldest compatible release; it then writes nothing but its registry heartbeat and the release of its
+  shards, and answers 503. The registry's functions in their new versions, `instance_register_v2` and
+  `instance_heartbeat_v2`, return the requirement set with the epoch when a registration succeeds or the epoch differs
+  from the one the process sends with its heartbeat (the gate's own, so a lost answer is asked again), and the gate
+  keeps it (design 049's Task 049-5);, and refuse such a process in the transaction that already reads the requirement
+  epoch, so that an activation and a registration cannot race. Every entry point that opens the database calls the
+  handshake: the control plane, the engine, each command of `control-plane` (the `secret-cleanup` job included) and
+  `migrate`, checked by `scripts/check-architecture.py`. The handshake tests run as the runtime role. `BINARY_TOO_OLD`
+  wins over `BINARY_CAPABILITY_MISSING` when both apply. A 503 shows no version to the caller; the versions go to the
+  log.
 
 ### New behaviour and the fleet
 
 - **Requirement 053-006 One rule for the oldest compatible release.** The effective oldest compatible release MUST be
   computed, never stored as a counter: the greatest of the newest `schema_compatibility` row's `oldest_compatible` and,
   for each capability whose state is `active` or `draining`, the release that introduced it (`introduced_in`).
-  `platform_requirements` gains `state` (`active`, `draining`), `introduced_in`, `draining_since` and `permanent`, added by an expand
-  migration; `sagat_oldest_compatible()` computes the value and both the handshake and the v2 registry functions call it.
+  `platform_requirements` gains `state` (`active`, `draining`), `introduced_in`, `draining_since` and `permanent`, added
+  by an expand migration; `sagat_oldest_compatible()` computes the value and both the handshake and the v2 registry
+  functions call it.
 - **Requirement 053-007 New behaviour waits for the fleet.** A change that writes state release N-1 cannot process MUST
   be behind a registry capability, added to the capability lists by an expand migration (the lists are closed checks,
   rewritten `NOT VALID` and validated in the next migration). `platform_requirement_activate_v2` switches it to `active`
   only when the census shows no live process older than its `introduced_in` and none without it. A process that was not
   live at the activation (silent for 30 s) can reconnect and serve until its next heartbeat, about 12 s, before the
   registry refuses it; so each capability's design MUST state either why a write of release N-1 after the activation is
-  harmless, or the database-side fence (a trigger, a constraint or a default) that refuses it. In release 0.3.0 these are
-  design 049's dated journal buckets (harmless: a legacy root created by a process that has not yet learned of the
+  harmless, or the database-side fence (a trigger, a constraint or a default) that refuses it. In release 0.3.0 these
+  are design 049's dated journal buckets (harmless: a legacy root created by a process that has not yet learned of the
   activation is valid and processed by every release) and design 052's ready queue (which states its own rule).
 - **Requirement 053-008 A deactivation drains first.** `platform_requirement_deactivate_v2` MUST work in two phases. The
   first moves the capability to `draining`, records `draining_since`, appends a history row and moves the requirement
@@ -140,24 +142,23 @@ From the code and documents on `develop` at `546d5aa5`:
   (`platform_requirements_guard`) allows only that one update, from `active` to `draining` on a row that is not
   permanent, and its deferred epoch check covers updates as well as inserts and deletes. The second phase removes the
   row and is refused until every live process has heartbeated after `draining_since` (at least 12 s, the heartbeat's
-  jittered bound), the drain check its design states passes, and no contract migration naming the capability is
-  applied. Only after the second phase may the binaries roll back to N-1. A capability whose design declares it
-  permanent is refused by both phases and by the registry's older `platform_requirement_remove`: the guard refuses the
-  delete or the move to `draining` of a permanent row. `platform_requirement_activate_v2` writes `permanent` from the
-  list of permanent capabilities, and a check, `permanent = (capability IN (...))`, rewritten by the migration that adds
-  a permanent capability (and written `permanent = false` while the list is empty), refuses a wrong value. In 0.3.0 the
+  jittered bound), the drain check its design states passes, and no contract migration naming the capability is applied.
+  Only after the second phase may the binaries roll back to N-1. A capability whose design declares it permanent is
+  refused by both phases and by the registry's older `platform_requirement_remove`: the guard refuses the delete or the
+  move to `draining` of a permanent row. `platform_requirement_activate_v2` writes `permanent` from the list of
+  permanent capabilities, and a check, `permanent = (capability IN (...))`, rewritten by the migration that adds a
+  permanent capability (and written `permanent = false` while the list is empty), refuses a wrong value. In 0.3.0 the
   list holds design 049's `journal-buckets-v1`, whose drain check would be "no run of a dated bucket exists", since a
   binary of the release before it cannot read a dated run's content.
 - **Requirement 053-009 Old and new writers run together.** `scripts/test-mixed-writers.py` MUST run engines and control
   planes of N-1 (built from its release's tag) and N on one database under the chain shape: apply N's migrations during
   the load, roll the processes one at a time, activate N's capabilities that are not permanent, deactivate them in both
   phases and roll one process back to N-1, then roll it forward and activate the permanent ones, and pass the integrity
-  oracle, with the 99th percentile transition latency during the migrations
-  no more than 2 s (the lock timeout) above a baseline run. Release N MUST NOT be published unless it passes against N-1.
-  The test first gates a release when 0.3.0 is N-1, since 0.2.x binaries have no handshake; until then it runs in CI with
-  both sides built from `develop` at two commits, which proves the migration rules and the oracle but not the version
-  gates, and those are proved by tests with fixed versions (Task 053-3). The run names its runner, a free standard runner
-  (Owner decision 2026-11-25-1).
+  oracle, with the 99th percentile transition latency during the migrations no more than 2 s (the lock timeout) above a
+  baseline run. Release N MUST NOT be published unless it passes against N-1. The test first gates a release when 0.3.0
+  is N-1, since 0.2.x binaries have no handshake; until then it runs in CI with both sides built from `develop` at two
+  commits, which proves the migration rules and the oracle but not the version gates, and those are proved by tests with
+  fixed versions (Task 053-3). The run names its runner, a free standard runner (Owner decision 2026-11-25-1).
 
 ### Success criteria
 
