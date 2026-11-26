@@ -859,7 +859,7 @@ and the yearly rotation is hygiene rather than a bound. The associated data is t
 caller (the principal's `Subject`), so a cursor reveals no row key and opens only for its caller; every field of the
 `info` and of the associated data is length-prefixed (a 4-byte big-endian length, then the bytes), so no two different
 tuples encode alike. Its wire form is
-`<key id>.<salt>.<nonce>.<ciphertext>` in base64url, and `open` derives the key from the cursor's own key id and salt.
+`<key id>.<salt>.<nonce>.<ciphertext>` (the key id in decimal, the rest in base64url), and `open` derives the key from the cursor's own key id and salt.
 
 The use cases seal and open cursors through a port, `InboxCursorSealer`, whose methods are asynchronous (`async
 seal(scope, key) -> Result<String, SealerError>`, `async open(scope, &str) -> Result<Option<key>, SealerError>`) in
@@ -871,8 +871,10 @@ outside any transaction; a failed read keeps the cached keys. Each read takes ev
 own monotonic clock, which tests move instead of waiting. It seals with the newest key older than two timer periods
 (two minutes), or with the oldest key when none is that old, as with the first key; so every replica whose reads
 succeed holds a key before any cursor uses it, and the adapter never reads on demand. A `rotate` while the newest key
-is younger than two minutes is refused, so a sealing key always remains. A cursor whose key id does not parse as a positive `i64` (an overflow included) is the
-malformed-cursor `400` before any lookup, and one whose key id the replica does not hold is answered
+is younger than two minutes is refused, so a sealing key always remains. A cursor that is not in canonical form is the malformed-cursor `400` before any key lookup: the key
+id in decimal, `[1-9][0-9]{0,18}` and at most `i64::MAX`; the salt, the nonce and the ciphertext in base64url without
+padding, the salt exactly 16 bytes, the nonce exactly 12 and the ciphertext at least 16
+(`a_cursor_with_a_wrong_field_is_malformed`: `+1`, `01`, `0`, an overflowing id, a 15-byte salt, an 11-byte nonce); and one whose key id the replica does not hold is answered
 as a malformed cursor (`400`), which costs the Studio only a fresh first page. With no key loaded (an empty table, or
 no successful read since start), `SealerError::Unavailable` answers `503` with `Error.code` `UNAVAILABLE`,
 `details.reason` `INBOX_CURSOR_KEYS_UNAVAILABLE`, retryable, and `Retry-After` set to the seconds until the next timer
@@ -1155,7 +1157,7 @@ primitive goes in a new file of `src/ui/`.
   one live row: the first page is empty with a cursor, the second returns the live row),
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller`,
   `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_dropped_key_is_a_malformed_cursor` (two rotations back),
-  `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`,
+  `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`, `a_cursor_with_a_wrong_field_is_malformed`,
   `a_rotate_within_two_minutes_of_the_last_is_refused`, `an_unknown_key_id_is_a_malformed_cursor_without_a_read` (an
   overflowing key id included), `a_replica_with_no_key_loaded_is_unavailable`, `migrate_after_two_rotations_creates_no_key`,
   `two_concurrent_rotations_leave_the_two_newest_keys`, `a_cursor_refusal_never_precedes_the_namespace_refusal`, `the_runtime_role_cannot_write_the_cursor_key`, `the_cursor_key_is_created_by_migrate_and_never_printed`,

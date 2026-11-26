@@ -802,7 +802,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 | Sign-in by organization, renewal; identity screens | `frontend/apps/studio/src/auth/`, `frontend/apps/studio/src/features/identity/` |
 
 `scripts/check-architecture.py` gains four rules, each with a negative fixture in `scripts/tests/`: the `cli-refresh`
-label, `derive_purpose_key` and the accessor of a key's bytes appear only in the module of `IdentityKeyRing<P>`; no server crate
+string literals `"cli-refresh"` and `"signin-attempt"` appear only as the purpose markers' `LABEL` constants in the module of `IdentityKeyRing<P>`, and nothing outside that module calls `derive_purpose_key` (the rule matches call sites and exact literals, not the command name `identity cli-refresh-key`); no server crate
 depends on `libxml`, `xmlsec` or a crate that links them; `VerifiedClaims` is consumed only by `authenticate_bearer`,
 and `IdentityService::authenticate` is the only caller of `Membership::principal` outside the domain; no SQL reads
 `memberships` outside `crates/infra-postgres/src/identity.rs` and the migrations.
@@ -868,6 +868,10 @@ Technical Plan 12 (its `ACTIVE` key seals; its `ACTIVE`, `PENDING` and `RETAINED
 start and on the key set's refresh. Each attempt is sealed under a key of its own, derived by HKDF-SHA256 from the ring
 key with a random 16-byte salt carried in the cookie and the label `signin-attempt` as `info`, so no key ever reaches
 the random-nonce limit whatever the rate of anonymous requests; the associated data is the tenant and the connection.
+The cookie's value is `<key id>.<salt>.<nonce>.<ciphertext>`, at most 1 KiB, the key id in decimal
+(`[1-9][0-9]{0,18}`, at most `i64::MAX`), the rest in base64url without padding, the salt exactly 16 bytes, the nonce
+exactly 12 and the ciphertext at least 16; anything else is refused as an unknown attempt is, before any ring lookup or
+re-read (`a_malformed_attempt_cookie_is_refused_before_any_lookup`).
 A replica whose last successful read of the attempt ring is older than two intervals seals nothing and answers `503
 IDENTITY_SIGNING_UNAVAILABLE` (`a_replica_with_a_stale_attempt_ring_seals_nothing`); once that read is older than two
 intervals plus the 10-minute attempt lifetime, older than any genuine attempt, it opens nothing either, so a key that
@@ -978,9 +982,9 @@ token; refuses after the absolute expiry.
 purpose key `cli-refresh` derived from the `cli-refresh` ring's key named by `<key id>` (Technical Plan 12), over the
 session id, the generation and a random value kept on the session. The server recomputes the MAC of any generation, so
 it stores no per-generation secret. A successor is always minted under the ring's active key, with the highest
-generation issued plus one; a number is never reused. A token longer than 256 bytes, or whose `<sid>` is not a UUID,
-whose `<generation>` is not a positive `i64`, whose `<key id>` is not a positive `i64` or whose `<mac>` is not 43
-base64url characters, is `invalid_grant` with no effect before any ring or session lookup
+generation issued plus one; a number is never reused. Every field has one spelling: `<sid>` the lowercase hyphenated
+UUID, `<generation>` and `<key id>` decimal without sign or leading zero (`[1-9][0-9]{0,18}`, at most `i64::MAX`),
+`<mac>` 43 base64url characters without padding. A token longer than 256 bytes, or with any field not in that form, is `invalid_grant` with no effect before any ring or session lookup
 (`a_malformed_refresh_token_is_invalid_grant_before_any_lookup`).
 
 *Before the transaction.* The key id is in the clear in the token, so the use case takes its handles before `BEGIN`:
@@ -1439,18 +1443,18 @@ activate|remove`, which records or removes the `identity-federation-v1` requirem
 11). Its stored document, which the attempt ring shares, holds each key's id (a positive integer, the highest id ever
 written plus one, never reused, the highest also kept in the document), material, state (`PENDING`, `ACTIVE`,
 `RETAINED`; `PENDING` verifies or opens and never mints or seals), time added and time activated. One loader builds
-`IdentityKeyRing<P>` (in `crates/infra-secrets`, wrapping `KeyRing`, typed by its purpose, `CliRefresh` or
-`SigninAttempt`, with no public constructor and no `From<KeyRing>`) from it, so the two-step code is written once;
-the document's path in the identity mount is an associated constant of the purpose marker, and the loader,
+`IdentityKeyRing<P>` (its own module of `crates/infra-secrets`, holding its key bytes by id itself and not wrapping
+`KeyRing`, whose code does not change; typed by its purpose, `CliRefresh` or `SigninAttempt`, with no public
+constructor) from it, so the two-step code is written once; the document's path in the identity mount and the
+purpose's label are associated constants of the purpose marker (`P::PATH`, `P::LABEL`), and the loader,
 `load::<P>()`, reads only `P::PATH`, so a wiring mistake cannot load one ring's document as the other
 (`a_ring_loads_only_from_its_own_path`); the
 refresh MAC code takes `IdentityKeyRing<CliRefresh>` through the port `RefreshTokenMac`, so passing the secrets ring or
-the attempt ring fails to compile; an architecture rule keeps the `cli-refresh` label, every call of the derivation and
-the accessor of a key's bytes in that module (code of the same crate, `SecretCipher` included, could otherwise reach
-them), and `KeyRing::derive_purpose_key(key_id, label, salt)` (key bytes kept by id, none for an unknown id; HKDF-SHA256 with the
-label as `info` and the salt as HKDF's own salt input: none for `cli-refresh`, the attempt's 16 random bytes for
-`signin-attempt`) is `pub(crate)` for both, added by Task 013-8 with the `hmac` and `hkdf` crates and a change of `KeyRing` to keep
-its bytes by id, which `SecretCipher`'s use of the ring does not see. Every write of the document is a KV version 2
+the attempt ring fails to compile. The key bytes and `derive_purpose_key(key_id, salt)` (none for an unknown id;
+HKDF-SHA256 with `P::LABEL` as `info` and the salt as HKDF's own salt input: none for `cli-refresh`, the attempt's 16
+random bytes for `signin-attempt`) are private to that module, so `SecretCipher`'s code cannot reach them; an
+architecture rule keeps the label literals there (Technical Plan 2). Task 013-8 adds them with the `hmac` and `hkdf`
+crates. Every write of the document is a KV version 2
 check-and-set on the version the command read.
 - `rotate` on an empty ring creates an `ACTIVE` key at once. Otherwise it adds a `PENDING` key (verify only), waits two
   refresh intervals, then by check-and-set on the version its first step wrote makes it `ACTIVE` and the previous key
@@ -1743,10 +1747,9 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
   `IdentityKeyRing<P>` read by the one loader from its purpose's path, `a_ring_loads_only_from_its_own_path`);
-  `KeyRing::derive_purpose_key(key_id, label, salt)`
-  with key bytes kept by id (design 050 no longer uses it); the architecture rule on the `cli-refresh` label, the
-  derivation and the key-bytes accessor with its negative fixtures (a call from `SecretCipher`'s module and from
-  another crate); the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
+  the module-private key bytes and `derive_purpose_key(key_id, salt)` of `IdentityKeyRing<P>` (`KeyRing` unchanged);
+  the architecture rule on the label literals and the derivation's call sites with its negative fixtures (a literal
+  `"cli-refresh"` and a call outside the module; the command name `identity cli-refresh-key` passes); the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
   `a_workflow_secret_reference_cannot_name_the_identity_mount`,
   `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
@@ -1812,7 +1815,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_logout_with_a_stale_ring_still_revokes`, `a_refresh_racing_a_random_value_rotation_mints_nothing_old`
   (barrier), `a_retired_generation_revokes_the_session`, `a_fourth_grace_rotation_revokes_the_session`,
   `an_unknown_newer_key_id_without_a_fresh_read_is_unavailable`, `a_forged_refresh_token_takes_no_row_lock`,
-  `a_malformed_refresh_token_is_invalid_grant_before_any_lookup`,
+  `a_malformed_refresh_token_is_invalid_grant_before_any_lookup` (a sign, a leading zero, a braced or uppercase UUID),
+  `a_malformed_attempt_cookie_is_refused_before_any_lookup`,
   `a_replica_with_a_stale_attempt_ring_seals_nothing`, `an_attempt_key_revoke_ends_every_sign_in_in_flight`,
   `a_logout_under_an_unknown_key_with_a_failed_read_is_unavailable`, `an_outage_reads_the_ring_at_most_once_per_interval`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
