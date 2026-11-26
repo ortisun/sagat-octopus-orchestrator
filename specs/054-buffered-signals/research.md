@@ -148,7 +148,8 @@ approved.
 - **Decision 054-017 — Answers of the security review** (its Majors 1 to 7, Nits 8 and 9; every one fixed, none accepted). A
   pending payload's digest and size are withheld (the journal read's `payloadRef`, inspection and disclosure by sequence, the
   list's `bytes` without `run:payload:inspect`); the list is a lock-free read; a namespace resource of Architecture decision 0027,
-  `pending_signal_bytes` (provisional default 64 MiB), bounds what senders can store through inboxes; a signal crosses at most 100
+  `pending_signal_bytes` (provisional default 64 MiB), and a tenant aggregate, `tenant_pending_signal_bytes` (provisional default
+  1 GiB, added after the security re-read's Nit 3), bound what senders can store through inboxes; a signal crosses at most 100
   continuations, so each accepted signal writes at most 101 events; the hold takes the epoch `FOR SHARE` first and answers only for
   a capability with a floor row; the floor's functions are revoked from `PUBLIC`, its trigger is `SECURITY INVOKER` and enabled
   `ALWAYS`, and a registered function is checked; refusals are traceable through spans and authorized logs. Options weighed for

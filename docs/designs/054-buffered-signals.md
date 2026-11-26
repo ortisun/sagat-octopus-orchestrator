@@ -161,8 +161,8 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   signal (CUJs 1 and 3) is kept, and a signal whose only wait sits on a branch not taken is kept until the run ends and is then
   discarded and counted; the refusal is never a guess;
   a name that already holds `maxPending` pending signals, refused `409` with the reason `SIGNAL_INBOX_FULL`; retained bytes that the payload would take above 4 MiB,
-  refused `429 QUOTA_EXCEEDED` as today; the namespace's pending-signal bytes above their ceiling, refused `429 QUOTA_EXCEEDED` with
-  the reason `PENDING_SIGNAL_BYTES` (Technical Plan 2); the tenant's content quota (Architecture decision 0027), as today. A signal that passes is
+  refused `429 QUOTA_EXCEEDED` as today; the namespace's or the tenant's pending-signal bytes above their ceilings, refused `429
+  QUOTA_EXCEEDED` with the reason `PENDING_SIGNAL_BYTES` (Technical Plan 2); the tenant's content quota (Architecture decision 0027), as today. A signal that passes is
   stored, journaled `signal.buffered`, audited `run.signalled` and answered `202` with `deliveredTo: []`, `buffered: true` and its
   `sequence`, all in one transaction. A refusal commits nothing. *Acceptance:* a test per refusal and its order; the idempotency
   test; the transaction test that a failure after the inbox write leaves no row.
@@ -181,8 +181,8 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   step's output that would pass the 4 MiB still fails `RUN_DATA_LIMIT`, as today; pending signals can no longer cause it. For a code
   run, design 044's headroom rules (`HISTORY_HEADROOM` from 3 MiB) also apply, and its guide says so (Gap 054-008). One exception,
   stated in the guide: a code run continued under another version keeps every moved signal of a name that version declares, even
-  above its `maxPending` or `maxBytes`; new signals of that name are refused until its count is below `maxPending` (the moved bytes
-  stay within the 2 MiB the predecessor's version allowed). *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
+  above its `maxPending` or `maxBytes`; new signals of that name are refused until its count is below `maxPending`, and new signals
+  of any name are refused (`SIGNAL_INBOX_FULL`) while the run's pending bytes are above 2 MiB, so the exception never adds to them. *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
 - **Requirement 054-008 — Pending payloads count in the retained bytes.** Every check of the 4 MiB bound MUST count the run's
   pending payloads with its step outputs, so that consuming a pending signal never takes a run over the bound. They are charged to
   the run's existing byte ledger (`run_instance_usage`, Technical Plan 6), whose check enforces the sum in the database.
@@ -197,8 +197,8 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
 - **Requirement 054-010 — Continue-as-new.** In the continuation's handoff transaction (chain lock, then run lock), pending signals
   whose name the successor's version declares MUST move to the successor in their order, each journaled in the successor as
   `signal.buffered` with `movedFrom` (the predecessor and its sequence), and the rest MUST be discarded; the predecessor journals
-  `signal.moved` with the count and the successor, and `signal.discarded` with the count and the cause `not_declared` when any was
-  discarded. *Acceptance:* an integration test per case; the replay test of both runs.
+  `signal.moved` with the count and the successor, and `signal.discarded` with the count and the cause `not_declared` or
+  `move_limit` (Technical Plan 7) for each cause that discarded any. *Acceptance:* an integration test per case; the replay test of both runs.
 - **Requirement 054-011 — The end of a run.** The transaction that ends a run, on every path that ends one (the planner's and the
   store-side paths of Technical Plan 8), MUST discard every pending signal and journal
   `signal.discarded` with the count and the cause `run_ended`, before `run.finished`, when the count is above zero. *Acceptance:* a
@@ -241,12 +241,15 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   a sleep (AGENTS.md rule 18, "races are tested with held locks or barriers, never with sleeps"). *Acceptance:*
   `fault_buffered_signals`.
 - **Requirement 054-019 — Telemetry and audit.** The metrics, spans, logs and audit records of Technical Plan 14 MUST carry closed
-  labels only: no tenant, namespace, run, signal name or payload as a label or in a log line. *Acceptance:* the metrics text test of
+  labels only: no identifier as a metric label; the tenant and run identifiers only in authorized span and log fields; never a
+  signal's name or payload in a log line. *Acceptance:* the metrics text test of
   `integration_buffered_signals`.
 - **Requirement 054-020 — Journal and replay.** The events of Technical Plan 11 are written only for runs of a version of level 1;
-  the invariant of Terms MUST hold after every commit (checked by `assert_inbox_invariant(tx)` after each commit of the two suites,
-  not by the replay, whose events do not mark commits); a run's replay MUST
-  equal its projection (the pending bytes derived by joining each settled sequence to its `signal.buffered`), the inbox rows, `runs.pending_signals` and the ledger's
+  the invariant of Terms MUST hold after every commit (checked in the two suites by `assert_inbox_invariant`, a deferred constraint
+  trigger installed in the test database, so the engine's background commits are checked too, not by the replay, whose events do
+  not mark commits); a run's replay MUST
+  equal its projection (the reducer adds a `signal.buffered`'s bytes, subtracts a consumption's by joining its sequence to its
+  `signal.buffered`, and empties the pending set on `signal.moved` and `signal.discarded`, checking that their counts add up to it), the inbox rows, `runs.pending_signals` and the ledger's
   `pending_signal_bytes` included. *Acceptance:* the
   replay-equals-projection corpus of `integration_buffered_signals`.
 
@@ -426,7 +429,7 @@ CREATE TABLE run_signal_inbox (
     version_id     uuid        NOT NULL,  -- the run's version when the signal was buffered; kept by a move and a reset
     moved_from_run uuid        NULL,
     moved_from_seq bigint      NULL,
-    moves          smallint    NOT NULL DEFAULT 0,  -- how many continuations this signal crossed; at most 100
+    moves          smallint    NOT NULL DEFAULT 0,  -- how many continuations this signal crossed; CHECK 0 to 100, added NOT VALID
     PRIMARY KEY (tenant_id, run_id, sequence),
     CONSTRAINT run_signal_inbox_run_fk FOREIGN KEY (tenant_id, run_id) REFERENCES runs (tenant_id, id) ON DELETE CASCADE,
     CONSTRAINT run_signal_inbox_payload_fk FOREIGN KEY (tenant_id, payload_digest) REFERENCES payloads (tenant_id, digest),
@@ -453,11 +456,13 @@ the row), which is all the domain needs to know: whether a wait's entry must ask
 
 **A namespace's pending bytes are bounded.** A sender with `run:signal` could otherwise buffer up to 2 MiB into every open run of
 a version that declares signals and exhaust the tenant's content quota, making other runs fail `STORAGE_QUOTA_EXCEEDED`
-(Architecture decision 0027). This design adds the namespace resource `pending_signal_bytes` to Architecture decision 0027's
-policies (namespace setting, then tenant default, then the operator's ceiling; provisional default 64 MiB, operator maximum
-1 TiB): a delta trigger on `run_signal_inbox`, in the pattern of `payloads_quota_delta` (`sagat_quota_row_delta` with its deferred
-flush), charges each row's `bytes` to the namespace's usage of that resource and releases them when the row is deleted, and the
-buffering's transaction reads the limit after acquiring the policy fence, last (slot 8b of Architecture decision 0050), as every
+(Architecture decision 0027). This design adds two resources to Architecture decision 0027's policies: the namespace resource
+`pending_signal_bytes` (namespace setting, then tenant default, then the operator's ceiling; provisional default 64 MiB; a setting
+is capped at the tenant's `tenant_content_bytes`) and the tenant aggregate `tenant_pending_signal_bytes` (provisional default
+1 GiB, at most a tenth of the tenant's content quota by default), so that many namespaces together cannot exhaust the tenant's
+content either. A delta trigger on `run_signal_inbox`, in the pattern of `payloads_quota_delta` (`sagat_quota_row_delta` with its
+deferred flush), charges each row's `bytes` to both usages and releases them when the row is deleted, and the buffering's
+transaction reads both limits after acquiring the policy fences, last (slot 8b of Architecture decision 0050), as every
 quota check does. A consumed or discarded payload stays charged to the tenant's content quota until its run is purged, as a step's
 output does; the guide says so.
 
@@ -547,7 +552,7 @@ A root `waitEvent` enters `WAITING` through that resolution, with one exception:
 version of level 1 cannot reach it with a declared name (`SIGNAL_ENTRY_WAIT_CONTINUES`, Requirement 054-001). The other store-side
 paths that release a successor without the engine's loop resolve no correlation: the collection's finish (`primitives.rs`)
 resolves only an `end` node's output and refuses any other pending evaluation, the loop's routing (`route_loop_successor`,
-`loop_progress.rs`) writes an activity `READY` or an `end` done, and `continue_as_new` requires an activity entry. Task 054-3 adds a
+`loop_progress.rs`) writes an activity `READY` or an `end` done, and `continue_as_new` requires an activity entry. Task 054-9 adds a
 test that each of these paths refuses or cannot reach a `waitEvent` of a declared name, so that no entry bypasses the inbox.
 
 ### 5. The look-back of feature 004, weighed
@@ -599,8 +604,7 @@ compares with the bound then reads the sum:
 - the collection-finalization scan of `crates/infra-postgres/src/maintenance.rs`, which selects work that fits the room, subtracts
   `pending_signal_bytes` too;
 - the three sites that sum `RunData.outputs` themselves (`wake` in `crates/scheduler/src/events.rs`, a retained-size read in
-  `crates/scheduler/src/passes.rs`, `Engine::evaluate_run_result` in `crates/application/src/execution.rs`) read the method instead,
-  add the run's pending bytes to their in-memory sum, so that they answer with today's typed refusal rather than the check's error.
+  `crates/scheduler/src/passes.rs`, `Engine::evaluate_run_result` in `crates/application/src/execution.rs`) add the run's pending bytes to their in-memory sum, so that they answer with today's typed refusal rather than the check's error.
   They read the ledger's `pending_signal_bytes` only when `runs.pending_signals > 0` (known from the run's row), so a run with no
   pending signal, level 0 included, makes no new statement; budget lines for an event's wake and an `end` output on a run of level
   0 hold it. `evaluate_run_result` is synchronous and holds no transaction, so it gains a `pending: u64` parameter, which its two
@@ -628,9 +632,9 @@ both, and only when `runs.pending_signals > 0` (read with the run's row):
 2. one `INSERT INTO run_events ... SELECT` over those rows appends the successor's `signal.buffered` events with `movedFrom`, one per
    moved row, at the same sequences, with `run_events.payload_digest` set (a bulk append, not one `append_event` call per row), and
    the successor's `run_version` is written as 3 plus the count;
-3. one `DELETE` removes the predecessor's rows; the predecessor appends `signal.moved {count, to}` when any moved and
-   `signal.discarded {count, cause: "not_declared"}` when some were not declared, with one `append_event` call each, *before* its
-   handoff event (`run.continued` or `continuation.selected`), at `run_version + 1` and `+ 2`, because the handoff event ends the
+3. one `DELETE` removes the predecessor's rows; the predecessor appends one event per non-zero kind, `signal.moved {count, to}`,
+   `signal.discarded {count, cause: "not_declared"}` and `signal.discarded {count, cause: "move_limit"}`, with one `append_event`
+   call each, *before* its handoff event (`run.continued` or `continuation.selected`), numbered on from `run_version + 1`, because the handoff event ends the
    run and `RunState::apply` refuses any event after a terminal one; the handoff event follows, and the idempotent replay looks for
    it by type after the expected version; `mark_telemetry` is raised to the predecessor's last sequence and to the successor's
    `3 + count`; both runs' counts and byte ledgers are set by the
@@ -684,12 +688,13 @@ cause: "run_ended"}` immediately before `run.finished`, when the count is above 
   `[EndReached, RunFinished]` and the instance-limit shape in `primitives.rs`) admit the optional `SignalsDiscarded` before
   `RunFinished`. A rule in `scripts/check-architecture.py` lists every writer of `run.finished` outside the domain's planner (the
   `RunEvent::RunFinished` constructions and the string literals `"run.finished"` and `'run.finished'` in `crates/infra-postgres/src`,
-  such as the loop's `append_run_event` at `routed_sequence + 2`) against an allowlist whose entries each call the helper, so a
-  later path cannot be missed.
+  such as the loop's `append_run_event` at `routed_sequence + 2`) against an allowlist whose entries each call the helper or give
+  "not a journal write" as their reason (the outbox and telemetry writes of `execution.rs`, `telemetry.rs`, `event_codec.rs`), so a
+  later journal path cannot be missed.
 
 **A database check holds every path to it:** `runs` gets `CHECK (pending_signals = 0 OR status IN ('RUNNING', 'WAITING', 'PAUSED',
 'CANCELLING', 'COMPENSATING', 'MANUAL_REVIEW'))`, so a path that ends a run without discarding fails its transaction in the tests
-instead of leaving rows behind; Task 054-3 adds a test per path. A signal for a run that has ended, or that is stopping
+instead of leaving rows behind; Task 054-9 adds a test per path. A signal for a run that has ended, or that is stopping
 (`CANCELLING`, `COMPENSATING`), is refused (`RUN_ENDED`, `RUN_STOPPING`; Requirement 054-005), so nothing is buffered after the
 discard. The payloads stay as run content until the run is purged, as a step's output does.
 
@@ -699,8 +704,8 @@ Feature 018's reset re-emits the source's events `1..N` under the new run with `
 registry of `specs/018-schedules-bulk-operations/contracts/journal-and-events.md`. This design declares its rows there (Technical
 Plan 11): `signal.buffered` is `REMATERIALIZE`. The store's hook that inserts an inbox row when it writes `signal.buffered` skips
 restored events (`restored: true`), so a signal consumed inside the prefix never comes back; instead one statement, computed from the
-prefix (every `signal.buffered` whose sequence no `wait.satisfied`, `signal.consumed`, `signal.moved` or `signal.discarded` of the
-prefix settles), inserts the new run's rows with the same sequences and digests and sets the count and the pending bytes, before the
+prefix (every `signal.buffered` whose sequence no `wait.satisfied` or `signal.consumed` of the prefix settles; `signal.moved` and
+`signal.discarded` cannot be in a prefix, their rule being `EXCLUDE`), inserts the new run's rows with the same sequences and digests and sets the count and the pending bytes, before the
 settle reduction that follows `run.reset`, so a wait released by that reduction finds them. A test resets a prefix that buffered
 and consumed one signal: the new run's inbox is empty and no second `wait.satisfied` appears. A pending signal at the point does not make the point ineligible. A continuation's successor is never a reset source (feature
 018's registry marks the chain's event types `EXCLUDE`, Gap 1001 of feature 018), so the signals moved into it never meet a reset.
@@ -907,7 +912,7 @@ The signatures a builder needs, in the crates that own them:
 - `crates/domain`: `WorkflowDefinition::signals() -> &SignalDeclarations`; `SignalDeclarations::get(&EventType) ->
   Option<&SignalDeclaration>` with `max_pending: u16` and `max_bytes: u32`; `Evaluation::Correlation { node, expression,
   take_buffered: bool }`; `Effects.consumed: Vec<(NodeId, Digest, u32)>` (in `crates/application`); `Resolution::Correlation { node, key: Result<CorrelationKey, ()>, taken: Option<TakenSignal> }` with
-  `TakenSignal { sequence: u64, bytes: u32 }`; `RunEvent::SignalBuffered { name: EventType, bytes: u32, payload: Digest,
+  `TakenSignal { sequence: u64, bytes: u32, digest: Digest }`; `RunEvent::SignalBuffered { name: EventType, bytes: u32, payload: Digest,
   via: WaitVia, accepted_by: WorkflowVersionId, moved_from: Option<(RunId, u64)> }` (`via` is `Signal` or `SignalWithStart`); `RunEvent::WaitSatisfied { node, via: Option<WaitVia>,
   signal: Option<u64> }` with `WaitVia::Buffered`; `RunEvent::SignalsMoved { count: u16, to: RunId }`;
   `RunEvent::SignalsDiscarded { count: u16, cause: DiscardCause }` with `DiscardCause::{RunEnded, NotDeclared, MoveLimit}`; four new
@@ -939,7 +944,8 @@ The signatures a builder needs, in the crates that own them:
 |---|---|
 | A graph queue handled one signal per segment (CUJ 2) moves every pending signal at every handoff, up to 1,000 rows and events each, and a chain has at most `max_segments` segments | Stated in Technical Plan 7 and the guide; the guide points a high-volume queue to a code version (design 044), which consumes from its channel in one run; the budget suite measures a handoff with 1,000 pending (Task 054-16) |
 | Security: a sender with `run:signal` fills the inboxes of many runs to exhaust the tenant's content quota | A namespace ceiling of pending bytes, a quota resource of Architecture decision 0027 checked under its fence (Technical Plan 2) |
-| Security: a sender keeps a continuing run's inbox full to multiply journal rows across a long chain | A signal is moved at most 100 times, then discarded and counted, so each accepted signal writes at most 101 events (Technical Plan 7) |
+| Security: a sender keeps a continuing run's inbox full to multiply journal rows across a long chain | A signal is moved at most 100 times, then discarded and counted, so each accepted signal writes at most 101 events (Technical Plan 7); a sender who refills the inbox is bounded by the rate quota on signal requests (`api_requests_per_second`, Architecture decision 0027), about 101 journal writes per accepted request |
+| Security: a sender spreads pending signals over many namespaces | The tenant aggregate `tenant_pending_signal_bytes` bounds their sum, and a namespace's setting is capped at the tenant's content quota (Technical Plan 2) |
 | Security: a viewer learns a pending payload from its digest or size | The journal read hides `signal.buffered`'s digest, inspection and disclosure answer nothing for it, and the list shows sizes only with `run:payload:inspect` (Requirement 054-014) |
 | A sender fills a run's inbox and the run's step outputs then lack room | The declarations' bytes are capped at 2 MiB at publication (Requirement 054-001), so outputs always keep the other 2 MiB: a full inbox refuses the sender; a step fails `RUN_DATA_LIMIT` only when its own outputs pass what they always had |
 | A Temporal user expects every signal to be kept | The `409` names the reason; the guide's comparison table says how to declare a name; Signal-with-Start's refusal names the missing declaration |
@@ -1083,7 +1089,8 @@ caller of a signature it changes, so the workspace builds after each.
   Refs: Requirement 054-001, Requirement 054-002
 - [ ] T054-6 The store (the event codec of the new events is slice 1's, Task 054-3): the skeletons of the suites
   `integration_buffered_signals` and `fault_buffered_signals` (their `[[test]]` entries in `tests/Cargo.toml`, their `main.rs`,
-  their entries in `scripts/integration-suite-durations.toml`), so that later tasks add their tests there first; the inbox written
+  their entries in `scripts/integration-suite-durations.toml`) and `assert_inbox_invariant` (a deferred constraint trigger installed
+  in their test database), so that later tasks add their tests there first; the inbox written
   from `signal.buffered`; `take_oldest_pending_signal`,
   `Effects.consumed` written to the journal's and the step's digest and left out of the charge, `consume_pending_signals` (for
   design 044), `discard_pending_signals`, `list_pending_signals`, the per-name count; the count in the
@@ -1094,7 +1101,7 @@ caller of a signature it changes, so the workspace builds after each.
   statements' predicates (`charge_logical_output_bytes`, `charge_collection_owner_output`, the path charge), the consumption's move
   of bytes and its exclusion from the output charge, the three `total()` comparisons of `primitives.rs`, the collection-finalization scan of `maintenance.rs`, and
   the three sites that sum `RunData.outputs` (`wake` in `crates/scheduler/src/events.rs`, the retained-size read of
-  `crates/scheduler/src/passes.rs`, `Engine::evaluate_run_result` with its `retained` parameter and its two callers). A test per check site of `MAX_RUN_OUTPUT_BYTES` and per
+  `crates/scheduler/src/passes.rs`, `Engine::evaluate_run_result` with its `pending` parameter and its two callers). A test per check site of `MAX_RUN_OUTPUT_BYTES` and per
   predicate first (the worker's and scoped outputs, the event wake, the `end` output, collections, loops,
   children, the signal paths): a run with pending payloads refuses, with its typed answer, an output that fits without them.
   Refs: Requirement 054-008
