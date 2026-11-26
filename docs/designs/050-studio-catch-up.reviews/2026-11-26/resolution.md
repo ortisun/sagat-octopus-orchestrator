@@ -169,3 +169,13 @@ The security re-read at `db9e8a50` found nothing in design 050.
 | 1 | Nit | Fixed: Task 013-8 named as the other owner | Technical Plan 6 |
 
 The security re-read of round 10 (`approval/reread-10-security.md`, at `9a760bd7`) found nothing.
+
+## Architecture re-read, round 2 (`approval/reread-2-architecture.md`, at `239577a1`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the port `InboxCursorSealer` in the application, its adapter in `infra-secrets` with `aes-gcm-siv`, wired in the control plane and the harness; no new dependency edge | Technical Plan 6, Task 050-4 |
+| 2 | Major | Fixed: Requirement 050-010 is conditional on the key ring; `KEY_RING_NOT_CONFIGURED` with its remediation; the Studio shows the inbox unavailable and stops refreshing; the runbook line; the harness configured with a ring; Architecture decision 0144's Consequences record the dependency and why a dedicated ring was rejected; a test | Requirement 050-010, Technical Plans 6 and 9, Task 050-4, Architecture decision 0144 |
+| 3 | Nit | Fixed: Task 050-4 lists the derivation and a closed enumeration of purpose labels, unless Task 013-8 landed them | Task 050-4 |
+| 4 | Nit | Fixed: four tests in "Enforced by" | Architecture decision 0144 |
+| 5 | Nit | Fixed: `inbox_rows_scanned{list}` | Technical Plan 6 |

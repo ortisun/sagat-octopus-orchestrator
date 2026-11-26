@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
 **Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor", and Architecture decision 0018 decision 4 (who may approve a publication request), on which `PublicationRequest::may_decide` is built; supersedes none
-**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles and initiators, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
+**Enforced by:** planned in design 050 and not existing yet: `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`, `a_full_page_resumes_after_its_last_item`, `a_cursor_reveals_nothing_and_opens_only_for_its_caller` and `without_a_key_ring_the_inbox_returns_no_unsealed_cursor` (decisions 4 and 5); the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles and initiators, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
 
 ## Context
 
@@ -76,6 +76,9 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 ## Consequences
 
+- The inbox routes need the deployment's key ring (`SAGAT_SECRETS_KEYS`), because their cursors are sealed; without it
+  they answer `503 UNAVAILABLE` with the reason `KEY_RING_NOT_CONFIGURED`. A dedicated inbox ring was rejected: one more
+  key for operators to manage, for a cursor whose key is already separated by its purpose label.
 - Two migrations add partial indexes, on pending approvals by namespace and deadline and on open publication requests by
   namespace and request time. The decision path keeps its rule and its
   answers; its ended-run refusal moves after authorization.

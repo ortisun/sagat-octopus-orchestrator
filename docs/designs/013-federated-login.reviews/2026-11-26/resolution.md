@@ -228,3 +228,15 @@ session idle for a day expires (the reviewer's note for correctness).
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Nit | Fixed: `revoke` must win: on a failed check-and-set it re-reads and writes again up to five times, then fails audited; it rotates the random values only after its write commits; `a_revoke_racing_a_rotation_promotion_still_replaces_every_key` | Requirement 013-026, Task 013-8 |
+
+## Architecture re-read, round 2 (`approval/reread-2-architecture.md`, at `239577a1`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: ports `RefreshTokenMac` and `AttemptSealer` in the application, adapters in `infra-secrets`; the use case keeps the order; placement rows | Technical Plans 2 and 4, Task 013-9 |
+| 2 | Major | Fixed: Architecture decision 0140 decision 11, with the rejected options and the consequences; "Enforced by"; a Complexity Tracking row | Architecture decision 0140, Complexity Tracking |
+| 3 | Major | Fixed: the control plane starts with an empty ring and refuses only CLI redemption and refresh, as a missing signing key degrades; the rollout creates the keys before enabling federation; the test renamed | Requirement 013-026, Technical Plan 12 |
+| 4 | Nit | Fixed | Requirement 013-025 |
+| 5 | Nit | Fixed: read at start and on refresh, kept on a failed read; after a revoke a stale replica mints at most one interval | Requirement 013-026 |
+| 6 | Nit | Fixed: bounded batches tenant by tenant; a failure after the ring write is safe; a re-run finishes | Requirement 013-026 |
+| 7 | Nit | Fixed: Architecture decision 0050 says `FOR UPDATE` for an administrator target and `FOR SHARE` otherwise; the contract's `lock_timeout` applies to an exclusive taker, as Technical Plan 4 says | Architecture decision 0050, `specs/029-custom-roles-folders/contracts/group-source.md` |

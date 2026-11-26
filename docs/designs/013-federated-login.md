@@ -403,7 +403,7 @@ already has.
   link-local, metadata, a redirect, a DNS answer that changes, a random `kid` flood);
   `the_development_relaxation_is_refused_outside_development`.
 - **Requirement 013-025** Identity secrets (connections' client secrets, the platform's token-signing keys, the
-  attempt-sealing ring, the connections' `private_key_jwt` keys, the service provider's request-signing keys) MUST live in a separate OpenBao
+  attempt-sealing ring, the `cli-refresh` ring, the connections' `private_key_jwt` keys, the service provider's request-signing keys) MUST live in a separate OpenBao
   mount and policy that no feature 017 secret reference and no execution capability can name, readable by the control
   plane's identity only, written through the connection API by the intent, write, verify, activate protocol of
   Architecture decision 0035 decision 7, and never returned. The signing keys MUST follow the lifecycle of Architecture
@@ -434,15 +434,20 @@ already has.
   refresh interval, and the command itself keeps the old key until 7 days and one refresh interval after its successor
   became active, so no live CLI token loses its key (`a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`,
   a test of the command with a session kept alive by refreshes on both sides of the rotation); `rotate` on an empty
-  ring creates a key that is active at once (no token exists yet); start-up with federation on refuses an empty ring
-  with a named error and never falls back to another ring; `identity cli-refresh-key revoke` (audited) is the
+  ring creates a key that is active at once (no token exists yet); with an empty ring the control plane starts and refuses only CLI redemption and
+  refresh, with `IDENTITY_SIGNING_UNAVAILABLE` and the gauge, as a missing signing key does, and never falls back to
+  another ring; the ring is read at start and on the key set's refresh and kept on a failed read, so an OpenBao
+  outage stops no verification, and after a `revoke` a replica with a stale ring can mint under the dropped key for at
+  most one refresh interval, after which those tokens get `invalid_grant`; `identity cli-refresh-key revoke` (audited) is the
   emergency path for a leaked key: it activates a new key at once, drops every key it did not create (the active one, a
   retained predecessor and a pending one), cancels any unfinished rotation and rotates every CLI session's random value (every write of the
   `cli-refresh` ring is a KV version 2 check-and-set on the version the command read, and `rotate`'s second step
   promotes only if the ring is still at the version its first step wrote, otherwise it stops with an audited
   "rotation cancelled" and writes nothing; `revoke` instead must win: on a failed check-and-set it re-reads the ring
   and writes again, up to five times, then exits non-zero with an audited failure that names the conflict, and it
-  rotates the random values only after its ring write has committed, so a refused write never passes for success),
+  rotates the random values only after its ring write has committed, in bounded batches tenant by tenant, so a refused
+  write never passes for success; a failure after the ring write is safe, because tokens under the dropped key no
+  longer verify, and running `revoke` again finishes the rotation),
   so no forged refresh token survives; one use, rotated on every refresh by
   compare-and-set on its generation; the server can verify any generation by recomputing its MAC, so it stores no
   per-generation secret and its storage per session is bounded; the access token is signed with a handle obtained
@@ -821,10 +826,10 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 |---|---|
 | Connection, mapping rules, owning connection, provisioning policy, session policy, SCIM patch semantics; the OIDC claim rules (`iss`, `aud`, `azp`, `nonce`, the tenant restriction, the subject claim) and the SAML profile's rules over parsed values (pure) | `crates/domain/src/federation.rs`, `crates/domain/src/federation/{oidc,saml}.rs` |
 | The identity egress policy (any name, global addresses only, allowlisted hosts never to loopback, link-local or metadata, port 443 unless listed) | `crates/domain/src/egress.rs`, beside `EgressPolicy`, with unit tests |
-| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets` | `crates/application/src/federation/` |
+| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (`mint(sid, generation, random) -> (key_id, mac)`, `verify(key_id, sid, generation, random, mac) -> verdict`) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
 | The platform key set's fetcher: maps `FederationStore::signing_keys()` to a `JwkSet` for the verifier's `JwksCache` | `crates/api-http/src/auth/issuers.rs` |
 | `EgressClient` with no redirects under the identity policy; `JwksCache` and its `JwksFetcher` trait, moved here from `crates/api-http/src/auth/jwks.rs` so that `api-http` and `infra-federation` share them without `api-http` depending on the federation crate | `crates/infra-egress` |
-| `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client | `crates/infra-secrets` |
+| `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), on the existing OpenBao client; the adapters of `RefreshTokenMac` (holding the `IdentityKeyRing`) and `AttemptSealer` (holding the attempt ring) | `crates/infra-secrets` |
 | The OIDC client (its connection key sets are `JwksCache` instances over a fetcher through the identity egress guard); the SAML parser, canonicalization and signature check | `crates/infra-federation` (new adapter crate) |
 | Tables, stores (the `FederationStore` adapter, `signing_keys()` included), the redefined `sagat_lock_memberships`, the session join of the membership read | `crates/infra-postgres` (migration `<ts>_federated_login`, `src/federation.rs`, `src/identity.rs`) |
 | Routes `/v1/auth/*`, `/scim/v2/*`, `/identity/*`, `/members*`; the multi-issuer verifier; `Core::authenticate` widened to take the issuer kind, `sid` and `jti` | `crates/api-http/src/routes/{signin,scim,identity_admin,members}.rs`, `crates/api-http/src/auth/issuers.rs`, `crates/api-http/src/core.rs` |
@@ -895,7 +900,7 @@ The Studio's sign-in page starts the flow itself: `startLogin` gains the optiona
 `form-action 'self'` is not crossed). The service resolves the tenant by slug, picks the active connections (a chooser page when there
 are several), and writes nothing: it seals the attempt (a random attempt id, tenant, connection, client, the client's
 challenge, redirect URI and `state`, the provider-side `state`, `nonce` and PKCE verifier, the SAML request `ID`, the
-connection's `settings_revision`, the expiry) with AES-256-GCM by the existing `KeyRing` of `crates/infra-secrets` (its active key seals, any key of the ring opens,
+connection's `settings_revision`, the expiry) with AES-256-GCM through the port `AttemptSealer`, whose adapter uses the existing `KeyRing` of `crates/infra-secrets` (its active key seals, any key of the ring opens,
 with the associated data `signin-attempt`, the tenant and the connection), whose material is one entry of the identity
 mount in the `id:base64` form `KeyRing::parse` reads, read at start and on the key set's refresh, sets it as `__Host-sagat_login-<attempt id>`
 (Requirement 013-009) and redirects to the provider: OIDC with its own PKCE, `state` (the attempt id) and `nonce`;
@@ -1369,9 +1374,9 @@ activate|remove`, which records or removes the `identity-federation-v1` requirem
 **Rollout.**
 
 1. Deploy 0.3.0 with federation off: nothing changes.
-2. The operator sets `SAGAT_PUBLIC_ORIGIN` and the identity mount, enables federation in the configuration of every
-   control plane, runs `control-plane identity signing-key create` and `control-plane identity cli-refresh-key rotate` (which, on an
-   empty ring, creates the first key), and, once every live process lists
+2. The operator sets `SAGAT_PUBLIC_ORIGIN` and the identity mount, runs `control-plane identity signing-key create`
+   and `control-plane identity cli-refresh-key rotate` (which, on an empty ring, creates the first key), then enables
+   federation in the configuration of every control plane, and, once every live process lists
    `identity-federation-v1`, activates the requirement (Architecture decision 0082 decision 1). The Studio's
    `config.json` then offers the platform issuer beside the deployment issuer.
 3. Each tenant adds its connections. Requiring federated sign-in is per tenant.
@@ -1493,6 +1498,7 @@ the requirement is unsupported. Federation rows stay.
 
 | Addition | Why it is needed | Simpler alternative rejected |
 |---|---|---|
+| A CLI refresh token with a MAC under its own ring | Reuse detection for the life of a CLI session with bounded storage, forgery impossible without the identity mount, rotation without signing anyone out | A token signed with the access-token key (refused by Requirement 013-018); an opaque token with a hash per generation (unbounded storage); a key from the secrets ring (held by every engine) |
 | The platform signs its own tokens | One token format for two protocols; the tenant binding is the platform's | Accepting each provider's tokens (no SAML, provider-chosen subjects) |
 | A SAML verifier of our own | No C XML code in the control plane; a narrow profile | `samael` with `xmlsec1` and `libxml2` |
 | SCIM | Offboarding and groups from the directory | Just-in-time only (no offboarding) |
@@ -1638,7 +1644,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_rotation_resumed_after_a_revoke_writes_nothing` (a barrier holds `rotate` between its steps while `revoke`
   commits), `a_revoke_racing_a_rotation_promotion_still_replaces_every_key` (a barrier holds `revoke` between its
   read and its write while `rotate`'s second step commits),
-  `start_up_refuses_an_empty_cli_refresh_ring`, the negative fixture of the `cli-refresh` rule,
+  `an_empty_cli_refresh_ring_refuses_only_cli_refresh`, the negative fixture of the `cli-refresh` rule,
   `a_client_secret_write_follows_intent_write_verify_activate`; the alert rule's test in
   `contract_observability_operations`.
   Verification: `cargo test -p sagat-tests --test integration_federated_login keys`; `python3 scripts/check-architecture.py`;
@@ -1673,7 +1679,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   Refs: Requirement 013-016, Requirement 013-019, Requirement 013-032
 - [ ] T013-9 Server builder, milestone A, after Tasks 013-8 and 013-10. Sign-in: authorize with the attempt sealed by
   the `KeyRing`, the OIDC callback, redemption, the refresh grant (rotation, the grace, revocation on reuse), renewal,
-  logout, the refresh MAC over `IdentityKeyRing`, the link and test flow, just-in-time provisioning, sessions, origins and the start-up refusals, the blob
+  logout, the refresh grant over the port `RefreshTokenMac` (its adapter holding the `IdentityKeyRing`), the link and test flow, just-in-time provisioning, sessions, origins and the start-up refusals, the blob
   upload bounded by the session (`crates/api-http/src/blobs.rs`), the lock order of Technical Plan 4.
   Red tests (`integration_federated_login` unless named): `a_response_injected_into_another_browser_is_refused`,
   `a_sign_in_started_by_another_site_establishes_no_session`, `a_provider_cannot_choose_the_tenant`,
