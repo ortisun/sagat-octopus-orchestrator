@@ -153,3 +153,15 @@ All eight findings are fixed.
 |---|---|---|---|
 | 1 | Major | Fixed: the confirmation takes the connection row, re-checks it, takes the advisory lock, then the membership; the path in `lock_order.rs`; a barrier test; Architecture decision 0050's addition | Technical Plan 4, Architecture decision 0050, Task 013-9 |
 | 2 to 8 | Nit | Fixed: the two tests in Task 013-9; `signin_refresh_generations` and the code row kept with its identity cleared; `identity_connection_health` written outside the request; the gauge `identity_connections_scim_failing`; a guarded outcome for recomputation callers; the lock order reworded; the compare-and-set rules stated | Technical Plans 3, 4, 6, 11 and 13 |
+
+## Security re-read, round 4 (`approval/reread-4-security.md`, at `2d71be9c`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: promotions before demotions; a guarded row recorded durably and retried every pass; two tests | Technical Plan 6, Task 013-17 |
+| 2 | Major | Fixed: the refresh token is `<sid>.<generation>.<32 random bytes>`, opaque and unsigned; a lower generation outside the grace revokes however old; step 6 signs only the access token; two tests | Requirement 013-026, Technical Plans 3 and 4, Task 013-9 |
+| 3 | Nit | Fixed: client, redirect URI and PKCE are checked before the cookie comparison, every mismatch `invalid_grant` | Technical Plan 4 |
+| 4 | Nit | Fixed: the restart rule and the test's name added to the contract | `specs/029-custom-roles-folders/contracts/group-source.md` |
+
+The deadlock the reviewer noted outside its lens is fixed too: the link and test confirmation takes the advisory lock
+first, then the connection row, as redemption does, and Architecture decision 0050's addition says so.

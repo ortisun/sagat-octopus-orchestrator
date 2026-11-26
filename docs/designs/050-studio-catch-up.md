@@ -830,9 +830,17 @@ work of a page is bounded whatever the predicates drop, and `approval_inbox_rows
 The use case keeps rows until it has `limit` items or the examined rows run out: when the page fills, the cursor is
 the key (`deadline`, `request_id`) of its last item; otherwise the key of the last row examined; it is null only when
 no row remains (Architecture decision 0144, decision 5). Because a cursor can then be the key of a row the caller may
-not see, the cursor is sealed: AES-256-GCM by the deployment's existing `KeyRing` of `crates/infra-secrets`
-(`SAGAT_SECRETS_KEYS`), with the associated data `approval-inbox-cursor`, the tenant, the namespace and the caller, so
-a caller learns nothing from it and cannot use another caller's. The tests:
+not see, the cursor is sealed with AES-256-GCM under a purpose key derived by HKDF-SHA256 from the active key of the
+deployment's `KeyRing` (`SAGAT_SECRETS_KEYS`), with the label `approval-inbox-cursor` (and `publication-inbox-cursor`
+for the publication list) and the ring's key id, so the secrets key's own nonce budget is untouched and rotation
+follows the ring; the associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and
+opens only for its caller. Without a key ring the two inbox routes answer `503` with a remediation naming the setting
+and never return an unsealed cursor (`without_a_key_ring_the_inbox_returns_no_unsealed_cursor`); a `cursor`
+parameter over 512 bytes is refused before decoding, and every cursor that does not open (another caller's, a retired
+key, tampered) gets the same `400` as a malformed one. Because the bound is counted before the folder predicate, a page
+that is not full tells a folder-restricted caller how many hidden pending rows its window held, a count feature 029
+allows aggregates to disclose (Requirement 029-017, its Gap 1442); no hidden row's identifier or content is
+disclosed. The tests:
 `a_full_page_resumes_after_its_last_item` (300 decidable rows inside the first 2,000, `limit=200`, all 300 found in
 two requests, with a publication twin), `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`, and
 `a_cursor_reveals_nothing_and_opens_only_for_its_caller`; the publication inbox follows the same rules.
@@ -975,7 +983,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 | Risk | Mitigation |
 |---|---|
 | The inbox adds a disclosure | It adds none beyond what the caller can already read: an approval's policy is in the workflow version (`definition:read`), and the initiator and deciders are actors of the journal (`run:read`); the inbox returns only the caller's own eligibility, and a contract test holds its item to its field list (Architecture decision 0144) |
-| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a sealed cursor; the performance journey includes a caller who sees one folder of many |
+| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a cursor sealed under a purpose key; the performance journey includes a caller who sees one folder of many; the count of hidden rows per window is the one aggregate disclosed (Requirement 029-017) |
 | A legacy node is lost on save | The canonical form keeps unknown members; a test saves and reloads one |
 | A capability shown by one replica is refused by another | The server's validation decides; the problem appears at validation (Gap 050-001) |
 | Parallel Studio branches rewrite the same files | The order of Technical Plan 1; new primitives in new files |
@@ -1083,7 +1091,8 @@ primitive goes in a new file of `src/ui/`.
   `a_settled_approval_is_not_flagged_decidable`, `a_pending_approval_of_an_ended_run_is_not_flagged_decidable`,
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
   `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`,
-  `a_cursor_reveals_nothing_and_opens_only_for_its_caller`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
+  `a_cursor_reveals_nothing_and_opens_only_for_its_caller`, `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
+  `an_unopenable_cursor_is_a_malformed_cursor`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
   Verification: `cargo test -p sagat-domain approval`;

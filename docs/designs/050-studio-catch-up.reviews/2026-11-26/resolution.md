@@ -129,3 +129,11 @@ All ten findings are fixed.
 | 3 | Major | Fixed: the guard reads the status captured before `decide`; `an_eligible_caller_on_an_ended_run_still_gets_503` | Technical Plan 6, Task 050-4 |
 | 4 | Major | Fixed (the stronger option): a page examines at most 2,000 rows in an inner query before any predicate; the cursor is sealed by the deployment's `KeyRing` with the caller as associated data; the histogram counts examined rows; two tests and a performance case; Architecture decision 0144 decisions 4 and 5 | Technical Plan 6, Risks, Metrics, Architecture decision 0144 |
 | 5 to 10 | Nit | Fixed: the adapter's `effective_policy` routed through the pure function; the report script's second input; the sentence rephrased; the seven run-end paths listed; the codec returns its index map; the name derived from `reset_reapply_enabled()` | Technical Plans 3 to 6, Tasks 050-4, 050-14 |
+
+## Security re-read, round 3 (`approval/reread-3-security.md`, at `2d71be9c`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a purpose key derived by HKDF-SHA256 from the ring's active key, labels `approval-inbox-cursor` and `publication-inbox-cursor` | Technical Plan 6, Architecture decision 0144 decision 5 |
+| 2 | Nit | Fixed: `503` without a ring and never an unsealed cursor; 512 bytes; one `400`; two tests | Technical Plan 6, Task 050-4 |
+| 3 | Nit | Fixed: the count of hidden rows per window is stated as the one aggregate disclosed, under Requirement 029-017 | Technical Plan 6, Architecture decision 0144 decision 4, Risks |
