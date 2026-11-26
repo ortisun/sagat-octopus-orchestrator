@@ -971,10 +971,16 @@ the hub needs feature 028's Tasks 028-062 to 028-067. The tasks that deliver a d
   refusal"; add the case to the conformance scenario `resource_access`; before Task 047-15.
   Refs: Requirement 047-010, Requirement 047-016
   Owner-gate: OD-2026-11-25-3
-- [ ] T047-25 Once constitution 5.1.0 has merged, compare its third declared set with Technical Plan 12: if it admits the
-  secrets a resource's slots bind, record it and close this task; if it admits only the settings and the current access
-  token, narrow Requirement 047-015, Technical Plan 5 and Tasks 047-9 and 047-15 to 047-17 to those before any of them is
-  built; before Task 047-9.
+- [ ] T047-25 Align Technical Plan 12 and Requirement 047-015 with constitution 5.1.0's Principle V (pull request #286;
+  Owner decision 2026-11-24-334): the third declared set is the non-secret settings of the pinned resource revision and,
+  for an OAuth credential, only its current access token, never a refresh token, client secret or private or signing key;
+  an access token with no stated expiry is disclosed only to a managed integration runner (Tasks 047-15 to 047-17 refuse
+  one to an activity or a script); "any other secret that one of its slots binds reaches an executor only as a declared
+  secret of the first set, under that set's checks and the resource's authorities, bound like managed delivery when that
+  executor is a managed integration runner"; a design-044 workflow task is never such an executor. Technical Plan 12's
+  proposed wording is replaced by a reference to that text, and the delivery of slot secrets in Technical Plan 5 and
+  Tasks 047-9 and 047-15 to 047-17 goes through the first set's declared-secret path; before Task 047-9. Test:
+  `a_token_without_expiry_is_refused_to_a_script_or_activity`.
   Refs: Requirement 047-015
   Owner-gate: OD-2026-11-25-3
 - [ ] T047-26 Restate the design as the data model now reads (Decision 047-069): only state transitions and the refresh

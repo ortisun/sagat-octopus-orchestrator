@@ -701,8 +701,9 @@ Owned by design 047 (`docs/designs/047-oauth-integration-hub.md`), not by this f
   `graphql` OAuth scheme only references such a credential (FR-021-001, FR-021-003).
 - Per-tenant and operator-offered OAuth client registration.
 - Resources consumed by ordinary activities and scripts: an activity or script declares a resource
-  and receives its non-secret settings and current access token through the declared-secret
-  delivery of constitution Principle V.
+  and receives its non-secret settings and current access token under the third declared set of
+  constitution Principle V (5.1.0), and any other secret its slots bind as a declared secret of the
+  first set, under that set's checks and the resource's authorities (Decision 021-022).
 - The curated integration and template hub (constitution 5.0.0: only the release's signed index and
   operator-pinned indexes as sources, items imported as drafts under the same publication,
   signature, secret and isolation rules as authored content, nothing run in the server), built on

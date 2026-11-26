@@ -600,6 +600,16 @@ weighed and the one with the most architectural and business advantage was chose
   "a declared resource", bound like managed database delivery for the integration runner; this feature's capability
   resolution depends on that wording being in the constitution before it ships, which the coordinating session is asked
   to carry into the 5.0.0 amendment or the next one.
+  Settled on 2026-11-26 (Owner decision 2026-11-24-334, delegate (OD-2026-11-24-4)): constitution 5.1.0 (pull request
+  #286) admits the third set as the non-secret settings of the pinned resource revision and, for an OAuth credential, only
+  its current access token, never a refresh token, a client secret or a private or signing key; an access token with no
+  stated expiry is disclosed only to a managed integration runner; and "any other secret that one of its slots binds
+  reaches an executor only as a declared secret of the first set, under that set's checks and the resource's
+  authorities, bound like managed delivery when that executor is a managed integration runner". So the integration
+  runner receives a resource's settings and access token under the third set, and every other slot secret as a declared
+  secret of the first set, with the first set's checks plus the resource's authorities, bound like managed database
+  delivery (the recorded lease-owning runner subject and its live session). A design-044 workflow task is never such an
+  executor.
 
 ### Gaps (2026-11-24)
 
