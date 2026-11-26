@@ -340,8 +340,9 @@ From the code on `develop` at `546d5aa5`:
   taken from the migrations' own grants, and a generated name with no entry in the table fails. The audit reads the
   effective grants, `aclexplode(coalesce(proacl, acldefault('f', proowner)))`, so that a function whose `PUBLIC` grant
   was never revoked (a null `proacl`) fails, compares grantees by identifier with `0` as `PUBLIC` (never through an inner
-  join to the role catalog, which would drop `PUBLIC`), and requires `proowner` to be the owner role; a negative fixture
-  with a null `proacl` must fail it. Feature 020's purge
+  join to the role catalog, which would drop `PUBLIC`) together with the privilege and `is_grantable`, which must be
+  false for every grantee but the owner, and requires `proowner` to be the owner role; negative fixtures with a null
+  `proacl` and with a grant `WITH GRANT OPTION` must fail it. Feature 020's purge
   function, which other migrations create, has its entry by name.
 - **Requirement 049-016 Privileges.** The runtime role keeps `SELECT, INSERT` on `run_events`, `run_payloads` and
   `payloads` and gains no `UPDATE`: the reference and bucket triggers, which lock rows `FOR KEY SHARE`, are `SECURITY
