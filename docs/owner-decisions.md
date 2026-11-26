@@ -4,6 +4,18 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-26 — Delegated decisions of design 054 (buffered signals)
+
+Taken by the agent that the coordinating session briefed for design 054, under the owner's delegation Owner decision 2026-11-24-4
+(accepting ADRs, settling review findings in writing, approving design docs) and the approval rule of Owner decision 2026-11-25-2.
+Each row is a delegate's decision, weighed over every option and taken for the most architectural and business advantage; its
+reasoning is in `specs/054-buffered-signals/research.md` or in the review report named in `Covers`. The owner may overrule any of
+them. Ids OD-2026-11-26-540 to OD-2026-11-26-559 are reserved for design 054.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-26-540 | Design 054 may build into features 014 (the continuation handoff moves pending signals), 018 (Signal-with-Start buffers for a declared name, reset rematerializes and reapplies buffered signals, four rows of its reset registry, the refinement of FR-018-024 and FR-018-039) and 004 (its sentence that a signal is accepted only by a waiting step) at the tasks named here: buffered signals are a 0.3.0 feature (Owner decision 2026-11-24-1) that cannot exist without these changes, each made under the owning feature's rules and tests | delegate (OD-2026-11-24-4) | Decided | docs/designs/054-buffered-signals.md T054-1, T054-9, T054-10, T054-11 |
+
 ## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
 
 The coordinating session compared the platform with Temporal and Windmill (gaps that have a specification, gaps that have
