@@ -12,6 +12,9 @@ Every label is closed; tenants, namespaces, scripts, versions and packages are s
 | `script_supply_chain_findings_total` | `kind` (`vulnerability`, `malware`, `licence`, `age`, `install_script`, `yanked`), `severity` (`critical`, `high`, `moderate`, `low`, `unrated`, `none`) |
 | `script_supply_chain_lease_refusals_total` | `point` (`lease`, `materialization`, `start`) |
 | `script_policy_reevaluation_backlog` | none (rows waiting) |
+| `script_steps_waiting_for_layer` | `ecosystem`, `target` (`linux-amd64`, `linux-arm64`) |
+| `script_layer_materialization_failures_total` | `ecosystem`, `target`, `outcome` (`reported`, `layer_unavailable`) |
+| `script_ready_steps_failed_total` | `reason` (`package_blocked`, `layer_unavailable`) |
 | `package_advisory_import_seconds`, `package_advisory_snapshot_age_seconds` | `ecosystem` |
 | `package_advisory_imports_total` | `ecosystem`, `outcome` (`switched`, `refused_older`, `refused_shrinking`, `held`, `confirmed`) |
 

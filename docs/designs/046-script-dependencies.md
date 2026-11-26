@@ -289,9 +289,9 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 ## Owner decisions needed
 
 None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
-2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2. Every other choice,
+2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2 (pull request 284). Every other choice,
 including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
-recorded in research.md as Decisions 046-001 to 046-072 with the register's literal marker "delegate (OD-2026-11-24-4)".
+recorded in research.md as Decisions 046-001 to 046-073 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -386,8 +386,11 @@ version. Every transition is one transaction fenced by the job's lease token; a 
   longer `BUILDING` and finishes its own job as cancelled. The unique key of dependency jobs is
   `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`.
 - **The build** waits until every install job of the version succeeded. The build claim, the dependency-job claim and the
-  `script_jobs` quota count only jobs of versions that are `BUILDING`, so the jobs of a refused version stop counting at
-  once.
+  `script_jobs` quota count only `RESOLVE` and `INSTALL` jobs of versions that are `BUILDING`, so the jobs of a refused
+  version stop counting at once. `BACKFILL` jobs are the exception: the dependency-job claim offers them on `READY`
+  versions (phase `backfill`, only to runners that declare `script-dependencies-v1`), they count in the backfill pass's
+  own bound of 4 running per target instead of a tenant's `script_jobs`, and their completion requires the version
+  `READY` and writes only the layer record (Technical Plan 9).
 - **The finish** (Technical Plan 9) runs on both the new-build path and the cache-hit path.
 
 **Publication and the build key.** `content_digest` (`crates/application/src/scripts.rs`) gains the manifest under a new
@@ -451,8 +454,9 @@ Upstream fetches use a streaming GET-only send that `crates/infra-egress` gains:
 refused unless the operator allows an upstream's, redirects not followed, only https hosts that are configured upstreams
 or file hosts (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org` by default). Names are validated and normalised
 before an upstream path is built. A file is checked against the registry's declared hash before it is stored once under
-its SHA-256 in the public store, a blob store of its own (`SAGAT_PACKAGE_STORE_*`, read by `BlobSettings` with a prefix
-parameter that `crates/infra-blobstore` gains). The timing of a public cache hit can tell a tenant that some tenant
+its SHA-256 in the public store, a blob store of its own (`SAGAT_PACKAGE_STORE_*`). The gateway uses `object_store`
+directly with settings of its own (`apps/package-gateway/src/store.rs`), not `crates/infra-blobstore`, which depends on
+`sagat-application` and reads the payload store's `SAGAT_BLOB_*` settings. The timing of a public cache hit can tell a tenant that some tenant
 fetched a public file: an accepted residual (Gap 046-007).
 
 **Collection.** A leased control-plane pass (daily) marks public objects that no stored lock references and no pin holds,
@@ -552,8 +556,13 @@ block records, and never removes an `ADVISORY_IMPORT` or `OPERATOR` block.
 
 **Steps of a blocked artifact.** A step whose artifact becomes blocked may have no runner holding its volume, so no runner
 would advertise it and the lease check would never see it. So the transaction that inserts a block also inserts a row the
-block pass reads; that pass fails the ready script steps of the blocked artifact in the affected namespaces, in batches,
-through `reject_input` with `SCRIPT_DENIED` and `PACKAGE_BLOCKED`. With `blockNewAtLease`, a finding at or above the threshold without a waiver
+block pass reads (the block row's `steps_failed_at` is null until the pass is done with it); that pass fails the ready
+script steps of the blocked artifact in the affected namespaces, in batches, through a new application operation
+`fail_ready_step` (`crates/application/src/worker.rs`), not the worker-session `reject_input`. Its boundary is one
+transaction per step: lock the step row `FOR UPDATE`, recheck that it is ready, unleased and still blocked (or still
+without a layer, for `LAYER_UNAVAILABLE`), then write the journal event, the next work, the outbox row and the audit
+record with the system actor `system:engine`; a step leased meanwhile is left to the lease-time admission. The pass then
+sets `steps_failed_at`. With `blockNewAtLease`, a finding at or above the threshold without a waiver
 blocks that namespace.
 
 ### 7. The advisory snapshot
@@ -575,9 +584,13 @@ its records under a new snapshot identifier in paged transactions, outside any l
 malicious record, the exact (name, version) pairs it matches among the rows at or below the mark. The switch is one
 transaction that takes the snapshot row `FOR UPDATE` and then: refuses the import if it is older than the current
 snapshot of that ecosystem or holds at least 1 percent fewer records (checked again under the lock); makes it current;
-inserts a block for every artifact that locks a precomputed pair, whatever its `locked_seq`; evaluates the ranges,
-through `PackageRules`, for every row above the mark; and inserts one re-evaluation row per tenant that either of the
-two found. An import that would newly block more than 50 artifacts is held for an
+inserts a block for every artifact that locks a precomputed pair, whatever its `locked_seq`; and inserts one
+re-evaluation row per tenant concerned. Range evaluation never runs under that lock: as `StaleInputs` does for the
+finish, the application (`crates/application/src/scripts/packages.rs`, through the `PackageRules` port) reads the rows
+above the mark, evaluates them outside any lock, and passes the switch the pairs it found together with the highest
+`locked_seq` it read; the store's switch (`crates/infra-postgres`) refuses with `StaleInputs` when a row above that
+value exists, and the application evaluates the new rows and calls again (a bounded number of times, then the import
+is held for an operator). An import that would newly block more than 50 artifacts is held for an
 operator's confirmation (`advisory:import`) and an alert fires; while it is held, finishes and materializations refuse
 artifacts that lock a package its malicious records match, so a wide compromise is not delayed. Refusals and holds are
 audited. The old snapshot's rows are deleted afterwards. A malware block is released only through
@@ -688,7 +701,7 @@ artifact from it, checks the blocks for that namespace, and answers an `id`. A r
 (`POST /script-runner/materializations/{id}/failed`, accepted only from the principal that created that row, in its
 tenant; any other caller gets the unknown `404`); when three distinct runner identities (the authenticated runner
 principals of the route, never the self-configured `SAGAT_RUNNER_INSTANCE_ID`) have failed one, or no registered target
-has a layer record for 10 minutes, the control plane fails the ready steps of that artifact through `reject_input` with
+has a layer record for 10 minutes, the control plane fails the ready steps of that artifact through `fail_ready_step` with
 `SCRIPT_SANDBOX_UNAVAILABLE` and `LAYER_UNAVAILABLE`, so no step waits silently, and the gauge
 `script_steps_waiting_for_layer` shows the rest.
 
@@ -742,7 +755,7 @@ finishes. Design 038's budget test gains a script-step shape.
 | Bundle version 5 | `crates/infra-schema/src/bundle.rs` | Modify |
 | Tables and statements | `crates/infra-postgres` (migrations after `20270119000000`, `scripts.rs`, `quotas.rs`, `storage-classification.json`) | Create, Modify |
 | REST and runner routes | `crates/api-http/src/routes/{scripts,script_packages,runner}.rs`, `crates/api-http/src/dto_scripts.rs`, `crates/api-http/src/lib.rs` | Create, Modify |
-| Streaming GET send; store settings prefix | `crates/infra-egress/src/lib.rs`, `crates/infra-blobstore/src/config.rs` | Modify |
+| Streaming GET send | `crates/infra-egress/src/lib.rs` | Modify |
 | Container driver: resolve, unpack, verify, seal containers; volumes; channel forwarding; the lockfile gate | `crates/infra-sandbox/src/{docker,lake,protocol,lockfile}.rs` | Modify |
 | Runner: dependency jobs, materialization, caches, configuration | `apps/sandbox-runner/src/{lib,config,api,host}.rs` | Modify |
 | The gateway | `apps/package-gateway` | Create |
@@ -754,8 +767,9 @@ finishes. Design 038's budget test gains a script-step shape.
 configuration of `crates/infra-sandbox` (`docker.rs` and `lake.rs`); a run container's configuration has exactly one added
 mount, read-only; no token or secret in a resolve or install container's environment or input (a configuration-builder
 unit test); only `apps/package-gateway` names the public store's settings; and a dependency allow-list for `apps/package-gateway` (as the
-existing lake-runner rule does), which fails if it links `sagat-infra-postgres`, `sagat-application`, `sagat-infra-sandbox`
-or any crate that reads database or payload-store settings. A test checks that activating `script-dependencies-v1` is
+existing lake-runner rule does), transitive, naming the workspace crates it may link (`sagat-infra-egress`, `sagat-domain` through it, and `sagat-telemetry`
+only), so that it fails if it links `sagat-infra-postgres`, `sagat-application`,
+`sagat-infra-sandbox`, `sagat-infra-blobstore` or any other crate that reads database or payload-store settings. A test checks that activating `script-dependencies-v1` is
 refused when the admission statement does not read `script_artifact_blocks`. A Helm render test checks that only the gateway
 may leave the cluster. The rows go into `docs/engineering/architecture-principles.md`.
 
@@ -933,7 +947,7 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   Refs: Requirement 046-008, Requirement 046-009
 - [ ] T046-6 Gateway skeleton and npm side: listeners, tokens, abbreviated documents filtered by the cut, tarballs, the
   public store, the streaming GET send, the healthcheck subcommand. Files: `apps/package-gateway/`,
-  `crates/infra-egress/src/lib.rs`, `crates/infra-blobstore/src/config.rs`. Tests against recorded responses
+  `crates/infra-egress/src/lib.rs`, `apps/package-gateway/src/store.rs`. Tests against recorded responses
   (`apps/package-gateway/tests/fixtures/npm/`, refreshed by `scripts/record-registry-fixtures.sh`):
   `filters_versions_after_the_cut`, `drops_versions_without_a_time`, `refuses_a_redirect_to_another_host`,
   `a_document_over_the_cap_is_refused_not_partly_served`, `full_document_parses_are_bounded_and_cached`,
@@ -961,7 +975,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `crates/application/src/scripts.rs`, `crates/application/src/scripts/packages.rs`, `crates/application/src/sandbox.rs`,
   `crates/infra-postgres/src/{scripts,quotas}.rs`. Tests: `framework_only_versions_keep_their_build_key`,
   `resolve_again_makes_a_new_version`, `an_author_lock_is_validated_synchronously`,
-  `a_refused_install_and_a_sibling_completion_do_not_deadlock` (a barrier), `a_refused_install_stops_the_build_job_and_the_quota`,
+  `a_refused_install_and_a_sibling_completion_do_not_deadlock` (a barrier),
+  `a_target_added_later_gets_records_without_republishing`, `a_refused_install_stops_the_build_job_and_the_quota`,
   `a_duplicate_completion_changes_nothing`, `an_undeclared_import_fails_at_import_time_and_changes_nothing`.
   Refs: Requirement 046-002, Requirement 046-003, Requirement 046-008
 - [ ] T046-11 Vulnerabilities, licences, waivers (routes and the hourly pass), findings and blocks listings,
@@ -1005,7 +1020,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `a_script_cannot_write_the_layer`, `a_malware_import_during_materialization_stops_the_start`, `native_extension_imports_*`.
   Refs: Requirement 046-009, Requirement 046-013, Requirement 046-014
 - [ ] T046-17 The typed admission on both lease paths, `reject_input`, `Failure::Denied` with its reason, the block pass
-  for ready steps; design 038's budget test with a script-step shape. Tests: `a_malware_import_blocks_the_next_lease`,
+  for ready steps through `fail_ready_step`; design 038's budget test with a script-step shape. Tests:
+  `a_malware_import_blocks_the_next_lease`, `a_lease_racing_the_block_pass_is_left_to_admission` (a barrier),
   `a_blocked_child_script_step_fails_at_lease`, `a_blocked_step_with_no_materialized_runner_fails`,
   `an_attempt_already_started_finishes`, `activation_requires_the_block_check`.
   Refs: Requirement 046-009, Requirement 046-020
@@ -1035,6 +1051,14 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
 - [ ] T046-25 The control plane's metrics and audit records of telemetry.md. Test: `metric_labels_are_closed` (control
   plane).
   Refs: Requirement 046-019, Non-functional requirement 046-005
+- [ ] T046-26 The fitness functions of Technical Plan 13 in `scripts/check-architecture.py`, each with a negative test in
+  its test module: no network mode other than `none` in `crates/infra-sandbox`'s container configurations; exactly one
+  added read-only mount on a run container; only `apps/package-gateway` names the public store's settings; the
+  transitive dependency allow-list of `apps/package-gateway`; and the rows in
+  `docs/engineering/architecture-principles.md`. The configuration-builder unit test (no token or secret in a resolve or
+  install container), the activation test (`activation_requires_the_block_check`) and the Helm render test stay with
+  Tasks 046-13, 046-17 and 046-22. Built first in the gateway's slice, before `apps/package-gateway` links anything.
+  Refs: Requirement 046-004, Requirement 046-012, Non-functional requirement 046-002
 
 #### Follow-up tasks
 

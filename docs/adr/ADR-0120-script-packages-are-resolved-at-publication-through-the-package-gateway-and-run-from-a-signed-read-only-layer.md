@@ -1,7 +1,7 @@
 # ADR-0120: TypeScript and Python packages are resolved at publication through the platform's package gateway and run from a signed, read-only, content-addressed layer
 
 **Status:** Proposed
-**Decided by:** agent proposal (design 046, 2026-11-24, revised after review rounds 1 and 2), to be accepted or rejected under Owner decision 2026-11-24-4 when design 046 completes its review
+**Decided by:** agent proposal (design 046, 2026-11-24, revised after review rounds 1 to 3 and the re-reads of 2026-11-26), to be accepted or rejected under Owner decision 2026-11-24-4 when design 046 completes its review
 **Refines / supersedes:** supersedes ADR-0013 **in part**: a run container of a bundle version 5 has one added mount, a read-only dependency layer that is not `noexec` (every other rule of ADR-0013 stays, including "no network" for every sandbox container). Narrows ADR-0057 decision 4 to C#, Rust and PHP: for TypeScript and Python a resolve container's requests reach, through its runner, only the package gateway's public routes and the control plane's private document, metadata and file routes for the tenant's reserved names. Refines ADR-0023: private packages use its tenant payload store; the gateway's public files use a store of their own. Supersedes Decision 105 of feature 005 for TypeScript and Python only.
 **Enforced by:** planned tests of design 046 (`docs/designs/046-script-dependencies.md`, Verification Plan): the lock validator fixtures in `crates/infra-packages` (including `a_relabelled_file_is_refused`); the hostile battery `integration_script_dependencies_containers` (`a_resolve_container_reaches_only_the_forwarded_routes`, `a_reserved_name_never_reaches_the_public_registry`, `a_script_cannot_write_the_layer`, `two_tenants_with_one_lock_get_two_volumes`, `an_unmarked_volume_is_never_mounted`, `unpacker_refuses_*`); `the_digest_is_recomputed_by_a_fresh_container`; `layer_digest_is_identical_on_two_hosts`; the tamper tests; the Helm test `only_the_gateway_leaves_the_cluster`; and four rules of `scripts/check-architecture.py` with negative tests: no network mode other than `none` in `crates/infra-sandbox` (`docker.rs`, `lake.rs`); exactly one added read-only mount on a run container; no token or secret in a resolve or install container; only `apps/package-gateway` names the public store's settings, and its dependency allow-list keeps it away from the database, application and sandbox crates. Until they exist: review only.
 
@@ -35,7 +35,7 @@ The forces:
    control plane. Other components MUST NOT reach a public registry.
 3. **A resolve container has no network.** It uses the ADR-0013 profile unchanged. Its resolver's requests become
    `fetch` ops on the supervisor channel; the runner forwards only the gateway's public package routes, or the control
-   plane's private index routes for a tenant's reserved names, adding a job grant. No token or secret enters the
+   plane's private document, metadata and file routes for a tenant's reserved names, adding a job grant. No token or secret enters the
    container.
 4. **Private packages stay with the tenant.** They are stored in the tenant's payload store and served to runners by the
    control plane, for that tenant only.

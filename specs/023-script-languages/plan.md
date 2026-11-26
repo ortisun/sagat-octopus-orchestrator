@@ -253,7 +253,10 @@ exists; it adds what the language section needs to it.
 ### 8a. Lease-time language check
 
 Superseded in part on 2026-11-24 by Decision 1235: the policy row is read with no row lock, in one
-statement with the artifact, for script activities only; the rest of this section stands.
+statement with the artifact, for script activities only; the rest of this section stands. Extended on
+2026-11-26 by Decision 1628 and design 046's typed admission: every "`lease_one`" below means both lease
+paths, `lease_one` in `crates/application/src/worker.rs` and the scoped claims of
+`crates/application/src/worker/scoped_claims.rs`, which share design 046's admission statement.
 
 The engine's lease path (`lease_one`) recognizes `script.sha256-<hex>` activities. Inside the lease
 transaction, after the existing run and step locks, it reads the artifact language by
@@ -507,7 +510,7 @@ Owns `sagat-domain`, `sagat-application`, `sagat-infra-schema`, its additions to
 | A1 Data and fleet activation | T023-006, T023-067, T023-011 | migrations `20270323000000_script_languages` and `20270323000100_script_languages_validate` (proposed, Gap 1213); `crates/infra-postgres/src/scripts.rs`; `crates/application/src/{scripts,instances}.rs`; `crates/api-http/src/error.rs` | slice 0; for the language section of the policy, Task T046-2 (design 046's policy document and its migration) |
 | A2 Attestation and artifact formats | T023-068, T023-009, T023-047, T023-007, the version 4 part of T023-008 | additions to `crates/infra-packages/`; `crates/application/src/{attestation,script_signing,scripts}.rs`; `crates/infra-schema/src/{catalog,bundle}.rs`; `runners/{rust,php}/catalog/catalog.json` (catalog data only, files the runner lane does not edit) | A1 (the provenance table); Task T046-15 (the provenance and SBOM builders) |
 | A3 Policy API, discovery, workflow publication | T023-044, T023-013, T023-045 | `crates/api-http/src/routes/{scripts,runner}.rs`; `crates/application/src/{scripts,definitions}.rs` | A1; for T023-044, design 046's policy endpoint (Task T046-2 and its REST task) |
-| A4 Lease-time check | T023-061 (with the budget shape of Decision 1235) | `crates/application/src/worker.rs` (`lease_one`); `crates/infra-postgres/src/workers.rs`; `work_budget.rs` | A1; Task T046-17 (design 046's lease statement, which this slice extends). Its tests insert artifact rows of a new language directly, so it needs no flipped `is_built` |
+| A4 Lease-time check | T023-061 (with the budget shape of Decision 1235) | `crates/application/src/worker.rs` (`lease_one`) and `crates/application/src/worker/scoped_claims.rs` (both lease paths, Decision 1628); `crates/infra-postgres/src/workers.rs`; `work_budget.rs` | A1; Task T046-17 (design 046's lease statement, which this slice extends). Its tests insert artifact rows of a new language directly, so it needs no flipped `is_built` |
 | A5 Reservation of `python-data` | the reservation part of T023-062 | `crates/domain/src/scripts.rs`, admission refusals | A1 |
 | A6 Contracts, SDKs, Studio | T023-051, T023-050, T023-019, the Studio parts of T023-027, T023-038, T023-042, and T023-046 | contracts of feature 001; `sdks/{typescript,python}`; the conformance scenario (all six SDKs run it); `frontend/apps/studio/src/features/scripts/` | A3 |
 | A7 Control-plane cross-cutting | T023-053 (control-plane ceilings), T023-054, T023-055 (control-plane part), T023-063 | `tests/integration/script-languages/{limits,telemetry,rollback}.rs`; `tests/contract/security-multitenancy/rest/battery.rs` | A3, A4 |

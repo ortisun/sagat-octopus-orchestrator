@@ -4,14 +4,14 @@
 
 Every claim carries `capabilities` (`script-dependencies-v1` for this design) and `target` (`linux-amd64` or
 `linux-arm64`, from `SAGAT_RUNNER_TARGET`). A runner that does not declare the capability is never given a dependency
-job, a materialization, a test run with a manifest or a step of a bundle version 5. Bodies stay under the router's 4 MiB
+job (a `backfill` job included), a materialization, a test run with a manifest or a step of a bundle version 5. Bodies stay under the router's 4 MiB
 limit; nothing large passes through the control plane except private package files (at most 64 MiB, on their own route).
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /script-runner/dependency-jobs/claim` | `{capabilities, target, languages}` | `204`, or `{jobId, attempt, leaseToken, phase: "resolve" \| "install", version, language, runtime, targets, manifest, cut, maxLayerBytes, reservedNames, lock (install), files (install: hash, size, install path, source "public" \| "private"), grant}` |
+| `POST /script-runner/dependency-jobs/claim` | `{capabilities, target, languages}` | `204`, or `{jobId, attempt, leaseToken, phase: "resolve" \| "install" \| "backfill", version, language, runtime, targets, manifest, cut, maxLayerBytes, reservedNames, lock (install), files (install: hash, size, install path, source "public" \| "private"), grant}` |
 | `POST /script-runner/dependency-jobs/{jobId}/heartbeat` | `{leaseToken}` | `204`, or `409` when the lease is lost |
-| `POST /script-runner/dependency-jobs/{jobId}/complete` | resolve: `{leaseToken, outcome, lock, forwardedBytes}` (also on a failed resolve); install: `{leaseToken, outcome, target, layer: {digest, size, files}, installScripts: [{name, version, scripts}], compileFailures}`; failure: `{leaseToken, outcome: "failed", kind, code, retryable, log}`, with `forwardedBytes` for a resolve | `204`; a finished job answers `204` and changes nothing |
+| `POST /script-runner/dependency-jobs/{jobId}/complete` | resolve: `{leaseToken, outcome, lock, forwardedBytes}` (also on a failed resolve); install: `{leaseToken, outcome, target, layer: {digest, size, files}, installScripts: [{name, version, scripts}], compileFailures}`; backfill: the install shape (the control plane requires the version `READY` and no record yet for that target, and writes only the signed layer record, in its own transaction); failure: `{leaseToken, outcome: "failed", kind, code, retryable, log}`, with `forwardedBytes` for a resolve | `204`; a finished job answers `204` and changes nothing |
 | `GET /script-runner/namespaces/{namespace}/pending-activities` (feature 005's, extended) | query `target` | each ready activity with its artifact digest and whether a layer for the target is needed |
 | `POST /script-runner/materializations` | `{activity, target}` (a ready activity from the pending-activities answer) | `{id, artifactDigest, lock, files, layerRecord, maxLayerBytes, grant}`; the tenant, namespace and artifact come from the activity, never from the runner; `403 SCRIPT_DENIED` reason `PACKAGE_BLOCKED` if blocked for that namespace; `404` for another tenant's activity, one that is not ready, or an artifact without a record for the target (the attempt is audited) |
 | `POST /script-runner/materializations/{id}/failed` | `{code}` | `204`; accepted only from the principal that created the row, in its tenant (any other caller gets the unknown `404`); only three distinct principals fail the ready steps |
