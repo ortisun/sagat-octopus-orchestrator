@@ -852,29 +852,25 @@ async fn a_waiter_whose_run_is_busy_holds_back_the_younger_waiters_of_its_key() 
         "the older waiter first: {first:?} {second:?}"
     );
 }
-/// Batch 5 correctness Major 1 (decision D022-121): a waiter whose grant always fails (here a trigger refuses its holder
-/// row, as a constraint would) no longer ends its key's pass: it is skipped, counted `failed`, and stays queued, and the
-/// younger waiter behind it is granted in the same pass. `limit: 2`, so that the older waiter's reservation leaves the
-/// younger room once both holders end.
-#[tokio::test]
-async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters() {
-    let w = gated_world().await;
-    let workflow = publish(&w, serial_start("start-poisoned", 2)).await;
-    let session = w.session(&["act.g"]).await;
-    let account = json!({"accountId": "acct-1"});
-    let holders = [
-        w.start(workflow, &account).await,
-        w.start(workflow, &account).await,
-    ];
-    let older = w.start(workflow, &account).await;
-    let younger = w.start(workflow, &account).await;
-    assert_eq!(start_rows(&w, older).await, (0, 1));
-    assert_eq!(start_rows(&w, younger).await, (0, 1));
+/// The failure rows of `run`'s waiters (node, attempt, class), decision D022-124.
+async fn grant_failures(w: &World, run: RunId) -> Vec<(String, i32, String)> {
+    sqlx::query_as(
+        "SELECT node, attempt, failure FROM flow_control_grant_failures WHERE run_id = $1 ORDER BY node, attempt",
+    )
+    .bind(run.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("failure rows")
+}
+
+/// Makes every insert of a holder row of `run` raise SQLSTATE `code` (a trigger the test drops with [`unrefuse`]).
+async fn refuse_holder(w: &World, run: RunId, code: &str) {
     for statement in [
         format!(
             "CREATE FUNCTION test_refuse_holder() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
-               IF NEW.run_id = '{}' THEN RAISE EXCEPTION 'the test refuses this holder'; END IF; RETURN NEW; END $$",
-            older.as_uuid()
+               IF NEW.run_id = '{}' THEN RAISE EXCEPTION 'the test refuses this holder' USING ERRCODE = '{code}'; \
+               END IF; RETURN NEW; END $$",
+            run.as_uuid()
         ),
         "CREATE TRIGGER test_refuse_holder BEFORE INSERT ON concurrency_holders FOR EACH ROW \
            EXECUTE FUNCTION test_refuse_holder()"
@@ -885,18 +881,47 @@ async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiter
             .await
             .expect("the refusing trigger");
     }
-    for task in w.poll(&session, 8).await {
-        assert!(holders.contains(&task.run_id), "only the holders run");
-        w.complete(&session, &task, &json!({})).await.expect("done");
+}
+
+async fn unrefuse(w: &World) {
+    for statement in [
+        "DROP TRIGGER test_refuse_holder ON concurrency_holders",
+        "DROP FUNCTION test_refuse_holder()",
+    ] {
+        sqlx::query(statement)
+            .execute(&w.db.pool)
+            .await
+            .expect("the trigger dropped");
     }
-    for holder in holders {
-        assert_eq!(start_rows(&w, holder).await, (0, 0), "the holder ended");
-    }
+}
+
+/// Batch 5 correctness Major 1 (decision D022-121) and its re-read's new finding 1 (decision D022-124): a waiter whose
+/// grant always fails (here a trigger refuses its holder row, as a constraint would) no longer ends its key's pass, and
+/// no longer counts ahead of the younger waiters, on a key of limit 1: it is skipped, counted `failed`, recorded with
+/// its class, and stays queued, and the younger waiter behind it is granted in the same pass. Once its cause is gone, the
+/// first try that decides it (here refused for room, the younger holding the permit) deletes its row, and it is granted
+/// when the permit is free.
+#[tokio::test]
+async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("start-poisoned", 1)).await;
+    let session = w.session(&["act.g"]).await;
+    let account = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &account).await;
+    let older = w.start(workflow, &account).await;
+    let younger = w.start(workflow, &account).await;
+    assert_eq!(start_rows(&w, older).await, (0, 1));
+    assert_eq!(start_rows(&w, younger).await, (0, 1));
+    refuse_holder(&w, older, "P0001").await;
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder, "only the holder runs");
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    assert_eq!(start_rows(&w, holder).await, (0, 0), "the holder ended");
     let report = w.scheduler.grant_gates().await;
     assert_eq!(
         (report.gates_granted, report.failed),
         (1, 1),
-        "the failing waiter is skipped, the younger granted: {report:?}"
+        "the failing waiter is skipped and not counted ahead, the younger granted: {report:?}"
     );
     assert_eq!(
         start_rows(&w, younger).await,
@@ -908,17 +933,115 @@ async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiter
         (0, 1),
         "the failing waiter stays queued"
     );
-    sqlx::query("DROP TRIGGER test_refuse_holder ON concurrency_holders")
-        .execute(&w.db.pool)
-        .await
-        .expect("the trigger dropped");
+    assert_eq!(
+        grant_failures(&w, older).await,
+        [(String::new(), 0, "INTERNAL".to_owned())],
+        "its failure is recorded with its class"
+    );
+    unrefuse(&w).await;
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 0,
+        "the younger holds the permit: {report:?}"
+    );
+    assert!(
+        grant_failures(&w, older).await.is_empty(),
+        "a try that decides it deletes its failure row"
+    );
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, younger);
+    w.complete(&session, &task, &json!({})).await.expect("done");
     let report = w.scheduler.grant_gates().await;
     assert_eq!(
         report.gates_granted, 1,
         "the older is granted once it can be: {report:?}"
     );
     assert_eq!(start_rows(&w, older).await, (1, 0));
-    for run in holders.iter().copied().chain([older, younger]) {
+    for run in [holder, older, younger] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// The re-read's finding 3 (decision D022-130 item 1): a failure that clears on its own (here a trigger raising
+/// SQLSTATE 40001, a serialization failure, on the older waiter's holder row) ends the key's pass, as a busy run does:
+/// nothing is granted, the younger waiter is not tried, and no failure row is written.
+#[tokio::test]
+async fn a_transient_grant_failure_ends_the_keys_pass() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("start-transient", 1)).await;
+    let session = w.session(&["act.g"]).await;
+    let account = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &account).await;
+    let older = w.start(workflow, &account).await;
+    let younger = w.start(workflow, &account).await;
+    refuse_holder(&w, older, "40001").await;
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    let report = w.scheduler.grant_gates().await;
+    unrefuse(&w).await;
+    assert_eq!(
+        (report.gates_granted, report.failed),
+        (0, 1),
+        "a transient failure ends the pass: {report:?}"
+    );
+    assert_eq!(start_rows(&w, younger).await, (0, 1), "the younger waits");
+    assert!(
+        grant_failures(&w, older).await.is_empty(),
+        "a failure that clears on its own is not recorded"
+    );
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 1,
+        "the next pass grants the older: {report:?}"
+    );
+    assert_eq!(start_rows(&w, older).await, (1, 0));
+    for run in [holder, older, younger] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Batch 5 correctness minor 2 (decision D022-126 item 2): the grant of a queued start locks its run's active-run
+/// counter row only when the definition's entry path can end the run in the grant's transaction. A start whose entry is
+/// an activity cannot end there: with its counter row held by another transaction, its grant refused for room is
+/// decided at once, never waiting for that row. A start whose entry is an `end` node still takes the row first (the
+/// lock-order case of `concurrency_locks`).
+#[tokio::test]
+async fn a_held_counter_row_does_not_block_the_refused_grant_of_a_start_that_cannot_end() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("start-cannot-end", 1)).await;
+    let account = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &account).await;
+    let waiter = w.start(workflow, &account).await;
+    assert_eq!(start_rows(&w, waiter).await, (0, 1));
+    // the key due, so the pass tries the waiter, which the holder's permit refuses
+    sqlx::query(
+        "UPDATE concurrency_semaphores SET next_eligible_at = clock_timestamp() WHERE permit_scope = 'RUN'",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("the key due");
+    let mut counter = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query(
+        "SELECT 1 FROM run_active_counts c JOIN runs r ON r.tenant_id = c.tenant_id AND r.namespace_id = c.namespace_id \
+          WHERE r.id = $1 AND c.slot = (get_byte(uuid_send($1::uuid), 15) & 15)::smallint FOR UPDATE OF c",
+    )
+    .bind(waiter.as_uuid())
+    .execute(&mut *counter)
+    .await
+    .expect("the counter row held");
+    // a bound on a hang, not a timing of the race: the refused grant takes no lock the test holds
+    let report = crate::support::bounded::within(
+        "the refused grant of a start that cannot end".to_owned(),
+        std::time::Duration::from_secs(60),
+        w.scheduler.grant_gates(),
+    )
+    .await;
+    counter.rollback().await.expect("the counter row freed");
+    assert_eq!(report.gates_granted, 0, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(start_rows(&w, waiter).await, (0, 1), "still queued");
+    for run in [holder, waiter] {
         w.assert_consistent(run).await;
     }
 }
@@ -927,7 +1050,8 @@ async fn a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiter
 /// other gate (a rate-limit window with no slot left). The refusal's transaction is rolled back, and the rollback awaited,
 /// before the second waiter is tried, so the second finds its run free and is granted, and the younger waiter of another
 /// run behind them is granted in the same pass. Before, the dropped transaction kept the run locked until the pool rolled
-/// it back in a task of its own: the second waiter found its run busy, which ends the key's pass (D022-088).
+/// it back in a task of its own: the second waiter found its run busy, which ends the key's pass (D022-088). A connection
+/// released while the run is still locked fails the test whatever the timing (decision D022-130 item 3).
 #[tokio::test]
 async fn a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_is_tried() {
     let w = gated_world().await;
@@ -1002,9 +1126,11 @@ async fn a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_i
         ["c"],
         "the other run waits behind them"
     );
-    // the scheduler's store over a pool that returns a released connection late, as a loaded pool does: sqlx sends the
-    // rollback of a dropped transaction only when the connection is returned (after `after_release`), so a refusal
-    // that merely drops its transaction keeps the run locked for that long
+    // the scheduler's store over a pool of one connection whose `after_release` hook, which sqlx runs before it sends
+    // the rollback of a dropped transaction (the ping that follows flushes it), asks a second connection for the run's
+    // lock with `FOR UPDATE NOWAIT`: a refusal that merely drops its transaction still holds the run then, and the
+    // check is refused. With one connection the next try cannot begin before the hook has run, so the check reads a
+    // held lock, never a timing (re-read correctness finding 5, decision D022-130 item 3)
     let url = if crate::support::as_runtime_role() {
         w.db.url_for(
             crate::support::RUNTIME_ROLE,
@@ -1013,17 +1139,28 @@ async fn a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_i
     } else {
         w.db.url.clone()
     };
+    let lingering = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let (probe, seen) = (w.db.pool.clone(), std::sync::Arc::clone(&lingering));
     let late = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(8)
-        .after_release(|_, _| {
-            Box::pin(async {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        .max_connections(1)
+        .after_release(move |_, _| {
+            let (probe, seen) = (probe.clone(), std::sync::Arc::clone(&seen));
+            Box::pin(async move {
+                let mut check = probe.begin().await?;
+                let locked = sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE NOWAIT")
+                    .bind(run.as_uuid())
+                    .execute(&mut *check)
+                    .await;
+                check.rollback().await?;
+                if let Err(error) = locked {
+                    seen.lock().expect("the record").push(error.to_string());
+                }
                 Ok(true)
             })
         })
         .connect(&url)
         .await
-        .expect("a pool that returns its connections late");
+        .expect("a pool of one connection that checks the run's lock on release");
     let store = crate::support::flow_control::gate(sagat_infra_postgres::PgRunStore::new(
         late,
         w.cache.clone(),
@@ -1046,6 +1183,11 @@ async fn a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_i
         (waiting(run).await, waiting(other).await),
         (vec!["a".to_owned()], vec![]),
         "the run's second waiter and the other run are granted in the first pass: {report:?}"
+    );
+    assert!(
+        lingering.lock().expect("the record").is_empty(),
+        "a released connection still held the run: {:?}",
+        lingering.lock().expect("the record")
     );
     for run in [run, other] {
         w.assert_consistent(run).await;

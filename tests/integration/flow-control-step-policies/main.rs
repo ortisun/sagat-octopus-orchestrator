@@ -13,6 +13,7 @@ mod ceilings;
 mod child_starts;
 mod concurrency_locks;
 mod consistency;
+mod disclosure;
 mod lifecycle;
 mod migrations;
 mod publication;

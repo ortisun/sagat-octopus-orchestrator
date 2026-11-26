@@ -728,6 +728,10 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   - *Amended 2026-11-20 (decision D022-068 item 6):* the two key listings' handlers share one opening, parameterised by
     `KeyListing` (`KeyListingQuery`, `key_cursor_in_force`), when this task reshapes them (architecture minor 3 of the
     review of task T022-078).
+  - *Amended 2026-11-26 (decisions D022-131, D022-133, D022-151 to D022-153):* the task's aim, no per-key value for a
+    caller who may not see labels, covers every surface of the sweep of D022-151: each group is read whole, the quota
+    usages of keys are withheld, `getRun`'s `rateLimit.position` is null, and the flow-control alerts are shown only with
+    the reveal right; the matrix test `disclosure.rs` checks that such a caller's answers do not change with key sharing.
   - *Amended 2026-11-25 (decision D022-086):* the group rows are read by a walk of the page's groups over the key rows in
     one snapshot, not from counter rows: a counter row of a group locked by the holder and waiter triggers between one
     decision's key locks can deadlock (as D022-084 item 2 found for the live keys); the page still costs its own groups.

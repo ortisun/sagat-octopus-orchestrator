@@ -147,7 +147,7 @@ paths:
       summary: List live concurrency keys with holders, waiters and oldest wait age
       tags: [Operations]
       x-proposed: '022'
-      description: Needs `ops:read`. Keys appear only as labels, and a label only to a caller who may reveal personal data in the namespace (null otherwise), and the key's oldest instants to such a caller whole, to any other truncated to their minute, toward the past, UTC (D022-060; this narrows, and does not stop, linking a key's runs by the minute of their own `since`, D022-061). Sorted by oldest wait first; keys nobody waits for last. `queuedRuns` in the page header counts the namespace's queued runs against its `queued_runs` ceiling. Counts are read without the keys' locks, one snapshot per page, so a key's counts and place may change between pages. `nextCursor` is opaque and sealed for the namespace under the digest key version in force (D022-059); an altered or foreign cursor, or one of a version no longer in force (a forced retirement included, D022-063), is a 400; so is a cursor more than fifteen minutes old (D022-100). Merged into the canonical contract (T022-060, 0.3.0 slice).
+      description: Needs `ops:read`. Keys appear only as labels, and a label only to a caller who may reveal personal data in the namespace (null otherwise), and the key's oldest instants to such a caller whole, to any other truncated to their minute, toward the past, UTC (D022-060; this narrows, and does not stop, linking a key's runs by the minute of their own `since`, D022-061). Sorted by oldest wait first; keys nobody waits for last. `queuedRuns` in the page header counts the namespace's queued runs against its `queued_runs` ceiling. Counts are read without the keys' locks, one snapshot per page, so a key's counts and place may change between pages. `nextCursor` is opaque and sealed for the namespace under the digest key version in force (D022-059); an altered or foreign cursor, or one of a version no longer in force (a forced retirement included, D022-063), is a 400; so is a cursor more than fifteen minutes old, or stamped more than a minute ahead of the reader's clock (D022-100, D022-129). In the group view (view GROUPS) a page holds at most 5 groups whatever `limit` asks, each summed whole over all its keys in the page's snapshot; a group is never split across pages, filtered or not, and the cursor names only the place between two groups, so nothing a page tells depends on how many keys a group has (D022-131). Merged into the canonical contract (T022-060, 0.3.0 slice).
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: group, in: query, required: false, description: 'An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name; review 2026-11-13.', schema: {type: string, maxLength: 130, pattern: '^([a-z][a-z0-9.-]{0,63}|=[a-z][a-z0-9-]{2,62}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?)$'}}
@@ -174,7 +174,7 @@ paths:
       summary: List live rate-limit keys with their grants in the window, waiters and oldest wait age
       tags: [Operations]
       x-proposed: '022'
-      description: Release 0.3.0 slice (US07, FR-022-048; plan "Visibility of the rate gate", D022-067). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), oldest wait first, keys nobody waits for last. Keys appear only as labels, and a label only to a caller who may reveal personal data in the namespace (null otherwise); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute, toward the past, UTC (D022-060, D022-067 item 6). `queuedRuns` in the page header counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) against its `queued_runs` ceiling. Counts are read without the keys' locks, one snapshot per page, at the page's instant. `nextCursor` is opaque and sealed for the namespace under the digest key version in force, of this listing's own kind; an altered or foreign cursor, a concurrency listing's, another group's, or one of a version no longer in force is a 400; so is a cursor more than fifteen minutes old (D022-100). Merged into the canonical contract (T022-078, 0.3.0 slice).
+      description: Release 0.3.0 slice (US07, FR-022-048; plan "Visibility of the rate gate", D022-067). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), oldest wait first, keys nobody waits for last. Keys appear only as labels, and a label only to a caller who may reveal personal data in the namespace (null otherwise); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute, toward the past, UTC (D022-060, D022-067 item 6). `queuedRuns` in the page header counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) against its `queued_runs` ceiling. Counts are read without the keys' locks, one snapshot per page, at the page's instant. `nextCursor` is opaque and sealed for the namespace under the digest key version in force, of this listing's own kind; an altered or foreign cursor, a concurrency listing's, another group's, or one of a version no longer in force is a 400; so is a cursor more than fifteen minutes old, or stamped more than a minute ahead of the reader's clock (D022-100, D022-129). In the group view (view GROUPS) a page holds at most 5 groups whatever `limit` asks, each summed whole over all its keys in the page's snapshot; a group is never split across pages, filtered or not, and the cursor names only the place between two groups, so nothing a page tells depends on how many keys a group has (D022-131). Merged into the canonical contract (T022-078, 0.3.0 slice).
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: group, in: query, required: false, description: 'An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name; review 2026-11-13.', schema: {type: string, maxLength: 130, pattern: '^([a-z][a-z0-9.-]{0,63}|=[a-z][a-z0-9-]{2,62}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?)$'}}
@@ -424,7 +424,7 @@ components:
       additionalProperties: false
       required: [view, items, groups, queuedRuns]
       properties:
-        view: {type: string, enum: [KEYS, GROUPS], description: 'KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).'}
+        view: {type: string, enum: [KEYS, GROUPS], description: 'KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty; at most 5 groups a page (FR-022-057, D022-061, D022-086, D022-128).'}
         queuedRuns: {type: integer, minimum: 0}
         items: {type: array, items: {$ref: '#/components/schemas/ConcurrencyKey'}}
         groups: {type: array, items: {$ref: '#/components/schemas/ConcurrencyKeyGroup'}}
@@ -433,7 +433,7 @@ components:
       type: object
       additionalProperties: false
       required: [pool, scope, group, holders, waiters, oldestWaitSince, oldestHolderSince, spansPages]
-      description: Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys across the pages that read it, each page one snapshot; no key's label, value or own count, and not how many keys it has.
+      description: Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over all its keys in one page's snapshot (D022-131); no key's label, value or own count, and not how many keys it has.
       properties:
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
         scope: {type: string, enum: [RUN, STEP]}
@@ -442,12 +442,12 @@ components:
         waiters: {type: integer, minimum: 0}
         oldestWaitSince: {type: [string, 'null'], format: date-time, description: 'The queueing instant of the group''s oldest waiter, whole; null when nobody waits.'}
         oldestHolderSince: {type: [string, 'null'], format: date-time, description: 'The acquisition instant of the group''s oldest holder, whole; null when nobody holds.'}
-        spansPages: {type: boolean, description: 'Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more holders than its keys allow (D022-101).'}
+        spansPages: {type: boolean, deprecated: true, description: 'Always false since D022-131: a group is read whole on one page, never across pages. Kept so that readers of this contract version still validate; removed in a later version.'}
     RateLimitKeyGroup:
       type: object
       additionalProperties: false
       required: [pool, scope, group, grantsInWindow, unleasedGrants, waiters, oldestWaitSince, spansPages]
-      description: Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows across the pages that read it, each page one snapshot at its own instant, each window read as RateLimitKey reads it; no key's label, value or own count, not how many windows it has, and not when its next slot frees (an instant that links a waiting run to a granted one; a caller with the reveal right reads it per key).
+      description: Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over all its windows in one page's snapshot at its instant (D022-131), each window counted as RateLimitKey counts it; no key's label, value or own count, not how many windows it has, and not when its next slot frees (an instant that links a waiting run to a granted one; a caller with the reveal right reads it per key).
       properties:
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
         scope: {type: string, enum: [RUN, STEP]}
@@ -456,7 +456,7 @@ components:
         unleasedGrants: {type: integer, minimum: 0}
         waiters: {type: integer, minimum: 0}
         oldestWaitSince: {type: [string, 'null'], format: date-time, description: 'The queueing instant of the group''s oldest waiter, whole; null when nobody waits.'}
-        spansPages: {type: boolean, description: 'Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more grants than its windows allow (D022-101).'}
+        spansPages: {type: boolean, deprecated: true, description: 'Always false since D022-131: a group is read whole on one page, never across pages. Kept so that readers of this contract version still validate; removed in a later version.'}
     RateLimitKey:
       description: Release 0.3.0 slice (US07). One window row of the namespace. Counts are a snapshot read without the key's lock, at the page's instant.
       type: object
@@ -477,7 +477,7 @@ components:
       additionalProperties: false
       required: [view, items, groups, queuedRuns]
       properties:
-        view: {type: string, enum: [KEYS, GROUPS], description: 'KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).'}
+        view: {type: string, enum: [KEYS, GROUPS], description: 'KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty; at most 5 groups a page (FR-022-057, D022-061, D022-086, D022-128).'}
         queuedRuns: {type: integer, minimum: 0}
         items: {type: array, items: {$ref: '#/components/schemas/RateLimitKey'}}
         groups: {type: array, items: {$ref: '#/components/schemas/RateLimitKeyGroup'}}
@@ -588,8 +588,31 @@ components:
             per: {type: string, enum: [second, minute, hour]}
             since: {type: string, format: date-time, description: 'When the run was buffered (WAITING) or granted (GRANTED).'}
             queueDeadline: {type: [string, 'null'], format: date-time}
-            position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
+            position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings, and null for a caller to whom keyLabel is null, since the rank counts the runs that share the key (D022-153): rank among the waiters the grant pass visits ahead of it at read time (in the queue''s order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2).'}
             estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), or when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2).'}
+    AlertFlowControlAdditions:
+      description: |
+        Amends the description of the canonical `Alert.kind` (merge into it; no new property, decisions D022-152 and
+        D022-135 as superseded). The `listAlerts` operation itself is left as it is: feature 035 pins every operation
+        defined before it, so the rule lives on the schema the operation returns. An alert of the four flow-control kinds (CONCURRENCY_QUEUE_STUCK,
+        RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED) is listed only to a caller who
+        may reveal personal data in the namespace, the right read in the same statement as the alerts: its state, count
+        and ages depend on per-key conditions and so tell which runs share a key. Other callers do not see such rows at
+        all: the statement that pages the alerts leaves them out before its limit, so a page and its `nextCursor` are
+        the same whether one fires (D022-154). These kinds are never sent as `ops.alert.*` events.
+      type: object
+    QuotaUsageFlowControlFields:
+      description: |
+        Amends the descriptions of the canonical `Quota.used` and `Quota.usageWithheld` (merge into them; no new
+        property, decision D022-133). The usage of `concurrency_live_keys`, `rate_limit_live_keys` and
+        `flow_control_key_waiters` is shown only to a caller who may reveal personal data in the namespace (the reveal
+        right of the key listings, D022-060), read in one snapshot with that right; for any other caller `used` is
+        absent and `usageWithheld` is true, since the live-key count changes exactly when the last run of a key ends and
+        so tells which runs share a key.
+      type: object
+      properties:
+        used: {type: integer, format: int64, minimum: 0, description: 'Absent also for concurrency_live_keys, rate_limit_live_keys and flow_control_key_waiters unless the caller may reveal personal data in the namespace (D022-133).'}
+        usageWithheld: {type: boolean, description: 'Present and true also for concurrency_live_keys, rate_limit_live_keys and flow_control_key_waiters when used is withheld because the caller may not reveal personal data in the namespace (D022-133).'}
     RunOriginAdditions:
       description: Values added to the canonical `DatabaseExecutionOrigin` enumeration (name kept for compatibility) used by `Run.origin` and `listRuns?origin=`.
       type: string

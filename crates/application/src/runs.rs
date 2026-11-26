@@ -2111,20 +2111,33 @@ where
                         fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
                     };
                     // a start that queued for its gates has no step yet: the signal is held with the run and the
-                    // grant of its start delivers it, when some node of the definition can ever wait for it (feature
-                    // 022, T022-109, decision D022-087)
+                    // grant of its start delivers it, when a wait of its name is on the start's entry path, which the
+                    // grant reaches, and its payload copied to each keeps the run within its output bound; otherwise
+                    // it is refused as the delivery would refuse it with room on the key, and nothing is created
+                    // (feature 022, T022-109, decisions D022-087 and D022-126)
                     let queued = {
                         let (def, state) = tx.parts();
-                        state.run_gates().is_waiting().then(|| {
-                            def.nodes().any(|node| {
-                                matches!(
-                                    node.kind(),
-                                    NodeKind::WaitEvent { event_type, .. } if event_type.as_str() == signal.name
-                                )
-                            })
-                        })
+                        state
+                            .run_gates()
+                            .is_waiting()
+                            .then(|| def.entry_path().waits_for(signal.name))
                     };
-                    match queued {
+                    if let Some(waits) = queued.filter(|waits| *waits > 0) {
+                        let retained = tx
+                            .logical_output_bytes()
+                            .await
+                            .map_err(|error| store_failure(pending_completion, error))?;
+                        let additional = u64::try_from(signal.payload.len())
+                            .unwrap_or(u64::MAX)
+                            .saturating_mul(u64::try_from(waits).unwrap_or(u64::MAX));
+                        if retained.saturating_add(additional)
+                            > crate::execution::MAX_RUN_OUTPUT_BYTES as u64
+                        {
+                            drop(tx);
+                            return Err(AppError::QuotaExceeded("output retained by one run"));
+                        }
+                    }
+                    match queued.map(|waits| waits > 0) {
                         Some(true) => {
                             let held = HeldSignal {
                                 name: signal.name.to_owned(),
@@ -2432,23 +2445,24 @@ where
             Some(mut run) => {
                 self.reveal_permit_labels(principal, std::slice::from_mut(&mut run))
                     .await?;
-                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014)
+                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014), to a
+                // caller who sees the key's label only: the rank counts the runs waiting on the same key ahead of it, the
+                // estimate is another run's grant instant plus the window (D022-153, D022-067 item 8), and the read of
+                // the place takes time that grows with the key's grants and waiters, so it is not even made for another
+                // caller (D022-155). The slot's limit is already bounded by the namespace's ceiling without the key.
                 if let Some(slot) = run.rate_limit.as_mut()
                     && matches!(
                         slot.state,
                         crate::flow_control_keys::RunGateState::Waiting { .. }
                     )
+                    && slot.label().is_some()
                     && let Some(mut place) = self.rate_place(principal, id).await?
                 {
-                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014); and the
-                    // estimate is another run's grant instant plus the window, which would link the two runs for a
-                    // caller who may not see the label (D022-067 item 8)
-                    if slot.label().is_none()
-                        || matches!(
-                            run.concurrency.as_ref().map(|permit| permit.state),
-                            Some(crate::flow_control_keys::RunGateState::Waiting { .. })
-                        )
-                    {
+                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014)
+                    if matches!(
+                        run.concurrency.as_ref().map(|permit| permit.state),
+                        Some(crate::flow_control_keys::RunGateState::Waiting { .. })
+                    ) {
                         place.estimated_grant_at = None;
                     }
                     slot.place(place);

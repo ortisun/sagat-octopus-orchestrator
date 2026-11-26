@@ -321,8 +321,10 @@ impl PgRunTx {
         // a run's start: its grant may end the run in this transaction (an entry that is an `end` node), whose commit locks
         // the run's active-run counter row (slot 6 of ADR-0050's merged order), and deleting its waiter row locks its
         // queued-run counter row (slot 8b). The active-run counter row is taken first, before the keys (slot 7), as an
-        // admission takes it (batch 3 reviews of 2026-11-25, correctness Major 1); a step's grant never ends its run here
-        if node.is_none() {
+        // admission takes it (batch 3 reviews of 2026-11-25, correctness Major 1), and only when the definition's entry
+        // path can end the run here (decision D022-126 item 2): an entry of activities and timers takes no extra lock. A
+        // step's grant never ends its run here
+        if node.is_none() && self.def.entry_path().can_end() {
             sqlx::query("SELECT run_active_counts_lock_slot($1, $2)")
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())

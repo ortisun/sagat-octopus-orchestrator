@@ -85,6 +85,13 @@ The reviews found four more facts:
    audit record (`DELIVERY_FAILED`) and the start is granted without it. A waiter's transaction that does not commit is
    rolled back, and the rollback awaited, before the next waiter is tried, so that a second waiter of the same run
    finds the run free.
+   *Amended 2026-11-26, delegate (OD-2026-11-24-4; feature 022 decisions D022-124 and D022-125):* a skipped waiter
+   whose grant keeps failing is no longer eligible: its failure is recorded in a row of its own outside the run's
+   journal (`flow_control_grant_failures`: its class and first instant), and the one eligibility text excludes a
+   waiter with such a row, so it neither reserves room ahead of a younger waiter nor holds back a new arrival at
+   admission, on a key of limit 1 too. The pass still tries it first, in its place; the first later try that decides
+   it deletes the row, and it counts ahead again. A commit that fails after a held signal was delivered is a failure
+   of the delivery: the grant is tried once more without the signal.
 5. **One timeout routine.** A waiter has one deadline, the earlier of its gates'. At it, one transaction
    MUST journal the `wait_timed_out` of the gate that refuses it then (`rate_limit` first when both do) and
    the `dequeued` of the other. A grant MUST skip a waiter past its deadline. A waiter of a terminal run is

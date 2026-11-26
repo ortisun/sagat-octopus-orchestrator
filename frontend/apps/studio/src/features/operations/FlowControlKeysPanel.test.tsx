@@ -123,6 +123,9 @@ describe('the flow-control keys of a namespace', () => {
     expect(cells(row)[5]).not.toMatch(/to the minute/);
     const region = screen.getByRole('region', { name: 'Concurrency keys' });
     expect(region).toHaveTextContent(/one row per group, summed over its keys, and no key/);
+    // decision D022-131: a group is read whole on one page; the note never says a group may take more than one page
+    expect(region).toHaveTextContent(/each group read whole on one page/);
+    expect(region).not.toHaveTextContent(/more than one page/);
     expect(region).not.toHaveTextContent(/Key label|Hidden/);
     await user.click(within(region).getByRole('button', { name: 'Load more concurrency keys' }));
     await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
@@ -132,7 +135,7 @@ describe('the flow-control keys of a namespace', () => {
     expect(cells(within(rate).getAllByRole('row')[1] as HTMLElement).slice(3, 6)).toEqual(['10', '2', '7']);
   });
 
-  it('says on a group row whose sums were read across pages that its totals may be above the limit (D022-101)', async () => {
+  it('never marks a group row as read across pages: each group is read whole (D022-131)', async () => {
     const { user } = await mount({
       'GET /namespaces/ns-1/concurrency-keys': (_init, url) => {
         const query = new URL(url, 'http://studio.test').searchParams;
@@ -148,14 +151,14 @@ describe('the flow-control keys of a namespace', () => {
     expect(first).toHaveTextContent(/^accounts$/);
     await user.click(screen.getByRole('button', { name: 'Load more concurrency keys' }));
     await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
-    const spanning = within(within(table).getAllByRole('row')[2] as HTMLElement).getByRole('rowheader');
-    expect(spanning).toHaveTextContent('regions');
-    expect(spanning).toHaveTextContent('Totals read across pages; may be above the limit');
-    // the words are part of the row header, so assistive technology reads them with every cell of the row
-    expect(spanning).toHaveAccessibleName(/^regions.*totals read across pages; may be above the limit/i);
+    // `spansPages` is deprecated and always false (D022-131); a `true` sent by an older platform is not shown either
+    const second = within(within(table).getAllByRole('row')[2] as HTMLElement).getByRole('rowheader');
+    expect(second).toHaveTextContent(/^regions$/);
+    expect(second).toHaveAccessibleName('regions');
     const rate = await screen.findByRole('table', { name: /Rate-limit keys of payments, one row per group/ });
     const rateRow = within(within(rate).getAllByRole('row')[1] as HTMLElement).getByRole('rowheader');
-    expect(rateRow).toHaveAccessibleName(/^=provider-sync\/fetch.*totals read across pages; may be above the limit/i);
+    expect(rateRow).toHaveAccessibleName('=provider-sync/fetch');
+    expect(screen.queryByText(/read across pages/i)).toBeNull();
   });
 
   it('filters by group with the keyboard and shows the platform refusal of a group that is no group', async () => {

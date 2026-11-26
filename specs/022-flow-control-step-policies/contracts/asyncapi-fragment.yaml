@@ -8,6 +8,10 @@ info:
     properties and new enumeration values only. The baseline (events.baseline.json) is regenerated on
     purpose and its diff reviewed. Bodies are payload-free: identifiers, status and trace metadata only
     (ADR-0027 protected outbox). Test-tree runs produce none of the outbound messages below.
+
+    Amended 2026-11-26 (decision D022-152, superseding D022-135 item 1): the `ops.alert.fired` and
+    `ops.alert.resolved` messages of the canonical contract are never sent for the four flow-control alert kinds: a
+    subscription's endpoint holds no reveal right, and their state and counts tell which runs share a key.
 channels:
   outboundWebhook:
     address: '{subscriberUrl}'

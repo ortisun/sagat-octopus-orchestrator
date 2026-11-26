@@ -329,6 +329,38 @@ pub struct GateWaiter {
     pub tenant_id: sagat_domain::identity::TenantId,
     pub run_id: sagat_domain::execution::RunId,
     pub node: Option<sagat_domain::workflow::NodeId>,
+    /// The attempt the waiter is queued for: 0 for a run's start.
+    pub attempt: u32,
+    /// Whether the waiter's grant kept failing at an earlier try (a `flow_control_grant_failures` row, decision
+    /// D022-124): it is not counted ahead of the younger waiters until a try decides it.
+    pub grant_failing: bool,
+}
+
+/// The closed class of a failure of a waiter's grant that does not clear on its own, as its failure row keeps it
+/// (decision D022-124).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantFailureClass {
+    /// The run's version cannot be read by this build (G460).
+    UnreadableDefinition,
+    /// The store refused a row of the grant (a constraint, a quota, a conflict).
+    Refused,
+    /// The domain refused the grant's transition.
+    Execution,
+    /// Any other failure of the store.
+    Internal,
+}
+
+impl GrantFailureClass {
+    /// The stored word.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnreadableDefinition => "UNREADABLE_DEFINITION",
+            Self::Refused => "REFUSED",
+            Self::Execution => "EXECUTION",
+            Self::Internal => "INTERNAL",
+        }
+    }
 }
 
 /// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3, plan "grant pass": at most 256 grants per

@@ -206,6 +206,17 @@ namespace lock (OD-2026-11-19-4; for the rate-limit keys OD-2026-11-20-11). So, 
 
 While the count is above the ceiling, a step whose key is new is refused; keys that exist are decided as before.
 
+The flow-control alerts (sections 8 to 10 and 14) are listed only to a caller with the namespace's reveal grant and are
+not sent to subscriptions (D022-152); `getRun`'s `rateLimit.position` and `estimatedGrantAt` are null without it
+(D022-153). Every surface and its gate is listed in decision D022-151.
+
+How close a namespace is to these ceilings is in its quota view (`GET /namespaces/{namespaceId}/quotas`): the `used` of
+`concurrency_live_keys`, `rate_limit_live_keys` and `flow_control_key_waiters` is shown only to a caller who may reveal
+personal data in the namespace (the reveal grant of the key listings); everyone else reads `usageWithheld: true` and no
+`used`, since the live-key count changes exactly when a key's last run ends (D022-133). Give the operators who watch
+these ceilings the reveal grant. That a refusal at the ceiling depends on whether a key exists is itself an oracle, an
+open owner question (G022-040).
+
 A run's start counts under the namespace's admission lock, so two starts never pass a ceiling together; a step's
 readiness round takes no such lock. A rate-limit window row stays while a waiter or a grant the purge must keep uses it
 (its window row's longest period and one more minute after the grant's lease), so a key used once counts for that long.
@@ -241,6 +252,22 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
   `SELECT run_id, name, held_at FROM flow_control_held_signals WHERE tenant_id = '<tenant>' AND namespace_id =
   '<namespace>' ORDER BY held_at`. Rolling back migration `20270214000000` is refused while one is held: let the runs
   be granted or end first.
+  A signal is held only when a `waitEvent` of its name is on the start's entry path and its payload keeps the run within
+  its 4 MiB retained-output bound; otherwise the request is refused, with nothing created, as with room on the key
+  (`SIGNAL_NOT_ACCEPTED_AT_START`, `QUOTA_EXCEEDED`; D022-126). `flow_control_held_signals_total{outcome}` counts the
+  held, delivered and dropped signals (`held`, `delivered`, `dropped_not_waiting`, `dropped_output_bound`,
+  `dropped_run_ended`, `dropped_delivery_failed`; D022-127): a steady `dropped_not_waiting` means the branch the grant
+  takes does not reach the wait.
+- A waiter whose grant keeps failing (a version this build cannot read, a row a constraint refuses, an execution error;
+  not a busy run or a failure that clears on its own) is skipped by every pass and logged `a flow-control grant failed`
+  with its run, counted `scheduler_actions_total{kind="gate_grant",outcome="failed"}`, and recorded in
+  `flow_control_grant_failures` with the class of its failure (`UNREADABLE_DEFINITION`, `REFUSED`, `EXECUTION`,
+  `INTERNAL`) and its first instant. While it has that row it does not count ahead of the younger waiters, which are
+  granted past it (D022-124); the pass still tries it first, and the first try that decides it deletes the row. The
+  failing waiters of a namespace: `SELECT run_id, node, attempt, failure, first_failed_at FROM
+  flow_control_grant_failures WHERE tenant_id = '<tenant>' AND namespace_id = '<namespace>' ORDER BY first_failed_at`.
+  Fix the cause (roll the build forward, drop the refusing object) or cancel the run; never delete the row by hand
+  while the cause remains (the next pass writes it again).
 
 ### 5.1 The life of a waiter
 
@@ -593,12 +620,12 @@ Every other caller reads `view: GROUPS`: `items` is empty and `groups` holds one
 `holders`, `waiters`, `oldestWaitSince` and `oldestHolderSince` (concurrency) or `grantsInWindow`, `unleasedGrants`,
 `waiters` and `oldestWaitSince` (rate limits) summed over the group's keys, whole instants (D022-061, D022-086). A group
 row never says how many keys the group has, nor when its next slot frees: both would tell which runs share a key. A
-page of groups reads at most 200 key rows; a group with more keys is summed across the pages that read it, each page
-one snapshot (its counts may move between pages), and its row is on the page that reads its last key, with
-`spansPages: true` (its sums mix the pages' snapshots, so it may show more holders than its keys allow, D022-101); a
-page can hold no group and still have a `nextCursor`: follow the cursor. A cursor is sealed for its namespace, its
+page of groups holds at most 5 groups, each summed whole over all its keys in the page's one snapshot, whatever its size
+and whether or not the listing is filtered: a group is never split across pages, the cursor names only the place between
+two groups, and `spansPages` is always `false` (deprecated, D022-131). A very large group (up to the namespace's
+`concurrency_live_keys`, at most 100,000 keys) still reads within the 2 s timeout; a page that does not is a `503`. A cursor is sealed for its namespace, its
 kind of listing and the digest key version in force: an altered, foreign, other group's or forcibly retired one is a
-`400`, and so is one more than fifteen minutes old (read the listing again without a cursor, D022-100); an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
+`400`, and so is one more than fifteen minutes old or stamped more than a minute ahead of the reader's clock (read the listing again without a cursor, D022-100, D022-129); an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
 is a `404`.
 
 One run: `GET /runs/{runId}` shows `concurrency` (`state` `HOLDING` or `WAITING`, `pool`, `group`, `keyLabel`, `since`,

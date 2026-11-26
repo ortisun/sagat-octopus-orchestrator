@@ -5,8 +5,9 @@ import type { components } from '../../api/schema';
 /**
  * The flow-control keys of a namespace (feature 022): the live concurrency keys (FR-022-022) and the rate-limit keys
  * (FR-022-048), oldest wait first, by key label only, to a caller who may reveal personal data in the namespace; one row
- * per group to every other caller (`view: GROUPS`, decision D022-086). The cursor is opaque and sealed by the platform:
- * it is sent back as it came and never read.
+ * per group to every other caller (`view: GROUPS`, decision D022-086), each group read whole on one page and never across
+ * pages (decision D022-131: `spansPages` is always false, deprecated, and not shown). The cursor is opaque and sealed by
+ * the platform: it is sent back as it came and never read.
  */
 
 type Schemas = components['schemas'];
@@ -63,15 +64,6 @@ export function poolWords(pool: unknown): string {
 export function queuedWords(queued: number): string {
   if (queued === 0) return 'No run of this namespace is queued.';
   return `${queued} ${queued === 1 ? 'run of this namespace is' : 'runs of this namespace are'} queued (waiting for a permit or a slot, each run counted once).`;
-}
-
-/**
- * A group whose sums were begun by an earlier page mixes the snapshots of the pages that read it, so its totals may be
- * above its keys' limits (`spansPages`, decision D022-101); `null` for a row read in one page, or a platform that does
- * not say.
- */
-export function spansPagesWords(group: { spansPages?: boolean }): string | null {
-  return group.spansPages === true ? 'Totals read across pages; may be above the limit' : null;
 }
 
 /** Why a rate-limit key, or group, has no instant for its next slot, in the contract's words. */

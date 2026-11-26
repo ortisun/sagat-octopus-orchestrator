@@ -37,14 +37,37 @@ macro_rules! live_gate_run {
     };
 }
 
-/// A waiter (alias `$w`, its run `$r`) the grant pass may grant at the instant `$now`: not past its queue deadline, of a
-/// run the pass serves ([`live_gate_run!`]). Its own limit is checked beside it by each statement, over its own window.
-/// One text for every use of the predicate (the grant routine's waiters ahead, the pass's listing of a key's waiters,
-/// admission's eligible waiter, the place estimate; task T022-112, decision D022-068 item 6), as [`purgeable_grant!`]
-/// is for the purge; `scripts/check-architecture.py` refuses a copy written out elsewhere.
-macro_rules! eligible_gate_waiter {
+/// A waiter (alias `$w`, its run `$r`) the grant pass serves at the instant `$now`: not past its queue deadline, of a
+/// run the pass serves ([`live_gate_run!`]). The pass's listing of a key's waiters reads these, so that a waiter whose
+/// grant keeps failing is still tried, in its place (decision D022-124); every other use reads
+/// [`eligible_gate_waiter!`].
+macro_rules! queued_gate_waiter {
     ($w:literal, $r:literal, $now:literal) => {
         concat!($w, ".deadline_at > ", $now, " AND ", live_gate_run!($r))
+    };
+}
+
+/// A waiter (alias `$w`, its run `$r`) the grant pass may grant at the instant `$now`: a [`queued_gate_waiter!`] whose
+/// grant has not kept failing (no `flow_control_grant_failures` row, decision D022-124). Its own limit is checked
+/// beside it by each statement, over its own window. One text for every use of the predicate (the grant routine's
+/// waiters ahead, admission's eligible waiter, the place estimate, the stuck alert; task T022-112, decision D022-068
+/// item 6), as [`purgeable_grant!`] is for the purge; `scripts/check-architecture.py` refuses a copy written out
+/// elsewhere.
+macro_rules! eligible_gate_waiter {
+    ($w:literal, $r:literal, $now:literal) => {
+        concat!(
+            queued_gate_waiter!($w, $r, $now),
+            " AND NOT EXISTS (SELECT 1 FROM flow_control_grant_failures grant_failure \
+               WHERE grant_failure.tenant_id = ",
+            $w,
+            ".tenant_id AND grant_failure.run_id = ",
+            $w,
+            ".run_id AND grant_failure.node = ",
+            $w,
+            ".node AND grant_failure.attempt = ",
+            $w,
+            ".attempt)"
+        )
     };
 }
 
@@ -130,9 +153,9 @@ pub use execution::{PgRunStore, PgRunTx};
 /// (D022-058).
 #[doc(hidden)]
 pub use flow_control::{
-    CONCURRENCY_GROUP_AFTER_SQL, CONCURRENCY_GROUP_KEYS_SQL, CONCURRENCY_GROUP_NAMED_AFTER_SQL,
-    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_GROUP_AFTER_SQL, RATE_GROUP_KEYS_SQL,
-    RATE_GROUP_NAMED_AFTER_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
+    CONCURRENCY_GROUP_AFTER_SQL, CONCURRENCY_GROUP_NAMED_AFTER_SQL, CONCURRENCY_GROUP_SUMS_SQL,
+    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_GROUP_AFTER_SQL, RATE_GROUP_NAMED_AFTER_SQL,
+    RATE_GROUP_SUMS_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
 };
 /// The deciding transactions of feature 022's gates file their keys through these, inside the store; exposed for the
 /// integration suite that proves the rotation (T022-095).
@@ -192,11 +215,21 @@ mod gate_predicate_tests {
     #[test]
     fn the_eligibility_of_a_waiter_is_one_text() {
         assert_eq!(
-            eligible_gate_waiter!("w", "r", "now()"),
+            queued_gate_waiter!("w", "r", "now()"),
             // split as the macro is, so that the architecture check does not read it as a copy
             concat!(
                 "w.deadline_at > now() AND r.status IN ('RUNNING', 'WAITING') ",
                 "AND NOT r.paused"
+            )
+        );
+        // decision D022-124: a waiter whose grant keeps failing is queued, not eligible
+        assert_eq!(
+            eligible_gate_waiter!("w", "r", "now()"),
+            concat!(
+                "w.deadline_at > now() AND r.status IN ('RUNNING', 'WAITING') ",
+                "AND NOT r.paused AND NOT EXISTS (SELECT 1 FROM flow_control_grant_failures grant_failure ",
+                "WHERE grant_failure.tenant_id = w.tenant_id AND grant_failure.run_id = w.run_id ",
+                "AND grant_failure.node = w.node AND grant_failure.attempt = w.attempt)"
             )
         );
         assert_eq!(

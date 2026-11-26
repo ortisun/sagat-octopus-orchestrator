@@ -6,13 +6,13 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use sagat_telemetry::{
-    ConcurrencyOutcome, FlowControlMetric, FlowControlScope, FlowControlSpan, Metrics,
-    RateLimitOutcome, flow_control,
+    ConcurrencyOutcome, FlowControlMetric, FlowControlScope, FlowControlSpan, HeldSignalOutcome,
+    Metrics, RateLimitOutcome, flow_control,
 };
 
 #[test]
 fn the_metric_names_and_label_keys_are_those_of_the_plan() {
-    let plan: [(FlowControlMetric, &str, &[&str]); 8] = [
+    let plan: [(FlowControlMetric, &str, &[&str]); 9] = [
         (
             FlowControlMetric::ConcurrencyAcquisitions,
             "concurrency_acquisitions_total",
@@ -53,6 +53,12 @@ fn the_metric_names_and_label_keys_are_those_of_the_plan() {
             "rate_limit_unleased_grants",
             &[],
         ),
+        // decision D022-127 (batch 5 security nit): the held, delivered and dropped signals of Signal-with-Start
+        (
+            FlowControlMetric::HeldSignals,
+            "flow_control_held_signals_total",
+            &["outcome"],
+        ),
     ];
     assert_eq!(plan.len(), FlowControlMetric::ALL.len());
     for (metric, name, keys) in plan {
@@ -88,6 +94,17 @@ fn the_metric_names_and_label_keys_are_those_of_the_plan() {
             "timed_out",
             "dequeued",
             "slot_returned"
+        ]
+    );
+    assert_eq!(
+        HeldSignalOutcome::ALL.map(HeldSignalOutcome::as_str),
+        [
+            "held",
+            "delivered",
+            "dropped_not_waiting",
+            "dropped_output_bound",
+            "dropped_run_ended",
+            "dropped_delivery_failed"
         ]
     );
     assert_eq!(
@@ -127,6 +144,9 @@ fn every_recorded_series_uses_only_the_closed_vocabulary() {
         }
         flow_control::record_grant_lag(0.25);
         flow_control::set_unleased_grants(1.0);
+        for outcome in HeldSignalOutcome::ALL {
+            flow_control::record_held_signal(outcome);
+        }
     });
     let rendered = telemetry.render();
     let (seen, violations) = check(&rendered);
@@ -145,6 +165,7 @@ fn check(rendered: &str) -> (BTreeSet<&'static str>, Vec<String>) {
         .map(ConcurrencyOutcome::as_str)
         .into_iter()
         .chain(RateLimitOutcome::ALL.map(RateLimitOutcome::as_str))
+        .chain(HeldSignalOutcome::ALL.map(HeldSignalOutcome::as_str))
     {
         allowed.insert(format!("outcome=\"{outcome}\""));
     }

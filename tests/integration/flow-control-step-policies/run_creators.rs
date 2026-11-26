@@ -1586,17 +1586,42 @@ async fn a_held_signal_is_dropped_with_an_audit_when_its_queued_run_times_out_or
     }
 }
 
-/// Decision D022-087 item 3: a held signal whose node is not on the entry's path (an activity runs first) finds no step
+/// A Signal-with-Start of `workflow` for `id`, signal `payment.confirmed` with `payload`, as `principal`.
+async fn signal_with_start_by(
+    w: &World,
+    principal: &sagat_domain::identity::Principal,
+    workflow: WorkflowId,
+    id: &str,
+    payload: &[u8],
+) -> Result<sagat_application::runs::SignalStarted, AppError> {
+    let key = idempotency();
+    w.runs
+        .signal_with_start(
+            principal,
+            &request(workflow, br#"{"k": "s", "accountId": "acct-1"}"#, &key),
+            business(id),
+            SignalAtStart {
+                name: "payment.confirmed",
+                payload,
+            },
+            &ctx(),
+        )
+        .await
+}
+
+/// Decision D022-087 item 3 as narrowed by D022-126: a held signal whose wait is on the entry path but on a branch the
+/// grant does not take (the entry is a condition, true for this input, whose true branch is an activity) finds no step
 /// waiting at the grant; it is dropped with an audit record (`NOT_WAITING_AT_GRANT`), as `signalRun` would refuse it,
-/// and the run goes on.
+/// and the run goes on. With room on the key, the creation takes the same branch and refuses the request.
 #[tokio::test]
-async fn a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit() {
+async fn a_held_signal_the_branch_taken_does_not_reach_is_dropped_with_an_audit() {
     let w = gated_world().await;
     let mut doc = document(
-        "creators-signal-later",
-        "g",
+        "creators-signal-branch",
+        "check",
         vec![
-            with(activity("g"), "next", json!("w")),
+            crate::support::engine::condition_node("check", "input.k == 's'", "g", "w"),
+            activity("g"),
             wait_node("w", "payment.confirmed", "input.k", 300_000, None),
         ],
     );
@@ -1605,14 +1630,14 @@ async fn a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit()
     let first = signal_with_start(&w, workflow, "cart-1").await;
     assert!(
         matches!(first, Err(AppError::SignalRefused { .. })),
-        "with room, nothing waits at creation: {first:?}"
+        "with room, the branch taken does not wait: {first:?}"
     );
     let holder = w
         .start(workflow, &json!({"k": "s", "accountId": "acct-1"}))
         .await;
     let held = signal_with_start(&w, workflow, "cart-2")
         .await
-        .expect("held");
+        .expect("held: a branch of the entry path waits for it");
     assert!(held.held, "{held:?}");
     let run = held.run.info.run_id;
     w.operate_run(holder, sagat_application::runs::RunOperation::Cancel)
@@ -1633,6 +1658,196 @@ async fn a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit()
         "the run goes on"
     );
     w.assert_consistent(run).await;
+}
+
+/// Batch 5 correctness minor 1 and security suspicion 4 (decision D022-126): a Signal-with-Start whose wait is not on
+/// the start's entry path (an activity runs first) is refused when the start would queue, as it is with room on the
+/// key (`SIGNAL_NOT_ACCEPTED_AT_START`), and nothing is created: no run, no waiter row, no held signal. Before, it was
+/// held, charged to the tenant, and always dropped at the grant.
+#[tokio::test]
+async fn a_signal_with_start_whose_wait_is_not_on_the_entry_path_is_refused_when_the_start_would_queue()
+ {
+    let w = gated_world().await;
+    let mut doc = document(
+        "creators-signal-later",
+        "g",
+        vec![
+            with(activity("g"), "next", json!("w")),
+            wait_node("w", "payment.confirmed", "input.k", 300_000, None),
+        ],
+    );
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let with_room = signal_with_start(&w, workflow, "cart-1").await;
+    assert_eq!(
+        with_room.expect_err("refused with room"),
+        AppError::SignalRefused {
+            reason: "SIGNAL_NOT_ACCEPTED_AT_START"
+        }
+    );
+    let _holder = w
+        .start(workflow, &json!({"k": "s", "accountId": "acct-1"}))
+        .await;
+    let queued = signal_with_start(&w, workflow, "cart-2").await;
+    assert_eq!(
+        queued.expect_err("refused when the start would queue"),
+        AppError::SignalRefused {
+            reason: "SIGNAL_NOT_ACCEPTED_AT_START"
+        }
+    );
+    assert_eq!(
+        runs_of(&w, workflow).await.len(),
+        1,
+        "only the holder exists"
+    );
+    let (waiters, held): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM concurrency_waiters WHERE permit_scope = 'RUN'), \
+                (SELECT count(*) FROM flow_control_held_signals)",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!((waiters, held), (0, 0), "no waiter row and no held signal");
+}
+
+/// Batch 5 correctness minor 1 (decision D022-126 item 1): a Signal-with-Start whose payload, copied to every wait of
+/// its name on the entry path (seventeen parallel waits, 250 KiB each), would pass the run's 4 MiB retained-output bound
+/// is refused `QUOTA_EXCEEDED` when the start would queue, as it is with room on the key, and nothing is created.
+#[tokio::test]
+async fn a_signal_with_start_over_the_output_bound_is_refused_when_the_start_would_queue() {
+    let w = gated_world().await;
+    let branches: Vec<String> = (0..17).map(|i| format!("w{i:02}")).collect();
+    let names: Vec<&str> = branches.iter().map(String::as_str).collect();
+    let mut nodes = vec![crate::support::engine::parallel_node("p", &names, "all")];
+    nodes.extend(
+        names
+            .iter()
+            .map(|id| wait_node(id, "payment.confirmed", "input.k", 300_000, None)),
+    );
+    let mut doc = document("creators-signal-bound", "p", nodes);
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let payload = format!("\"{}\"", "x".repeat(250 * 1024 - 2));
+    let refused = |result: Result<sagat_application::runs::SignalStarted, AppError>| {
+        assert_eq!(
+            result.expect_err("over the bound"),
+            AppError::QuotaExceeded("output retained by one run")
+        );
+    };
+    refused(signal_with_start_by(&w, &w.admin, workflow, "cart-1", payload.as_bytes()).await);
+    let _holder = w
+        .start(workflow, &json!({"k": "s", "accountId": "acct-1"}))
+        .await;
+    refused(signal_with_start_by(&w, &w.admin, workflow, "cart-2", payload.as_bytes()).await);
+    assert_eq!(
+        runs_of(&w, workflow).await.len(),
+        1,
+        "only the holder exists"
+    );
+    let held: i64 = sqlx::query_scalar("SELECT count(*) FROM flow_control_held_signals")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("rows");
+    assert_eq!(held, 0, "no held signal");
+}
+
+/// The value of the series `flow_control_held_signals_total{outcome="<outcome>"}` on the process's page, 0 when absent.
+fn held_signals_counted(page: &str, outcome: &str) -> f64 {
+    let series = format!("flow_control_held_signals_total{{outcome=\"{outcome}\"}} ");
+    page.lines()
+        .find_map(|line| line.strip_prefix(&series))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0.0)
+}
+
+/// Batch 5 security nit (decision D022-127): the held, delivered and dropped signals are counted by outcome once their
+/// transaction commits, in the closed vocabulary (no tenant, run or signal name). Other tests of the process count too,
+/// so each outcome is asserted to have grown by at least the commits of this test.
+#[tokio::test]
+async fn the_held_signal_counter_counts_each_outcome_after_its_commit() {
+    let telemetry = sagat_telemetry::Metrics::global();
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-counted")).await;
+    let before = telemetry.render();
+    let first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let delivered = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    let ended = signal_with_start(&w, workflow, "cart-3")
+        .await
+        .expect("held");
+    assert!(delivered.held && ended.held);
+    w.operate_run(
+        ended.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    let after = telemetry.render();
+    for (outcome, at_least) in [
+        ("held", 2.0),
+        ("delivered", 1.0),
+        ("dropped_run_ended", 1.0),
+    ] {
+        assert!(
+            held_signals_counted(&after, outcome) - held_signals_counted(&before, outcome)
+                >= at_least,
+            "{outcome}: {}",
+            after
+                .lines()
+                .filter(|line| line.starts_with("flow_control_held_signals_total"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    for line in after
+        .lines()
+        .filter(|line| line.starts_with("flow_control_held_signals_total{"))
+    {
+        let labels = line
+            .split_once('{')
+            .and_then(|(_, rest)| rest.split_once('}'));
+        assert!(
+            labels
+                .is_some_and(|(labels, _)| labels.starts_with("outcome=") && !labels.contains(',')),
+            "one label, the outcome: {line}"
+        );
+    }
+}
+
+/// Re-read security nit 3 (decision D022-129): the audit record of a dropped signal names its sender whole (an actor is
+/// bounded at 255 characters), not cut to 128.
+#[tokio::test]
+async fn a_dropped_signal_keeps_the_whole_name_of_its_sender() {
+    use sagat_domain::identity::Role;
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-sender")).await;
+    let _first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let name = format!("carol-{}", "x".repeat(200));
+    let carol = w.member(&name, Role::Operator).await;
+    w.bind_everything(&carol).await;
+    let held = signal_with_start_by(&w, &carol, workflow, "cart-2", br#"{"paid": true}"#)
+        .await
+        .expect("held");
+    assert!(held.held, "{held:?}");
+    let run = held.run.info.run_id;
+    w.operate_run(run, sagat_application::runs::RunOperation::Cancel)
+        .await;
+    let (_, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+    let reason = dropped.first().cloned().flatten().unwrap_or_default();
+    assert!(
+        reason.starts_with("RUN_ENDED") && reason.contains(&format!("sent by '{name}'")),
+        "the whole sender: {reason}"
+    );
 }
 
 /// FR-018-024 as amended by D022-087 item 2: a Signal-with-Start whose start would queue, of a signal no node of the
@@ -2760,13 +2975,46 @@ async fn a_held_signal_is_delivered_without_reauthorization_and_keeps_its_sender
         .expect("created and held");
     let run = queued.run.info.run_id;
     assert!(queued.held, "{queued:?}");
-    sqlx::query(
+    let demoted = sqlx::query(
         "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = 'carol'",
     )
     .bind(w.admin.tenant_id().as_uuid())
     .execute(&w.db.pool)
     .await
-    .expect("demoted");
+    .expect("demoted")
+    .rows_affected();
+    // the demotion took effect (re-read correctness finding 6, decision D022-130 item 4): one membership row changed,
+    // the identity store reads carol back as a viewer, and a signal carol sends herself now is refused
+    assert_eq!(demoted, 1, "carol's one membership row");
+    let membership = sagat_application::identity::IdentityStore::find_membership(
+        &PgIdentityStore::new(w.db.pool.clone()),
+        w.admin.tenant_id(),
+        carol.subject(),
+    )
+    .await
+    .expect("read")
+    .expect("carol is a member");
+    assert_eq!(membership.role(), Role::Viewer, "{membership:?}");
+    let as_viewer = sagat_domain::identity::Principal::new(
+        w.admin.tenant_id(),
+        carol.subject().clone(),
+        membership.role(),
+    );
+    let direct = w
+        .runs
+        .signal(
+            &as_viewer,
+            run,
+            "payment.confirmed",
+            br#"{"paid": true}"#,
+            &idempotency(),
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(direct, Err(AppError::Forbidden { .. })),
+        "a viewer may not signal: {direct:?}"
+    );
     w.operate_run(
         first.run.info.run_id,
         sagat_application::runs::RunOperation::Cancel,

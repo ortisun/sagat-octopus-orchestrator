@@ -59,8 +59,19 @@ async fn seed(w: &World, table: &'static str, sql: &'static str, run: RunId) {
     tx.commit().await.expect("seed");
 }
 
-fn monitor(w: &World) -> Monitor<sagat_infra_postgres::PgRunStore> {
-    Monitor::new(w.store.clone(), MonitorSettings::default())
+/// The engine's monitor over a store of the runtime role's pool, in every run of the suite (batch 5 security nit,
+/// decision D022-130 item 6): the alert detection is what the engine runs as `sagat_app`, so a table its statements read
+/// without a grant fails the owner's run too, as the runtime-role statements of `rate_gate.rs` and `migrations.rs` do.
+async fn monitor(w: &World) -> Monitor<sagat_infra_postgres::PgRunStore> {
+    Monitor::new(runtime_store(w).await, MonitorSettings::default())
+}
+
+/// A store of the runtime role's pool (see [`monitor`]).
+async fn runtime_store(w: &World) -> sagat_infra_postgres::PgRunStore {
+    crate::support::flow_control::gate(sagat_infra_postgres::PgRunStore::new(
+        w.db.runtime_pool_with(4).await,
+        w.cache.clone(),
+    ))
 }
 
 /// `CONCURRENCY_QUEUE_STUCK` (section 8): a key with no room whose oldest eligible waiter queued more than the unclaimed
@@ -73,7 +84,7 @@ async fn a_waiter_passed_over_by_every_holder_raises_concurrency_queue_stuck_unt
     let input = json!({"accountId": "acct-1"});
     let holder = w.start(workflow, &input).await;
     let waiter = w.start(workflow, &input).await;
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(
         alerts(&w, "CONCURRENCY_QUEUE_STUCK").await.is_empty(),
@@ -141,7 +152,7 @@ async fn a_due_window_no_pass_serves_raises_rate_limit_grant_lagging_until_it_is
     .execute(&w.db.pool)
     .await
     .expect("due");
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(
         alerts(&w, "RATE_LIMIT_GRANT_LAGGING").await.is_empty(),
@@ -202,7 +213,7 @@ async fn a_buffer_above_eighty_percent_raises_rate_limit_queue_saturated_until_i
     for _ in 0..8 {
         waiters.push(w.start(workflow, &input).await);
     }
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(
         alerts(&w, "RATE_LIMIT_QUEUE_SATURATED").await.is_empty(),
@@ -235,10 +246,10 @@ async fn a_waiter_of_an_ended_run_raises_flow_control_waiter_orphaned_and_the_ga
     let input = json!({"accountId": "acct-1"});
     let _holder = w.start(workflow, &input).await;
     let waiter = w.start(workflow, &input).await;
-    let sample = w.store.sample().await.expect("a sample");
+    let sample = runtime_store(&w).await.sample().await.expect("a sample");
     assert_eq!(sample.flow_control.rate_run_waiters, 1, "{sample:?}");
     assert_eq!(sample.flow_control.concurrency_run_waiters, 0);
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     assert!(alerts(&w, "FLOW_CONTROL_WAITER_ORPHANED").await.is_empty());
     let page = telemetry.render();
@@ -348,7 +359,7 @@ async fn a_saturated_key_of_one_tenant_fires_beside_thousands_of_another_tenants
     .execute(&w.db.pool)
     .await
     .expect("tenant A's alert of a key that drained");
-    let monitor = monitor(&w);
+    let monitor = monitor(&w).await;
     monitor.run_once().await;
     monitor.run_once().await;
     let states: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
@@ -400,12 +411,263 @@ async fn a_stuck_key_is_judged_against_the_tenants_concurrency_ceiling_below_its
         waiter,
     )
     .await;
-    monitor(&w).run_once().await;
+    monitor(&w).await.run_once().await;
     assert_eq!(
         alerts(&w, "CONCURRENCY_QUEUE_STUCK").await,
         [("accounts".to_owned(), "FIRING".to_owned(), 1)]
     );
     for run in [waiter, holder] {
+        w.operate_run(run, RunOperation::Cancel).await;
+    }
+}
+
+/// Security checks of the quota and alerts fixes (decisions D022-135 and D022-152): a flow-control alert is judged per
+/// key, so its state, count and ages tell which runs share a key; it is listed only to a caller who may reveal personal
+/// data in the namespace. With `flow_control_key_waiters` at 1, one buffered start fires `RATE_LIMIT_QUEUE_SATURATED` for
+/// its group: a Viewer does not see that alert at all, while an alert of another kind stays listed with its count; a
+/// Developer given the reveal grant reads both, with the counts.
+#[tokio::test]
+async fn a_flow_control_alert_is_shown_only_to_a_caller_who_may_reveal_its_keys() {
+    use sagat_application::clock::SystemClock;
+    use sagat_application::operations::OperationsService;
+    use sagat_domain::identity::Role;
+    let w = gated_world().await;
+    set(&w, QuotaResource::FlowControlKeyWaiters, 1).await;
+    let workflow = publish(&w, rated_start("alert-withheld", 1)).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    let waiter = w.start(workflow, &input).await;
+    monitor(&w).await.run_once().await;
+    assert_eq!(
+        alerts(&w, "RATE_LIMIT_QUEUE_SATURATED").await,
+        [("accounts".to_owned(), "FIRING".to_owned(), 1)]
+    );
+    // an alert of another kind, seeded, keeps its count for every reader
+    sqlx::query(
+        "INSERT INTO operational_alerts (id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
+                last_seen_at, fired_count, item_count, oldest_seconds) \
+         VALUES (gen_random_uuid(), $1, $2, 'DEAD_ITEMS', 'events', 'FIRING', 'warning', now(), now(), 1, 3, 0)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("an alert of another kind");
+    let service = OperationsService::new(
+        runtime_store(&w).await,
+        SystemClock,
+        "docs/runbooks/alerts.md",
+    );
+    let read = |who: sagat_domain::identity::Principal| {
+        let (service, w) = (&service, &w);
+        async move {
+            let mut lines: Vec<(String, u64)> = service
+                .alerts(
+                    &who,
+                    w.namespace.id(),
+                    None,
+                    None,
+                    None,
+                    &crate::support::engine::ctx(),
+                )
+                .await
+                .expect("the alerts")
+                .into_iter()
+                .map(|alert| (alert.kind.as_str().to_owned(), alert.items))
+                .collect();
+            lines.sort();
+            lines
+        }
+    };
+    let viewer = w.member("vera", Role::Viewer).await;
+    assert_eq!(
+        read(viewer).await,
+        [("DEAD_ITEMS".to_owned(), 3)],
+        "no flow-control alert for a caller without the reveal right"
+    );
+    let dave = w.member("dave", Role::Developer).await;
+    sqlx::query(
+        "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+         VALUES ($1, $2, 'dave', 'admin', clock_timestamp())",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("the reveal grant");
+    assert_eq!(
+        read(dave).await,
+        [
+            ("DEAD_ITEMS".to_owned(), 3),
+            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 1),
+        ],
+        "shown with the reveal grant, with its count"
+    );
+    for run in [holder, waiter] {
+        w.operate_run(run, RunOperation::Cancel).await;
+    }
+}
+
+/// Decision D022-154 (security check of the sweep, item 1): the flow-control alerts are left out by the statement that
+/// pages the alerts, before its limit, so the pages a Viewer reads, and their `nextCursor`, are the same whether a
+/// flow-control alert it may not see fires or not. Two visible alerts and, newest, a `RATE_LIMIT_QUEUE_SATURATED` one are
+/// seeded firing; `GET /namespaces/{namespaceId}/alerts?state=FIRING&limit=1`, followed page after page, answers the same
+/// bodies while that alert fires and after it resolved. Dropped after the limit, the page beside the hidden row came
+/// short and ended the listing (`nextCursor` null) only while it fired.
+#[tokio::test]
+async fn a_viewer_pages_the_alerts_alike_whether_a_flow_control_alert_fires() {
+    use reqwest::StatusCode;
+    use uuid::Uuid;
+    let (api, namespace) = crate::rate_rest::api().await;
+    let tenant: Uuid = sqlx::query_scalar("SELECT tenant_id FROM namespaces WHERE id = $1::uuid")
+        .bind(&namespace)
+        .fetch_one(&api.db.pool)
+        .await
+        .expect("tenant");
+    api.owner_store
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            sagat_domain::identity::TenantId::new(tenant),
+            sagat_domain::identity::Subject::parse("vera").expect("subject"),
+            sagat_domain::identity::Role::Viewer,
+            crate::support::now(),
+        ))
+        .await
+        .expect("a Viewer");
+    // in id order, which the listing reads newest first: two visible alerts, then the hidden one
+    let (older, newer, hidden) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    for (id, kind, subject) in [
+        (older, "DEAD_ITEMS", "events"),
+        (newer, "DEAD_ITEMS", "webhooks"),
+        (hidden, "RATE_LIMIT_QUEUE_SATURATED", "accounts"),
+    ] {
+        sqlx::query(
+            "INSERT INTO operational_alerts (id, tenant_id, namespace_id, kind, subject, state, severity, \
+                    first_seen_at, last_seen_at, fired_count, item_count, oldest_seconds) \
+             VALUES ($1, $2, $3::uuid, $4, $5, 'FIRING', 'warning', now(), now(), 1, 1, 0)",
+        )
+        .bind(id)
+        .bind(tenant)
+        .bind(&namespace)
+        .bind(kind)
+        .bind(subject)
+        .execute(&api.db.pool)
+        .await
+        .expect("an alert");
+    }
+    let pages = || {
+        let (api, namespace) = (&api, &namespace);
+        async move {
+            let mut pages = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let path = match &cursor {
+                    Some(cursor) => format!(
+                        "/namespaces/{namespace}/alerts?state=FIRING&limit=1&cursor={cursor}"
+                    ),
+                    None => format!("/namespaces/{namespace}/alerts?state=FIRING&limit=1"),
+                };
+                let (status, page) = crate::rate_rest::read_as(api, &path, "vera").await;
+                assert_eq!(status, StatusCode::OK, "{page}");
+                cursor = page["nextCursor"].as_str().map(str::to_owned);
+                pages.push(page);
+                if cursor.is_none() || pages.len() > 5 {
+                    break;
+                }
+            }
+            pages
+        }
+    };
+    let firing = pages().await;
+    sqlx::query(
+        "UPDATE operational_alerts SET state = 'RESOLVED', resolved_at = now() WHERE id = $1",
+    )
+    .bind(hidden)
+    .execute(&api.db.pool)
+    .await
+    .expect("the hidden alert resolves");
+    let resolved = pages().await;
+    assert_eq!(
+        firing, resolved,
+        "a Viewer's pages depend on a flow-control alert it may not see"
+    );
+    let ids: Vec<Vec<String>> = resolved
+        .iter()
+        .map(|page| {
+            page["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .map(|alert| alert["id"].as_str().expect("an id").to_owned())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        [vec![newer.to_string()], vec![older.to_string()]],
+        "one visible alert a page, newest first, and a cursor between them"
+    );
+}
+
+/// Decision D022-152 (security check of the sweep, item 3): a flow-control alert is never delivered to a subscription,
+/// whose endpoint holds no reveal right, while an alert of another kind is. A subscription to `ops.alert.fired`; one look
+/// of the monitor fires `RATE_LIMIT_QUEUE_SATURATED` (one buffered start of a key, `flow_control_key_waiters` at 1) and
+/// `STEP_UNCLAIMED` (the holder's step, ready for an hour with no worker): one delivery, of the second, none of the first.
+#[tokio::test]
+async fn a_flow_control_alert_is_never_delivered_while_an_alert_of_another_kind_is() {
+    use uuid::Uuid;
+    let w = gated_world().await;
+    set(&w, QuotaResource::FlowControlKeyWaiters, 1).await;
+    let workflow = publish(&w, rated_start("alert-unsent", 1)).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    let waiter = w.start(workflow, &input).await;
+    sqlx::query(
+        "INSERT INTO webhook_subscriptions \
+         (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+          kinds,rate_per_second,timeout_ms,status,created_by) \
+         VALUES ($1,$2,$3,'ops','WEBHOOK','{}','https://example.invalid/ops', \
+                 'ops-key',ARRAY['ops.alert.fired'],100,1000,'ACTIVE','test')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("a subscription to the fired alerts");
+    sqlx::query(
+        "UPDATE steps SET ready_at = clock_timestamp() - interval '1 hour' WHERE status = 'READY' AND run_id = $1",
+    )
+    .bind(holder.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("the holder's step waits for a worker");
+    monitor(&w).await.run_once().await;
+    assert_eq!(
+        alerts(&w, "RATE_LIMIT_QUEUE_SATURATED").await,
+        [("accounts".to_owned(), "FIRING".to_owned(), 1)]
+    );
+    assert_eq!(alerts(&w, "STEP_UNCLAIMED").await.len(), 1);
+    let delivered: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT a.kind, count(d.id) FROM operational_alerts a \
+           LEFT JOIN webhook_deliveries d \
+             ON d.tenant_id = a.tenant_id AND d.kind = 'ops.alert.fired' \
+            AND d.event_id = 'alert-' || a.id || '-' || a.fired_count || '-ops.alert.fired' \
+          WHERE a.tenant_id = $1 AND a.kind IN ('RATE_LIMIT_QUEUE_SATURATED', 'STEP_UNCLAIMED') \
+          GROUP BY a.kind ORDER BY a.kind",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("the deliveries");
+    assert_eq!(
+        delivered,
+        [
+            ("RATE_LIMIT_QUEUE_SATURATED".to_owned(), 0),
+            ("STEP_UNCLAIMED".to_owned(), 1)
+        ],
+        "no delivery of a flow-control alert, one of the other"
+    );
+    for run in [holder, waiter] {
         w.operate_run(run, RunOperation::Cancel).await;
     }
 }

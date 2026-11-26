@@ -460,6 +460,7 @@ Spans: `workflow.rate_limit.admit`, `workflow.rate_limit.grant`. Attributes as a
 | `rate_limit_waiters` | `scope` |
 | `rate_limit_grant_lag_seconds` (histogram: from the instant a slot was free with a waiter present to the grant) | — |
 | `rate_limit_unleased_grants` | — |
+| `flow_control_held_signals_total` (added 2026-11-26, D022-127) | `outcome` ∈ held, delivered, dropped_not_waiting, dropped_output_bound, dropped_run_ended, dropped_delivery_failed |
 
 `refused_reset` of both families counts a refused reset in each family its start declares, not only in the gate that
 refused it (D022-069 item 4): a reset refused by its slot while its permit was free counts in `rate_limit_decisions_total`

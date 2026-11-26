@@ -414,6 +414,17 @@ impl QuotaResource {
         )
     }
 
+    /// Whether the usage of this resource changes exactly when the last run of a flow-control key ends, so that it
+    /// tells which runs share a key (feature 022, decision D022-133): the quota view shows it only to a caller who may
+    /// reveal personal data in the namespace.
+    #[must_use]
+    pub const fn reveals_key_sharing(self) -> bool {
+        matches!(
+            self,
+            Self::ConcurrencyLiveKeys | Self::RateLimitLiveKeys | Self::FlowControlKeyWaiters
+        )
+    }
+
     /// Whether the quota view can report one exact retained/live usage value.
     #[must_use]
     pub const fn has_usage(self) -> bool {

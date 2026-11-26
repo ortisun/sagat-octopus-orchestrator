@@ -699,3 +699,19 @@ pub async fn keys_due(pool: &sqlx::PgPool) {
         .await
         .expect("due");
 }
+
+/// Gives the world's admin the payload reveal grant in its namespace, so that it reads the usage of the quotas that
+/// tell which runs share a key (`concurrency_live_keys`, `rate_limit_live_keys`, `flow_control_key_waiters`; feature 022,
+/// decision D022-133). A test of what those usages count, not of who may read them.
+pub async fn reveal_to_admin(w: &super::engine::World) {
+    sqlx::query(
+        "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+         VALUES ($1, $2, $3, 'operator', clock_timestamp()) ON CONFLICT DO NOTHING",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(w.admin.subject().as_str())
+    .execute(&w.db.pool)
+    .await
+    .expect("the reveal grant");
+}

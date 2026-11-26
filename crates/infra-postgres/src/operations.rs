@@ -96,6 +96,12 @@ fn alert_from_row(row: &PgRow) -> Result<AlertRecord, StoreError> {
 const ALERT_COLUMNS: &str = "id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
      last_seen_at, resolved_at, fired_count, item_count, oldest_seconds";
 
+/// Whether a change of an alert of `kind` is sent to the namespace's subscriptions: never for a flow-control kind
+/// (decision D022-152).
+fn sends_event(kind: AlertKind) -> bool {
+    !AlertKind::FLOW_CONTROL.contains(&kind)
+}
+
 /// The body subscribers are sent for a change of an alert: identifiers, the kind, counts, ages and
 /// the runbook; never data of a run.
 fn event_body(
@@ -598,7 +604,9 @@ impl MonitorStore for PgRunStore {
             (&out.fired, OutboundKind::AlertFired),
             (&out.resolved, OutboundKind::AlertResolved),
         ] {
-            for alert in alerts {
+            // a flow-control alert is judged per key and tells which runs share a key: a subscription's endpoint holds no
+            // reveal right, so none is sent (feature 022, decision D022-152)
+            for alert in alerts.iter().filter(|alert| sends_event(alert.kind)) {
                 let body = event_body(alert, event, runbook_base, now);
                 let event_id = format!(
                     "alert-{}-{}-{}",
@@ -855,7 +863,59 @@ impl MonitorStore for PgRunStore {
 }
 
 impl AlertReader for PgRunStore {
-    async fn list_alerts(
+    async fn list_alerts_as(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
+        state: Option<AlertState>,
+        before: Option<Uuid>,
+        limit: u32,
+    ) -> Result<(Vec<AlertRecord>, bool), StoreError> {
+        // the alerts and the reader's reveal right in one statement, so one snapshot (decision D022-135): the role of a
+        // member that holds the namespace's reveal grant, on every row. A flow-control alert is left out here, before
+        // the limit, for a reader who may not use the grant, so that a page's size and the cursor the route derives
+        // from it are the same whether such an alert fires or not (decision D022-154); the service drops them too.
+        let reveal_role = crate::reveal_grants::reveal_role_sql("$1", "$2", "$6");
+        let flow_control: Vec<&str> = AlertKind::FLOW_CONTROL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {ALERT_COLUMNS}, {reveal_role} AS reveal_role \
+               FROM operational_alerts \
+              WHERE tenant_id = $1 AND namespace_id = $2 \
+                AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR id < $4) \
+                AND (kind <> ALL($7::text[]) OR {reveal_role} = ANY($8::text[])) \
+              ORDER BY id DESC LIMIT $5"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(state.map(AlertState::as_str))
+        .bind(before)
+        .bind(i64::from(limit))
+        .bind(subject.as_str())
+        .bind(&flow_control)
+        .bind(crate::reveal_grants::reveal_grant_roles())
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        let reveals = rows.first().is_some_and(|row| {
+            row.try_get::<Option<String>, _>("reveal_role")
+                .ok()
+                .flatten()
+                .is_some_and(|role| crate::reveal_grants::may_use_reveal_grant(&role))
+        });
+        let alerts = rows.iter().map(alert_from_row).collect::<Result<_, _>>()?;
+        Ok((alerts, reveals))
+    }
+}
+
+impl PgRunStore {
+    /// Every alert of a namespace, newest first, whoever asks: for tests and the operators' tools only. The API reads
+    /// alerts through [`AlertReader::list_alerts_as`], which knows its reader (decision D022-152).
+    #[doc(hidden)]
+    pub async fn list_alerts(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
@@ -1066,5 +1126,51 @@ impl AuditStore for PgRunStore {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alert(kind: AlertKind) -> AlertRecord {
+        AlertRecord {
+            id: Uuid::nil(),
+            tenant_id: TenantId::new(Uuid::nil()),
+            namespace_id: NamespaceId::new(Uuid::nil()),
+            kind,
+            subject: "accounts".to_owned(),
+            state: AlertState::Firing,
+            severity: Severity::Warning,
+            first_seen_at: time::OffsetDateTime::UNIX_EPOCH,
+            last_seen_at: time::OffsetDateTime::UNIX_EPOCH,
+            resolved_at: None,
+            fired_count: 1,
+            items: 7,
+            oldest_seconds: 1.0,
+        }
+    }
+
+    /// Decision D022-152: a change of a flow-control alert is never sent to a subscription (its endpoint holds no reveal
+    /// right); every other kind is, with its count.
+    #[test]
+    fn a_flow_control_alert_sends_no_event() {
+        for kind in AlertKind::ALL {
+            assert_eq!(
+                sends_event(kind),
+                !AlertKind::FLOW_CONTROL.contains(&kind),
+                "{}",
+                kind.as_str()
+            );
+        }
+        let body: serde_json::Value = serde_json::from_slice(&event_body(
+            &alert(AlertKind::DeadItems),
+            OutboundKind::AlertFired,
+            "docs/runbooks/alerts.md",
+            time::OffsetDateTime::UNIX_EPOCH,
+        ))
+        .expect("a body");
+        assert_eq!(body["data"]["items"], serde_json::json!(7));
+        assert!(body["data"].get("itemsWithheld").is_none());
     }
 }

@@ -571,9 +571,9 @@ enum Granted {
     /// serialization failure, a deadlock): like [`Self::Busy`], it ends its key's pass (decision D022-121).
     Transient,
     /// Its grant failed for any other reason (a version this build cannot load, an execution error, a row a constraint
-    /// refuses): it is skipped and the pass goes on, so that a waiter whose grant always fails does not hold back the
-    /// younger waiters of its key until its deadline (decision D022-121).
-    Failed,
+    /// refuses), of this class: it is skipped and the pass goes on, and its failure is recorded so that it is not counted
+    /// ahead of the younger waiters of its key until a try decides it (decisions D022-121 and D022-124).
+    Failed(sagat_application::flow_control::GrantFailureClass),
     /// This process has no digest key ring (G1198): it grants nothing.
     Unsupported,
 }
@@ -585,7 +585,7 @@ impl Granted {
             Self::Refused | Self::RefusedRoom(_) | Self::HeldBack | Self::Busy => "skipped",
             Self::Orphan => "orphan",
             Self::Fenced => "fenced",
-            Self::Transient | Self::Failed => "failed",
+            Self::Transient | Self::Failed(_) => "failed",
             Self::Unsupported => "unsupported",
         }
     }
@@ -599,8 +599,42 @@ impl Granted {
             EngineError::Store(
                 StoreError::Unavailable { .. } | StoreError::DatabaseUnavailable,
             ) => Self::Transient,
-            _ => Self::Failed,
+            error => Self::Failed(failure_class(error)),
         }
+    }
+
+    /// Whether the try decided the waiter (a grant, or a refusal for what the counts or the run say), so that a failure
+    /// recorded at an earlier try no longer applies (decision D022-124).
+    const fn decides(self) -> bool {
+        matches!(
+            self,
+            Self::Yes | Self::Refused | Self::RefusedRoom(_) | Self::HeldBack | Self::Orphan
+        )
+    }
+}
+
+/// The closed class a lasting failure of a waiter's grant is recorded with (decision D022-124).
+const fn failure_class(error: &EngineError) -> sagat_application::flow_control::GrantFailureClass {
+    use sagat_application::flow_control::GrantFailureClass;
+    match error {
+        EngineError::Store(StoreError::UnreadableDefinition) => {
+            GrantFailureClass::UnreadableDefinition
+        }
+        EngineError::Store(
+            StoreError::QuotaExceeded { .. }
+            | StoreError::Conflict(_)
+            | StoreError::StateConflict(_)
+            | StoreError::MissingReference
+            | StoreError::FlowControl(_)
+            | StoreError::DatabaseLimit
+            | StoreError::IdempotencyKeyReused
+            | StoreError::RevisionConflict { .. }
+            | StoreError::BusinessIdHeld { .. }
+            | StoreError::LakeRefused { .. }
+            | StoreError::RevealGrantRequired,
+        ) => GrantFailureClass::Refused,
+        EngineError::Execution(_) => GrantFailureClass::Execution,
+        EngineError::Store(_) => GrantFailureClass::Internal,
     }
 }
 
@@ -6046,7 +6080,8 @@ where
         let mut refused: Vec<sagat_application::flow_control::RefusedRoom> = Vec::new();
         for waiter in waiters {
             let order = sagat_application::flow_control::PassOrder::of(&key, &refused);
-            match self.grant_waiter(view, &hold, &waiter, order).await {
+            let outcome = self.grant_waiter(view, &hold, &waiter, order).await;
+            match outcome {
                 Granted::Yes => pass.granted += 1,
                 Granted::RefusedRoom(room) => {
                     if !refused
@@ -6083,12 +6118,20 @@ where
                     return pass;
                 }
                 // any other failure would recur on every pass: the waiter is skipped, counted and logged (by
-                // `grant_waiter`), and stays queued until its deadline; the key keeps its hint, so it is tried again
-                // (decision D022-121)
-                Granted::Failed => {
+                // `grant_waiter`), and stays queued until its deadline; its failure is recorded, so that it no longer
+                // counts ahead of the younger waiters tried next, nor holds back a new arrival; the key keeps its hint,
+                // so it is tried again (decisions D022-121 and D022-124)
+                Granted::Failed(failure) => {
                     pass.failed += 1;
                     undecided = true;
+                    if !waiter.grant_failing {
+                        self.record_grant_failure(&key, &waiter, Some(failure))
+                            .await;
+                    }
                 }
+            }
+            if waiter.grant_failing && outcome.decides() {
+                self.record_grant_failure(&key, &waiter, None).await;
             }
         }
         undecided |= truncated && pass.granted > 0;
@@ -6100,6 +6143,23 @@ where
             tracing::warn!(%error, "a flow-control key's hint could not be cleared");
         }
         pass
+    }
+
+    /// Records a lasting failure of `waiter`'s grant, or clears it once a try decided it (decision D022-124). A failure
+    /// to record is logged: the waiter is then counted ahead until a later pass records it.
+    async fn record_grant_failure(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        failure: Option<sagat_application::flow_control::GrantFailureClass>,
+    ) {
+        if let Err(error) = self
+            .store
+            .record_gate_grant_failure(key, waiter, failure)
+            .await
+        {
+            tracing::warn!(%error, run_id = %waiter.run_id, "the failure of a flow-control grant could not be recorded");
+        }
     }
 
     async fn grant_waiter(
@@ -6115,7 +6175,7 @@ where
         // a held signal whose delivery fails for a reason that does not clear on its own would fail the grant on every
         // pass: the grant is tried once more, in a new transaction, without it (decision D022-121)
         if let Err(GrantFailure::Delivery(error)) = &outcome
-            && Granted::of_failure(error) == Granted::Failed
+            && matches!(Granted::of_failure(error), Granted::Failed(_))
         {
             tracing::warn!(
                 %error,
@@ -6166,13 +6226,21 @@ where
         else {
             return Ok(Granted::Busy);
         };
+        let mut delivered = false;
         let decided = self
-            .decide_grant(&mut tx, view, hold, waiter, order, held)
+            .decide_grant(&mut tx, view, hold, waiter, order, held, &mut delivered)
             .await;
         if matches!(decided, Ok(Granted::Yes)) {
-            tx.commit()
-                .await
-                .map_err(|error| GrantFailure::Other(EngineError::Store(error)))?;
+            // a commit that fails after a held signal was delivered (a deferred trigger) is a failure of the delivery:
+            // the grant is tried once more without it (decision D022-125)
+            tx.commit().await.map_err(|error| {
+                let error = EngineError::Store(error);
+                if delivered {
+                    GrantFailure::Delivery(error)
+                } else {
+                    GrantFailure::Other(error)
+                }
+            })?;
         } else if let Err(error) = tx.rollback().await {
             // the pool closes a connection whose rollback failed, which ends the transaction and frees the run
             tracing::warn!(%error, run_id = %waiter.run_id, "a flow-control grant could not be rolled back");
@@ -6180,7 +6248,9 @@ where
         decided
     }
 
-    /// The decision of one try of a grant, in `tx`, which the caller commits or rolls back.
+    /// The decision of one try of a grant, in `tx`, which the caller commits or rolls back; `delivered` says whether it
+    /// delivered the signal held with a queued start (decision D022-125).
+    #[allow(clippy::too_many_arguments)]
     async fn decide_grant<Tx: RunTx>(
         &self,
         tx: &mut Tx,
@@ -6189,6 +6259,7 @@ where
         waiter: &sagat_application::flow_control::GateWaiter,
         order: sagat_application::flow_control::PassOrder<'_>,
         held: HeldSignal,
+        delivered: &mut bool,
     ) -> Result<Granted, GrantFailure> {
         let other = |error: EngineError| GrantFailure::Other(error);
         if !view
@@ -6286,16 +6357,19 @@ where
         if start {
             match held {
                 HeldSignal::Deliver => {
-                    self.engine
-                        .deliver_held_signal(&mut *tx)
-                        .await
-                        .map_err(GrantFailure::Delivery)?;
+                    *delivered = matches!(
+                        self.engine
+                            .deliver_held_signal(&mut *tx)
+                            .await
+                            .map_err(GrantFailure::Delivery)?,
+                        sagat_application::execution::HeldDelivery::Delivered(_)
+                    );
                 }
                 HeldSignal::Drop => {
                     self.engine
                         .drop_held_signal(
                             &mut *tx,
-                            sagat_application::execution::HELD_SIGNAL_DELIVERY_FAILED,
+                            sagat_application::execution::HeldSignalDrop::DeliveryFailed,
                         )
                         .await
                         .map_err(other)?;

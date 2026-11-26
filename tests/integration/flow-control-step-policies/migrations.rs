@@ -991,6 +991,8 @@ async fn the_quota_and_declaration_migrations_roll_back_only_once_their_rows_are
 #[tokio::test]
 async fn the_counts_of_the_gate_read_the_waiter_and_key_rows() {
     let w = world().await;
+    // it reads the live-key and waiter usages, shown only with the reveal grant (decision D022-133)
+    crate::support::flow_control::reveal_to_admin(&w).await;
     let pool = &w.db.pool;
     let first = a_run(&w).await;
     let second = a_run(&w).await;

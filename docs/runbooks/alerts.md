@@ -57,6 +57,15 @@ Design: [ADR-0017](../adr/ADR-0017-telemetry-is-derived-from-the-journal-and-con
 - **Do:** find out why (the receiver's answer is on every delivery attempt; a dead letter has its reason), fix it, then redrive (`POST …/redrive`) or discard. [`events.md`](events.md) describes each.
 - **Over when:** the namespace has none of that kind.
 
+## Who sees the flow-control alerts
+
+The four alerts of feature 022 (`CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING`, `RATE_LIMIT_QUEUE_SATURATED`,
+`FLOW_CONTROL_WAITER_ORPHANED`) are judged per key, so their state and counts tell which runs share a key. They are listed
+only to a caller who holds the namespace's payload reveal grant (with a role that may use it), and they are never sent as
+`ops.alert.fired` or `ops.alert.resolved` events (decision D022-152). Give the operators who watch flow control the reveal
+grant in each namespace they watch; without it they see the deployment-wide gauge `alerts_firing{kind}` and the engine's
+logs only.
+
 ## concurrency-queue-stuck
 
 **`CONCURRENCY_QUEUE_STUCK`, warning (feature 022).** A concurrency key has no room and its oldest eligible waiter queued more than `SAGAT_ALERT_UNCLAIMED_SECS` (300) before the key's oldest current holder took its permit: what it waits for keeps going to others. The **subject** is the key's group, never a key's value or label.

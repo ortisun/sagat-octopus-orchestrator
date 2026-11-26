@@ -22,7 +22,7 @@ const HOUR_US: i64 = 3_600 * SECOND_US;
 
 /// An API with flow control on, tenant `acme` (admin `alice`, who may reveal personal data in it) and its namespace
 /// `payments`, whose id is the second value.
-async fn api() -> (TestApi, String) {
+pub(crate) async fn api() -> (TestApi, String) {
     let api = start_with(Options {
         flow_control: true,
         ..Options::default()
@@ -118,7 +118,7 @@ async fn start(api: &TestApi, workflow: &str, account: &str) -> String {
 }
 
 /// The body of `path` as `subject` of `acme`, checked for the canary.
-async fn read_as(api: &TestApi, path: &str, subject: &str) -> (StatusCode, Value) {
+pub(crate) async fn read_as(api: &TestApi, path: &str, subject: &str) -> (StatusCode, Value) {
     let response = api
         .as_user(Method::GET, path, subject, "acme")
         .header("x-octopus-namespace", "payments")
@@ -230,15 +230,18 @@ async fn a_run_shows_its_rate_slot_and_a_waiting_run_its_place() {
         granted_us(&api, &holder).await + HOUR_US,
         "the counted slot's grant plus the window, exactly"
     );
-    // a member without the reveal grant: no label and no estimate (another run's grant instant plus the window,
-    // decision D022-067 item 8); the position stays
+    // a member without the reveal grant: no label, no estimate (another run's grant instant plus the window,
+    // decision D022-067 item 8) and no position (the rank counts the runs that share the key, D022-153)
     member(&api, &namespace, "olivia").await;
     let (status, hidden) = read_as(&api, &format!("/runs/{first}"), "olivia").await;
     assert_eq!(status, StatusCode::OK, "{hidden}");
+    conforms("/runs/{runId}", &hidden);
     let slot = &hidden["rateLimit"];
-    assert_eq!(slot["position"], 1, "{slot}");
+    assert_eq!(slot["state"], "WAITING", "{hidden}");
     assert!(
-        slot["keyLabel"].is_null() && slot["estimatedGrantAt"].is_null(),
+        slot["keyLabel"].is_null()
+            && slot["estimatedGrantAt"].is_null()
+            && slot["position"].is_null(),
         "{slot}"
     );
     let (_, behind) = read(&api, &format!("/runs/{second}")).await;

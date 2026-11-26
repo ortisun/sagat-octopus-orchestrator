@@ -83,6 +83,34 @@ without an event schema are not proof that every embedded credential can be dete
 See [owner decisions](../owner-decisions.md), [classification specification](../../specs/016-payload-classification/spec.md)
 and [event payload handling](../../crates/application/src/event_payloads.rs).
 
+### Feature 022: which runs share a flow-control key
+
+A flow-control key (a concurrency key or a rate-limit key) is computed from a run's input, which may be personal data, so
+which runs share a key is guarded like the payload itself. A caller who may not reveal personal data in the namespace
+(feature 009's reveal grant, held with a role that may use it) is shown none of these:
+
+- a key's label;
+- a count of keys, or of the runs that hold or wait on a key: the key view, the live-key and waiter usages of the quota
+  view, and the counts of an alert;
+- a run's rank in its key's queue or the estimate of its grant, which `getRun` leaves out, and does not even compute,
+  for such a caller;
+- a key's fullness, or a condition judged per key: the four flow-control alerts are listed only with the reveal right,
+  left out by the statement that pages the alerts so that a page and its cursor do not change when one fires, and they
+  are never sent to a subscription.
+
+A group view (per-group sums, each group summed whole) stays open to `ops:read`, since nothing it shows depends on how
+the group's runs are spread over its keys.
+
+**What this does not cover.** The order and times of runs' own progress can still suggest that two runs share a key:
+that a run waits, when it is granted, when its step starts and when it ends. Any reader of the runs sees these through
+the run, its journal, its telemetry and its attempts. A run granted just as another run of its group ended probably
+shares its key. This is a stated limit of the guarantee, not a defect: hiding the instants or showing a single "held
+back" state is defeated by polling the run and by its later events, and closing it would mean withholding `run:read`.
+Two refusals are open questions for the owner, not part of this guarantee: the live-key ceiling and a key's waiter
+ceiling, whose refusals can be probed to count others' keys or waiters, and a reset refused at a full key (gap G022-040).
+See [feature 022's sweep, decision D022-151](../../specs/022-flow-control-step-policies/research.md) and requirement
+FR-022-022 of its [specification](../../specs/022-flow-control-step-policies/spec.md).
+
 ## Feature 005: what a script can and cannot do
 
 | A script can | A script cannot |

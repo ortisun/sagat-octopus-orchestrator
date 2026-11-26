@@ -491,6 +491,12 @@ Added after the review of 2026-11-13:
   `signalRun` would, or drop it with an audit when no step waits for it; a queued run that ends instead MUST drop it
   with an audit. A retry of the request MUST answer the same. A signal no node of the definition waits for keeps the
   refusal of FR-018-024.
+  *Amended 2026-11-26 (decision D022-126; batch 5 correctness minor 1, security suspicion 4):* the signal MUST be held
+  only when a `waitEvent` of its name is on the entry path of the start (the nodes the start's settle passes through
+  in the grant's transaction, every branch counted) and its payload, copied to each such wait, keeps the run's retained
+  output within its bound; otherwise the request MUST be refused as the delivery would refuse it with room on the key
+  (`SIGNAL_NOT_ACCEPTED_AT_START`, or `QUOTA_EXCEEDED`), and nothing is created. The grant of a queued start MUST lock
+  the run's active-run counter only when its entry path can end the run in that transaction.
 - **FR-022-019 — Step permits** *(revised 2026-11-13 after review, D022-019; changes ADR-0056 decision 3
   through the proposed ADR-0089)*: A step whose node declares `concurrency` MUST NOT become `READY` before
   it holds a permit. The transaction that would make it ready (FR-022-051) MUST acquire the permit when its
@@ -527,6 +533,20 @@ Added after the review of 2026-11-13:
   (`view: GROUPS`) with its holders or counted grants, waiters and oldest instants, never how many keys a group has or
   when its next slot frees. A page of groups reads at most 200 key rows; a larger group is summed across the pages that
   read it, each page one snapshot, its partial sums carried in the sealed cursor.
+  *Amended 2026-11-26 (decisions D022-131 and D022-100; security re-reads of the batch-5 fixes):* the group view MUST
+  NOT page inside a group, filtered or not: each group is summed whole by one statement in the page's snapshot, a
+  cursor falls only between groups, a page holds at most 5 groups whatever its `limit`, and nothing a page tells
+  depends on how many keys a group has (`spansPages` is always false).
+  *Amended 2026-11-26 (decisions D022-151 to D022-155; security checks of the alerts fix and of the sweep):* to a
+  caller who may not reveal personal data in the namespace, no surface MUST show a key's label, a count of keys or of a
+  key's runs, a run's rank in a key's queue, a key's fullness or a per-key condition. `getRun`'s `rateLimit.position`
+  and `estimatedGrantAt` are null for such a caller, and the run's place in the queue is not read for it. The
+  flow-control alerts are shown only to a caller with the reveal right, filtered in the statement that pages them, so a
+  page and its cursor are the same whether such an alert fires or not; they are never sent as `ops.alert.*` events.
+  The order and times of runs' own progress (that a run waits, when it is granted, starts and ends), which any reader
+  of the runs sees, can still suggest that two runs share a key. That is a stated limit of this guarantee (gap
+  G022-043, closed as inherent), written in `docs/architecture/security-and-sandbox.md`. The refusals at a key's
+  waiter ceiling and at the live-key ceiling are gap G022-040. The sweep of every surface and its gate is D022-151.
 
 #### Standalone steps (US05)
 
@@ -672,6 +692,13 @@ Added after the review of 2026-11-13:
   metrics (decisions by outcome, wait time, waiters, grant lag behind a free slot) and raise per-namespace
   alerts when grants lag behind free slots (`rate_limit_grant_lagging`) and when a key's buffer nears its
   ceiling (`rate_limit_queue_saturated`), each with a runbook section. Labels follow FR-022-033.
+  *Amended 2026-11-26 (decisions D022-135 and D022-152; security checks of the quota and alerts fixes):* a flow-control
+  alert (`CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING`, `RATE_LIMIT_QUEUE_SATURATED`, `FLOW_CONTROL_WAITER_ORPHANED`)
+  MUST be shown only to a caller who may reveal personal data in the namespace, the right read with the alerts in one
+  statement, and MUST NOT be sent as an `ops.alert.*` event; operators keep the deployment-wide gauge
+  `alerts_firing{kind}`. *Amended again 2026-11-26 (decision D022-154; security check of the sweep, item 1):* the rows
+  are left out by the statement that pages the alerts, before its limit, so the page size and `nextCursor` a caller
+  without the right reads do not depend on a flow-control alert.
 - **FR-022-050 — Capability, SDKs and Studio**: `rateLimits` MUST be a capability enabled separately from
   `concurrencyKeys` under the rules of FR-022-031, and both MUST be activated through the instance-capability
   registry (FR-022-053). The six SDKs (TypeScript, Go, Python, C#, Java, Rust; FR-022-035 predates the Rust
@@ -707,6 +734,11 @@ Added after the review of 2026-11-13:
   invariant breach: it is alerted and skipped, and never counts as ahead. The timeout routine, at the
   waiter's deadline, MUST journal the `*.wait_timed_out` of the gate that refuses it then (`rate_limit`
   first when both do) and the `*.dequeued` of the other, in one transaction.
+  *Amended 2026-11-26 (decisions D022-121 and D022-124; re-read correctness new finding 1):* a waiter whose grant
+  failed for a reason that does not clear on its own MUST be skipped and MUST NOT count as eligible (ahead of a younger
+  waiter, or as the eligible waiter a new arrival queues behind) until a later try decides it; the failure is recorded
+  with its class and first instant, outside the run's journal, and the pass still tries that waiter first. A busy run
+  and a failure that clears on its own end the key's pass instead.
 - **FR-022-053 — Fleet activation**: `concurrencyKeys` and `rateLimits` MUST be instance capabilities
   (`flow-control-concurrency-v1`, `flow-control-rate-v1`, required of `CONTROL_PLANE` and
   `EXECUTION_ENGINE`) activated through feature 018's instance-capability registry (ADR-0050 decision 9,
@@ -745,6 +777,10 @@ Added after the review of 2026-11-13:
   `database`, `forEach` or `while` node, or a path that cannot be followed) MUST take the strictest level of every
   carrier of the document, never less than `pii`; a carrier whose classification walk did not complete MUST count as
   `secret`.
+  *Amended 2026-11-26 (decision D022-151):* a key's label is not the only per-key value: a key's rank, count, fullness
+  and the per-key conditions of an alert are shown under the same rule as its label (only to a caller who may reveal
+  personal data in the namespace), as the sweep of D022-151 lists. A value withheld this way is not computed for such a
+  caller either, when computing it would take time that depends on the key (D022-155).
 - **FR-022-058 — Namespace counters**: `queued_runs` and live keys per namespace MUST be usage rows of
   ADR-0050 slot 8b, sharded like `run_active_counts` (16 slots), changed in the transaction that changes
   what they count and maintained by `SECURITY DEFINER` triggers; the runtime role reads them only. A run
@@ -752,6 +788,10 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25 (decision D022-084; batch 3 reviews, correctness minor 7):* only `queued_runs` is kept in the
   counter rows; the live keys are counted from the semaphore and window rows of the digest versions in force, since a
   live-key counter would be locked between the key locks of one decision (D022-084 item 2).
+  *Amended 2026-11-26 (decision D022-133; security check of the group-view fix, finding 1):* the quota view MUST show
+  the usage of `concurrency_live_keys`, `rate_limit_live_keys` and `flow_control_key_waiters` only to a caller who may
+  reveal personal data in the namespace, the reveal right and the usage read in one snapshot; any other caller reads
+  `used` absent and `usageWithheld: true`, since the live-key count changes exactly when a key's last run ends.
 - **FR-022-059 — The one admission port is enforced**: The gate MUST run inside `PgRunStore::create`
   (`crates/infra-postgres/src/execution.rs`), the one function that inserts a new run; the only other
   inserts into `runs`, the continue-as-new successors of `crates/infra-postgres/src/chain_progress.rs`,
@@ -781,6 +821,9 @@ Added after the review of 2026-11-13:
   handler configuration and redrive, standalone and test admission, pin disclosure). Metric labels MUST
   NOT carry tenant, namespace, run, workflow, group or key; logs, spans and audit MUST NOT carry a payload,
   raw key or secret.
+  *Amended 2026-11-26 (decision D022-127; batch 5 security nit):* the signals a Signal-with-Start holds are counted by
+  outcome once their transaction commits (`flow_control_held_signals_total{outcome}`: `held`, `delivered`,
+  `dropped_not_waiting`, `dropped_output_bound`, `dropped_run_ended`, `dropped_delivery_failed`).
 - **FR-022-034 — Finite ceilings and typed errors**: Every new resource MUST have a default and hard ceiling
   (plan); effective = min(declaration or request, namespace, deployment); zero refuses; admission fails
   before work. Errors MUST use the existing `Error.code` set with the reasons and codes of

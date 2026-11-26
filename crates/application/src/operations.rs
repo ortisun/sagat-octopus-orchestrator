@@ -454,15 +454,18 @@ pub trait AuditStore: Send + Sync {
 
 /// What the API reads alerts through.
 pub trait AlertReader: NamespaceDirectory {
-    /// The alerts of a namespace, newest first.
-    fn list_alerts(
+    /// The alerts of a namespace, newest first, for the reader `subject`, and whether it may reveal personal data in the
+    /// namespace (its current role may use a reveal grant and it holds one there), both read in one statement, so one
+    /// snapshot (feature 022, decisions D022-135 and D022-152). There is no read of the alerts without a reader.
+    fn list_alerts_as(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
         state: Option<AlertState>,
         before: Option<Uuid>,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<AlertRecord>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<(Vec<AlertRecord>, bool), StoreError>> + Send;
 }
 
 /// Reads alerts for the API.
@@ -665,10 +668,24 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
         // A caller that asks for one more than its page, to know whether another follows, is
         // answered with that one more.
         let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
-        Ok(self
+        let (mut alerts, reveals) = self
             .store
-            .list_alerts(principal.tenant_id(), namespace, state, before, limit)
-            .await?)
+            .list_alerts_as(
+                principal.tenant_id(),
+                namespace,
+                principal.subject(),
+                state,
+                before,
+                limit,
+            )
+            .await?;
+        // a flow-control alert is judged per key: its state, count and ages tell which runs share a key, so it is shown
+        // only to a caller who may reveal personal data in the namespace (feature 022, decision D022-152); the rows are
+        // dropped here, whatever answers the caller
+        if !reveals {
+            alerts.retain(|alert| !AlertKind::FLOW_CONTROL.contains(&alert.kind));
+        }
+        Ok(alerts)
     }
 }
 
@@ -743,7 +760,10 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                         namespace,
                         group,
                         after,
-                        limit.saturating_sub(1).max(1),
+                        // at most five groups a page, each its own budget of key rows (decision D022-128)
+                        limit
+                            .saturating_sub(1)
+                            .clamp(1, crate::flow_control_keys::GROUP_PAGE_GROUPS),
                     )
                     .await?
             }
@@ -818,7 +838,10 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                         namespace,
                         group,
                         after,
-                        limit.saturating_sub(1).max(1),
+                        // at most five groups a page, each its own budget of key rows (decision D022-128)
+                        limit
+                            .saturating_sub(1)
+                            .clamp(1, crate::flow_control_keys::GROUP_PAGE_GROUPS),
                     )
                     .await?
             }

@@ -1178,17 +1178,17 @@ async fn seed_group_keys(
     }
 }
 
-/// Batch 4 reviews of 2026-11-25, correctness Major 1 and security minor 2 (decision D022-086 item 5): a page of groups
-/// reads at most its budget of key rows, whatever its groups' sizes: each statement of the walk, asked of the planner over
-/// a group of 20,000 keys beside 100 groups of 50, reads at most the budget and one more of the key table (and one probe
-/// of the holders a key), and the probe for the next group, named or not, at most four rows; never a scan.
+/// Decision D022-131 (and D022-086 item 5's bound on what a page reads): a group is summed by one statement over its own
+/// rows. Asked of the planner over a group of 2,000 keys beside 100 groups of 500, each gate's statement reads the
+/// group's key rows and no other group's (never a scan of the key table), and returns one row; the probe for the next
+/// group, named or not, reads at most four rows.
 #[tokio::test]
-async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
+async fn a_group_is_summed_by_one_statement_over_its_own_rows() {
     let (api, namespace, tenant) = api().await;
     let pool = &api.db.pool;
-    seed_group_keys(&api, tenant, &namespace, "big", 20_000).await;
+    seed_group_keys(&api, tenant, &namespace, "big", 2_000).await;
     for group in 0..100 {
-        seed_group_keys(&api, tenant, &namespace, &format!("group-{group:03}"), 50).await;
+        seed_group_keys(&api, tenant, &namespace, &format!("group-{group:03}"), 500).await;
     }
     for table in [
         "concurrency_semaphores",
@@ -1201,50 +1201,42 @@ async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
             .await
             .expect("analyze");
     }
-    let budget = i64::from(sagat_application::flow_control_keys::GROUP_PAGE_KEY_ROWS);
     let namespace_id = Uuid::parse_str(&namespace).expect("uuid");
     let explain = |sql: &'static str| format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}");
-    for (keys, relation, others) in [
+    for (sums, relation) in [
         (
-            sagat_infra_postgres::CONCURRENCY_GROUP_KEYS_SQL,
+            sagat_infra_postgres::CONCURRENCY_GROUP_SUMS_SQL,
             "concurrency_semaphores",
-            "concurrency_holders",
         ),
         (
-            sagat_infra_postgres::RATE_GROUP_KEYS_SQL,
+            sagat_infra_postgres::RATE_GROUP_SUMS_SQL,
             "rate_limit_windows",
-            "rate_limit_grants",
         ),
     ] {
-        // from the group's first key, and from the middle of its range
-        for after in [Vec::new(), vec![0x80_u8; 32]] {
-            let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain(keys)))
-                .bind(tenant.as_uuid())
-                .bind(namespace_id)
-                .bind("ORDINARY")
-                .bind("RUN")
-                .bind("big")
-                .bind(&after)
-                .bind(budget + 1)
-                .fetch_one(pool)
-                .await
-                .expect("a plan");
-            let text = plan.to_string();
-            assert!(
-                !scans_all_of(&plan[0]["Plan"], relation),
-                "no scan of every key: {text}"
-            );
-            let read = rows_of(&plan[0]["Plan"], relation);
-            assert!(
-                read > 0.0 && read <= (budget + 1) as f64,
-                "{relation} rows read {read} for a budget of {budget}: {text}"
-            );
-            let probed = rows_of(&plan[0]["Plan"], others);
-            assert!(
-                probed <= 4.0 * (budget + 1) as f64,
-                "{others} rows read {probed}: {text}"
-            );
-        }
+        let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain(sums)))
+            .bind(tenant.as_uuid())
+            .bind(namespace_id)
+            .bind("ORDINARY")
+            .bind("RUN")
+            .bind("big")
+            .fetch_one(pool)
+            .await
+            .expect("a plan");
+        let text = plan.to_string();
+        assert!(
+            !scans_all_of(&plan[0]["Plan"], relation),
+            "no scan of every key: {text}"
+        );
+        let read = rows_of(&plan[0]["Plan"], relation);
+        assert!(
+            (2_000.0..=2_001.0).contains(&read),
+            "{relation} rows read {read}: the big group's own: {text}"
+        );
+        assert_eq!(
+            plan[0]["Plan"]["Actual Rows"].as_f64(),
+            Some(1.0),
+            "one row: {text}"
+        );
     }
     for (sql, relation, named) in [
         (
@@ -1293,74 +1285,261 @@ async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
     }
 }
 
-/// Batch 4 reviews of 2026-11-25, correctness Major 1 (decision D022-086 item 5): one group of 100,000 keys and a group
-/// `zz` after it. A viewer pages both listings one group at a time: every page answers `200`, the first holds no group
-/// (the big group is summed across pages, its partial sums in the sealed cursor), the big group's row comes whole, its
-/// sums those of every key, and `zz` is reached. The big group's row says its sums were read across pages, `zz`'s does
-/// not (batch 5 correctness minor 5, decision D022-101).
+/// Seeds `count` step-scope keys of `group` in both gates' key tables of `namespace`, each with one real holder row
+/// (`acquired_at` half an hour ago) and one counted grant (leased ten minutes ago, within the window's hour), held by the
+/// runs `runs` in turn under node names `<group>-<i>`, and one waiter counted, its oldest wait an hour ago; digests
+/// `sha256(group/i)`. The counters of holders and grants are kept by their triggers (decision D022-134).
+async fn seed_held_group_keys(
+    api: &TestApi,
+    tenant: sagat_domain::identity::TenantId,
+    namespace: &str,
+    group: &str,
+    count: i32,
+    runs: &[Uuid],
+) {
+    for (index, statement) in [
+        "INSERT INTO concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, \
+                holders, waiters, oldest_wait_at, key_version, key_shard, updated_at) \
+         SELECT $1, $2::uuid, 'ORDINARY', 'STEP', $3, sha256(convert_to($3 || '/' || i, 'UTF8')), 0, 1, \
+                clock_timestamp() - interval '1 hour', \
+                (SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'), i % 64, clock_timestamp() \
+           FROM generate_series(1, $4) i",
+        "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, \
+                live_grants, waiters, oldest_wait_at, max_period_ms, key_version, key_shard, updated_at) \
+         SELECT $1, $2::uuid, 'ORDINARY', 'STEP', $3, sha256(convert_to($3 || '/' || i, 'UTF8')), 0, 1, \
+                clock_timestamp() - interval '1 hour', 3600000, \
+                (SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'), i % 64, clock_timestamp() \
+           FROM generate_series(1, $4) i",
+        "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, \
+                group_name, key_digest, declared_limit, acquired_at) \
+         SELECT $1, $2::uuid, ($5::uuid[])[1 + i % cardinality($5::uuid[])], 'STEP', $3 || '-' || i, 1, 'ORDINARY', $3, \
+                sha256(convert_to($3 || '/' || i, 'UTF8')), 1, clock_timestamp() - interval '30 minutes' \
+           FROM generate_series(1, $4) i",
+        "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, \
+                key_digest, declared_limit, period_ms, granted_at, leased_at, shard) \
+         SELECT $1, $2::uuid, r.run, $3 || '-' || r.i, 1, 'ORDINARY', 'STEP', $3, \
+                sha256(convert_to($3 || '/' || r.i, 'UTF8')), 1, 3600000, \
+                clock_timestamp() - interval '10 minutes', clock_timestamp() - interval '10 minutes', run_shard(r.run) \
+           FROM (SELECT i, ($5::uuid[])[1 + i % cardinality($5::uuid[])] AS run FROM generate_series(1, $4) i) r",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // the holder and grant rows' triggers find their key row by its primary key: the planner must know the key tables
+        // are large, or each of the 100,000 trigger updates scans them
+        if index == 2 {
+            for table in ["concurrency_semaphores", "rate_limit_windows"] {
+                sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
+                    .execute(&api.db.pool)
+                    .await
+                    .expect("analyze");
+            }
+        }
+        sqlx::query(statement)
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .bind(group)
+            .bind(count)
+            .bind(runs)
+            .execute(&api.db.pool)
+            .await
+            .unwrap_or_else(|error| panic!("seeded: {error}"));
+    }
+}
+
+/// Decision D022-131, measured at the ceiling, and D022-134: one step-scope group of 100,000 keys (the hard ceiling of
+/// `concurrency_live_keys` and `rate_limit_live_keys`), every key with a real holder and a counted grant, and a group
+/// `zz` after it. A viewer reads both listings one group a page: the big group's page answers `200` within the listing's
+/// 2 s statement timeout with the group whole, its sums those of every key and every holder and grant, `spansPages`
+/// false; nothing is read across pages.
 #[tokio::test]
-async fn a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached() {
+async fn a_group_of_a_hundred_thousand_keys_is_read_whole_on_one_page() {
     use sagat_domain::identity::Role;
     let (api, namespace, tenant) = api().await;
     member(&api, tenant, "vera-viewer", Role::Viewer).await;
-    seed_group_keys(&api, tenant, &namespace, "big", 100_000).await;
-    seed_group_keys(&api, tenant, &namespace, "zz", 1).await;
-    for (listing, sums) in [
-        ("concurrency-keys", ["holders", "waiters"]),
-        ("rate-limit-keys", ["waiters", "unleasedGrants"]),
+    // a hundred runs that hold the seeded permits and grants, a node each (a run holds one permit a node)
+    let workflow = publish(
+        &api,
+        "rest-ceiling-runs",
+        serial_start("rest-ceiling-runs", 1),
+    )
+    .await
+    .expect("published");
+    let mut runs = Vec::new();
+    for index in 0..100 {
+        let run = start(&api, &workflow, &format!("acct-ceiling-{index}")).await;
+        runs.push(Uuid::parse_str(&run).expect("a run id"));
+    }
+    seed_held_group_keys(&api, tenant, &namespace, "big", 100_000, &runs).await;
+    seed_held_group_keys(&api, tenant, &namespace, "zz", 1, &runs).await;
+    for table in [
+        "concurrency_semaphores",
+        "concurrency_holders",
+        "rate_limit_windows",
+        "rate_limit_grants",
     ] {
-        let mut cursor: Option<String> = None;
-        let mut groups: Vec<Value> = Vec::new();
-        let mut pages = 0_u32;
-        loop {
-            let path = match &cursor {
-                Some(cursor) => {
-                    format!("/namespaces/{namespace}/{listing}?limit=1&cursor={cursor}")
-                }
-                None => format!("/namespaces/{namespace}/{listing}?limit=1"),
-            };
-            let (status, page) = read_as(&api, &path, "vera-viewer").await;
-            assert_eq!(status, StatusCode::OK, "page {pages} of {listing}: {page}");
-            assert_eq!(page["view"], "GROUPS", "{page}");
-            if pages == 0 {
-                assert_eq!(
-                    page["groups"],
-                    json!([]),
-                    "the big group does not fit one page: {page}"
-                );
-            }
-            pages += 1;
-            groups.extend(page["groups"].as_array().into_iter().flatten().cloned());
-            match page["nextCursor"].as_str() {
-                Some(next) => cursor = Some(next.to_owned()),
-                None => break,
-            }
-            assert!(pages <= 1_000, "{listing} never ends");
-        }
-        let names: Vec<&str> = groups.iter().filter_map(|g| g["group"].as_str()).collect();
-        assert_eq!(names, ["big", "zz"], "{listing}: {groups:?}");
-        assert!(
-            pages >= 500,
-            "{listing}: at most 200 keys a page, {pages} pages"
+        sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
+            .execute(&api.db.pool)
+            .await
+            .expect("analyze");
+    }
+    for (listing, sums, expected) in [
+        (
+            "concurrency-keys",
+            ["holders", "waiters"],
+            [100_000, 100_000],
+        ),
+        (
+            "rate-limit-keys",
+            ["grantsInWindow", "unleasedGrants"],
+            [100_000, 0],
+        ),
+    ] {
+        let walk = group_walk(&api, &namespace, listing, "limit=1").await;
+        assert_eq!(
+            walk,
+            [
+                (0, "accounts".to_owned(), false),
+                (1, "big".to_owned(), false),
+                (2, "zz".to_owned(), false)
+            ]
+            .into_iter()
+            .filter(|(_, group, _)| listing == "concurrency-keys" || group != "accounts")
+            .enumerate()
+            .map(|(page, (_, group, spans))| (u32::try_from(page).expect("a page"), group, spans))
+            .collect::<Vec<_>>(),
+            "{listing}"
         );
-        let expected = if listing == "concurrency-keys" {
-            [100_000, 100_000]
+        let after = if listing == "concurrency-keys" {
+            let (_, first) = read_as(
+                &api,
+                &format!("/namespaces/{namespace}/{listing}?limit=1"),
+                "vera-viewer",
+            )
+            .await;
+            format!(
+                "&cursor={}",
+                first["nextCursor"].as_str().expect("a next page")
+            )
         } else {
-            [100_000, 0]
+            String::new()
         };
+        let (status, page) = read_as(
+            &api,
+            &format!("/namespaces/{namespace}/{listing}?limit=1{after}"),
+            "vera-viewer",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{listing}: {page}");
+        let groups = page["groups"].as_array().expect("groups").clone();
+        assert_eq!(groups.len(), 1, "{listing}: {page}");
+        assert_eq!(groups[0]["group"], "big", "{listing}: {page}");
         for (field, value) in sums.iter().zip(expected) {
+            assert_eq!(groups[0][*field], json!(value), "{listing} {field}: {page}");
+        }
+        assert_eq!(groups[0]["waiters"], json!(100_000), "{listing}: {page}");
+        assert!(groups[0]["oldestWaitSince"].is_string(), "{page}");
+        assert_eq!(groups[0]["spansPages"], json!(false), "{page}");
+    }
+}
+
+/// Every group row a viewer reads of `listing` from `query` on, page by page: (page index, group, `spansPages`).
+async fn group_walk(
+    api: &TestApi,
+    namespace: &str,
+    listing: &str,
+    query: &str,
+) -> Vec<(u32, String, bool)> {
+    let mut cursor: Option<String> = None;
+    let mut rows = Vec::new();
+    for page_index in 0_u32.. {
+        let path = match &cursor {
+            Some(cursor) => format!("/namespaces/{namespace}/{listing}?{query}&cursor={cursor}"),
+            None => format!("/namespaces/{namespace}/{listing}?{query}"),
+        };
+        let (status, page) = read_as(api, &path, "vera-viewer").await;
+        assert_eq!(status, StatusCode::OK, "{path}: {page}");
+        assert_eq!(page["view"], "GROUPS", "{page}");
+        for group in page["groups"].as_array().into_iter().flatten() {
+            rows.push((
+                page_index,
+                group["group"].as_str().expect("a group").to_owned(),
+                group["spansPages"].as_bool().expect("spansPages"),
+            ));
+        }
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+        assert!(page_index < 100, "{listing} never ends");
+    }
+    rows
+}
+
+/// Security re-read of `c36e8336`, new finding 1 (decision D022-131): nothing a page of the group view tells depends on
+/// how many keys a group has. Groups `g200` (200 keys) and `g201` (201 keys, one more than the page bound the earlier build
+/// paged a group by) and `zz`: read one group a page, every group comes whole on its own page with `spansPages` false,
+/// and read through its own filter each comes alone on one page, the same shape and flags. With paging inside a group,
+/// `g201` took two pages, the second marked `spansPages`.
+#[tokio::test]
+async fn a_group_view_reads_each_group_whole_whatever_its_size() {
+    use sagat_domain::identity::Role;
+    let (api, namespace, tenant) = api().await;
+    member(&api, tenant, "vera-viewer", Role::Viewer).await;
+    for (group, keys) in [("g200", 200), ("g201", 201), ("zz", 1)] {
+        seed_group_keys(&api, tenant, &namespace, group, keys).await;
+    }
+    for listing in ["concurrency-keys", "rate-limit-keys"] {
+        let walk = group_walk(&api, &namespace, listing, "limit=1").await;
+        let shape: Vec<(u32, &str, bool)> = walk
+            .iter()
+            .map(|(page, group, spans)| (*page, group.as_str(), *spans))
+            .collect();
+        assert_eq!(
+            shape,
+            [(0, "g200", false), (1, "g201", false), (2, "zz", false)],
+            "{listing}"
+        );
+        for group in ["g200", "g201"] {
+            let filtered =
+                group_walk(&api, &namespace, listing, &format!("limit=1&group={group}")).await;
             assert_eq!(
-                groups[0][*field],
-                json!(value),
-                "{listing} {field}: {groups:?}"
+                filtered,
+                [(0, group.to_owned(), false)],
+                "{listing}: {group} through its own filter"
             );
         }
-        assert!(groups[0]["oldestWaitSince"].is_string(), "{groups:?}");
-        // batch 5 correctness minor 5 (decision D022-101): the row says its sums were read across pages
+    }
+}
+
+/// Decisions D022-128 and D022-131: a page of the group view holds at most five groups whatever its `limit`, each summed
+/// whole; the next page goes on after the fifth.
+#[tokio::test]
+async fn a_page_of_groups_holds_at_most_five_groups() {
+    use sagat_domain::identity::Role;
+    let (api, namespace, tenant) = api().await;
+    member(&api, tenant, "vera-viewer", Role::Viewer).await;
+    for group in ["g1", "g2", "g3", "g4", "g5", "g6", "g7"] {
+        seed_group_keys(&api, tenant, &namespace, group, 1).await;
+    }
+    for listing in ["concurrency-keys", "rate-limit-keys"] {
+        let walk = group_walk(&api, &namespace, listing, "limit=200").await;
+        let pages: Vec<(u32, &str)> = walk
+            .iter()
+            .map(|(page, group, _)| (*page, group.as_str()))
+            .collect();
         assert_eq!(
-            (&groups[0]["spansPages"], &groups[1]["spansPages"]),
-            (&json!(true), &json!(false)),
-            "{listing}: {groups:?}"
+            pages,
+            [
+                (0, "g1"),
+                (0, "g2"),
+                (0, "g3"),
+                (0, "g4"),
+                (0, "g5"),
+                (1, "g6"),
+                (1, "g7")
+            ],
+            "{listing}"
         );
     }
 }
@@ -1484,40 +1663,62 @@ async fn a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version
 
 /// Batch 4 correctness nit 1 (decision D022-123): a cursor of the key view, read again by its caller once the caller's
 /// reveal grant is gone (the caller now gets the group view), is refused `400` with a message of its own, so the caller
-/// learns to read the listing again from its start rather than that its cursor was altered.
+/// learns to read the listing again from its start rather than that its cursor was altered. Both listings (the
+/// rate-limit listing's message was untested: re-read correctness finding 7, decision D022-130 item 5).
 #[tokio::test]
 async fn a_cursor_of_the_other_view_is_refused_with_its_own_message() {
     let (api, namespace, acme) = api().await;
     let workflow = publish(&api, "rest-other-view", serial_start("rest-other-view", 1))
         .await
         .expect("published");
-    let _first = start(&api, &workflow, CANARY).await;
-    let _second = start(&api, &workflow, "acct-other-view").await;
-    let keys = format!("/namespaces/{namespace}/concurrency-keys");
-    let (status, page) = read_as(&api, &format!("{keys}?limit=1"), "alice").await;
-    assert_eq!(status, StatusCode::OK, "{page}");
-    assert_eq!(
-        page["view"], "KEYS",
-        "the admin with the grant reads keys: {page}"
-    );
-    let cursor = page["nextCursor"].as_str().expect("a next page").to_owned();
+    let mut rated = serial_start("rest-other-view-rate", 1);
+    rated
+        .as_object_mut()
+        .expect("a document")
+        .remove("concurrency");
+    rated["rateLimit"] =
+        json!({"group": "providers", "key": "input.accountId", "limit": 1, "per": "hour"});
+    let rated = publish(&api, "rest-other-view-rate", rated)
+        .await
+        .expect("published");
+    for flow in [&workflow, &rated] {
+        let _first = start(&api, flow, CANARY).await;
+        let _second = start(&api, flow, "acct-other-view").await;
+    }
+    let mut cursors = Vec::new();
+    for listing in ["concurrency-keys", "rate-limit-keys"] {
+        let keys = format!("/namespaces/{namespace}/{listing}");
+        let (status, page) = read_as(&api, &format!("{keys}?limit=1"), "alice").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(
+            page["view"], "KEYS",
+            "the admin with the grant reads keys: {page}"
+        );
+        cursors.push((
+            keys,
+            page["nextCursor"].as_str().expect("a next page").to_owned(),
+        ));
+    }
     sqlx::query("DELETE FROM payload_reveal_grants WHERE tenant_id = $1 AND subject = 'alice'")
         .bind(acme.as_uuid())
         .execute(&api.db.pool)
         .await
         .expect("the grant revoked");
-    let (status, refused) =
-        read_as(&api, &format!("{keys}?limit=1&cursor={cursor}"), "alice").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
-    assert!(
-        refused.to_string().contains("other view of this listing"),
-        "{refused}"
-    );
+    for (keys, cursor) in cursors {
+        let (status, refused) =
+            read_as(&api, &format!("{keys}?limit=1&cursor={cursor}"), "alice").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{keys}: {refused}");
+        assert!(
+            refused.to_string().contains("other view of this listing"),
+            "{keys}: {refused}"
+        );
+    }
 }
 
 /// Batch 5 security suspicion 3 (decision D022-100): a key listing's cursor expires fifteen minutes after its page. A
 /// real page's cursor of both listings and both views, opened and sealed again with the deployment's ring sixteen
-/// minutes earlier, is refused `400` with a message of its own; sealed fourteen minutes earlier, it is read.
+/// minutes earlier, is refused `400` with a message of its own; sealed fourteen minutes earlier, it is read. One sealed
+/// two minutes ahead is refused the same way, thirty seconds ahead is read (decision D022-129).
 #[tokio::test]
 async fn an_expired_cursor_is_refused_with_its_own_message() {
     use sagat_application::flow_control_keys::{KeyListing, KeyPosition};
@@ -1585,6 +1786,42 @@ async fn an_expired_cursor_is_refused_with_its_own_message() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{path} as {subject}: {read}");
+        // decision D022-129: thirty seconds ahead of the reader's clock is read, two minutes ahead is refused
+        let ahead = |seconds: i64| {
+            opened
+                .position
+                .seal(
+                    gate.of(opened.view),
+                    &ring,
+                    1,
+                    acme,
+                    namespace_id,
+                    opened.sealed_at + time::Duration::seconds(seconds),
+                )
+                .expect("sealed again")
+        };
+        let (status, read) = read_as(
+            &api,
+            &format!("{listing}?limit=1&cursor={}", ahead(30)),
+            subject,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path} as {subject}: {read}");
+        let (status, refused) = read_as(
+            &api,
+            &format!("{listing}?limit=1&cursor={}", ahead(120)),
+            subject,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{path} as {subject}: {refused}"
+        );
+        assert!(
+            refused.to_string().contains("the cursor has expired"),
+            "{path} as {subject}: {refused}"
+        );
         let (status, refused) = read_as(
             &api,
             &format!("{listing}?limit=1&cursor={}", aged(16)),

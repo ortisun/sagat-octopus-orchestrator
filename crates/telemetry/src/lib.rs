@@ -25,7 +25,8 @@ pub use capacity::{
     CapacityFinishOutcome, CapacityVacateOutcome,
 };
 pub use flow_control::{
-    ConcurrencyOutcome, FlowControlMetric, FlowControlScope, FlowControlSpan, RateLimitOutcome,
+    ConcurrencyOutcome, FlowControlMetric, FlowControlScope, FlowControlSpan, HeldSignalOutcome,
+    RateLimitOutcome,
 };
 pub use json_log::{LogLayer, Style};
 pub use lake::{

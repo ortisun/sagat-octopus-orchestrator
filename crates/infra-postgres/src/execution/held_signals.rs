@@ -3,7 +3,8 @@
 //! with an audit record when no step waits for it), and dropped with an audit record by the commit that ends the queued
 //! run instead. Every statement runs under the run's own lock, in the run's transaction.
 
-use sagat_application::execution::{HELD_SIGNAL_RUN_ENDED, HeldSignal};
+use sagat_application::execution::{HeldSignal, HeldSignalDrop};
+use sagat_telemetry::flow_control::HeldSignalOutcome;
 
 use super::*;
 
@@ -53,6 +54,7 @@ impl PgRunTx {
             )
             .await?;
         }
+        self.held_signal = Some(HeldSignalOutcome::Held);
         Ok(())
     }
 
@@ -71,6 +73,10 @@ impl PgRunTx {
         .fetch_optional(&mut *self.tx)
         .await
         .map_err(store_error)?;
+        // delivered, unless its drop is audited next in this transaction
+        if row.is_some() {
+            self.held_signal = Some(HeldSignalOutcome::Delivered);
+        }
         Ok(row.map(|(name, payload, actor, trace_id)| HeldSignal {
             name,
             payload,
@@ -83,21 +89,29 @@ impl PgRunTx {
     pub(super) async fn audit_held_signal_dropped_inner(
         &mut self,
         signal: &HeldSignal,
-        reason: &'static str,
+        reason: HeldSignalDrop,
     ) -> Result<(), StoreError> {
         let now = self.now;
         insert_audit(
             &mut self.tx,
             &dropped(self.info.tenant_id, self.info.run_id, signal, reason, now),
         )
-        .await
+        .await?;
+        // every reason its own outcome: a drop is never counted as the delivery an earlier take set (decision D022-132)
+        self.held_signal = Some(match reason {
+            HeldSignalDrop::NotWaitingAtGrant => HeldSignalOutcome::DroppedNotWaiting,
+            HeldSignalDrop::OutputBound => HeldSignalOutcome::DroppedOutputBound,
+            HeldSignalDrop::RunEnded => HeldSignalOutcome::DroppedRunEnded,
+            HeldSignalDrop::DeliveryFailed => HeldSignalOutcome::DroppedDeliveryFailed,
+        });
+        Ok(())
     }
 
     /// In a commit that ends a run whose start declares a gate: drops the signal held with it, audited (decision D022-087
     /// item 4). One probe of the primary key; nothing for a run without one.
     pub(super) async fn drop_held_signal_of_ended_run(&mut self) -> Result<(), StoreError> {
         if let Some(signal) = self.take_held_signal_inner().await? {
-            self.audit_held_signal_dropped_inner(&signal, HELD_SIGNAL_RUN_ENDED)
+            self.audit_held_signal_dropped_inner(&signal, HeldSignalDrop::RunEnded)
                 .await?;
         }
         Ok(())
@@ -110,7 +124,7 @@ fn dropped(
     tenant: TenantId,
     run: sagat_domain::execution::RunId,
     signal: &HeldSignal,
-    reason: &str,
+    reason: HeldSignalDrop,
     now: OffsetDateTime,
 ) -> AuditRecord {
     AuditRecord::engine(
@@ -119,9 +133,11 @@ fn dropped(
         ResourceType::Run,
         run.to_string(),
         format!(
-            "{reason}: signal '{}' held with the queued start, sent by '{}'",
+            "{}: signal '{}' held with the queued start, sent by '{}'",
+            reason.as_str(),
             signal.name.chars().take(64).collect::<String>(),
-            signal.actor.chars().take(128).collect::<String>()
+            // the whole sender, which the held row's `CHECK` bounds at 255 characters (decision D022-129)
+            signal.actor.chars().take(255).collect::<String>()
         ),
         signal.trace_id.clone(),
         now,

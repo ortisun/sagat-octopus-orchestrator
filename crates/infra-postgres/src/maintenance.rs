@@ -62,6 +62,9 @@ fn gate_waiter(row: &PgRow) -> Result<sagat_application::flow_control::GateWaite
         } else {
             Some(NodeId::parse_stored(&node).map_err(|_| corrupt("waiter node"))?)
         },
+        attempt: u32::try_from(col::<i32>(row, "attempt")?)
+            .map_err(|_| corrupt("waiter attempt"))?,
+        grant_failing: col(row, "grant_failing")?,
     })
 }
 
@@ -213,22 +216,30 @@ impl MaintenanceStore for PgRunStore {
         let statement = match key.kind {
             sagat_domain::workflow::GateKind::Concurrency => {
                 concat!(
-                    "SELECT w.tenant_id, w.run_id, w.node FROM concurrency_waiters w \
+                    "SELECT w.tenant_id, w.run_id, w.node, w.attempt, \
+                            EXISTS (SELECT 1 FROM flow_control_grant_failures f \
+                                     WHERE f.tenant_id = w.tenant_id AND f.run_id = w.run_id AND f.node = w.node \
+                                       AND f.attempt = w.attempt) AS grant_failing \
+                       FROM concurrency_waiters w \
                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.permit_scope = $6 \
                     AND w.group_name = $3 AND w.key_digest = $4 AND ",
-                    eligible_gate_waiter!("w", "r", "now()"),
+                    queued_gate_waiter!("w", "r", "now()"),
                     " \
                   ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
                 )
             }
             sagat_domain::workflow::GateKind::RateLimit => {
                 concat!(
-                    "SELECT w.tenant_id, w.run_id, w.node FROM rate_limit_waiters w \
+                    "SELECT w.tenant_id, w.run_id, w.node, w.attempt, \
+                            EXISTS (SELECT 1 FROM flow_control_grant_failures f \
+                                     WHERE f.tenant_id = w.tenant_id AND f.run_id = w.run_id AND f.node = w.node \
+                                       AND f.attempt = w.attempt) AS grant_failing \
+                       FROM rate_limit_waiters w \
                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $6 \
                     AND w.group_name = $3 AND w.key_digest = $4 AND ",
-                    eligible_gate_waiter!("w", "r", "now()"),
+                    queued_gate_waiter!("w", "r", "now()"),
                     " \
                   ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
                 )
@@ -247,6 +258,42 @@ impl MaintenanceStore for PgRunStore {
             .iter()
             .map(gate_waiter)
             .collect()
+    }
+
+    async fn record_gate_grant_failure(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        failure: Option<sagat_application::flow_control::GrantFailureClass>,
+    ) -> Result<(), StoreError> {
+        let node = waiter.node.as_ref().map_or("", NodeId::as_str);
+        let attempt = i32::try_from(waiter.attempt).map_err(|_| corrupt("waiter attempt"))?;
+        let statement = match failure {
+            // the first failure is kept: a waiter that keeps failing keeps its first instant and class
+            Some(_) => {
+                "INSERT INTO flow_control_grant_failures (tenant_id, namespace_id, run_id, node, attempt, failure, \
+                                                          first_failed_at) \
+                 SELECT $1, $2, $3, $4, $5, $6, clock_timestamp() FROM runs \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 \
+                 ON CONFLICT (tenant_id, run_id, node, attempt) DO NOTHING"
+            }
+            None => {
+                "DELETE FROM flow_control_grant_failures \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $3 AND node = $4 AND attempt = $5 \
+                    AND $6::text IS NULL"
+            }
+        };
+        sqlx::query(statement)
+            .bind(waiter.tenant_id.as_uuid())
+            .bind(key.namespace_id.as_uuid())
+            .bind(waiter.run_id.as_uuid())
+            .bind(node)
+            .bind(attempt)
+            .bind(failure.map(sagat_application::flow_control::GrantFailureClass::as_str))
+            .execute(self.pool())
+            .await
+            .map_err(store_error)?;
+        Ok(())
     }
 
     async fn rest_gate_key(
@@ -455,13 +502,13 @@ impl MaintenanceStore for PgRunStore {
         let (limit, shards, exclude) = window_params(window);
         // a step queued for both gates has one deadline, the earlier, on both rows: `UNION` names it once
         let rows = sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node, t.attempt, false AS grant_failing FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 (SELECT tenant_id, run_id, node, deadline_at FROM concurrency_waiters \
+                 (SELECT tenant_id, run_id, node, attempt, deadline_at FROM concurrency_waiters \
                    WHERE shard = sh.s AND deadline_at <= now() \
                      AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
                  UNION \
-                 (SELECT tenant_id, run_id, node, deadline_at FROM rate_limit_waiters \
+                 (SELECT tenant_id, run_id, node, attempt, deadline_at FROM rate_limit_waiters \
                    WHERE shard = sh.s AND deadline_at <= now() \
                      AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
              ) t ORDER BY t.deadline_at LIMIT $1",

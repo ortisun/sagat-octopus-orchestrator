@@ -144,8 +144,95 @@ pub(crate) async fn step_log_usage_if_revealed(
         .map_err(|_| corrupt("step-log usage"))
 }
 
+/// The value of `usage` (a statement over tenant `$1` and namespace `$2` answering one `bigint`) for `namespace`, or
+/// `None` unless `subject`'s current role may use a reveal grant and it holds one for the namespace, as
+/// [`may_reveal_payload_unlocked`] reads it (feature 022, decisions D022-133 and D022-135 item 2). The membership role,
+/// the grant and the usage are one `SELECT`, so one snapshot, as in [`step_log_usage_if_revealed`]: a statement that runs
+/// after a revoke commits sees no grant and answers no usage, and the usage is computed only when the grant exists.
+///
+/// # Errors
+/// A store error (the view then fails whole rather than show the usage).
+pub(crate) async fn usage_if_revealed_in_namespace(
+    pool: &sqlx::PgPool,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    subject: &Subject,
+    usage: &'static str,
+) -> Result<Option<u64>, StoreError> {
+    let row: Option<(String, Option<i64>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT m.role, \
+                CASE WHEN EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                                   WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.subject = $3) \
+                     THEN ({usage}) END \
+           FROM memberships m WHERE m.tenant_id = $1 AND m.subject = $3"
+    )))
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(subject.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(store_error)?;
+    let Some((role, Some(used))) = row else {
+        return Ok(None);
+    };
+    if !may_use_reveal_grant(&role) {
+        return Ok(None);
+    }
+    u64::try_from(used)
+        .map(Some)
+        .map_err(|_| corrupt("flow-control usage"))
+}
+
+/// A scalar subquery, for a statement that reads something with the reveal right in its own snapshot: the stored
+/// membership role of the subject `subject` in tenant `tenant` when it holds the reveal grant for namespace `namespace`
+/// (each a placeholder of the statement, such as `$1`), else null; [`may_use_reveal_grant`] then says whether that role
+/// may use it (feature 022, decision D022-135). The one place outside this file's functions that reads the grants.
+pub(crate) fn reveal_role_sql(tenant: &str, namespace: &str, subject: &str) -> String {
+    format!(
+        "(SELECT m.role FROM memberships m WHERE m.tenant_id = {tenant} AND m.subject = {subject} \
+           AND EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                        WHERE g.tenant_id = {tenant} AND g.namespace_id = {namespace} AND g.subject = {subject}))"
+    )
+}
+
+/// Whether a stored membership role may use a reveal grant (feature 009's rule, its one implementation); an unknown role
+/// may not.
+pub(crate) fn may_use_reveal_grant(role: &str) -> bool {
+    role.parse::<Role>().is_ok_and(role_can_use_reveal_grant)
+}
+
 fn role_can_use_reveal_grant(role: Role) -> bool {
     role.grants(Permission::PayloadReadInternal)
+}
+
+/// The stored membership roles that may use a reveal grant, for a statement that applies the rule itself, before its
+/// `LIMIT` (feature 022, decision D022-154): `<reveal_role_sql> = ANY(<these>)` is [`may_use_reveal_grant`] in SQL. The
+/// same rule, [`role_can_use_reveal_grant`], judges every role.
+pub(crate) fn reveal_grant_roles() -> Vec<&'static str> {
+    // a role added to the enum fails this match until it is judged here, and listed below
+    let judged = |role: Role| match role {
+        Role::Admin
+        | Role::Developer
+        | Role::Operator
+        | Role::Viewer
+        | Role::Worker
+        | Role::Runner
+        | Role::DatabaseRunner => role,
+    };
+    [
+        Role::Admin,
+        Role::Developer,
+        Role::Operator,
+        Role::Viewer,
+        Role::Worker,
+        Role::Runner,
+        Role::DatabaseRunner,
+    ]
+    .into_iter()
+    .map(judged)
+    .filter(|role| role_can_use_reveal_grant(*role))
+    .map(Role::as_str)
+    .collect()
 }
 
 async fn lock_namespace(
