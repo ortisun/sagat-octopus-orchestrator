@@ -113,7 +113,8 @@ From the code on `develop` at `546d5aa5`:
   a child and takes its root's bucket; a root chain's next segment is a new root. The creating transaction MUST compute
   the bucket once, before its first write, and pass it explicitly to every row it writes, the input payload written
   before the run row included: a root's from the `created_at` it binds and whether the process has learned of the switch
-  (Requirement 049-010), except that a root whose `created_at` falls in a month that ended more than 24 hours before the
+  (Requirement 049-010), which the application's registry state (`crates/application/src/instances.rs`) passes to the
+  store as an explicit flag of the creation command, except that a root whose `created_at` falls in a month that ended more than 24 hours before the
   database clock (a root chain's next segment carries its command's time) takes the legacy bucket, so that no root
   lands in a month a retirement may be dropping; a child's from the parent run row it already holds under the run lock. A trigger on `runs`
   (before insert) MUST refuse a root whose bucket is neither legacy nor its month, a dated root whose month ended more
@@ -203,7 +204,8 @@ From the code on `develop` at `546d5aa5`:
   run of it is purgeable under feature 020 (terminal, its tree terminal and, for a chain, the chain final, past its
   namespace's hot retention, every sink applied or held past its hold, not `PARTIAL`, not `COMPENSATION_FAILED`, no
   unresolved outcome or review, and no leaf-success certificate, whose sources feature 020's decision D298 keeps without
-  expiry) and its archive is `VERIFIED` (or its policy is `archive: NONE`). The legacy bucket is never retired: its
+  expiry) and its archive is `VERIFIED` (a run whose policy is `archive: NONE` holds its month, since constitution 5.1.0
+  admits a deletion only after a verified archive). The legacy bucket is never retired: its
   payloads are shared in `payloads`, so its runs leave only by feature 020's per-run purge. Retirement MUST, in order:
   (1) record the retirement as active in `journal_retirements` in a transaction that takes the bucket's advisory lock in
   exclusive mode, so that it waits for the per-run purges in flight, which hold it in shared mode (Requirement 049-014);
@@ -325,9 +327,10 @@ From the code on `develop` at `546d5aa5`:
   a day before); `journal_retire_drop` accepts only `run_events` or `run_payloads` as its table and confirms the
   partition through `pg_partition_tree` before it drops; the functions build partition names from the date with `%I`
   quoting. The pre-drop report of sessions comes from an owner-owned definer function that returns only the process
-  identifier, user, application name and transaction start, so `sagat_retirer` needs no `pg_read_all_stats`; the
-  migration grants `pg_read_all_stats` to the owner role where it lacks it (the owner already reads every table, so it
-  gains no data), since without it another role's transaction start reads as null. `EXECUTE` is
+  identifier, user, application name and transaction start, so `sagat_retirer` needs no `pg_read_all_stats`; it reports
+  the transaction start as unknown for a session it cannot see, which happens unless the operator has granted
+  `pg_read_all_stats` to the owner role, as the runbook says (no migration grants a predefined role, which managed
+  services often refuse). `EXECUTE` is
   granted per role, and Requirement 049-013's audit compares each function's `proacl` with this list: `sagat_app` may
   execute `ensure_journal_buckets`, `journal_bucket_retiring` and feature 020's purge function; `sagat_retirer` the
   retirement functions and the sessions function; no one else any of them. A tenant's audit record of a retirement names
@@ -452,7 +455,7 @@ record is under Owner decision 2026-11-24-4 (pull request 274).
 
 *   **Given**: one run of bucket 2026-12 still waiting for an approval in 2027-06.
 *   **When**: the operator's retirement reaches December's bucket.
-*   **Then**: it stops before recording anything and reports `journal_bucket_held_runs{reason="LIVE"}` as one; feature
+*   **Then**: it stops before recording anything and prints one held run of reason `LIVE`, as one; feature
     020 purges every other run of the bucket one by one, by its key; when the run ends and becomes purgeable, the bucket
     can be retired.
 
@@ -491,8 +494,10 @@ Partition names are `<table>_b<YYYYMM>` and `<table>_legacy`. Bucket code lives 
 
 Every migration of this design that runs in 0.3.0's stopped upgrade is transactional and carries the waiver
 `-- lint-allow: stopped-upgrade <reason>` of design 053 (Architecture decision 0131, decision 2) for each rule it
-breaks: the constraint drops, the rename, the replaced primary key and the dropped triggers, all of which break design
-053's rules only because they assume writers that are running. Design 053's lint (its Task 053-2) is a prerequisite of
+breaks: the index builds that are not concurrent (the new unique index of `run_events` and the index on
+`runs (journal_bucket)`), the several locks that block inserts in one migration, a unique index on an existing table
+(design 053's contract rule), the constraint drops, the rename, the replaced primary key and the dropped triggers, all of
+which break design 053's rules only because they assume writers that are running. Design 053's lint (its Task 053-2) is a prerequisite of
 Task 049-8, so that each waiver is checked. Each migration has a `down` that restores the previous schema (the foreign
 keys recreated `NOT VALID` and validated), refused once a dated row exists. In order:
 
@@ -544,8 +549,7 @@ step, as `sagat_retirer` (Requirement
 calling them:
 
 1. `journal_retire_start(bucket)`: refuse the legacy bucket and a month that ended less than 24 hours ago; check every run of the bucket (on `runs (journal_bucket)`), and stop if any is not
-   purgeable, counting the held runs by reason (`NO_POLICY`, `NOT_ELIGIBLE`, `NOT_VERIFIED`, `LIVE`) in
-   `journal_bucket_held_runs{reason}`; otherwise take the bucket's advisory lock in exclusive mode, insert the active row
+   purgeable, printing the held runs counted by reason (`NO_POLICY`, `NOT_ELIGIBLE`, `NOT_VERIFIED`, `LIVE`); otherwise take the bucket's advisory lock in exclusive mode, insert the active row
    and commit.
 2. `journal_retire_purge_chunk(bucket)`, called until it reports none left: purge runs in the mark-only form, in chunks,
    each under its run lock, through feature 020's purge function; it stops and reports a run that fails the re-check.
@@ -560,8 +564,9 @@ calling them:
 
 Before step 4 the command lists, through the sessions function of Requirement 049-016, the sessions that hold a lock on
 either parent and are older than 60 s, printing their process identifier, user, application name and transaction start
-only, never their query. Waits on the bucket's advisory
-lock are counted (`journal_bucket_lock_waits_total`) and the holder is logged, since any role can take an advisory lock.
+only, never their query. A wait on the bucket's advisory lock is printed with its duration and the holder's process
+identifier and role, since any role can take an advisory lock; the command is run by an operator, so it prints what a
+long-running process would export, and records the held runs and the waits in `journal_retirements`.
 
 ### What is not partitioned, and why
 
@@ -600,7 +605,7 @@ lock are counted (`journal_bucket_lock_waits_total`) and the holder is logged, s
 | A trigger per write costs more than the key check it replaces | Task 049-3 measures both; the budget records locks and round trips |
 | A long run holds a month | The rest of the month is purged by run; held runs are a metric with a reason |
 | Retirement races an append or a per-run purge | Runs are purged under their run lock before the drop; a purged run refuses appends; the bucket's advisory lock and the active row exclude per-run purges; the check before the drop |
-| A drop does not release the tenant's quota | Bytes counted from the frozen partition by an owner-only function and released in the drop's transaction; Success criterion 049-004 |
+| A drop does not release the tenant's quota | Bytes counted from the frozen partition by an owner-only function and released by the idempotent transaction that follows the drops; Success criterion 049-004 |
 | A credential for retirement is stolen | `sagat_retirer` can only call the retirement functions; no platform pod or chart holds it |
 
 ## Constitution Check
@@ -680,7 +685,7 @@ Each task's files are named; the test suites are those of the Verification Plan.
   Refs: Requirement 049-008
 - [ ] T049-10 Write `crates/infra-postgres/run-content-references.json` and the reference-trigger migration generated from it, the three registry tests, the barrier tests of a reference racing a delete in both orders, `run_payloads` and its triggers (step 3), `read_run_content` in `crates/infra-postgres/src/payloads.rs`, and make dated trees' payload writes (`execution.rs`, `chain_progress.rs`, `declared_operations.rs`, `loop_progress.rs`, `primitives.rs`, `execution/path.rs`, `batch.rs`, `schedules.rs`) and reads (`path_read.rs`, `resets.rs`, `scope_frontier.rs`, `payload_inspection.rs`, `payload_disclosure.rs`, `collection_outputs.rs`, `database_results.rs`, `ad_hoc.rs`, `maintenance.rs` and the others the static check finds) use them.
   Refs: Requirement 049-005, Requirement 049-006, Requirement 049-016
-- [ ] T049-11 After Task 049-3's measurement and feature 020's Task T020-046, build the partial legacy reference indexes (Requirement 049-007) and give feature 020's legacy purge its reference check on them, with the re-check after the delete.
+- [ ] T049-11 After Task 049-3's measurement, build the partial legacy reference indexes (Requirement 049-007) that feature 020's Task T020-046 uses for its reference check of a legacy run (which, with the re-check after the delete, is that task's, not this one's), with a test that the check's plan uses them.
   Refs: Requirement 049-007
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
 - [ ] T049-12 Write the per-tree copy rules for resets, reruns, root chains' next segments, cross-namespace operations and rows of no run, with a test per path that the new tree references only its own payloads and a child chain's next segment shares its tree's.
@@ -690,7 +695,7 @@ Each task's files are named; the test suites are those of the Verification Plan.
 - [ ] T049-14 Write `control-plane journal retire`, `sagat_retirer`, `journal_retirements`, the six retirement functions, `journal_bucket_retiring`, `sagat_quota_release_bytes`, the mark-only form in feature 020's purge function and the bucket lock in its purge, with the crash test at every step (between the drop and the release among them), a lock timeout in the drop's transaction, the races with an append, with a per-run purge held by a barrier at the retirement's start, and of two purges of one tree, the abandon after a run fails its re-check with its sweep, a crash during an abandon followed by a resume (refused) and by the abandon again, an abandon racing a purge chunk, an abandon after step 3 then a reactivation and a retirement, a partition held by another session behind a barrier (the attempt fails at once and is retried), and the quota reconciliation test after each; the refusals of `journal_retire_start` for the current month and of `journal_retire_drop` for any other table, called directly as `sagat_retirer`; an erasure refused whole when one run of its tree blocks.
   Refs: Requirement 049-009, Requirement 049-014, Requirement 049-016, Success criterion 049-002, Success criterion 049-004
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
-- [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge and erasure have the key, the tree as unit and the mark-only form of Requirement 049-014, and its Task T020-046 reads the registry.
+- [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge and erasure have the key, the tree as unit and the mark-only form of Requirement 049-014, its Task T020-046 reads the registry and uses the partial legacy indexes of Task 049-11, and its Task T020-061 points to constitution 5.1.0 instead of opening an amendment of its own.
   Refs: Requirement 049-014, Requirement 049-015
 - [ ] T049-17 Write the retention section of `docs/runbooks/database-recovery.md` and the bucket runbook `docs/runbooks/journal-buckets.md` (the switch, which 0.3.0 leaves off until an operator runs it, and retirement), and the release-notes line.
   Refs: User story 049-01
