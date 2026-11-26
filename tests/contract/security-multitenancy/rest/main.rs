@@ -6,6 +6,9 @@
 #[path = "../../../support/mod.rs"]
 mod support;
 
+#[path = "../../../support/canary.rs"]
+mod canary;
+
 mod api_rate_admission;
 mod battery;
 mod conformance;
