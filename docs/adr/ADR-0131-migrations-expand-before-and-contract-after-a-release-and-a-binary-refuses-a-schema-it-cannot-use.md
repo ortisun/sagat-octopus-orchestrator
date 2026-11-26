@@ -30,7 +30,8 @@ writers together.
    `NOT NULL` column, or replaced or dropped function, trigger, policy or view that an earlier migration created; a definer function
    pins its search path and is revoked from public. The lint parses each statement with PostgreSQL's own parser. A
    waiver is a header naming the rule and the reason.
-3. `migrate` MUST confirm the database as ADR-0130's one-run commands do, hold sqlx's migration lock, apply migrations
+3. The `migrate` command MUST confirm the database as ADR-0130's one-run commands do (the suites run the loop without
+   it), hold sqlx's migration lock, apply migrations
    one by one, retry a lock or statement timeout and a failed concurrent index a bounded number of times and then stop
    naming what failed, record a concurrent index only once it is valid, and index a partitioned table only by the
    procedure the design defines (the parent `ON ONLY`, each partition concurrently, then attached). The integration
@@ -53,7 +54,7 @@ writers together.
    capability's own drain check passes; its refusals are named, and a row that never applies can be evicted by the
    owner. A capability whose drain check cannot pass once used cannot be removed.
 7. Release N MUST NOT be published unless N-1 and N pass the integrity oracle together, with every run reaching a
-   terminal state, N's migrations applied during the load, an activation, a two-phase deactivation and a rollback, and
+   terminal state, N's migrations applied during the load, an activation, a two-phase deactivation and, when every capability N added can be removed, a rollback, and
    the 99th percentile latency during the migrations within 2 s of a baseline; each capability adds its scenario. A
    hotfix's migrations are merged forward before the next minor release is cut.
 8. The promise starts with 0.3.0 as N-1; the upgrade from 0.2.x to 0.3.0 stays a stopped upgrade.
