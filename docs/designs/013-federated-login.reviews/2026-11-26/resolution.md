@@ -222,3 +222,9 @@ session idle for a day expires (the reviewer's note for correctness).
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Nit | Fixed: every write of the ring is a KV version 2 check-and-set; `rotate`'s second step promotes only from its own version, otherwise stops with an audited "rotation cancelled"; `a_rotation_resumed_after_a_revoke_writes_nothing` | Requirement 013-026, Task 013-8 |
+
+## Security re-read, round 12 (`approval/reread-12-security.md`, at `9a760bd7`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: `revoke` must win: on a failed check-and-set it re-reads and writes again up to five times, then fails audited; it rotates the random values only after its write commits; `a_revoke_racing_a_rotation_promotion_still_replaces_every_key` | Requirement 013-026, Task 013-8 |

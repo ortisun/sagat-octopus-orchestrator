@@ -167,3 +167,5 @@ The security re-read at `db9e8a50` found nothing in design 050.
 | Finding | Severity | Disposition | Where |
 |---|---|---|---|
 | 1 | Nit | Fixed: Task 013-8 named as the other owner | Technical Plan 6 |
+
+The security re-read of round 10 (`approval/reread-10-security.md`, at `9a760bd7`) found nothing.
