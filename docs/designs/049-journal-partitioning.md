@@ -113,8 +113,11 @@ From the code on `develop` at `546d5aa5`:
   a child and takes its root's bucket; a root chain's next segment is a new root. The creating transaction MUST compute
   the bucket once, before its first write, and pass it explicitly to every row it writes, the input payload written
   before the run row included: a root's from the `created_at` it binds and whether the process has learned of the switch
-  (Requirement 049-010), a child's from the parent run row it already holds under the run lock. A trigger on `runs`
-  (before insert) MUST refuse a root whose bucket is neither legacy nor its month, and a child whose bucket is not its
+  (Requirement 049-010), except that a root whose `created_at` falls in a month that ended more than 24 hours before the
+  database clock (a root chain's next segment carries its command's time) takes the legacy bucket, so that no root
+  lands in a month a retirement may be dropping; a child's from the parent run row it already holds under the run lock. A trigger on `runs`
+  (before insert) MUST refuse a root whose bucket is neither legacy nor its month, a dated root whose month ended more
+  than 24 hours before `clock_timestamp()`, and a child whose bucket is not its
   root's (one lookup of the root by key, which the existing self-referencing foreign key guarantees exists); a trigger
   MUST refuse a change of `journal_bucket`, `created_at` or `root_run_id`. A legacy root is always accepted: one created by
   a process in the 12 s before it learns of the switch is processed by every release and purged run by run like any
@@ -243,14 +246,18 @@ From the code on `develop` at `546d5aa5`:
   (`FOR NO KEY UPDATE`) before its own, so that two purges of one tree serialize and the second sees the first. Erasure of
   a dated run therefore erases its whole tree: it checks the caller's `retention:manage` permission and the eligibility
   of every run of the tree (none live, none with an unresolved effect, an open review or a leaf certificate that
-  decision D298 keeps) before it purges any, erases nothing if one is refused, and its report names every run erased or,
+  decision D298 keeps), and marks every run of the tree `PURGING` (feature 020's job state, under which its guard refuses
+  a rerun, a review or an append) in the same transaction, which holds the root's row and then each run's row in key
+  order; only then do its purge chunks run. It erases nothing if one run is refused, and its report names every run erased or,
   when refused, the run that blocks and the content that survives (feature 020's requirement 020-037).
   The purge of a legacy run keeps feature 020's reference check (Requirement 049-007). Every purge of a dated run but the
   mark-only form runs at `READ COMMITTED`, takes the bucket's advisory lock in shared mode for its transaction and then,
   in a separate statement once the lock is granted (so that its snapshot follows a retirement's commit), refuses with a retryable error while a
   retirement of the bucket is active (Requirement 049-009); the mark-only form runs under the retirement's own row. The *mark-only form*, used by
-  retirement, runs through feature 020's own purge function (its authorization row and its `run.purged` audit record
-  per run) under the run lock, and differs only in leaving the run's partitioned rows for the drop: it re-checks
+  retirement, runs the body of feature 020's purge function (its authorization row and its `run.purged` audit record
+  per run) under the run lock, but only through `journal_retire_purge_chunk`, which `sagat_app` may not execute and which
+  checks that its bucket's retirement row is active; the abandon's deletes likewise run only in `journal_retire_abandon`;
+  the purge function that `sagat_app` executes has neither form, and differs only in leaving the run's partitioned rows for the drop: it re-checks
   eligibility, writes the stub (tombstone digests, the `NOT NULL` columns kept, so an older reader reads a stub as
   feature 020 designed), deletes the run's rows of the unpartitioned run-owned tables, its run-purpose blobs that no
   other run references (feature 020's blob check, since a rerun shares its source's input blob) and its step-log
@@ -285,7 +292,8 @@ From the code on `develop` at `546d5aa5`:
   comes from the run row the transaction holds or has read, and every lease and completion already reads the run row.
   A statement that spans runs (a scheduler pass such as `collection_candidates` or `run_result` in `maintenance.rs`) MAY
   compare it with a joined column, opens every partition, and is allowed only off the lease and completion paths, by
-  name in the check's allow-list with the pass that runs it; Task 049-3 counts its locks. A static check,
+  name in the check's allow-list with the pass that runs it, and only if it joins `runs` with `purged_at IS NULL`, which
+  the check verifies; Task 049-3 counts its locks. A static check,
   `scripts/check-journal-buckets.py`, over the SQL literals of `crates/infra-postgres/src` and the function bodies of the
   migrations after this design's first one, MUST fail on a statement that touches a partitioned journal table without
   the comparison and is not allowed, on SQL built at run time (`format!` and the like) that names one, and on a statement
@@ -317,7 +325,9 @@ From the code on `develop` at `546d5aa5`:
   a day before); `journal_retire_drop` accepts only `run_events` or `run_payloads` as its table and confirms the
   partition through `pg_partition_tree` before it drops; the functions build partition names from the date with `%I`
   quoting. The pre-drop report of sessions comes from an owner-owned definer function that returns only the process
-  identifier, user, application name and transaction start, so `sagat_retirer` needs no `pg_read_all_stats`. `EXECUTE` is
+  identifier, user, application name and transaction start, so `sagat_retirer` needs no `pg_read_all_stats`; the
+  migration grants `pg_read_all_stats` to the owner role where it lacks it (the owner already reads every table, so it
+  gains no data), since without it another role's transaction start reads as null. `EXECUTE` is
   granted per role, and Requirement 049-013's audit compares each function's `proacl` with this list: `sagat_app` may
   execute `ensure_journal_buckets`, `journal_bucket_retiring` and feature 020's purge function; `sagat_retirer` the
   retirement functions and the sessions function; no one else any of them. A tenant's audit record of a retirement names
