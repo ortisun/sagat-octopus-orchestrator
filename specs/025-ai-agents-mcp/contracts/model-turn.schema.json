@@ -59,7 +59,7 @@
           "properties": {
             "callIndex": {"type": "integer", "minimum": 1},
             "status": {"enum": ["ok", "error", "refused"]},
-            "reason": {"enum": ["UNKNOWN_TOOL", "INVALID_INPUT", "LIMIT_REACHED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED", "TOOL_FAILED", "MCP_UNSUPPORTED_RESULT", "AI_TOOL_CHANGED"], "description": "Fixed, safe reason sent to the model; never a provider or executor message."},
+            "reason": {"enum": ["UNKNOWN_TOOL", "INVALID_INPUT", "LIMIT_REACHED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED", "TOOL_FAILED", "MCP_UNSUPPORTED_RESULT", "AI_TOOL_CHANGED", "MCP_TOOL_ERROR"], "description": "Fixed, safe reason sent to the model; never a platform, provider or executor message. INVALID_INPUT and TOOL_FAILED for CHILD_INPUT_INVALID add only the design 043 validator's value-free rule and field. MCP_TOOL_ERROR is an external server's isError result: its bounded, secret-scanned text is the content only when the agent's transcript level is pii (Decision 025-008)."},
             "content": {"description": "Projected tool output (bounded JSON) or a fixed reason text."},
             "truncated": {"type": "boolean"}
           }}}

@@ -1,5 +1,9 @@
 # Validation guide: AI agents and MCP
 
+Status: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
+2026-11-24-1); Architecture decisions 0059 and 0060 accepted (delegate, Owner decisions 2026-11-26-123
+and 2026-11-26-124); not started.
+
 Nothing in this guide runs today. It is the target demo of the Definition of Done: T025-072 makes
 `cargo test -p sagat-tests --test e2e_ai_agents_mcp --locked quickstart::` execute exactly these
 steps against the real control plane, engine, agent runner, PostgreSQL, OpenBao (development mode)
@@ -13,18 +17,25 @@ server. Model ids are those of the provider; the platform checks them only again
 ## Prerequisites
 
 ```sh
-docker compose -f infra/docker/compose.yaml -f infra/docker/compose.ai.yaml up -d   # T025-068
+docker compose -f infra/docker/compose.yaml -f infra/docker/compose.database.yaml \
+  -f infra/docker/compose.ai.yaml up -d   # Task 025-068; OpenBao from compose.database.yaml
+control-plane platform-requirement activate ai-agents-v1 mcp-server-v1   # operator command, schema-owning role (Architecture decision 0082)
 export SAGAT=https://127.0.0.1:8443 NS=<namespace-uuid>
 export TOKEN=$(curl -s -X POST http://127.0.0.1:9100/token -H 'Content-Type: application/json' \
   -d '{"subject": "alice", "tenant": "demo"}' | jq -r .access_token)   # dev-idp; alice is an admin member
 ```
 
-`compose.ai.yaml` (planned) adds `dev-model-provider`, `agent-runner` and an OpenBao development
-service, with the runner's egress limited to the engine, OpenBao and the dev provider.
+`compose.ai.yaml` (planned) is layered on `compose.database.yaml`, which already runs the project's
+OpenBao (prepare its private files and scoped tokens with `docs/runbooks/openbao.md` first); it adds
+only `dev-model-provider` and `agent-runner`, with the runner's egress limited to the engine and the dev
+provider. It starts no second OpenBao. The requirement command above is illustrative: its exact name is
+the instance registry's operator command (Task 025-082).
 
 ## 1. Register a provider (US01)
 
-Create the API-key secret through the existing secret routes (OpenBao-backed, feature 017), then:
+Create the API-key secret through the existing secret routes (OpenBao-backed, feature 017); the
+administrator who saves the provider needs `ai:manage` and `secret:use` on it, and so does every
+publisher of an agent that pins the provider (Requirement 025-003). Then:
 
 ```sh
 curl -s -X PUT "$SAGAT/v1/namespaces/$NS/ai-providers/anthropic-dev" -H "Authorization: Bearer $TOKEN" \
@@ -80,6 +91,7 @@ endpoint returns it only to a holder of `payload:read-internal` and the reveal g
 | Lost broker hint | stop NATS during turn 2, restart it | runner polls; the outbox re-emits; one turn 2 |
 | Approval expiry | approval `timeoutMs: 5000`, no decision | `onExpire: fail` → `AI_TOOL_DENIED`; the losing late decision is `409 ALREADY_DECIDED` |
 | Classification refusal | change the provider to `maxPromptClassification: public` and republish | publication `422` with `PROMPT_CLASSIFICATION_EXCEEDED` and the pointer of `context.ticket` |
+| Publisher loses the secret | revoke the publisher's `secret:use` on `anthropic-dev-key`, start a run | the model call is refused at resolution (`AI_CAPABILITY_UNAVAILABLE`), no credential leaves OpenBao, the denial is audited |
 | Secret canary | an activity tool echoing a secret it was given | `SECRET_IN_OUTPUT`; the canary appears in no prompt, transcript, log, span, audit or response |
 | Data ceilings | annotate `result.priority` as `public`; then lower the MCP server to `public` | publication `422` with `CLASSIFICATION_LOOSENED`, then `MCP_ARGUMENT_CLASSIFICATION_EXCEEDED` |
 | Unattended write | mark `issue_refund` `approval: "none"` and try to expose the workflow | exposure `422` `UNATTENDED_WRITE_TOOL` |
@@ -108,7 +120,8 @@ The projection selects an existing object (`result.summary`, declared `internal`
 ## 5. MCP client (US07)
 
 Register the dev provider's test MCP server (`https://dev-model-provider:9443/mcp`, mode `bearer`,
-`maxArgumentClassification: internal`), refresh it, allow `get_weather` in an agent node with a closed
+`maxArgumentClassification: internal`; mode `oauth-client-credentials` is refused with
+`MCP_AUTH_MODE_UNAVAILABLE` until Gap 025-001 closes), refresh it, allow `get_weather` in an agent node with a closed
 `outputSchema` annotated `internal` (otherwise its results count as `pii` and the `internal` provider
 refuses the agent), publish, and run: the call is leased by the agent
 runner and its result returns to the model. Then switch the test server to `weather-v2` (changed input

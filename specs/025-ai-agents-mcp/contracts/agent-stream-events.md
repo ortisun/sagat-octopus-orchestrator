@@ -46,7 +46,7 @@ An `agent` node with `stream.tokens: true` implicitly declares and emits the cha
   superseded attempt (FR-026-016); readers discard them.
 - Deltas are coalesced: at most one `text_delta` event per 100 ms or per 1 KiB of text, whichever
   comes first.
-- Budget (coordinator decision, review S6, aligned with 026's plan of 2026-10-27): 026 counts all
+- Budget (coordinator decision answering finding 6 of the security review of 2026-10-27, aligned with 026's plan of 2026-10-27): 026 counts all
   reserved `sagat.` channels of a run in a reserved pool apart from the author pool. The agent's budget
   is the effective `maxTurns` × the per-call caps: per model call 1,024 events and 1 MiB by default
   (4,096 events and 4 MiB hard), so 16,384 events and 16 MiB for one agent at the default 16 turns.

@@ -3,6 +3,8 @@
 Implemented by `crates/api-mcp`, mounted by `apps/control-plane` on the same TLS listener as the REST
 API. It never runs user code and never calls a model: a `tools/call` admits durable work through the
 existing admission transaction and reads committed results. ADR-0060 records the trust boundary.
+The endpoint answers `404` for every namespace until the operator records the platform requirement
+`mcp-server-v1` in the instance registry (Architecture decision 0082, Decision 025-002).
 
 ## Endpoint and discovery
 
@@ -58,9 +60,29 @@ unknown method is JSON-RPC `-32601`.
 |---|---|
 | `server/discover` | Above. No authorization needed beyond a valid token; reveals no tools. |
 | `tools/list` | Exposures that are `ENABLED`, in the token's scope and callable by the caller now (`mcp:call`, `run:start` on the target, rights of `maxResultClassification`, and, when feature 029 is enabled, visibility of the exposure's target decided by the 029 access evaluator `sagat_domain::access::evaluate`), ordered by tool name, paginated (50 per page), `ttlMs: 60000`, `cacheScope: "private"`. Each tool: `name`, `title`, `description`, `inputSchema` (from the target), `outputSchema` (the exposure's `resultSchema`), `annotations` (`readOnlyHint` false unless declared, `idempotentHint` false), `_meta.sagat-octopus-orchestrator.io/exposureRevision`. |
-| `tools/call` | Validate arguments against `inputSchema` (`-32602` with a bounded pointer list, no values); authorize as for `tools/list` (an exposure the caller cannot call is answered exactly like an unknown tool, `-32602`, with an `mcp.call_denied` audit); refuse a target version with an unattended write tool (`UNATTENDED_WRITE_TOOL`, answered as a tool error); consult the receipt for `_meta.sagat-octopus-orchestrator.io/idempotencyKey` (1–128 printable ASCII; same key and argument digest → same run; changed arguments → tool error `IDEMPOTENCY_KEY_REUSED`); admit a run of the target pinned by the exposure's version policy, with the receipt and the `mcp.tool_called` audit in the admission transaction; wait up to `waitMs` (default 10 s, ceiling 30 s; feature-026 `executeRun` semantics, FR-026-007 and FR-026-009, when available). Terminal and succeeded → `structuredContent` is the validated projection and one `text` block with its canonical JSON; audit `mcp.result_disclosed`. Terminal and failed → `isError: true` with the run's failure code only. Not terminal → a task when the client declared `io.modelcontextprotocol/tasks`, otherwise `structuredContent: {"status": "RUNNING", "runId": "..."}`. |
+| `tools/call` | Check only the JSON-RPC shape (`arguments` is an object within the request bound); authorize as for `tools/list` (an exposure the caller cannot call is answered exactly like an unknown tool, `-32602`, with an `mcp.call_denied` audit); refuse a target version with an unattended write tool (`UNATTENDED_WRITE_TOOL`, answered as a tool error); pass the arguments, as the run input, through the run-input gate of design 043 (a new row of its table: a `CheckedRunInput` against the pinned target version's `inputSchema`, admitted through the existing `create`; Decision 025-006); consult the receipt for `_meta.sagat-octopus-orchestrator.io/idempotencyKey` (1–128 printable ASCII; same key and argument digest → same run; changed arguments → tool error `IDEMPOTENCY_KEY_REUSED`); admit a run of the target pinned by the exposure's version policy, with the receipt and the `mcp.tool_called` audit in the admission transaction; wait up to `waitMs` (default 10 s, ceiling 30 s; feature-026 `executeRun` semantics, FR-026-007 and FR-026-009, when available). Terminal and succeeded → `structuredContent` is the validated projection and one `text` block with its canonical JSON; audit `mcp.result_disclosed`. Terminal and failed → `isError: true` with the run's failure code only. Not terminal → a task when the client declared `io.modelcontextprotocol/tasks`, otherwise `structuredContent: {"status": "RUNNING", "runId": "..."}`. |
 | `tasks/get` | Task handle bound to tenant, namespace, caller and run; every call re-checks the token, `mcp:call`, the token scope, the exposure's state and the result-level rights (a handle is a name, not a capability; a failed check answers like an unknown task); status `working`, `completed` (with the projected result, audited), `failed` (failure code), `cancelled`. Approval waits stay `working`; `input_required` is never used. |
 | `tasks/cancel` | Same re-checks as `tasks/get`, plus `run:operate`; requests run cancellation through the existing operation path; cancellation is not rollback. |
+
+## Run-input gate
+
+`tools/call` is a row of design 043's run-input gate, like every other way a run is created; this
+adapter has no validator of its own.
+
+- The exposure's `inputSchema` is the target version's, which lies inside the 043 subset
+  (`specs/043-run-input-validation/contracts/input-schema-subset.md`); an exposure whose target version
+  is outside it cannot be saved (`RUN_INPUT_SCHEMA_UNUSABLE`), and an `ACTIVE`-policy exposure whose
+  active version is outside it answers the tool error below.
+- `RUN_INPUT_INVALID` → JSON-RPC `-32602` with `data: {"rule": ..., "field": ...}`, the gate's
+  value-free rule and field; never a value or an excerpt.
+- `RUN_INPUT_SCHEMA_UNUSABLE` → a tool error with that reason.
+- A transient refusal (no permit within 5 s, the backstop, an interrupted check) → a retryable
+  JSON-RPC `-32603` with a trace id; nothing was judged and nothing was admitted.
+- `report` mode: the gate runs every check, counts and audits a final refusal and creates the run
+  anyway (design 043, FR-043-013), so the MCP caller sees an ordinary call; the operator sees the
+  refusal in the gate's metric and audit.
+- The receipt is consulted before the gate, so a retry with the same key and arguments returns the
+  run of the first call without a second check.
 
 ## Result disclosure
 
@@ -81,7 +103,10 @@ unknown method is JSON-RPC `-32601`.
 | Situation | MCP response |
 |---|---|
 | Unknown, disabled, out-of-scope or foreign exposure | JSON-RPC `-32602` "Unknown tool" (identical for all four) |
-| Arguments fail the input schema | `-32602` with bounded pointers |
+| Arguments refused by the run-input gate (`RUN_INPUT_INVALID`) | `-32602` with the value-free rule and field |
+| Target version's schema unusable (`RUN_INPUT_SCHEMA_UNUSABLE`) | tool error with the reason |
+| Run-input gate busy (no permit, backstop, interrupted) | JSON-RPC `-32603`, retryable, trace id only |
+| Target version has an unattended write tool | tool error `UNATTENDED_WRITE_TOOL` |
 | Caller lacks `run:start` or the result-level rights | JSON-RPC `-32602` "Unknown tool", identical to an absent tool; audited `mcp.call_denied` |
 | Quota or rate limit (`QUOTA_EXCEEDED`, `RATE_LIMITED`) | tool error with the reason and `retryAfterMs` in `_meta` |
 | Platform unavailable | JSON-RPC `-32603` with a trace id only |

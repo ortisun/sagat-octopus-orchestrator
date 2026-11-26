@@ -1,18 +1,23 @@
 # ADR-0060: The MCP server exposes only declared tools through a classified result projection, and the MCP client calls only pinned tools of registered servers
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
-**Refines / supersedes:** Applies the ADR-0031 declared-disclosure pattern, ADR-0033 levels and the
-`pii`-egress rule proposed with 020's O1081 to a new surface; refines ADR-0026 (a new inbound credential profile for MCP) and ADR-0035 (egress and
-credential rules for a third managed executor, via ADR-0059). Supersedes none.
+**Status:** Accepted (2026-11-26, delegate, Owner decision 2026-11-24-4)
+**Decided by:** agent proposal (2026-10-26, revised 2026-10-27 after the independent architecture and
+security reviews); accepted on 2026-11-26 by the agent preparing feature 025 for build, under the owner's
+delegation (Owner decision 2026-11-24-4), recorded as Owner decision 2026-11-26-124; revised the same day
+against `develop` (`3f22b612`) after an independent audit of the feature 025 set.
+**Refines / supersedes:** Applies the ADR-0031 declared-disclosure pattern, ADR-0033 levels, the
+`EgressCeiling` of Architecture decision 0071 decision 8 and the `pii`-egress rule decided for Owner
+question 1081 to a new surface; adds a row to the run-input gate of design 043 (Architecture decisions
+0090 and 0092); refines ADR-0026 (a new inbound credential profile for MCP) and ADR-0035 (egress and
+credential rules for a third managed executor, via Architecture decision 0059). Supersedes none.
 **Enforced by:** planned, not yet existing: MCP conformance tests with independent client libraries at
 revisions 2026-07-28 and 2025-11-25 and the security battery under
 `tests/{contract,integration}/ai-agents-mcp/` named in `specs/025-ai-agents-mcp/tasks.md` (default-empty
 list, audience binding, query-token refusal, foreign-exposure opacity, projection classification,
 snapshot drift refusal, egress denial, single-audience tokens, `tasks/get` re-authorization, argument
-ceilings and canaries, a changed token endpoint); the restricted-crate → allowed-dependents map in
-`scripts/check-architecture.py` (task T025-073: the control plane does not
-depend on `crates/infra-ai`). Until those exist this is review only.
+ceilings and canaries, the run-input gate's answers); the extension of the restricted-dependent rules
+of `scripts/check-architecture.py` (Task 025-073: the control plane does not depend on
+`crates/infra-ai`, and only it depends on `crates/api-mcp`). Until those exist this is review only.
 
 ## Context
 
@@ -55,7 +60,10 @@ to change once clients depend on it:
    with `WWW-Authenticate`, refuse tokens in a query string, and never forward a received token.
 4. **A call is a durable admission; a task handle is a name.** `tools/call` MUST admit the target
    through the existing admission transaction (receipt, pins, audit, outbox) and nothing else; it never
-   runs code. An optional `_meta` key `sagat-octopus-orchestrator.io/idempotencyKey` deduplicates;
+   runs code. Its arguments are the run input and MUST pass the run-input gate of design 043 as a row of
+   that gate (`CheckedRunInput`, the existing `create`): a refused input is JSON-RPC `-32602` with the
+   value-free rule and field, an unusable schema a tool error, a transient refusal a retryable `-32603`,
+   and `report` mode admits as it does everywhere else. The MCP server has no validator of its own. An optional `_meta` key `sagat-octopus-orchestrator.io/idempotencyKey` deduplicates;
    without it every call is a new run, and the documentation says so. A run that outlives the bounded
    wait is returned as a task (tasks extension) or a run handle; `tasks/get` and `tasks/cancel` MUST
    re-check the token, `mcp:call`, token scope, exposure state and result-level rights on every call.
@@ -70,19 +78,27 @@ to change once clients depend on it:
    with the pinned digests and refuses a changed tool (`AI_TOOL_CHANGED`). A server revision MUST
    declare `maxArgumentClassification`; publication MUST refuse an `mcp` tool whose server ceiling is
    below the agent's transcript level (ADR-0059 decision 7), because the model can copy anything in its
-   transcript into arguments. A `pii` ceiling follows the uniform rule proposed with 020's O1081 (set by
-   a reveal-grant holder, rechecked per call, revocation pauses the server, each call audited).
-   Descriptions, annotations and results are untrusted content; results are bounded, text or structured
-   only, and scanned for the attempt's resolved secrets.
-7. **The client runs only in the agent runner, through the egress guard, and sends its secret only to a
-   recorded token endpoint.** Connections use the guarded egress client and the namespace egress
-   policy (private destinations only through the operator-approved runner policy); credentials (static
-   bearer or OAuth client credentials with a resource indicator) are resolved per attempt from OpenBao
-   and dropped with it. For OAuth, the issuer and token endpoint are recorded in the server revision by
-   an `ai:manage` holder; the runner never discovers them at call time, and a refresh that finds
-   different advertised metadata audits it and blocks calls until the revision is updated.
-   User-delegated authorization, `input_required` and client-side tasks are not supported until a
-   later decision.
+   transcript into arguments. The ceiling is the domain's `EgressCeiling`. A `pii` ceiling follows the
+   uniform rule decided for Owner question 1081 (Decision 1617 of feature 020, applied by Owner decision
+   2026-11-26-120: set by a reveal-grant holder, rechecked per call, revocation pauses the server, each
+   call audited, a secret never leaves, default `internal`). Descriptions, annotations and results are
+   untrusted content; results are bounded, text or structured only, and scanned for the attempt's
+   resolved secrets. A server's error result reaches the model as `MCP_TOOL_ERROR`; its text has no
+   carrier, counts as `pii` and is forwarded only when the transcript level is already `pii`.
+7. **The client runs only in the agent runner, through the egress guard, with declared secrets only.**
+   Connections use the guarded egress client and the namespace egress policy (private destinations only
+   through the operator-approved runner policy). A static bearer credential is a declared secret of the
+   task definition, because the MCP-server revision that holds it is pinned by the published version;
+   it is disclosed under Principle V's first declared set, all or nothing, to the lease-owning agent
+   runner, under the caller's current membership, its binding (`BindingProfile::Agent`), the
+   pool-delivery policy and the publisher's `secret:use` on it, checked at publication and again at
+   delivery, and dropped when the attempt ends. MCP servers authenticated by OAuth reach access tokens
+   only through design 047's token broker, which needs a third declared set the owner has not yet added
+   to Principle V; the `oauth-client-credentials` mode is refused at save until the owner makes that
+   amendment. When it is enabled, the issuer and token endpoint are recorded in the server revision by an
+   `ai:manage` holder, never discovered at call time, and a refresh that finds different advertised
+   metadata audits it and blocks calls until the revision is updated. User-delegated authorization,
+   `input_required` and client-side tasks are not supported until a later decision.
 
 ## Considered options
 
@@ -113,8 +129,10 @@ to change once clients depend on it:
 
 ## Evidence
 
-None yet; this is a proposal. Required: the MCP conformance and security tests listed in
+None yet: accepted as a design, not as an implementation. Required before the implementation is
+declared done: the MCP conformance and security tests listed in
 [tasks.md](../../specs/025-ai-agents-mcp/tasks.md), the contracts
 [mcp-server.md](../../specs/025-ai-agents-mcp/contracts/mcp-server.md) and
 [mcp-client.md](../../specs/025-ai-agents-mcp/contracts/mcp-client.md), and decisions D1289,
-D1296, D1301–D1306, D1316, D1317, D1637 and D1638 in [research.md](../../specs/025-ai-agents-mcp/research.md).
+D1296, D1301–D1306, D1316, D1317, D1637, D1638, D025-001, D025-006 and D025-008 and gap G025-001 in
+[research.md](../../specs/025-ai-agents-mcp/research.md).

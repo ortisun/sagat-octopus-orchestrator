@@ -4,7 +4,9 @@
 
 **Created**: 2026-10-26
 
-**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
+**Status**: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision 2026-11-24-1); Architecture decisions 0059 and 0060 accepted (delegate, Owner decisions 2026-11-26-123 and 2026-11-26-124); not started
+
+**Revised**: 2026-11-26, against `develop` at `3f22b612`, after an independent audit (3 Blockers, 19 Majors, 14 Nits), with the decisions the coordinating author took under the owner's delegation (Owner decision 2026-11-24-4): Owner decisions 2026-11-26-120 to 2026-11-26-125
 
 **Input**: LLM provider resources (Anthropic, OpenAI-compatible, AWS Bedrock, Azure); a durable AI
 agent step whose model calls and tool calls are durable attempts run by a managed executor, with
@@ -12,7 +14,8 @@ tools (published scripts, activities, managed operations, child workflows, MCP t
 output, budgets (turns, tokens, cost, wall time) and human approval for sensitive tools; an MCP
 server exposing declared workflows, scripts and operations as tools with OAuth or scoped tokens,
 per-tool authorization, audit and declared result disclosure; an MCP client so agent steps can use
-external MCP servers; token streaming through feature 026 Workflow Streams; and, at P3, a Studio
+external MCP servers (static bearer-token servers now; OAuth-authenticated servers wait for the owner's
+Principle V amendment requested by design 047); token streaming through feature 026 Workflow Streams; and, at P3, a Studio
 authoring assistant that drafts workflows and never publishes them.
 
 ## Context and delivery boundary
@@ -31,10 +34,21 @@ This feature adds no second engine, approval mechanism, secret authority or stre
   ([ADR-0059](../../docs/adr/ADR-0059-agent-steps-are-engine-driven-loops-of-durable-derived-steps.md);
   derived-step precedent ADR-0010).
 - Model calls and MCP client calls run in a separate managed executor, `apps/agent-runner`, on the
-  feature-017 model (ADR-0035, ADR-0036) and under the placement rule that 021 writes in ADR-0055
-  (coordinator C3 (a)): a request whose content a tenant authored in a workflow, such as a model
-  prompt or a tool call, is sent only by a managed executor holding only that attempt's capability.
-  The control plane and scheduler never call a provider or an external MCP server.
+  feature-017 model (Architecture decisions 0035 and 0036). The reason is Principle V itself: a model
+  prompt or an MCP tool call is a request a tenant authored, sent with a third-party credential, and
+  its answer is untrusted content, so it is sent only by an isolated executor holding only that
+  attempt's capability. Feature 021 proposes the same placement as a general rule (Architecture
+  decision 0055 decision 11, still proposed, Owner question 1123 open); this feature does not depend on
+  that rule being accepted. The control plane and scheduler never call a provider or an external MCP
+  server.
+- The credentials of a model call or an MCP call are delivered under Principle V's first declared set
+  (ordinary task execution), not as a new exception: the immutable task definition of such a derived
+  step is the agent node of the published version together with the provider revision and the
+  MCP-server revision that version pins, so the secrets those pinned revisions name are the declared
+  secrets of that task definition (Requirement 025-003). OAuth-authenticated MCP servers are the one
+  exception: they reach tokens only through design 047's token broker, which needs a third declared
+  set added to Principle V by the owner; until the owner makes that amendment, the
+  `oauth-client-credentials` mode is refused (Gap 025-001).
 - Effects stay at-least-once (ADR-0004). A model call has no provider idempotency key: a lost
   response is asked again and paid twice. A tool call carries a stable key.
 - Approvals use feature 014 (FR-014-007, FR-014-008); values follow ADR-0033; the transcript has its
@@ -44,11 +58,19 @@ This feature adds no second engine, approval mechanism, secret authority or stre
   is exposed by default, results leave only through a declared classified projection, and external
   tools are called only from pinned, allow-listed snapshots.
 
-Depends on existing features 001–003, 005–009, 011, 014, 016 and 017, and on parallel drafts 021
-(resource types, managed operations), 022 (standalone steps) and 026 (Workflow Streams, `executeRun`);
-it registers in registries owned by drafts 018 (reset rules, ADR-0050 lock slots), 020 (content stores,
-`pii` egress), 028 (time classes), 029 (access evaluator), 031 (encoded positions) and 032 (key
-inventory). Nothing here claims those drafts are implemented.
+Depends on existing features 001–003, 005–009, 011, 014, 016, 017, 018 (merged: its reset-rule
+registry is code, `crates/domain/src/execution/reset.rs`, and Architecture decision 0050, accepted, fixes
+the lock slots), 035 (managed kinds and runner profiles, `ManagedKind` and `BindingProfile`), 038
+(claim and transition statement budget), 041 (step logs, worker-protocol minor 1.7) and 043 (run-input
+gate and validator), and on parallel drafts 021 (resource types, managed operations), 022 (standalone
+steps) and 026 (Workflow Streams, `executeRun`); it registers in registries owned by drafts 020 (content
+stores), 028 (time classes), 031 (encoded positions) and 032 (key inventory), uses the 029 access
+evaluator when 029 is enabled, and adds rows to the audit-to-OCSF mapping of design 040. Nothing here
+claims those drafts are implemented.
+
+Agents are a graph-model feature. A procedural workflow (constitution Principle IV, design 044, not yet
+written) reaches an agent only through a child graph workflow that its envelope declares; an envelope
+entry for agents is left to design 044 (Gap 025-002).
 
 ## Domain vocabulary
 
@@ -191,8 +213,8 @@ or response, and the transcript is readable only through its audited endpoint.
    published, **then** publication fails with `PROMPT_CLASSIFICATION_EXCEEDED` and the JSON pointer;
    `secret` is always refused.
 2. **Given** a run value that does not validate against its carrier, **when** it would be rendered,
-   **then** it is not sent and the call fails with `AI_PROMPT_CLASSIFICATION`; a value with no carrier
-   counts as `pii`.
+   **then** it is not sent and the call fails with `CLASSIFICATION_EGRESS_REFUSED` (the existing
+   worker-origin code of `sdks/error-catalog.json`); a value with no carrier counts as `pii`.
 3. **Given** a tool output containing a secret its attempt received, **when** it completes, **then**
    the tool call fails with `SECRET_IN_OUTPUT` and nothing is appended to the transcript.
 4. **Given** a user with `run:read` only, **when** they inspect the run, **then** they see turns, tool
@@ -228,8 +250,9 @@ key; there is one run, one audited call and only the declared projection in the 
 
 ### US07 — Use tools of an external MCP server (Priority: P2)
 
-An administrator registers an external MCP server with OAuth client credentials and refreshes its
-tools; an author allows two of them in an agent node.
+An administrator registers an external MCP server with a static bearer token and refreshes its
+tools; an author allows two of them in an agent node. (OAuth client credentials wait for the owner's
+Principle V amendment requested by design 047, Gap 025-001.)
 
 **Why this priority**: many tool providers publish MCP servers.
 
@@ -299,8 +322,9 @@ may apply.
   concurrency is free again, without any counter repair.
 - A workflow with a `write` tool acknowledged `approval: "none"` is published, then someone tries to
   expose it through MCP or a 026 public link: both refuse with `UNATTENDED_WRITE_TOOL`.
-- An external MCP server starts advertising another token endpoint: the next call is refused before
-  the client secret is sent, and the change is audited.
+- An external MCP server starts advertising another token endpoint (OAuth servers, once the owner's
+  Principle V amendment requested by design 047 is made): the next call is refused before any
+  credential is used, and the change is audited.
 - Two tool calls of a turn complete at once: the run lock serializes them; only the last commit
   schedules the next turn.
 - Cancellation while a model call streams, an approval is pending and a child tool runs: the call is
@@ -332,8 +356,10 @@ fails before work.
 
 - **FR-025-001 — Provider catalog**: The platform MUST provide namespace-scoped create, list, detail,
   update, pause, probe and delete for provider resources of kinds `anthropic`, `openai-compatible`,
-  `aws-bedrock` and `azure-openai`, as a feature-021 resource kind when accepted, otherwise as a
-  self-contained catalog with the same rules and a migration path (D1283). Settings are non-secret
+  `aws-bedrock` and `azure-openai`, as platform-provided resource types of feature 021's resource
+  model; there is no second catalog (Owner decision 2026-11-26-122, Decision 1283). The provider work
+  starts after 021's resource core merges; until then the engine, runner and adapters are built against
+  a test provider written through the store port by test support only. Settings are non-secret
   (HTTPS endpoint, region, deployment map, API version); credentials are secret references; unknown
   fields and credentials in settings or URLs are rejected. Resources have stable identity, a
   namespace-unique name and immutable revisions with optimistic concurrency; deletion is a tombstone
@@ -347,27 +373,49 @@ fails before work.
 - **FR-025-003 — Credentials**: Credential values MUST live only in OpenBao behind the feature-017
   facade and be resolved per attempt: API-key header or bearer (`anthropic`, `openai-compatible`),
   access key pair with optional role (`aws-bedrock`), API key or Entra client credentials
-  (`azure-openai`). No fallback; a deployment's own cloud identity is never used for a tenant
-  account; adapters use explicit static credentials only, never SDK default credential chains or
-  instance-metadata lookups (D1299).
+  (`azure-openai`). Their disclosure fits Principle V's first declared set (ordinary task execution):
+  the immutable task definition of a model-call or MCP-call derived step is the agent node of the
+  published version plus the provider revision and the MCP-server revision that version pins, so the
+  logical secrets those pinned revisions name are the declared secrets of that task definition (a probe
+  or refresh run's private definition pins its revision the same way). They are delivered all or
+  nothing, only to the lease-owning agent runner, and only while the caller's current membership, its
+  worker/activity binding (`BindingProfile::Agent` for the reserved activity), the pool-delivery policy
+  of every secret and the publisher's permission `secret:use` on every one of them authorize it; the
+  publisher's `secret:use` is checked at publication and again at delivery. No fallback; a deployment's
+  own cloud identity is never used for a tenant account; adapters use explicit static credentials only,
+  never SDK default credential chains or instance-metadata lookups (D1299). MCP servers authenticated by
+  OAuth are outside this rule: they reach tokens only through design 047's token broker, which waits
+  for the owner's Principle V amendment requested by design 047 (Gap 025-001).
 - **FR-025-004 — Provider probe**: Test provider MUST admit a fixed durable probe (origin
   `AI_PROVIDER_PROBE`) run by the agent runner on the same destination, TLS, credential and quota
   path as a model call, calling a model-listing endpoint or equivalent. It generates no tokens and
-  records a safe category, tested revision and time; success is evidence at that instant only.
+  records a safe category, tested revision and time; success is evidence at that instant only. The
+  probe, the MCP tool refresh (Requirement 025-035) and the authoring assistant (Requirement 025-039)
+  are private runs created by `start_private` and so pass row 13 of the design 043 run-input gate.
 - **FR-025-005 — Data policy**: A revision MUST declare `maxPromptClassification` (`public`,
-  `internal` or `pii`), with no default; `secret` is not a value (D1289, O1280). Declaring `pii`
-  requires the saving administrator to hold the namespace reveal grant; the grant is rechecked at
-  every resolution whose transcript level is `pii`, its revocation pauses the provider, and each such
-  attempt is audited `ai.pii_egress` (D1637, the uniform rule of 020's O1081).
+  `internal` or `pii`), with no default at the API; `secret` is not a value (D1289). The value is the
+  existing domain type `EgressCeiling` (`crates/domain/src/classification.rs`, Architecture decision
+  0071 decision 8): `EgressCeiling::requires_reveal_grant` decides who may set it and
+  `EgressCeiling::admits` decides what may leave. The rule for `pii` is the uniform `pii`-egress rule of
+  Owner question 1081 (decided on 2026-11-24 for feature 020, Decision 1617), applied to provider
+  revisions and MCP-server revisions by Owner decision 2026-11-26-120: a ceiling of `pii` is set only by
+  an administrator holding the namespace reveal grant; the grant is rechecked at every resolution whose
+  transcript level is `pii`; its revocation pauses the provider; each such attempt is audited
+  `ai.pii_egress`; a secret never leaves; and the default is `internal` (the type's default, which the
+  Studio preselects; the API still requires the field to be sent) (D1637).
 
 #### Agent node and loop
 
 - **FR-025-006 — Agent node**: The IR MUST gain an additive `agent` node (ADR-0032) with `model`,
   literal `instructions` and `prompt`, named `context` expressions, `tools`, optional closed
-  `outputSchema`, `budgets`, `modelOptions` (`effort`, `maxOutputTokens`), `retry`, optional `stream`,
-  `timeoutMs`, `next` and `onError` (`contracts/agent-node.schema.json`). It is allowed only in the
-  root graph and not with `chainPolicy` (D1281), refused unless the agent capability is enabled
-  (FR-014-016); unknown fields are rejected.
+  `outputSchema`, `budgets`, `modelOptions` (`effort`, `maxOutputTokens`), `retry`,
+  `attemptTimeoutMs`, optional `stream`, `timeoutMs`, `next` and `onError`
+  (`contracts/agent-node.schema.json`). It is allowed only in the root graph of a graph-model version
+  and not with `chainPolicy` (D1281); it declares no step-output destinations (feature 035), so no
+  `<agent>~d.<name>` id exists (Decision 025-004). Publication refuses it unless the operator has
+  recorded the platform requirement `ai-agents-v1` in the instance registry (Architecture decisions
+  0082 and 0050 decision 9; the capability is listed by control planes and execution engines whose
+  configuration runs agents); unknown fields are rejected.
 - **FR-025-007 — Request rendering**: The server MUST render each request from the pinned
   instructions, the prompt, context values evaluated by the bounded evaluator and serialized as
   canonical JSON in named delimited blocks, declared tools, the committed transcript and the output
@@ -378,13 +426,19 @@ fails before work.
   by the transaction settling the turn's last tool call. The first committed result wins, a stale
   attempt is rejected, and the transcript is append-only with provider-opaque blocks replayed
   unchanged (D1282).
-- **FR-025-009 — Model call execution**: A model call MUST be the reserved activity `sagat.ai.model`,
-  claimable only by a current `agent-runner` bound to the namespace and resolved by a two-phase
-  `ResolveModelCall` that checks lease, session, pinned revision, provider status and the publisher's
-  and initiator's rights before and after OpenBao I/O, commits the resolution audit and a
-  metadata-only credential pin before returning, and holds no lock during provider I/O. Provider
-  failures map to the closed vocabulary of `contracts/errors.md`; retries honour `retry-after`
-  within the attempt deadline.
+- **FR-025-009 — Model call execution**: A model call MUST be the reserved activity `sagat.ai.model`
+  (a managed step of `ManagedKind::AiModel`), claimable only by a current `agent-runner` identity whose
+  binding has `BindingProfile::Agent` in the namespace, and resolved by a two-phase `ResolveModelCall`.
+  Phase 1, in a run transaction closed before OpenBao I/O, checks the current tenant and namespace
+  scope, the exact task, attempt and generation, the matching capability token and unexpired lease, the
+  recorded lease-owning executor subject and live session, the pinned revision and provider status, and
+  the Principle V authorities of Requirement 025-003 (caller membership, binding, pool-delivery policy,
+  the publisher's `secret:use` on every declared secret) plus the initiator's `ai:use`. Phase 2
+  re-checks all of them and that the selected secret revisions still match, then commits the
+  value-free `secret.resolved` audit and a metadata-only credential pin per secret slot before any value
+  is returned; a failed check or audit refuses disclosure. No lock is held during OpenBao or provider
+  I/O. Provider failures map to the closed vocabulary of `contracts/errors.md`; retries honour
+  `retry-after` within the attempt deadline.
 - **FR-025-010 — Tool declarations**: Each tool MUST declare a name matching `^[a-zA-Z0-9_-]{1,64}$`
   unique within the node, a literal description, a kind (`activity`, `script`, `database`,
   `operation`, `child`, `mcp`) with its reference, a closed bounded input schema (from the target
@@ -395,18 +449,29 @@ fails before work.
   (G1293). A `database` tool is a parameterized `query` bound only from tool arguments; `execute`
   requires approval. An `mcp` tool names a server resource and a tool of its pinned snapshot.
 - **FR-025-011 — Tool call validation**: An undeclared tool or input failing its schema MUST NOT
-  execute; the model gets a bounded error result. Requests beyond the per-turn limit or the remaining
-  `maxToolCalls` get refusal results. A turn's results return in request order in one message.
+  execute; the model gets a bounded error result. Tool inputs are validated by the platform's run-input
+  validator of design 043 (`RunInputValidator`, `crates/infra-schema/src/run_input/`), not by a second
+  validator; `agentClosedSchema` is a restriction of the 043 subset plus closure
+  (`additionalProperties: false` on every object, `maxLength` on every string, `maxItems` on every
+  array), so every agent schema compiles there. The error result is built only from the validator's
+  value-free rule and field, never from the value. Requests beyond the per-turn limit
+  (`maxParallelToolCalls`) or the remaining `maxToolCalls` get refusal results. A turn's results return
+  in request order in one message.
 - **FR-025-012 — Tool execution**: Each valid call MUST be a derived step run by its kind's executor
   (SDK worker, sandbox runner, database runner, 021 executor, child run, agent runner for MCP) with
   key `agent:{runId}:{node}:{turn}:{call}` (D1296). `read` tools retry; a `write` tool with an unknown
   outcome uses `reconcileWith` when declared, otherwise manual review. `child` tools use the existing
-  child semantics and tree budget. Results are bounded, scanned for resolved secrets, projected and
-  checked against the provider's level before they are appended.
+  child semantics and tree budget; the child's admission goes through the run-input gate of design 043
+  (its child row), and a refused input creates no child: the tool-call step fails with
+  `CHILD_INPUT_INVALID` (or `RUN_INPUT_SCHEMA_UNUSABLE`), as FR-043-008 says of a parent step, and the
+  model receives `TOOL_FAILED` with that code and the value-free rule and field; the agent continues and
+  the call counts toward `maxToolCalls` (Decision 025-007). Results are bounded, scanned for resolved
+  secrets, projected and checked against the provider's level before they are appended.
 - **FR-025-013 — Structured output**: With `outputSchema`, the platform MUST validate the final
   answer against the closed bounded schema, use the adapter's native constraint where the model entry
   declares it (never forced tool choice), send at most `maxRepairTurns` bounded validation summaries
-  back, and fail with `AI_OUTPUT_INVALID` when no valid answer fits the budget.
+  back, and fail with `AI_OUTPUT_INVALID` when no valid answer fits the budget. Validation uses the 043
+  validator (Requirement 025-011); a summary lists only its value-free rule and field pairs.
 - **FR-025-014 — Stop reasons and output**: An answer without tool requests is final. `refusal` fails
   with `AI_MODEL_REFUSED`, a `max_tokens` stop without a complete answer or request with
   `AI_OUTPUT_TRUNCATED`; both non-retryable and routable by `onError`. The retained output is
@@ -414,16 +479,21 @@ fails before work.
   field is at least the transcript level (FR-025-019) and the metadata is `internal`; a looser author
   annotation is refused at publication with `CLASSIFICATION_LOOSENED` (D1291). It is retained under
   the content quota and as a blob claim-check above the inline limit.
-- **FR-025-015 — Budgets**: An agent step MUST enforce `maxTurns`, `maxToolCalls`, `maxInputTokens`,
-  `maxOutputTokens`, optional `maxCost` and `timeoutMs`. Every model-call attempt, first or retry,
-  takes its conservative reservation (D1286) against the agent's budgets and the namespace's daily
-  row in the transaction that grants its lease; a reservation that does not fit fails the step with
+- **FR-025-015 — Budgets**: An agent step MUST enforce `maxTurns`, `maxToolCalls`,
+  `maxParallelToolCalls`, `maxRepairTurns`, `maxInputTokens`, `maxOutputTokens`, optional `maxCost` and
+  `timeoutMs`. Every model-call attempt, first or retry, takes its conservative reservation (D1286)
+  against the agent's budgets and the namespace's daily budget in the transaction that grants its lease
+  (the daily budget is charged to a per-tenant, per-namespace lease of the claiming server backend,
+  refilled from the namespace's `ai_usage_daily` row only when short, never written at every commit:
+  the pattern of Architecture decision 0097); a reservation that does not fit fails the step with
   `AI_BUDGET_EXHAUSTED` before any lease reaches a runner. Completion settles reported usage; a
   provider error response releases the reservation; a lost response, timeout or lease expiry keeps it
   as charged. `maxCost` needs declared prices; cost is labelled estimated.
-- **FR-025-016 — AI quotas**: The platform MUST enforce namespace and tenant concurrent model calls
-  (the count of live `sagat.ai.*` leases, read in the claim transaction, so completion and expiry
-  release capacity), namespace tokens and estimated cost per UTC day (settled plus reserved), and
+- **FR-025-016 — AI quotas**: The platform MUST enforce namespace and tenant concurrent agent-runner
+  attempts (`ai_runner_concurrency` and `tenant_ai_runner_concurrency`: the count of live leases of
+  every `sagat.ai.*` activity, model calls, MCP calls, probes and refreshes alike, read in the claim
+  transaction, so completion and expiry release capacity), namespace tokens and estimated cost per UTC
+  day (settled plus reserved, through the leases of Requirement 025-015), and
   counts of providers, MCP servers, exposures and scoped tokens, through ADR-0027 resolution. Over a
   limit, claim or admission waits or fails before any provider request; a lowered limit does not
   cancel dispatched work.
@@ -450,9 +520,10 @@ fails before work.
   provider's `maxPromptClassification` or a referenced path is `secret`; reject with
   `MCP_ARGUMENT_CLASSIFICATION_EXCEEDED` an `mcp` tool whose server revision's
   `maxArgumentClassification` is below it; and reject with `CLASSIFICATION_LOOSENED` a `child` tool
-  whose child input schema declares a field below it. At run time a value that does not validate
-  against its carrier is not sent: the call fails with `AI_PROMPT_CLASSIFICATION` before dispatch (a
-  tool result in that state returns `TOOL_FAILED` to the model).
+  whose child input schema declares a field below it. The levels are compared with the domain's
+  `Level::stricter` and `EgressCeiling::admits`, not a second implementation. At run time a value that
+  does not validate against its carrier is not sent: the call fails with `CLASSIFICATION_EGRESS_REFUSED`
+  before dispatch (a tool result in that state returns `TOOL_FAILED` to the model).
 - **FR-025-020 — Secrets never in prompts**: Secret values MUST NOT reach a rendered request,
   transcript, journal, log, span, audit record, stream event or response. Rendering has no secret
   capability; provider and MCP credentials exist only in the runner's transport; tool outputs are
@@ -475,11 +546,19 @@ fails before work.
   namespace egress policy, with no redirects for non-GET, no environment proxy, bounded time and bytes
   and a bounded incremental reader for event streams. Private destinations need the operator-approved
   runner policy (ADR-0035 decision 4); metadata, link-local, loopback and platform endpoints stay denied.
-- **FR-025-024 — Managed executor isolation**: The agent runner MUST be a separate process with
-  machine role `agent-runner` (`worker:execute`, `ai:execute`), a current namespace binding and the
-  next free additive protocol minor (G1280). It holds no platform database URL, OpenBao token or
-  signing key, receives only the current attempt's capability, drops credentials when the attempt
-  ends and cannot claim ordinary tasks; ordinary workers cannot claim or resolve its activities.
+- **FR-025-024 — Managed executor isolation**: The agent runner MUST be a separate process with the
+  new machine role `agent-runner` (`worker:execute`, `ai:execute`; never `database:execute` and never a
+  database credential, which the `database-runner` role holds), a current namespace binding of
+  `BindingProfile::Agent`, and the next free minor of the worker-protocol register of `sdks/SPEC.md`
+  section 9 when its contract merges (1.7 is feature 041's, Owner decision 2026-11-15-8; G1280). It
+  holds no platform database URL, OpenBao token, signing key or container-engine access, receives only
+  the current attempt's capability and the credentials of Requirement 025-003, drops them when the
+  attempt ends and cannot claim ordinary tasks; ordinary workers, sandbox, database and lake runners
+  cannot claim or resolve its activities. Its steps are managed steps (`Node::managed_kind` is an AI
+  kind), so the step logs of design 041 are refused for them: an `agent-runner` token is refused by the
+  step-log ingest (its checks P1 and T7), a carry on a `sagat.ai.*` step is ignored (check C0), its
+  registration carries no `StepLogPolicy`, and the runner never sends step logs; the transcript is the
+  separate authoritative record (Decision 025-005).
 - **FR-025-025 — Sagas**: An agent in a saga region MUST compensate completed tool calls in reverse
   completion order with each tool's `compensateWith`; a `write` tool without compensation is
   irreversible and compensating past it ends the run `PARTIAL`; a failing compensation waits for a
@@ -518,7 +597,15 @@ fails before work.
 - **FR-025-031 — Call admission and waiting**: A call MUST admit the target through the existing
   durable admission transaction, deduplicated by the optional `_meta` key
   `sagat-octopus-orchestrator.io/idempotencyKey` (same key and arguments return the same run; changed
-  arguments conflict). After a bounded wait a non-terminal run is a task for clients with the tasks
+  arguments conflict). The arguments are the run input and pass the run-input gate of design 043 as a
+  new row of its table: the call builds a `CheckedRunInput` and admits through the existing `create`,
+  so no second validation path exists. `RUN_INPUT_INVALID` is answered as JSON-RPC `-32602` with the
+  value-free rule and field (never a value), `RUN_INPUT_SCHEMA_UNUSABLE` as a tool error, and the
+  transient refusals (no permit, the backstop, an interrupted check) as a retryable JSON-RPC `-32603`;
+  in `report` mode the refusal is counted and audited, the run is admitted and the MCP caller sees an
+  ordinary call. An exposure's `inputSchema` is the target version's, inside the 043 subset
+  (`specs/043-run-input-validation/contracts/input-schema-subset.md`); a target outside it cannot be
+  exposed. After a bounded wait a non-terminal run is a task for clients with the tasks
   extension or a run handle otherwise; the wait reuses feature 026 `executeRun` semantics
   (FR-026-007, FR-026-009) when available. `tasks/get` and `tasks/cancel` (which also needs
   `run:operate`) re-check `mcp:call`, token scope, exposure state and result-level rights on every
@@ -537,21 +624,28 @@ fails before work.
 - **FR-025-034 — External MCP server resources**: `ai:manage` holders MUST be able to register,
   revise, pause and delete external MCP servers (HTTPS URL, protocol preference, a required
   `maxArgumentClassification` of `public`, `internal` or `pii` (`pii` under the same reveal-grant rule as
-  FR-025-005), authentication none, static bearer
-  secret or OAuth client credentials with a resource indicator, limits), as a 021 resource kind when
-  available. For OAuth the revision records the issuer and token endpoint, confirmed by the saving
-  `ai:manage` holder; the client secret is sent only there (D1306). User-delegated authorization is
-  not supported (G1288).
+  FR-025-005), authentication none or static bearer secret, limits), as a 021 resource type (Owner
+  decision 2026-11-26-122). The static bearer secret is a declared secret of the task definition as in
+  Requirement 025-003. OAuth client credentials with a resource indicator wait for the owner's
+  Principle V amendment requested by design 047 and are refused at save until then
+  (`MCP_AUTH_MODE_UNAVAILABLE`, Gap 025-001); when enabled, the revision records the issuer and token
+  endpoint, confirmed by the saving `ai:manage` holder, and tokens come only from design 047's broker
+  (D1306). User-delegated authorization is not supported (G1288).
 - **FR-025-035 — Tool snapshots**: Refresh MUST be a durable runner job (origin `MCP_TOOL_REFRESH`)
   storing an immutable, bounded snapshot of tool names and description, input- and output-schema
   digests. Publication pins the snapshot; at call time a changed definition fails with
   `AI_TOOL_CHANGED` without calling. Descriptions and annotations are untrusted content.
 - **FR-025-036 — MCP call execution**: An MCP tool call MUST be the reserved activity `sagat.ai.mcp`
-  run by the agent runner with `ResolveMcpCall`, at-least-once, bounded in time and bytes, keeping
-  text and structured content only (D1317), scanning results for resolved secrets, returning
-  `input_required` and task results as `MCP_UNSUPPORTED_RESULT`, reporting a timeout after sending as
-  `OUTCOME_UNKNOWN`, and refusing to authenticate when the server advertises an issuer or token
-  endpoint other than the recorded ones (`AI_MCP_AUTH`, audit `mcp.oauth_metadata_changed`).
+  (a managed step of `ManagedKind::AiMcp`) run by the agent runner with `ResolveMcpCall` under the same
+  two phases and Principle V authorities as Requirement 025-009, at-least-once, bounded in time and
+  bytes, keeping text and structured content only (D1317), scanning results for resolved secrets,
+  returning `input_required` and task results as `MCP_UNSUPPORTED_RESULT`, and reporting a timeout
+  after sending as `OUTCOME_UNKNOWN`. A server's `isError: true` result reaches the model as the reason
+  `MCP_TOOL_ERROR`; its text (bounded to 4 KiB, secret-scanned, marked untrusted) has no carrier and so
+  counts as `pii`: it is forwarded only when the agent's transcript level is already `pii`, otherwise
+  the model receives the reason alone (Decision 025-008). For OAuth servers, once enabled (Gap 025-001),
+  the call is refused when the server advertises an issuer or token endpoint other than the recorded
+  ones (`AI_MCP_AUTH`, audit `mcp.oauth_metadata_changed`).
 
 #### Streaming, Studio and assistant
 
@@ -577,20 +671,29 @@ fails before work.
 
 #### Cross-cutting
 
-- **FR-025-040 — SDKs and conformance**: The five SDKs MUST provide agent node and tool builders that
-  emit byte-identical canonical IR, client calls for transcript reading and tool-call approvals, and
-  pass the shared scenarios of `contracts/conformance.md` against the real engine and the dev provider.
+- **FR-025-040 — SDKs and conformance**: The six official SDKs (TypeScript, Go, Python, C#, Java and
+  Rust, `sdks/rust`) MUST provide agent node and tool builders that emit byte-identical canonical IR,
+  client calls for transcript reading and tool-call approvals, and pass the shared scenarios of
+  `contracts/conformance.md` against the real engine and the dev provider.
 - **FR-025-041 — Observability and audit**: Model calls, tool calls, approvals, MCP calls, probes and
   refreshes MUST emit OTel spans (journal-derived per ADR-0017, or runner spans), fixed-label metrics
   (no tenant, run, model or tool ids), redacted logs, and audit records committed with their decision
   for catalog changes, credential resolution, budget exhaustion, tool denials, transcript reads,
-  exposures, token lifecycle and MCP calls.
+  exposures, token lifecycle and MCP calls. Every new audit action needs its row in the audit-to-OCSF
+  mapping of design 040 (`docs/designs/040-ocsf-event-standard.md`, Technical Plan 1: one arm per
+  action in `crates/domain/src/audit_ocsf.rs` once that design is built).
 - **FR-025-042 — Typed errors**: Errors MUST use the closed `Error.code` set with new `details.reason`
   values and durable failure codes from `contracts/errors.md`, each with a remediation row,
-  `retryable` and trace id, never a prompt, response, argument, credential or provider message.
+  `retryable` and trace id, never a prompt, response, argument, credential or provider message. The
+  durable failure codes of managed steps are added to `sdks/error-catalog.json` as `worker`-origin
+  entries and to `sdks/SPEC.md` section 2, as the Iceberg codes of feature 035 were, and every SDK's
+  embedded copy follows.
 - **FR-025-043 — Contracts and compatibility**: OpenAPI, IR, worker protocol and any AsyncAPI change
   MUST be additive; older workers and SDKs never receive agent tasks; rollback disables new agent
-  publication and admission while compatible readers drain existing runs.
+  publication and admission while compatible readers drain existing runs. The capabilities
+  `ai-agents-v1` (control plane and execution engine) and `mcp-server-v1` (control plane) are added to
+  the closed capability list of the instance registry (Architecture decision 0082), so a fleet with a
+  process that cannot serve agents or MCP cannot have them required.
 - **FR-025-044 — Tenant boundary**: Tenant and namespace MUST come from the authenticated context on
   every row, query, task, credential path, MCP call and audit record; another tenant's provider,
   server, exposure, token, run or transcript is an opaque `NOT_FOUND` and the probe is audited.
@@ -599,11 +702,14 @@ fails before work.
   providers, the agent runner and MCP, and a reproducible happy and failure demo (quickstart.md).
   Real-provider tests are opt-in and never the only evidence of a guarantee.
 
-- **FR-025-046 — Reset rules**: Every journal event type added here MUST declare its rule in 018's
-  reset-rule registry: a reset point inside an open agent loop (after `agent.started`, before
-  `agent.finished` of the same step) is `REFUSE`; the events of a finished agent step are
-  `REMATERIALIZE`, re-creating its agent rows in the new run without repeating any call or charging any
-  budget (D1635).
+- **FR-025-046 — Reset rules**: Every journal event type added here MUST have its arm in the reset-rule
+  registry of feature 018, which is code (`crates/domain/src/execution/reset.rs`, the `registry!` macro;
+  an event without a rule does not compile): every event of an open agent loop (`agent.started` to
+  `agent.budget_exhausted`) is `ResetRule::Refuse { until: Some("agent.finished") }`, so no point
+  between them and the `agent.finished` of the same agent node is offered; `agent.finished` is
+  `ResetRule::Rematerialize`, re-creating the finished step's agent rows in the new run without
+  repeating any call or charging any budget (D1635). Every agent event names the agent node, not a
+  derived id, so the window closes on the right step.
 - **FR-025-047 — Encoded fields**: Agent context expressions, tool-result projections, tool inputs,
   `child` tool inputs, the agent result and MCP exposure projections MUST be registered in 031's
   position registry and checked with 031's codes (`ENCODING_READ_BY_EXPRESSION`,
@@ -641,7 +747,7 @@ implemented opens the one consolidated amendment of FR-016-002 (coordinator C6);
   model provider or an external MCP server; model-written values are never classified below the
   transcript level; the transcript is disclosed only through its audited endpoint.
 - **NFR-025-005 (compatibility)**: existing definitions, runs, workers and protocol minors keep their
-  semantics; the agent capability is advertised only after five-SDK conformance passes.
+  semantics; the agent capability is advertised only after six-SDK conformance passes.
 - **NFR-025-006 (observability)**: every accepted model, tool and MCP call has persisted correlation
   and bounded OTel evidence; export failure never decides a commit.
 - **NFR-025-007 (performance)**: activation, turn scheduling, resolution, runner overhead per call and
@@ -683,11 +789,11 @@ All criteria are future evidence; none is met by this document.
 | SC-025-007 | `pii`, `secret`, unmarked and non-validating values are refused at publication or before dispatch per the provider's and MCP servers' levels; looser `result`, approval-view and child-input annotations are refused; secret and MCP-argument canaries appear in no prompt, MCP request, transcript, journal, log, span, audit, stream or response; `write` tools without approval or acknowledgement are refused | FR-025-010, 014, 017, 019..021, 026 |
 | SC-025-008 | Transcript endpoint: each combination of the three rights, revocation of the reveal grant between requests, no-store headers and per-read audit; audit failure returns no bytes | FR-025-022, 041 |
 | SC-025-009 | Metadata, loopback, link-local, private and redirect destinations refused for providers and MCP servers; the event-stream reader enforces bytes and deadlines | FR-025-023, 036 |
-| SC-025-010 | Ordinary workers, sandbox and database runners cannot claim or resolve agent-runner activities; the agent runner cannot claim ordinary tasks; stale leases and expired sessions are refused | FR-025-009, 024 |
+| SC-025-010 | Ordinary workers, sandbox, database and lake runners cannot claim or resolve agent-runner activities; the agent runner cannot claim ordinary tasks, is refused by the step-log ingest and never receives a database credential; stale leases, expired sessions and a publisher who lost `secret:use` are refused | FR-025-003, 009, 024 |
 | SC-025-011 | MCP server tested with an MCP client library at 2026-07-28 and 2025-11-25: empty default list, single-audience tokens and REST refusal of MCP tokens, uniform metadata answers, insufficient scope, scoped tokens and revocation, idempotent retry, tasks re-authorized on every `tasks/get`, foreign and uncallable exposures answered as unknown tools | FR-025-026..033 |
-| SC-025-012 | MCP client against the test server: snapshot pinning, drift refusal, egress denial, unknown outcome to manual review, unsupported results as tool errors, refusal on a changed token endpoint | FR-025-034..036 |
+| SC-025-012 | MCP client against the test server: snapshot pinning, drift refusal, egress denial, unknown outcome to manual review, unsupported results and `MCP_TOOL_ERROR` as tool errors (text forwarded only at transcript level `pii`), the `oauth-client-credentials` mode refused while Gap 025-001 is open (and, once enabled, refusal on a changed token endpoint) | FR-025-034..036 |
 | SC-025-013 | With feature 026, a 16-turn streaming agent stays within its reserved-channel budget, a resumed stream matches the committed transcript and superseded attempts are marked; without 026, publication refuses streaming | FR-025-037 |
-| SC-025-014 | All five SDKs build byte-identical agent definitions and pass the shared runtime scenarios | FR-025-040, 043 |
+| SC-025-014 | All six SDKs (Rust included) build byte-identical agent definitions and pass the shared runtime scenarios | FR-025-040, 043 |
 | SC-025-015 | Telemetry carries only closed label values; spans and logs carry no prompt, response, argument, credential or provider message; every audit action is written with its decision | FR-025-041, 042 |
 | SC-025-016 | Assistant proposals never create a version, activation or run; failed validation changes no draft | FR-025-039 |
 | SC-025-017 | Reproducible Compose demo of the happy path and of budget-exhaustion and runner-crash failures, with measured latency and resource figures on a declared environment | FR-025-045, NFR-025-007 |
@@ -695,10 +801,11 @@ All criteria are future evidence; none is met by this document.
 
 ## Assumptions and dependencies
 
-- **021** (ADR-0055, proposed): if accepted before T025-006 with types that can name the agent runner
-  as executor, providers and MCP servers are its platform-provided resource types and `operation`
-  tools are its `resourceOperation`s run by its integration runner; otherwise the self-contained
-  catalog ships and `operation` tools stay disabled (O1282, G1281).
+- **021** (Architecture decision 0055, proposed): providers and MCP servers are its platform-provided
+  resource types, whose executor is the agent runner, and `operation` tools are its
+  `resourceOperation`s run by its integration runner (Owner decision 2026-11-26-122 answering Owner
+  question 1282). The provider and MCP-server catalog work starts after 021's resource core merges; the
+  other work proceeds with a test provider; `operation` tools stay refused until 021 offers them (G1281).
 - **022**: standalone steps gate script and operation exposures (D1315).
 - **026**: Workflow Streams (FR-026-013..021, `AppendStreamEvents`, reserved `sagat.` channels) gate
   token streaming; `executeRun` semantics (FR-026-007..009) are reused by the MCP wait (G1282).
@@ -709,11 +816,19 @@ All criteria are future evidence; none is met by this document.
 - **013** (federated login, draft) may later issue MCP tokens; until then the configured OIDC issuer
   of 001 does. **029** custom roles and folders would allow narrower MCP audiences (G1290); when 029 is
   enabled its evaluator decides MCP visibility and `agent-runner` is an additive built-in role.
-- **018** reset rules (FR-025-046) and ADR-0050 lock slots, **020** content-store registry and `pii`
-  egress rule (O1081), **028** time classes, **031** position registry (FR-025-047) and **032** key
-  inventory are registries owned by those drafts; 025 registers its entries (D1635–D1638, G1635).
-- The worker protocol minor is allocated by the coordinator (G1280). Model ids are the provider's;
-  the platform interprets them only against the revision's allowlist.
+- **018** is merged: its reset-rule registry is code (Requirement 025-046) and Architecture decision
+  0050 (accepted) already names 025's lock slots, 4b for provider and MCP-server heads and 8b for the
+  daily usage row. The `pii`-egress rule of Owner question 1081 is decided (Decision 1617 of feature
+  020). **020** content-store registry, **028** time classes, **031** position registry
+  (Requirement 025-047) and **032** key inventory are registries owned by drafts; 025 registers its
+  entries when they exist (D1635–D1638, G1635).
+- **041** owns worker-protocol minor 1.7 (step logs); 025 takes the next free minor of the register in
+  `sdks/SPEC.md` section 9 when its contract merges (Owner decision 2026-11-15-8, G1280). **043** owns
+  the run-input gate and validator that MCP admission and agent schemas reuse. **038** owns the claim
+  and transition statement budget that agent claims and completions are measured against. **040** owns
+  the audit-to-OCSF mapping. **047** owns the OAuth token broker that OAuth MCP servers wait for
+  (Gap 025-001). **044** (not yet written) owns the procedural model (Gap 025-002). Model ids are the
+  provider's; the platform interprets them only against the revision's allowlist.
 
 ## Out of scope
 
@@ -725,6 +840,9 @@ Constraints; since 5.0.0 an open marketplace stays out and only the curated hub 
 
 ## Owner questions
 
-O1280 (data sent to providers), O1281 (role grants) and O1282 (resource model) with recommended
-defaults are in [research.md](research.md#5-owner-questions), with decisions D1280–D1319 and
-D1635–D1638 and gaps G1280–G1297 and G1635. See the [requirements checklist](checklists/requirements.md).
+All three are decided under the owner's delegation (Owner decision 2026-11-24-4): Owner question 1280
+(data sent to providers) by Owner decision 2026-11-26-120, Owner question 1281 (role grants) by Owner
+decision 2026-11-26-121 and Owner question 1282 (resource model) by Owner decision 2026-11-26-122; see
+[research.md](research.md#5-owner-questions), with decisions D1280–D1319, D1635–D1638 and
+D025-001 onward, and gaps G1280–G1297, G1635 and G025-001 onward. See the
+[requirements checklist](checklists/requirements.md).

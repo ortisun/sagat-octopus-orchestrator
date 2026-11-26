@@ -1,10 +1,12 @@
-# Draft OpenAPI fragment for feature 025. Not canonical: T025-002 merges it into
+# Draft OpenAPI fragment for feature 025. Not canonical: Task 025-002 merges it into
 # specs/001-platform-foundation/contracts/openapi.yaml (additive under /v1). Every operation reuses
 # the canonical security scheme, X-Trace-Id/X-Request-Id headers, the Error envelope and the shared
 # responses (BadRequest, Unauthorized, Forbidden, NotFound, Conflict, ValidationError,
 # TooManyRequests, Unavailable, InternalError); they are abbreviated here as `x-standard-errors`.
 # A foreign or missing resource is the same opaque 404. Credential values never appear in a
-# response. The MCP endpoint itself is not REST; see mcp-server.md.
+# response. The MCP endpoint itself is not REST; see mcp-server.md. The authorization stated on each
+# operation is the same as plan.md, "Authorization" (Decision 025-015). Providers and MCP servers are
+# feature 021 resource types (Owner decision 2026-11-26-122); these routes are their typed views.
 openapi: 3.1.0
 info: {title: Sagat AI agents and MCP (draft fragment), version: 0.0.0-draft}
 paths:
@@ -28,10 +30,13 @@ paths:
     put:
       operationId: putAiProvider
       description: >-
-        Requires ai:manage and secret:use plus the ACL of each referenced secret. expectedRevision 0 creates.
+        Requires ai:manage and secret:use plus the access list of each referenced secret (the secrets become
+        declared secrets of every task definition that pins the revision; Requirement 025-003); a secret the
+        caller may not use is 403 SECRET_NOT_USABLE. expectedRevision 0 creates.
         Retries keep requestId; changed content under the same requestId is 409 IDEMPOTENCY_KEY_REUSED.
         Revision, head and audit ai.provider_created|changed|paused commit together. maxPromptClassification
-        is required and secret is not accepted. No provider call is made.
+        is required (an EgressCeiling; setting pii needs the namespace reveal grant, 403 REVEAL_GRANT_REQUIRED)
+        and secret is not accepted. No provider call is made.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutAiProviderRequest'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/AiProvider'}}}}}
       x-standard-errors: true
@@ -45,8 +50,9 @@ paths:
     post:
       operationId: probeAiProvider
       description: >-
-        Requires ai:manage and run:start. Admits a durable probe run (origin AI_PROVIDER_PROBE) executed by the
-        agent runner; it lists models and generates no tokens. Idempotency-Key replays the same run.
+        Requires ai:manage and run:start. Admits a durable private probe run (origin AI_PROVIDER_PROBE, created by
+        start_private, row 13 of the design 043 run-input gate) executed by the agent runner; it lists models
+        and generates no tokens. Idempotency-Key replays the same run.
         A paused provider refuses with 409 reason AI_PROVIDER_PAUSED.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
@@ -69,19 +75,23 @@ paths:
     get: {operationId: getMcpServer, responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}, x-standard-errors: true}
     put:
       operationId: putMcpServer
-      description: Requires ai:manage (and secret ACLs). Same revision and receipt rules as putAiProvider. No network call.
+      description: >-
+        Requires ai:manage and secret:use plus the access list of each referenced secret, as putAiProvider. Same
+        revision and receipt rules. auth.mode oauth-client-credentials is refused with 422 MCP_AUTH_MODE_UNAVAILABLE
+        until the owner's Principle V amendment requested by design 047 (Gap 025-001). No network call.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpServerRequest'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}
       x-standard-errors: true
     delete:
       operationId: deleteMcpServer
+      description: Requires ai:manage and expectedRevision. Tombstone; pinned revisions and snapshots remain for run history.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExpectedRevision'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}
       x-standard-errors: true
   /namespaces/{namespaceId}/mcp-servers/{serverName}/refresh:
     post:
       operationId: refreshMcpServerTools
-      description: Requires ai:manage and run:start. Admits a durable refresh run (origin MCP_TOOL_REFRESH) in the agent runner; completion stores an immutable snapshot and moves the head pointer. Idempotency-Key replays.
+      description: Requires ai:manage and run:start. Admits a durable private refresh run (origin MCP_TOOL_REFRESH, start_private) in the agent runner; completion stores an immutable snapshot and moves the head pointer. Idempotency-Key replays.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {name: serverName, in: path, required: true, schema: {type: string}}
@@ -119,7 +129,8 @@ paths:
         and none secret (422 MCP_RESULT_CLASSIFICATION_EXCEEDED). SCRIPT and OPERATION targets return
         422 UNSUPPORTED_NODE with details.dependency=STANDALONE_STEPS until feature 022 exists. A target version
         whose agent nodes contain a write tool acknowledged approval "none" is refused (422 UNATTENDED_WRITE_TOOL),
-        including when an ACTIVE-policy exposure later resolves to such a version at call time.
+        including when an ACTIVE-policy exposure later resolves to such a version at call time. A target version
+        whose inputSchema is outside the design 043 subset is refused (422 RUN_INPUT_SCHEMA_UNUSABLE).
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpExposureRequest'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}
       x-standard-errors: true
@@ -132,7 +143,7 @@ paths:
     parameters: [{$ref: '#/components/parameters/NamespaceId'}]
     get:
       operationId: listMcpTokens
-      description: Requires mcp:token:manage; admins see all, others only their own. Never returns a token value.
+      description: Requires mcp:token:manage; an ai:manage holder sees every token of the namespace, others only their own. Never returns a token value.
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpTokenList'}}}}}
       x-standard-errors: true
     post:
@@ -185,7 +196,7 @@ paths:
     post:
       operationId: requestAuthoringProposal
       description: >-
-        P3. Requires definition:write and ai:use. Admits an internal run (origin AUTHORING_ASSISTANT) on the
+        P3. Requires definition:write and ai:use. Admits an internal private run (origin AUTHORING_ASSISTANT, start_private) on the
         namespace's assistant provider; the result is a proposal, never a saved draft or version.
       parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AuthoringRequest'}}}}
@@ -274,7 +285,7 @@ components:
           additionalProperties: false
           required: [mode]
           properties:
-            mode: {enum: [none, bearer, oauth-client-credentials]}
+            mode: {enum: [none, bearer, oauth-client-credentials], description: 'oauth-client-credentials is refused (MCP_AUTH_MODE_UNAVAILABLE) until Gap 025-001 closes.'}
             secrets: {type: object, maxProperties: 2, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}}
             clientId: {type: string, maxLength: 256}
             issuer: {type: string, format: uri, maxLength: 512, description: 'Required for oauth-client-credentials. Recorded and confirmed by the saving ai:manage holder (a refresh shows the discovered value); never replaced by discovery.'}
