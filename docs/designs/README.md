@@ -17,7 +17,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
 | 044 | [Workflow as code](044-workflow-as-code.md) | Approved | 0 of 37 |
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Approved | 0 of 20 |
-| 048 | [A reference high-availability topology for PostgreSQL, and the platform's side of a failover](048-high-availability.md) | Draft | 0 of 17 |
+| 048 | [A reference high-availability topology for PostgreSQL, and the platform's side of a failover](048-high-availability.md) | Approved | 0 of 18 |
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Approved | 0 of 19 |
 | 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Draft | 0 of 14 |
 | 052 | [Hot-path dispatch: a lean ready queue, wake on commit, the next step in a completion, and a throughput gate](052-hot-path-dispatch.md) | Draft | 0 of 15 |

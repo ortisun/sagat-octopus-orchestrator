@@ -1,8 +1,14 @@
 # A reference high-availability topology for PostgreSQL, and the platform's side of a failover
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-26
+*   **Reviewed-commit:** 8bcdf393ed0dd38c3b07b816f7538969a99343b5
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/048-high-availability.reviews/2026-11-26/approval-egm-review.md sha256:78684e18e6a422d791a961348abe6d5b4b599fbf10a8da3dfe7346e783cc44b2; docs/designs/048-high-availability.reviews/2026-11-26/approval-architecture.md sha256:8fd1d7cb2fc31ec3b648c70e305b2f346ef90f3167cdac5911096caf9e8e7036; docs/designs/048-high-availability.reviews/2026-11-26/approval-security.md sha256:3cd2749df3395cf4813604434f6845bf905cb2a347f249763a43a09c2583548f; docs/designs/048-high-availability.reviews/2026-11-26/approval-correctness.md sha256:3d40d17ab360e3decd918b6bbddf8bc124ca309f43bd09150e18be870829e29f
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 2; OD-2026-11-24-519, OD-2026-11-24-520
 
 --------------------------------------------------------------------------------
 
@@ -709,7 +715,8 @@ Each task names its files and tests; the metrics of a behaviour come with it.
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T048-18 Settle the findings left open at the approval (Owner decisions 2026-11-24-519 and 2026-11-24-520), each test first, before or with Tasks 048-3, 048-4, 048-13 and 048-14: (a) Compose's observability for the reference lives in an overlay of its own, `infra/docker/compose.ha.observability.yaml`, run with `compose.ha.yaml` as one project: it declares `db-metrics` (`internal: true`), joins Prometheus and the nodes' metrics endpoints to it, and mounts `infra/observability/prometheus-ha.yml`, which scrapes the Patroni members and loads only `database-patroni.yaml` and its scrape-down rule; the default `prometheus.yml` and its `rule_files` gain no database manager alert, so the single-node stack never fires them; on Kubernetes the CloudNativePG rules ship as a `PrometheusRule` in `infra/kubernetes/ha/`, generated from `database-cloudnativepg.yaml` and checked equal to it by `scripts/check-ha-reference.py`; CI's `promtool` step tests both rule files; (b) Requirement 048-002's reference has four networks, `db-metrics` the fourth, and Requirement 048-001's network policy admits besides the monitoring namespace's Prometheus pods on the metrics port only, paired in one `from` entry from the chart's `networkPolicy.metricsFrom` namespace selector and the pod label `app.kubernetes.io/name: prometheus`; Task 048-4's policy test admits exactly that peer; (c) `scripts/check-ha-reference.py`, created in Task 048-3 instead of Task 048-4, asserts from Task 048-3 the Patroni `allowlist` of Requirement 048-002 (`allowlist_include_members`, no `db-metrics` address); (d) each standby alert is guarded by every member of its scope having been scraped (`and on (scope) min by (scope) (up{job="patroni"}) == 1` on Patroni, by `cluster` on CloudNativePG); a member not scraped silences the standby alerts and fires the scrape-down alert, and the rule test of a failed scrape fails one member; (e) the negative control pauses both standbys' containers (`docker pause`, which also holds their Patroni), commits through its connection to the primary one row of the kind and key that `dr_verify` looks up for a real acknowledgment (a step completion of a run the workload created, with a new step sequence), appends that key and digest to the ledger file, stops the primary, and unpauses the standbys; its repetition is judged only on `dr_verify` finding exactly that one acknowledgment missing, and none of Requirement 048-043's other conditions applies to it; (f) "the operator" in Requirement 048-001 becomes "the CloudNativePG operator" where it is the operator's pods; `database-runner` is the chart's managed database executor (`infra/helm/templates/database-runner.yaml`) and `denyCidrs` its egress deny list; `client_connection_check_interval = 0` is set as a startup option of every session, beside `synchronous_commit`, and Requirement 048-011 lists it; (g) fault (3) is exempt from "a fault with no qualifying repetition fails the drill" (its standbys are gone for 60 s by design), and its repetitions are judged by Requirement 048-043 and the 8 s lease-expiry rule only.
+  Refs: Requirement 048-001, Requirement 048-002, Requirement 048-011, Requirement 048-042, Requirement 048-043, Success criterion 048-003
 
 ### Verification Plan
 
