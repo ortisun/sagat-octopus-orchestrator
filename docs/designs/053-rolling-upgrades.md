@@ -100,7 +100,8 @@ From the code and documents on `develop` at `546d5aa5`:
   the next release is cut: the script refuses to cut a release whose tree lacks a migration listed in an earlier
   release's checksum file.
 - **Requirement 053-005 A binary refuses a schema it cannot use.** A process calls `sagat_schema_handshake()`
-  (owner-defined, `SECURITY DEFINER`, `search_path` pinned, executable by `sagat_app` only), which returns the applied
+  (owner-defined, `SECURITY DEFINER`, `search_path` pinned, executable by `sagat_app` and by design 049's
+  `sagat_retirer` only), which returns the applied
   migration versions and the effective oldest compatible release (Requirement 053-006), at start, at each confirmation of
   design 048 (Requirement 048-013), and with each registry heartbeat, so that a gate it closed reopens within one
   heartbeat once the schema is right. The process sets the gate's reason `SCHEMA_TOO_OLD` when an expand migration it was
@@ -119,7 +120,7 @@ From the code and documents on `develop` at `546d5aa5`:
 - **Requirement 053-006 One rule for the oldest compatible release.** The effective oldest compatible release MUST be
   computed, never stored as a counter: the greatest of the newest `schema_compatibility` row's `oldest_compatible` and,
   for each capability whose state is `active` or `draining`, the release that introduced it (`introduced_in`).
-  `platform_requirements` gains `state` (`active`, `draining`), `introduced_in` and `draining_since`, added by an expand
+  `platform_requirements` gains `state` (`active`, `draining`), `introduced_in`, `draining_since` and `permanent`, added by an expand
   migration; `sagat_oldest_compatible()` computes the value and both the handshake and the v2 registry functions call it.
 - **Requirement 053-007 New behaviour waits for the fleet.** A change that writes state release N-1 cannot process MUST
   be behind a registry capability, added to the capability lists by an expand migration (the lists are closed checks,
@@ -133,9 +134,9 @@ From the code and documents on `develop` at `546d5aa5`:
 - **Requirement 053-008 A deactivation drains first.** `platform_requirement_deactivate_v2` MUST work in two phases. The
   first moves the capability to `draining` and records `draining_since`; processes stop starting new uses of it at their
   next heartbeat. The second removes it and is refused until every live process has heartbeated after `draining_since`
-  (at least 12 s, the heartbeat's jittered bound), the drain check its design states passes (for design 049, no run of a
-  dated bucket exists), and no contract migration naming the capability is applied. Only after the second phase may the
-  binaries roll back to N-1. A capability whose design declares it permanent is refused by both phases: in 0.3.0, design
+  (at least 12 s, the heartbeat's jittered bound), the drain check its design states passes (none for design 049's capability, which is permanent), and no contract migration naming the capability is applied. Only after the second phase may the
+  binaries roll back to N-1. A capability whose design declares it permanent (`platform_requirements.permanent`, set by
+  the migration that adds it) is refused by both phases: in 0.3.0, design
   049's `journal-buckets-v1`, since a binary of the release before it cannot read a dated run's content.
 - **Requirement 053-009 Old and new writers run together.** `scripts/test-mixed-writers.py` MUST run engines and control
   planes of N-1 (built from its release's tag) and N on one database under the chain shape: apply N's migrations during
@@ -241,7 +242,7 @@ Rollback before step 3 rolls the binaries back onto N's schema; after it, the tw
 | Object | Columns | Runtime role |
 |---|---|---|
 | `schema_compatibility` | as Requirement 053-004 | none; read through `sagat_schema_handshake()` |
-| `platform_requirements` (new columns) | `state text` (`active`, `draining`), `introduced_in text`, `draining_since timestamptz` | as the table today (read) |
+| `platform_requirements` (new columns) | `state text` (`active`, `draining`), `introduced_in text`, `draining_since timestamptz`, `permanent boolean not null default false` | as the table today (read) |
 
 **Order of the build.** Task 053-2 (the lint) before any other migration of designs 048, 049 and 052; design 051's
 driver (its Task 051-2) before Task 053-6.
@@ -310,7 +311,7 @@ Each task names its files and tests.
   Refs: Requirement 053-004, Requirement 053-005, Success criterion 053-003
 - [ ] T053-4 Write `control-plane migrate`'s own loop (the confirmation, the bounded retry on `55P03`, the bounded invalid-index check, the contract refusals, the release check) in `apps/control-plane/src/lib.rs` and `crates/infra-postgres/src/lib.rs`, with the tests `a_failed_concurrent_index_build_is_retried_three_times_then_named` and `a_lock_held_longer_than_the_retries_ends_migrate_naming_the_table`.
   Refs: Requirement 053-003
-- [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation` and `the_second_phase_waits_for_every_live_process_to_heartbeat`, held by barriers.
+- [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, the column `permanent`, with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation`, `the_second_phase_waits_for_every_live_process_to_heartbeat` and `a_permanent_capability_refuses_both_deactivation_phases`, held by barriers.
   Refs: Requirement 053-006, Requirement 053-007, Requirement 053-008
 - [ ] T053-6 Write `scripts/test-mixed-writers.py` and add it to the release workflow on a free standard runner; it uses design 051's driver (Task 051-2) and publishes its run with the runner named.
   Refs: Requirement 053-009, Success criterion 053-001
