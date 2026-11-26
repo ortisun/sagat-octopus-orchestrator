@@ -1,7 +1,7 @@
 # ADR-0144: The approvals inbox asks the server which approvals the caller may decide now, through the same rule that decides; it never returns a policy
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
+**Status:** Accepted (2026-11-26, OD-2026-11-26-903)
+**Decided by:** agent proposal (design 050, 2026-11-24), accepted with design 050's approval under Owner decision 2026-11-24-4 (OD-2026-11-26-903)
 **Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor", and Architecture decision 0018 decision 4 (who may approve a publication request), on which `PublicationRequest::may_decide` is built; supersedes none
 **Enforced by:** planned in design 050 and not existing yet: `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`, `a_full_page_resumes_after_its_last_item`, `a_cursor_reveals_nothing_and_opens_only_for_its_caller` (decisions 4 and 5), `the_cursor_key_is_created_by_migrate_and_never_printed` and `the_runtime_role_cannot_write_the_cursor_key`; the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles and initiators, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
 

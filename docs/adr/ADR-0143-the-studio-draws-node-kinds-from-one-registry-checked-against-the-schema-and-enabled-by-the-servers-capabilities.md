@@ -1,7 +1,7 @@
 # ADR-0143: The Studio draws node kinds from one registry checked against the workflow schema and enabled by the capabilities the server advertises; a kind the server refuses is never offered
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
+**Status:** Accepted (2026-11-26, OD-2026-11-26-902)
+**Decided by:** agent proposal (design 050, 2026-11-24), accepted with design 050's approval under Owner decision 2026-11-24-4 (OD-2026-11-26-902)
 **Refines / supersedes:** refines Architecture decision 0016 (the Studio is a same-origin application over the REST API) and Architecture decision 0032 (the workflow IR grows additively); supersedes research decisions Decision 145 and Gap 147 of feature 007 ("a node the schema accepts and the engine does not run yet" is shown in the palette, marked "does not run yet")
 **Enforced by:** planned in design 050 and not existing yet: `frontend/apps/studio/src/model/registry.test.ts` (every `type` constant of `$defs/node` and `$defs/bodyNode` of `specs/001-platform-foundation/contracts/workflow.schema.json` has exactly one registry entry with its scopes, every registry entry names a schema kind, and every required property of each scope's member is a field or a handle of the entry); `tests/contract/workflow-studio/rest/capabilities.rs (in `contract_rest_workflow_studio`)` (every variant of `AdvertisedCapability` is in the `x-known-values` of `openapi.yaml` and the reverse, the list a test deployment advertises matches the switches it was started with, and a reader ignores an unknown name); the Studio unit test that a kind whose capability is absent is not in the palette and that a document holding a refused kind opens read-only on that node
 

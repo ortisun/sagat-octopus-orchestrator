@@ -1,8 +1,14 @@
 # The Studio catch-up: every executable node kind, the approvals inbox, the audit log
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
-*   **Date:** 2026-11-24
+*   **Status:** Approved
+*   **Date:** 2026-11-26
+*   **Reviewed-commit:** 34a282d5e36e93ae99d939852ddb1eb51617fd7d
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-egm-review.md sha256:b5bdcec26c6cb7e39daaf180ace0186a3ba137fd6001d22a57e6b0ad13801a65; docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-6-architecture.md sha256:ef984e643bf1a83d275c8423ea7f8fd671bee09661dc6115d1d651cb5c968478; docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-18-security.md sha256:c642db2b442463ea1c55c7f5f7986b3c7c74dccc7bfa98116f356bca798cf65e; docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-correctness.md sha256:dca4da63e2bab9438b265a2b2ad0886d700cf9b3d2b62afab6b56e9ddf1eff3e
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 2; OD-2026-11-26-900, OD-2026-11-26-901
 
 --------------------------------------------------------------------------------
 
@@ -1333,7 +1339,24 @@ primitive goes in a new file of `src/ui/`.
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T050-20 Server builder, with Task 050-4 (OD-2026-11-26-900, OD-2026-11-26-901): `rotate` checks the age of the
+  newest key after taking the table lock, in READ COMMITTED, and the refusal reads the database's `now() -
+  created_at`; a new key's `created_at` is `clock_timestamp()` taken after the lock; the rotation tests backdate
+  `created_at` as the schema-owning role and never sleep; the concurrent test becomes
+  `two_concurrent_rotations_insert_one_key_and_refuse_the_other` (one success, one refusal, keys K1 and K2); the
+  `INSERT`, `DELETE` and `LOCK TABLE` on `inbox_cursor_keys` in `migrate` and `rotate` get `ALLOWED` entries with
+  their reasons in `tests/integration/platform-foundation/runtime_privileges.rs`, as the trigger handover has, with
+  `the_runtime_role_cannot_write_the_cursor_key` as the proof.
+  Verification: `cargo test -p sagat-tests --test integration_studio_catch_up rotat`; the runtime privilege target.
+  Refs: Requirement 050-009, Requirement 050-010
+- [ ] T050-21 Server builder, with Task 050-9 (OD-2026-11-26-901): the iteration tests live in the module
+  `tests/integration/studio-catch-up/iteration.rs`, so the verification filter `iteration` selects all seven red tests.
+  Refs: Requirement 050-008
+- [ ] T050-22 Studio builder, with Task 050-10 (OD-2026-11-26-900): the refresh follows Technical Plan 6 "Studio"
+  read with its `400` clause after the parenthesis: the refresh is TanStack Query's `refetchInterval` with a function,
+  which skips a hidden browser tab and carries the back-off; a `400` on a later page ends that refresh, which shows
+  what it collected with "more may wait", and the next refresh starts from the first page.
+  Refs: Requirement 050-012
 
 ### Verification Plan
 

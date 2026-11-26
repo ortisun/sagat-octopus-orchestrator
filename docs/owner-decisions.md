@@ -4,6 +4,21 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-26 — Designs 050 and 013 approved; architecture decisions 0140 to 0144 accepted
+
+Taken by the agent the coordinating session briefed for the product surface, under Owner decision 2026-11-24-4 and
+following the approval steps of Owner decision 2026-11-25-2: a full round by every required reviewer, every Blocker and
+every security finding fixed (none accepted), every Major fixed, the fixes re-read until the four reports of one commit
+held no Blocker or Major, and the minors of that last round settled here, each with the follow-up task that carries it
+to the build. The owner may overrule any of them.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-26-900 | The three minors of the last egm-review re-read of design 050 go to the build as follow-up tasks rather than reopening the approved text: the clock of the `rotate` refusal and backdated tests, and the runtime-privilege allowances (Task 050-20), and the misplaced `400` clause of the Studio paragraph, whose meaning Task 050-22 states. Weighed: a fifth round of four re-reads for wording and test plumbing; settling them here. None touches a guarantee, and every reviewer found the cursor design sound | delegate (OD-2026-11-24-4) | Decided | docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-egm-review.md#1, docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-egm-review.md#2, docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-egm-review.md#3; docs/designs/050-studio-catch-up.md Tasks 050-20, 050-22 |
+| OD-2026-11-26-901 | The three minors of the last correctness re-read of design 050 go to the build as follow-up tasks: the `rotate` age check after the table lock and the backdated rotation tests (Task 050-20), and the iteration tests' module so their filter selects them (Task 050-21). Weighed as above; the race the first minor names only refuses or delays a rotation, it never loses a key a cursor needs beyond the documented `400` | delegate (OD-2026-11-24-4) | Decided | docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-correctness.md#1, docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-correctness.md#2, docs/designs/050-studio-catch-up.reviews/2026-11-26/approval/reread-4-correctness.md#3; docs/designs/050-studio-catch-up.md Tasks 050-20, 050-21 |
+| OD-2026-11-26-902 | Architecture decision 0143 (the Studio draws node kinds from one registry checked against the workflow schema and enabled by the capabilities the server advertises) accepted with design 050's approval. Weighed: accept; keep proposed until the Studio build. The registry, its drift test and the capability names were settled by every reviewer of design 050, and three other features need the same advertisement | delegate (OD-2026-11-24-4) | Decided; not built | docs/adr/ADR-0143-*.md; docs/designs/050-studio-catch-up.md Decision 050-002 |
+| OD-2026-11-26-903 | Architecture decision 0144 (the approvals inbox asks the server which approvals the caller may decide now, through the same rule that decides, and never returns a policy) accepted with design 050's approval, including decision 5's sealed per-cursor key. Weighed: accept; keep proposed until the build. Eighteen security re-reads closed every finding on the inbox and its cursor | delegate (OD-2026-11-24-4) | Decided; not built | docs/adr/ADR-0144-*.md; docs/designs/050-studio-catch-up.md Decision 050-004, Technical Plan 6 |
+
 ## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
 
 The coordinating session compared the platform with Temporal and Windmill (gaps that have a specification, gaps that have
