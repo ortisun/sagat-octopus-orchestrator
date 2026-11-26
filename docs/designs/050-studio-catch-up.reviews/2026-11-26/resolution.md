@@ -155,3 +155,5 @@ All ten findings are fixed.
 The security re-read of round 6 (`approval/reread-6-security.md`, at `4dea6eaa`) found nothing. The shared
 `KeyRing::derive_purpose_key` gained a key id at `013`'s round 7; design 050's text follows (a cursor under a retired
 key gets the same `400` and the Studio starts from the first page).
+
+The security re-read of round 7 (`approval/reread-7-security.md`, at `9a19411f`) found nothing.

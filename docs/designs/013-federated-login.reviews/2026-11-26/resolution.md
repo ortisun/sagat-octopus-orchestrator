@@ -188,3 +188,11 @@ first, then the connection row, as redemption does, and Architecture decision 00
 | 4 | Nit | Fixed: the highest issued generation plus one, never reused; a valid MAC above the current generation is `invalid_grant`; a restore rotates the random values | Requirement 013-026 |
 | 5 | Nit | Fixed: the row holds the random value and the generations | Technical Plan 3 |
 | 6 | Nit | Fixed: `Mac::verify_slice`; `a_forged_refresh_token_cannot_sign_out` | Requirement 013-026, Task 013-9 |
+
+## Security re-read, round 8 (`approval/reread-8-security.md`, at `9a19411f`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a dedicated `cli-refresh` ring in the identity mount, never `SAGAT_SECRETS_KEYS` (an architecture rule refuses the label there); two-step rotation by `identity cli-refresh-key rotate`, which keeps the old key 7 days and one interval; a test of the command; the `KeyRing` change owned by whichever of Tasks 050-4 and 013-9 runs first | Requirement 013-026, Technical Plan 12, Task 013-9 |
+| 2 | Nit | Fixed: the bound stated as 12 for the fixed window; the test bursts across a boundary | Requirement 013-026, Task 013-9 |
+| 3 | Nit | Fixed: a lower generation with no row is outside the grace and its reuse revokes; the test includes a deleting refresh | Technical Plan 3, Task 013-9 |

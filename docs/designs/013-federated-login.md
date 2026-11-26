@@ -420,15 +420,22 @@ already has.
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (`<sid>.<generation>.<key id>.<mac>`, where the MAC is an HMAC-SHA256, under a purpose key
   `cli-refresh` derived from the ring key named by the token's key id (`KeyRing::derive_purpose_key(key_id, label,
-  info)`, which keeps key bytes by id and answers none for an id it does not know) and never the access-token key, of
+  info)`, which keeps key bytes by id and answers none for an id it does not know; added to `crates/infra-secrets` by
+  whichever of Tasks 050-4 and 013-9 runs first) of a dedicated `cli-refresh` ring in the identity mount, read by the
+  control plane only and never `SAGAT_SECRETS_KEYS`, which every execution engine also holds (Requirement 013-025; an
+  architecture rule refuses the `cli-refresh` label on the secrets ring), and never the access-token key, of
   the session id, the generation and a random value kept on the session; a successor is always minted under the
   active key with the highest generation issued plus one, a number never reused (after a database restore,
   the runbook's restore page rotates every CLI session's random value, so no rolled-back generation becomes valid again); a token under an unknown key id, or
-  with a valid MAC and a generation above the current one, is `invalid_grant` with no effect; a ring key is retired
-  only after the CLI's absolute lifetime (7 days) has passed since its successor became active, as the runbook says; one use, rotated on every refresh by
+  with a valid MAC and a generation above the current one, is `invalid_grant` with no effect; the ring rotates in two steps
+  by `identity cli-refresh-key rotate`, the new key added first for verifying only and made the minting key after one
+  refresh interval, and the command itself keeps the old key until 7 days and one refresh interval after its successor
+  became active, so no live CLI token loses its key (`a_cli_refresh_key_rotation_keeps_a_six_day_old_token_refreshing`,
+  a test of the command); one use, rotated on every refresh by
   compare-and-set on its generation; the server can verify any generation by recomputing its MAC, so it stores no
   per-generation secret and its storage per session is bounded; the access token is signed with a handle obtained
-  before the transaction; a session refreshes at most six times a minute, counted by a window start and a count on `signin_sessions` and
+  before the transaction; a session refreshes at most six times a minute, counted by a window start and a count on `signin_sessions` (a fixed
+  window, so at most 12 grace rows younger than 30 seconds can exist across a window boundary) and
   applied in this order: the MAC first, compared in constant time (`Mac::verify_slice`), then the generation's class (a
   reuse revokes whatever the limit), then the limit, for current-generation and grace rotations only, a refusal
   leaving the token unspent; every path, logout included, first checks the presented MAC, and a token that fails is `invalid_grant` with no effect on the session and the same answer
@@ -846,7 +853,8 @@ stays one row |
 | `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or, for the CLI, the refresh MAC's random value, the current and the highest issued generation,
 and the refresh rate window's start and count, and for the CLI's grace the rows of
 `signin_refresh_generations` (session, generation, rotated at, used at; for the grace's bookkeeping only, since any generation's MAC can be
-recomputed; the grace is decided by `rotated_at` plus 30 seconds, never by whether a row exists; each refresh deletes,
+recomputed; the grace is decided by `rotated_at` plus 30 seconds, never by whether a row exists, and a generation below the
+current one with no row is outside the grace, so its reuse revokes; each refresh deletes,
 under the session row, the session's rows older than 30 seconds, and the maintenance loop purges those of ended
 sessions; the session keeps its random MAC value and current generation), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
@@ -1335,7 +1343,8 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
 **Operator commands.** The commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
-`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
+`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity cli-refresh-key rotate` (Requirement 013-026: two steps, the old key kept 7 days and one refresh
+interval after its successor became active); `identity attempt-key rotate` (writes the attempt-sealing ring in the identity mount in two steps, as the signing
 keys do: the new key is added as an opening key, and after one refresh interval it becomes the sealing key, so an
 attempt sealed on an updated replica opens on every replica; keys older than one rotation plus 10 minutes, an
 attempt's lifetime, are dropped; every control plane reads the ring at start and on the key set's refresh;
@@ -1655,11 +1664,12 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_second_callback_of_one_attempt_is_refused`, `two_sign_ins_in_two_tabs_both_complete`,
   `an_upload_outlives_its_access_token_while_the_session_lives`, `two_concurrent_refreshes_keep_the_session`,
   `a_lost_refresh_response_keeps_the_session`, `two_lost_refresh_responses_keep_the_session`,
-  `a_reuse_an_hour_after_rotation_revokes_the_session`,
+  `a_reuse_an_hour_after_rotation_revokes_the_session` (with an intermediate refresh that deletes the row),
   `a_stolen_refresh_token_used_first_revokes_the_session_when_the_owner_returns`,
   `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
   `refreshing_faster_than_six_a_minute_is_refused_and_leaves_the_token_unspent`,
-  `a_week_of_refreshes_keeps_storage_bounded` (at most seven grace rows for the session after a week at the limit),
+  `a_week_of_refreshes_keeps_storage_bounded` (at most 12 grace rows for the session, with a burst across a window
+  boundary),
   `a_refresh_token_minted_before_a_rotation_still_refreshes`,
   `a_token_under_an_unknown_key_id_is_invalid_grant_with_no_effect`, `forged_refreshes_do_not_consume_the_rate_limit`,
   `a_mac_valid_generation_above_the_current_one_is_invalid_grant`, `a_forged_refresh_token_cannot_sign_out`,
