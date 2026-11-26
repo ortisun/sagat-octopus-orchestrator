@@ -590,10 +590,16 @@ fn the_corpus_that_declares_no_gate_reads_as_before() {
 /// rule has a fixture in [`REFUSED`], is the warning of
 /// [`a_self_starting_child_under_a_run_permit_is_published_with_a_warning`], or is a namespace warning of
 /// [`NAMESPACE_WARNINGS`].
-const PENDING: [(&str, &str); 1] = [(
-    "ENCODING_READ_BY_CONCURRENCY_KEY",
-    "feature 031 registers it (FR-022-036)",
-)];
+const PENDING: [(&str, &str); 2] = [
+    (
+        "ENCODING_READ_BY_CONCURRENCY_KEY",
+        "feature 031 registers it (FR-022-036)",
+    ),
+    (
+        "ENCODING_READ_BY_RATE_LIMIT_KEY",
+        "feature 031 registers it (FR-022-036, D022-120)",
+    ),
+];
 
 /// The warnings that compare a definition with the namespace's other published definitions (G1187): one document
 /// cannot show them, so they are proved against PostgreSQL by the named test of `integration_flow_control_step_policies`.
