@@ -11,7 +11,7 @@ The baseline below describes the design context of 2026-10-16; the implemented s
 release evidence are recorded above.
 
 Today no REST call returns the value of a run payload. The run, its journal and its runtime graph carry
-a `payloadRef` digest and a failure code; an Admin or Operator may inspect the *structure* of the run
+a `payloadRef` digest and a failure code (a digest that T016-066 replaced with a reference, FR-016-030); an Admin or Operator may inspect the *structure* of the run
 input or of one journal payload (`POST /v1/runs/{runId}/payload-inspections`, policy
 `structure-only-v1`, [ADR-0028](../../docs/adr/ADR-0028-authorized-structural-payload-inspection.md));
 a declared Query or Update result is disclosed on its own terms (ADR-0031, feature 014). Operators
@@ -429,8 +429,19 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   Update result is never filtered by this feature, and a classification annotation inside its result
   schema is a publication error (`CLASSIFICATION_NOT_APPLICABLE`) so that nobody believes it protects
   anything there. The event inbox and the connector dead letters are the one exception and change as FR-016-026 and
-  FR-016-027 say. `listRunJournalEvents` is not payload-free as built: its `payloadRef` is the payload's unsalted SHA-256
-  (G665); bugfix T016-066 replaces it with a reference that cannot be derived from the payload, a second exception.
+  FR-016-027 say. `listRunJournalEvents` was not payload-free as built: its `payloadRef` was the payload's unsalted
+  SHA-256 (G665). Bugfix T016-066 makes it the second exception and FR-016-030 says what it returns now.
+- **FR-016-030** (bugfix T016-066, G665): No read returns a digest of a payload the platform keeps: a step output, the
+  result of a wait or of a reconciliation, a run input, the input of a schedule, a signal or Update argument. A digest
+  computed only from the payload lets anyone who reads it confirm a guessed value offline. This holds whatever the
+  classification, and it holds for every caller, a caller who may reveal every value included: that caller can disclose
+  the value and needs no digest. The journal read's `payloadRef` is the reference `journal:<runId>:<seq>`. It names
+  where the payload is: the run and the sequence that payload inspection and disclosure accept as the selector
+  `{"source": "journal", "sequence": <seq>}`. It is `null` for an event with no payload. Two equal payloads get two
+  different references. The schedule read says that the action has an input (`action.hasInput`); it no longer returns
+  the input's digest (`action.inputDigest`). The server keeps the digest inside, where it identifies the stored
+  content (the `payloads` table is addressed by it). It never leaves through the API, the event stream, the CLI, the
+  Studio, the SDKs, an export or an example of the contracts.
 - **FR-016-017**: Telemetry, structured logs, metrics, spans, audit records, error bodies and the
   `Debug` output of every type that carries a payload MUST NOT contain a value, a key of a payload or a
   schema fragment, at any level. Metric labels MUST come from closed sets and never include a tenant,
@@ -614,5 +625,5 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - Declared state and Query/Update results (ADR-0031 owns them); a generic state reader (G285).
 - A Studio screen for reveal grants, SDK REST-client methods for disclosure, and annotation helpers in
   the SDK builders (G280, G281).
-- Changing the `payloadRef` digest in journal events (G275), validating inline input at run start (G273)
+- Validating inline input at run start (G273)
   and encrypting payloads at rest (G279).

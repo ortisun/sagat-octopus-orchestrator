@@ -635,3 +635,91 @@ is set, so an audience that reads `pii` and not `internal` cannot be built.
 |---|---|---|
 | O660 | Should the first version of a legacy workflow under the current rules list a relaxation per location (D664), or one finding per carrier that says how many locations became readable? | Per location, bounded at 100 with the exact remainder; it follows US01.7 ("an attention finding for each"). |
 | O661 | Should a promotion (for example `operator` to `admin`) keep the member's reveal grants, and only a demotion remove them (D663)? | Any change of role removes them; the administrator grants again. Simpler, and it needs no ranking of roles. |
+
+## Bugfix T016-066: no read returns a payload digest (2026-11-26)
+
+Gap G665 (and the older G275, which said the same and was left open) is a High disclosure (OD-2026-11-26-566). The
+journal read returned `run_events.payload_digest` as `payloadRef` to every `run:read` caller. That value is the unsalted
+SHA-256 of the payload bytes, and the bytes are a deterministic serialization of the value. A viewer could hash `true`
+and `false`, or every date of a year, and compare: an offline, silent confirmation of a `pii` or `secret` output. The
+search for every surface that returns such a digest found two:
+
+| Surface | Field | Who reads it |
+|---|---|---|
+| `GET /runs/{runId}/events` (`listRunJournalEvents`): Studio timeline and node panel, the Rust SDK's typed `JournalEvent.payload_ref`, the raw event of the five other SDKs | `payloadRef`, the digest of a step output, of a wait's result and of a reconciliation's result | `run:read`: every role but worker and runner |
+| `GET`/`POST`/`PATCH /namespaces/{namespaceId}/schedules…` (every answer that carries a `Schedule`): Studio schedule page, the six SDKs' typed schedule action, the six conformance runners | `action.inputDigest`, the digest of the schedule's input, which is the input of the runs it starts and is classified by the same `inputSchema` | `schedule:read`: viewer included |
+
+These surfaces do not carry a payload digest, and were checked: the graph, its changes and the stream (`seq`,
+`eventType`, `occurredAt`, `stepId` and `attempt` only), the run, telemetry and attempts. The batch job answers
+`hasPayload` (feature 018 already withheld its digest). Payload inspection and disclosure return sizes to callers
+allowed to inspect, never a digest. The audit records, the outbox and the NATS hints carry none. The CLI prints none: it
+reads the journal through the REST read and prints only the sequence, type, step, attempt and cause. The worker
+protocol is out of scope: a worker receives the input of its own lease and sends `output_sha256` itself. Feature 020's
+draft run-history export contract (`specs/020-visibility-analytics-archival/contracts/run-history.schema.json`,
+`$defs.payloadRef`) still describes a `sha256`. Nothing builds it yet (G016-001).
+
+### D016-001 — `payloadRef` names where the payload is, never what it is (delegate (OD-2026-11-24-4))
+
+**Decision**: `payloadRef` keeps its name and its type (`string` or `null`). Its value is `journal:<runId>:<seq>`, the
+run and the journal sequence of the event. Payload inspection (ADR-0028) and disclosure (D271) accept exactly that place
+as the selector `{"source": "journal", "sequence": <seq>}`. It is `null` when the event carries no payload, as before.
+No caller gets the digest, whatever their grants. The application type cannot carry it: `JournalEntry.payload` is a
+`JournalPayloadRef { run, seq }`, not a string. A store that selected the digest into it would not compile.
+
+**Why this and not the alternatives**:
+
+- *A keyed HMAC under a per-namespace key held by the key authority.* It stops a guess made offline, but it keeps
+  equality: two equal payloads in a namespace have equal references. A reader who knows one value can then confirm the
+  same value elsewhere. Examples: a public output or a run input they wrote, compared with a `pii` output; or a guess
+  planted in a run they may start. Feature 016 promises that a reader learns nothing of a value they may not see, and an
+  equality oracle breaks that promise. The HMAC would also put the key authority (feature 015) on the read path of every
+  journal page, with rotation that silently changes every reference. It would cost more and protect less.
+- *A random opaque id per event.* It reveals as little as the place does, but it needs a new column, a migration and a
+  lookup, and it is not a selector anything accepts. It has no advantage.
+- *Remove the field, or replace it with a boolean.* It is as safe, and a larger break: the Studio, the end-to-end
+  tests and clients test `payloadRef !== null` to find the events whose payload they may inspect. The reference keeps
+  that working and gives them the selector directly.
+- *Keep the digest for a caller who may reveal every classified place of that payload.* That caller can disclose the
+  value and hash it if they need to. A second code path whose authorization must follow grants, `reveal` and the
+  pinned rules of each payload would be a new place to get the check wrong, for no use the platform has.
+- *Only `runId` and `seq`, or `journal:<seq>` alone.* A reference without the run would be the same string in every
+  run. A client that caches or deduplicates by `payloadRef`, which was safe with a digest, would then merge payloads of
+  different runs. With the run inside, two places never share a reference.
+
+**What the reference reveals**: that the event at `seq` of that run carries a payload. The event type already says
+so for a `step.completed`, `wait.satisfied` or `reconciliation.concluded`, and the old field said it too (it was
+non-null). It does not depend on the bytes, so it says nothing of the value, its size or its equality with any other
+payload.
+
+**Inside the server** the digest stays what it was. It is the content address of `payloads`
+(`payloads.digest`, deduplicated per tenant), and inspection, disclosure, retention and the reducers join on it. Only
+the API boundary changed. Integrity needs no client-visible digest: the payload is read from the authority over the
+authenticated channel, and a caller who reads the value can hash it.
+
+### D016-002 — A schedule says that it has an input, not the input's digest (delegate (OD-2026-11-24-4))
+
+**Decision**: the schedule read's `action.inputDigest` is replaced by `action.hasInput` (boolean, always present). This
+follows the batch job's `hasPayload`. FR-018-042 said "digests and sizes only" and now says "whether there is one, never
+a digest". The input's values still come out only through `input-disclosures`, which applies the audiences of this
+feature. The six SDKs replace the typed `inputDigest` with `hasInput`. They do not keep `inputDigest` returning `null`:
+code that compared two digests to learn whether an input changed would then see `null == null` and conclude "unchanged",
+which is wrong and gives no warning. Against an older server that still sends `inputDigest`, each SDK and the Studio
+answer `hasInput: true` when it is present. The value is never kept.
+
+**Why not a reference here**: no selector names a schedule's input by place (disclosure takes the schedule id and
+reads its current revision). Equality across revisions would be the same oracle: someone who may write the schedule
+could set a guess and compare it with the previous revision. A boolean is all the read may say.
+
+### D016-003 — A documented break, no compatibility switch (delegate (OD-2026-11-24-4))
+
+**Decision**: there is no setting that brings the digest back. A switch would keep the High disclosure one
+configuration away, and the platform has no use for the digest outside the server. The break is recorded in
+`docs/releases/unreleased.md` with the migration path. The guarded byte-identical check of the FR-016-016 surfaces
+(`tests/integration/payload-classification/compat.rs`) now compares the journal with every `payloadRef` removed on both
+sides and checks the new form apart.
+
+### Gaps of this section
+
+| # | Gap | Treatment | Status |
+|---|---|---|---|
+| G016-001 | Feature 020's draft run-history export contract defines `$defs.payloadRef` as `{sha256, size, level}`. Under FR-016-030, a reader of the export who cannot read the content must not get that `sha256`. | Nothing builds the export yet. Its owner applies FR-016-030 when the contract is next revised, as design 044's history export does (its Task 044-24). The rule is written in FR-016-030, so the draft cannot be built against an unstated rule. | Open (feature 020) |

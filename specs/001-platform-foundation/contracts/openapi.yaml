@@ -5574,7 +5574,7 @@ components:
         attempt: {type: [integer, 'null']}
         actor: {type: string, description: 'user:<sub>, worker:<id> or system:<component>.'}
         traceId: {type: [string, 'null']}
-        payloadRef: {type: [string, 'null'], description: 'SHA-256 of the output payload the event refers to.'}
+        payloadRef: {type: [string, 'null'], pattern: '^journal:[0-9a-f-]{36}:[1-9][0-9]*$', description: 'Where the payload this event carries is kept: `journal:<runId>:<seq>`, the run and this event''s sequence, which payload inspection and disclosure accept as `{"source": "journal", "sequence": <seq>}`. Null when the event carries none. It is not derived from the payload, so two equal payloads have different references, and it is no digest: no read returns a digest of a payload (FR-016-030, G665). Until T016-066 it was the SHA-256 of the payload.'}
         cause: {anyOf: [{$ref: '#/components/schemas/Cause'}, {type: 'null'}], description: 'Why it happened, when the event is the result of something going wrong, a person''s choice or the clock.'}
         spanId: {type: [string, 'null'], pattern: '^[0-9a-f]{16}$', description: 'For the events of an attempt: its span in the run''s trace (`traceId` of the run).'}
     Cause:
@@ -8269,12 +8269,13 @@ components:
         policies: {$ref: '#/components/schemas/SchedulePolicies'}
         action:
           type: object
-          description: The action without its input; `inputDigest` (SHA-256, hex) describes the input.
+          description: The action without its input. `hasInput` says whether it has one; its values come out only through `input-disclosures`. No digest of the input is returned (FR-016-030, G665); until T016-066 the read carried `inputDigest`, its SHA-256.
+          required: [hasInput]
           properties:
             workflowId: {type: string, format: uuid}
             versionPolicy: {type: string, enum: [ACTIVE, PINNED]}
             versionId: {type: string, format: uuid}
-            inputDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+            hasInput: {type: boolean, description: 'Whether the action has an input.'}
             nominalTimeField: {type: string}
             runTimeoutMs: {type: integer}
             businessIdPrefix: {type: string, description: 'Present when the action names a prefix; with the two policies below, which are written out with their defaults. Customer text.'}
