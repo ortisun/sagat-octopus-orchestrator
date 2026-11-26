@@ -186,8 +186,10 @@ From the code on `develop` at `546d5aa5`:
   `SagatJournalPartitionsLow` MUST fire below two. A row for a bucket with no partition fails with SQLSTATE 23514 and the
   partitioned table as the error's table (which distinguishes it from the PL/pgSQL guards that also raise 23514); the
   adapter maps it to code `UNAVAILABLE` with reason `JOURNAL_BUCKET_MISSING` (retryable) for a bucket at or after the
-  current month or not marked retired, and to code `NOT_FOUND` with reason `RUN_PURGED` (the existing reason) only for a
-  month that `journal_retirements` marks dropped, read on this error path through `journal_bucket_retiring`. The new reason is added to
+  current month or whose retirement has not dropped it, and to code `NOT_FOUND` with reason `RUN_PURGED` (the existing
+  reason) only for a month whose table `journal_retirements` records as dropped or whose retirement is done, read on this
+  error path through `journal_bucket_retiring`. The function skips a month that has a row in `journal_retirements`, so a
+  retired month is never created again. The new reason is added to
   `specs/001-platform-foundation/contracts/openapi.yaml`, the error contracts and the Studio's generated types in the same
   delivery. There is no default partition.
 
@@ -205,19 +207,26 @@ From the code on `develop` at `546d5aa5`:
   left in `PURGING`; (3) check that no row of the bucket's partitions belongs to a run that is not purged, and compute
   each tenant's bytes in the bucket's `run_payloads` partition (summing `octet_length(content)` as the delta trigger
   does), recorded in `journal_retirements`: the partitions are frozen by then, since a purged run refuses every append and
-  a past month gains rows only from the trees of its own roots, all purged; (4) in one transaction, under a `lock_timeout`
-  of 2 s: `LOCK TABLE run_payloads, run_events IN ACCESS EXCLUSIVE MODE` (the order in which a completion writes them, so
-  that no completion deadlocks with it), then detach both partitions (without `CONCURRENTLY`, which needs only catalog work
-  here, since no foreign key and no default partition exist, but takes `ACCESS EXCLUSIVE` on the parent), drop them, and
-  mark the retirement dropped; (5) in a following transaction, release each tenant's recorded bytes through
+  a past month gains rows only from the trees of its own roots, all purged; (4) for `run_events`, then for
+  `run_payloads`, one transaction each, under a `lock_timeout` of 2 s: `LOCK TABLE ONLY` the parent `IN ACCESS EXCLUSIVE
+  MODE`, then lock the bucket's partition alone, detach it (without `CONCURRENTLY`, which needs only catalog work here,
+  since no foreign key and no default partition exist, but takes `ACCESS EXCLUSIVE` on the parent), drop it, and record
+  the table dropped; (5) in a following transaction, release each tenant's recorded bytes through
   `sagat_quota_release_bytes` in tenant UUID order (Architecture decision 0027), write the audit records and mark the
-  retirement done; it is idempotent on the retirement's state, so a crash between the two transactions leaves the
-  content charged until the release runs on resume, never released twice. A lock timeout in step 4 rolls it back whole
-  and it is retried after 1 s, doubling to at most 30 s, at most 10 attempts, then the command stops and reports; nothing
-  is ever detached and not dropped. A retirement is active only by its row, never by a lock alone. An operator may
-  abandon a retirement only before step 2 starts (`--abandon`); once its runs are purged in the mark-only form it can
-  only be resumed, from its recorded step, so that their rows always leave by the drop. Until the drop commits, a purge or
-  erasure report of feature 020 for such a run says that its content awaits the month's drop.
+  retirement done; it is idempotent on the retirement's state, so a crash between transactions leaves the content
+  charged until the release runs on resume, never released twice. A step 4 transaction holds nothing while it waits for
+  its parent, and once it holds the parent no platform transaction can hold the partition (every platform statement
+  reaches a partition through its parent), so it cannot deadlock with the hot path; only a maintenance process (a vacuum)
+  can make it wait for the partition. A lock timeout rolls it back whole and it is retried after 1 s, doubling to at most
+  30 s, at most 10 attempts, then the command stops and reports; nothing is ever detached and not dropped. A retirement
+  is active only by its row, never by a lock alone. Until it is done, a purge or erasure report of feature 020 for one of
+  its runs says that the content awaits the month's drop. An operator may abandon a retirement at any step before step 4
+  (`--abandon`), for example when a run fails the mark-only form's re-check because its namespace's retention grew or a
+  review opened: the abandon command deletes, by key and in chunks, under feature 020's authorization row (so the
+  quota triggers release what it deletes), the `run_events` rows of every run of the bucket
+  already purged and the `run_payloads` rows of every tree of the bucket whose runs are all purged, then marks the
+  retirement abandoned, after which per-run purges of the bucket resume; a tree with a run left unpurged keeps its
+  payloads until feature 020 purges that run, which, being its tree's last, deletes them.
 - **Requirement 049-014 Feature 020's purge, by key, and its mark-only form.** Feature 020's purge of a dated run MUST
   delete that run's rows of `run_events` by `(tenant_id, run_id, journal_bucket)` with no reference check, and the purge
   of the tree's last unpurged run also deletes the tree's `run_payloads` rows by `(tenant_id, root_run_id,
@@ -225,8 +234,8 @@ From the code on `develop` at `546d5aa5`:
   (`FOR NO KEY UPDATE`) before its own, so that two purges of one tree serialize and the second sees the first. Erasure of
   a dated run therefore erases its whole tree, and its report names every run erased (feature 020's requirement 020-037).
   The purge of a legacy run keeps feature 020's reference check (Requirement 049-007). Every purge of a dated run but the
-  mark-only form takes the bucket's advisory lock in shared mode for its transaction and then, in a separate statement
-  once the lock is granted (so that its snapshot follows a retirement's commit), refuses with a retryable error while a
+  mark-only form runs at `READ COMMITTED`, takes the bucket's advisory lock in shared mode for its transaction and then,
+  in a separate statement once the lock is granted (so that its snapshot follows a retirement's commit), refuses with a retryable error while a
   retirement of the bucket is active (Requirement 049-009); the mark-only form runs under the retirement's own row. The *mark-only form*, used by
   retirement, runs through feature 020's own purge function (its authorization row and its `run.purged` audit record
   per run) under the run lock, and differs only in leaving the run's partitioned rows for the drop: it re-checks
@@ -283,7 +292,8 @@ From the code on `develop` at `546d5aa5`:
   revoked from `PUBLIC`. `journal_retirements` has no grant to the runtime role; a purge learns whether a retirement is
   active through the definer function `journal_bucket_retiring(bucket)`. Retirement runs as `sagat_retirer`, a login role
   with no table privilege, which may only execute the definer functions of retirement (`journal_retire_start`,
-  `journal_retire_check`, `journal_retire_drop`, `journal_retire_release`, `journal_retire_abandon`), owned by the owner; the platform's processes
+  `journal_retire_purge_chunk`, which calls feature 020's purge function in the mark-only form, `journal_retire_check`,
+  `journal_retire_drop`, `journal_retire_release`, `journal_retire_abandon`), owned by the owner; the platform's processes
   and the chart hold no credential of either role. `sagat_quota_release_bytes` is executable by those functions' owner
   only. The retirement command parses `--bucket` as a month and refuses the legacy bucket and any month that ended less
   than 24 hours ago by the database clock (a root's `created_at` is the database clock or the application's time of the
@@ -298,9 +308,9 @@ From the code on `develop` at `546d5aa5`:
 - **Success criterion 049-002** On a free standard runner of GitHub (Owner decision 2026-11-25-1), on a database holding
   12 monthly buckets of 20,000 runs of the chain shape each, the retirement of one bucket is measured end to end (the
   mark-only purge of its runs included) and its last transaction alone, each at the median and the maximum of five
-  repetitions; during step 4's transaction no insert into `run_events` or `run_payloads` waits more than its two lock
-  waits of at most 2 s each, 2 × 2 = 4 s, plus that transaction's measured catalog time (the detach and the drop), as the
-  driver's per-second counter shows. The report names the runner.
+  repetitions; during each transaction of step 4 no statement on its table waits more than that transaction's two lock
+  waits of at most 2 s each (the parent's and the partition's), 2 × 2 = 4 s, plus its measured catalog time (the detach
+  and the drop), as the driver's per-second counter shows. The report names the runner.
 - **Success criterion 049-003** The conversion of a `run_events` of 5 GiB on the same runner copies no row (the legacy
   partition keeps the old table's `relfilenode`, and the relation sizes before and after are equal), and its time and the
   time of its index build are published with the runner named.
@@ -504,12 +514,13 @@ calling them:
    purgeable, counting the held runs by reason (`NO_POLICY`, `NOT_ELIGIBLE`, `NOT_VERIFIED`, `LIVE`) in
    `journal_bucket_held_runs{reason}`; otherwise take the bucket's advisory lock in exclusive mode, insert the active row
    and commit.
-2. Purge each run in the mark-only form, in chunks, each under its run lock, through feature 020's purge function.
+2. `journal_retire_purge_chunk(bucket)`, called until it reports none left: purge runs in the mark-only form, in chunks,
+   each under its run lock, through feature 020's purge function; it stops and reports a run that fails the re-check.
 3. `journal_retire_check(bucket)`: verify that no row of the bucket's partitions belongs to a run that is not purged,
    and record each tenant's bytes of the bucket's `run_payloads` partition.
-4. `journal_retire_drop(bucket)`: the transaction of Requirement 049-009 step 4: `SET LOCAL lock_timeout = '2s'`, lock
-   both parents in the completion's order, detach and drop the bucket's partitions of `run_events` and `run_payloads`,
-   and mark the retirement dropped. It holds no tenant's usage row, so its exclusive locks last only for catalog work.
+4. `journal_retire_drop(bucket, table)`, for `run_events` then `run_payloads`: the transactions of Requirement 049-009
+   step 4: `SET LOCAL lock_timeout = '2s'`, `LOCK TABLE ONLY` the parent, lock the bucket's partition, detach and drop it,
+   and record the table dropped. It holds no tenant's usage row, so its exclusive locks last only for catalog work.
 5. `journal_retire_release(bucket)`: release each tenant's recorded bytes in tenant UUID order, write one audit record
    per tenant with that tenant's counts only and the actor, record the retirement's own audit in `journal_retirements`
    (an audit record needs a tenant), and mark it done; a second call on a done retirement does nothing.
@@ -642,7 +653,7 @@ Each task's files are named; the test suites are those of the Verification Plan.
   Refs: Requirement 049-005, Requirement 049-014
 - [ ] T049-13 Add `journal-buckets-v1` to the `Capability` enum of `crates/application/src/instances.rs` and the schema's closed lists (step 4), and write `control-plane journal switch` in `apps/control-plane/src/cli.rs` on the registry's activation, with a suite that runs after it across a month boundary with two dated partitions; tests before the command exists activate the capability through the registry's test fixture.
   Refs: Requirement 049-002, Requirement 049-010
-- [ ] T049-14 Write `control-plane journal retire`, `sagat_retirer`, `journal_retirements`, the four retirement functions, `journal_bucket_retiring`, `sagat_quota_release_bytes`, the mark-only form in feature 020's purge function and the bucket lock in its purge, with the crash test at every step (between the drop and the release among them), a lock timeout in the drop's transaction, the races with an append, with a per-run purge held by a barrier at the retirement's start, and of two purges of one tree, the abandon refused after step 2, and the quota reconciliation test.
+- [ ] T049-14 Write `control-plane journal retire`, `sagat_retirer`, `journal_retirements`, the six retirement functions, `journal_bucket_retiring`, `sagat_quota_release_bytes`, the mark-only form in feature 020's purge function and the bucket lock in its purge, with the crash test at every step (between the drop and the release among them), a lock timeout in the drop's transaction, the races with an append, with a per-run purge held by a barrier at the retirement's start, and of two purges of one tree, the abandon after a run fails its re-check with its sweep, and the quota reconciliation test.
   Refs: Requirement 049-009, Requirement 049-014, Requirement 049-016, Success criterion 049-002, Success criterion 049-004
   Owner-gate: pending, the merge of constitution 5.1.0 (approved by Owner decision 2026-11-25-3, point 1)
 - [ ] T049-15 Amend the data models and tasks of features 020, 022, 025, 026 and 030 so that their run-content references follow Requirements 049-005 and 049-006, and feature 020's purge and erasure have the key, the tree as unit and the mark-only form of Requirement 049-014, and its Task T020-046 reads the registry.

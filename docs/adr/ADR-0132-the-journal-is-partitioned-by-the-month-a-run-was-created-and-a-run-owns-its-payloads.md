@@ -37,10 +37,10 @@ a lock that blocks their writes, and a drop releases no quota because it fires n
    MUST be the one design 049's Task 049-3 measures to lock no more than the pruned partition.
 6. A bucket MAY be dropped only when every run in it is purgeable under feature 020 and its archive verified, in this
    order: the retirement recorded as active, excluding per-run purges of the bucket; the runs purged under their run
-   locks through feature 020's purge function; the frozen partitions checked and their bytes per tenant counted; one
-   transaction under a lock timeout that locks both parents in the hot path's order, detaches and drops the partitions;
-   then an idempotent transaction releases, audits and records the bytes. Nothing is ever left detached and not dropped,
-   and once its runs are purged a retirement can only be resumed, not abandoned. Retirement is an operator's command run as a role that can only call its definer
+   locks through feature 020's purge function; the frozen partitions checked and their bytes per tenant counted; for
+   each table, one transaction under a lock timeout that locks only its parent and the bucket's partition, detaches and
+   drops it; then an idempotent transaction releases, audits and records the bytes. Nothing is ever left detached and not
+   dropped; a retirement abandoned before its drops deletes by key the rows of the runs it already purged. Retirement is an operator's command run as a role that can only call its definer
    functions, never a platform process. Deleting journal rows waits for constitution 5.1.0, approved by Owner decision
    2026-11-25-3.
 7. New roots get a dated bucket once their process has learned of the registry's activation of `journal-buckets-v1`; a
