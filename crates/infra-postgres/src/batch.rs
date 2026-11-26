@@ -232,11 +232,14 @@ fn item_from(row: &PgRow) -> Result<ItemRecord, StoreError> {
 
 /// The first part of every statement that reads the runs a selector matches in a namespace, created at or before `$11`. The
 /// parameters are fixed: tenant, namespace, workflow, version, statuses, origin, schedule, created after, created before, run
-/// ids and the bound (`$1` to `$11`, `NULL` meaning "no restriction").
+/// ids and the bound (`$1` to `$11`, `NULL` meaning "no restriction"). The bound is `NULL` for a selector of run ids, which
+/// names a closed set and takes the runs it names whatever their recorded creation (D2405, `Bind::bound`); the tenant and the
+/// namespace bind every selector.
 macro_rules! matching_runs_base {
     () => {
         "SELECT r.id FROM runs r \
-         WHERE r.tenant_id = $1 AND r.namespace_id = $2 AND r.created_at <= $11 \
+         WHERE r.tenant_id = $1 AND r.namespace_id = $2 \
+          AND ($11::timestamptz IS NULL OR r.created_at <= $11) \
           AND ($3::uuid IS NULL OR r.workflow_id = $3) \
           AND ($4::uuid IS NULL OR r.workflow_version_id = $4) \
           AND (cardinality($5::text[]) = 0 OR r.status = ANY($5)) \
@@ -315,6 +318,14 @@ fn prefix_end(prefix: &str) -> String {
 }
 
 impl Bind {
+    /// The time bound of the selection of this selector, given the instant of the job's creation (or of the preview): that
+    /// instant for a filter, which freezes its open-ended set against the runs committed later, and none for a list of run
+    /// ids, which is already closed. With a bound, a backward step of the database clock between a run's commit and the job's
+    /// creation left a named run out and the job selected nothing (G2403, D2405).
+    const fn bound(&self, at: OffsetDateTime) -> Option<OffsetDateTime> {
+        if self.ids.is_some() { None } else { Some(at) }
+    }
+
     fn of(selector: &Selector) -> Self {
         match selector.kind() {
             SelectorKind::RunIds(ids) => Self {
@@ -351,12 +362,13 @@ impl Bind {
 }
 
 /// Binds the parameters `$1` to `$11` of the statements that read the runs of a selector: the same for every one of them.
+/// `bound` is what [`Bind::bound`] gives, `None` for a selector of run ids.
 fn with_filter<'q>(
     query: sqlx::query::QueryScalar<'q, sqlx::Postgres, Uuid, sqlx::postgres::PgArguments>,
     tenant: Uuid,
     namespace: Uuid,
     bind: &'q Bind,
-    bound: OffsetDateTime,
+    bound: Option<OffsetDateTime>,
 ) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, Uuid, sqlx::postgres::PgArguments> {
     query
         .bind(tenant)
@@ -695,7 +707,7 @@ impl BatchStore for PgBatchStore {
                     tenant.as_uuid(),
                     namespace,
                     &bind,
-                    bound,
+                    bind.bound(bound),
                 )
                 .bind(cursor)
                 .bind(take)
@@ -708,7 +720,7 @@ impl BatchStore for PgBatchStore {
                     tenant.as_uuid(),
                     namespace,
                     &bind,
-                    bound,
+                    bind.bound(bound),
                 )
                 .bind(from)
                 .bind(to)
@@ -1100,7 +1112,7 @@ impl BatchStore for PgBatchStore {
                     tenant.as_uuid(),
                     namespace.as_uuid(),
                     &bind,
-                    now,
+                    bind.bound(now),
                 )
                 .bind(most)
                 .fetch_all(&mut *tx)
@@ -1112,7 +1124,7 @@ impl BatchStore for PgBatchStore {
                     tenant.as_uuid(),
                     namespace.as_uuid(),
                     &bind,
-                    now,
+                    bind.bound(now),
                 )
                 .bind(from)
                 .bind(to)
