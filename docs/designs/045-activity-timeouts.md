@@ -168,9 +168,9 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
   a scoped instance and a path instance, and the conformance scenario `retry-by-code`.
 - **Requirement 045-008 — A worker's delay.** `FailStep.next_retry_delay_ms` (1 to 86,400,000; out of range refused
   `INVALID_ARGUMENT`) MUST make the delay of the next attempt the longer of the worker's delay and the policy's computed delay for
-  that attempt, without further jitter, when the decision schedules one. The event MUST record `delaySource: worker` whenever the
-  field was sent. It MUST NOT add an attempt or pass the close cutoff. Its value is part of the report's idempotency fingerprint
-  only when it is present. A session below 1.9 that sends it is refused `INVALID_ARGUMENT`. *Acceptance:* unit tests and the
+  that attempt, without further jitter, when the decision schedules one. At level 1 or 2 the event MUST record `delaySource: worker`
+  whenever the field was sent; at level 0 the field is ignored. It MUST NOT add an attempt or pass the close cutoff. Its value is part of the report's idempotency fingerprint
+  whenever it is present, at every level (the fingerprint is built before the run is loaded). A session below 1.9 that sends it is refused `INVALID_ARGUMENT`. *Acceptance:* unit tests and the
   conformance scenario `retry-by-code`.
 - **Requirement 045-009 — Deadlines are acted on by a pass on the database clock.** A scheduler pass of its own, `step_deadlines`,
   MUST end `READY` steps whose start deadline or close cutoff has passed: on its shard, through `pick` with the tenant exclusion and
@@ -194,7 +194,9 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
   of level 1 or 2; an event written before this design decodes as before. A run's replay MUST equal its projection with and without
   them. The domain computes each deadline (truncated to microseconds) and the store writes the event's value, or, for the pause and
   the resume, applies the one arithmetic rule of Technical Plan 3 to every claimable row. *Acceptance:* the replay-equals-projection
-  corpus of `integration_activity_timeouts`, comparing the deadline columns (the lease expiry, which renewals move, excluded).
+  corpus of `integration_activity_timeouts`, comparing the columns `start_deadline_at`, `start_window_us`, `close_deadline_at` and `close_cutoff_at` at every level, and
+  `attempt_deadline_at` and `attempt_deadline_cause` at levels 1 and 2 (`StepState` carries the attempt deadline and its cause for
+  those levels); the lease expiry, which renewals move, is excluded.
 - **Requirement 045-014 — Visible deadlines.** The REST view of a step and the Studio MUST show its start, close and attempt deadlines
   and the cause of the attempt deadline, and a timeout's code with its meaning; the time left is computed against the server time the
   view carries, never the browser's clock. *Acceptance:* `contract_rest_durable_execution` and the Studio's run-view tests.
@@ -389,7 +391,8 @@ Properties added to `$defs/retry` and `$defs/bodyRetry`, which keep `additionalP
 
 The schema cannot express the cross-field rules of Requirements 045-001 and 045-002. The domain's constructors own them and their
 closed reasons (`TIMEOUT_OUT_OF_RANGE`, `TIMEOUTS_CONTRADICT`, `HEARTBEAT_SOURCE_NEEDS_TIMEOUTS`, `TIMEOUT_NOT_ALLOWED_ON_NODE`,
-`RETRY_CODE_RESERVED`, `RETRY_CODE_DUPLICATED`, `RETRY_CODES_TOO_MANY`, `RETRY_OVERRIDE_INVALID`); `crates/infra-ir` parses and maps
+`RETRY_CODE_RESERVED`, `RETRY_CODE_DUPLICATED`, `RETRY_CODES_TOO_MANY`, `RETRY_OVERRIDE_INVALID`, and `DOCUMENT_NEEDS_REPUBLISH` of
+Technical Plan 13); `crates/infra-ir` parses and maps
 each refusal to the field's pointer. The reasons, and `ACTIVITY_TIMEOUTS_NOT_ACTIVE` (Technical Plan 13), are listed in
 `specs/045-activity-timeouts/contracts/errors.md`, written by Task 045-1.
 
@@ -412,7 +415,7 @@ from computing a deadline otherwise (Task 045-20).
 
 | Deadline | Set by the events | Kept through | Cleared by |
 |---|---|---|---|
-| start (`start_deadline_at`; the window in `start_window_us`) | the release past its gates; `step.retry_due` and `step.retry_requested` (for a gated node, the grant instead); the admission of a body instance; `step.lease_withdrawn` (Technical Plan 3); `run.resumed` | the lease | the end of the attempt by a report; the end of the step; `run.paused` |
+| start (`start_deadline_at`; the window in `start_window_us`) | the release past its gates; `step.retry_due` and `step.retry_requested` (for a gated node, the grant instead); the admission of a body instance; `step.lease_withdrawn` (Technical Plan 3); `run.resumed` | the lease | every exit from a live attempt (a report, an expiry, a withdrawal, which then writes its own value); the end of the step; `run.paused` |
 | close and cutoff (`close_deadline_at`, `close_cutoff_at`) | the step's release | every retry, a pause | the end of the step; `reconciliation.requested`; `step.needs_review`; `step.retry_requested` of a known failure |
 | attempt (`attempt_deadline_at`, exists; `attempt_deadline_cause` new) | `step.leased`, which gains `attemptDeadlineUs` and `attemptDeadlineCause` for a version of level 1 or 2 | the attempt | the end of the attempt |
 
@@ -435,7 +438,7 @@ store computes each deadline once, from the transition's `db_now` and the defini
 the event and the column in one statement; they are the named exceptions of the static check (Task 045-20). The row-shape predicates at the top of
 `execution.rs` (the conditions that say a row holds no work) include the new columns. The loaders that restore a step (the root load,
 `RUN_FOR_CLAIM` in `execution.rs`, the path snapshot reader) select them, and `StepState` gains `start_deadline`, `start_window`,
-`close_deadline` and `close_cutoff`, with `StepState::restore` taking them. `min_protocol_minor` is not domain state: this design owns the column (design 044 depends on it, Gap 044-020; any later
+`close_deadline`, `close_cutoff` and, at levels 1 and 2, the attempt deadline and its cause, with `StepState::restore` taking them. `min_protocol_minor` is not domain state: this design owns the column (design 044 depends on it, Gap 044-020; any later
 feature that needs a per-step minor writes the larger of its own and the value already there); it is an
 adapter-only hint for the candidate query, written from the definition, and the domain's lease predicate reads the node's required
 host features (`StepTimeouts::required_host_features()`) against the session's.
@@ -498,9 +501,14 @@ The close deadline is not moved and is enforced during the pause, by every path,
 
 **A withdrawal** (Architecture decision 0098 decision 3, Architecture decision 0099 decision 5) sets the step back to `READY` without
 spending an attempt. Its event, `step.lease_withdrawn`, gains `startDeadlineUs`: the later of the old deadline and the withdrawal's
-`db_now` plus the full start window, and the withdrawal keeps the step's `ready_at`, so the step is not sent behind a backlog. A lease
+`db_now` plus the full start window, and the withdrawal keeps the step's `ready_at` (the projection statement, which today resets `ready_at` when a step goes from
+`LEASED` back to `READY`, keeps it for a withdrawal; this refines Architecture decision 0098 decision 3), so the step is not sent
+behind a backlog; a silent host may claim it again up to the four withdrawals per attempt, after which the next lease is not
+provisional (a test re-claims from one silent host). A lease
 lost on the wire is not a missing worker; the four withdrawals per attempt of Architecture decision 0098 decision 7 bound how often.
-For a node without `scheduleToStartMs` it writes none, at level 0 no field, and while the run is paused none. Built
+For a node without `scheduleToStartMs` it writes none, at level 0 no field, and while the run is paused it writes the start
+deadline as null, so no deadline from before the pause survives into it. The re-check of the pass also refuses a start deadline on a
+paused run. Built
 by whichever of this design and pull request #260 lands second.
 
 ### 4. The close deadline
@@ -609,7 +617,7 @@ not need to be reproduced.
 
 Every row is decided under the run lock, which every transition of a step's status takes (constitution principle I); the loser
 commits nothing or a counted no-op. A claim locks a run with `SKIP LOCKED` and a pass with `Lock::Wait`, so the claim rows have three
-tests each: no lock held, the deadline at `db_now` less and plus a margin; the claim's transaction held while the pass runs (the pass
+tests each: no lock held, the deadline at `db_now` less a margin and minutes ahead; the claim's transaction held while the pass runs (the pass
 then finds `LEASED`); and a barrier between the candidate query and the claim's run transaction, inside which the deadline passes (the
 claim then skips the step and leases its sibling).
 
@@ -624,7 +632,7 @@ claim then skips the step and leases its sibling).
 | the retries pass and the close cutoff | the retries pass ends a `RETRY_WAIT` step past the cutoff instead of making it claimable |
 | a gate's grant, the gate's queue timeout and the close cutoff | one deadline per waiter, the earlier, in 022's one timeout routine; the grant refuses a waiter past its cutoff |
 | a lease withdrawal and the start deadline | the withdrawal writes the later of the old deadline and a full window from the withdrawal, keeping the step's place in the queue; a healthy worker claims again; a test withdraws a lease just after the deadline |
-| a pause and each deadline | the pause removes the start deadlines; the resume writes a full window; the close cutoff is enforced during the pause; tests with a step that becomes claimable during the pause, two pauses, and path instances |
+| a pause and each deadline | the pause removes the start deadlines; the resume writes a full window; the close cutoff is enforced during the pause; tests with a step that becomes claimable during the pause, two pauses, path instances, a withdrawal during the pause and an operator's retry during the pause |
 | a stop and a deadline | first commit wins; both end the step without an effect |
 | a step in reconciliation past its close deadline | never ended by the pass: its close deadline was cleared |
 | an operator's retry of a known failure past the cutoff | the retry clears the close deadline and writes a start deadline; the attempt is leased |
@@ -796,7 +804,7 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 Each rule below is stated once, here.
 
 - **The worker's delay** is the longer of the worker's delay and the policy's computed delay including its jitter sample; at level 0 it
-  is ignored and left out of the fingerprint, where it is otherwise a tagged part appended only when present.
+  is ignored; the fingerprint carries it as a tagged part whenever it is present, at every level.
 - **Counting.** A `SCHEDULE_TO_CLOSE_TIMEOUT` decided at row 6 after a worker's delay is counted under `step_retry_decisions_total` only;
   an `ATTEMPT_TIMEOUT` with `deadline: scheduleToClose` counts as `kind="schedule_to_close"`; the rules counted are those of rows 3
   to 7; a claim's skip reuses `worker_claim_skipped_total{reason}` and a pass's no-op `scheduler_actions_total{outcome="skipped"}`.
@@ -807,7 +815,7 @@ Each rule below is stated once, here.
 - **The overlay** is the domain's (`RetryRules`), not `retry_at`'s, which would default an absent `strategy` to exponential; `RetryRules`
   replaces the `RetryPolicy` fields of `NodeKind::Activity` and of the effect policy, and `Node::retry_rules()` returns it by reference.
 - **Gates.** A step whose cutoff is at or before `db_now` is ended before it is enqueued at a gate (022's waiter `CHECK` requires a
-  future deadline); `step.failed` from a gate's `WAITING` is one of the new transitions; Task 045-10 owns this work in feature 022's
+  future deadline); Task 045-10 owns this work in feature 022's
   crates once 022 lands.
 - **Path steps** are re-checked by the domain command itself in the path transaction; `apply_path_if` takes the new kind beside
   `LeaseLoss`. `due_step_deadlines` returns rows shaped like `LostLease` (the step, the generation, the kind).
@@ -950,8 +958,8 @@ changes every caller of a signature it changes, so the workspace builds after ea
 - [ ] T045-5 The publication gate, after Task 045-6: `infra-ir` parses the fields (with `retry_at` for the entries) and maps the domain's
   refusals to pointers; the application's publication (`publish` in `crates/application/src/definitions.rs`) computes the version's
   level, refuses `ACTIVITY_TIMEOUTS_NOT_ACTIVE` through the store's `hold_requirement(capability) -> bool` and writes the level with
-  the version; a version of level 0 is read without the fields. An IR fixture per reason, and a stored document of level 0 that
-  carries the keys.
+  the version; a version of level 0 is read without the fields. An IR fixture per reason, a stored document of level 0 that
+  carries the keys, and a republication of the same bytes refused `DOCUMENT_NEEDS_REPUBLISH`.
   Refs: Requirement 045-001, Requirement 045-002, Requirement 045-017
 - [ ] T045-6 The two migrations of Technical Plan 2 (the columns, the checks and their validation, the indexes with their validity
   check, the capabilities in the three closed lists, the hold function with its grant and the replaced operator functions, the down
