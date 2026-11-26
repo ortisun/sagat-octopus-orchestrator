@@ -148,10 +148,11 @@ async fn a_control_plane_registers_before_it_serves_and_its_row_is_gone_when_it_
         .await
         .expect("it registered before it answered its first call");
     assert_eq!(version, sagat_control_plane::registry::BINARY_VERSION);
-    // design 043: a control plane in `enforce` (the default) lists `run-input-validation-v1`, and nothing else yet
+    // design 043: a control plane in `enforce` (the default) lists `run-input-validation-v1`; feature 006: every control
+    // plane of this build lists `lease-withdrawal-v1`
     assert_eq!(
         capabilities,
-        vec!["run-input-validation-v1"],
+        vec!["lease-withdrawal-v1", "run-input-validation-v1"],
         "{capabilities:?}"
     );
     assert_eq!(
@@ -378,7 +379,11 @@ async fn an_engine_registers_before_its_first_pass_with_the_capabilities_of_its_
     use sqlx::Row;
     assert_eq!(
         row.get::<Vec<String>, _>("capabilities"),
-        vec!["run-input-validation-v1", "schedules-v1"],
+        vec![
+            "lease-withdrawal-v1",
+            "run-input-validation-v1",
+            "schedules-v1"
+        ],
         "the capabilities of the binary, narrowed by the passes its configuration runs (and by its run-input mode)"
     );
     assert_eq!(
@@ -622,7 +627,7 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
         .expect("registered");
     assert_eq!(
         capabilities,
-        vec!["run-input-validation-v1"],
+        vec!["lease-withdrawal-v1", "run-input-validation-v1"],
         "{capabilities:?}"
     );
     let refused = r
@@ -650,7 +655,11 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
         .expect("registered");
     assert_eq!(
         capabilities,
-        vec!["run-input-validation-v1", "schedules-v1"]
+        vec![
+            "lease-withdrawal-v1",
+            "run-input-validation-v1",
+            "schedules-v1"
+        ]
     );
     assert_eq!(
         r.require(Capability::SchedulesV1, &[InstanceKind::ExecutionEngine])
@@ -694,9 +703,10 @@ async fn the_run_input_requirement_is_refused_while_an_engine_reports_and_closes
     let (reporting_id, _, capabilities) = instance_of_kind(&r, "EXECUTION_ENGINE")
         .await
         .expect("registered");
-    assert!(
-        capabilities.is_empty(),
-        "an engine in report mode does not list it: {capabilities:?}"
+    assert_eq!(
+        capabilities,
+        vec!["lease-withdrawal-v1"],
+        "an engine in report mode does not list it (feature 006: it lists lease-withdrawal-v1 always): {capabilities:?}"
     );
     let refused = r
         .require(

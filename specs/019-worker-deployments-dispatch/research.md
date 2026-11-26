@@ -342,3 +342,5 @@ rule), C4 (slot 4 of ADR-0050's lock order), C6 ("Amendment to feature 016" for 
 classes), C14 (018's `REPIN` batch action), C16 (`PUSH_DESTINATION_DENIED`, `run.deployment_repinned`, snake_case
 journal detail keys), C17 (023's reserved `checkpoint` host call), C19 (022 permit order, G1610), C22 (ADR-0052
 supersedes ADR-0013 in part). Registry entries are made in the owners' files at implementation (T019-068).
+
+Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9. A host of 1.9 or later also carries the 1.8 host procedure (a flagged lease is acknowledged before it runs), so the SDK work of delivery acknowledgement comes before any later minor in the SDKs. `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken. This draft names `TaskLease` fields 19 to 22 and `WorkerCapabilities` field 6 for its own additions, which stay free; `specs/031-client-side-encryption` names `TaskLease` field 19 and `WorkerCapabilities` field 6 too, a clash between the two drafts, not with this design.
