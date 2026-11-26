@@ -588,8 +588,8 @@ Updates of 2026-11-24 (states above are kept as history):
   until its target-aware routing is built.
 - Gap 1213: proposed reservation `20270323000000_script_languages` and `20270323000100_script_languages_validate`
   (the second validates the widened registry CHECK, as `20270118000100` does). Newest on `develop` is
-  `20270119000000`, newest on any open branch `20270209000100`; the coordinator confirms the reservation,
-  and the builder checks again before the slice merges.
+  `20270119000000`, newest on any open branch `20270209000100`; the coordinator confirmed the reservation on
+  2026-11-26 (OD-2026-11-24-310), and the builder checks again before the slice merges.
 - Gap 1220: once `script-languages-v1` is recorded, a control plane of a registry-aware release without the
   capability is held by the registry gate (`503 BINARY_CAPABILITY_MISSING`) instead of failing a listing
   (Decision 1234); a 0.2.x control plane is outside the registry (Gap 1230).

@@ -556,6 +556,12 @@ Each stale item names the evidence and the decision that fixes it. The fixes are
   channel-started creator; one added later is a new row. Every creator above calls feature 022's permit port when that
   slice is merged; a run queued or buffered by it is simply not terminal, so a waiter answers `202`.
 
+  Where the rows went (2026-11-26, OD-2026-11-24-310): design 043 carries them as its follow-up Task 043-29 until its
+  next revision moves them into Technical Plan 1 (a change of that table reopens the approved design). Feature 022's
+  "Run creators" table is not edited here: feature 022 belongs to the other coordinating session, which received the
+  four rows above through the coordinator and adds them to `specs/022-flow-control-step-policies/` itself. Until it
+  does, this note is the record that the edit is owed.
+
 ### Gaps added on 2026-11-24
 
 | Id | Gap | Consequence |

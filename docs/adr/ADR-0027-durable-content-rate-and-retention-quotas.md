@@ -215,6 +215,43 @@ Considered options (O041-040): (a) this text, a section of ADR-0027: chosen by t
 moved into ADR-0097: not chosen, the measurement belongs with the resource and class it amends; (c) accept with changes:
 not chosen.
 
+## Amendment (2026-11-26): the `workflow_stream` class, accepted 2026-11-26 (delegate, OD-2026-11-24-4)
+
+Amendment accepted 2026-11-26 under Owner decision 2026-11-24-4, at the coordinating session's request, as a section of
+this ADR like the two before it (the exception to rule 2 of `docs/adr/README.md` that OD-2026-11-15-16 first granted). It
+serves feature 026's Workflow Streams (its Decision 026-007, Task 026-071) and ADR-0068 decision 4; nothing above changes
+for the resources it already covers.
+
+1. **A resource.** `tenant_stream_bytes`: tenant aggregate; the retained bytes of Workflow Stream events
+   (`run_stream_events.data`); kind storage, unit bytes, maximum the byte maximum of `tenant_log_bytes`, default and
+   default ceiling 1 GiB (the value of `tenant_step_log_bytes`, until an operator sets another). A batch that does not fit
+   is refused whole with the stream's typed refusal and stores nothing; it never truncates an event, never blocks a
+   terminal state (no terminal report writes a stream event), and never consumes `tenant_content_bytes`, so a runaway
+   stream cannot fail unrelated run completions.
+2. **A class.** `workflow_stream`, beside `content`, `log`, `step_log` and `protected_system`: the column
+   `run_stream_events.data`, measured as `octet_length_utf8` of its canonical text, plus a fixed 128 bytes per row (the
+   `fixed_octets` kind of the first Amendment, on `run_stream_events.channel`), so that a flood of tiny events is charged
+   for what each row costs.
+3. **Accounting, as the step-log class after the Amendment of the Amendment.** A statement-level `AFTER INSERT` trigger
+   over the transition table sums the measurement per tenant and charges it once per statement to the inserting writer's
+   own stream lease, under ADR-0097's lease rules (decisions 1 to 5) applied to the resource `tenant_stream_bytes`; no
+   delta is queued on insert and the tenant usage row is not taken at commit. The purge's `DELETE` releases per row with
+   the per-row delta and flush triggers. `quota_transaction_deltas` gains `stream_delta` and the finalizer a branch for
+   it, reached only by a release; `sagat_quota_row_delta` routes the class `workflow_stream` to it; a transaction that
+   charges several classes takes their fences in the order content, log, step-log, stream, then the usage row.
+4. **Retention.** A stream keeps the retention of its namespace's `stream_retention_seconds` from the time the purge pass
+   first sees the run terminal (feature 026, Decision 026-008).
+5. **Enforced by** the manifest test, taught the class and its statement-level shape; a test that an append of ten events
+   charges the writer's lease their bytes plus 1,280 and queues no flush, and that their purge releases the same; the
+   property test that a charge equals its release; the runtime-role bypass tests extended to the stream trigger and lease
+   (feature 026, Task 026-071).
+
+Considered options: (a) a class and resource of their own on the step-log model, chosen: a runaway stream cannot exhaust
+the content quota, and the hot-row cost that design 041 measured on the usage row is avoided; (b) charging
+`tenant_content_bytes`, as the first draft of feature 026 did: rejected, one agent's token stream could fail other runs'
+completions with `STORAGE_QUOTA_EXCEEDED`; (c) sharing the step-log resource: rejected, a stream and the step logs of the
+same run would compete for one allowance with different readers and retention.
+
 ## Implementation slices and ownership contract
 
 1. **Shared policy and manifest:** domain resource names/units/ranges; application ports and typed rate result; migration, durable usage/rate state, exhaustive classification manifest and backfill tests; existing quota REST/CLI/OpenAPI views. Own `domain/quota.rs`, `application/quotas.rs`, `infra-postgres/quotas.rs`, new `infra-postgres/content_usage.rs` and migration. Preserve T010-040 activity lock hierarchy and broker resource arms.

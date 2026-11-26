@@ -14,7 +14,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Draft | 0 of 1 |
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
-| 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
+| 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 29 |
 | 046 | [Package dependencies for TypeScript and Python scripts](046-script-dependencies.md) | In Review | 0 of 25 |
 | 047 | [OAuth resources and a curated integration hub](047-oauth-integration-hub.md) | In Review | 0 of 23 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |

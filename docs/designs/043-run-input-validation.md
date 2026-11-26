@@ -1415,6 +1415,25 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   that time, put a work-conserving share to the owner as an owner question (an O043 entry of `research.md`); below it,
   record the numbers in G043-017.
   Refs: NFR-043-BOUND, SC-043-004
+- [ ] T043-29 Add feature 026's run creators to Technical Plan 1 and its creator labels to Technical Plan 7 before
+  feature 026's code that calls the gate (Decision 026-017 of `specs/026-invocation-human-surfaces/research.md`,
+  recorded here on 2026-11-26 as a follow-up task because a change to Technical Plan 1 reopens this approved design; the
+  next revision moves these four rows into the table). (a) Studio generated form: row 1 unchanged, label `api`; an
+  invalid input as row 1 with the form marking the one field; a busy gate `503`, the form keeps its key and retries.
+  (b) `executeRun` (`crates/api-http/src/routes/invocation.rs` → `start_with_options`, a second entry of row 1): the gate
+  as row 1 before any waiter is registered, label `api`; invalid `422 RUN_INPUT_INVALID` with `field` and `rule`
+  (policy `Show`) and no wait; unusable `422 RUN_INPUT_SCHEMA_UNUSABLE`; busy `503`, retryable, key not consumed.
+  (c) Public-link submission (`crates/api-http/src/routes/public.rs` → `crates/application/src/public_links.rs` →
+  `start_with`): `RunInputGate::check` on the merged input of the unlocked revision before the admission transaction,
+  which refuses a revision other than the one checked so the use case repeats once from the gate; new label
+  `public_link`; invalid `422 VALIDATION_FAILED` `RUN_INPUT_INVALID` keeping `field` only inside an exposed pointer, else
+  `/` and `other`, `rule` withheld outside exposed fields; unusable the uniform `404`, audited `public_link.refused`
+  `SCHEMA_UNUSABLE` and raised as the alert `PUBLIC_LINK_UNUSABLE`; busy `503` with `Retry-After` and no detail.
+  (d) Synchronous custom route (with feature 021): the dispatcher, row 9 unchanged, label `trigger`; invalid and
+  unusable `422` with `field` `/` and `rule` `other` (Decision 026-010); busy, the dispatcher retries as row 9 and the
+  caller gets `202` at the end of its wait. A field outside the exposed pointers is refused before the gate with
+  `422 VALIDATION_FAILED` `FORM_INPUT_INVALID` and `field` `/`.
+  Refs: FR-043-001, FR-043-016
 
 ### Verification Plan
 

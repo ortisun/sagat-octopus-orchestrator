@@ -7,7 +7,7 @@ a reference across tenants. This feature adds one constraint change and three ta
 migration `crates/infra-postgres/migrations/<next>_script_languages.{up,down}.sql`; the
 version number is allocated at implementation because parallel features share the sequence (G1213).
 
-Updated 2026-11-24: two migrations, proposed as `20270323000000_script_languages` (everything below, and
+Updated 2026-11-24: two migrations, reserved (confirmed 2026-11-26, OD-2026-11-24-310) as `20270323000000_script_languages` (everything below, and
 the registry capability CHECK widened `NOT VALID`) and `20270323000100_script_languages_validate` (validates
 that CHECK), following `20270118000000` and `20270118000100` of design 043 (research Gap 1213, Decision 1234).
 
