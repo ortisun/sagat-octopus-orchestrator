@@ -1,7 +1,7 @@
 # ADR-0123: Hub integrations are signed data that specialise closed operation kinds, and are imported as pinned versions
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 047, 2026-11-24, revised after review rounds 1 and 2), to be accepted or rejected under Owner decision 2026-11-24-4 when design 047 completes its review
+**Status:** Accepted (2026-11-26, delegate (OD-2026-11-24-4), Owner decision 2026-11-24-320), with the approval of design 047; proposed 2026-11-24
+**Decided by:** agent proposal (design 047, 2026-11-24, revised after review rounds 1 and 2), revised after the re-reads of 2026-11-26; accepted on 2026-11-26 under Owner decision 2026-11-24-4 with the approval of design 047 at `6a57e37d` (Owner decision 2026-11-24-320)
 **Refines / supersedes:** refines ADR-0074 (the operator's block and offers) and the curated template hub of feature 028 (Requirements 028-039 to 028-042: the signed index, its verification, import as a draft) and ADR-0055 (the closed resource-type catalog of feature 021) as admitted by constitution 5.0.0 (Owner decision 2026-11-24-2); supersedes none
 **Enforced by:** planned tests of design 047: the contract suite `contract_integration_hub` that loads every item of `hub/` with the platform's own codecs and refuses an item that names an operation kind outside the closed set, a host outside https, a host pattern outside design 047's rule (one leftmost-label wildcard under a fixed registrable domain, bound from the token response or the registration) or an undeclared scope; the index tests of feature 028 (tampered file, unpinned key, rollback, expiry); the import tests (a pinned type version, provenance, idempotency, nothing executed). Until they exist: review only.
 
@@ -55,4 +55,5 @@ kinds executed by its integration runner, and refused namespace-defined types (i
 
 ## Evidence
 
-None yet: this is a proposal. The tests named under "Enforced by" are required before acceptance.
+None yet. The direction is accepted with design 047's approval (Owner decision 2026-11-24-320); the build owes the tests
+named under "Enforced by", and one that fails against a decision above reopens it.

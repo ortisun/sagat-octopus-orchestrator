@@ -1,7 +1,7 @@
 # ADR-0122: OAuth tokens are held by a broker in the control plane, with values in a vault of their own, and executors receive only a current access token
 
-**Status:** Proposed
-**Decided by:** agent proposal (design 047, 2026-11-24, revised after review rounds 1 and 2), to be accepted or rejected under Owner decision 2026-11-24-4 when design 047 completes its review; not acceptable before Principle V carries the declared set of design 047's Technical Plan 12
+**Status:** Accepted (2026-11-26, delegate (OD-2026-11-24-4), Owner decision 2026-11-24-320), conditional on constitution 5.1.0 merging with the third declared set of design 047's Technical Plan 12 (Owner decision 2026-11-25-3); proposed 2026-11-24
+**Decided by:** agent proposal (design 047, 2026-11-24, revised after review rounds 1 and 2), revised after the re-reads of 2026-11-26; accepted on 2026-11-26 under Owner decision 2026-11-24-4 with the approval of design 047 at `6a57e37d` (Owner decision 2026-11-24-320), on the condition that Principle V carries the declared set of design 047's Technical Plan 12 before any delivery is built
 **Refines / supersedes:** refines ADR-0055 (feature 021's `oauth` scheme names a credential of this design; clause 11(e) is widened to admit RFC 7009 revocation, OIDC userinfo calls and the delivery method `ResolveDeclaredResources`), ADR-0035, ADR-0074 (deployment registrations and offers wait for it) and ADR-0082 (the capability `oauth-broker-v1`); supersedes none
 **Enforced by:** planned tests and checks of design 047 (Verification Plan): `two_control_planes_refresh_once`, `a_holder_paused_past_its_lease_activates_nothing`, `a_disconnect_between_answer_and_store_revokes_the_new_token`, `a_pending_revision_is_adopted_after_a_crash`, `no_transaction_is_open_during_a_token_request` (a barrier in the OAuth test server and `pg_stat_activity`), `canaries_never_leave_the_broker`, `ordinary_token_is_refused_on_the_oauth_mount`, the callback refusal tests, `a_credential_cannot_be_bound_to_a_foreign_host`, `one_tenant_cannot_starve_a_shared_registration`; and two rules of `scripts/check-architecture.py` with negative tests: the `"grant_type"` string literal only in `crates/infra-oauth` (one recorded exemption), the `OAuthVault` port only in the broker, its implementation and the composition root. Until they exist: review only.
 
@@ -82,5 +82,7 @@ The forces:
 
 ## Evidence
 
-None yet: this is a proposal. The tests and checks named under "Enforced by" are required before acceptance, with real
-OpenBao and a local OAuth test server, and real-provider runs recorded as gaps until credentials are supplied.
+None yet. The direction is accepted with design 047's approval, conditionally (Owner decision 2026-11-24-320); the build
+owes the tests and checks named under "Enforced by", with real OpenBao and a local OAuth test server, and real-provider
+runs recorded as gaps until credentials are supplied. If constitution 5.1.0 merges without the third declared set, this
+decision returns to Proposed.

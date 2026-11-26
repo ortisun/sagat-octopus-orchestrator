@@ -46,11 +46,11 @@ Counts: Blocker 0, Major 2, Nit 5
 
 ## The author's answers
 
-1. Settled by Owner decision 2026-11-24-327 (delegate) and follow-up Task 047-24, before Task 047-15: a closed refusal
+1. Settled by Owner decision 2026-11-24-329 (delegate) and follow-up Task 047-24, before Task 047-15: a closed refusal
    `CAPABILITY_UNAVAILABLE`, reason `REFRESH_IN_FLIGHT`, with a retry delay and counted against neither budget, Requirement
    047-010 restated for the gRPC paths, and a `resource_access` case. Not fixed in the text now because the text is the
    one the security re-reads cleared; the task lands before any delivery code.
-2. Settled by Owner decision 2026-11-24-328 (delegate), and reported to the coordinating session for the owner: the
+2. Settled by Owner decision 2026-11-24-330 (delegate), and reported to the coordinating session for the owner: the
    approval is conditional on constitution 5.1.0 merging with Technical Plan 12's wording, slot secrets included; if
    5.1.0 merges narrower (settings and the access token only), follow-up Task 047-25 narrows Requirement 047-015 and the
    delivery tasks to settings and access tokens before they are built. The delivery tasks carry

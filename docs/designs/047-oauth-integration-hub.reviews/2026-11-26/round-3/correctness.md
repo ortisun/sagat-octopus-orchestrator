@@ -40,5 +40,5 @@ Counts: Blocker 0, Major 3, Nit 3
 All six are fixed in the data model, which the build reads (Decision 047-069), with four new tests; the design's own
 sentences (the fence rule of Technical Plan 4, Requirement 047-013's destroy, step 5's retirement, the expiry base) are
 restated by follow-up Task 047-26 before Tasks 047-7 and 047-8 are built. The Majors are recorded as settled by Owner
-decisions 2026-11-24-329 to 2026-11-24-331 (delegate): fixed where the build reads them, the design text following,
+decisions 2026-11-24-331 to 2026-11-24-333 (delegate): fixed where the build reads them, the design text following,
 because the text at the reviewed commit is the one the security re-reads cleared.

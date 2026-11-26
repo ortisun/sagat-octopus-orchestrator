@@ -1,8 +1,14 @@
 # OAuth resources and a curated integration hub
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** In Review
-*   **Date:** 2026-11-25
+*   **Status:** Approved
+*   **Date:** 2026-11-26
+*   **Reviewed-commit:** 6a57e37db990c842ad1066f8bba1cf62f3e33d28
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/047-oauth-integration-hub.reviews/2026-11-26/round-3/egm-review.md sha256:088e1d39badb471ff63b5b5f5ed68027a95fd6a55b393eb66f26f2b9ce23bf1a; docs/designs/047-oauth-integration-hub.reviews/2026-11-26/round-3/architecture.md sha256:188f492350144a23cb996762248555b5b31995f35831f1a1c49f9ecce49796c8; docs/designs/047-oauth-integration-hub.reviews/2026-11-26/round-3/security.md sha256:e8668aae8b062bc576630665e894e1e0b4bbf01d97fc0329672152889d050979; docs/designs/047-oauth-integration-hub.reviews/2026-11-26/round-3/correctness.md sha256:ebb07c05e7ab6ed444ecf40717f7289a537b1cda485e9a23f526957ec94003d5
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 13; OD-2026-11-24-321, OD-2026-11-24-322, OD-2026-11-24-323, OD-2026-11-24-324, OD-2026-11-24-325, OD-2026-11-24-326, OD-2026-11-24-327, OD-2026-11-24-328, OD-2026-11-24-329, OD-2026-11-24-330, OD-2026-11-24-331, OD-2026-11-24-332, OD-2026-11-24-333
 
 --------------------------------------------------------------------------------
 
@@ -959,7 +965,38 @@ the hub needs feature 028's Tasks 028-062 to 028-067. The tasks that deliver a d
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T047-24 Give a delivery call that finds a refresh running a closed refusal, `CAPABILITY_UNAVAILABLE` with the reason
+  `REFRESH_IN_FLIGHT` and a retry delay, counted against neither the full calls nor the re-asks; restate Requirement
+  047-010 for the gRPC paths (no wait while an admission place is held) and Technical Plan 5's "`RESOURCE_ASK_LIMIT`-style
+  refusal"; add the case to the conformance scenario `resource_access`; before Task 047-15.
+  Refs: Requirement 047-010, Requirement 047-016
+  Owner-gate: OD-2026-11-25-3
+- [ ] T047-25 Once constitution 5.1.0 has merged, compare its third declared set with Technical Plan 12: if it admits the
+  secrets a resource's slots bind, record it and close this task; if it admits only the settings and the current access
+  token, narrow Requirement 047-015, Technical Plan 5 and Tasks 047-9 and 047-15 to 047-17 to those before any of them is
+  built; before Task 047-9.
+  Refs: Requirement 047-015
+  Owner-gate: OD-2026-11-25-3
+- [ ] T047-26 Restate the design as the data model now reads (Decision 047-069): only state transitions and the refresh
+  steps increase the fence; destroyers tombstone an unwritten reference first; a losing holder whose revocation fails
+  leaves its row `PENDING` for the sweeper; the revision bound is checked at acquire; expiry is dated from the acquire;
+  the acquire updates the per-second window; before Tasks 047-7 and 047-8.
+  Refs: Requirement 047-009, Requirement 047-013
+- [ ] T047-27 Put only the four tenant permissions in `Permission::ALL` and keep `oauth:offer:manage` and
+  `hub:version:block` out of it (before Task 047-2); list every protocol-minor gating file (`crates/infra-postgres/src/execution.rs`
+  and `execution/path.rs`, `crates/application/src/worker.rs`, `worker/scoped_claims.rs` and `execution.rs`) and add a
+  per-task protocol requirement beside the run-wide one (before Task 047-15); name the capability enum of
+  `crates/application/src/instances.rs`, cite `OpenBao::retire_inner` for the tombstone write, drop `apps/dev-idp` from
+  Task 047-3, end feature 028's range at 028-067 everywhere, mark the OpenBao bootstrap scripts Modify and name the Helm
+  value `controlPlane.studioOrigin`.
+  Refs: Requirement 047-015, Requirement 047-025
+- [ ] T047-28 Reference Success criterion 047-002 from Tasks 047-7 and 047-8 and add an end-to-end task for Success
+  criterion 047-001; split Requirement 047-013 into numbered rules; give each file one task and one builder (Task 047-14's
+  publication and admission checks in builder A's crates) and give Requirement 047-023's block check at admission and
+  delivery a task; write the request and response schemas, the offers listing route and the offer identifier into
+  `contracts/rest-api.md`; the remaining writing and readiness Nits of `stage-style.md` and `stage-readiness.md`; before
+  Task 047-1.
+  Refs: Requirement 047-013, Requirement 047-023, Requirement 047-026
 
 ### Verification Plan
 
