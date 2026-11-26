@@ -12,12 +12,14 @@
 
 use std::fmt;
 
+use sagat_application::error::StoreError;
 use sagat_application::instances::{
     Activated, Activation, Capability, ChangeRefused, InstanceKind,
 };
 use sagat_domain::identity::Subject;
 use sagat_infra_postgres::{
-    CapabilityCensus, PgInstanceStore, capability_census, census_step, may_activate,
+    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, PgInstanceStore, capability_census,
+    census_step, may_activate, requirement_recorded,
 };
 
 use crate::config::{ConfigError, DatabaseConfig};
@@ -35,21 +37,38 @@ pub struct Activatable {
     /// Whether every kind it covers must have at least one live process that lists it (decision D006-082; feature 022's
     /// rule). `--expect-live` still counts the kinds together.
     pub each_kind_live: bool,
+    /// A requirement that must be recorded for every kind before this one may be (decision D006-096): the command refuses
+    /// while it is not, before its census and again under the epoch lock, where its removal cannot cross the activation.
+    pub follows: Option<Capability>,
     /// What follows the activation, in words for the operator, and where the runbook is.
     pub after: &'static str,
 }
 
 /// The capabilities this command activates (decision D006-034). A capability listed in the registry but not here has its
 /// own command or none.
-pub const ACTIVATABLE: &[Activatable] = &[Activatable {
-    capability: Capability::LeaseWithdrawalV1,
-    kinds: &InstanceKind::ALL,
-    empty_fleet: true,
-    each_kind_live: false,
-    after: "Each engine withdraws the leases it never handed to a host from its next heartbeat on (within about ten \
-            seconds). The activation is one-way once a lease is withdrawn; to stop, set SAGAT_LEASE_WITHDRAWAL=off on the \
-            engines: docs/runbooks/lease-withdrawal.md.",
-}];
+pub const ACTIVATABLE: &[Activatable] = &[
+    Activatable {
+        capability: Capability::LeaseWithdrawalV1,
+        kinds: &InstanceKind::ALL,
+        empty_fleet: true,
+        each_kind_live: false,
+        follows: None,
+        after: "Each engine withdraws the leases it never handed to a host from its next heartbeat on (within about ten \
+                seconds). The activation is one-way once a lease is withdrawn; to stop, set SAGAT_LEASE_WITHDRAWAL=off on \
+                the engines: docs/runbooks/lease-withdrawal.md.",
+    },
+    // the floor that a build of protocol 1.8 rolls back to (request (9) of decision D006-059, decision D006-096)
+    Activatable {
+        capability: Capability::LeaseWithdrawalV2,
+        kinds: &InstanceKind::ALL,
+        empty_fleet: true,
+        each_kind_live: false,
+        follows: Some(Capability::LeaseWithdrawalV1),
+        after: "From now on a process that does not list lease-withdrawal-v2 (an older build, one of lease-withdrawal-v1 \
+                alone among them) is refused registration. The requirement can be removed again until a journal holds a \
+                withdrawal with the cause NOT_ACKNOWLEDGED: docs/runbooks/lease-withdrawal.md.",
+    },
+];
 
 /// The entry of `token`, the registry token the command line names.
 #[must_use]
@@ -137,6 +156,17 @@ fn store_failure(error: &impl ToString) -> RunError {
     } else {
         RunError::Database(text)
     }
+}
+
+/// The refusal of an entry whose followed requirement is not recorded for every kind (decision D006-096).
+fn not_followed(entry: &Activatable, follows: Capability) -> RunError {
+    declined(format!(
+        "{} follows {}, which is not recorded for control planes and execution engines. Activate {} first \
+         (docs/runbooks/lease-withdrawal.md) and run the command again. Nothing was changed.",
+        entry.capability.as_str(),
+        follows.as_str(),
+        follows.as_str()
+    ))
 }
 
 fn lacking(entry: &Activatable, census: &CapabilityCensus) -> RunError {
@@ -285,6 +315,13 @@ async fn run(
     if census.recorded {
         return Ok(ActivationOutcome::AlreadyActive { entry });
     }
+    if let Some(follows) = entry.follows
+        && !requirement_recorded(&mut conn, follows, &InstanceKind::ALL)
+            .await
+            .map_err(|error| store_failure(&error))?
+    {
+        return Err(not_followed(entry, follows));
+    }
     check_live(entry, census.live, args.expect_live)?;
     check_kinds(entry, &census.kinds_live)?;
     if census.lacking > 0 {
@@ -325,7 +362,7 @@ async fn run(
                 kinds,
                 actor: operator,
             },
-            census_step(capability, kinds, judge),
+            census_step(capability, kinds, entry.follows, judge),
         )
         .await;
     match activated {
@@ -351,12 +388,17 @@ async fn run(
              (docs/runbooks/instance-registry.md, section 5). Nothing was changed.",
             capability.as_str()
         ))),
-        Err(ChangeRefused::Store(sagat_application::error::StoreError::StateConflict(_))) => {
-            Err(declined(
-                "the live processes changed while the activation was being made. Nothing was changed; run the command \
-                 again.",
-            ))
+        Err(ChangeRefused::Store(StoreError::StateConflict(reason)))
+            if reason == FOLLOWED_REQUIREMENT_MISSING =>
+        {
+            Err(entry
+                .follows
+                .map_or_else(|| declined(reason), |follows| not_followed(entry, follows)))
         }
+        Err(ChangeRefused::Store(StoreError::StateConflict(_))) => Err(declined(
+            "the live processes changed while the activation was being made. Nothing was changed; run the command \
+                 again.",
+        )),
         Err(ChangeRefused::Store(error)) => Err(store_failure(&error)),
     }
 }
@@ -469,11 +511,17 @@ mod tests {
             activatable("lease-withdrawal-v1").map(|entry| entry.capability),
             Some(Capability::LeaseWithdrawalV1)
         );
+        // the floor of protocol 1.8 is activatable since its follow-up (request (9) of decision D006-059, D006-096)
+        assert_eq!(
+            activatable("lease-withdrawal-v2").map(|entry| entry.capability),
+            Some(Capability::LeaseWithdrawalV2)
+        );
         for token in [
             "schedules-v1",
-            "lease-withdrawal-v2",
+            "lease-withdrawal-v3",
             "",
             "LEASE-WITHDRAWAL-V1",
+            "LEASE-WITHDRAWAL-V2",
         ] {
             assert_eq!(activatable(token), None, "{token:?}");
         }
@@ -486,6 +534,38 @@ mod tests {
                     .iter()
                     .all(|other| other.capability != entry.capability)
             );
+        }
+    }
+
+    /// Decision D006-096: `lease-withdrawal-v2` covers both kinds, may be activated with nothing live, follows
+    /// `lease-withdrawal-v1`, and says what it refuses from now on; the refusal names both requirements and changes nothing.
+    #[test]
+    fn the_entry_of_lease_withdrawal_v2_follows_lease_withdrawal_v1() {
+        let entry = activatable("lease-withdrawal-v2").expect("an entry");
+        assert_eq!(entry.kinds, &InstanceKind::ALL);
+        assert!(entry.empty_fleet && !entry.each_kind_live);
+        assert_eq!(entry.follows, Some(Capability::LeaseWithdrawalV1));
+        assert!(
+            entry.after.contains("refused registration"),
+            "{}",
+            entry.after
+        );
+        assert!(entry.after.contains("NOT_ACKNOWLEDGED"), "{}", entry.after);
+        assert_eq!(LEASE.follows, None, "lease-withdrawal-v1 follows nothing");
+        let RunError::Declined(message) = not_followed(entry, Capability::LeaseWithdrawalV1) else {
+            panic!("a refusal in words");
+        };
+        assert!(
+            message.contains("lease-withdrawal-v2 follows lease-withdrawal-v1"),
+            "{message}"
+        );
+        assert!(message.contains("Nothing was changed"), "{message}");
+        // every entry follows a capability the command also activates, never itself
+        for entry in ACTIVATABLE {
+            if let Some(follows) = entry.follows {
+                assert_ne!(follows, entry.capability);
+                assert!(activatable(follows.as_str()).is_some(), "{follows:?}");
+            }
         }
     }
 

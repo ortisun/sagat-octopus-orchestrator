@@ -999,6 +999,8 @@ impl ApiError {
                 e
             }
             AppError::Unavailable => Self::unavailable(),
+            AppError::RegistrySilent => Self::unavailable_after(1)
+                .with_reason(sagat_application::instances::REASON_REGISTRY_SILENT),
             AppError::PayloadTooLarge(what) => {
                 let mut e = Self::new(
                     StatusCode::PAYLOAD_TOO_LARGE,

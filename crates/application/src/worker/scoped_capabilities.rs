@@ -26,7 +26,12 @@ where
                 .is_some_and(|node| !node.secrets().is_empty());
         // A cancelled but still current attempt retains the existing upload-policy refusal.
         // This exception only returns a denial; it never grants a capability over cancellation.
-        Self::live_path_fence(&mut tx, task, refuses_secret_upload).await?;
+        Self::live_path_fence(
+            &mut tx,
+            task,
+            StopAllowance::cancellation(refuses_secret_upload),
+        )
+        .await?;
         if refuses_secret_upload {
             return Err(AppError::NotAllowed(
                 "blob outputs with declared secrets require content scanning",
@@ -34,6 +39,8 @@ where
         }
         let scope = Self::scope_from_info(&tx.snapshot().info, task);
         if let Some((blob, trace_id)) = audit_read {
+            // decision D006-100, as at the root
+            self.capability_window_holds()?;
             let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist_addressed(&[], &[], effects).await?;
         }
