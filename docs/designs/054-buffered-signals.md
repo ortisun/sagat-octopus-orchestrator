@@ -161,7 +161,7 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   signal (CUJs 1 and 3) is kept, and a signal whose only wait sits on a branch not taken is kept until the run ends and is then
   discarded and counted; the refusal is never a guess;
   a name that already holds `maxPending` pending signals, refused `409` with the reason `SIGNAL_INBOX_FULL`; for a code run continued
-  under another version, pending bytes above 2 MiB, refused `409 SIGNAL_PENDING_BYTES_FULL` (Requirement 054-007); retained bytes
+  under another version, pending bytes that the payload would take above 2 MiB, refused `409 SIGNAL_PENDING_BYTES_FULL` (Requirement 054-007); retained bytes
   that the payload would take above 4 MiB,
   refused `429 QUOTA_EXCEEDED` as today; the namespace's or the tenant's pending-signal bytes above their ceilings, refused `429
   QUOTA_EXCEEDED` with the reason `PENDING_SIGNAL_BYTES` (Technical Plan 2); the tenant's content quota (Architecture decision 0027), as today. A signal that passes is
@@ -184,8 +184,8 @@ when it chooses (Gap 044-017 of `specs/044-workflow-as-code/research.md`).
   run, design 044's headroom rules (`HISTORY_HEADROOM` from 3 MiB) also apply, and its guide says so (Gap 054-008). One exception,
   stated in the guide: a code run continued under another version keeps every moved signal of a name that version declares, even
   above its `maxPending` or `maxBytes`; new signals of that name are refused until its count is below `maxPending`, and new signals
-  of any name are refused `409` with their own reason, `SIGNAL_PENDING_BYTES_FULL`, while the run's pending bytes are above 2 MiB,
-  so the exception never adds to them (its place in Requirement 054-005's order: after the store's read of the ledger, in the
+  of any name are refused `409` with their own reason, `SIGNAL_PENDING_BYTES_FULL`, while the run's pending bytes and the new payload
+  together would pass 2 MiB, so the exception never adds to them (its place in Requirement 054-005's order: after the store's read of the ledger, in the
   application, before the run's 4 MiB check; tested by Task 054-9). *Acceptance:* the guide page and the Studio's message, reviewed in Tasks 054-14 and 054-15.
 - **Requirement 054-008 — Pending payloads count in the retained bytes.** Every check of the 4 MiB bound MUST count the run's
   pending payloads with its step outputs, so that consuming a pending signal never takes a run over the bound. They are charged to
@@ -319,7 +319,8 @@ None. The questions raised while designing are decided in `specs/054-buffered-si
 
 ## Owner decisions needed
 
-None open. Tasks 054-3 (the reset rules of the new event types), 054-7 (the byte checks of collections, loops and the event wake),
+None open. Tasks 054-3 (the reset rules of the new event types), 054-4 and 054-6 (the run's byte ledger, of the execution core
+features 014 and 016 share), 054-7 (the byte checks of collections, loops and the event wake),
 054-8 (the chain-addressed signal path and batch `SIGNAL` items), 054-9 (the handoffs, the store-side ends of chains, collections
 and loops, the scheduler's collection passes), 054-10, 054-11 and 054-18 (the floor of Architecture decision 0098) change code that
 features 004 (the event wake), 014 (continuation, collections, loops) and 018 (Signal-with-Start, reset, batch items) and
@@ -499,7 +500,7 @@ One function decides for every entry point (`signalRun`, `chain.signal`, a batch
    every signal of a declared name, live or buffered, so that acceptance never depends on timing; then live delivery to the first
    waiter (Requirement 054-004); the answer names that one node. The retained-bytes check is today's, with pending bytes counted (Technical Plan 6).
 3. **Declared name, no waiter, or a code run:** the checks of Requirement 054-005 in their order; then the domain's command
-   `buffer_signal(def, state, name, bytes, digest)` emits `SignalBuffered`; the engine stores the payload in `payloads` (the
+   `buffer_signal` (its signature in Technical Plan 17) emits `SignalBuffered`; the engine stores the payload in `payloads` (the
    existing content-addressed insert), and the store, when it writes that event, inserts the inbox row with the event's sequence,
    raises `runs.pending_signals` and charges the payload's bytes to the ledger's `pending_signal_bytes`. The per-name count is read from the index range of the name, bounded by `LIMIT maxPending`.
 
@@ -954,7 +955,7 @@ The signatures a builder needs, in the crates that own them:
 | A sender fills a run's inbox and the run's step outputs then lack room | The declarations' bytes are capped at 2 MiB at publication (Requirement 054-001), so outputs always keep the other 2 MiB: a full inbox refuses the sender; a step fails `RUN_DATA_LIMIT` only when its own outputs pass what they always had |
 | A Temporal user expects every signal to be kept | The `409` names the reason; the guide's comparison table says how to declare a name; Signal-with-Start's refusal names the missing declaration |
 | A buffered signal is discarded when its run ends | Journaled with its count and shown on the run's page; the `202` says "kept for a later wait while the run lives", and the guide says so |
-| A store-side path enters a wait without the planner and misses a pending signal | The test of Task 054-3 over the three store-side release paths, and the statement in Technical Plan 4 |
+| A store-side path enters a wait without the planner and misses a pending signal | The test of Task 054-9 over the store-side release paths (`entries::store_side_paths_never_enter_a_declared_wait`), and the statement in Technical Plan 4 |
 | A check of the 4 MiB bound forgets the pending bytes | The bytes are in the existing ledger, read by the one method the checks use, under a database check of the sum; the three sites that sum outputs themselves move to the ledger (Task 054-7) |
 | Two waits of one name in parallel branches: an author expected a copy each | One consumer is the rule for declared names, stated in the guide; an author who wants a copy each does not declare the name |
 | A rollback below this release after a version declared signals | Refused by the floor; stated in the release notes and the runbook; the operator records the requirement only when a rollback is no longer planned |
@@ -1067,7 +1068,9 @@ caller of a signature it changes, so the workspace builds after each.
 - [ ] T054-3 Domain events and planning: `SignalBuffered`, `SignalsMoved`, `SignalsDiscarded`, `WaitVia::Buffered` and the
   `signal` field of `WaitSatisfied`; `RunState.pending_signals` and `restore`; `buffer_signal`; the choice of the first waiter
   (Requirement 054-004); `take_buffered` on `Evaluation::Correlation` and `taken` on `Resolution::Correlation`; the discard before `run.finished` for every
-  way the planner ends a run; the `NO_CONSUMER_AHEAD` predicate (no root wait of the name still `PENDING`, no `continueAsNew`); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the event codec of the new
+  way the planner ends a run; the `NO_CONSUMER_AHEAD` predicate in the words of Requirement 054-005 (refused only when no root `waitEvent` node of the name is
+  a consumer ahead, one with no step yet or a `PENDING` step, and the version has no `continueAsNew` node), with unit tests of an
+  early signal before the wait is routed (kept), of a wait on a branch not taken (kept), and of every wait entered (refused); the reset rules of the new types in `crates/domain/src/execution/reset.rs`; the event codec of the new
   events and every exhaustive match, so the workspace builds. Unit tests first; replay equals projection over a corpus that buffers,
   consumes, moves and discards; journals written before this design decode as before.
   Refs: Requirement 054-004, Requirement 054-006, Requirement 054-011, Requirement 054-020
