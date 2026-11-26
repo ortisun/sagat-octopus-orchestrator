@@ -193,3 +193,16 @@ the phases; existing IDs were kept so that references stay valid.
   _Evidence: Runbook, generated API/CLI references, glossary and G21/G80/G144/G39/G42 cross-notes are updated. Reference generator passed 8 tests; docs describe current integrated scope and remaining release gates. See `tasks/project-completion/integration-notes.md` (outside git) for commands and logs._
 - [x] T016-056 Execute every command of `quickstart.md` against a real stack, record the results in `specs/016-payload-classification/quickstart.md` and `analysis.md`, update `docs/traceability.md` and the ADR-0033 status line from "not implemented" to the delivered scope, and refresh `checklists/requirements.md`; only then tick the tasks whose evidence exists. Refs: all.
   _Evidence: `cargo test -p sagat-tests --test e2e_payload_classification --locked quickstart:: -- --test-threads=1`: 1 passed, 20.5 s (2026-10-25), against real HTTP, gRPC and PostgreSQL with the actual `sagat` and `curl` processes and the production engine entry point. Reviewed 2026-10-25: the test used to hard-code its commands and never read `quickstart.md`. It now records every `sagat` argument vector and HTTP request and, at the end, reads the fenced `sh` blocks of the guide and requires that each documented `sagat` command and `curl` request was run and that each `sagat` command run is documented (`--namespace`, `--grpc` and `--timeout` are the only flags the harness supplies or bounds); a guide whose `--idle-exit` is renamed fails the test. The guide gained the one command the test ran and the guide lacked (`workflow inspect --values --reveal-pii`). The specification prerequisites, link and reference checks, the Studio tests and the Clippy run of the original entry are historical (`tasks/project-completion/integration-notes.md`, outside git); at that review the benchmark (T016-053) and workspace gate (T016-054) were open. Their subsequent closure evidence is recorded under those tasks and in the release-gate record._
+
+## Bugfixes after the release
+
+- [ ] T016-066 Withhold the payload digest from the journal read (G665, severity High, OD-2026-11-26-566). Tests first, seen
+  failing: a contract test that a `run:read` caller without a reveal grant reads no `payloadRef` from which the SHA-256 of a
+  guessed step output can be compared (a run whose step outputs `true`, classified `pii`), on the event list, the event stream,
+  the CLI's events and the Studio's run view, and that the six SDK clients still parse the answer. Then replace the digest with a
+  reference that cannot be derived from the payload (the run and journal sequence that payload inspection already accepts), or
+  return no reference, on every surface that returns `payloadRef`; keep the digest only where a caller may reveal every
+  classified location of that payload, or nowhere. Record the change as a break in `docs/releases/` and `docs/reference/api.md`,
+  and add the event list to the canary of T016-049. Design 054 already withholds it for `signal.buffered` (its Requirement
+  054-014); design 044's history export (its Task 044-24) follows the same rule.
+  Refs: FR-016-007, FR-016-016, G665

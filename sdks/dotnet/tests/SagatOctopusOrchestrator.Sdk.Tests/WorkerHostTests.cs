@@ -739,14 +739,19 @@ public sealed class WorkerHostTests : IAsyncLifetime
     [Fact]
     public async Task AStreamCannotExceedTheAggregateEightMiBInputBudget()
     {
-        State.AcceptedVersion = "1.4";
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        State.AcceptedVersion = "1.8";
         State.StreamFrameSize = 1;
         var document = "{\"input\":\"" + new string('x', 4 * 1024 * 1024) + "\"}";
         State.Lease(
             Lease(l => { l.TaskId = "run-1/charge/1"; l.RunId = "run-1"; l.InputJson = document; }),
             Lease(l => { l.TaskId = "run-2/charge/1"; l.RunId = "run-2"; l.InputJson = document; }));
         var handled = 0;
-        var host = Host(o => o.Worker.MaxInflight = 2);
+        var host = Host(o =>
+        {
+            o.Worker.MaxInflight = 2;
+            o.Worker.ProtocolVersion = "1.8";
+        });
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) =>
         {
             Interlocked.Increment(ref handled);
@@ -755,10 +760,16 @@ public sealed class WorkerHostTests : IAsyncLifetime
 
         await host.StartAsync();
         await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the first frame within the aggregate budget");
+
+        // The lease of the second frame breaks the budget of the window: it is handed back, never run (SPEC section 6.2).
+        await Eventually.UntilAsync(() => State.Of("FailStep").Count == 1, "the lease over the budget is handed back");
         await Task.Delay(150);
         Assert.Equal(1, Volatile.Read(ref handled));
         Assert.Single(State.Of("CompleteStep"));
-        Assert.Empty(State.Of("FailStep"));
+        var handedBack = (FailStepRequest)Assert.Single(State.Of("FailStep")).Request;
+        Assert.Equal("run-2/charge/1", handedBack.TaskId);
+        Assert.Equal("TASK_NOT_STARTED", handedBack.ErrorCode);
+        Assert.True(handedBack.Retryable);
     }
 
     [Fact]

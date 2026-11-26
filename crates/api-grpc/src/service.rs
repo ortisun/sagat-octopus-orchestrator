@@ -47,6 +47,8 @@ use crate::pb;
 use crate::request::{Attempt, idempotency_key, worker_id};
 use crate::server::AdmissionProvider;
 use crate::status::{invalid, to_status};
+use crate::undelivered::{Abandonment, DeliveryProbe, PendingLeases, WithdrawalSink, Withdrawals};
+use tokio_util::sync::CancellationToken;
 
 /// The gRPC adapter of [`WorkerService`]. `St` carries token verification, the budgets and the
 /// identity lookup (the same [`Core`] the REST API authenticates with).
@@ -56,6 +58,12 @@ pub struct WorkerGrpc<St, S, C, E, R> {
     blobs: Option<BlobAccess>,
     task_streams: Arc<TaskStreams>,
     admission: Admission,
+    /// The withdrawals of leases that were committed and never handed to the transport (feature 006, decision D006-016).
+    withdrawals: Withdrawals,
+    /// A barrier after a claim committed (tests only, decision D006-008).
+    probe: Option<DeliveryProbe>,
+    /// A barrier before a run's transaction that leased commits (tests only, decisions D006-008 and D006-092).
+    commit_probe: Option<DeliveryProbe>,
 }
 
 impl<St: Clone, S, C, E, R> Clone for WorkerGrpc<St, S, C, E, R> {
@@ -66,6 +74,9 @@ impl<St: Clone, S, C, E, R> Clone for WorkerGrpc<St, S, C, E, R> {
             blobs: self.blobs.clone(),
             task_streams: Arc::clone(&self.task_streams),
             admission: self.admission.clone(),
+            withdrawals: self.withdrawals.clone(),
+            probe: self.probe.clone(),
+            commit_probe: self.commit_probe.clone(),
         }
     }
 }
@@ -80,7 +91,42 @@ impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
             blobs: None,
             task_streams: TaskStreams::new(),
             admission,
+            withdrawals: Withdrawals::default(),
+            probe: None,
+            commit_probe: None,
         }
+    }
+
+    /// The withdrawals in flight: a graceful shutdown waits for them once the server stopped serving (feature 006,
+    /// decision D006-016).
+    #[must_use]
+    pub fn withdrawals(&self) -> Withdrawals {
+        self.withdrawals.clone()
+    }
+
+    /// Runs at most `concurrency` withdrawals at once (decision D006-038: a quarter of the pool,
+    /// [`crate::withdrawal_concurrency`]). Call it before [`Self::withdrawals`] is read.
+    #[must_use]
+    pub fn with_withdrawal_concurrency(mut self, concurrency: usize) -> Self {
+        self.withdrawals = Withdrawals::bounded(concurrency);
+        self
+    }
+
+    /// Holds every claim at `probe` after each run's transaction committed leases, before the next run is claimed and
+    /// before its leases are queued or answered. For the tests of the withdrawal only (decision D006-008): production never
+    /// sets one.
+    #[must_use]
+    pub fn with_delivery_probe(mut self, probe: DeliveryProbe) -> Self {
+        self.probe = Some(probe);
+        self
+    }
+
+    /// Holds every claim at `probe` just before a run's transaction that leased commits, before the claim asks whether its
+    /// consumer is gone (decision D006-092). For the tests of the rollback only (decision D006-008): production never sets one.
+    #[must_use]
+    pub fn with_commit_probe(mut self, probe: DeliveryProbe) -> Self {
+        self.commit_probe = Some(probe);
+        self
     }
 
     /// Serves `WriteBlob` and `ReadBlob`, and accepts `output_blob_ref`. Without it those calls are
@@ -119,6 +165,40 @@ impl<St, S, C, E, R> AdmissionProvider for WorkerGrpc<St, S, C, E, R> {
 
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
 
+/// A stream of a capability call that asks the gate again before each item it hands out (feature 006, decisions D006-098
+/// and D006-100): before the first, so a call admitted at the edge of the capability window hands nothing out after it, and
+/// before every later one (a cheap read of the gate), so a long download stops when the window lapses.
+struct CheckedFirst<S> {
+    inner: S,
+    admission: Admission,
+    method: &'static str,
+    refused: bool,
+}
+
+impl<S, T> Stream for CheckedFirst<S>
+where
+    S: Stream<Item = Result<T, Status>> + Unpin,
+{
+    type Item = Result<T, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.refused {
+            return Poll::Ready(None);
+        }
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(item))) => {
+                if let Some(refused) = self.admission.capability_refusal(self.method) {
+                    // the item is dropped: nothing of it leaves
+                    self.refused = true;
+                    return Poll::Ready(Some(Err(refused)));
+                }
+                Poll::Ready(Some(Ok(item)))
+            }
+            other => other,
+        }
+    }
+}
+
 /// How long before the hard end of a receive window the producer stops claiming and queues its terminal hint. It is
 /// 5% of the window: measured under CPU load the hint took up to 15 ms to reach a reader that was keeping up, and the
 /// 10 ms this was before was lost twice in 34 runs of the contract test under load.
@@ -156,9 +236,34 @@ fn stream_deadline_frame(
     }
 }
 
+/// One item of the queue between the producer and the body: the frame, and the leases it carries until it is handed to the
+/// transport (decision D006-002).
+struct Frame {
+    item: Result<pb::PollTasksResponse, Status>,
+    leases: PendingLeases,
+}
+
+impl Frame {
+    const fn plain(item: Result<pb::PollTasksResponse, Status>) -> Self {
+        Self {
+            item,
+            leases: PendingLeases::none(),
+        }
+    }
+
+    /// The frame is handed to the transport: its leases are no longer this process's to withdraw.
+    fn handed(self) -> Result<pb::PollTasksResponse, Status> {
+        self.leases.handed();
+        self.item
+    }
+}
+
 struct TaskBody {
-    inner: mpsc::Receiver<Result<pb::PollTasksResponse, Status>>,
+    inner: mpsc::Receiver<Frame>,
     producer: tokio::task::JoinHandle<()>,
+    /// Tells the producer to stop: it is never aborted, so a claim it is in finishes and its leases reach a frame or the
+    /// withdrawal (decision D006-002).
+    stop: CancellationToken,
     _ticket: Option<TaskStreamTicket>,
     _connection_deadline: Option<ConnectionDeadline>,
     token_expiry: Pin<Box<tokio::time::Sleep>>,
@@ -191,24 +296,32 @@ impl Stream for TaskBody {
         if !this.expiry_reported && this.token_expiry.as_mut().poll(cx).is_ready() {
             this.expiry_reported = true;
             this.reason.store(5, Ordering::Release);
-            this.producer.abort();
+            this.stop.cancel();
             this.inner.close();
+            // a drained frame drops its leases into the withdrawal
             while this.inner.try_recv().is_ok() {}
             return Poll::Ready(Some(Err(api(&ApiError::invalid_credentials()))));
         }
         if this.deadline_reported {
-            // The window is over and its last item was given: nothing follows, and the aborted producer is not asked why.
+            // The window is over and its last item was given: nothing follows, and the stopped producer is not asked why.
             return Poll::Ready(None);
         }
         if this.window_deadline.as_mut().poll(cx).is_ready() {
             this.deadline_reported = true;
             let completed_reason = this.reason.load(Ordering::Acquire);
-            this.producer.abort();
+            this.stop.cancel();
             // A terminal hint that the producer queued before the deadline is still the right ending for a reader that
             // was merely late to come for it. It carries no task, so handing it over late cannot lose a lease. Anything
             // else that is queued is discarded: a transport that stalled past the deadline sees no old frame.
             let late_hint = match this.inner.try_recv() {
-                Ok(Ok(frame)) if frame.tasks.is_empty() && frame.retry_after_ms > 0 => Some(frame),
+                Ok(Frame {
+                    item: Ok(frame),
+                    leases,
+                }) if frame.tasks.is_empty() && frame.retry_after_ms > 0 => {
+                    leases.handed();
+                    Some(frame)
+                }
+                // a frame with leases, discarded here, drops them into the withdrawal
                 _ => None,
             };
             this.inner.close();
@@ -228,7 +341,10 @@ impl Stream for TaskBody {
                 "the task receive window ended",
             ))));
         }
-        let next = this.inner.poll_recv(cx);
+        let next = this
+            .inner
+            .poll_recv(cx)
+            .map(|frame| frame.map(Frame::handed));
         if matches!(
             &next,
             Poll::Ready(Some(Ok(frame))) if frame.tasks.is_empty() && frame.retry_after_ms > 0
@@ -247,7 +363,9 @@ impl Stream for TaskBody {
 
 impl Drop for TaskBody {
     fn drop(&mut self) {
-        self.producer.abort();
+        // Told, never aborted: the producer finishes the claim it is in, and the leases it holds, and those still queued
+        // (dropped with the queue), go to the withdrawal (decision D006-002).
+        self.stop.cancel();
         let reason = match self.reason.load(Ordering::Acquire) {
             2 => "credit",
             3 => "bytes",
@@ -431,6 +549,19 @@ where
     }
 }
 
+impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R>
+where
+    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
+    C: Clock + 'static,
+    E: ExpressionEvaluator + 'static,
+    R: Entropy + 'static,
+{
+    /// Where a lease that was committed and not handed to the transport goes (decision D006-001).
+    fn withdrawal_sink(&self) -> WithdrawalSink {
+        WithdrawalSink::new(Arc::clone(&self.workers), self.withdrawals.clone())
+    }
+}
+
 #[tonic::async_trait]
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
@@ -507,26 +638,56 @@ where
             let worker = worker_id(&message.worker_id)?;
             let max_tasks = u32::try_from(message.max_tasks)
                 .map_err(|_| invalid("max_tasks must not be negative"))?;
-            let tasks = self
-                .workers
-                .poll(
-                    &auth.session.principal,
-                    worker,
-                    &message.session_token,
-                    max_tasks,
-                    request_trace.as_deref(),
-                )
+            // The claim runs in a task of its own: a client that goes away drops this handler, and with it, before,
+            // the leases the claim had already committed. Its leases come back here in a guard, or, when the handler is
+            // gone, the guard is dropped with the task's output and they are withdrawn (decisions D006-001, D006-017). The
+            // claim leases no further run once the handler is gone (D006-035), keeps the tenant's slot until it ends
+            // (D006-037), and runs on the tracker a graceful shutdown waits for (D006-036).
+            let workers = Arc::clone(&self.workers);
+            let principal = auth.session.principal.clone();
+            let slot = auth.slot;
+            let session_token = message.session_token.clone();
+            let sink = self.withdrawal_sink();
+            // cancelled when this handler is dropped: what the claim and a probe watch (decision D006-008)
+            let abandoned = CancellationToken::new();
+            let _abandon_on_drop = abandoned.clone().drop_guard();
+            let watch = ConsumerWatch {
+                gone: abandoned,
+                probe: self.probe.clone(),
+                commit_probe: self.commit_probe.clone(),
+            };
+            let claim = self.withdrawals.spawn(async move {
+                let _slot = slot;
+                let tasks = workers
+                    .poll_bounded(
+                        &principal,
+                        worker,
+                        &session_token,
+                        max_tasks,
+                        sagat_application::worker::MAX_POLL_BYTES,
+                        request_trace.as_deref(),
+                        &watch,
+                    )
+                    .await?;
+                let leases = PendingLeases::of(principal.tenant_id(), &tasks, &sink);
+                Ok::<_, AppError>((tasks, leases))
+            });
+            let (tasks, leases) = claim
                 .await
+                .map_err(|_| Status::internal("the claim of the poll failed"))?
                 .map_err(app)?;
             let retry_after_ms = if tasks.is_empty() {
                 i32::try_from(self.workers.settings().idle_retry.as_millis()).unwrap_or(i32::MAX)
             } else {
                 0
             };
-            Ok(pb::PollTasksResponse {
+            let response = pb::PollTasksResponse {
                 tasks: tasks.iter().map(lease).collect(),
                 retry_after_ms,
-            })
+            };
+            // handed to the transport (gap G006-001 if the answer is lost from here)
+            leases.handed();
+            Ok(response)
         })
         .await
     }
@@ -601,54 +762,76 @@ where
             // terminal hint; a stalled transport is cut at the hard deadline and exposes no old
             // buffered frame afterwards.
             let producer_end = producer_end(body_deadline, token_expires_first);
-            let producer = tokio::spawn(async move {
+            let stop = CancellationToken::new();
+            let stopped = stop.clone();
+            let sink = self.withdrawal_sink();
+            let watch = ConsumerWatch {
+                gone: stop.clone(),
+                probe: self.probe.clone(),
+                commit_probe: self.commit_probe.clone(),
+            };
+            // on the tracker a graceful shutdown waits for, so that a claim in progress and its withdrawal end before
+            // the pool closes (decision D006-036)
+            let producer = self.withdrawals.spawn(async move {
                 let mut credit = max_tasks;
                 let mut bytes_left = sagat_application::worker::MAX_POLL_BYTES;
                 loop {
+                    if stopped.is_cancelled() {
+                        break;
+                    }
                     if credit == 0 {
                         producer_reason.store(2, Ordering::Release);
                         break;
                     }
                     if bytes_left == 0 {
-                        if let Ok(Ok(place)) =
-                            tokio::time::timeout_at(producer_end, sender.clone().reserve_owned())
-                                .await
-                        {
-                            place.send(Ok(pb::PollTasksResponse {
-                                tasks: Vec::new(),
-                                retry_after_ms: i32::try_from(idle_retry.as_millis())
-                                    .unwrap_or(i32::MAX)
-                                    .max(1),
-                            }));
+                        tokio::select! {
+                            biased;
+                            () = stopped.cancelled() => {}
+                            reserved = tokio::time::timeout_at(producer_end, sender.clone().reserve_owned()) => {
+                                if let Ok(Ok(place)) = reserved {
+                                    place.send(Frame::plain(Ok(pb::PollTasksResponse {
+                                        tasks: Vec::new(),
+                                        retry_after_ms: i32::try_from(idle_retry.as_millis())
+                                            .unwrap_or(i32::MAX)
+                                            .max(1),
+                                    })));
+                                }
+                            }
                         }
                         producer_reason.store(3, Ordering::Release);
                         break;
                     }
                     if tokio::time::Instant::now() >= producer_end {
                         if let Ok(place) = sender.clone().try_reserve_owned() {
-                            place.send(stream_deadline_frame(token_expires_first, idle_retry));
+                            place.send(Frame::plain(stream_deadline_frame(
+                                token_expires_first,
+                                idle_retry,
+                            )));
                         }
                         producer_reason
                             .store(if token_expires_first { 5 } else { 4 }, Ordering::Release);
                         break;
                     }
                     // Reserve the sole queue place before authentication or a database claim.
-                    let place =
-                        match tokio::time::timeout_at(producer_end, sender.clone().reserve_owned())
-                            .await
-                        {
-                            Ok(Ok(place)) => place,
-                            Ok(Err(_)) => break,
-                            Err(_) => {
-                                producer_reason.store(
-                                    if token_expires_first { 5 } else { 4 },
-                                    Ordering::Release,
-                                );
-                                break;
+                    let place = tokio::select! {
+                        biased;
+                        () = stopped.cancelled() => break,
+                        reserved = tokio::time::timeout_at(producer_end, sender.clone().reserve_owned()) => {
+                            match reserved {
+                                Ok(Ok(place)) => place,
+                                Ok(Err(_)) => break,
+                                Err(_) => {
+                                    producer_reason.store(
+                                        if token_expires_first { 5 } else { 4 },
+                                        Ordering::Release,
+                                    );
+                                    break;
+                                }
                             }
-                        };
+                        }
+                    };
                     if let Some(refusal) = admission.not_serving() {
-                        place.send(Err(api(&refusal)));
+                        place.send(Frame::plain(Err(api(&refusal))));
                         producer_reason.store(7, Ordering::Release);
                         break;
                     }
@@ -663,54 +846,67 @@ where
                             "outcome" => "error"
                         )
                         .increment(1);
-                        place.send(Err(api(&ApiError::rate_limited(Duration::from_secs(1)))));
+                        place.send(Frame::plain(Err(api(&ApiError::rate_limited(
+                            Duration::from_secs(1),
+                        )))));
                         producer_reason.store(6, Ordering::Release);
                         break;
                     };
-                    let authenticated = match tokio::time::timeout_at(
-                        producer_end,
-                        authenticate_bearer(&core, &bearer),
-                    )
-                    .await
-                    {
-                        Ok(Ok(authenticated)) => authenticated,
-                        Ok(Err(error)) => {
-                            let status = api(&error);
-                            producer_reason.store(
-                                match status.code() {
-                                    Code::Unauthenticated | Code::PermissionDenied => 5,
-                                    Code::ResourceExhausted => 6,
-                                    Code::Unavailable => 7,
-                                    _ => 8,
-                                },
-                                Ordering::Release,
-                            );
-                            place.send(Err(status));
-                            metrics::counter!(
-                                "worker_task_stream_claims_total",
-                                "outcome" => "error"
-                            )
-                            .increment(1);
-                            break;
-                        }
-                        Err(_) => {
-                            place.send(stream_deadline_frame(token_expires_first, idle_retry));
-                            producer_reason
-                                .store(if token_expires_first { 5 } else { 4 }, Ordering::Release);
-                            break;
+                    let authenticated = tokio::select! {
+                        biased;
+                        () = stopped.cancelled() => break,
+                        authenticated = tokio::time::timeout_at(
+                            producer_end,
+                            authenticate_bearer(&core, &bearer),
+                        ) => match authenticated {
+                            Ok(Ok(authenticated)) => authenticated,
+                            Ok(Err(error)) => {
+                                let status = api(&error);
+                                producer_reason.store(
+                                    match status.code() {
+                                        Code::Unauthenticated | Code::PermissionDenied => 5,
+                                        Code::ResourceExhausted => 6,
+                                        Code::Unavailable => 7,
+                                        _ => 8,
+                                    },
+                                    Ordering::Release,
+                                );
+                                place.send(Frame::plain(Err(status)));
+                                metrics::counter!(
+                                    "worker_task_stream_claims_total",
+                                    "outcome" => "error"
+                                )
+                                .increment(1);
+                                break;
+                            }
+                            Err(_) => {
+                                place.send(Frame::plain(stream_deadline_frame(
+                                    token_expires_first,
+                                    idle_retry,
+                                )));
+                                producer_reason
+                                    .store(if token_expires_first { 5 } else { 4 }, Ordering::Release);
+                                break;
+                            }
                         }
                     };
-                    let claim = workers.poll_bounded(
-                        &authenticated.session.principal,
-                        worker,
-                        &session_token,
-                        credit,
-                        bytes_left,
-                        request_trace.as_deref(),
-                    );
-                    let tasks = match tokio::time::timeout_at(producer_end, claim).await {
-                        Ok(Ok(tasks)) => tasks,
-                        Ok(Err(error)) => {
+                    // The claim is never cut off: it commits one transaction per run, and a claim dropped between two
+                    // commits would lose the leases it had committed (decision D006-002). The store's statement and
+                    // lock timeouts bound it; what it returns past the window goes to the withdrawal below.
+                    let claimed = workers
+                        .poll_bounded(
+                            &authenticated.session.principal,
+                            worker,
+                            &session_token,
+                            credit,
+                            bytes_left,
+                            request_trace.as_deref(),
+                            &watch,
+                        )
+                        .await;
+                    let tasks = match claimed {
+                        Ok(tasks) => tasks,
+                        Err(error) => {
                             // The role may have been lowered since the stream opened: the
                             // refusal is a denial like any other, but this task is outside the
                             // call that `observe` watches.
@@ -738,18 +934,12 @@ where
                                 },
                                 Ordering::Release,
                             );
-                            place.send(Err(status));
+                            place.send(Frame::plain(Err(status)));
                             metrics::counter!(
                                 "worker_task_stream_claims_total",
                                 "outcome" => "error"
                             )
                             .increment(1);
-                            break;
-                        }
-                        Err(_) => {
-                            place.send(stream_deadline_frame(token_expires_first, idle_retry));
-                            producer_reason
-                                .store(if token_expires_first { 5 } else { 4 }, Ordering::Release);
                             break;
                         }
                     };
@@ -762,15 +952,28 @@ where
                             "outcome" => "empty"
                         )
                         .increment(1);
-                        tokio::time::sleep_until(
-                            (tokio::time::Instant::now() + idle_retry).min(producer_end),
-                        )
-                        .await;
+                        tokio::select! {
+                            biased;
+                            () = stopped.cancelled() => break,
+                            () = tokio::time::sleep_until(
+                                (tokio::time::Instant::now() + idle_retry).min(producer_end),
+                            ) => {}
+                        }
                         continue;
                     }
+                    // From the commit of the claim the leases travel in a guard: dropped before the frame is handed to the
+                    // transport, they are withdrawn (decision D006-001).
+                    let leases = PendingLeases::of(tenant, &tasks, &sink);
                     let used = tasks.iter().map(|task| task.input.len()).sum::<usize>();
                     credit = credit.saturating_sub(tasks.len() as u32);
                     bytes_left = bytes_left.saturating_sub(used);
+                    if stopped.is_cancelled() {
+                        // the body is gone or past its window: nothing more is queued
+                        drop(place);
+                        drop(leases);
+                        break;
+                    }
+                    // counted only when queued: a lease that went to the withdrawal was never streamed
                     metrics::counter!(
                         "worker_task_stream_claims_total",
                         "outcome" => "ready"
@@ -778,16 +981,20 @@ where
                     .increment(1);
                     metrics::counter!("worker_task_stream_tasks_total")
                         .increment(tasks.len() as u64);
-                    place.send(Ok(pb::PollTasksResponse {
-                        tasks: tasks.iter().map(lease).collect(),
-                        retry_after_ms: 0,
-                    }));
+                    place.send(Frame {
+                        item: Ok(pb::PollTasksResponse {
+                            tasks: tasks.iter().map(lease).collect(),
+                            retry_after_ms: 0,
+                        }),
+                        leases,
+                    });
                 }
             });
 
             let body: Self::StreamTasksStream = Box::pin(TaskBody {
                 inner: receiver,
                 producer,
+                stop,
                 _ticket: Some(ticket),
                 _connection_deadline: connection
                     .map(|connection| connection.arm(body_deadline + Duration::from_millis(10))),
@@ -810,6 +1017,10 @@ where
     ) -> Result<Response<pb::ResolveSecretsResponse>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ResolveSecrets", trace, async {
+            // a silent registry serves no capability call (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("ResolveSecrets") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let mut attempt = Attempt::parse(
@@ -834,6 +1045,10 @@ where
                 )
                 .await
                 .map_err(app)?;
+            // asked again before the first byte of the values (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("ResolveSecrets") {
+                return Err(refused);
+            }
             Ok(pb::ResolveSecretsResponse {
                 secrets: resolved
                     .iter()
@@ -862,6 +1077,9 @@ where
     ) -> Result<Response<pb::ResolvedDatabase>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ResolveDatabase", trace, async {
+            if let Some(refused) = self.admission.capability_refusal("ResolveDatabase") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let m = request.get_ref();
             let mut attempt = Attempt::parse(
@@ -886,6 +1104,9 @@ where
                 )
                 .await
                 .map_err(app)?;
+            if let Some(refused) = self.admission.capability_refusal("ResolveDatabase") {
+                return Err(refused);
+            }
             crate::database::response(resolved).map_err(app)
         })
         .await
@@ -1043,6 +1264,9 @@ where
         let trace = trace_of(&request);
         observe(&self.core, "WriteBlob", trace, async {
             let started = Instant::now();
+            if let Some(refused) = self.admission.capability_refusal("WriteBlob") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let _place = blobs.permit()?;
@@ -1137,6 +1361,10 @@ where
             } else {
                 scope.ok_or_else(|| app(AppError::Internal))?
             };
+            // asked again before the store's write starts (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("WriteBlob") {
+                return Err(refused);
+            }
             let storing = blobs
                 .service
                 .write(scope, principal.subject().as_str(), write, body);
@@ -1180,6 +1408,9 @@ where
     ) -> Result<Response<Self::ReadBlobStream>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ReadBlob", trace, async {
+            if let Some(refused) = self.admission.capability_refusal("ReadBlob") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
@@ -1234,8 +1465,13 @@ where
                 sha256: descriptor.digest().to_hex(),
                 content_type: descriptor.content_type().as_str().to_owned(),
             };
-            let stream: Self::ReadBlobStream =
-                Box::pin(Download::new(header, body, place, auth, blobs.timeout));
+            // the gate is asked again before each item of the download (decisions D006-098 and D006-100)
+            let stream: Self::ReadBlobStream = Box::pin(CheckedFirst {
+                inner: Download::new(header, body, place, auth, blobs.timeout),
+                admission: self.admission.clone(),
+                method: "ReadBlob",
+                refused: false,
+            });
             Ok(stream)
         })
         .await
@@ -1575,16 +1811,17 @@ mod tests {
     async fn a_stalled_body_discards_its_buffer_at_the_transport_deadline() {
         let (sender, receiver) = mpsc::channel(1);
         sender
-            .send(Ok(pb::PollTasksResponse {
+            .send(Frame::plain(Ok(pb::PollTasksResponse {
                 tasks: vec![pb::TaskLease::default()],
                 retry_after_ms: 0,
-            }))
+            })))
             .await
             .expect("queue frame");
         drop(sender);
         let mut body = TaskBody {
             inner: receiver,
             producer: tokio::spawn(std::future::pending()),
+            stop: CancellationToken::new(),
             _ticket: None,
             _connection_deadline: None,
             token_expiry: Box::pin(tokio::time::sleep(Duration::from_secs(60))),
@@ -1633,19 +1870,18 @@ mod terminal_hint_margin {
     }
 
     /// A body whose window ended 10 ms ago with `frame` still queued: the reader was late, not the transport stalled.
-    async fn late_body(
-        frame: Option<pb::PollTasksResponse>,
-    ) -> (
-        TaskBody,
-        mpsc::Sender<Result<pb::PollTasksResponse, Status>>,
-    ) {
+    async fn late_body(frame: Option<pb::PollTasksResponse>) -> (TaskBody, mpsc::Sender<Frame>) {
         let (sender, receiver) = mpsc::channel(1);
         if let Some(frame) = frame {
-            sender.send(Ok(frame)).await.expect("queue the frame");
+            sender
+                .send(Frame::plain(Ok(frame)))
+                .await
+                .expect("queue the frame");
         }
         let body = TaskBody {
             inner: receiver,
             producer: tokio::spawn(std::future::pending()),
+            stop: CancellationToken::new(),
             _ticket: None,
             _connection_deadline: None,
             token_expiry: Box::pin(tokio::time::sleep(Duration::from_secs(60))),
@@ -1766,5 +2002,279 @@ mod terminal_hint_margin {
     fn a_token_that_expires_first_ends_production_at_its_own_deadline_with_no_margin() {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         assert_eq!(producer_end(deadline, true), deadline);
+    }
+}
+
+/// Feature 006 (decisions D006-001, D006-002 and D006-008): a lease the body never handed to the transport goes to the
+/// withdrawal, however the frame that carried it was discarded. The queue slot is held by the test: nothing reads it.
+#[cfg(test)]
+mod withdrawal_of_undelivered_frames {
+    use super::*;
+    use sagat_application::entropy::Token;
+    use sagat_application::worker::UndeliveredLease;
+    use sagat_domain::execution::{Fence, RunId};
+    use sagat_domain::identity::TenantId;
+    use tokio_stream::StreamExt as _;
+
+    fn undelivered(n: u8) -> UndeliveredLease {
+        UndeliveredLease {
+            tenant_id: TenantId::new(uuid::Uuid::from_u128(1)),
+            run_id: RunId::generate(),
+            instance: ExecutionInstanceId::root(NodeId::parse("a").expect("node")),
+            step_id: uuid::Uuid::from_u128(u128::from(n)),
+            fence: Fence {
+                attempt: 1,
+                generation: u64::from(n),
+            },
+            lease_token: Token::from_bytes([n; 32]).expect("token"),
+        }
+    }
+
+    fn frame_with(leases: Vec<UndeliveredLease>, sink: &WithdrawalSink) -> Frame {
+        Frame {
+            item: Ok(pb::PollTasksResponse {
+                tasks: leases.iter().map(|_| pb::TaskLease::default()).collect(),
+                retry_after_ms: 0,
+            }),
+            leases: PendingLeases::recorded(leases, sink),
+        }
+    }
+
+    fn passed() -> Pin<Box<tokio::time::Sleep>> {
+        let now = tokio::time::Instant::now();
+        Box::pin(tokio::time::sleep_until(
+            now.checked_sub(Duration::from_millis(1)).unwrap_or(now),
+        ))
+    }
+
+    fn far() -> Pin<Box<tokio::time::Sleep>> {
+        Box::pin(tokio::time::sleep(Duration::from_secs(3600)))
+    }
+
+    fn body(
+        receiver: mpsc::Receiver<Frame>,
+        window_deadline: Pin<Box<tokio::time::Sleep>>,
+        token_expiry: Pin<Box<tokio::time::Sleep>>,
+    ) -> (TaskBody, CancellationToken) {
+        let stop = CancellationToken::new();
+        (
+            TaskBody {
+                inner: receiver,
+                producer: tokio::spawn(std::future::pending()),
+                stop: stop.clone(),
+                _ticket: None,
+                _connection_deadline: None,
+                token_expiry,
+                window_deadline,
+                expiry_reported: false,
+                deadline_reported: false,
+                terminal_delivered: false,
+                reason: Arc::new(AtomicU8::new(1)),
+                started: Instant::now(),
+            },
+            stop,
+        )
+    }
+
+    fn fences(kept: &std::sync::Mutex<Vec<UndeliveredLease>>) -> Vec<Fence> {
+        kept.lock().expect("lock").iter().map(|l| l.fence).collect()
+    }
+
+    #[tokio::test]
+    async fn a_frame_discarded_at_the_window_deadline_hands_its_leases_to_the_withdrawal() {
+        let (sink, kept) = WithdrawalSink::recording();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(frame_with(vec![undelivered(1), undelivered(2)], &sink))
+            .await
+            .expect("queue");
+        let (mut body, stop) = body(receiver, passed(), far());
+        let status = body
+            .next()
+            .await
+            .expect("a last item")
+            .expect_err("the stale frame is not exposed");
+        assert_eq!(status.code(), Code::DeadlineExceeded);
+        assert_eq!(
+            fences(&kept),
+            [
+                Fence {
+                    attempt: 1,
+                    generation: 1
+                },
+                Fence {
+                    attempt: 1,
+                    generation: 2
+                }
+            ]
+        );
+        assert!(
+            stop.is_cancelled(),
+            "the producer is told to stop, not aborted"
+        );
+        assert!(!body.producer.is_finished(), "nothing aborted the producer");
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn a_queue_drained_at_token_expiry_hands_its_leases_to_the_withdrawal() {
+        let (sink, kept) = WithdrawalSink::recording();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(frame_with(vec![undelivered(3)], &sink))
+            .await
+            .expect("queue");
+        let (mut body, stop) = body(receiver, far(), passed());
+        let status = body.next().await.expect("an item").expect_err("expired");
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert_eq!(
+            fences(&kept),
+            [Fence {
+                attempt: 1,
+                generation: 3
+            }]
+        );
+        assert!(stop.is_cancelled());
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn a_body_dropped_with_a_queued_frame_hands_its_leases_to_the_withdrawal() {
+        let (sink, kept) = WithdrawalSink::recording();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(frame_with(vec![undelivered(4)], &sink))
+            .await
+            .expect("queue");
+        let (body, stop) = body(receiver, far(), far());
+        drop(body);
+        assert_eq!(
+            fences(&kept),
+            [Fence {
+                attempt: 1,
+                generation: 4
+            }]
+        );
+        assert!(stop.is_cancelled());
+        drop(sender);
+    }
+
+    /// The producer reserved its place, the body went away, and the frame is sent into the closed queue: its leases are
+    /// withdrawn when the queue is freed.
+    #[tokio::test]
+    async fn a_frame_sent_into_a_closed_queue_hands_its_leases_to_the_withdrawal() {
+        let (sink, kept) = WithdrawalSink::recording();
+        let (sender, receiver) = mpsc::channel(1);
+        let place = sender.clone().reserve_owned().await.expect("a place");
+        let (body, _stop) = body(receiver, far(), far());
+        drop(body);
+        place.send(frame_with(vec![undelivered(5)], &sink));
+        drop(sender);
+        assert_eq!(
+            fences(&kept),
+            [Fence {
+                attempt: 1,
+                generation: 5
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_handed_to_the_transport_withdraws_nothing() {
+        let (sink, kept) = WithdrawalSink::recording();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(frame_with(vec![undelivered(6)], &sink))
+            .await
+            .expect("queue");
+        let (mut body, _stop) = body(receiver, far(), far());
+        let frame = body.next().await.expect("an item").expect("the frame");
+        assert_eq!(frame.tasks.len(), 1);
+        drop(body);
+        drop(sender);
+        assert!(
+            kept.lock().expect("lock").is_empty(),
+            "the frame was handed over"
+        );
+    }
+}
+
+/// What a claim of this API watches (decisions D006-035, D006-092 and D006-008): its consumer, gone when the stream's producer
+/// is told to stop or the unary handler is dropped, the test's probe after each run's commit, and the test's probe just before
+/// the commit of a run's transaction that leased.
+struct ConsumerWatch {
+    gone: CancellationToken,
+    probe: Option<DeliveryProbe>,
+    commit_probe: Option<DeliveryProbe>,
+}
+
+impl sagat_application::worker::ClaimWatch for ConsumerWatch {
+    fn consumer_gone(&self) -> bool {
+        self.gone.is_cancelled()
+    }
+
+    fn committed(&self) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        match &self.probe {
+            Some(probe) => probe(Abandonment(self.gone.clone())),
+            None => Box::pin(std::future::ready(())),
+        }
+    }
+
+    fn before_commit(&self) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        match &self.commit_probe {
+            Some(probe) => probe(Abandonment(self.gone.clone())),
+            None => Box::pin(std::future::ready(())),
+        }
+    }
+}
+
+/// The review of 2026-11-25 (decision D006-100): a capability stream asks the gate before every item, not only at its first
+/// poll; once the window lapses the item is dropped, the refusal is the stream's last item, and nothing follows.
+#[cfg(test)]
+mod checked_items {
+    use super::*;
+    use sagat_application::instances::ServingGate;
+    use tokio_stream::StreamExt as _;
+
+    #[tokio::test]
+    async fn a_capability_stream_stops_at_the_first_item_after_the_window_lapses() {
+        let gate = Arc::new(ServingGate::closed());
+        gate.decided_by_the_registry();
+        gate.open(1);
+        gate.decided_at(std::time::Instant::now());
+        let admission = Admission::new(8, Duration::from_secs(30));
+        admission.set_serving_gate(Arc::clone(&gate));
+        let (sender, receiver) = mpsc::channel::<Result<u32, Status>>(4);
+        let mut stream = CheckedFirst {
+            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
+            admission,
+            method: "ReadBlob",
+            refused: false,
+        };
+        sender.send(Ok(1)).await.expect("queued");
+        assert_eq!(stream.next().await.map(|item| item.ok()), Some(Some(1)));
+        // the window lapses during the download: the next item never leaves
+        let lapsed = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(26))
+            .expect("an instant 26 s ago");
+        // a decision never moves back: forget it, then decide it 26 s ago
+        gate.decided_by_the_registry();
+        gate.decided_at(lapsed);
+        sender.send(Ok(2)).await.expect("queued");
+        sender.send(Ok(3)).await.expect("queued");
+        let refused = stream
+            .next()
+            .await
+            .expect("an item")
+            .expect_err("the refusal, not the item");
+        assert_eq!(refused.code(), Code::Unavailable);
+        assert_eq!(
+            refused
+                .metadata()
+                .get(crate::status::ERROR_METADATA)
+                .and_then(|value| value.to_str().ok()),
+            Some("REGISTRY_SILENT")
+        );
+        assert!(stream.next().await.is_none(), "nothing follows the refusal");
     }
 }

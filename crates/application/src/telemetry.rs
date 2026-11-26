@@ -243,6 +243,18 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
                     },
                 );
             }
+            // A lease that never reached a handler is not an attempt (feature 006, decision D006-013): it is dropped, and
+            // the step is ready again since the time it first was.
+            RunEvent::StepLeaseWithdrawn { node, attempt, .. } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                if open.get(&instance).is_some_and(|a| a.attempt == *attempt)
+                    && let Some(withdrawn) = open.remove(&instance)
+                    && let Some(ready_at) = withdrawn.ready_at
+                {
+                    ready.insert(instance, ready_at);
+                }
+            }
             RunEvent::StepCompleted { node, attempt, .. } => {
                 let instance =
                     ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
@@ -404,10 +416,11 @@ pub async fn all_attempts<S: TelemetryStore>(
 /// The event types [`derive`] needs from the part of the journal that was projected already: the
 /// ones that close an attempt leased in an earlier batch, and the starts of the timers and waits
 /// that end in this one.
-pub const CONTEXT_EVENTS: [&str; 12] = [
+pub const CONTEXT_EVENTS: [&str; 13] = [
     "step.released",
     "step.retry_due",
     "step.leased",
+    "step.lease_withdrawn",
     "step.completed",
     "step.retry_scheduled",
     "step.failed",
@@ -1157,6 +1170,7 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
                         | RunEvent::StepSkipped { .. }
                         | RunEvent::StepResolved { .. }
                         | RunEvent::StepNeedsReview { .. }
+                        | RunEvent::StepLeaseWithdrawn { .. }
                         | RunEvent::SagaAborting { .. }
                         | RunEvent::CompensationPlanned { .. }
                         | RunEvent::SagaCompensated { .. }

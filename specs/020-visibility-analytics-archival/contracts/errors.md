@@ -26,10 +26,11 @@ the `Error.details` description, `docs/reference/api.md` and the SDK remediation
 | `CONFLICT` | `SINK_STATE_CONFLICT` | An action not valid in the sink's state (resume an `ACTIVE` sink, skip without an open batch) |
 | `CONFLICT` | `RUN_NOT_TERMINAL` | Erasure of a run that is not terminal or whose tree is not |
 | `CONFLICT` | `EFFECT_UNRESOLVED` | Erasure of a run ended `COMPENSATION_FAILED`/`PARTIAL` or with an unresolved outcome or review; record the resolution first |
-| `CONFLICT` | `RUN_PURGED` | Rerun or reset (018) of a purged or purging run, checked after the ADR-0039 identity guard; consumed by 018 and by the ADR-0039 rerun path (018's draft currently says `NOT_FOUND`; to be aligned) |
+| `CONFLICT` | `RUN_PURGED` | Rerun or reset (018) of a purged or purging run, checked after the ADR-0039 identity guard; consumed by 018 and by the ADR-0039 rerun path. *Corrected 2026-11-24:* aligned; 018 as built uses `CONFLICT` (409) `RUN_PURGED` in its `contracts/errors.md` and failure-reason checks |
+| `VALIDATION_FAILED` | `CAPABILITY_NOT_ACTIVE` (added 2026-11-24) | A publication with search-attribute or analytics declarations, a sink creation, a retention policy or an erasure while its capability (`search-attributes-v1`, `analytics-v1`, `retention-v1`) is not a recorded requirement of the instance registry; `details.capability` names it (FR-020-045) |
 | `VALIDATION_FAILED` | `ENVELOPES_NOT_ENABLED` | A sink revision asks for `inbound_event`/`delivery` before envelope capture is enabled |
 | `VALIDATION_FAILED` | `STREAM_SUBSCRIPTION_SHARED` | A `STREAM` sink names a subscription that also receives run events |
-| `VALIDATION_FAILED` | `SINK_DESTINATION_DENIED` | The destination fails the egress policy or names a platform state endpoint (`details.category`, never the address) |
+| `VALIDATION_FAILED` | `SINK_DESTINATION_DENIED` | The destination fails 017's destination policy or names a platform state endpoint, or the referenced connection is of another kind or its egress ceiling is below `maxLevel` (`details.category`, never the address) |
 | `VALIDATION_FAILED` | `RETENTION_CEILING` | `hotRetentionDays` above the operator ceiling (the effective value is returned in `details`) |
 | `NOT_FOUND` | `RUN_PURGED` | A hot-only endpoint (journal, graph, attempts, payload disclosure) on a purged run; `details.archive` is `AVAILABLE` or `NONE` |
 | `UNAVAILABLE` | `ARCHIVE_UNAVAILABLE` | The archive store did not answer; retryable |
@@ -43,7 +44,9 @@ role); `ABORTED` + `STALE_ATTEMPT` (lease expired, generation moved, batch super
 Sink states carry closed reasons (shown in the API, never free provider text): `SINK_REJECTED`,
 `SINK_AUTH_FAILED`, `SINK_SCHEMA_MISMATCH`, `CREDENTIALS_UNUSABLE`, `DISCLOSURE_REVOKED`,
 `SINK_DESTINATION_DENIED`, `TRANSIENT_FAILURES`, `EXPORT_QUOTA`, `USER_PAUSED`, `STREAM_DELIVERY_DEAD`,
-`CONNECTION_UNUSABLE` (the 017 connection of a `POSTGRESQL` sink is paused, deleted or denied).
+`CONNECTION_UNUSABLE` (the 017 connection of a connection-backed sink is paused, deleted or denied; since
+2026-11-24 every sink but `STREAM` and `PULL`). `CREDENTIALS_UNUSABLE` stays for a `STREAM` sink whose
+subscription secret is unusable.
 
 Archival job blocked reasons: `ARCHIVE_INTEGRITY`, `DESTINATION_UNUSABLE`, `SINK_HOLD`,
 `TREE_NOT_TERMINAL`, `POLICY_REMOVED`.

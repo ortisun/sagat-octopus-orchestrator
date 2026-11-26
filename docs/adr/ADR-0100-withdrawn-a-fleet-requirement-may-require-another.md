@@ -1,0 +1,39 @@
+# ADR-0100: Retired number: a fleet requirement may require another
+
+**Status:** Withdrawn (2026-11-21) before acceptance, folded into Architecture decision 0099 as its considered option 10; the number is retired so that no other branch takes it.
+**Decided by:** agent, delegate (Owner decision 2026-11-20-6), on the design reviewer's round-6 finding (Minor 5) and the architecture reviewer's round-7 confirmation (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`).
+**Refines / supersedes:** none.
+**Enforced by:** review only: the record decides nothing.
+
+## Context
+
+Round 5 of the review of Architecture decision 0099 split out a decision of its own: a trigger of the instance-capability registry
+that would refuse recording `delivery-acknowledgement-v1` before `lease-withdrawal-v1`, and removing the second while the first is
+recorded.
+
+## Decision
+
+None. Once every withdrawal of a marked lease reads both requirements under the locks their removals wait for, and an engine marks
+only while it knows both are recorded, no order of recordings and removals can write `step.lease_withdrawn` without its replay floor;
+a wrong order costs only marks that are never honoured, and is counted and alerted. The trigger, its static check and its typed
+refusals bought nothing more. What remains is considered option 10 of Architecture decision 0099.
+
+## Considered options
+
+1. **Withdraw it (chosen).** Nothing is left for it to enforce about the order.
+2. **Keep it.** A trigger, a function body rewritten in every migration that adds a dependency, a check that parses it, and race
+   tests, for an ordering the withdrawals already make safe.
+
+## Consequences
+
+The registry is changed by Architecture decision 0099 only by its capability, the amendment of Architecture decision 0082
+decision 5 and the floor's capability `lease-withdrawal-v2` that the build of Architecture decision 0098 carries, and the trigger of
+its decision 10, which refuses recording `delivery-acknowledgement-v1` while a registered instance lacks `lease-withdrawal-v2`: a
+guarantee of the liveness rule, not the ordering this record proposed (its considered option 10). The same trigger refuses removing
+`lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded, because a removal and a new recording would otherwise admit a
+registered binary without the liveness rule that the census at insert never sees: the census invariant, not the order.
+
+## Evidence
+
+Architecture decision 0099, decision 10 and considered option 10; Decision 006-047 of `specs/006-sdk-multilanguage/research.md`; the
+round-5, round-6 and round-7 reviews under `specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`.

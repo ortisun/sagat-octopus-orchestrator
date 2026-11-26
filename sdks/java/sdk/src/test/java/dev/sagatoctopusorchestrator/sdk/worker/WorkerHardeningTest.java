@@ -362,10 +362,12 @@ class WorkerHardeningTest {
     // ------------------------------------------------------------------- the number of tasks that run
 
     @Test
-    void aPollAnswerWithMoreTasksThanAskedRunsOnlyTheFirstOnesAndLeavesTheRestToLapse() throws Exception {
+    void aPollAnswerWithMoreTasksThanAskedRunsOnlyTheFirstOnesAndHandsTheRestBack() throws Exception {
         fake.ignoreMax = true;
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        fake.acceptedVersion = "1.8";
         CapturingLogger log = new CapturingLogger();
-        WorkerHost h = host(b -> b.maxInflight(2).logger(log));
+        WorkerHost h = host(b -> b.protocolVersion("1.8").transport(WorkerTransport.POLL).maxInflight(2).logger(log));
         AtomicInteger running = new AtomicInteger();
         AtomicInteger peak = new AtomicInteger();
         AtomicInteger started = new AtomicInteger();
@@ -390,9 +392,17 @@ class WorkerHardeningTest {
         assertEquals(List.of("run-1/charge/1", "run-2/charge/1"), ranTasks.stream().sorted().toList(), "the first ones");
         release.countDown();
         sleep(300);
-        assertEquals(2, started.get(), "the rest were left to lapse, not run later");
-        assertEquals(0, fake.of("FailStep").size(), "and not failed either");
-        assertEquals(1, log.warnings("lapse").size(), "one warning says that tasks were left to lapse");
+        assertEquals(2, started.get(), "the rest were handed back, not run later");
+        until(() -> fake.of("FailStep").size() == 10, "the ten hand-backs");
+        List<String> handedBack = fake.of("FailStep").stream()
+                .map(c -> (Worker.FailStepRequest) c.request())
+                .filter(r -> r.getErrorCode().equals("TASK_NOT_STARTED") && r.getRetryable())
+                .map(Worker.FailStepRequest::getTaskId)
+                .sorted()
+                .toList();
+        assertEquals(10, handedBack.size(), "each of the rest is handed back once, as not started: " + handedBack);
+        assertFalse(handedBack.contains("run-1/charge/1") || handedBack.contains("run-2/charge/1"), "never a task that started");
+        assertEquals(1, log.warnings("the rest are not run").size(), "one warning says that tasks were not run");
         assertTrue(log.lines().stream().noneMatch(l -> l.message().contains("lt")), "no lease token in a log line");
     }
 

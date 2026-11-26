@@ -100,7 +100,7 @@
             "defaultMs": {
               "type": "integer",
               "minimum": 1,
-              "description": "Used when a caller node omits timeoutMs. When absent: 10000 for a sync operation, 86400000 (24 h) for an async one. Must not exceed maxMs."
+              "description": "Used when a caller node omits scheduleToCloseMs. When absent: 10000 for a sync operation, 86400000 (24 h) for an async one. Must not exceed maxMs."
             },
             "maxMs": {
               "type": "integer",

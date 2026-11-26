@@ -231,7 +231,13 @@ Rules (D1034, G1607):
    first restricted folder or operation list can be created), `payload-encoding-v1` (031, `CONTROL_PLANE`
    and `EXECUTION_ENGINE`), `run-input-validation-v1` (043, `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed only by a
    process in `enforce` mode, `SAGAT_RUN_INPUT_VALIDATION`, so once it is required a process in `report` or a 0.2.x
-   binary is refused).
+   binary is refused), `lease-withdrawal-v1` (006, `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed unconditionally by
+   every process of a build that replays `step.lease_withdrawn`; an engine withdraws an undelivered lease only once it is
+   required of both kinds: `specs/006-sdk-multilanguage/research.md` D006-004, ADR-0098), `lease-withdrawal-v2` (006,
+   `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed unconditionally by every process of a build that replays every cause of
+   `step.lease_withdrawn`, `NOT_ACKNOWLEDGED` of protocol 1.8 included, and whose engine serves no capability call while its
+   registry is silent; activated only after `lease-withdrawal-v1` is recorded for both kinds, and a replay floor once a
+   journal holds a `NOT_ACKNOWLEDGED` withdrawal: D006-059 request (9), D006-096, ADR-0099).
 
 `scheduler_members` is unchanged (shard membership and the replica count for shard shares); adding
 control-plane rows or capabilities to it would distort the shard-share computation of ADR-0020.

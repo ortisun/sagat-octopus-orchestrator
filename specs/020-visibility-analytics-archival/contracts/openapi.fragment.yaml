@@ -223,8 +223,7 @@ components:
       properties:
         name: {type: string, pattern: '^[a-z][a-z0-9-]{1,62}$'}
         kind: {type: string, enum: [OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, ICEBERG, STREAM, PULL]}
-        settings: {type: object, description: 'Closed per kind (contracts/sinks.md); never a credential. POSTGRESQL: connectionRef {name, revision?} of a 017 connection; ICEBERG: connectionRef {name, revision?} of a 035 Iceberg connection, namespace, tablePrefix; STREAM: subscriptionId of a subscription dedicated to the sink.'}
-        credentialsSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$', description: 'OBJECT_STORAGE and CLICKHOUSE only; POSTGRESQL and ICEBERG use the connection credentials, STREAM the subscription secret.'}
+        settings: {type: object, description: 'Closed per kind (contracts/sinks.md); never a credential. Every connection-backed kind holds connectionRef {name, revision?} of a 017 connection of its kind: POSTGRESQL (a postgresql connection) with schema, tablePrefix; CLICKHOUSE (a 035 clickhouse connection) with tablePrefix; OBJECT_STORAGE (a 035 object_storage connection) with prefix, format; ICEBERG (a 035 iceberg connection) with namespace, tablePrefix. STREAM: subscriptionId of a subscription dedicated to the sink. PULL: leaseSeconds, maxExporters. No sink kind carries a secret of its own (corrected 2026-11-24, O035-005).'}
         recordKinds: {type: array, description: 'inbound_event and delivery need envelope capture enabled (ENVELOPES_NOT_ENABLED otherwise).', items: {type: string, enum: [run_snapshot, step_attempt, journal_event, inbound_event, delivery, declared_record, run_tombstone]}}
         workflows: {type: array, maxItems: 64, items: {type: string, format: uuid}}
         maxLevel: {type: string, enum: [INTERNAL, PII]}
@@ -254,7 +253,7 @@ components:
         hotRetentionDays: {type: integer, minimum: 1, maximum: 3650}
         archive: {type: string, enum: [REQUIRED, NONE]}
         archiveValues: {type: string, enum: [METADATA_ONLY, UP_TO_INTERNAL, UP_TO_PII], default: METADATA_ONLY}
-        destination: {type: object, additionalProperties: false, properties: {kind: {type: string, enum: [PLATFORM, OBJECT_STORAGE]}, settings: {type: object}, credentialsSecret: {type: string}}}
+        destination: {type: object, additionalProperties: false, description: 'PLATFORM (the platform blob store) or CONNECTION (an object_storage connection of feature 035, written by the managed executor; corrected 2026-11-24).', properties: {kind: {type: string, enum: [PLATFORM, CONNECTION]}, connectionRef: {type: object, additionalProperties: false, required: [name], properties: {name: {type: string}, revision: {type: integer, minimum: 1}}}, prefix: {type: string, maxLength: 256}}}
         sinkHoldDays: {type: integer, minimum: 1, maximum: 30, default: 7}
         expectedRevision: {type: integer, minimum: 1}
     RetentionPolicy:

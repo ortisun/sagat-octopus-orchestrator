@@ -83,7 +83,7 @@ where
             Ok(SecretResolutionTx::Root(tx))
         } else {
             let mut tx = self.open_worker_path(principal, task).await?;
-            Self::live_path_fence(&mut tx, task, false).await?;
+            Self::live_path_fence(&mut tx, task, StopAllowance::None).await?;
             Ok(SecretResolutionTx::Scoped(tx))
         }
     }

@@ -10,7 +10,9 @@ a codec (FR-031-015: it stays `READY` for a capable worker). The
 request is made by the guarded egress client of `crates/infra-egress` (destination and every resolved address
 checked, no redirects, no environment proxies, bounded time and size). Delivery is **at least once**: the same
 attempt can be invoked again after a lost lease, and AWS Lambda `Event` invocations can be retried by Lambda itself;
-the function deduplicates on `idempotencyKey`.
+the function deduplicates on `idempotencyKey`. Corrected 2026-11-24: an attempt whose lease was lost is invoked again
+only after reconciliation or an operator settles its unknown outcome (feature 037). A push lease is never provisional
+(protocol 1.8 has no host to acknowledge it).
 
 ## Request
 
@@ -67,7 +69,7 @@ and task. **One key signs every tenant's envelopes, and any tenant can aim an en
 signature alone proves only that the platform sent it — not that it was meant for this function. Protection against
 another tenant's envelopes therefore rests on the verifier checking the expected identity below.
 
-**Verifier rules** (all five SDKs, `verifyPushEnvelope`, shared vectors in
+**Verifier rules** (all six SDKs, `verifyPushEnvelope`, shared vectors in
 `tests/contract/sdk-conformance/scenarios/push-envelope.json`, new): reject an unknown key id, a timestamp outside
 ±300 s of the verifier's clock, a `task.deadline` already passed, a signature that does not verify over the raw body
 (never a re-serialized one), an envelope `version` other than 1, and a tenant id, namespace id or endpoint name other than the **required**
@@ -96,7 +98,8 @@ platform never sends one. Whether a token alone should suffice is owner question
 | other `4xx` | refused | non-retryable `PUSH_REJECTED` |
 | `3xx` | redirect | not followed; non-retryable `PUSH_REJECTED` |
 | timeout or connection broken **after** the request was written | unknown | `OUTCOME_UNKNOWN` (reconcile with `reconcileWith`, otherwise manual review for `highRisk`) |
-| connect failure **before** sending, DNS failure | not delivered | retryable `PUSH_UNAVAILABLE` |
+| connect failure **before** sending, DNS failure | not delivered | the lease is withdrawn (ADR-0098, cause `NOT_SENT`, no attempt spent) while lease withdrawal is recorded and the attempt has fewer than four withdrawals; otherwise retryable `PUSH_UNAVAILABLE` (corrected 2026-11-24, D019-008) |
+| the invoker's replica stops while the request is in flight | unknown | the lease lapses as `LEASE_EXPIRED`, an unknown outcome: reconciliation or review (feature 037); a later attempt keeps the idempotency key |
 | destination refused by the egress guard | denied | `PUSH_DESTINATION_DENIED`, endpoint health `DENIED`, audited once per window |
 | body larger than 256 KiB or not JSON | invalid | non-retryable `PUSH_RESPONSE_INVALID`; the bytes are discarded, never logged |
 
