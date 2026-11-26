@@ -132,8 +132,8 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
   `nonRetryableErrorCodes` (1 to 32 distinct codes) and `byErrorCode` (1 to 16 entries, each with `codes`, 1 to 32 distinct codes, and
   any of `maxAttempts`, `initialDelayMs`, `maxDelayMs`, `strategy`, `jitter` with the meaning and bounds they have in `retry`). A code
   matches `^[A-Z0-9_]{1,64}$`, the grammar every SDK host sends (`sdks/SPEC.md` §6.5). It appears at most once across both lists,
-  and the lists name at most 64 codes in all. None is one the platform decides elsewhere: the seven outcome-unknown codes,
-  `CANCELLED`, `TASK_NOT_STARTED`, `SCHEDULE_TO_START_TIMEOUT` and `SCHEDULE_TO_CLOSE_TIMEOUT`. The effective policy of each entry
+  and the lists name at most 64 codes in all. None is a reserved code, one decided before row 3 or reported only by the platform
+  (the list is in Technical Plan 15). The effective policy of each entry
   (Technical Plan 6) MUST be valid. *Acceptance:* a publication test per refusal (`RETRY_CODE_RESERVED`, `RETRY_CODE_DUPLICATED`,
   `RETRY_CODES_TOO_MANY`, `RETRY_OVERRIDE_INVALID`).
 - **Requirement 045-003 — Schedule-to-start.** When an attempt of a node with `scheduleToStartMs` becomes claimable, the domain MUST
@@ -203,7 +203,8 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
   refusing a code outside the list grammar. *Acceptance:* each SDK's unit tests and the IR conformance scenarios.
 - **Requirement 045-016 — SDK hosts at 1.9.** A host accepted at 1.9 MUST beat at the shorter of its configured interval and a third
   of `heartbeat_timeout_ms`, within today's bounds of 500 ms and 10 s, its first interval also no longer than a third of the lease's
-  time left at receipt; it honours `heartbeat_from_handler` and sends `next_retry_delay_ms` when the handler asks. *Acceptance:* each
+  time left at receipt (for a lease flagged under protocol 1.8, the first beat follows Architecture decision 0099 decision 6); it
+  honours `heartbeat_from_handler` and sends `next_retry_delay_ms` when the handler asks. *Acceptance:* each
   SDK's unit tests and the conformance scenarios `activity-timeouts` and `heartbeat-from-handler`, one case with the lease received
   6 s after its claim.
 - **Requirement 045-017 — Fleet switches and runs in flight.** A version of level 1 MUST publish only once the operator recorded the
@@ -221,14 +222,16 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
   root or path branch. A worker-sent `ATTEMPT_TIMEOUT` or `LEASE_EXPIRED` never gets a `deadline` field. Timeouts MUST be counted
   where the platform decides them, never from a worker's code. *Acceptance:* a worker-report test per code, root and path.
 - **Requirement 045-020 — Operator actions.** An operator's retry (`step.retry_requested`) of a step that failed with a known code
-  MUST write a new start deadline and clear the close deadline and cutoff: the person has looked at the step and decided. A step
+  MUST write a new start deadline (none while the run is paused) and clear the close deadline and cutoff: the person has looked at the step and decided. A step
   whose outcome is unknown is not retried until a person settles it (feature 037, `ExecutionError::OutcomeUnresolved`, unchanged).
   *Acceptance:* an operator-retry test past the close cutoff, and the existing test that refuses a retry of an unsettled step.
 - **Requirement 045-021 — Pause and withdrawal.** While a run is paused, no claimable step of it has a start deadline; the resume
   gives each claimable step of the run, root and path, a full start window from the resume's `db_now`. The close deadline is not
-  moved by a pause and is enforced during it. A lease withdrawal MUST write the start deadline as the later of the old one and the
-  withdrawal's `db_now` plus the shorter of the start window and 6,000 ms, so that a delivery lost on the wire does not fail a step
-  whose workers are up. *Acceptance:* the pause and withdrawal tests of Technical Plan 7.
+  moved by a pause and is enforced during it. No event that makes a step claimable (a release, a retry that is due, an operator's retry, a
+  withdrawal, a gate's grant) writes a start deadline while the run is paused; a close cutoff reached during a pause ends the step,
+  whose failure route runs at the resume. A lease withdrawal MUST write the start deadline as the later of the old one and the
+  withdrawal's `db_now` plus the full start window, and keep the step's place in the queue (its `ready_at`), so that a delivery lost
+  on the wire does not fail a step whose workers are up. *Acceptance:* the pause and withdrawal tests of Technical Plan 7.
 
 ### Non-functional
 
@@ -468,7 +471,7 @@ application), says whether a step may be leased: its start deadline and its clos
 `min_protocol_minor` is met. `claim_root_run` and `claim_path` (`crates/application/src/worker.rs` and `worker/scoped_claims.rs`)
 apply it where they build the list of steps to lease, beside the managed-kind check and before any audit, quota or input work, so a
 skipped step never aborts the run's other leases and leaves no misleading record; each skip is counted
-(`step_claim_skips_total{reason}`). The lease commands (`lease_step`, `lease_instance`, `lease_path_instance`) check it again and
+(`worker_claim_skipped_total{reason}`, an existing family). The lease commands (`lease_step`, `lease_instance`, `lease_path_instance`) check it again and
 return `ExecutionError::NotClaimable` with its closed reason, which is then an invariant violation.
 
 **The candidate query carries the same conditions as a hint.** The two forward branches of `claimable_query!`
@@ -487,7 +490,7 @@ cutoff have both passed, the earlier names the code, and a tie goes to `SCHEDULE
 no-op. A scoped or path step is ended in its path transaction with the scoped-protocol filter the `leases` pass uses. A run with a
 stop reason is left to the stop path, which cancels the step. The pass is registered in the tick with its lag gauge, as the others.
 
-**A pause** (Decision 045-019). `run.paused` gains `pausedAtUs` for a run of a version of level 1 or 2; its transaction writes the
+**A pause** (Decision 045-019). For a run of a version of level 1 or 2, the pause's transaction writes the
 start deadline of every claimable step of the run, root and path, as null, in one statement, and the domain records none while the
 run is paused. `run.resumed` gains `resumedAtUs`; its transaction writes, in one statement, the start deadline of every claimable
 step as `resumedAt` plus its `start_window_us`: a fresh full window, because a pause is an operator's hold, not a missing worker.
@@ -495,8 +498,9 @@ The close deadline is not moved and is enforced during the pause, by every path,
 
 **A withdrawal** (Architecture decision 0098 decision 3, Architecture decision 0099 decision 5) sets the step back to `READY` without
 spending an attempt. Its event, `step.lease_withdrawn`, gains `startDeadlineUs`: the later of the old deadline and the withdrawal's
-`db_now` plus the shorter of the start window and 6,000 ms. A lease lost on the wire is not a missing worker, so the attempt gets one
-receive bound to be claimed again; the four withdrawals per attempt of Architecture decision 0098 decision 7 bound how often. Built
+`db_now` plus the full start window, and the withdrawal keeps the step's `ready_at`, so the step is not sent behind a backlog. A lease
+lost on the wire is not a missing worker; the four withdrawals per attempt of Architecture decision 0098 decision 7 bound how often.
+For a node without `scheduleToStartMs` it writes none, at level 0 no field, and while the run is paused none. Built
 by whichever of this design and pull request #260 lands second.
 
 ### 4. The close deadline
@@ -514,8 +518,8 @@ What follows a live attempt's timeout is feature 037's, unchanged: the reconcili
 `not_applied` and `unknown` are not final and wait for a person, who settles the step before any retry.
 
 Feature 022's gates are specified and being built (`time_out_step_gates` exists on its branch, `concurrency_waiters` is not in
-`crates/` on `develop`); whichever is built second adds the gate rows of this table and their tests (Task 045-10, and its counterpart
-in feature 022's tasks). This refines Architecture decision 0089 decisions 4 and 5 (Architecture decision 0110).
+`crates/` on `develop`); whichever is built second adds the gate rows of this table and their tests (Task 045-10, which owns that work in
+feature 022's crates). This refines Architecture decision 0089 decisions 4 and 5 (Architecture decision 0110).
 
 The ending events of a live attempt that a deadline ended (`step.failed`, `reconciliation.requested`, `step.needs_review`) gain an
 optional `deadline` field (`startToClose`, `scheduleToClose`, `heartbeat`), written only for a version of level 1 or 2: from
@@ -619,7 +623,7 @@ claim then skips the step and leases its sibling).
 | a failure's retry and the close cutoff | decided in the failure's transaction (row 6), at the cutoff less one microsecond, at it, after it |
 | the retries pass and the close cutoff | the retries pass ends a `RETRY_WAIT` step past the cutoff instead of making it claimable |
 | a gate's grant, the gate's queue timeout and the close cutoff | one deadline per waiter, the earlier, in 022's one timeout routine; the grant refuses a waiter past its cutoff |
-| a lease withdrawal and the start deadline | the withdrawal writes the later of the old deadline and a fresh receive bound; a healthy worker claims again; a test withdraws a lease just after the deadline |
+| a lease withdrawal and the start deadline | the withdrawal writes the later of the old deadline and a full window from the withdrawal, keeping the step's place in the queue; a healthy worker claims again; a test withdraws a lease just after the deadline |
 | a pause and each deadline | the pause removes the start deadlines; the resume writes a full window; the close cutoff is enforced during the pause; tests with a step that becomes claimable during the pause, two pauses, and path instances |
 | a stop and a deadline | first commit wins; both end the step without an effect |
 | a step in reconciliation past its close deadline | never ended by the pass: its close deadline was cleared |
@@ -708,7 +712,8 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
   retries pass, the failure's transaction for row 6, the lost-lease pass), where `kind` is `schedule_to_start`, `schedule_to_close`,
   `start_to_close` (an attempt deadline), `heartbeat` (the lapse of a node's own `heartbeatTimeoutMs`) or `lease` (the lapse of the
   platform's time-to-live); `step_retry_decisions_total{rule}` with the seven rows' rules; `step_deadline_lag_seconds` (a histogram,
-  from the deadline to the pass's commit); `step_deadline_pass_noops_total{kind}`; `step_claim_skips_total{reason}`.
+  from the deadline to the pass's commit); a pass's no-op in `scheduler_actions_total{outcome="skipped"}` and a claim's skip in `worker_claim_skipped_total{reason}`, the
+  existing families.
 - Spans: the pass's transaction carries `sagat.deadline.kind`.
 - Audit: publication of a version with these fields is audited as every publication. A timeout is a system transition, journaled and
   not audited, as a lease expiry is today.
@@ -722,7 +727,7 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
   lists of `specs/002-durable-execution/data-model.md` and `specs/018-schedules-bulk-operations/contracts/journal-and-events.md`): the
   deadlines (microseconds since the epoch, as `StartDelayed {until_us}` does) on `step.released`, `step.retry_due`,
   `step.retry_requested`, the body admissions, 022's grant events and `step.lease_withdrawn`; `attemptDeadlineUs` and
-  `attemptDeadlineCause` on `step.leased`; `pausedAtUs` on `run.paused` and `resumedAtUs` on `run.resumed`; `deadline`, `retryRule`,
+  `attemptDeadlineCause` on `step.leased`; `resumedAtUs` on `run.resumed`; `deadline`, `retryRule`,
   `lastAttemptCode` and `delaySource` on the events of Technical Plans 4 and 6; `generation` on a `step.failed` with no fence.
 - **New transitions of the reducer**, root and scoped: `step.failed` from `READY` and from `RETRY_WAIT` (no fence, guarded by the
   generation). An older build refuses them, which is why the requirements are a floor for a rollback (Requirement 045-017).
@@ -786,19 +791,10 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 | 044 (workflow as code) | being designed | the options of an activity call map to these fields |
 | ADR-0029 decision 6 | accepted | a handler-sourced lease is not renewed continuously by the host; refined by Architecture decision 0110 |
 
-### 15. Rules settled in the third review round
+### 15. Details the tasks build
 
-- **No start deadline while paused.** Every event that makes a step claimable (a release, a retry that is due, an operator's retry, a
-  withdrawal, a gate's grant) writes no start deadline while the run is paused; this overrides Requirements 045-020 and 045-021 and the
-  withdrawal rule. A close cutoff reached during a pause ends the step; its failure route runs at the resume, because the planner does
-  nothing while a run is paused.
-- **A withdrawal keeps its place and gets a full window.** A withdrawal writes the start deadline as the later of the old one and the
-  withdrawal's `db_now` plus the full start window (not one receive bound: under a backlog a withdrawn step waits behind others), and
-  keeps the step's `ready_at`, so it is not sent to the back of the queue; the four withdrawals per attempt of Architecture decision
-  0098 decision 7 bound how often. For a node without `scheduleToStartMs` it writes none; at level 0 no field. This replaces the
-  shorter window of Technical Plan 3 and Requirement 045-021.
-- **The first beat of a flagged lease** follows Architecture decision 0099 decision 6 (timed from the acknowledgement's answer); the
-  1.9 first-interval rule applies to unflagged leases only. A conformance case: a flagged lease received at 6 s and acknowledged at 12 s.
+Each rule below is stated once, here.
+
 - **The worker's delay** is the longer of the worker's delay and the policy's computed delay including its jitter sample; at level 0 it
   is ignored and left out of the fingerprint, where it is otherwise a tagged part appended only when present.
 - **Counting.** A `SCHEDULE_TO_CLOSE_TIMEOUT` decided at row 6 after a worker's delay is counted under `step_retry_decisions_total` only;
@@ -832,7 +828,7 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 | Security: a worker asks for a short delay to retry faster than the author's policy allows | The delay is the longer of the worker's and the policy's, and the journal says it came from the worker |
 | Security: a worker reports a platform timeout code to claim that nothing ran | The server records it as `WORKER_ERROR`; timeouts are counted where the platform decides them |
 | Security: one tenant floods deadlines or short heartbeats | The pass is fair across tenants with its own window; the minimum heartbeat timeout bounds a lease to five thirds of today's beat rate; an older host is never given a timeout below 30 s |
-| Security: a requirement is removed while a publication that needs it commits, or publications starve the operator | The publication holds the requirement under a fair advisory lock until it commits |
+| Security: a requirement is removed while a publication that needs it commits, or publications starve the operator | The publication reads the requirement's row `FOR SHARE` inside its own transaction until it commits; only a publication that needs the requirement holds it, and a removal is refused while a version of its level exists |
 | A host clock far from the database's distorts an older host's interval | An older host is served only nodes whose time-to-live is at least today's 30 s |
 | The deadline pass falls behind under load | Its lag is a histogram with an alert in the runbook, and its criterion includes a one-tenant flood |
 
@@ -840,7 +836,7 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass | Every deadline is computed by the domain, journaled, written to a column and acted on in one run transaction under the run lock; the lease decision and the pass's re-check make a lease and a timeout exclusive; the retry decision is journaled with its rule. The principle's audited no-op is for a timeout racing a signal, which this design does not change; here a late worker report loses as today (`STALE_ATTEMPT`, recorded with its trace), a pass that loses is counted (`step_deadline_pass_noops_total`) and a claim's skip is counted (`step_claim_skips_total`), since no caller made them |
+| I. State and retry semantics are explicit and durable | Pass | Every deadline is computed by the domain, journaled, written to a column and acted on in one run transaction under the run lock; the lease decision and the pass's re-check make a lease and a timeout exclusive; the retry decision is journaled with its rule. The principle's audited no-op is for a timeout racing a signal, which this design does not change; here a late worker report loses as today (`STALE_ATTEMPT`, recorded with its trace), a pass that loses is counted (`scheduler_actions_total`) and a claim's skip is counted (`worker_claim_skipped_total`), since no caller made them |
 | II. Modular domain, ports and adapters | Pass | New types in `crates/domain` without `serde_json`; the domain sees host features, not protocol numbers; parsing in `infra-ir`; SQL in `infra-postgres`; the pass in `scheduler`; no new crate edge (`scripts/check-architecture.py`) |
 | III. External effects are at-least-once; sagas compensate | Pass | A deadline that ends a live attempt is an unknown outcome (reconciliation or review); only a deadline with no live attempt is a known failure; compensation and reconciliation nodes are untouched; the close deadline is cleared when a person or a reconciliation takes over; an unsettled step is never retried |
 | IV. Compatibility is versioned and pinned | Pass | Optional IR fields read only for versions of level 1 or 2, protocol 1.9 additive, optional journal fields written only for those versions, two fleet requirements with a floor for a rollback; versions of level 0 are unchanged; no code changes meaning |
@@ -859,7 +855,7 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
 | `byErrorCode` beside `nonRetryableErrorCodes` | The owner's brief asks for a retry policy per error type; a rate limit and a bug need different patience, and a worker's delay cannot give a rate limit more attempts than a bug | Only the list: forces an author to choose between giving up and retrying a provider faster than it accepts |
 | `heartbeat_timeout_ms` on the lease although an older host derives its interval from the expiry | The expiry is an instant on the database's clock; a duration lets a host beat in time whatever its clock says, as protocol 1.8 chose for its own fields | The instant alone: a host whose clock is off by more than the window beats too late |
 | A second requirement for steps that need 1.9 | Their steps can only run on 1.9 hosts, which need 1.7 and 1.8 first | One requirement: such a version could publish before any server offers 1.9 and never be leased |
-| A definer function with a fair advisory lock for the publication hold | Without it a removal can commit between a publication's check and its commit, and a row lock would let publications starve the operator | No hold: an older binary could serve a version it cannot honour |
+| A definer function that holds the requirement's row for a publication | Without it a removal can commit between a publication's check and its commit | No hold: an older binary could serve a version it cannot honour |
 | A pause that removes and rewrites start deadlines | A paused run is an operator's hold; without it a pause fails steps, or paused rows sit at the head of the index | Shift each deadline by the paused time: wrong for steps that became claimable during the pause, and needs a payload per step |
 
 ## Alternatives Considered
@@ -904,7 +900,11 @@ released 0.2 scenario and the protocol baseline test for 045-004.
 
 Test first: each task that changes behaviour adds its tests and sees them fail for the right reason before the code (AGENTS.md rule
 18). Documentation first: Task 045-1 changes the contracts and documents before any code (Owner decision 2026-11-20-8). The tasks are
-ordered into slices for two builders whose lanes never touch the same crate at once. Each server slice is one pull request that
+ordered into slices for two builders whose lanes never touch the same crate at once, in two phases. Phase A is level 1 with no
+protocol change (the three timeouts with a heartbeat timeout of at least 30,000 ms on any host, and the retry lists): slices 0 to 3,
+5, 6 and 7, gated by Success criteria 045-001, 045-002 and 045-004. Phase B is protocol 1.9 and level 2 (`heartbeatFrom: "handler"`,
+heartbeat timeouts below 30,000 ms, `nextRetryDelay`): slices 4 and 8, gated by Success criterion 045-003, after protocols 1.7 and
+1.8. The rows that compose with lease withdrawal, protocol 1.8 and feature 022's gates are built by whichever lands second. Each server slice is one pull request that
 changes every caller of a signature it changes, so the workspace builds after each.
 
 | Slice | Lane | Tasks | Crates and folders | Depends on |
@@ -984,7 +984,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   the `deadline_cause` column on 022's two waiter tables; the dequeue events and `step.failed` in 022's one timeout routine; the
   eligibility rule; the return of a granted step's slot and permit in 022's lock order; the start deadline on the grant events; the
   races of Technical Plan 7; the runtime role's grants on 022's tables checked and every statement scoped by `tenant_id`. Built by
-  whichever of 022's gate and this design lands second (the counterpart task in `specs/022-flow-control-step-policies/tasks.md`).
+  whichever of 022's gate and this design lands second (this task owns the work in feature 022's crates).
   Refs: Requirement 045-011
   Owner-gate: OD-2026-11-26-560
 - [ ] T045-11 `crates/api-http` and the fleet requirements: `RuntimeNode`'s deadlines and cause and `RuntimeGraph.serverTime`, the
@@ -1022,8 +1022,8 @@ changes every caller of a signature it changes, so the workspace builds after ea
   suite `perf_activity_timeouts` (`tests/performance/activity-timeouts/`, its `[[test]]` entry); record them with their
   environment in `tests/performance/reports/`.
   Refs: Non-functional requirement 045-001, Non-functional requirement 045-002, Success criterion 045-005
-- [ ] T045-18 Released 0.2 and mixed-fleet scenarios, and the inventory `control-plane activity-timeouts-inventory` (it lists stored
-  level-0 root nodes that carry the keys, and its runbook says to edit them): runs from 0.2 finish unchanged, a 0.2 host is served at its minor and never leased
+- [ ] T045-18 Released 0.2 and mixed-fleet scenarios, and the inventory of stored level-0 root nodes that carry the keys, a mode of
+  design 043's inventory module (`apps/control-plane/src/inventory.rs`, its scope and exit codes; its runbook says to edit them): runs from 0.2 finish unchanged, a 0.2 host is served at its minor and never leased
   a step of a level-2 version, a stored level-0 document with the keys runs as today, the requirement gates, the floor for a rollback,
   rollback before the requirements.
   Refs: Requirement 045-017, Non-functional requirement 045-004
