@@ -4,6 +4,22 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-26 — Data, AI and events readiness: designs 015, 039, 040, 042 and features 024, 025
+
+Acts taken by the agent preparing these features for build, under the owner's delegation for release 0.3.0
+(OD-2026-11-24-4). Each row gives the act and its reason; the owner may overrule any of them.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-26-100 | Design 040, O040-001 (scope): the whole audit trail in OCSF, with `script.violation`, `egress.denied` and `access.denied.cross_tenant` as Detection Findings; operational alerts stay out. Why: a SIEM needs the trail and must see the platform's own controls firing as detections; alerts are operations and would be noise with a security label | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, specs/040-ocsf-event-standard/research.md O040-001 |
+| OD-2026-11-26-101 | Design 040, O040-002 (delivery): both a read (`GET /audit/ocsf`) and a push to sinks. Why: a read alone leaves every customer a poller with the commit-order problem; push is what SIEMs take | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, O040-002 |
+| OD-2026-11-26-102 | Design 040, O040-003 (who configures a sink): tenant administrators for their tenant through the API (`audit:sink:manage`); the operator for every tenant through the engine's configuration only. Why: a tenant owns its trail; a cross-tenant stream reachable through the API would be a new way out of the tenant boundary | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, O040-003 |
+| OD-2026-11-26-103 | Design 040, O040-004 (version): OCSF 1.10.0, read from schema.ocsf.io on 2026-11-26, with the profiles `trace` and `security_control`. Why: current, and 1.9.0 deprecates the class the first mapping would have used; a declared profile makes its attributes required | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, O040-004, D040-001, D040-003 |
+| OD-2026-11-26-104 | Design 040, O040-005 (extension): no registered extension in 0.3.0; platform facts in `unmapped` with closed keys. Why: registration needs the OCSF project's review outside this repository; receivers keep `unmapped` | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, O040-005 |
+| OD-2026-11-26-105 | Design 040, O040-006 (native shape): `GET /audit` stays the default and is never removed; OCSF is the separate operation `GET /audit/ocsf`. Why: one typed schema per operation; removing the native shape breaks callers for no gain | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, O040-006 |
+| OD-2026-11-26-106 | Design 040, O040-007 (logs): only durable records become OCSF; log lines stay OpenTelemetry. Why: log lines are lossy by design (ADR-0084), and a SIEM would read a gap as a quiet period | delegate (OD-2026-11-24-4) | Decided | docs/designs/040-ocsf-event-standard.md, O040-007 |
+| OD-2026-11-26-107 | ADR-0150 accepted: security and audit events leave as OCSF 1.10.0 projections of the native record, mapped by one total table and streamed by a cursor below the snapshot's `xmin`. Why: no write added to audited transactions, no commit-order gap and no replication slot on the primary, against an outbox row per record (a second write at more than 300 places) or logical decoding (unbounded write-ahead log) | delegate (OD-2026-11-24-4) | Decided | docs/adr/ADR-0150-security-and-audit-events-leave-as-ocsf-projections-of-the-native-record.md |
+
 ## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
 
 The coordinating session compared the platform with Temporal and Windmill (gaps that have a specification, gaps that have
