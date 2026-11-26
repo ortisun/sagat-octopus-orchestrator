@@ -1,8 +1,14 @@
 # Activity timeouts and retry per failure code
 
 *   **Author:** Claude Code, for the owner (under Owner decision 2026-11-20-6 and Owner decision 2026-11-24-4)
-*   **Status:** Draft
-*   **Date:** 2026-11-24
+*   **Status:** Approved
+*   **Date:** 2026-11-26
+*   **Reviewed-commit:** b696b288d5baebffa73a062a1ae65fac27a4b8e4
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/045-activity-timeouts.reviews/2026-11-26/approval/egm-review.md sha256:03a0c2b33a251161974be7927e8dde01f93503767b6d4f6bbc2e79f2c494e793; docs/designs/045-activity-timeouts.reviews/2026-11-26/approval/architecture.md sha256:784d05069c8cfcd79e39e482432a950ca80728a509c849233d47c31676af2db3; docs/designs/045-activity-timeouts.reviews/2026-11-26/approval/security.md sha256:0a27254e0008c20535182f9ecc74b9d562ece777e929fea1a3b3dc4e40f2285a; docs/designs/045-activity-timeouts.reviews/2026-11-26/approval/correctness.md sha256:aa6faabc76dd742b80d280563802785366abf4d9e808bf76e964e77a80f8b5f6
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 1; OD-2026-11-26-561
 
 --------------------------------------------------------------------------------
 
