@@ -93,6 +93,10 @@ The reviews found four more facts:
    control-plane and engine instances; until an operator activation, their use is refused
    (`FLOW_CONTROL_ACTIVATION_PENDING`). The current keyed-digest version MUST be a database row read in each
    deciding transaction.
+   *Amended 2026-11-26, delegate (OD-2026-11-24-4; feature 022 decisions D022-136 and D022-137, task T022-116):* the
+   operator activation is the generic `control-plane capability-activate flow-control-concurrency-v1` (and
+   `flow-control-rate-v1`) of ADR-0098 decision 4, which keeps every check of the feature's own command (now removed)
+   and refuses while no digest key version is `ACTIVE`.
 
 ## Considered options
 

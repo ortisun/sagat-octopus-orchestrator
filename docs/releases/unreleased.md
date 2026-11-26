@@ -40,13 +40,20 @@ ADR-0096). Off by default; nothing changes for a definition that does not declar
    In Helm the switches are `flowControl.concurrencyKeys` and `flowControl.rateLimits`; the compose overlay
    `compose.flow-control.yaml` turns both on (decision D022-118, runbook section 6).
 3. Activate the digest key version (`SELECT * FROM flow_control_key_activate(1::smallint, '<your name>');`), then each
-   capability for the fleet: `control-plane flow-control-activate --capability concurrency-keys --operator <your name>`
-   and `--capability rate-limits`, as the schema-owning role. Until then publication and starts that use one are
+   capability for the fleet with the one operator command of every fleet requirement:
+   `control-plane capability-activate flow-control-concurrency-v1 --operator <your name> --expect-live <n>` and
+   `control-plane capability-activate flow-control-rate-v1 ...`, as the schema-owning role (`--dry-run` checks and
+   changes nothing). The command refuses while a live process does not list the capability, while a kind has no live
+   process, and while no digest key version is active (decisions D022-136 and D022-137). Until then publication and starts that use one are
    refused `422 VALIDATION_FAILED`, `FLOW_CONTROL_ACTIVATION_PENDING`; afterwards a process without the capability
    answers `503`, `BINARY_CAPABILITY_MISSING`. The digest-key commands are SQL functions of the schema owner only, with
    no API, command or metric yet (gap G022-006, runbook section 1.3).
 4. To turn one off, switch it off and keep the key file mounted: a switched-off process that holds the file still lists
    the gate and drains what was admitted (D022-062).
+5. A lease the server withdraws (feature 006) leaves its gated step with its concurrency permit and its rate slot: the
+   step is leased again without queueing and takes no second slot; the slot counts from the lease that reached a
+   worker (decisions D022-138 and D022-139, migration `20270217000000_flow_control_withdrawn_lease`; gap G022-041 for
+   a lease withdrawn after its window had passed).
 
 New reads: `Run.concurrency`, `Run.rateLimit` (with `position` and `estimatedGrantAt` on a single-run read) and a step's
 `waitingOn` for a reader of the run; `GET /namespaces/{namespaceId}/concurrency-keys` and `GET .../rate-limit-keys` with

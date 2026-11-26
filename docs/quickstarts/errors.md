@@ -135,7 +135,7 @@ Another published workflow of this namespace declares the same explicit rate-lim
 
 ### FLOW_CONTROL_ACTIVATION_PENDING
 
-The capability this workflow uses (concurrency keys or rate limits) is switched on but not activated for the fleet: the operator activates it with `control-plane flow-control-activate` once every control plane and engine runs it.
+The capability this workflow uses (concurrency keys or rate limits) is switched on but not activated for the fleet: the operator activates it with `control-plane capability-activate flow-control-concurrency-v1` (or `flow-control-rate-v1`) once every control plane and engine runs it.
 
 ### COLLECTION_OPERATORS_DISABLED
 

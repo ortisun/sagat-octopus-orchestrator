@@ -2355,6 +2355,75 @@ taken after `git grep D022-04` on every `origin/*` branch.
   lease-withdrawal design planned one generic command for this feature to adopt. Chosen: the two flow-control
   capabilities become entries of `capability-activate`, and `flow-control-activate` is removed before release 0.3.0
   ships (task T022-116, which blocks the release). The runbook and the release notes name only the generic command.
+- **D022-137 — How the two flow-control capabilities are entries of `capability-activate` (2026-11-26; task
+  T022-116; decisions D022-136, D022-062, D006-034, D006-082; ADR-0089 decision 6, ADR-0098 decision 4).** Delegate
+  (OD-2026-11-24-4, OD-2026-11-20-6). Every check that `flow-control-activate` made is kept, and each now lives in the
+  generic command:
+  1. *The tokens:* the command line names the registry tokens `flow-control-concurrency-v1` and `flow-control-rate-v1`
+     (`concurrency-keys` and `rate-limits` go with the old command). Each entry covers both kinds
+     (`InstanceKind::ALL`), sets `empty_fleet: false` and `each_kind_live: true`, and follows no other requirement.
+  2. *The operator* is required and checked as a subject (the old command's `Subject::parse`, plus the generic check of
+     unprintable characters); a dry run may omit it.
+  3. *The live fleet:* the old feature step `live_capable_step` (the SQL function
+     `flow_control_kinds_without_capable_process`: each required kind has a live process that lists the capability)
+     is the generic census with `each_kind_live` and no process lacking the capability, judged before the activation
+     and again under the epoch lock. Both are removed: the function by the migration
+     `20270217000100_flow_control_activation_function_drop` (its down creates it again), and its runtime-privilege
+     allowance with it.
+  4. *The refusals of the registry itself* (a live process lacks the capability, the requirement is recorded for
+     other kinds, the runtime role may not run the functions) are the generic command's, with the same "Nothing was
+     changed" sentences; the audit record is the registry's history row with the operator and the database role, as
+     before.
+  5. *What the generic command adds:* `--expect-live N` and `--dry-run`, which the old command lacked.
+  6. *A check the old command did not make, added as a generic hook:* the entry field `prerequisite`, a state of the
+     platform the requirement needs, read before the census (a dry run included) and again under the epoch lock. The
+     flow-control entries require an `ACTIVE` digest key version (`flow_control_key_versions`). Without one every gated
+     decision is refused as unavailable (`readiness_gate.rs`, "no digest key version is active"), so activating the
+     capability first would make every gated publication and start fail with `503` while the runbook's order (key
+     version, then capability) was only prose. Weighed: leaving the order to the runbook (the old behaviour; a
+     mistake there is an outage of the gated workflows); a flow-control step closure passed to the generic command (a
+     second shape of feature step beside `follows`, which D006-034 meant to avoid). The hook is an enum of named
+     prerequisites, so a later entry adds a variant, not a closure.
+  `control-plane flow-control-activate` is then an unknown command (`unknown command 'flow-control-activate'`), with no
+  alias: it was never released.
+- **D022-138 — A withdrawn lease of a gated step keeps its permit and its slot (2026-11-26; ADR-0098 decision 3,
+  ADR-0089, ADR-0094, ADR-0096; FR-022-019, FR-022-040, FR-022-046; delegate OD-2026-11-20-6).** A lease the server
+  never handed to the transport is withdrawn (`step.lease_withdrawn`): the step goes back to `READY` at the attempt it
+  had, nothing ran, and the next lease reuses the attempt with the next generation. Facts read in the code: a step's
+  gates are filed for the attempt they admit (`attempt() + 1`, D022-029), and the withdrawal changes neither the
+  attempt the slots name nor their phase (`StepState::withdraw_lease`), so the step is again what ADR-0096 calls
+  *granted and not leased*. Options: (a) the step gives its permit and its slot back and asks again (a second decision:
+  it may queue behind its key, and a rate key may take a second slot for an attempt that ran once); (b) the step keeps
+  both, and the next lease is admitted without a decision. Chosen: **(b)**. The permit and the slot were granted to
+  this attempt and no handler used them; asking again would put a granted step behind waiters that came later, and
+  count one attempt twice in a key's window. So:
+  1. the concurrency permit stays held by the attempt until the attempt ends, and is released once
+     (`concurrency.released`), as for an attempt that was never withdrawn;
+  2. the rate slot stays granted to the attempt and is never asked for again; a pause, a hold for review, a
+     cancellation or the end of the run gives it back as any granted, unleased slot (ADR-0096), whatever lease instant
+     the withdrawn lease had recorded;
+  3. the slot counts from the lease that reached a handler, not from the withdrawn one: the withdrawal's commit clears
+     the lease instant the scheduler may have copied onto the grant (`leased_at`), so the slot counts again without
+     end, as an unleased grant does, until the lease pass records the attempt's next lease (D022-139). A slot thus
+     never stops counting while its step is granted and unleased (invariant 13), and never counts from a lease that
+     did not run.
+  Before this decision the code kept the permit and the slot (so (b) held for the decision), but the grant kept the
+  withdrawn lease's instant: the slot stopped counting one window after a lease that never ran while the step still
+  held it, the pass never recorded the lease that ran, and a pause, a cancellation or the end of the run refused to
+  give back a slot whose row looked leased (`the row a flow-control event gives back`).
+- **D022-139 — The lease pass records the last lease of the attempt, and a row a withdrawal changed is not written
+  (2026-11-26; D022-064 item 4, D022-138).** The pass (transaction T23) copied the instant of the *first*
+  `step.leased` of the granted attempt journaled after the grant; with withdrawals an attempt has several, and only the
+  last can have reached a handler. It now copies the last one, and only while the step's projection is at that attempt
+  (a withdrawn step is one attempt behind, so nothing is recorded until it is leased again). The withdrawal clears
+  `leased_at` with a write that always makes a new row version, and the pass writes a row only when its version is the
+  one the pass read (`xmin`): a pass that read the step as leased before a withdrawal committed, and then waited for the
+  row, finds a new version on its recheck and skips it, instead of recording the withdrawn lease. The row guard
+  (`rate_limit_rows_guard`) allows that clear and nothing else beside the recording: every other column must be
+  unchanged (migration `20270217000000_flow_control_withdrawn_lease`; its down restores the guard of
+  `20270130000100`). Weighed: locking the step row from the pass (the pass then waits for run transactions, and
+  D022-064 item 4 keeps it to the grant rows); a column counting withdrawals (a schema change for what the row's
+  version already says).
 
 ## Gaps
 
@@ -2421,6 +2490,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G022-036 | The deployment files cannot turn the rate gate on: the Helm chart has one switch, `flowControl.concurrencyKeys` (`infra/helm/values.yaml`, `templates/_helpers.tpl` `sagat.flowControl.env`), and no value for `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its comment still says "The rate gate is not served by this release"; the overlay `infra/docker/compose.flow-control.yaml` sets the concurrency switch only. The runbook (section 6) says so and gives the local workaround (found 2026-11-26, task T022-088). | Closed by D022-118 (2026-11-26) |
 | G022-037 | An orphaned waiter (alert `FLOW_CONTROL_WAITER_ORPHANED`) is removed by a hand `DELETE` as the schema owner, with no API, command or audit record, while NFR-022-005 asks an audited API for every operator action; the same holds for the digest-key commands (G022-006). The runbook (section 14) tells the operator what to keep in the change record (found 2026-11-26, task T022-061). | Open; with G022-006's operator role |
+| G022-041 | A withdrawal whose grant had recorded the withdrawn lease, and whose window had already passed when the lease was withdrawn, makes the slot count again from the withdrawal (D022-138). Between the end of that window and the withdrawal the slot did not count, so the key may have granted another step meanwhile; when both attempts then run within one window the downstream sees one call more than the limit, once per such withdrawal. It needs a lease that waited longer than its window before it was withdrawn (most likely with `per: second`). Not measured; no alert says it happened (found 2026-11-26, decision D022-138). | Open; accepted for 0.3.0 by the delegate (OD-2026-11-20-6) |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 
 ## Owner questions
