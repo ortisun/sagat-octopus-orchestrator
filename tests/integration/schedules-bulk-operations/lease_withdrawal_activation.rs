@@ -178,6 +178,21 @@ fn the_command_line_takes_a_capability_and_the_three_flags_and_nothing_else() {
             true
         )))
     );
+    // the floor of protocol 1.8 is one the command activates since the follow-up of pull request #260 (decision D006-096)
+    assert_eq!(
+        parse(&[
+            "capability-activate",
+            "lease-withdrawal-v2",
+            "--operator",
+            "ana"
+        ]),
+        Ok(Command::CapabilityActivate(ActivationArgs {
+            capability: "lease-withdrawal-v2".to_owned(),
+            operator: Some("ana".to_owned()),
+            expect_live: None,
+            dry_run: false,
+        }))
+    );
     for wrong in [
         &[
             "capability-activate",
@@ -197,7 +212,7 @@ fn the_command_line_takes_a_capability_and_the_three_flags_and_nothing_else() {
         &["capability-activate"][..],
         &[
             "capability-activate",
-            "lease-withdrawal-v2",
+            "lease-withdrawal-v3",
             "--operator",
             "ana",
         ][..],
@@ -275,4 +290,196 @@ async fn the_census_names_the_kinds_that_have_a_live_process() {
         vec![InstanceKind::ExecutionEngine],
         "a silent process is not live"
     );
+}
+
+fn v2_args(dry_run: bool) -> ActivationArgs {
+    ActivationArgs {
+        capability: "lease-withdrawal-v2".to_owned(),
+        operator: Some("ana".to_owned()),
+        expect_live: Some(2),
+        dry_run,
+    }
+}
+
+async fn recorded_v2(r: &Registry) -> Option<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT kinds FROM platform_requirements WHERE capability = 'lease-withdrawal-v2'",
+    )
+    .fetch_optional(&r.db.pool)
+    .await
+    .expect("requirements")
+}
+
+/// A control plane and an engine of the follow-up's build: both list the two capabilities.
+async fn fleet_of_the_follow_up(r: &Registry) {
+    for kind in InstanceKind::ALL {
+        r.serving(
+            kind,
+            &[Capability::LeaseWithdrawalV1, Capability::LeaseWithdrawalV2],
+        )
+        .await;
+    }
+}
+
+/// Request (9) of decision D006-059 (Task 006-071, decision D006-096): `lease-withdrawal-v2` is activated only after
+/// `lease-withdrawal-v1` is recorded for both kinds. Without it, and with it recorded for the engines only, the command
+/// refuses, a dry run too, naming both; with it, the requirement is recorded for both kinds, once.
+#[tokio::test]
+async fn lease_withdrawal_v2_is_refused_until_lease_withdrawal_v1_is_recorded_for_both_kinds() {
+    let r = registry().await;
+    fleet_of_the_follow_up(&r).await;
+    for dry_run in [true, false] {
+        let message = declined(activate(&r, &v2_args(dry_run)).await);
+        assert!(
+            message.contains("lease-withdrawal-v2 follows lease-withdrawal-v1"),
+            "dry_run={dry_run}: {message}"
+        );
+    }
+    assert_eq!(recorded_v2(&r).await, None);
+    // recorded by hand for one kind: not the requirement it follows
+    r.require(
+        Capability::LeaseWithdrawalV1,
+        &[InstanceKind::ExecutionEngine],
+    )
+    .await
+    .expect("recorded for the engines");
+    let message = declined(activate(&r, &v2_args(false)).await);
+    assert!(message.contains("follows lease-withdrawal-v1"), "{message}");
+    assert_eq!(recorded_v2(&r).await, None);
+    sqlx::query_scalar::<_, String>(
+        "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v1', 'ana')",
+    )
+    .fetch_one(&r.db.pool)
+    .await
+    .expect("removed");
+    activate(&r, &args(Some("ana"), Some(2), false))
+        .await
+        .expect("lease-withdrawal-v1 for both kinds");
+    match activate(&r, &v2_args(false)).await.expect("activated") {
+        ActivationOutcome::Activated { entry, live, .. } => {
+            assert_eq!(entry.capability, Capability::LeaseWithdrawalV2);
+            assert_eq!(live, 2);
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut kinds = recorded_v2(&r).await.expect("recorded");
+    kinds.sort();
+    assert_eq!(kinds, ["CONTROL_PLANE", "EXECUTION_ENGINE"]);
+    assert!(matches!(
+        activate(&r, &v2_args(false)).await,
+        Ok(ActivationOutcome::AlreadyActive { .. })
+    ));
+}
+
+/// Decision D006-096: the requirement it follows is read again under the epoch lock. A removal of `lease-withdrawal-v1`
+/// that commits while the activation of `lease-withdrawal-v2` waits for the lock it holds makes the activation refuse,
+/// though its first check found the requirement.
+#[tokio::test]
+async fn the_requirement_it_follows_is_read_again_under_the_epoch_lock() {
+    let r = registry().await;
+    fleet_of_the_follow_up(&r).await;
+    activate(&r, &args(Some("ana"), Some(2), false))
+        .await
+        .expect("lease-withdrawal-v1");
+    let mut removal = r.db.pool.begin().await.expect("a transaction");
+    let removed: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v1', 'ana')",
+    )
+    .fetch_one(&mut *removal)
+    .await
+    .expect("removed, not committed");
+    assert_eq!(removed, "REMOVED");
+    // the first check reads the committed row, so it passes; the activation then waits for the epoch lock
+    let url = r.db.url.clone();
+    let activation =
+        tokio::spawn(async move { capability_activate(&database(url), &v2_args(false)).await });
+    r.wait_for_lock_waiters(1, "the activation waits for the epoch lock")
+        .await;
+    removal.commit().await.expect("the removal commits");
+    let message = declined(activation.await.expect("the activation ended"));
+    assert!(
+        message.contains("lease-withdrawal-v2 follows lease-withdrawal-v1"),
+        "{message}"
+    );
+    assert_eq!(recorded_v2(&r).await, None);
+}
+
+/// Decision D006-096: `lease-withdrawal-v2` is a replay floor of one cause. It can be removed while the journals hold only
+/// causes a build without it replays (`NOT_SENT` here), and is refused once one holds `NOT_ACKNOWLEDGED` (written by SQL
+/// fixture: nothing of this build writes it), and outside READ COMMITTED.
+#[tokio::test]
+async fn lease_withdrawal_v2_cannot_be_removed_while_a_journal_holds_a_not_acknowledged_withdrawal()
+{
+    let r = registry().await;
+    fleet_of_the_follow_up(&r).await;
+    activate(&r, &args(Some("ana"), Some(2), false))
+        .await
+        .expect("lease-withdrawal-v1");
+    let withdrawal = |cause: &'static str| {
+        let pool = r.db.pool.clone();
+        async move {
+            let mut tx = pool.begin().await.expect("a transaction");
+            sqlx::query("SET LOCAL session_replication_role = replica")
+                .execute(&mut *tx)
+                .await
+                .expect("foreign keys off for this transaction");
+            sqlx::query(
+                "INSERT INTO run_events (tenant_id, run_id, seq, event_type, node, attempt, detail, actor, occurred_at) \
+                 VALUES (gen_random_uuid(), gen_random_uuid(), 1, 'step.lease_withdrawn', 'a', 1, \
+                         jsonb_build_object('attempt', 1, 'generation', 1, 'cause', $1::text), 'lease-withdrawal', now())",
+            )
+            .bind(cause)
+            .execute(&mut *tx)
+            .await
+            .expect("a withdrawal in a journal");
+            tx.commit().await.expect("committed");
+        }
+    };
+    let remove = || {
+        let pool = r.db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v2', 'ana')",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| error.to_string())
+        }
+    };
+    withdrawal("NOT_SENT").await;
+    activate(&r, &v2_args(false))
+        .await
+        .expect("lease-withdrawal-v2");
+    assert_eq!(
+        remove().await.as_deref(),
+        Ok("REMOVED"),
+        "only a NOT_SENT withdrawal"
+    );
+    activate(&r, &v2_args(false)).await.expect("recorded again");
+    let mut strict = r.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *strict)
+        .await
+        .expect("isolation level");
+    let refused = sqlx::query_scalar::<_, String>(
+        "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v2', 'ana')",
+    )
+    .fetch_one(&mut *strict)
+    .await
+    .expect_err("refused outside READ COMMITTED")
+    .to_string();
+    assert!(
+        refused.contains("lease-withdrawal-v2 is removed only under READ COMMITTED"),
+        "{refused}"
+    );
+    drop(strict);
+    withdrawal("NOT_ACKNOWLEDGED").await;
+    let refused = remove().await.expect_err("the floor holds");
+    assert!(
+        refused.contains(
+            "lease-withdrawal-v2 cannot be removed while a journal holds step.lease_withdrawn with the cause NOT_ACKNOWLEDGED"
+        ),
+        "{refused}"
+    );
+    assert!(recorded_v2(&r).await.is_some(), "the requirement stays");
 }
