@@ -1313,9 +1313,12 @@ clause stays on `secrets.existingSecret` or `openbao.enabled`, since federation 
 container (`openbao-identity-agent`), its own config volume projecting the ConfigMap entry `control-plane-identity.hcl`
 (role `openbao.roles.identity`), its own in-memory sink volume `openbao-identity-mount` at
 `/run/openbao-identity-mount` (named apart from `openbao-identity`, which holds the projected service-account token),
-and a startup probe on that sink; the control plane's environment gains `SAGAT_IDENTITY_FEDERATION=on`,
+and a startup probe on that sink. The control-plane container mounts `openbao-identity-mount` read-only at
+`/run/openbao-identity-mount` and `openbao-ca` at `/etc/openbao/ca` exactly once whenever either value is true (the CA
+line of `sagat.openbao.mounts` moves under the same condition, so no second mount of that path is added). Its
+environment gains `SAGAT_IDENTITY_FEDERATION=on`,
 `SAGAT_PUBLIC_ORIGIN` from the new required value `identity.publicOrigin` (checked as an HTTPS origin, as
-`openbao.address` is), `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`, `SAGAT_IDENTITY_OPENBAO_ADDRESS` and
+`openbao.address` is), `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE=/run/openbao-identity-mount/token`, `SAGAT_IDENTITY_OPENBAO_ADDRESS` and
 `SAGAT_IDENTITY_OPENBAO_CA_FILE=/etc/openbao/ca/ca.crt`, so the chart's federation value and the binary's switch are
 one. `_openbao.tpl` validates
 the address, CA secret, auth mount, audience, image and `openbao.roles.identity` whenever federation is enabled
@@ -1323,10 +1326,11 @@ the address, CA secret, auth mount, audience, image and `openbao.roles.identity`
 `tests/contract/scalability-ha/identity_chart.rs`: with `openbao.enabled` both agents, distinct container names, roles
 and sinks; with federation on and `openbao.enabled=false` the identity agent alone, no `SAGAT_OPENBAO_*` variable, the
 CA variable and the egress rule present with its configured peers, every `configMap` and `secret` volume and the
-`serviceAccountName` resolving to a rendered object or a set value, and in both modes the control plane's
-`serviceAccountName` equal to `<fullname>-control-plane`, and the ConfigMap holding exactly
-`control-plane-identity.hcl` with the identity role; in both modes `SAGAT_IDENTITY_FEDERATION=on` and
-`SAGAT_PUBLIC_ORIGIN`; the same with `openbao.network.to: []`, with neither native TLS nor `allowPlaintextSecrets` for
+`serviceAccountName` resolving to a rendered object or a set value, and the ConfigMap holding exactly
+`control-plane-identity.hcl` with the identity role (with `openbao.enabled`, the three existing entries plus that
+one); in both modes the control plane's `serviceAccountName` equal to `<fullname>-control-plane`,
+`SAGAT_IDENTITY_FEDERATION=on` and `SAGAT_PUBLIC_ORIGIN`, every path named by a `SAGAT_*_FILE` variable of the
+control-plane container under one of its `volumeMounts`, and no two mounts sharing a `mountPath`; the same with `openbao.network.to: []`, with neither native TLS nor `allowPlaintextSecrets` for
 the control plane, without `identity.publicOrigin`, or with `--kube-version 1.28`, fails the render; and the
 federation-only case that renders sets nothing on `engine.grpc`). The policy name
 `sagat-identity` is fixed, not a setting, since both clients check it; `docs/runbooks/federated-login.md` and
