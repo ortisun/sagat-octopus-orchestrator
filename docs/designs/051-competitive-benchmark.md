@@ -141,7 +141,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   all` so that statements inside functions are seen, `pg_stat_statements_reset()` runs once per turn, after the
   restore and before the product starts (no session exists yet), and never again in the turn, so a scan after every rung
   and at the turn's end covers every interval since then (the start-up of connection pools and the waits between rungs
-  included); the scan fails the turn when `pg_stat_statements_info.dealloc` is not 0 (an entry evicted), and on a `SET` of
+  included); the scan fails the turn when `pg_stat_statements_info.dealloc` is not 0 (an entry evicted) or its `stats_reset` is
+  not the time of that one reset, and on a `SET` of
   `synchronous_commit` or `commit_delay` and on any `set_config` statement outside a per-product list that the pilot
   fixes and publishes, since `pg_stat_statements` stores the setting's name of a `set_config` call as a placeholder;
   each entry is a normalized statement text admitted only when every call site of the pinned vendor source that
@@ -149,7 +150,8 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   the list trusts only source no pilot can change; for this platform, whose source changes between campaigns,
   `check_competitive_benchmark` finds every `set_config` call site of the workspace at the commit under test and
   refuses one not listed or without a constant setting name. The statement latency of Requirement 051-007 for a rung is
-  the difference of two snapshots of `pg_stat_statements`, taken at the rung's start and end. This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's
+  the difference of two snapshots of `pg_stat_statements`, taken at the rung's start and end; the snapshots stay in the host-only directory, and only their computed
+  differences per table (`queryid`, table, `calls`, `total_exec_time`, never `query`) are uploaded. This platform runs with `SAGAT_DB_REQUIRE_SYNCHRONOUS_STANDBY=false` when design 048's
   task that adds the setting is in the commit, as a single node requires, stated.
 
 ### The load and the measurement
@@ -373,7 +375,7 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   is pinned to a commit with its `go.sum` and runs unprivileged. The raw data uploaded are an allowlist of regular files copied into the host-only directory,
   each opened the same way, checked by `fstat` on the open file, bounded in size and copied from that same open file (a link anywhere in
   the path or any other kind of file refused; no
-  environment dumps, `docker inspect`, `docker compose config` or logs with statements; `log_statement` stays `none`).
+  environment dumps, `docker inspect`, `docker compose config`, logs with statements or `pg_stat_statements` snapshots; `log_statement` stays `none`).
   The release workflow (`.github/workflows/release.yml`) downloads its artifacts by name and refuses a duplicate file
   name, and no job of it restores a cache (`recovery`'s `rust-cache` removed; `cache: false` on `setup-go` and `setup-dotnet`, no
   `cache:` input on `setup-node`, `setup-python` or `setup-java` and `package-manager-cache: false` on `setup-node`; no
