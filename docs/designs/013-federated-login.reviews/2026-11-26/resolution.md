@@ -37,3 +37,22 @@ Settled by the author under Owner decision 2026-11-24-4, on the approval rule of
 | 13 | Nit | Fixed: the parenthetical deleted; CUJ 3 merged. Settled: "both equal the refresh interval" states the two settings' values and stays | Requirement 013-019, CUJ 3 |
 | 14 | Nit | Fixed: the redirect sentence split, "evicted", "a ceiling of zero refuses every request", "more often than that interval" | Technical Plan 4, Requirements 013-009, 013-024, 013-031 |
 | 15 | Nit | Fixed: Open Questions as in design 050, "Start-up refuses", "the `remove` command refusing" | Open Questions, Technical Plan 12 |
+
+## egm-review Stage 8, Intermediate Zoom Out (`intermediate_zoom_out_report.md`, at `88b3427f`)
+
+All ten findings are accepted and fixed. No security property is weakened. Each fix keeps the guarantee and removes a
+mechanism: `identity_revision`, the transactional revocation of a raised context, the `SEALING` key kind and its
+command group, a capability name, an engine setting, most of the `break` switch and the silence alert.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the subject rule and the tenant restriction are immutable with the issuer (Decision 013-014 extended). Only the sign-in path is staged, activation revokes nothing, and `identity_revision` with its predicate and batch branch is removed | Requirements 013-001, 013-019, Technical Plans 3, 4 and 6, Decision 013-014, Task 013-4 |
+| 2 | Major | Fixed: the per-request check refuses a session whose recorded context does not meet the current requirement. Raising the context writes the connection row only, and the maintenance loop marks those sessions later | Requirements 013-010, 013-019, Technical Plans 4 and 13, Task 013-20 |
+| 3 | Major | Fixed: every task belongs to one milestone. New Tasks 013-19 (B) and 013-20 (D) are added, and Task 013-17 holds all of C. Release 0.3.0 is A, B and D, and C ships when 029's migration lands. The required context moves to D, and each milestone's journey covers what it adds | Decision 013-020, Success criterion 013-001, the plan |
+| 4 | Major | Fixed: the attempt is sealed by the existing `KeyRing`, whose ring is one entry of the identity mount, with `identity attempt-key rotate`. The `SEALING` kind and the sealing-key command group are removed | Technical Plans 3, 4 and 12, Requirement 013-025, Task 013-8 |
+| 5 | Nit | Fixed: the session bound applies to blob uploads only | Requirement 013-018, Task 013-9 |
+| 6 | Nit | Fixed: `identity.federation` only, and `config.json`'s platform issuer comes from the same mapping | Requirement 013-032, Technical Plan 10, Task 013-10 |
+| 7 | Nit | Fixed: a 0.3.0 engine lists `identity-federation-v1` always, and only the control plane reads the setting | Requirement 013-032, Technical Plan 12 |
+| 8 | Nit | Fixed: `break` covers `alg`, `nonce` and `acr`, and the other rules are domain unit tests | Requirement 013-007, Technical Plan 9, Tasks 013-3, 013-4 |
+| 9 | Nit | Fixed: only the sign-in path is staged. The provisioning policy and the default role apply directly, audited, with the recomputation, and `a_default_role_change_applies_without_a_test_sign_in` is added | Requirement 013-001, Task 013-12 |
+| 10 | Nit | Fixed: `IDENTITY_SCIM_FAILING` fires after ten consecutive refused requests, convergence is stated at the provider's next change of the resource, and the fixtures show which provider sends `If-Match` | Technical Plan 6, Risks, Constitution Check VII, Task 013-13 |
