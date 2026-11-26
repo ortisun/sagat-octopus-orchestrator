@@ -124,8 +124,9 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
   the report publishes each product's tuning budget (the configurations tried and the runner minutes spent). Durability
   is never changed, which these checks hold:
   - *At every commit.* The three database servers run one image, built at the commit from the pinned PostgreSQL image
-    with a first-party extension, `sagat_commit_check` (in `postgres/`, a few dozen lines of C), loaded through
-    `shared_preload_libraries`. Its transaction callback, at the pre-commit and pre-prepare events of every transaction
+    with a first-party extension, `sagat_commit_check` (in `postgres/`, a few dozen lines of C), compiled in a builder
+    image pinned in `images.lock` that holds the compiler and the server's headers, with `docker build --network none`,
+    and loaded through `shared_preload_libraries`. Its transaction callback, at the pre-commit and pre-prepare events of every transaction
     that holds a transaction identifier, raises an error, which aborts that commit, when the transaction's effective
     `synchronous_commit` is below `local` or its `commit_delay` is not 0, and counts the refusal in shared memory,
     which the host's probe reads after every rung and at the turn's end; a refusal fails the turn. The check reads the
@@ -135,15 +136,27 @@ times a promotion on loopback (0.2 s) and adds a 15 s shard takeover as a consta
     writes nothing asynchronously, so a refusal unseen (between the last read and fault (c)'s kill, which empties
     shared memory) turns nothing off. Its tests run a disposable server and refuse a commit after each of those ways
     of setting `off`, and of a non-zero `commit_delay`, and accept `on` and `local`; a pilot that meets a refusal
-    reports it as that product's configuration, fixed before the campaign.
+    reports it as that product's configuration, fixed before the campaign. At each turn's start, and after fault (c)'s
+    restart, the harness's role runs a canary on the product's server (`SET LOCAL synchronous_commit = off`, a write,
+    `COMMIT`), which must be refused and raise the count by exactly 1, the canary subtracted from the product's count;
+    the probe's read errors, never returns 0, when the extension's shared memory is not initialised.
+  - *Unlogged relations.* The same extension's utility hook refuses creating a relation unlogged or switching one to
+    unlogged (`CREATE UNLOGGED TABLE` or `SEQUENCE`, `CREATE TABLE AS` and `SELECT INTO` unlogged, `ALTER ... SET
+    UNLOGGED`), since an unlogged table's rows skip the write-ahead log whatever the commit's setting, and
+    `pg_class` holds no relation with `relpersistence = 'u'` in any database at the turn's start (the restored
+    archive included), after every rung and at its end; a vendor schema that needs an unlogged table is reported by
+    the pilot and the table created logged, a deviation line; tests refuse each form.
   - *Server settings.* At the start and at the end of each turn `pg_settings` shows the fixed constraints' values
     (`fsync`, `full_page_writes` and the server's `synchronous_commit` among them); the products' roles are not
-    superusers, hold no row of `pg_parameter_acl` (no `SET` or `ALTER SYSTEM` grant on any parameter) and no `EXECUTE`
-    on `pg_reload_conf`, so no product can change a server setting between the two reads, checked through SQL.
+    superusers, are members, directly or by inheritance, of none of `pg_execute_server_program`,
+    `pg_write_server_files` and `pg_read_server_files`, and lack `EXECUTE` on `pg_reload_conf`
+    (`has_function_privilege`), and `pg_parameter_acl` is empty (no `SET` or `ALTER SYSTEM` grant to anyone), so no
+    product can change a server setting between the two reads, checked through SQL.
   - *Latency.* `pg_stat_statements` (`track = all`, so that statements inside functions are seen) is reset once per
     turn, after the restore and before the product starts, and its `dealloc` must stay at 0 (an evicted entry fails
     the turn, since it falsifies the differences); after fault (c)'s restart, which empties it, the differences start
-    again from the restart. The statement latency of Requirement 051-007 for a rung is the difference of two snapshots of
+    again from the restart; a rung fails when a key present in its start snapshot is missing from its end snapshot or
+    its `calls` went down (a reset of single entries, whatever the privileges). The statement latency of Requirement 051-007 for a rung is the difference of two snapshots of
     `pg_stat_statements`, taken by the host at the planned start and end of the rung's 300 s window, which the driver
     posts before the rung (its schedule is precomputed), the snapshot's lag after the planned time published and a
     rung whose lag exceeds 1 s marked; the snapshots are keyed on (`userid`, `dbid`, `queryid`, `toplevel`), with
@@ -523,7 +536,7 @@ turn; the others are stopped.
 
 - One PostgreSQL configuration for the three servers, by a neutral rule: the server's defaults, with `shared_buffers` a
   quarter and `effective_cache_size` a half of the database server's memory share, `max_wal_size` 1 GB,
-  `max_connections` 200, `shared_preload_libraries = 'pg_stat_statements'` with `pg_stat_statements.max = 10000` and
+  `max_connections` 200, `shared_preload_libraries = 'pg_stat_statements,sagat_commit_check'` with `pg_stat_statements.max = 10000` and
   `pg_stat_statements.track = all` (the pilot confirms that `dealloc` stays at 0 for each product), `track_commit_timestamp = on`, durability
   untouched (Requirement 051-004).
 - Temporal's visibility store is SQL on the same server; its outcomes and close times are read from its persistence,
@@ -689,7 +702,7 @@ estimate is to be recomputed with the method then current. Each is the owner's d
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-008, Requirement 051-014, Requirement 051-015
 - [ ] T051-5 Write Windmill's compose files (single-node, and two server processes behind a load balancer with two workers for crashes; its sandbox where Requirement 051-020 allows it), its flows for the variants, its recorded-end reader, the step-language pilot under the network rule, and its history loader.
   Refs: Requirement 051-001, Requirement 051-002, Requirement 051-004, Requirement 051-008, Requirement 051-015, Requirement 051-020
-- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the server image with `sagat_commit_check` and its tests (a commit refused after a startup option, `SET`, `SET LOCAL`, `set_config`, a role's or database's setting of `off` and a non-zero `commit_delay`, `on` and `local` accepted), the durability checks (the refusal count after every rung and at the turn's end, `pg_settings` at each turn's start and end, the roles' grants: `pg_parameter_acl` and `pg_reload_conf`), the single reset of `pg_stat_statements` before the product starts with `dealloc` at 0, the snapshots at the planned window boundaries keyed with `toplevel` with their lag, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
+- [ ] T051-6 Write `run.sh` and `campaign.json`, and the driver's `host` subcommand they start in every job kind: the tool caches freed, the sets and the daemon's control-group parent, the images loaded and checked against `images.lock`, the archives restored and checked, the server image with `sagat_commit_check` built from the pinned builder image without network and its tests (the utility hook refusing each unlogged form,a commit refused after a startup option, `SET`, `SET LOCAL`, `set_config`, a role's or database's setting of `off` and a non-zero `commit_delay`, `on` and `local` accepted), the durability checks (the canary at each turn's start and after fault (c)'s restart, the refusal count after every rung and at the turn's end with its read erroring when uninitialised, no relation with `relpersistence = 'u'` at start, after every rung and at end, `pg_settings` at each turn's start and end, the roles' grants: no membership in the three server-file and program roles, `pg_reload_conf` by `has_function_privilege`, `pg_parameter_acl` empty), the single reset of `pg_stat_statements` before the product starts with `dealloc` at 0, the snapshots at the planned window boundaries keyed with `toplevel` with their lag and the refusal of a missing key or falling `calls`, the channel (the driver's posts in their fixed grammar, the acknowledgement before each rung, both directories read only by the `host` subcommand from a root handle each, the upload copy from the open file), the daemon's and shims' processor time from `cpu.stat` of their control groups, steal or calibration, the free space, the competitive rule run first, the driver's subcommands per job kind, the allowlist of uploaded raw data.
   Refs: Requirement 051-003, Requirement 051-004, Requirement 051-007, Requirement 051-012, Requirement 051-015, Requirement 051-018, Requirement 051-019, Requirement 051-020
 - [ ] T051-7 Add the fault injector to the driver's `host` subcommand (the three faults, the 5 s restart, the in-flight trigger with its 30 s limit, the checkpoint before fault (c), the fault times in the host-only directory, the baseline's and null fault's ends read from the driver's posts, each execution record read on from its last offset at most 1 MB per poll, each execution record and each uploaded file opened beneath its own directory's root with `openat2` and `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, checked by `fstat` on the open file, read bounded and copied from that open file, with a test that a link in a directory part of the path is refused), the crash deployments' pre-fault check, the first step of every common-rate, confirmation and crash job (download the same run's earlier stages' summaries by pattern and run `driver report --common-rate <variant>`, the crash jobs also reading the confirmation's verdict), and the crash jobs after the throughput jobs; test the injector's recorded `CLOCK_REALTIME` fault time against a child process's death seen through `pidfd` and stamped on `CLOCK_REALTIME`, within 100 ms.
   Refs: Requirement 051-009
