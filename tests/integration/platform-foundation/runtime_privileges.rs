@@ -167,6 +167,16 @@ const ALLOWED: &[Allowed] = &[
         need: "UNRESOLVED placeholder {groups}",
         reason: "the sub-select text comes from the AlertKind match arms right above, each a literal statement that is audited on its own; the wrapper only reads",
     },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {reveal_role}",
+        reason: "the reader's role as reveal_grants::reveal_role_sql writes it, over this statement's own parameters $1, $2 and $6: a scalar sub-select of memberships and payload_reveal_grants, the same reads reveal_grants.rs issues as written (usage_if_revealed_in_namespace); never input (decisions D022-135 and D022-154)",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/reveal_grants.rs",
+        need: "UNRESOLVED placeholder {usage}",
+        reason: "one of quotas.rs's three &'static str usage statements (CONCURRENCY_LIVE_KEYS_USAGE_SQL, RATE_LIMIT_LIVE_KEYS_USAGE_SQL, FLOW_CONTROL_KEY_WAITERS_USAGE_SQL), which the quota usage of the same file also runs as written, where they are audited; the wrapper only reads memberships and payload_reveal_grants (decision D022-133)",
+    },
 ];
 
 #[derive(Debug, Clone)]
