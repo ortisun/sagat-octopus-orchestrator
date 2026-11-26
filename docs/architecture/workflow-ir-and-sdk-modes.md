@@ -23,10 +23,15 @@ decision 2026-11-25-3):
 - a run's pin names exactly one version at any moment and changes only by a verified move (an explicit, authorized
   request per run, applied with the run locked and no workflow task leased, while the run has not completed an
   activation past the one verified, only after the server finds that a replay of its own history against the target
-  code matches); the version the run started on stays its identity origin; version markers in a later version let it
-  branch for older histories.
+  code matches, and only when every step that can still act fits the target's envelope and the target's declarations
+  fit the run: it declares every signal name with pending signals and every update not yet completed, accepts the
+  committed state against its state schema, and has gated entries and a `state.maxBytes` equal to the source's; a run
+  with a stop reason, a `CLOSED` or leased workflow-task step, or under a `HISTORY_LIMIT` review is not moved;
+  Requirement 044-023, Technical Plan 7.3); the version the run started on stays its identity origin; version markers
+  in a later version let it branch for older histories.
 
-[Design 044](../designs/044-workflow-as-code.md) and its Architecture decisions 0103 to 0109 hold the mechanism. It
+[Design 044](../designs/044-workflow-as-code.md) and its Architecture decisions 0103 to 0109 (Proposed, accepted when
+their build-evidence conditions are met) hold the mechanism. It
 starts with a determinism study per language, and the mode ships in an SDK only after that study and the shared replay
 conformance scenarios pass; an SDK without it says so in its capabilities. The declarative graph stays a first-class
 model beside it.

@@ -107,8 +107,10 @@ configured: it is the token's.
 
 **Not offered yet.** This section shows the API that [design 044](../designs/044-workflow-as-code.md) specifies; the Go
 SDK offers it once its runtime, Task 044-16 of that design, lands. None of it runs today. The calls are those of
-[`sdks/SPEC.md`](../../sdks/SPEC.md) section 12 (package `workflow`, each call taking `workflow.Context` first, durations
-in the language's idiom); where the design leaves a name or a shape to the runtime's task (the results, registering the
+[`sdks/SPEC.md`](../../sdks/SPEC.md) section 12 (package `workflows`, imported from
+`github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows`, each call taking `workflows.Context` first,
+durations in the language's idiom; the package is plural because `sdks/go/workflow` is the builder of the workflow
+document, Decision 044-239); where the design leaves a name or a shape to the runtime's task (the results, registering the
 function on the host, the replayer's entry point), the code below is a sketch that Task 044-16 settles. An operator also
 records the requirements `code-workflows-v1` and, because this workflow declares a signal, `signal-inbox-v1`
 ([instance-registry runbook](../runbooks/instance-registry.md)).
@@ -117,20 +119,20 @@ Instead of a graph, the workflow is a function. It reserves the stock, charges t
 reminder unless a `paid` signal arrived meanwhile (journey 1 of the design):
 
 ```go
-func Order(ctx workflow.Context, in OrderInput) (OrderResult, error) {
+func Order(ctx workflows.Context, in OrderInput) (OrderResult, error) {
 	paid := false
-	workflow.OnSignal(ctx, "paid", func(json.RawMessage) { paid = true })
-	if _, err := workflow.Activity[Reservation](ctx, "inventory.reserve", in); err != nil {
+	workflows.OnSignal(ctx, "paid", func(json.RawMessage) { paid = true })
+	if _, err := workflows.Activity[Reservation](ctx, "inventory.reserve", in); err != nil {
 		return OrderResult{}, err
 	}
-	if _, err := workflow.Activity[Charge](ctx, "payments.charge", in); err != nil {
+	if _, err := workflows.Activity[Charge](ctx, "payments.charge", in); err != nil {
 		return OrderResult{}, err
 	}
-	if err := workflow.Sleep(ctx, 24*time.Hour); err != nil {
+	if err := workflows.Sleep(ctx, 24*time.Hour); err != nil {
 		return OrderResult{}, err
 	}
 	if !paid {
-		if _, err := workflow.Activity[Reminder](ctx, "customers.remind", in); err != nil {
+		if _, err := workflows.Activity[Reminder](ctx, "customers.remind", in); err != nil {
 			return OrderResult{}, err
 		}
 	}
@@ -138,14 +140,19 @@ func Order(ctx workflow.Context, in OrderInput) (OrderResult, error) {
 }
 ```
 
-Each `workflow` call is a command the platform records and executes; the activities run in an ordinary worker as above.
+Each `workflows` call is a command the platform records and executes; the activities run in an ordinary worker as above.
 The function is run again from the start against the run's journal whenever a worker does not hold it in memory, so it
 must be deterministic, and Go cannot forbid a call at run time: no `go` statement, channel, `select`, `time.Now`,
-`time.Sleep`, `math/rand`, `crypto/rand` or `range` over a map in workflow code. Use `workflow.Go`, `workflow.Channel`,
-`workflow.Selector`, `workflow.Now`, `workflow.Sleep` and `workflow.SortedKeys` instead. The SDK's analyzer `sagatvet`
+`time.Sleep`, `math/rand`, `crypto/rand` or `range` over a map in workflow code. Use `workflows.Go`, `workflows.Channel`,
+`workflows.Selector`, `workflows.Now`, `workflows.Sleep` and `workflows.SortedKeys` instead. The SDK's analyzer `sagatvet`
 (`cmd/sagatvet`, a `go/analysis` analyzer) refuses the others in workflow functions, and the SDK's test helper runs it;
 run it over your workflow package in your tests. A native channel that blocks stops at the activation deadline of 2 s.
 The precondition is Go 1.25, the SDK's baseline.
+
+An activity failure the function does not handle fails the workflow task, not the run: the task is retried after 1, 2,
+4 and 8 s, and the fifth consecutive failure puts the run under review. To fail the run on purpose, return the SDK's
+`workflows.WorkflowFailure` with a code (Requirement 044-009). How the runtime treats any other returned error, such as
+the activity errors the function above returns, is decided by Task 044-16.
 
 **One binary for workflow code, another for activities.** The code digest of a Go workflow is the SHA-256 of the whole
 executable, so a change of an activity linked into the same binary makes a new digest, and runs open on the old one move
@@ -164,17 +171,22 @@ manifest, err := os.ReadFile("manifest.json")
 if err != nil {
 	return err
 }
-envelope := workflow.Envelope{Activities: []workflow.ActivityEntry{
+envelope := workflows.Envelope{Activities: []workflows.ActivityEntry{
 	{Name: "inventory.reserve"}, {Name: "payments.charge"}, {Name: "customers.remind"},
 }}
-if _, err := api.Definitions.PublishCode(ctx, manifest, envelope); err != nil {
+declarations := workflows.Declarations{Signals: []workflows.Signal{{
+	Name: "paid", Buffered: true, MaxPending: 10,
+	Schema: json.RawMessage(`{"type": "object", "properties": {}, "additionalProperties": false}`),
+}}}
+if _, err := api.Definitions.PublishCode(ctx, manifest, envelope, declarations); err != nil {
 	return err
 }
 ```
 
-`PublishCode` saves the code version as the workflow's draft and publishes it, making it active. The envelope lists what
-the function's commands may use; a command outside it puts the run under review. The `paid` signal is a declaration of
-the code document beside the envelope (`signals: [{name: paid, buffered: true}]`, Technical Plan 3.1 of the design).
+`PublishCode` assembles the code document from the manifest, the envelope and the declarations, saves it as the
+workflow's draft and publishes it, making it active (Decision 044-238). The envelope lists what the function's commands
+may use; a command outside it puts the run under review. The declarations hold the rest of the code document of
+Technical Plan 3.1, here the `paid` signal (`sagat workflow publish-code` takes them with `--declarations <file>`).
 
 **Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
 on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). In `cmd/order-workflows`:
@@ -190,8 +202,8 @@ if err := host.RegisterWorkflow("order", Order); err != nil { // the registratio
 return host.Start(ctx)
 ```
 
-Deploy a new workflow binary beside the old one: runs stay on the digest they started with, so keep the old binary
-running until the version list shows no run left on it, or move them.
+Deploy a new workflow binary beside the old one: runs stay on their current code version's digest (the start
+version's until a move), so keep the old binary running until the version list shows no run left on it, or move them.
 
 **Test it with the replayer.** Export the history of a run (`api.Runs.ExportHistory(ctx, runID)`, or
 `sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need
@@ -204,7 +216,7 @@ func TestTheNewCodeReplaysTheRecordedOrderRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer history.Close()
-	verdict, err := workflow.Replay(t.Context(), history, "order", Order) // named by Task 044-16
+	verdict, err := workflows.Replay(t.Context(), history, "order", Order) // named by Task 044-16
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,5 +232,5 @@ with `INCONCLUSIVE_REDACTED` instead of a false mismatch.
 ## Where to go next
 
 - [The SDK README](../../sdks/go/README.md): the client, the worker host, the builders of the workflow document, the errors.
-- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the five SDKs do the same way, and the conformance suite that holds them to it.
+- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the six SDKs do the same way, and the conformance suite that holds them to it.
 - [saga.md](saga.md): a payment saga, with compensation and reconciliation.

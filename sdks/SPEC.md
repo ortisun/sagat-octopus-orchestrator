@@ -880,13 +880,15 @@ Protocol version changes do not themselves change package SemVer.
 
 ## 12. Workflow as code
 
-**Status.** Approved in [design 044](../docs/designs/044-workflow-as-code.md) (Architecture decisions 0103 to 0109) and
-being built; nothing in this section is served or shipped before its task lands: the server lane by Tasks 044-2 to
-044-13 of that design, each SDK's runtime by its own task (TypeScript 044-10, Python 044-15, Go 044-16, C# 044-17, Java
-044-18, Rust 044-19), patches and the abandoned-activation cap by Task 044-20, the six-language conformance scenarios by
-Task 044-26. "Technical Plan" followed by a number is a section of that design. The server side is in
-[`docs/architecture/execution-semantics.md`](../docs/architecture/execution-semantics.md#workflow-as-code-design-044) and
-the wire in [`docs/architecture/worker-runtime-protocol.md`](../docs/architecture/worker-runtime-protocol.md#workflow-as-code-design-044).
+**Status.** Approved in [design 044](../docs/designs/044-workflow-as-code.md) (Architecture decisions 0103 to 0109,
+Proposed until their build-evidence conditions are met) and being built; nothing in this section is served or shipped
+before its task lands: the server lane by Tasks 044-2 to 044-13 of that design, each SDK's runtime by its own task
+(TypeScript 044-10, Python 044-15, Go 044-16, C# 044-17, Java 044-18, Rust 044-19), patches and the abandoned-activation
+cap by Task 044-20, the six-language conformance scenarios by Task 044-26. "Technical Plan" followed by a number is a
+section of that design. The server side is in
+[`docs/architecture/execution-semantics.md`](../docs/architecture/execution-semantics.md#workflow-as-code-design-044)
+and the wire in
+[`docs/architecture/worker-runtime-protocol.md`](../docs/architecture/worker-runtime-protocol.md#workflow-as-code-design-044).
 
 A workflow function runs in the tenant's worker under the SDK's **determinism runtime**. It never touches the outside
 world itself: each call below is a *command* the SDK records, and in each *workflow task* the SDK runs the function on
@@ -932,8 +934,9 @@ The calls are made on the workflow context the function receives (`ctx.activity(
 `maxDelayMs`, `strategy`, `jitter`) in the code profile, distinct from the client's HTTP retry policy (§5). The
 TypeScript replayer takes the bundle, not host functions, because no host function enters the run's `vm` context.
 
-The client gains `definitions.publishCode(manifest, envelope)`, `runs.moveCodeVersion`, `runs.exportHistory`,
-`runs.update(..., {waitMs, acceptPending})` and `runs.workerQuery` (the last deferrable, Task 044-29).
+The client gains `definitions.publishCode(manifest, envelope, declarations?)` (§12.8), `runs.moveCodeVersion`,
+`runs.exportHistory`, `runs.update(..., {waitMs, acceptPending})` and `runs.workerQuery` (the last deferrable, Task
+044-29).
 
 ### 12.2 The API in each language
 
@@ -941,7 +944,7 @@ The client gains `definitions.publishCode(manifest, envelope)`, `runs.moveCodeVe
 |---|---|---|---|
 | TypeScript | entry point `@sagat-octopus-orchestrator/sdk/workflows` (`./workflows` in the package's `exports`), which checks at load that Node is 22.8 or later; the bundler `@sagat-octopus-orchestrator/workflows-bundler` (`sdks/typescript-workflows-bundler/`, command `sagat-workflows`) | §12.1 | §12.1 |
 | Python | `sagat_octopus_orchestrator.workflows`, which refuses to import below Python 3.11 | The same names in snake case: `activity`, `script`, `sleep`, `wait_for_event`, `child`, `approval`, `saga`, `on_signal`, `signal`, `on_update`, `set_state`, `patched`, `deprecate_patch`, `side_effect`, `now`, `random`, `random_int`, `uuid`, `continue_as_new`, `cancellation`, `acknowledge_cancellation`, `WorkflowFailure`, `continue_as_new_suggested`, `history_limit_reached`; the waiting calls are awaitables of the SDK's deterministic event loop, under which `asyncio.sleep`, `asyncio.gather`, `asyncio.wait_for` and `asyncio.timeout` also work durably | `definitions.publish_code`, `runs.move_code_version`, `runs.export_history`, `runs.update(..., wait_ms=, accept_pending=)`, `runs.worker_query` |
-| Go | package `.../sdk/workflow` and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflow.Context` first: `workflow.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflow.Go`, `workflow.Channel`, `workflow.Selector` and `workflow.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
+| Go | package `github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows` (plural, because `sdks/go/workflow` is the builder of the workflow document; Decision 044-239) and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflows.Context` first: `workflows.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflows.Go`, `workflows.Channel`, `workflows.Selector` and `workflows.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
 | C# | packages `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | The same names in Pascal case, with the `Async` suffix on every call that returns a task: `ActivityAsync`, `ScriptAsync`, `SleepAsync`, `WaitForEventAsync`, `ChildAsync`, `ApprovalAsync`, `SagaAsync`, `SignalAsync`; and `OnSignal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `Uuid`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached` | The same names with `Async` suffixes (`Definitions.PublishCodeAsync`, ...) |
 | Java | artifact `sagat-workflows` (Java release 21; the core SDK stays on release 17) | The same names as TypeScript; the SDK also provides `Async.function`, `Promise` and `WorkflowQueue` for branches and queues | The same names, in the core SDK |
 | Rust | the SDK crate's feature `workflows` | The same names in snake case, `ctx` first (methods of the workflow context: `ctx.activity`, `ctx.wait_for_event`, `ctx.set_state`, `ctx.side_effect`, `ctx.random_int`, `ctx.continue_as_new`, ...), with `ctx.spawn` for branches, which are not `Send` | The same names in snake case (`publish_code`, ...) |
@@ -982,7 +985,7 @@ workflow types when the runtime's precondition fails** (Requirement 044-011, Tec
 | Language | Runtime | Detection beyond the command comparison and the server's chain | Precondition |
 |---|---|---|---|
 | TypeScript | A `node:vm` context per run without a host global, the bundled code, drained microtasks | The bundler refuses imports of built-ins and activity modules | Node 22.8 or later (the package's `engines` stays Node 20); process time zone UTC |
-| Python | A deterministic `asyncio` loop, a private module namespace with the SDK's importer, an audit hook | The importer and the audit hook | Python 3.11 or later (the activity worker keeps 3.10); process time zone UTC; a fixed `PYTHONHASHSEED` chosen by the operator (not `random`, not `0`) |
+| Python | A deterministic `asyncio` loop, a private module namespace with the SDK's importer, an audit hook | The importer and the audit hook | Python 3.11 or later (the activity worker keeps 3.10); process time zone UTC; the operator's own fixed `PYTHONHASHSEED` (not `random`, not `0`), kept private: it is a 32-bit value, so a reader of a Python version's digest who knows its modules' sources could search it (Gap 044-016); the SDK caps decoded objects at 10,000 keys, which bounds the harm whatever the seed |
 | Go | An `iter.Pull` coroutine dispatcher | The `sagatvet` analyzer, the activation deadline | Go 1.25 |
 | C# | A single-threaded `TaskScheduler` per run, the invariant culture | A scheduler check on every SDK call, the analyzer package | .NET 8; `TimeZoneInfo.Local` of UTC |
 | Java | Virtual threads under one permit | A thread check on every SDK call | Java 21; default time zone UTC and default locale `Locale.ROOT` |
@@ -1068,10 +1071,24 @@ For the compiled languages the digest hashes the whole executable, so a change o
 new digest that open runs take only through a move. The recommended topology is one worker binary (assembly, jar) for
 workflow code and another for activities.
 
-`definitions.publishCode(manifest, envelope)` saves the code document as the workflow's draft and publishes it through
-today's route (`POST /workflows/{workflowId}/publish`, `definition:publish`), which makes it the active version; it is
-refused `422 CAPABILITY_NOT_ACTIVE` until the operator has recorded the instance registry requirement
-`code-workflows-v1` (and `signal-inbox-v1` for a version that declares signals). Nothing runs code on the server.
+`definitions.publishCode(manifest, envelope, declarations?)` assembles the code document from the manifest (produced by
+the build), the envelope (reviewed by the publisher) and the declarations, which hold the other parts of the document of
+Technical Plan 3.1: `signals`, `state` with its queries and code updates, `inputSchema`, `outputSchema`, `triggers`,
+`limits`, `chainPolicy`, and the `code` object's `workflowTaskTimeoutMs`, `cancellationGraceMs` and `workerQueries`
+(Decision 044-238). For the order workflow of the quickstarts, which waits for a `paid` signal:
+
+```typescript
+await api.definitions.publishCode(manifest, envelope, {
+  signals: [{ name: 'paid', buffered: true, maxPending: 10,
+    schema: { type: 'object', properties: {}, additionalProperties: false } }],
+});
+```
+
+The command line's `sagat workflow publish-code --manifest <file> --envelope <file>` takes `--declarations <file>` as
+well. The call saves the code document as the workflow's draft and publishes it through today's route
+(`POST /workflows/{workflowId}/publish`, `definition:publish`), which makes it the active version; it is refused
+`422 CAPABILITY_NOT_ACTIVE` until the operator has recorded the instance registry requirement `code-workflows-v1` (and
+`signal-inbox-v1` for a version that declares signals). Nothing runs code on the server.
 
 ### 12.9 The replayer
 

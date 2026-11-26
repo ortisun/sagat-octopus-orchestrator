@@ -113,6 +113,10 @@ deterministic: no `fs`, `fetch` or `crypto`, and `ctx.now()`, `ctx.random()` and
 replaced. Its precondition: Node 22.8 or later and a process time zone of UTC for the workflow worker (the activity worker
 keeps Node 20).
 
+An activity failure the function does not catch fails the workflow task, not the run: the task is retried after 1, 2, 4
+and 8 s, and the fifth consecutive failure puts the run under review. To fail the run on purpose, throw the SDK's
+`WorkflowFailure` with a code (Requirement 044-009).
+
 **Bundle it and publish the version.** The bundler of the separate package `@sagat-octopus-orchestrator/workflows-bundler`
 writes the bundle the worker loads and its manifest, which names the code digest (a SHA-256 computed from the bundle,
 the Node version and the SDK); it refuses an import of a Node built-in:
@@ -126,13 +130,18 @@ const manifest = JSON.parse(await readFile('dist/manifest.json', 'utf8'));
 const envelope = {
   activities: [{ name: 'inventory.reserve' }, { name: 'payments.charge' }, { name: 'customers.remind' }],
 };
-await api.definitions.publishCode(manifest, envelope);
+const declarations = {
+  signals: [{ name: 'paid', buffered: true, maxPending: 10,
+    schema: { type: 'object', properties: {}, additionalProperties: false } }],
+};
+await api.definitions.publishCode(manifest, envelope, declarations);
 ```
 
-`publishCode` saves the code version as the workflow's draft and publishes it, making it active, as publishing a graph
-does. The envelope lists what the function's commands may use; a command outside it puts the run under review. The
-`paid` signal is a declaration of the code document beside the envelope (`signals: [{ name: 'paid', buffered: true }]`,
-Technical Plan 3.1 of the design).
+`publishCode` assembles the code document from the manifest, the envelope and the declarations, saves it as the
+workflow's draft and publishes it, making it active, as publishing a graph does (Decision 044-238). The envelope lists
+what the function's commands may use; a command outside it puts the run under review. The declarations hold the rest of
+the code document of Technical Plan 3.1, here the `paid` signal (`sagat workflow publish-code` takes them with
+`--declarations <file>`).
 
 **Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
 on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). The worker host loads the bundle
@@ -148,7 +157,8 @@ await workflows.start();
 ```
 
 The paths are this example's. Runs started with `api.start('order', { orderId: 'o-1', amount: '19.99' })` are pinned to
-the version's digest; a new bundle is a new version, and open runs stay on theirs until a person moves them.
+the version's digest; a new bundle is a new version, and open runs stay on their current code version's digest (the
+start version's until a move) until a person moves them.
 
 **Test it with the replayer.** Export the history of a run (`api.runs.exportHistory(runId)`, or
 `sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need
@@ -174,5 +184,5 @@ reaches a value the export redacted stops with `INCONCLUSIVE_REDACTED` instead o
 ## Where to go next
 
 - [The SDK README](../../sdks/typescript/README.md): the client, the worker host, the builders of the workflow document, the errors.
-- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the five SDKs do the same way, and the conformance suite that holds them to it.
+- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the six SDKs do the same way, and the conformance suite that holds them to it.
 - [saga.md](saga.md): a payment saga, with compensation and reconciliation.

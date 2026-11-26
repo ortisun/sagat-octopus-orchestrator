@@ -125,8 +125,14 @@ function is run again from the start against the run's journal whenever a worker
 be deterministic. The SDK runs it on a deterministic event loop (`asyncio.sleep` and `asyncio.wait_for` become durable
 timers too) and imports its modules through an importer of its own: `uuid.uuid4()`, `random.random()`, `os.getenv` and
 `open` raise inside a workflow, and `ctx.now()`, `ctx.random()` and `ctx.uuid()` take their place. Its precondition, for
-the workflow worker only: Python 3.11 or later, a process time zone of UTC and a fixed `PYTHONHASHSEED` that you choose
-and keep as a deployment secret (any value but `random` and `0`), the same on every workflow worker of the version.
+the workflow worker only: Python 3.11 or later, a process time zone of UTC and your own fixed `PYTHONHASHSEED` (any value
+but `random` and `0`), the same on every workflow worker of the version and kept private: it is a 32-bit value, so a
+reader of the version's digest who knows its modules' sources could search it (Gap 044-016); the SDK caps decoded
+objects at 10,000 keys, which bounds the harm whatever the seed.
+
+An activity failure the function does not catch fails the workflow task, not the run: the task is retried after 1, 2, 4
+and 8 s, and the fifth consecutive failure puts the run under review. To fail the run on purpose, raise the SDK's
+`WorkflowFailure` with a code (Requirement 044-009).
 
 **Write the manifest and publish the version.** The manifest names the code digest, computed from the modules the
 workflow imports, the Python version and the hash seed:
@@ -139,13 +145,17 @@ PYTHONHASHSEED="$ORDER_WORKFLOWS_HASH_SEED" python -m sagat_octopus_orchestrator
 with open("manifest.json") as file:
     manifest = json.load(file)
 envelope = {"activities": [{"name": "inventory.reserve"}, {"name": "payments.charge"}, {"name": "customers.remind"}]}
-await api.definitions.publish_code(manifest, envelope)
+declarations = {
+    "signals": [{"name": "paid", "buffered": True, "maxPending": 10,
+                 "schema": {"type": "object", "properties": {}, "additionalProperties": False}}],
+}
+await api.definitions.publish_code(manifest, envelope, declarations)
 ```
 
-`publish_code` saves the code version as the workflow's draft and publishes it, making it active. The envelope lists
-what the function's commands may use; a command outside it puts the run under review. The `paid` signal is a
-declaration of the code document beside the envelope (`signals: [{name: paid, buffered: true}]`, Technical Plan 3.1 of
-the design).
+`publish_code` assembles the code document from the manifest, the envelope and the declarations, saves it as the
+workflow's draft and publishes it, making it active (Decision 044-238). The envelope lists what the function's commands
+may use; a command outside it puts the run under review. The declarations hold the rest of the code document of
+Technical Plan 3.1, here the `paid` signal (`sagat workflow publish-code` takes them with `--declarations <file>`).
 
 **Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
 on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). Run it with the same
@@ -181,5 +191,5 @@ an export format other than 1 is refused, and a replay that reaches a value the 
 ## Where to go next
 
 - [The SDK README](../../sdks/python/README.md): the client, the worker host, the builders of the workflow document, the errors.
-- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the five SDKs do the same way, and the conformance suite that holds them to it.
+- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the six SDKs do the same way, and the conformance suite that holds them to it.
 - [saga.md](saga.md): a payment saga, with compensation and reconciliation.

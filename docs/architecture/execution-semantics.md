@@ -43,7 +43,7 @@ automatically to `READY`. Only known-failed, retry-eligible work receives anothe
 - Each `step_key` is stable and unique within the scope of the logical path (loop: index/element key; parallel: branch key). Do not reuse a step_key for different semantics within the same version.
 - `step_id = stable_hash(version_id, run_id, path, step_key)` (derived logical identity, hash collision detected by unique + full key stored).
 - Pure functions may be recomputed; side effects only inside activities/steps with a confirmed checkpoint.
-- Timestamp, random, UUID in orchestrator code must come from APIs registered as deterministic commands or persisted inputs.
+- Timestamp, random, UUID in orchestrator code must come from APIs registered as deterministic commands or persisted inputs. In code mode (design 044) they need no command: the time is the one recorded in the `workflow_task.started` that opens the activation, and random numbers and identifiers come from the run's seed, delivered in every workflow task (Technical Plan 1.8).
 - Large inputs/outputs go to the object store, the journal keeps `blob_ref`, digest and metadata.
 
 ## Fork/join, loops, children, race
@@ -143,7 +143,8 @@ activity's because a workflow task has no external effect: its commands act only
    (`apps/execution-engine/tests/workflow_task_expiry_parity.rs`, Task 044-8).
 3. **Its token is refused by every activity RPC** (`Heartbeat`, `CompleteStep`, `FailStep`, `ResolveSecrets`,
    `ResolveDatabase`, `AppendStepLogs`). It carries no secret. It reads history with `ReadHistory`, reads only blobs its
-   run's history references, and writes blobs only for command values that do not fit the message.
+   run's history references, never a blob whose carrier schema has a `secret` field, and writes blobs only for command
+   values that do not fit the message.
 4. **It journals only `workflow_task.started`** (no `step.leased`), with the activation's time, the window start
    `S(k − 1)` and the flags `continue_as_new_suggested` and `history_limit_reached` as they stand at the lease.
 5. **The claim's workflow-task arm** checks the session's digest against the run's current one and the namespace's
@@ -178,7 +179,9 @@ The domain decides what the function sees and what makes a workflow task due, fr
 - **Not visible:** lease renewals, the attempts and retries of an activity, hints, review and audit events, the events of
   derived steps (`~c`, `~r`) and of scope steps (`s-<n>`), and the internals of a step's admission (a gate's grant, the
   approval that releases an activity held for approval). The function sees only a step's outcome.
-- **Waking:** a visible event that is neither a command record nor a workflow-task event, and a command's immediate
+- **Waking:** decided by the event and its origin. An event a completion writes (origin `completion`) as the record or
+  the immediate bookkeeping of its own commands, and a workflow-task event, never wakes; a visible event of any other
+  origin (`engine`, such as `run.started`, or `external`, such as a signal) wakes, and so does a command's immediate
   effect (a wait satisfied at once by its look-back, the cancellation of a step that was still `READY`), which the
   completion appends with the origin `effect`. A waking event makes the next workflow task due.
 
@@ -311,10 +314,13 @@ A **move** re-pins one open code run to another code version of the same workflo
 transaction per run, only when a worker of the target digest replayed the run's history with the same command chain and
 body digests, the workflow task is not leased, and the run has not completed an activation past the one verified;
 events committed after it are delivered in the next activation, on the target code (Requirement 044-023, Technical Plan
-7.3, Task 044-13; constitution 5.1.0, Owner decision 2026-11-25-3, Gap 044-025). The start version and every identity
-derived from it do not change.
-
-
+7.3, Task 044-13; constitution 5.1.0, Owner decision 2026-11-25-3, Gap 044-025). Every step that can still act
+(outstanding steps, and the succeeded members of scopes not yet settled, with their derived entries) must fit the
+target's envelope, and the target's declarations must fit the run: it declares every signal name with pending signals
+and every update not yet completed, accepts the committed state against its state schema, and has gated entries and a
+`state.maxBytes` equal to the source's (`ENVELOPE_MISMATCH` otherwise). A run with a stop reason, a `CLOSED`
+workflow-task step or under a `HISTORY_LIMIT` review is not moved (`RUN_NOT_MUTABLE`); a leased step is checked again,
+then `RUN_BUSY`. The start version and every identity derived from it do not change.
 
 ## Worker-session claim admission
 

@@ -85,8 +85,9 @@ and [event payload handling](../../crates/application/src/event_payloads.rs).
 
 ### Workflow as code: what a workflow lease discloses (design 044)
 
-Approved in [design 044](../designs/044-workflow-as-code.md) and being built (the server lane by Tasks 044-8, 044-13 and
-044-24, the security tests by Task 044-24); "Technical Plan" followed by a number is a section of that design.
+Approved in [design 044](../designs/044-workflow-as-code.md) and being built (the tables by the migration of Task 044-6,
+`run_initiators` among them, the server lane by Tasks 044-8, 044-13 and 044-24, the security tests by Task 044-24);
+"Technical Plan" followed by a number is a section of that design.
 
 - **No workflow code runs in a platform process.** The function runs only in the tenant's SDK worker: never in the
   control plane, the scheduler, the engine or the API, replay checks and queries included (Non-functional requirement
@@ -113,12 +114,13 @@ Approved in [design 044](../designs/044-workflow-as-code.md) and being built (th
   admin role holds by default; every payload goes through the read path of feature 016 (classified by its carrier
   schema, or as `pii` when nothing declares it, and redacted unless the reader holds the reveal rights), a field
   classified `secret` is never exported, and every export is audited (Requirement 044-025).
-- **A workflow-type binding grants authorship.** The worker of a bound type writes the commands of every run of the type,
-  so setting a binding's `workflowTypes` needs `definition:publish` as well as `worker:bind`; workflow types are exact
-  names (an activity pattern, `*` or prefix, never covers one), only an ordinary binding of an identity with the
+- **A workflow-type binding grants authorship.** The worker of a bound type writes the commands of every run of the
+  type, so setting a binding's `workflowTypes` needs `definition:publish` as well as `worker:bind`; workflow types are
+  exact names (an activity pattern, `*` or prefix, never covers one), only an ordinary binding of an identity with the
   `worker` role may list them, and a binding records its binder (`bound_by`). The claim of a workflow task writes that
-  binder into the run's initiators, so an approval policy with `excludeInitiator` refuses the binder of the issuing
-  session's binding, and approvers are shown the issuing identity and its binder (Technical Plan 4.1 and 5.1).
+  binder into the run's initiators (`run_initiators`, created by the migration of Task 044-6), so an approval policy
+  with `excludeInitiator` refuses the binder of the issuing session's binding, and approvers are shown the issuing
+  identity and its binder (Technical Plan 4.1 and 5.1).
 - **What `excludeInitiator` cannot see.** A person who holds a worker's credential without being its binder can make
   that worker issue commands, and no record names that person, so `excludeInitiator` cannot exclude them from approving
   what the worker issued. Keep a workflow worker's credential with its binder, or treat every holder of it as an

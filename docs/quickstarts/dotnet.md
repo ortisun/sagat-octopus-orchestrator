@@ -117,9 +117,14 @@ Each `ctx` call is a command the platform records and executes; the activities r
 method is run again from the start against the run's journal whenever a worker does not hold it in memory, so it must be
 deterministic. The SDK runs it on a single-threaded scheduler of its own with the invariant culture, and every SDK call
 checks that it is still on that scheduler: `ConfigureAwait(false)`, `Task.Run`, `Task.Delay`, threads and `Parallel`
-leave it and fail the workflow task (`NONDETERMINISM_RISK`). Use `ctx.Now()`, `ctx.Random()` and `ctx.Uuid()` instead of
+leave it and fail the workflow task with `NONDETERMINISM_RISK`, which puts the run under review at once (Technical
+Plan 6.3), not after counted failures. Use `ctx.Now()`, `ctx.Random()` and `ctx.Uuid()` instead of
 `DateTime.Now`, `Random` and `Guid.NewGuid`; the analyzer package `SagatOctopusOrchestrator.Workflows.Analyzers` flags
 those calls at build time. The precondition is .NET 8 and a local time zone of UTC for the workflow worker.
+
+An activity failure the method does not catch fails the workflow task, not the run: the task is retried after 1, 2, 4
+and 8 s, and the fifth consecutive failure puts the run under review. To fail the run on purpose, throw the SDK's
+`WorkflowFailure` with a code (Requirement 044-009).
 
 **One assembly for workflow code, another for activities.** The code digest of a C# workflow hashes the workflow
 assembly and every assembly of its dependency closure, so a change of an activity in that closure makes a new digest,
@@ -136,12 +141,15 @@ dotnet out/workflows/OrderWorkflows.dll --sagat-manifest > manifest.json
 ```csharp
 var manifest = await File.ReadAllTextAsync("manifest.json", cancellationToken);
 var envelope = new CodeEnvelope(Activities: ["inventory.reserve", "payments.charge", "customers.remind"]);
-await api.Definitions.PublishCodeAsync(manifest, envelope, cancellationToken);
+var declarations = new CodeDeclarations(Signals: [new SignalDeclaration("paid", Buffered: true, MaxPending: 10,
+    Schema: JsonDocument.Parse("""{"type": "object", "properties": {}, "additionalProperties": false}"""))]);
+await api.Definitions.PublishCodeAsync(manifest, envelope, declarations, cancellationToken);
 ```
 
-`PublishCodeAsync` saves the code version as the workflow's draft and publishes it, making it active. The envelope lists
-what the method's commands may use; a command outside it puts the run under review. The `paid` signal is a declaration
-of the code document beside the envelope (`signals: [{name: paid, buffered: true}]`, Technical Plan 3.1 of the design).
+`PublishCodeAsync` assembles the code document from the manifest, the envelope and the declarations, saves it as the
+workflow's draft and publishes it, making it active (Decision 044-238). The envelope lists what the method's commands
+may use; a command outside it puts the run under review. The declarations hold the rest of the code document of
+Technical Plan 3.1, here the `paid` signal (`sagat workflow publish-code` takes them with `--declarations <file>`).
 
 **Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
 on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). In `OrderWorkflows`, run with
@@ -153,8 +161,8 @@ workflows.RegisterWorkflow("order", OrderFlow.Order); // the registration's name
 await workflows.StartAsync(cancellationToken);
 ```
 
-Deploy a new workflow worker beside the old one: runs stay on the digest they started with, so keep the old worker
-running until the version list shows no run left on it, or move them.
+Deploy a new workflow worker beside the old one: runs stay on their current code version's digest (the start
+version's until a move), so keep the old worker running until the version list shows no run left on it, or move them.
 
 **Test it with the replayer.** Export the history of a run (`api.Runs.ExportHistoryAsync(runId)`, or
 `sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need
@@ -176,5 +184,5 @@ that reaches a value the export redacted stops with `INCONCLUSIVE_REDACTED` inst
 ## Where to go next
 
 - [The SDK README](../../sdks/dotnet/README.md): the client, the worker host, the builders of the workflow document, the errors.
-- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the five SDKs do the same way, and the conformance suite that holds them to it.
+- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the six SDKs do the same way, and the conformance suite that holds them to it.
 - [saga.md](saga.md): a payment saga, with compensation and reconciliation.

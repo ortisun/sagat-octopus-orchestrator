@@ -174,10 +174,11 @@ protocol and lease checks; session renewal remains a separate operation. See the
 
 ## Workflow as code (design 044)
 
-Approved in [design 044](../designs/044-workflow-as-code.md) (Technical Plan 4.1 and 13.1, Architecture decision 0109)
-and being built: Task 044-2 adds the messages, the RPCs and an `UNIMPLEMENTED` stub for each RPC; Task 044-8 serves the
-lease and `ReadHistory`, Task 044-9 the completion, Task 044-13 the replay checks, and the deferrable Tasks 044-29 and
-044-14 the worker queries and `ReleaseSticky`. Nothing below is served on `develop` before its task lands.
+Approved in [design 044](../designs/044-workflow-as-code.md) (Technical Plan 4.1 and 13.1, Architecture decision 0109,
+Proposed until its build-evidence conditions are met) and being built: Task 044-2 adds the messages, the RPCs and an
+`UNIMPLEMENTED` stub for each RPC; Task 044-8 serves the lease and `ReadHistory`, Task 044-9 the completion, Task 044-13
+the replay checks, and the deferrable Tasks 044-29 and 044-14 the worker queries and `ReleaseSticky`. Nothing below is
+served on `develop` before its task lands.
 
 **The minor.** Workflow tasks travel on *the workflow-as-code minor*: the next free minor of the register in
 [`sdks/SPEC.md`](../../sdks/SPEC.md) section 9 when the contract of Task 044-2 merges (Architecture decision 0109; Gap
@@ -202,14 +203,19 @@ so `PollTasks` and the task stream carry them unchanged:
 | Kind | Message | What it is |
 |---|---|---|
 | `WORKFLOW` | `WorkflowTaskLease` | A lease of the run's workflow-task step: run, attempt, generation, lease token, expiry, the run's seed, the activation's time, the window start, the gated entries and `state_max_bytes` of the current version, the first history page (at most 256 KiB), the visible count, the flags `continue_as_new_suggested` and `history_limit_reached`, `traceparent` |
-| `QUERY` | `QueryTask` | A worker query of a run (Task 044-29): its name, its arguments inline (at most 64 KiB) and its deadline |
-| `REPLAY_CHECK` | `ReplayCheckTask` | Up to 16 runs of a move to replay against the target code, each with its own read token |
+| `QUERY` | `QueryTask` | A worker query of a run (Task 044-29): its name, its arguments inline (at most 64 KiB), its deadline and the run's seed |
+| `REPLAY_CHECK` | `ReplayCheckTask` | Up to 16 runs of a move to replay against the target code, each item with its own read token and its run's seed |
+
+The query and replay-check tasks carry the run's seed (`QueryTask.seed`, `ReplayCheckItem.seed` in the contract of Task
+044-2) because the history never does, and a replay of a run that drew random numbers or identifiers needs it; who
+holds the seed does not change: the workers bound to the workflow type and the holders of `history:export` (Decision
+044-240).
 
 **RPCs.** Each has its own request and response messages:
 
 | RPC | What it does |
 |---|---|
-| `CompleteWorkflowTask` | The completion: the fence, an idempotency key, `applied_through_seq`, the replayed command chain, the commands (at most 403), the deferred terminal command if any, the eager activity slots offered; the outcome is `ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, or `REVIEW` with its cause |
+| `CompleteWorkflowTask` | The completion: the fence, an idempotency key, `applied_through_seq`, the replayed command chain, the commands (at most 403), the deferred terminal command if any, the eager activity slots offered, and the reserved `behaviour_flags`, empty in 0.3.0 (Gap 044-015); the outcome is `ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, or `REVIEW` with its cause |
 | `FailWorkflowTask` | The failure: the fence, an idempotency key, a cause from the closed list of the review causes, and for a nondeterminism the command number and the actual kind and target; for an uncaught exception its type name only, never a message |
 | `ReadHistory` | A server stream of `HistoryEvent` pages from a sequence, at most 1,024 events or 3 MiB per page, under a workflow lease or the read token of a query or replay-check item; reading extends a workflow lease up to 120,000 ms |
 | `RespondWorkerQuery` | The answer to a `QUERY` task, inline (at most 256 KiB), with the journal sequence of the completion it was computed at |

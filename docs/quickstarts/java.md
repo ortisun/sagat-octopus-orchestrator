@@ -117,11 +117,16 @@ static OrderResult order(WorkflowContext ctx, OrderInput input) {
 Each `ctx` call is a command the platform records and executes; the activities run in an ordinary worker as above. The
 method is run again from the start against the run's journal whenever a worker does not hold it in memory, so it must be
 deterministic. The SDK runs each workflow on virtual threads under a single permit, and every SDK call checks that it is
-made from the thread that holds the permit (another thread fails the workflow task, `NONDETERMINISM_RISK`). Nothing
+made from the thread that holds the permit (another thread fails the workflow task with `NONDETERMINISM_RISK`, which
+puts the run under review at once, Technical Plan 6.3, not after counted failures). Nothing
 checks the rest of your code before it runs, so keep to the SDK: no `System.currentTimeMillis`, `Random`,
 `UUID.randomUUID`, threads, executors or `CompletableFuture`'s pool, and no iteration over a `HashSet` of objects that
 hash by identity (enums included); use `ctx.now()`, `ctx.random()` and `ctx.uuid()`. The workflow artifact needs Java 21
 (the core SDK stays on Java 17) and a default time zone of UTC and default locale `Locale.ROOT` for the workflow worker.
+
+An activity failure the method does not catch fails the workflow task, not the run: the task is retried after 1, 2, 4
+and 8 s, and the fifth consecutive failure puts the run under review. To fail the run on purpose, throw the SDK's
+`WorkflowFailure` with a code (Requirement 044-009).
 
 **One jar for workflow code, another for activities.** The code digest of a Java workflow hashes every jar and class
 directory of the worker's class path, so a change of an activity on that class path makes a new digest, and runs open
@@ -137,12 +142,17 @@ java -Duser.timezone=UTC -Duser.language= -Duser.country= -jar order-workflows.j
 ```java
 String manifest = Files.readString(Path.of("manifest.json"));
 CodeEnvelope envelope = CodeEnvelope.activities("inventory.reserve", "payments.charge", "customers.remind");
-api.definitions().publishCode(manifest, envelope);
+CodeDeclarations declarations = CodeDeclarations.signals(new SignalDeclaration("paid", true, 10,
+        """
+        {"type": "object", "properties": {}, "additionalProperties": false}"""));
+api.definitions().publishCode(manifest, envelope, declarations);
 ```
 
-`publishCode` saves the code version as the workflow's draft and publishes it, making it active. The envelope lists what
-the method's commands may use; a command outside it puts the run under review. The `paid` signal is a declaration of the
-code document beside the envelope (`signals: [{name: paid, buffered: true}]`, Technical Plan 3.1 of the design).
+`publishCode` assembles the code document from the manifest, the envelope and the declarations, saves it as the
+workflow's draft and publishes it, making it active (Decision 044-238). The envelope lists what the method's commands
+may use; a command outside it puts the run under review. The declarations hold the rest of the code document of
+Technical Plan 3.1, here the `paid` signal, buffered, at most 10 pending (`sagat workflow publish-code` takes them with
+`--declarations <file>`).
 
 **Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
 on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). In `order-workflows.jar`, started
@@ -155,8 +165,8 @@ workflows.registerWorkflow("order", OrderFlow::order); // the registration's nam
 workflows.start();
 ```
 
-Deploy a new workflow jar beside the old one: runs stay on the digest they started with, so keep the old worker running
-until the version list shows no run left on it, or move them.
+Deploy a new workflow jar beside the old one: runs stay on their current code version's digest (the start version's
+until a move), so keep the old worker running until the version list shows no run left on it, or move them.
 
 **Test it with the replayer.** Export the history of a run (`api.runs().exportHistory(runId)`, or
 `sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need
@@ -179,5 +189,5 @@ that reaches a value the export redacted stops with `INCONCLUSIVE_REDACTED` inst
 ## Where to go next
 
 - [The SDK README](../../sdks/java/README.md): the client, the worker host, the builders of the workflow document, the errors.
-- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the five SDKs do the same way, and the conformance suite that holds them to it.
+- [`sdks/SPEC.md`](../../sdks/SPEC.md): what the six SDKs do the same way, and the conformance suite that holds them to it.
 - [saga.md](saga.md): a payment saga, with compensation and reconciliation.

@@ -150,11 +150,17 @@ async fn order(ctx: WorkflowContext, input: Value) -> Result<Value, WorkflowFail
 Each `ctx` call is a command the platform records and executes; the activities run in an ordinary worker as above. The
 function is run again from the start against the run's journal whenever a worker does not hold it in memory, so it must
 be deterministic. The SDK polls it on a single-threaded executor of its own, on workflow threads where no Tokio runtime
-is entered: `tokio::time::sleep` or `tokio::spawn` there panics, and the SDK fails the workflow task
-(`NONDETERMINISM_RISK`). Branches go through `ctx.spawn` (not `Send`); `ctx.now()`, `ctx.random()` and `ctx.uuid()`
+is entered: `tokio::time::sleep` or `tokio::spawn` there panics, and the SDK fails the workflow task with
+`NONDETERMINISM_RISK`, which puts the run under review at once (Technical Plan 6.3), not after counted failures.
+Branches go through `ctx.spawn` (not `Send`); `ctx.now()`, `ctx.random()` and `ctx.uuid()`
 replace `SystemTime::now`, `rand` and `Uuid::new_v4`; and the `clippy.toml` fragment the SDK ships for workflow crates
 refuses those calls and the default-hasher `HashMap` and `HashSet`, whose iteration order differs per instance. The
 precondition is Rust 1.98, the SDK's baseline.
+
+An activity failure the function does not handle fails the workflow task, not the run: the task is retried after 1, 2,
+4 and 8 s, and the fifth consecutive failure puts the run under review. To fail the run on purpose, return the SDK's
+`WorkflowFailure` with a code (Requirement 044-009); the error type through which `?` passes an activity failure, so
+that it is never taken for a `WorkflowFailure`, is settled by Task 044-19.
 
 **One binary for workflow code, another for activities.** The code digest of a Rust workflow is the SHA-256 of the whole
 executable, so a change of an activity linked into the same binary makes a new digest, and runs open on the old one move
@@ -173,12 +179,17 @@ let manifest: Value = serde_json::from_str(&std::fs::read_to_string("manifest.js
 let envelope = json!({ "activities": [
     { "name": "inventory.reserve" }, { "name": "payments.charge" }, { "name": "customers.remind" }
 ] });
-api.definitions().publish_code(&manifest, &envelope, CallOptions::default()).await?;
+let declarations = json!({ "signals": [{ "name": "paid", "buffered": true, "maxPending": 10,
+    "schema": { "type": "object", "properties": {}, "additionalProperties": false } }] });
+api.definitions()
+    .publish_code(&manifest, &envelope, Some(&declarations), CallOptions::default())
+    .await?;
 ```
 
-`publish_code` saves the code version as the workflow's draft and publishes it, making it active. The envelope lists
-what the function's commands may use; a command outside it puts the run under review. The `paid` signal is a declaration
-of the code document beside the envelope (`signals: [{name: paid, buffered: true}]`, Technical Plan 3.1 of the design).
+`publish_code` assembles the code document from the manifest, the envelope and the declarations, saves it as the
+workflow's draft and publishes it, making it active (Decision 044-238). The envelope lists what the function's commands
+may use; a command outside it puts the run under review. The declarations hold the rest of the code document of
+Technical Plan 3.1, here the `paid` signal (`sagat workflow publish-code` takes them with `--declarations <file>`).
 
 **Serve it.** The identity of the workflow worker needs a binding that lists the workflow type `order` (`workflowTypes`
 on the worker binding; setting it needs `definition:publish` as well as `worker:bind`). In `order-workflows`:
@@ -191,8 +202,8 @@ workflows.workflow("order", order)?; // the registration's name is fixed by Task
 workflows.start().await?;
 ```
 
-Deploy a new workflow binary beside the old one: runs stay on the digest they started with, so keep the old binary
-running until the version list shows no run left on it, or move them.
+Deploy a new workflow binary beside the old one: runs stay on their current code version's digest (the start
+version's until a move), so keep the old binary running until the version list shows no run left on it, or move them.
 
 **Test it with the replayer.** Export the history of a run (`api.runs().export_history(run_id)`, or
 `sagat workflow history export --workflow order --last 64 --dir histories/` once the command ships; both need

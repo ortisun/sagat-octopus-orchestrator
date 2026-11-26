@@ -775,6 +775,29 @@ finding was answered.
   classified by the union of the parent's entry and the child's current version; the verifier's session is matched by
   id, token hash and namespace; the continue-as-new suggestion fires at 2.5 MiB.
 
+### Decisions while building the server lane: documents (2026-11-26)
+
+- **D044-238** (2026-11-26) `publishCode` takes the code document's declarations as well:
+  `client.definitions.publishCode(manifest, envelope, declarations?)`, where `declarations` holds the other parts of the
+  code document of Technical Plan 3.1 (`signals`, `state` with its queries and code updates, `inputSchema`,
+  `outputSchema`, `triggers`, `limits`, `chainPolicy`, and the `code` object's `workflowTaskTimeoutMs`,
+  `cancellationGraceMs` and `workerQueries`); the SDK assembles the code document from the three and publishes it as
+  Technical Plan 3.3 says. The command line's `sagat workflow publish-code --manifest <file> --envelope <file>` gains
+  `--declarations <file>`. delegate (OD-2026-11-24-4): Technical Plan 1.12 and 3.3 give publishCode only the manifest
+  and the envelope, so signals, state and updates had no way in (architecture review of Task 044-1, finding Major 1); a
+  third optional argument keeps the manifest (produced by the build) and the envelope (reviewed by the publisher) apart
+  from the declarations, which change with the code's contract with its callers.
+- **D044-239** (2026-11-26) The Go workflow-as-code package is `.../sdks/go/workflows` (plural, as the TypeScript entry
+  point and the Python module are named), because `sdks/go/workflow` is already the side-effect-free IR builder
+  (`sdks/go/workflow/workflow.go`) and exports names such as `Retry` and `Timeout` that would mean something else in the
+  runtime. delegate (OD-2026-11-24-4): Technical Plan 1.12 names `.../sdk/workflow`; the collision was found by the
+  architecture review of Task 044-1 (finding Major 3). Task 044-16 builds it there.
+- **D044-240** (2026-11-26) Query and replay-check tasks carry the run's seed (`QueryTask.seed`, `ReplayCheckItem.seed`
+  in the contract of Task 044-2), since the history never does and a replay of a run that drew random numbers or
+  identifiers needs it. delegate (OD-2026-11-24-4): Technical Plan 13.1 gave the seed only to the workflow lease
+  (architecture review of Task 044-1, finding Major 2); the holders of the seed are unchanged (workers bound to the
+  type).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -882,6 +905,10 @@ finding was answered.
   refinement for code versions, and its inbox row carries the version that buffered each signal (Decision 044-228);
   Task 044-21 waits for it.
 - **G044-020, G044-026** (2026-11-26, later state) Handed to design 045's owner by the coordinating session.
+
+- **G044-029** (2026-11-26) Design 044, Technical Plan 8.2, says a chain-addressed update of a code run behaves as for
+  a run, but table 13.2 does not list the chain's update route (`updateExecutionChain`), whose contract therefore has no
+  `waitMs`, `acceptPending` or `202`; Task 044-21 adds them with the update transitions.
 
 ## 4. Owner questions (all delegated)
 
