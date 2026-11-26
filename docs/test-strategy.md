@@ -147,6 +147,16 @@ Workspace crates retain the action's default exclusion, so compiling/linking thi
 test executables can still be substantial. Cache restoration alone does not establish a timing
 improvement; inspect the cache-hit log and measured build stages before claiming one.
 
+A test that kills a process of the platform kills the executable an operator runs. The restart test of feature 022
+(`tests/e2e/flow-control-step-policies/restart.rs`, T022-059) starts `control-plane` and `execution-engine` as processes of
+their own, with the deployment's variables, and kills them with `SIGKILL`; it finds them beside the test executable
+(`cargo build -p sagat-control-plane --bin control-plane -p sagat-execution-engine --bin execution-engine` with the same
+target directory) or where `SAGAT_CONTROL_PLANE_BIN` and `SAGAT_EXECUTION_ENGINE_BIN` say, and CI builds them in a step
+of the shard that runs the suite, as it builds the database runner. A kill lands inside a decision through a row lock
+the test holds and a backend of the process waiting for it in `pg_locks`; the test reads what a restart finds only once
+every backend of the killed process has ended (a backend waiting for a lock outlives its killed client until it is
+granted the lock).
+
 The loop-drain recovery test performs its expected-error downgrade probes on dedicated
 PostgreSQL sessions. SQLx 0.9 returns early on a refused migration before its session advisory
 unlock; returning that connection to a pool can block a later probe. The fixture acknowledges
