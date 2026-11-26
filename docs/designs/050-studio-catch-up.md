@@ -42,8 +42,7 @@ publication requests, a paged list of the iterations of one loop or collection, 
 whether the caller may decide the item now) on the two existing per-run and per-workflow lists. It makes two additive
 corrections the screens need: a validation problem's pointer names the body of a body node, and the runtime
 graph reports on a loop or collection node the counts of its iterations by outcome, taken from the engine's own
-iteration events. It makes one deliberate change of behaviour: a decision on an approval whose run has ended answers
-`409 RUN_ENDED` instead of a retryable `503` (Non-functional requirement 050-003). Nothing changes in the IR (the
+iteration events. Nothing changes in the IR (the
 workflow document's schema, `workflow.schema.json`), the worker protocol or the SDK interfaces.
 
 The owner is the product owner of the platform; the decisions of this design are taken under the owner's delegation
@@ -201,14 +200,13 @@ REST API to approve a step.
   `a_person_approves_a_step_from_the_run_view_and_the_run_moves_on`; `a_resend_replays_and_a_changed_decision_gets_a_new_key`.
 - **Requirement 050-010** The server MUST list the pending approval requests of a namespace
   (`GET /namespaces/{namespaceId}/approvals`) under Architecture decision 0144: ordered by deadline, each item with
-  `youMayDecide` computed by `ApprovalRequest::may_decide` on the caller's current principal and the run's state, the
+  `youMayDecide` computed by `ApprovalRequest::may_decide` on the caller's current principal, the
   filter `decidable=true` (`false` or absent: every pending item, each flagged), nothing of the policy, never an
   unbounded scan and always a cursor while rows remain. The items of `GET /runs/{runId}/approvals` gain the same
-  `youMayDecide`. An approval whose run has ended is left out of the namespace list; a decision on it answers `409` with
-  `details.reason` `RUN_ENDED`, never a retryable `503`. *Acceptance:* the property test `may_decide_equals_decide`
+  `youMayDecide`. An approval whose run has ended is left out of the namespace list. *Acceptance:* the property test `may_decide_equals_decide`
   (domain), the contract test that no field names a policy member, the cross-tenant battery entry, the integration
   test that 2,001 undecidable rows followed by one decidable row are found in two requests, and
-  `an_inbox_page_and_a_decision_agree_on_an_ended_run`.
+  `an_ended_run_is_left_out_of_the_inbox`.
 - **Requirement 050-011** The server MUST list the open publication requests of a namespace that still need an approval
   under the current effective policy (`PENDING`, and `APPROVED` with fewer approvals than the policy now requires,
   because publication recounts the approvals against the policy in force when it publishes; a request is superseded
@@ -288,13 +286,8 @@ REST API to approve a step.
 - **Non-functional requirement 050-003 (compatibility)** The REST additions are additive: new routes, and new
   optional fields that readers ignore when they do not know them (`sdks/SPEC.md`); `ApprovalListItem` and
   `PublicationRequest`, closed schemas today, gain `youMayDecide` in the OpenAPI document, and the SDK type
-  descriptions that say the per-run list carries no eligibility are corrected. One behaviour changes on purpose: a
-  decision on an approval whose run has ended answers `409 RUN_ENDED`, which every SDK classifies as not retryable,
-  where it answered a retryable `503`; each SDK that calls the decision route (the five of the conformance scenario
-  `approval-decisions.json`) gains a unit test that classifies `409 RUN_ENDED` as not retryable, and the Rust
-  integration test seeds the inconsistent row directly, since no public call can reach a pending approval of an ended
-  run. No IR, worker-protocol or AsyncAPI
-  change.
+  descriptions that say the per-run list carries no eligibility are corrected. No existing answer changes, and no IR,
+  worker-protocol or AsyncAPI change.
 - **Non-functional requirement 050-004 (observability)** The three new routes have spans and closed-label metrics; a
   decision from the inbox is the existing decision operation with its existing audit.
 
@@ -376,11 +369,11 @@ in `050-studio-catch-up.reviews/`.
 - **Decision 050-005 — Publication requests join the inbox.** Options: approvals only; approvals and publication
   requests. Chosen: both, because both are "a person must decide before the work goes on", and the second needs only
   a list route over rows that exist.
-- **Decision 050-006 — The known audit actions are listed in the OpenAPI document and in a JSON file the Studio
-  imports, both held to the domain.** Options: a route that lists the actions; free text; a separate contract file
-  bundled with the Studio; `x-known-values` on the `action` parameter of `listAuditRecords`. Chosen: `x-known-values`
-  for clients and `frontend/apps/studio/src/api/audit-actions.json` for the Studio (the type generator does not carry
-  `x-` extensions, and the Studio has no YAML parser), both held equal to `AuditAction::ALL` by one contract test, with
+- **Decision 050-006 — The known audit actions are a JSON file the Studio imports, held to the domain.** Options: a
+  route that lists the actions; free text; `x-known-values` on the `action` parameter of `listAuditRecords`; a
+  contract file bundled with the Studio. Chosen: `frontend/apps/studio/src/api/audit-actions.json`, held equal to
+  `AuditAction::ALL` by one contract test (the type generator does not carry `x-` extensions, the Studio has no YAML
+  parser, and no other client reads such a list, so an OpenAPI copy would be a second list without a reader), with
   free text still accepted because the Studio may be served from another build (Architecture decision 0016,
   `SAGAT_STUDIO_DIR`); settles Nit 15 of the architecture review of 2026-11-25 and Major 4 of the Stage 9 review.
 - **Decision 050-007 — Go and Java are marked built in the Studio's constant.** Options: a capability name per built
@@ -425,8 +418,7 @@ in `050-studio-catch-up.reviews/`.
   server's validation stays the authority (Architecture decision 0143, decision 5). A new Studio that reaches an older
   replica also meets three other answers, and handles each: a new list route answering `404` with `ROUTE_NOT_FOUND`
   shows "this page is not available on this server", never "namespace missing"; an absent `youMayDecide` means
-  unknown, so the decision is offered and the server decides; the old `503` on a decision is shown as "try again", and
-  the person's resend reuses the same decision key (`useIntentKey`), so it replays.
+  unknown, so the decision is offered and the server decides.
 - **Gap 050-002** The audit trail has no namespace column, so the audit page cannot filter by namespace.
 - **Gap 050-003** The approval form, summary and notification fields of feature 026 are drawn by 026's Studio tasks on
   the inspector this design builds; until then the approval inspector shows only the fields of feature 014.
@@ -675,7 +667,7 @@ it has exactly one `return`. When two
 loops name the same body, the panel says so and editing it asks for confirmation once per session.
 
 **Legacy and disabled kinds.** A node of a kind without a registry entry, of a legacy kind, or of a kind whose
-capability is absent is drawn with the generic node card, read-only, with a reason: "The platform no longer runs this
+capability is absent (a variant no kind of this design uses; it is there for feature 022's entries) is drawn with the generic node card, read-only, with a reason: "The platform no longer runs this
 kind of node" (legacy) or "This server does not enable this kind of node" (capability). The draft keeps it equal under
 `canonical()` and in its place among the nodes. A legacy node already keeps its index (`readDocument` reads it as a
 node); what moves today are entries without an `id` or a `type` and duplicate ids, which `documentIO.ts` appends after
@@ -718,13 +710,13 @@ until the author deletes it (a read-only node can be deleted). The author fills 
 
   *The source.* Both read the engine's progress tables, written in the transactions that append the iteration
   events: `iteration_scopes` and `collection_iterations` for a collection, `loop_scopes` and `loop_iterations` for a
-  loop (iteration lifecycles `ADMITTED`, `CHECKPOINTED`, `DRAINED`). They hold no failed index, so a migration adds
-  `failed_iteration integer` and `failure_code text` to `iteration_scopes` and `loop_scopes`, written by the statements
-  that move a scope to `DRAINING` for the reason `Failed` (in `crates/infra-postgres/src/execution.rs`,
-  `primitives.rs` and `loop_progress.rs`); a run whose drain began before the migration reports its failed iteration
-  as drained, which the runbook states. The mapping: `CHECKPOINTED` is `SUCCEEDED`; the index equal to
-  `failed_iteration` is `FAILED`; another `DRAINED` is `DRAINED`; `ADMITTED` is `RUNNING`; not admitted is
-  `item_count` minus `admitted_count`. The counts are one grouped query per run (grouped by scope), never one per owner, so design 039's nested
+  loop (iteration lifecycles `ADMITTED`, `CHECKPOINTED`, `DRAINED`). The failed iteration is already stored: the drain
+  writes `drain_kind`, `drain_iteration` and `drain_failure_code` on `iteration_scopes` and `loop_scopes` (migrations
+  `20261103000000_collection_drain` and `20261107000000_loop_drain`; the statements in
+  `crates/infra-postgres/src/primitives.rs` and `loop_progress.rs`), in the transaction that appends the drain event, so
+  this design adds no column and no write. The mapping: `CHECKPOINTED` is `SUCCEEDED`; the index equal to
+  `drain_iteration` when `drain_kind` is `FAILED` is `FAILED`, with `drain_failure_code`; another `DRAINED` is
+  `DRAINED`; `ADMITTED` is `RUNNING`; not admitted is `item_count` minus `admitted_count`. The counts are one grouped query per run (grouped by scope), never one per owner, so design 039's nested
   owners do not multiply the reads of each `graph/changes` poll; they are added to `GraphSnapshot`
   (`crates/application/src/runs.rs`) as a field `iterations` by `RunStore::graph`'s adapter
   (`crates/infra-postgres/src/execution.rs`) and written onto owner nodes by `runtime_graph` in
@@ -768,7 +760,7 @@ lists pending approvals only and needs `run:read` and `approval:read` (admission
 `ApiTarget::Namespace`, which answers another tenant's namespace as missing).
 
 *Eligibility rule.* The rule stays where it is:
-`crates/domain/src/execution/approval.rs` gains `ApprovalRequest::may_decide(&Principal, run_ended) -> bool`,
+`crates/domain/src/execution/approval.rs` gains `ApprovalRequest::may_decide(&Principal) -> bool`,
 extracted from `authorize_decision` (tenant, `approval:decide`, the policy snapshot's subjects and roles, the initiator
 exclusion), and `decide` calls it with the same inputs.
 
@@ -784,20 +776,20 @@ no row lock (the runtime role holds only column-level `UPDATE` on `approval_requ
 2,000 statements; the test `an_inbox_page_is_one_statement` counts them. The use case builds the caller's principal
 from the current membership read by `IdentityStore::find_membership` (`crates/application/src/identity.rs`; a
 point-in-time hint, where the decision reads it again in its own transaction) and computes `youMayDecide` with
-`may_decide(principal, run_ended)`, then drops the undecidable rows when `decidable=true`. The per-run
+`may_decide(principal)`, then drops the undecidable rows when `decidable=true`. The per-run
 list computes the flag from the same row type, read for one run by one statement as well; the session principal the
 request already carries is built from the current membership on every request, so the use case may take it instead of
 a second read.
 
-*Ended runs.* `decide` takes the same `run_ended` input, derived by the decision's adapter
-(`crates/infra-postgres/src/approval_progress.rs`) from `RunStatus::is_terminal`
-(today the adapter refuses an ended run itself before it reads the caller's principal, and answers a retryable
-`503`; that guard in `crates/infra-postgres/src/approval_progress.rs` is deleted, not remapped, so an ineligible caller
-never learns that the run ended): the domain then refuses with `RunEnded`, which the route answers `409` with `details.reason` `RUN_ENDED`, and
-the inbox leaves such rows out. Inside `decide` the order is kept: authorization first, then a winning receipt under
-the key replays (also on an ended run), then a settled status answers `ALREADY_DECIDED`, and only a `PENDING` request
-with no winning receipt on an ended run answers `RunEnded`; `may_decide` mirrors that order, so the golden
-`approval-settlement.json` of the SDK conformance suite keeps its answers. No SQL predicate repeats the rule; the snapshots never leave the use case.
+*Ended runs.* A run's end cancels its pending approvals in the run's own transaction
+(`crates/infra-postgres/src/execution.rs`), so a pending approval of an ended run should not exist; the probe
+`every_run_end_cancels_its_pending_approvals` is Task 050-4's first red test and checks every run-end path. The inbox's
+scan reads pending rows of runs that have not ended (a run-status predicate of the scan, a data filter like
+`status = 'PENDING'`, not the eligibility rule), and `may_decide` and `decide` keep their inputs. The decision's
+adapter (`crates/infra-postgres/src/approval_progress.rs`) today refuses an ended run before it reads the caller's
+principal, with a retryable `503`; that guard moves after authorization, so an ineligible caller is refused for
+eligibility and never learns that the run ended; its answer to an eligible caller stays the `503` it is today. No SQL
+predicate repeats the eligibility rule; the snapshots never leave the use case.
 
 *Paging and access filters.* A page reads
 at most 2,000 rows; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
@@ -812,10 +804,8 @@ design and 029's slice 0 merges second; the publication inbox follows the same r
 `GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, computed the same way (`ApprovalListItem`, a
 closed schema, gains the property; the flag concerns only the caller and reveals no policy, initiator or decider).
 
-*Run ends.* A run end is
-checked to cancel its pending approvals (the test `every_run_end_cancels_its_pending_approvals`); a path found not to
-becomes a follow-up task of its own scope, and until it is fixed such rows are left out of the inbox by the
-`run_ended` input.
+*Run ends.* A run-end path that the probe finds leaving approvals pending becomes a follow-up task of its own scope;
+until it is fixed, the scan's run-status predicate keeps such rows out of the inbox.
 
 *Index.* A migration adds `CREATE INDEX IF NOT EXISTS approval_requests_pending_deadline_idx ON approval_requests
 (tenant_id, namespace_id, deadline, request_id) WHERE status = 'PENDING'`; the runbook tells an operator with a large
@@ -856,7 +846,9 @@ test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The ite
 `ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram); no tenant, namespace, workflow
 or subject label.
 
-**Studio.** `features/inbox/`: two tabs, approvals (deadline ascending, "time left" in words and as a number) and
+**Studio.** `features/inbox/`, its refresh built on the Studio's existing pattern (TanStack Query's
+`refetchInterval` with a function, as `BatchPage.tsx` uses, which skips a hidden browser tab, with the back-off as that
+function; `RunListStore` of `features/runs/runList.ts` shows the same rules): two tabs, approvals (deadline ascending, "time left" in words and as a number) and
 publication requests (oldest first), each read with `decidable=true` through `collectPagesBounded` (at most five
 pages per list per refresh), saying "more may wait" when it stopped with a cursor left. Every refresh starts from the
 first page and reads only the inbox tab in view, and only while the browser tab is visible. The interval is 30 seconds and
@@ -883,13 +875,11 @@ identifier or a resource identifier can never move a request to another route. F
 action (a picker that suggests the known actions and accepts any text), resource type and id, actor, from and to. The table shows time, actor, action,
 resource and reason; a record view adds the trace link (the existing `TraceLink`). A resource link is made for the
 types that have a page (run, workflow, schedule, script, connection, namespace). The download reads pages until 10,000
-records or the end and saves JSON lines, saying which. The known actions are listed under `x-known-values` of the
-`action` parameter of `listAuditRecords` in `openapi.yaml` and in `frontend/apps/studio/src/api/audit-actions.json`,
-which the picker imports (Decision 050-006). `crates/domain/src/audit.rs` gains `AuditAction::ALL`, a constant list,
-with a private function that `match`es every variant to its position in `ALL` (adding a variant without a position
-fails to compile) and a unit test that the positions cover `ALL` exactly once. The contract test
-`the_known_audit_actions_equal_the_domain_actions` in `contract_rest_workflow_studio` reads the YAML and the JSON
-file and compares both with `ALL`; `SAGAT_CONTRACT_BLESS=1` rewrites the JSON after the diff is read. The server already records each reading
+records or the end and saves JSON lines, saying which. The known actions are in `frontend/apps/studio/src/api/audit-actions.json`, which the picker imports (Decision
+050-006). `crates/domain/src/audit.rs` builds `AuditAction`, its codes and `AuditAction::ALL` from one table with a
+macro, as `crates/domain/src/database/failure.rs` does with `failures!`, so a variant cannot exist outside `ALL`. The
+contract test `the_known_audit_actions_equal_the_domain_actions` in `contract_rest_workflow_studio` compares the JSON
+file with `ALL`; `SAGAT_CONTRACT_BLESS=1` rewrites the JSON after the diff is read. The server already records each reading
 (`audit.read`, collapsing within five minutes).
 
 ### 8. Versions, settings, events, scripts, palette
@@ -925,7 +915,7 @@ file and compares both with `ALL`; `SAGAT_CONTRACT_BLESS=1` rewrites the JSON af
   and the byte-stability digest of `contract_payload_classification` (recomputed in its `openapi.rs`).
 - `docs/engineering/architecture-principles.md`: four rows with their checks (the registry against the schema; the
   capability names against `AdvertisedCapability`; `may_decide` against `decide` for approvals
-  and publication requests; `AuditAction::ALL` against the OpenAPI list).
+  and publication requests; `AuditAction::ALL` against the Studio's list).
 - `docs/runbooks/studio.md`: the inbox, the audit page, the capability list and how an operator reads it.
 - `specs/007-workflow-studio/design/README.md`: the new screens.
 
@@ -1012,7 +1002,7 @@ primitive goes in a new file of `src/ui/`.
   Refs: Requirement 050-022
 - [ ] T050-2 Server builder: the contracts and documents of Technical Plan 9 (`x-planned: '050'` on the three new
   operations, each added to `not_built` of `tests/contract/security-multitenancy/rest/battery.rs`; `youMayDecide` on `ApprovalListItem` and `PublicationRequest`; `RuntimeNode.iterations`;
-  `PlatformVersion.capabilities`; the audit `x-known-values`), `frontend/apps/studio/src/api/audit-actions.json`, the
+  `PlatformVersion.capabilities`), `frontend/apps/studio/src/api/audit-actions.json`, the
   SDK type descriptions of the per-run approvals list, the two digests, the four rows of
   `docs/engineering/architecture-principles.md`, `docs/runbooks/studio.md` with the publishable subset of Technical
   Plan 4, the screen list in `specs/007-workflow-studio/design/README.md`; then the Studio builder regenerates
@@ -1030,23 +1020,22 @@ primitive goes in a new file of `src/ui/`.
   Verification: `cargo test -p sagat-application capabilities`;
   `cargo test -p sagat-tests --test contract_rest_workflow_studio capabilities`.
   Refs: Requirement 050-002
-- [ ] T050-4 Server builder: `ApprovalRequest::may_decide` and the order inside `decide`
-  (`crates/domain/src/execution/approval.rs`); `ApprovalInboxStore`, its use case and adapter, the migration with the
+- [ ] T050-4 Server builder: first the probe `every_run_end_cancels_its_pending_approvals`; then
+  `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`); `ApprovalInboxStore`, its use case and adapter, the migration with the
   partial index and its `down`; the route, its metrics and `x-implemented`; `youMayDecide` on the per-run list through
-  `list_for_run`; `RUN_ENDED`, with the adapter's ended-run guard deleted; the route removed from `not_built`; the new target `integration_studio_catch_up` (`tests/integration/studio-catch-up/main.rs`
-  and its `[[test]]` entry in `tests/Cargo.toml`); in each SDK that calls the decision route (the five of
-  `approval-decisions.json`), a unit test that `409 RUN_ENDED` is classified as not retryable.
+  `list_for_run`; the adapter's ended-run guard moved after authorization; the route removed from `not_built`; the new
+  target `integration_studio_catch_up` (`tests/integration/studio-catch-up/main.rs` and its `[[test]]` entry in
+  `tests/Cargo.toml`).
   Red tests: `may_decide_equals_decide` (property, `crates/domain`); in `integration_studio_catch_up`:
-  `a_decision_on_an_ended_run_is_409_run_ended` (the inconsistent row seeded directly, since a run end cancels its
-  approvals), `a_replay_on_an_ended_run_still_answers_its_receipt`, `an_inbox_page_and_a_decision_agree_on_an_ended_run`,
+  `every_run_end_cancels_its_pending_approvals` (the probe, first: a failing path opens a follow-up task),
+  `an_ended_run_is_left_out_of_the_inbox`,
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
-  `an_inbox_page_is_one_statement`, `an_ineligible_caller_on_an_ended_run_gets_403_not_409`,
-  `the_per_run_list_flags_the_callers_own_eligibility_only`, `every_run_end_cancels_its_pending_approvals` (a probe: a
-  failing path opens a follow-up task); in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
+  `an_inbox_page_is_one_statement`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
+  row seeded directly), `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
   Verification: `cargo test -p sagat-domain approval`;
   `cargo test -p sagat-tests --test integration_studio_catch_up --test contract_rest_workflow_studio`, and again with
-  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; the battery target; each SDK's unit suite (`sdks/AGENTS.md`).
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; the battery target.
   Refs: Requirement 050-009, Requirement 050-010
 - [ ] T050-5 Server builder: `PublicationRequest::may_decide`, called by `decide` (`crates/domain/src/versioning.rs`);
   `PublicationInboxStore`, the use case with `publication:approve`, the reduced item, order, cursor, bound and partial
@@ -1071,7 +1060,9 @@ primitive goes in a new file of `src/ui/`.
   new kinds of Technical Plan 4), the schema drift test, `useCapabilities`, the palette filtered by capability, legacy
   and disabled kinds read-only, `documentIO.ts` keeping every root entry at its index, `resolveNodeId` reading body
   pointers first.
-  Red tests: `registry_matches_the_schema` and `a_schema_with_a_new_kind_fails_the_registry_test`
+  Red tests: `without_the_operators_capability_the_stage_list_is_read_only_and_kept`
+  (`src/features/workflows/inspectors/ForEach.test.tsx`); `registry_matches_the_schema` and
+  `a_schema_with_a_new_kind_fails_the_registry_test`
   (`src/model/registry.test.ts`); `a_missing_capability_hides_the_lake_write` (`src/features/workflows/Palette.test.tsx`);
   `an_unreadable_entry_between_two_nodes_keeps_its_index` (`src/features/workflows/documentIO.test.ts`, fails today);
   `a_body_problem_is_placed_in_its_body_even_with_a_colliding_root_id` (`validationModel.test.ts`).
@@ -1100,8 +1091,8 @@ primitive goes in a new file of `src/ui/`.
   (`src/features/workflows/BodyCanvas.test.tsx`).
   Verification: `(cd frontend/apps/studio && npm test -- BodyCanvas)`.
   Refs: Requirement 050-007
-- [ ] T050-9 Server builder: the migration adding `failed_iteration` and `failure_code` (with its `down`) and their
-  writes at a `Failed` drain; the counts in `GraphSnapshot` and on owner nodes; `RunStore::iteration_page`, the use
+- [ ] T050-9 Server builder, read-only: the counts in `GraphSnapshot` and on owner nodes, from the progress tables
+  and their drain columns; `RunStore::iteration_page`, the use
   case, the route and `x-implemented`, its metric and battery entry.
   Red tests in `integration_studio_catch_up`: `the_counts_and_the_listed_outcomes_equal_the_iteration_events`,
   `a_failed_iteration_drains_the_others_and_counts_them_drained`,
@@ -1132,7 +1123,7 @@ primitive goes in a new file of `src/ui/`.
   `a_route_not_found_says_the_page_is_not_available`.
   Verification: `(cd frontend/apps/studio && npm test -- inbox)`.
   Refs: Requirement 050-012
-- [ ] T050-11 Server builder: `AuditAction::ALL` with its position `match` and unit test (`crates/domain/src/audit.rs`);
+- [ ] T050-11 Server builder: `AuditAction` and `AuditAction::ALL` built from one table (`crates/domain/src/audit.rs`);
   `the_known_audit_actions_equal_the_domain_actions` in `contract_rest_workflow_studio`.
   Verification: `cargo test -p sagat-domain audit`;
   `cargo test -p sagat-tests --test contract_rest_workflow_studio audit`.
@@ -1166,8 +1157,8 @@ primitive goes in a new file of `src/ui/`.
 - [ ] T050-14 Server builder, with the Studio builder's browser part: the performance journey. A new target
   `perf_studio_catch_up` (`tests/performance/studio-catch-up/main.rs`) seeds 10,000 pending approvals and a run of
   10,000 iterations of an eight-step body through the test support as the schema owner, times the inbox and audit
-  pages, and drives 300 simulated inboxes (tasks that follow the Studio's refresh schedule of Technical Plan 6) to
-  count requests per second against the tenant budget; `frontend/e2e/tests/perf.spec.ts` measures the graph's size and
+  pages, and measures the inbox routes' latency at a fixed rate of 50 requests per second from one tenant, the worst
+  case Technical Plan 6 bounds for 300 open inboxes, against the tenant budget (no copy of the Studio's schedule); `frontend/e2e/tests/perf.spec.ts` measures the graph's size and
   parse time and the input blocking in a real browser. The report goes to
   `tests/performance/reports/studio-catch-up-<date>.md` with the environment and failures.
   Verification: `cargo test -p sagat-tests --test perf_studio_catch_up --locked -- --ignored --nocapture`.

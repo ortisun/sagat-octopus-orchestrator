@@ -27,10 +27,12 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
    ordered by deadline then request id, with a bounded opaque cursor and no filter by workflow or by run (the per-run
    and per-workflow lists already serve those reads). It needs `run:read` and `approval:read`. Settled approvals stay
    on the per-run list and in the audit trail.
-2. Each item MUST carry `youMayDecide`, computed by `ApprovalRequest::may_decide(&Principal, run_ended)`, extracted
+2. Each item MUST carry `youMayDecide`, computed by `ApprovalRequest::may_decide(&Principal)`, extracted
    from the decision's own check and called by `decide` with the same inputs, on the caller's principal built from the
-   current membership as the decision builds it; an approval whose run has ended is not decidable, is left out of the
-   list, and its decision answers `409 RUN_ENDED`. The flag is a point-in-time hint; the decision re-checks. The filter `decidable=true` MUST return only
+   current membership as the decision builds it; an approval whose run has ended is left out of
+   the list by a run-status predicate of the scan (a run's end cancels its pending approvals, so such a row is a
+   defect the probe test finds), and the decision's answers are unchanged; the decision's adapter refuses an ended run
+   only after authorization. The flag is a point-in-time hint; the decision re-checks. The filter `decidable=true` MUST return only
    such items. The items of the existing per-run list (`GET /runs/{runId}/approvals`) MUST carry the same
    `youMayDecide`, computed the same way, so the run view needs no second route. The adapter returns bounded pages of pending rows with their policy snapshots; the use case filters;
    no SQL predicate repeats the rule, and the snapshots never leave the use case.
@@ -66,9 +68,8 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 ## Consequences
 
-- One migration adds a partial index on pending approvals by namespace and deadline. The decision path keeps its rule;
-  a decision on an approval whose run has ended answers `409 RUN_ENDED`, not retryable, where it answered a retryable
-  `503`: a deliberate change of behaviour, checked by a unit test in each SDK that calls the decision route and by a Rust integration test that seeds the row directly. Inside `decide`, a winning receipt still replays and a settled request still answers `ALREADY_DECIDED` on an ended run; only a pending request without a winning receipt answers `RUN_ENDED`.
+- One migration adds a partial index on pending approvals by namespace and deadline. The decision path keeps its rule and its
+  answers; its ended-run refusal moves after authorization.
 - A person sees their own eligibility for every pending approval of a namespace they can read, which they could learn
   anyway by attempting a decision; nobody learns anything about another person.
 - Rollback: the route is additive; removing it removes the inbox page.

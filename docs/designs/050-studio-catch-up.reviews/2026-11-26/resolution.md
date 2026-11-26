@@ -52,3 +52,16 @@ All 10 findings are fixed; a security finding is never accepted (Owner decision 
 | 14 | Nit | Fixed: `documentIO.ts` named | Technical Plan 4 |
 
 While fixing finding 1 the author also corrected the acceptance of Requirement 050-006, which still read "validates it against the test server and publishes it" after the Stage 9 settlement moved publication to the journeys.
+
+## egm-review Stage 8, Intermediate Zoom Out (`intermediate_zoom_out_report.md`, at `1b5b03cc`)
+
+All five findings are accepted and fixed. Findings 1 and 2 remove work: no migration on the progress tables and no
+change of any existing answer. The design is again read-only on the engine's tables, as Constitution Check I says.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the migration and the drain writes are removed. The outcomes map from `drain_kind`, `drain_iteration` and `drain_failure_code`, the runbook caveat is dropped, and Task 050-9 is read-only. Stage 9 Blocker 1's premise that no failed index was stored was wrong; its settlement is corrected here | Technical Plan 5, Task 050-9 |
+| 2 | Major | Fixed: the probe is Task 050-4's first red test. The scan has a run-status predicate (a data filter, not the eligibility rule), and `may_decide` and `decide` keep their inputs. The adapter's ended-run guard moves after authorization and keeps its answer. No SDK change, no `RUN_ENDED`, no Gap 050-001 case. Security Nit 3 stays fixed by the move: an ineligible caller is refused for eligibility and never learns the run ended | Overview, Requirement 050-010, Technical Plan 6, Non-functional requirement 050-003, Gap 050-001, Task 050-4, Architecture decision 0144 |
+| 3 | Nit | Fixed: one list, the Studio's JSON, held to `ALL`, with `AuditAction` built from one table as `failures!` does | Decision 050-006, Technical Plans 7 and 9, Tasks 050-2, 050-11 |
+| 4 | Nit | Fixed: the refresh is built on `refetchInterval` with a function, as `BatchPage.tsx` uses. Task 050-14 measures latency at the bounded worst case (50 requests per second) and does not copy the schedule | Technical Plan 6, Task 050-14 |
+| 5 | Nit | Fixed: the kind-level variant is marked as feature 022's, and `without_the_operators_capability_the_stage_list_is_read_only_and_kept` is added | Technical Plan 4, Task 050-15 |
