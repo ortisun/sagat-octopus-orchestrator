@@ -830,7 +830,7 @@ raise, cleared by the maintenance loop once its sessions are marked), `settings_
 stays one row |
 | `signin_attempts` | link and test attempts only (a sign-in attempt lives in its sealed cookie): tenant, id, connection, purpose (`LINK`, `TEST`), the subject that started it, the start address hash, browser binding hash, state, nonce, the provider-side verifier, SAML request id, the connection revision, the verified identity once the callback completed, created, expires (10 minutes), used at | created only by an authenticated caller; at most 20 live per tenant; purged at expiry |
 | `signin_codes` | tenant, code hash, attempt id (unique per tenant, so a second callback of one attempt is refused), the verified identity, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
-| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or, for the CLI, the refresh MAC's random value, the current and the highest issued generation,
+| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or, for the CLI, the refresh MAC's random value and `random_key_id` (the `cli-refresh` key id active when the random value was set, at redemption or by a rotation), the current and the highest issued generation,
 and the refresh rate window's start and count, and for the CLI's grace the rows of
 `signin_refresh_generations` (session, generation, rotated at, used at, grace rotations (a small integer, 0 by default); for the grace's bookkeeping only, since any generation's MAC can be
 recomputed; the grace is decided by `rotated_at` plus 30 seconds, never by whether a row exists, and a generation below the
@@ -1624,14 +1624,17 @@ written plus one, never reused, the highest also kept in the document), material
   refreshes on both sides; `a_second_rotate_finishes_an_interrupted_rotation`, driven by a controlled clock with skew).
 - `revoke` (audited) activates a new key at once, drops every key it did not create (`ACTIVE`, `RETAINED`, `PENDING`),
   and must win: on a failed check-and-set it reads again and writes again, up to five times, then exits non-zero with
-  an audited failure that names the conflict. Only after its write has committed does it rotate the random value of every CLI session whose random value is older
-  than that commit point (the new key id and its time, recorded in the audit row), so a session signed in under the
-  new key is never signed out again, in bounded batches tenant by tenant, each batch locking its session rows `FOR UPDATE` in (tenant,
+  an audited failure that names the conflict. Its check-and-set also records in the ring document the new key id as the revocation's commit point (key ids
+  only grow), so the point exists exactly when the ring write committed. Only then does it rotate the random value of
+  every CLI session whose `random_key_id` is below that point, setting `random_key_id` to it, so a session signed in
+  under the new key is never signed out again, and no clock is compared, in bounded batches tenant by tenant, each batch locking its session rows `FOR UPDATE` in (tenant,
   id) order in slot 4a, a path in `tests/support/lock_order.rs`; a failure after the ring write is safe, because tokens under the
-  dropped keys no longer verify, and `identity cli-refresh-key revoke --resume` continues the batches from the recorded
-  commit point without writing the ring (a plain `revoke` is a new revocation)
+  dropped keys no longer verify, and `identity cli-refresh-key revoke --resume` reads the commit point from the ring
+  and continues the batches without writing the ring, refusing with an audited non-zero exit when the ring records
+  none (a plain `revoke` is a new revocation; the audit row records the point too)
   (`a_cli_refresh_key_revoke_rotates_every_random_value` starting mid-rotation,
   `a_session_signed_in_after_a_revoke_keeps_refreshing`, `a_resumed_revoke_writes_no_ring_version`,
+  `a_revoke_that_crashed_before_its_audit_row_is_resumed_from_the_ring`,
   `a_rotation_resumed_after_a_revoke_writes_nothing`, `a_revoke_racing_a_rotation_promotion_still_replaces_every_key`).
 - A background task of the control plane reads both identity rings (`cli-refresh` and the attempt ring) at start and
   every refresh interval, single-flight with the unknown-id re-read, and keeps them on a failed read; a request that
@@ -1948,6 +1951,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_cli_refresh_key_rotation_keeps_a_session_refreshing_across_it`, `a_second_rotate_finishes_an_interrupted_rotation`,
   `a_cli_refresh_key_revoke_rotates_every_random_value` (starting from a ring in the middle of a rotation),
   `a_session_signed_in_after_a_revoke_keeps_refreshing`, `a_resumed_revoke_writes_no_ring_version`,
+  `a_revoke_that_crashed_before_its_audit_row_is_resumed_from_the_ring`,
   `a_rotation_resumed_after_a_revoke_writes_nothing` (a barrier holds `rotate` between its steps while `revoke`
   commits), `a_revoke_racing_a_rotation_promotion_still_replaces_every_key` (a barrier holds `revoke` between its
   read and its write while `rotate`'s second step commits),
