@@ -212,8 +212,10 @@ already has.
   restriction of Requirement 013-003, and a non-empty subject claim. The identity MUST come from the ID token;
   `userinfo` MAY add display claims only. *Acceptance:* one domain unit test per claim rule; and one table-driven integration test
   that sends, through the callback, an ID token breaking each rule (`iss`, `aud`, `azp`, `exp`, `iat`, `nonce`, `hd`,
-  `tid`, an empty subject, `alg`, `acr`), signed by the development provider, and asserts `SIGNIN_TOKEN_INVALID` (or
-  the context refusal) and that no code row is written, so the wiring of the callback is proved, not only the rules.
+  `tid`, an empty subject, `alg`), with two rows for a staged change (an ordinary sign-in whose `aud` is the pending
+  revision's client identifier, and a test sign-in whose `aud` is the active one's), signed by the development
+  provider, and asserts `SIGNIN_TOKEN_INVALID` and that no code row is written (the `acr` row is milestone D's, Task
+  013-20), so the wiring of the callback is proved, not only the rules.
 - **Requirement 013-008** A SAML sign-in MUST be service-provider-initiated and verified by Architecture decision
   0141's strict profile. An unsolicited response MUST NOT sign anyone in and MUST NOT redirect by itself: it answers a
   page with a button that starts a service-provider-initiated sign-in through that connection. *Acceptance:* the corpus
@@ -230,13 +232,16 @@ already has.
 - **Requirement 013-010** A connection MUST be able to require authentication context values (OIDC `acr`, SAML
   `AuthnContextClassRef`); a sign-in without one of them MUST be refused with a reason the person can act on. A
   session whose recorded context does not meet the connection's current requirement MUST be refused on its next request
-  by the per-request check. Raising the requirement writes only the connection row, and records the raised requirement
-  and its time as the connection's context floor; the per-request check also refuses every session that signed in
-  before the floor's time without meeting the floor, so a later lowering of the requirement revives no session the
-  raise cut off. The maintenance loop marks those sessions revoked later, in bounded batches.
+  by the per-request check. A raise is any change that removes an accepted value. Raising the requirement writes only
+  the connection row: it increments the connection's `session_epoch` and records the raised requirement with that
+  epoch as the connection's context floor; the per-request check also refuses every session whose epoch (copied from
+  the connection when the session was created) is below the floor's epoch and whose context does not meet the floor,
+  so a later lowering revives no session the raise cut off. The maintenance loop marks those sessions revoked in
+  bounded batches, selecting them by the floor, and clears the floor when it has marked them all; while a floor is
+  set, another raise is refused with the retryable reason `CONNECTION_STATE` (a lowering is allowed).
   *Acceptance:* refusal and acceptance tests with the development providers;
   `a_raised_context_refuses_the_sessions_that_do_not_meet_it_on_their_next_request`;
-  `lowering_the_context_revives_no_refused_session`.
+  `lowering_the_context_revives_no_refused_session`; `a_second_raise_waits_for_the_marking_of_the_first`.
 
 #### Identities and provisioning
 
@@ -331,10 +336,14 @@ already has.
   every 10 seconds for a platform token, and end when its token or its session ends; the Studio resumes it with
   `Last-Event-ID` (a stream reconnects at least every five minutes with 300-second tokens). Disabling or deleting a connection, or raising its required context,
   MUST make the affected sessions refused at once (the statement above) and mark them revoked in bounded batches
-  (Technical Plan 6). A disable records its time on the connection (`sessions_revoked_before`), and the per-request
-  check refuses every session created before it, so re-enabling a connection revives none of its old sessions
-  (`a_reenabled_connection_revives_no_session`). Renewal and refresh MUST re-check that the connection is `ACTIVE`, the session's
-  context meets the connection's requirement, and the membership is `ACTIVE`. *Acceptance:* the revocation tests of Architecture
+  (Technical Plan 6). A disable increments the connection's `session_epoch` and records the new value as
+  `revoked_below_epoch`, and the per-request check refuses every session whose epoch is below it, so re-enabling a
+  connection revives none of its old sessions (`a_reenabled_connection_revives_no_session`). Epochs, not times, are
+  compared: redemption copies the connection's epoch onto the session under its `FOR SHARE` lock of the connection
+  row, which a disable or a raise takes `FOR UPDATE`, so a sign-in racing either is ordered by the lock, not by
+  transaction start times. Renewal, refresh, and the re-checks of a stream and of a blob upload MUST use the
+  predicate of the per-request check (`IdentityStore::resolve_caller`), so a refused session can neither renew nor
+  rotate its refresh token (`a_reenabled_connections_old_session_cannot_renew`). *Acceptance:* the revocation tests of Architecture
   decision 0140: `a_revoked_session_is_refused_on_its_next_request` (a barrier holds a request after its membership read
   while the revocation commits: that request completes, the next one is refused), `a_stream_ends_within_ten_seconds_of_its_session`
   (measured), `a_stream_resumes_with_last_event_id`.
@@ -804,15 +813,18 @@ table.
 | `identity_break_glass_subjects` | tenant, subject, written by, written at | only `control-plane identity break-glass` (schema-owning role) writes it |
 | `identity_break_glass_uses` | tenant, `jti` or (`sub`, `iat`) when the token has no `jti`, first use | unique; the once-per-token audit |
 | `identity_signing_keys` | key version, public key, state (`PUBLISHED`, `ACTIVE`, `RETIRED`, `REVOKED`), published at, activated at, the identity-mount reference | deployment-wide; the operator command writes it |
-| `identity_connections` | tenant, global id, slug, protocol, issuer or entity identifier (immutable), state, display name, the active settings and, while one is staged, a pending revision, `sessions_revoked_before`
-(set by a disable), the context floor and its time (set by a raise of the required context), `settings_revision` (a counter incremented by every change) and the revision a test sign-in verified, up to two client secret references with their entered expiry, subject claim or attribute, tenant restriction (`hd`, `tid`), provisioning policy, required authentication context, the client authentication method | a change writes a revision; delete refused while one of its external groups is named (Decision 013-017) |
+| `identity_connections` | tenant, global id, slug, protocol, issuer or entity identifier (immutable), state, display name, the active settings and, while one is staged, a pending revision, `session_epoch` (incremented by a disable and by a
+raise of the required context), `revoked_below_epoch` (set by a disable), the context floor and its epoch (set by a
+raise, cleared by the maintenance loop once its sessions are marked), `settings_revision` (a counter incremented by every change) and the revision a test sign-in verified, up to two client secret references with their entered expiry, subject claim or attribute, tenant restriction (`hd`, `tid`), provisioning policy, required authentication context, the client authentication method | a change writes a revision; delete refused while one of its external groups is named (Decision 013-017) |
 | `identity_connection_keys` | tenant, connection, SAML signing keys and certificates, at most 3 | public data |
 | `identity_mapping_rules` | tenant, connection, position, group value, role | at most 32 |
 | `external_identities` | tenant, connection, provider subject, membership subject, created, last sign-in, deprovisioned at | unique (tenant, connection, provider subject); a connection's deletion keeps them, deprovisioned |
-| `member_profiles` | tenant, subject, display name, e-mail (display only), role pinned, owning connection (`ON DELETE SET NULL (owning_connection_id)`, the column-list form of PostgreSQL 15 and later, so the tenant column of the composite key stays) | `memberships` gains `status` (`ACTIVE`, `SUSPENDED`; default `ACTIVE`), so the per-request read stays one row |
+| `member_profiles` | tenant, subject, display name, e-mail (display only), role pinned, owning connection (`ON DELETE SET NULL (owning_connection_id)`, the column-list form of PostgreSQL 15 and later, so the tenant column of the composite key stays) | `memberships` gains `status` (`ACTIVE`, `SUSPENDED`; default `ACTIVE`) and `status_changed_at`, written by
+`sagat_member_set_status` and read after the membership lock by the SCIM reactivation rule, so the per-request read
+stays one row |
 | `signin_attempts` | link and test attempts only (a sign-in attempt lives in its sealed cookie): tenant, id, connection, purpose (`LINK`, `TEST`), the subject that started it, the start address hash, browser binding hash, state, nonce, the provider-side verifier, SAML request id, the connection revision, the verified identity once the callback completed, created, expires (10 minutes), used at | created only by an authenticated caller; at most 20 live per tenant; purged at expiry |
 | `signin_codes` | tenant, code hash, attempt id (unique per tenant, so a second callback of one attempt is refused), the verified identity, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
-| `signin_sessions` | tenant, id, subject, connection, client, cookie hash (Studio) or refresh token hash and its generation (CLI), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
+| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or refresh token hash and its generation (CLI), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
 | `scim_tokens` | tenant, connection, hash, created, last used, revoked | at most 2 in force |
 | `scim_resources` | tenant, connection, kind, SCIM id, the immutable matching value, the membership subject or external group, version (for `ETag`) | |
@@ -877,8 +889,9 @@ connection to `TESTED`, are one flow, started and finished by the signed-in pers
    the opening window end in different browsing-context groups and cannot message each other; the opening window
    therefore polls `GET /v1/auth/links/{attempt}` (every 2 seconds, until the attempt is verified or expired) and the
    policy stays as it is. The poll needs the bearer token and `X-Sagat-Renew` (a browser sends no `Origin` on a
-   same-origin `GET`); it answers only when the bearer's tenant and subject are the attempt's, and anything else,
-   another tenant included, gets the same `404` as a missing attempt; the answer holds only the attempt's state and,
+   same-origin `GET`); it answers only when the bearer's tenant and subject are the attempt's and the request
+   carries the attempt's binding cookie (the opening window shares the browser with the small window), and anything
+   else, another tenant or another browser included, gets the same `404` as a missing attempt; the answer holds only the attempt's state and,
    once verified, the provider identity, with `Cache-Control: no-store`.
 4. The opening window shows the identity to be linked and, when the person confirms, calls
    `POST /v1/auth/links/{attempt}` with the same bearer token, `Origin` and header; the browser sends
@@ -939,8 +952,8 @@ The request path then resolves, through one new store method
 `IdentityStore::resolve_caller(slug, subject, session: Option<SessionRef>) -> Option<CallerRow>`, in one statement that
 merges today's two reads (`find_tenant_by_slug`, `find_membership`), the tenant and its identity-settings row (with `federated_only`), the membership with its
 status and its effective role (Technical Plan 13), and, for a platform token, its session by (`tenant`, `sid`) with the session's subject and client equal to the
-token's, its connection `ACTIVE` with a required context the session's recorded context meets, the session created after the
-connection's `sessions_revoked_before` and, if it signed in before the context floor's time, meeting the floor, and
+token's, its connection `ACTIVE` with a required context the session's recorded context meets, the session's epoch not below
+the connection's `revoked_below_epoch` and, if below the context floor's epoch, its context meeting the floor, and
 the token's `kid` not `REVOKED` (primary-key
 lookups in the same statement); a suspended member or a revoked or expired session is refused with `401` and the reason `MEMBER_SUSPENDED` or
 `SESSION_REVOKED`.
@@ -1047,8 +1060,9 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   the connection owns (a bounded, audited job in subject order). Nothing is mapped from a sign-in assertion.
 - **Maintenance passes**: one leased loop (`crates/scheduler/src/identity.rs`, engine lease `identity-maintenance`,
   running only once `identity-federation-v1` is recorded) purges expired attempts, codes, replays and ended sessions in
-  bounded batches, marks revoked in bounded batches the sessions of a disabled or deleted connection or below a
-  raised required context (already refused by the per-request check), runs the recomputation jobs, updates the
+  bounded batches, marks revoked in bounded batches the sessions of a disabled or deleted connection and those
+  below a context floor (selected by the floor, already refused by the per-request check), clears a floor once its
+  sessions are marked, runs the recomputation jobs, updates the
   expiry and owner gauges and each connection's `scimFailing` after ten consecutive refused SCIM requests (a quiet
   directory sends nothing, so silence is not a fault)
 - **The amended contract**: `specs/029-custom-roles-folders/contracts/group-source.md` is updated in the readiness
@@ -1102,8 +1116,10 @@ development only, loopback unless explicitly exposed, known `Host` authorities, 
 for the configured test people (Architecture decision 0140 decision 8). Most OIDC refusal cases are unit tests over
 the pure claim rules in `crates/domain/src/federation/oidc.rs`; the integration refusals use the switch `break` of
 `/oidc/authorize`, a query parameter carried into the code and applied when the ID token is made, with a closed list
-of values (`alg`, `nonce`, `acr`) and one override, `claims:<json>`, that sets claims of the ID token, so the
-table-driven test of Requirement 013-007 can break every rule through the callback. SAML runs against a pinned Keycloak (`quay.io/keycloak/keycloak:26.0.7`, pinned by the digest
+of values (`alg`, `nonce`, `acr`) and one override, `claims:<json>`, that sets only the claims the table of Requirement 013-007 breaks
+(`iss`, `aud`, `azp`, `exp`, `iat`, `nonce`, `hd`, `tid`, and `sub` only as empty), at most 2 KiB, refused otherwise,
+and accepted only when the provider runs with `SAGAT_DEV_IDP_TEST_OVERRIDES=1`, which `tests/support` sets and a
+developer's laptop does not; tokens are still issued only for the configured test people. SAML runs against a pinned Keycloak (`quay.io/keycloak/keycloak:26.0.7`, pinned by the digest
 that Task 013-3 records), started by `tests/support` for the integration and interoperability suites and by the
 development overlay for a laptop, from the realm export `tests/fixtures/keycloak/realm-sagat.json` (a SAML client
 template, test users with attributes, a persistent name identifier, the authentication context classes, an OIDC
@@ -1156,7 +1172,7 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
   | `POST /v1/auth/session/token` | the session cookie, `Origin`, `X-Sagat-Renew` | renewal (`studio`) |
   | `POST /v1/auth/logout` | the session cookie, or the refresh token | sign-out |
   | `POST /v1/auth/links`, `POST /v1/auth/links/{attempt}` | bearer token, `Origin`, `X-Sagat-Renew` (and the attempt cookie for the confirmation) | test sign-in and link: start, confirm |
-  | `GET /v1/auth/links/{attempt}` | bearer token and `X-Sagat-Renew`; the attempt's own tenant and subject, otherwise `404` | test sign-in and link: poll |
+  | `GET /v1/auth/links/{attempt}` | bearer token, `X-Sagat-Renew` and the attempt cookie; the attempt's own tenant, subject and browser, otherwise `404` | test sign-in and link: poll |
 
   The administration routes of the REST API (bearer token; `x-access` tenant):
 
@@ -1291,11 +1307,12 @@ the requirement is unsupported. Federation rows stay.
   in 0.3.0 (Decision 013-007), the stored role is the effective role.
 - **Lock order additions.** In slot 4a, before `memberships`: the tenant's identity-settings row, then the connection
   row (the order of redemption's step 4). Redemption and every SCIM request take both `FOR SHARE` and re-check the connection's state and
-  required context after the lock; renewal and refresh take neither, because the per-request statement refuses a
-  token whose connection is no longer `ACTIVE` or whose required context the session no longer meets. A disable, an activation, a raised
+  required context after the lock; renewal and refresh take neither, because they apply the per-request check's predicate, which refuses a
+  session whose connection is no longer `ACTIVE`, whose epoch a disable cut off, or whose context a raise cut off. A disable, an activation, a raised
   context or a federated-only change (which writes `federated_only` on the settings row) takes the settings row and the
-  connection row `FOR UPDATE`, so a sign-in racing a disable either commits first and has its session refused, or sees
-  the disabled state. A write that can lower the set of active administrators (a suspension, a deletion, a
+  connection row `FOR UPDATE`, so a sign-in racing a disable either commits first with the old epoch and has its session
+  refused, or sees the disabled state; the barrier test `a_sign_in_racing_a_disable_ends_without_a_live_session` also
+  re-enables the connection and checks that the session stays refused. A write that can lower the set of active administrators (a suspension, a deletion, a
   demotion, a change of owning connection, a recomputation) reads the target's role first; when the target is an
   active `admin`, it takes the settings row `FOR UPDATE` before the membership; if the membership lock shows an
   `admin` it did not lock for, it restarts with the lock.
@@ -1363,7 +1380,7 @@ the requirement is unsupported. Federation rows stay.
 | IV. Compatibility is versioned and pinned | Pass | Off by default; additive migrations and routes; the deployment issuer unchanged; no change of the workflow document's schema, the worker protocol or the SDKs |
 | V. Code, tenant boundary and secrets are isolated | Pass with conditions (Complexity Tracking) | The tenant from the connection; secrets in the secret provider, never returned; guarded egress; two new trust boundaries, justified below: the platform signs tokens, and the internet-facing process can now write memberships through definer functions (until now only the schema owner provisioned members) |
 | VI. Observability and audit are part of the feature | Pass | Audit of every change and sign-in outcome; closed-label metrics; no token, code or assertion in logs |
-| VII. Events are redeliverable; inbox and outbox are the contract | Pass | SCIM requests are idempotent by effect; a late or reordered request is refused by `If-Match` when the provider sends it and otherwise converges at the provider's next change of that resource (Technical Plan 6); no message is added |
+| VII. Events are redeliverable; inbox and outbox are the contract | Pass | SCIM requests are idempotent by effect; a late or reordered request is refused by `If-Match` when the provider sends it and otherwise converges at the provider's next change of that resource, except that a reactivation without `If-Match` within 10 minutes of a suspension is refused (Technical Plan 6); no message is added |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Corpus, oracle, cross-site request forgery, server-side request forgery, revocation and crash tests; interoperability with a pinned Keycloak; the live commercial-provider gap stated (Gap 013-006) |
 | Delivery Constraints | Pass | The development providers stay development-only and out of the production image; no new runtime technology beyond a Rust crate set reviewed under the dependency rules |
 
@@ -1436,9 +1453,9 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `(cd frontend/apps/studio && npm run check:api)`.
   Refs: Requirement 013-005, Requirement 013-015, Requirement 013-020, Requirement 013-032
 - [ ] T013-3 Server builder, milestone A. `apps/dev-idp`: the development OIDC provider of Technical Plan 9, with its
-  `break` switch for `alg`, `nonce`, `acr` and the `claims` override.
+  `break` switch for `alg`, `nonce`, `acr` and the `claims` override (its names, its 2 KiB bound and its setting).
   Red tests (`cargo test -p sagat-dev-idp`): `the_dev_oidc_provider_issues_an_id_token_for_a_configured_person`,
-  `each_break_value_breaks_its_claim`, `the_dev_oidc_key_differs_from_the_deployment_key`,
+  `each_break_value_breaks_its_claim`, `the_claims_override_refuses_other_names_and_is_off_without_its_setting`, `the_dev_oidc_key_differs_from_the_deployment_key`,
   `the_json_token_route_still_refuses_a_form_post`; `the_production_image_has_no_dev_idp` (new: it builds the `control-plane` target of `infra/docker/Dockerfile` and
   checks that its filesystem holds no `dev-idp` binary; run by the CI job that builds the images).
   Verification: `cargo test -p sagat-dev-idp`.
@@ -1553,7 +1570,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_second_callback_of_one_attempt_is_refused`, `two_sign_ins_in_two_tabs_both_complete`,
   `an_upload_outlives_its_access_token_while_the_session_lives`, `two_concurrent_refreshes_keep_the_session`,
   `a_lost_refresh_response_keeps_the_session`, `a_reuse_after_the_successor_was_used_revokes_the_session`,
-  `a_reused_refresh_token_revokes_the_session`, `a_link_poll_by_another_subject_is_not_found` (and the poll route in
+  `a_reused_refresh_token_revokes_the_session`, `a_link_poll_by_another_subject_is_not_found`, `a_link_poll_without_the_binding_cookie_is_not_found` (and the poll route in
   the cross-tenant battery), `each_broken_id_token_claim_is_refused_through_the_callback` (table-driven).
   Verification: `cargo test -p sagat-tests --test integration_federated_login --test contract_federated_login --test fault_federated_login signin`.
   Refs: Requirement 013-002, Requirement 013-005, Requirement 013-006, Requirement 013-009, Requirement 013-012, Requirement 013-018, Requirement 013-026
@@ -1662,7 +1679,9 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
 - [ ] T013-20 Server builder with the clients builder's screens, milestone D, after Tasks 013-12 and 013-14. The
   required authentication context (the per-request check's context predicate, refusal and its page), federated-only
   and its guard, break-glass, the Studio's context field and federated-only setting, the journey of milestone D.
-  Red tests (`integration_federated_login`): `a_raised_context_refuses_the_sessions_that_do_not_meet_it_on_their_next_request`,
+  Red tests (`integration_federated_login`): the `acr` row of the table-driven callback test,
+  `a_second_raise_waits_for_the_marking_of_the_first`,
+  `a_raised_context_refuses_the_sessions_that_do_not_meet_it_on_their_next_request`,
   `the_sessions_below_a_raised_context_are_marked_in_batches`,
   `lowering_the_context_revives_no_refused_session`,
   `a_break_glass_use_shows_on_the_identity_settings`,

@@ -65,7 +65,9 @@ Owner decision 2026-11-24-1 asks for "Studio sign-in through each organization's
 8. The development identity provider keeps its JSON-only token route for `sagat dev token`; its browser routes for the
    development OIDC provider live on separate paths (SAML runs against a pinned Keycloak container, design 013
    Decision 013-010), keep its development-only, loopback, known-host and
-   bounded-body protections, and issue tokens only for the configured test people.
+   bounded-body protections, and issue tokens only for the configured test people; its one claims override, for the
+   refusal tests, sets only the claims those tests break, and works only with the test-only setting that the test
+   support sets.
 9. Federation MUST be activated through the instance-capability registry (Architecture decision 0082): a control plane lists
    `identity-federation-v1` only when its configuration enables federation, and an execution engine of a release
    that knows federation lists it always (federation turns on nothing in the engine), the operator records the requirement, and

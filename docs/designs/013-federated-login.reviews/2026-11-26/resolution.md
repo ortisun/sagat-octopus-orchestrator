@@ -91,3 +91,17 @@ property is weakened" was wrong for findings 2 to 5; each is restored below.
 | 7 | Nit | Fixed: a trigger refuses a change of the immutable columns, checked by `runtime_privileges` | Technical Plan 13 |
 | 8 | Nit | Fixed: `config.json` is built from the process's in-memory view of the registry | Technical Plan 7 |
 | 9 | Nit | Fixed: Architecture decision 0140 decision 9 says the engine lists the capability always | Architecture decision 0140 |
+
+## Security re-read, round 2 (`approval/reread-2-security.md`, at `fd2aad8c`)
+
+All seven findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: a raise is any change that removes an accepted value; one floor at a time, selected and cleared by the maintenance loop; another raise waits (retryable `CONNECTION_STATE`); `a_second_raise_waits_for_the_marking_of_the_first` | Requirement 013-010, Technical Plans 3, 4 and 6, Task 013-20 |
+| 2 | Nit | Fixed: epochs, not times: `session_epoch` on the connection, copied onto the session under redemption's `FOR SHARE`, incremented by a disable or a raise under `FOR UPDATE`; the barrier test re-enables | Requirement 013-019, Technical Plans 3, 4 and 13 |
+| 3 | Nit | Fixed: renewal, refresh and the stream and upload re-checks use the per-request check's predicate; `a_reenabled_connections_old_session_cannot_renew` | Requirement 013-019, Technical Plan 13 |
+| 4 | Nit | Fixed: the poll also requires the binding cookie; `a_link_poll_without_the_binding_cookie_is_not_found` | Technical Plans 4 and 11, Task 013-9 |
+| 5 | Nit | Fixed: the override sets only the tested names, `sub` only empty, 2 KiB, behind `SAGAT_DEV_IDP_TEST_OVERRIDES=1`; Architecture decision 0140 decision 8 amended; a test | Technical Plan 9, Task 013-3, Architecture decision 0140 |
+| 6 | Nit | Fixed: the two staged-change rows added; the `acr` row moved to Task 013-20 | Requirement 013-007, Tasks 013-9, 013-20 |
+| 7 | Nit | Fixed: `memberships.status_changed_at`; row VII names the exception | Technical Plans 3 and 6, Constitution Check |
