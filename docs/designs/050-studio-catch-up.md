@@ -888,9 +888,11 @@ read, and the metric outcome is `unavailable`; start-up still succeeds. Every ti
 `inbox_cursor_key_reads_total{outcome}` (`ok`, `failed`), the gauge `inbox_cursor_keys_last_read_age_seconds` gives the
 time since the last successful read (no tenant label), and a failed read is logged once per run of failures, so a
 replica sealing under a deleted key is seen before its cursors fail elsewhere
-(`a_failed_key_read_is_counted_and_logged_once`). The envelope `<key id>.<salt>.<nonce>.<ciphertext>` has the same
+(`a_failed_key_read_is_counted_and_logged_once`, which also checks that the gauge grows while reads fail). The envelope `<key id>.<salt>.<nonce>.<ciphertext>` has the same
 form as design 013's sign-in attempt cookie; each adapter keeps its own codec, so no crate edge is added, and both are
-tested against one table of malformed inputs, `tests/fixtures/sealed_envelope_malformed.json`. Tests:
+tested against one table of malformed inputs, `tests/fixtures/sealed_envelope_malformed.json` (each entry at most 512 bytes, so
+within both length limits, and each breaking the shared form; whichever of Tasks 050-4 and 013-8 merges first creates
+the file, the other only adds entries); `a_cursor_with_a_wrong_field_is_malformed` reads its cases from that table. Tests:
 `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`,
 `a_rotate_within_two_minutes_of_the_last_is_refused`, `an_unknown_key_id_is_a_malformed_cursor_without_a_read`,
 `a_replica_with_no_key_loaded_is_unavailable`, `migrate_after_two_rotations_creates_no_key`.
@@ -960,8 +962,9 @@ test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The ite
 (`PublicationRequest` gains the property).
 
 **Metrics.** `approval_inbox_requests_total{outcome}` and `publication_inbox_requests_total{outcome}` (`outcome` in
-`ok`, `denied`, `invalid`, `unavailable`), `inbox_rows_scanned{list}` (a histogram of the rows a page examined, `list` in `approvals`, `publications`); no tenant, namespace, workflow
-or subject label.
+`ok`, `denied`, `invalid`, `unavailable`), `inbox_rows_scanned{list}` (a histogram of the rows a page examined, `list` in `approvals`, `publications`),
+`inbox_cursor_key_reads_total{outcome}` (`ok`, `failed`) and the gauge `inbox_cursor_keys_last_read_age_seconds`; no
+tenant, namespace, workflow or subject label.
 
 **Studio.** `features/inbox/`, its refresh built on the Studio's existing pattern (TanStack Query's
 `refetchInterval` with a function, as `BatchPage.tsx` uses; a `400` on a later page ends that refresh, which shows what it collected with "more may wait", and the next

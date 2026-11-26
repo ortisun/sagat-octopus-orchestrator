@@ -788,7 +788,7 @@ identity egress guard; the bounded maintenance passes run in the execution engin
 |---|---|
 | Connection, mapping rules, owning connection, provisioning policy, session policy, SCIM patch semantics; the OIDC claim rules (`iss`, `aud`, `azp`, `nonce`, the tenant restriction, the subject claim) and the SAML profile's rules over parsed values (pure) | `crates/domain/src/federation.rs`, `crates/domain/src/federation/{oidc,saml}.rs` |
 | The identity egress policy (any name, global addresses only, allowlisted hosts never to loopback, link-local or metadata, port 443 unless listed) | `crates/domain/src/egress.rs`, beside `EgressPolicy`, with unit tests |
-| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (two handles, both asynchronous and obtained before `BEGIN`, returned as the application's trait objects `Box<dyn MacVerify>` and `Box<dyn MacMint>`, so `crates/application` names no adapter type: `verifier(key_id) -> Result<MacVerifier, UnknownKey | Unavailable>`, the named key in memory, never refused because the ring is stale, which does the single-flight re-read of an unknown id and is `Unavailable` only when that re-read fails or cannot run, Technical Plan 4; `minter() -> Result<MacMinter, Unavailable>`, the active key, refused when the ring is stale or empty; `MacVerifier::verify(sid, generation, random, mac)` and `MacMinter::mint(sid, generation, random) -> (key id, mac)` run in memory only, inside the transaction, as `TokenSigner`'s handle does; redemption takes the minter, the refresh grant both, logout the verifier only) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
+| Sign-in use cases (begin, complete OIDC, complete SAML, redeem, renew, logout), provisioning (just in time, SCIM users and groups), connection and member administration; ports `FederationStore` (with `signing_keys()`, the published, active and retired keys with their states and versions), `OidcProvider`, `SamlVerifier`, `TokenSigner`, `IdentitySecrets`, `RefreshTokenMac` (two handles, both asynchronous and obtained before `BEGIN`, returned as the application's trait objects `type MacVerifier = Box<dyn MacVerify + Send + Sync>` and `type MacMinter = Box<dyn MacMint + Send + Sync>`, declared in `crates/application/src/federation/` with the application's own `RefreshKeyId(i64)` and `RefreshMac([u8; 32])`, which the adapter converts to `KeyId` and `Tag`, so `crates/application` names no adapter type: `verifier(key_id) -> Result<MacVerifier, UnknownKey | Unavailable>`, the named key in memory, never refused because the ring is stale, which does the single-flight re-read of an unknown id and is `Unavailable` only when that re-read fails or cannot run, Technical Plan 4; `minter() -> Result<MacMinter, Unavailable>`, the active key, refused when the ring is stale or empty; `MacVerifier::verify(sid, generation, random, mac)` and `MacMinter::mint(sid, generation, random) -> (RefreshKeyId, RefreshMac)` run in memory only, inside the transaction, as `TokenSigner`'s handle does; redemption takes the minter, the refresh grant both, logout the verifier only) and `AttemptSealer` (seal and open of a sign-in attempt); the refresh grant's rules (the MAC first, then the generation's class, then the rate limit) stay in the use case | `crates/application/src/federation/` |
 | The platform key set's fetcher: maps `FederationStore::signing_keys()` to a `JwkSet` for the verifier's `JwksCache` | `crates/api-http/src/auth/issuers.rs` |
 | `EgressClient` with no redirects under the identity policy; `JwksCache` and its `JwksFetcher` trait, moved here from `crates/api-http/src/auth/jwks.rs` so that `api-http` and `infra-federation` share them without `api-http` depending on the federation crate | `crates/infra-egress` |
 | `TokenSigner` (the key material read from the identity mount for the active version the use case passes it, read from `FederationStore::signing_keys()`) and `IdentitySecrets` (the identity mount, with the intent, write, verify, activate protocol of Architecture decision 0035 decision 7), both reaching the identity mount only through `openbao::identity_mount` (Technical Plan 12), whose paths can never name a ring; the adapters of `RefreshTokenMac` (holding the `IdentityKeyRing<CliRefresh>`) and `AttemptSealer` (holding the attempt ring), which call only the rings' public operations (Technical Plan 12), none of which returns key material | `crates/infra-secrets` |
@@ -1288,9 +1288,19 @@ provider's entity identifier `<public origin>/v1/auth/saml/{connectionId}/metada
 corpus of Architecture decision 0141, and `xmlsec1` runs for the oracle test in a disposable container built from
 `tests/support/images/xmlsec1/Dockerfile` (`debian:bookworm-slim` pinned by digest, the `xmlsec1` package pinned by
 version). The development overlay `infra/docker/compose.database.yaml` gains the Keycloak service; the identity mount
-and its policy (`infra/openbao/policies/identity.hcl`) are added by `infra/openbao/bootstrap-development.py`, for
-production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/_openbao.tpl`, and for the suites by
-`start_openbao` in `tests/support/bounded.rs`; `infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
+and its policy (`infra/openbao/policies/identity.hcl`, installed as `sagat-identity`) are added by
+`infra/openbao/bootstrap-development.py` (its token in `identity-mount/token`, since `identity/token` already holds the
+database runner's development token), and for the suites by `start_openbao` in `tests/support/bounded.rs`. For
+production, `infra/openbao/bootstrap-kubernetes.py` creates the `sagat-identity/` KV version 2 mount, the policy and a
+Kubernetes role `sagat-identity` bound to the control plane's service account, issued with `token_no_default_policy`;
+and the chart, when its new value `identity.federation.enabled` is true, renders a second OpenBao Agent for the control plane, because one
+agent logs in with one role: a ConfigMap entry `control-plane-identity.hcl` (role `openbao.roles.identity`, sink
+`/run/openbao-identity-mount/token`), its sidecar and sink volume, and `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE` and
+`SAGAT_IDENTITY_OPENBAO_ADDRESS` in the control plane's environment; `_openbao.tpl` validates `openbao.roles.identity`
+when federation is enabled (`the_control_plane_renders_two_openbao_agents_when_federation_is_on`, a chart-render test in
+`tests/contract/scalability-ha/identity_chart.rs`: two agents, distinct roles and sinks). The policy name
+`sagat-identity` is fixed, not a setting, since both clients check it; `docs/runbooks/federated-login.md` and
+`infra/openbao/policies/README.md` say so; `infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
 `SAGAT_ENV=dev`, and the new production image check (Task 013-3) keeps it out.
 
 ### 10. Studio
@@ -1423,7 +1433,8 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
 |---|---|---|
 | `SAGAT_IDENTITY_FEDERATION` (`on` or `off`) | `off` | the control plane, which lists `identity-federation-v1` only when it is `on`; an execution engine lists it always |
 | `SAGAT_PUBLIC_ORIGIN` | none (required when federation is on) | the control plane: the Studio origin and the platform issuer's origin |
-| `SAGAT_IDENTITY_OPENBAO_MOUNT` | `sagat-identity` (KV version 2) | the control plane, with the token file of `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`, whose policy is `identity.hcl` |
+| `SAGAT_IDENTITY_OPENBAO_MOUNT` | `sagat-identity` (KV version 2) | the control plane, with the token file of `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`, whose policy is `sagat-identity` (`identity.hcl`) |
+| `SAGAT_IDENTITY_OPENBAO_ADDRESS`, `SAGAT_IDENTITY_OPENBAO_CA_FILE`, `SAGAT_IDENTITY_OPENBAO_TIMEOUT_MS`, `SAGAT_IDENTITY_OPENBAO_DEVELOPMENT` | none (the address required when federation is on), none, 5000, off | the control plane's identity client only; independent of the `SAGAT_OPENBAO_*` settings of feature 015 |
 | `SAGAT_IDENTITY_KEYSET_REFRESH` | 30 seconds | the control plane and the API verifier (Technical Plan 4) |
 | `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
 
@@ -1475,12 +1486,13 @@ written plus one, never reused, the highest also kept in the document), material
   `identity_ring::transport`: `read_versioned(path: RingPath) -> Result<(u32, RingDocument), RingError>` and
   `write_cas(path: RingPath, version: u32, body: RingDocument) -> Result<u32, RingError>`. The ring operations, the
   transport and `identity_mount`'s operations take an `IdentityOpenBao`, a newtype over the client, defined in
-  `identity_ring` with a private field, whose one constructor, `IdentityOpenBao::from_lookup(get, development)`, takes the mount
-  and the token file from `SAGAT_IDENTITY_OPENBAO_MOUNT` and `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`, never from
-  `SAGAT_OPENBAO_MOUNT` or `SAGAT_OPENBAO_TOKEN_FILE` (`identity_openbao_never_reads_the_secrets_mount_settings`), and
-  the shared transport settings `SAGAT_OPENBAO_ADDRESS`, `SAGAT_OPENBAO_CA_FILE`, `SAGAT_OPENBAO_TIMEOUT_MS` and
-  `SAGAT_OPENBAO_DEVELOPMENT`, the last with the same two-key gate as `OpenBaoSettings::from_lookup` (it holds only
-  when `development` is true, that is under `SAGAT_ENV=dev`), and builds the client itself; no other constructor and
+  `identity_ring` with a private field, whose one constructor, `IdentityOpenBao::from_lookup(get, development)`, reads only its own
+  settings, `SAGAT_IDENTITY_OPENBAO_ADDRESS`, `_CA_FILE`, `_MOUNT`, `_TOKEN_FILE`, `_TIMEOUT_MS` and `_DEVELOPMENT` (the
+  last with the same two-key gate as `OpenBaoSettings::from_lookup`: it holds only when `development` is true, that is
+  under `SAGAT_ENV=dev`), never a `SAGAT_OPENBAO_*` setting, and builds the client itself; so federation never turns on
+  or requires the OpenBao secrets provider of feature 015, and a deployment that keeps workflow secrets on
+  `SAGAT_SECRETS_KEYS` starts with federation on (`identity_openbao_never_reads_the_secrets_mount_settings`, with a
+  case where federation is on and no `SAGAT_OPENBAO_*` setting is set); no other constructor and
   no conversion from an `OpenBao` or an `OpenBaoConfig` exists. The settings cannot point it at the wrong token
   either. The client's private token check, which re-reads the token file and runs lookup-self before every request,
   takes a policy rule held in a private field of the client. The identity client, which only `from_lookup` builds,
@@ -1498,7 +1510,9 @@ written plus one, never reused, the highest also kept in the document), material
   directly and through the entity; both run against the pinned OpenBao container, which also confirms that entity
   policies appear in `identity_policies` and not in `policies`). A development client, which
   skips lookup-self, exists only under the gate above. The transport goes through the client's private `measured` wrapper with the closed operations `ring_read` and
-  `ring_write`, so ring reads appear in `secret_provider_requests_total`. Because `identity_ring` is a
+  `ring_write`, and `identity_mount`'s operations with `identity_read_version`, `identity_read_metadata`,
+  `identity_write_checked` and `identity_destroy_version`, so identity-mount traffic appears in
+  `secret_provider_requests_total` apart from the secrets mount's. Because `identity_ring` is a
   child of `openbao`, the transport uses the client's private request helper, `bounded_body` and fields as they are:
   none of them is widened, so no other module of the crate, `TokenSigner` and `IdentitySecrets` included, gains a raw
   read of the identity mount; no body ever reaches an error. `RingPath` is constructible only inside the module, from
@@ -1537,8 +1551,8 @@ written plus one, never reused, the highest also kept in the document), material
   SigninAttempt, KeyId, KeyState, Tag, Verdict, Sealed, RingChange, RingError};`, and is an allowlist over both children of `openbao`. `identity_mount` exposes, in any form other than private, only
   `IdentityPath`, `IdentitySecretName` and its four operations; no non-private function of either child takes a `&str`, `String`, `Url` or
   `ProviderReference` as a path. `identity_ring` and its submodules: in any form other than private
-  (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose` (sealed by `pub trait Sealed` in a private `sealed`
-  submodule, the usual pattern that the `private_bounds` lint accepts), the two purpose markers, `KeyId`, `KeyState`,
+  (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`), they expose only the types `IdentityKeyRing`, `RingPurpose` (sealed by `pub trait Purpose` in a private `sealed`
+  submodule, the usual pattern that the `private_bounds` lint accepts; named apart from the type `Sealed`), the two purpose markers, `KeyId`, `KeyState`,
   `Tag`, `Verdict`, `Sealed`, `RingChange`, `RingError`, `IdentityOpenBao` (with `from_lookup` as its only
   constructor) and, to the module itself only, `RingPath`
   and `RingDocument`; the operations above, the key-id and state accessors, `KeyId::new(i64) -> Option<KeyId>` and
@@ -1837,7 +1851,10 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   Refs: Requirement 013-008
 - [ ] T013-8 Server builder. The OIDC client in `crates/infra-federation`, its key sets being `JwksCache` instances of
   `infra-egress` over the identity egress guard; `TokenSigner` and `IdentitySecrets` in `crates/infra-secrets`; the
-  identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
+  identity mount and `identity.hcl` (`sagat-identity`) in both bootstraps (`identity-mount/token` in development, the
+  Kubernetes role in production), the chart's second control-plane agent and `_openbao.tpl` validation with
+  `the_control_plane_renders_two_openbao_agents_when_federation_is_on`, the `SAGAT_IDENTITY_OPENBAO_*` settings, and
+  `start_openbao`; the commands
   `identity signing-key`, `identity attempt-key rotate|revoke` and `identity cli-refresh-key rotate|revoke` (each ring an
   `IdentityKeyRing<P>` read by the one loader from its purpose's path, `a_ring_loads_only_from_its_own_path`);
   the modules `openbao::identity_mount` (`IdentityPath`, `an_identity_path_cannot_reach_a_ring`) and
@@ -1858,7 +1875,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `identity_openbao_never_reads_the_secrets_mount_settings`,
   `an_identity_client_refuses_a_token_without_only_the_identity_policy`,
   `a_secrets_client_refuses_a_token_with_the_identity_policy`, a non-private function returning `RingKey`, `PurposeKey` or `RingDocument`; the shared table
-  `tests/fixtures/sealed_envelope_malformed.json` run against the attempt cookie's codec; the alert test covering the
+  `tests/fixtures/sealed_envelope_malformed.json` (entries at most 512 bytes; created by whichever of Tasks 050-4 and
+  013-8 merges first, extended by the other) run against the attempt cookie's codec; the alert test covering the
   three values of `key`; a `"rings/cli-refresh"` literal and an
   `impl RingPurpose` outside the module; the command name `identity cli-refresh-key` passes); `an_identity_key_ring_never_prints_key_material`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
   Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
