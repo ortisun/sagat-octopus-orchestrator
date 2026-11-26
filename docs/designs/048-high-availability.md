@@ -207,8 +207,9 @@ From the code and documents on `develop` at `546d5aa5`:
   `DbHandle` carries `Arc::new(InertHealth)` (beside the trait, in the same file), which admits everything and closes
   nothing; the pool builder takes the same `Arc` (`pool::connect_lazy(config, health.clone())`), so that its
   `after_connect` reports to the object the `DbHandle` closes the gate through; `Pg*Store::new(PgPool)` stays only as a
-  test convenience that builds one with `InertHealth`, and `scripts/check-architecture.py` refuses it, and from Task 048-10 on `InertHealth` itself,
-  in `apps/` and in the non-test code of `crates/`. A cancel that reaches a commit while it
+  test convenience that builds one with `InertHealth`, and from Task 048-10 on both `InertHealth` and `Pg*Store::new(PgPool)` sit behind a `test-support` cargo
+  feature that only `tests/` and dev-dependencies enable: `scripts/check-architecture.py` refuses either name outside
+  items gated by `cfg(any(test, feature = "test-support"))`, and refuses the feature in any `[dependencies]` of `apps/`. A cancel that reaches a commit while it
   waits for a standby is different again: PostgreSQL answers success with a `WARNING`, the commit written locally
   only; the platform never sends one (the rules below), Task 048-6 establishes whether its statement timeout can (and if
   it can, `commit_safely` sends `SET LOCAL statement_timeout = 0` and `COMMIT` in one message), and an operator's cancel
