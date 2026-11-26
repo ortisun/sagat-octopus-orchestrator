@@ -42,12 +42,13 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
    what `listRunApprovals` carries, the workflow's identifier and name and the run's business identifier; feature 026
    adds its summary flag additively.
 4. When feature 029 is enabled, the listing MUST omit approvals of runs the caller cannot see (the evaluator's
-   `visibleFolders`), like every other listing, as a predicate of the scan itself, so a row the caller may not see is
-   never scanned and never named by a cursor (decision 5); `youMayDecide` stays the decision rule.
-5. A page MUST read a bounded number of pending rows; when the bound is reached before the page is full, the answer
-   returns what it found and a cursor to continue, never an error and never an unbounded scan. When the page fills,
-   the cursor is the key of its last item; when it does not, the key of the last row scanned; it is null only when no
-   row remains.
+   `visibleFolders`), like every other listing; the predicate applies to the rows a page examines, and the cursor is
+   sealed (decision 5), so a hidden row's key never reaches the caller; `youMayDecide` stays the decision rule.
+5. A page MUST examine a bounded number of pending rows, counted before any data or access predicate; when the bound
+   is reached before the page is full, the answer returns what it found and a cursor to continue, never an error and
+   never an unbounded scan. When the page fills, the cursor is the key of its last item; when it does not, the key of
+   the last row examined; it is null only when no row remains. The cursor is sealed by the deployment's key ring with
+   the tenant, the namespace and the caller as associated data, so it reveals nothing and opens only for its caller.
 6. The same holds for a namespace list of the open publication requests that still need an approval under the current
    effective policy (`PENDING`, and `APPROVED` with fewer approvals than now required), ordered by request time, with
    `PublicationRequest::may_decide` (the request open, not the requester, not the last editor, not a person who already

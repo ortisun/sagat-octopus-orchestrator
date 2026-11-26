@@ -225,8 +225,7 @@ already has.
   it; one cookie per attempt, at most five, the oldest evicted first). The authorization endpoint MUST write nothing to
   the database: the attempt's state is sealed in that cookie (Technical Plan 4), so no anonymous request consumes
   storage. The callback or the assertion consumer service MUST refuse an attempt of another browser (no cookie), a used
-  attempt (its code row, or the attempt tombstone that outlives the purged code until the attempt itself expires,
-  exists) and an expired one. The callback MUST NOT create a session or set the session
+  attempt (its code row exists, kept with its identity cleared until the attempt itself expires) and an expired one. The callback MUST NOT create a session or set the session
   cookie: it records the verified identity on the attempt and redirects with a code; the session is created, and its
   cookie set, only when the client redeems the code with its PKCE verifier (Requirement 013-018). *Acceptance:*
   `a_response_injected_into_another_browser_is_refused`, `a_sign_in_started_by_another_site_establishes_no_session`.
@@ -830,7 +829,8 @@ raise, cleared by the maintenance loop once its sessions are marked), `settings_
 stays one row |
 | `signin_attempts` | link and test attempts only (a sign-in attempt lives in its sealed cookie): tenant, id, connection, purpose (`LINK`, `TEST`), the subject that started it, the start address hash, browser binding hash, state, nonce, the provider-side verifier, SAML request id, the connection revision, the verified identity once the callback completed, created, expires (10 minutes), used at | created only by an authenticated caller; at most 20 live per tenant; purged at expiry |
 | `signin_codes` | tenant, code hash, attempt id (unique per tenant, so a second callback of one attempt is refused), the verified identity, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
-| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or refresh token hash and its generation (CLI), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
+| `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or refresh token hash and its generation (CLI), and for the CLI's grace the rows of
+`signin_refresh_generations` (session, generation, hash, rotated at, used at; kept 30 seconds after their rotation), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
 | `scim_tokens` | tenant, connection, hash, created, last used, revoked | at most 2 in force |
 | `scim_resources` | tenant, connection, kind, SCIM id, the immutable matching value, the membership subject or external group, version (for `ETag`) | |
@@ -902,10 +902,13 @@ connection to `TESTED`, are one flow, started and finished by the signed-in pers
 4. The opening window shows the identity to be linked and, when the person confirms, calls
    `POST /v1/auth/links/{attempt}` with the same bearer token, `Origin` and header; the browser sends
    the attempt's binding cookie with it. The service checks that the token's tenant and subject are the attempt's, that the
-   binding cookie is the attempt's, and that the attempt is verified, unused and unexpired; then, under the membership
-   lock, it writes the link (refused with `IDENTITY_LINK_CONFLICT` when the provider identity is linked to another
-   member) and its audit, and for a test sets `TESTED` by compare-and-set on the connection revision the attempt ran
-   against.
+   binding cookie is the attempt's, and that the attempt is verified, unused and unexpired; then it takes the locks in
+   the order of Technical Plan 13: the connection row (`FOR UPDATE` for a test, `FOR SHARE` for a link), its state and
+   revision re-checked; the advisory lock on (tenant, connection, provider subject); the membership. It writes the link
+   (refused with `IDENTITY_LINK_CONFLICT` when the provider identity is linked to another member) and its audit, and
+   for a test sets `TESTED` by compare-and-set on the connection revision the attempt ran against, on the row it
+   already holds. The path is in `tests/support/lock_order.rs`, with the barrier test
+   `a_test_confirmation_racing_a_redemption_of_the_same_subject_does_not_deadlock`.
 
 No session row is created and no code is issued, so a link or a test never signs anyone in. A cross-site page can start
 nothing (step 1 needs the bearer token) and confirm nothing (step 4 needs it again).
@@ -1008,8 +1011,9 @@ never creates a key. The rotation test drives the refreshes by a controlled cloc
 
 Every write transaction of this design follows the slots of Architecture decision 0050 (Terms):
 redemption as its steps above (the code in slot 2; then the settings row, the connection row, the membership and the
-fence in slot 4a; the session and attempt rows after them); a SCIM user request takes the membership, then the fence; a SCIM group request takes
-the affected memberships in subject order (slot 4a, first), then the 029 tenant access fence (slot 4a, after
+fence in slot 4a; the session and attempt rows after them); a SCIM user request takes, after the settings and connection rows that every SCIM request
+takes `FOR SHARE` (Technical Plan 13), the membership, then the fence; a SCIM group request takes, after those two
+rows, the affected memberships in subject order, then the 029 tenant access fence (slot 4a, after
 memberships, as Architecture decision 0050 orders them), then the group's rows. A SCIM request takes the fence
 exclusively only when its change can alter authority: a member added to or removed from a group that an assignment or
 a folder entry names, or a built-in role or status change; otherwise it takes the fence shared, so a directory's
@@ -1084,9 +1088,11 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   (constitution principle I): a SCIM group change that recomputes more than 100 members writes a row per remaining
   member in `identity_role_recompute` (tenant, connection, subject, rules revision); a rule or default change
   increments the connection's `rules_revision` and writes one job row (tenant, connection, rules revision, subject
-  cursor). The maintenance loop works through both in subject order in bounded batches, clearing each row by
-  compare-and-set on the rules revision; a job whose revision moved restarts from the first subject under the new
-  rules. A demotion therefore applies within one maintenance interval per batch of 100, and a crash loses nothing
+  cursor). The maintenance loop works through both in subject order in bounded batches, always under the connection's
+  current rules: a per-member row is recomputed and then cleared by compare-and-set on the revision it carries; a job
+  row clears itself by compare-and-set on its revision when its cursor reaches the end, and restarts from the first
+  subject when the revision moved; a job row of a newer revision makes the older per-member rows of that connection
+  unnecessary, and the loop deletes them. A demotion therefore applies within one maintenance interval per batch of 100, and a crash loses nothing
   (`a_crash_after_a_large_group_change_still_demotes_everyone`, a fault test;
   `a_rule_change_during_the_job_recomputes_everyone_under_the_new_rules`). A recomputed demotion that the
   last-administrator guard refuses is skipped, audited and shown on the connection (the count of guarded members); the
@@ -1094,12 +1100,16 @@ Response `Issuer` when present (equal to the Assertion's). The replay store keep
   that member until the rules or its groups change (`removing_the_last_admin_from_its_group_keeps_scim_working`).
   Nothing is mapped from a sign-in assertion.
 - **Maintenance passes**: one leased loop (`crates/scheduler/src/identity.rs`, engine lease `identity-maintenance`,
-  running only once `identity-federation-v1` is recorded) purges expired attempts, codes (keeping a tombstone of the attempt id until the attempt's own expiry), replays and
+  running only once `identity-federation-v1` is recorded) purges expired attempts, codes (a code row past its 60 seconds has its identity columns cleared and is kept until
+  the attempt's own expiry, so its unique attempt id still refuses a second callback), replays and
   ended sessions in
   bounded batches, marks revoked in bounded batches the sessions of a disabled or deleted connection and those
   below a context floor (selected by the floor, already refused by the per-request check), clears a floor once its
   sessions are marked, runs the recomputation jobs, updates the
-  expiry and owner gauges and each connection's `scimFailing` after ten consecutive refused SCIM requests (a quiet
+  expiry and owner gauges and the gauge `identity_connections_scim_failing` from each connection's `scimFailing`,
+  which a connection's health row (`identity_connection_health`: consecutive refused SCIM requests, last success)
+  sets after ten consecutive refused SCIM requests; the row is written after the SCIM request's transaction, never
+  under the connection row that sign-ins share (a quiet
   directory sends nothing, so silence is not a fault)
 - **The amended contract**: `specs/029-custom-roles-folders/contracts/group-source.md` is updated in the readiness
   pass of feature 029 and again on 2026-11-26 (no silence alert; the writer `lock_timeout` of 2 seconds): SCIM is the source kind built in 0.3.0; the assertion kind is deferred (Gap 013-011).
@@ -1276,7 +1286,7 @@ set, token, renewal, logout, links), `/identity/*` and `/members*`, their schema
   operator gets Prometheus rules in `infra/observability/alerts.yaml` over closed-label metrics, tested with the other
   rules by `contract_observability_operations`, each with a section of `docs/runbooks/alerts.md`:
   `IDENTITY_BREAK_GLASS_USED` (a per-use counter, `identity_break_glass_uses_total`, beside the once-per-token audit
-  record), `IDENTITY_SCIM_FAILING` (`identity_scim_requests_total{outcome="refused"}`), `IDENTITY_CREDENTIAL_EXPIRING`
+  record), `IDENTITY_SCIM_FAILING` (the gauge `identity_connections_scim_failing`, set by the maintenance loop), `IDENTITY_CREDENTIAL_EXPIRING`
   (the gauge `identity_credentials_expiring`, counted in 30-day and 7-day buckets), `IDENTITY_OWNER_DISABLED` (the
   gauge `identity_members_of_disabled_owners`) and `IDENTITY_SIGNING_UNAVAILABLE` (the gauge
   `identity_signing_available`). No metric carries a tenant, connection or subject.
@@ -1333,7 +1343,9 @@ the requirement is unsupported. Federation rows stay.
   migration role, each with its predicate and its audit in the same call: `sagat_member_insert` (just in time, SCIM,
   pre-provision), `sagat_member_set_status`, `sagat_member_set_role` (mapping, administrator, SCIM),
   `sagat_member_delete`. They lock the row `FOR NO KEY UPDATE`, re-check status and owning connection after the lock,
-  and enforce the last-administrator guard. `member_profiles`, the sign-in tables and the SCIM tables get `SELECT`,
+  and enforce the last-administrator guard: an administrator's or SCIM's direct request is refused with
+  `LOCKOUT_GUARD`, while a recomputation caller gets a guarded outcome (no exception, nothing written for that member),
+  so the rest of its transaction, the group change included, commits. `member_profiles`, the sign-in tables and the SCIM tables get `SELECT`,
   `INSERT`, `UPDATE` (and `DELETE` where purged); a trigger on `identity_connections` refuses a change of the issuer or entity identifier, the subject rule and the
   tenant restriction, and `runtime_privileges` checks it is present; `runtime_privileges` fails if `sagat_app` gains a write on
   `memberships`.
@@ -1619,6 +1631,8 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `an_upload_outlives_its_access_token_while_the_session_lives`, `two_concurrent_refreshes_keep_the_session`,
   `a_lost_refresh_response_keeps_the_session`, `two_lost_refresh_responses_keep_the_session`,
   `a_reuse_after_the_successor_was_used_revokes_the_session`, `an_attempt_sealed_after_a_rotation_opens_on_every_replica`,
+  `signing_inside_a_transaction_does_no_io`, `a_redemption_with_a_revoked_key_handle_rolls_back_with_the_code_unspent`,
+  `a_test_confirmation_racing_a_redemption_of_the_same_subject_does_not_deadlock` (barrier),
   `a_reused_refresh_token_revokes_the_session`, `a_link_poll_by_another_subject_is_not_found`, `a_link_poll_without_the_binding_cookie_is_not_found`,
   `a_reenabled_connections_old_session_cannot_renew` (renewal and the CLI's refresh) (and the poll route in
   the cross-tenant battery), `each_broken_id_token_claim_is_refused_through_the_callback` (table-driven).

@@ -574,7 +574,7 @@ Design 050 ships two names, one per switch that changes what a field may hold:
 | Name | Present when |
 |---|---|
 | `workflow.collection-operators` | the deployment's collection-operators switch is on (design 042) |
-| `workflow.reset-reapply` | `SAGAT_RESET_REAPPLY_ENABLED` is on, so publication accepts an Update with `reapplyOnReset: true`; without the name the Studio shows that field read-only |
+| `workflow.reset-reapply` | `sagat_infra_ir::reset_reapply_enabled()` is true (the codec's own switch, set from `SAGAT_RESET_REAPPLY_ENABLED`), so the name and publication read the same value; without the name the Studio shows that field read-only |
 
 Step-output destinations (feature 035: the `stepDestinations` field of a step, which also writes the step's output to
 a table or a stream) are refused by every server today (`DESTINATIONS_NOT_ENABLED`, `crates/infra-ir/src/convert.rs`)
@@ -653,14 +653,20 @@ node with the codec's reason. A codec problem about a body node names it by its 
 `crates/application/src/definitions.rs`), which the Studio cannot place inside a body or tell from a root node of the
 same id; the codec therefore sets the problem's existing JSON pointer to `/bodies/{name}/nodes/{index}` for a problem about one
 body node, and to `/bodies/{name}` for a problem about a whole body (as `EscapingBodyEdge` already does in
-`problems_of`). The refusals about body nodes are raised at six sites, each of which learns the body's name and the
-node's index from the raw document by iterating `bodies` with its keys and keeping each node's position:
+`problems_of`). The refusals about body nodes are raised at seven sites, each of which learns the body's name and the
+node's index from the raw document by iterating `bodies` with its keys and keeping each node's position: the body
+loop of `structured_definition_with_policy` (`crates/infra-ir/src/convert.rs`), whose `nodes(...)` errors (a kind not
+allowed in a body, `DESTINATIONS_NOT_ENABLED`) get the node's pointer and whose `BodyDefinition::new` errors other than
+`UnknownTarget` (a body without exactly one `return`, an `end` inside a body, a duplicate node, a cycle, an
+unreachable node) get the node's pointer when they name a node and `/bodies/{name}` otherwise, so the body canvas's
+return problem is the server's, never a rule of the Studio;
 `approval_in_a_body` (`crates/infra-ir/src/convert.rs`, a pre-scan of the raw document), `operators::check_surfaces`
 (`crates/infra-ir/src/operators.rs`, a pre-scan), `check_expressions` (`crates/infra-ir/src/lib.rs`, after conversion:
 it is given the index map the conversion builds from the raw document), `published_collection_definition` and
 `published_loop_definition` (`convert.rs`, whose `Unsupported { kind: "body" }` refusals name a whole body and get the
 `/bodies/{name}` pointer), and `DefinitionService::refused_collection_operator_node`
-(`crates/application/src/definitions.rs`). The `IrError` variants they raise gain an optional body scope (the name,
+(`crates/application/src/definitions.rs`), which works on the converted definition and is given the index map the
+codec returns with it. The `IrError` variants they raise gain an optional body scope (the name,
 and the index when the problem is about a node); `problems_of` writes the pointer when the scope is set and keeps
 `nodeId` as today. In `validationModel.ts`, `resolveNodeId` reads a `/bodies/{name}/nodes/{i}` pointer before `nodeId`,
 so a colliding root id never wins, and places a `/bodies/{name}` pointer on the body itself; no field is added. The codec reports its first
@@ -772,9 +778,9 @@ until the author deletes it (a read-only node can be deleted). The author fills 
 - **Family.** Parent (from the run), children (from `childRunId` of the graph's `child` nodes and their run status),
   chain (from the chain route when the run has a chain).
 - **Download.** "Download events" reads `GET /runs/{runId}/events` (the existing `endpoints.journal`) through `collectPagesBounded`, one bounded
-  variant of the existing `collectPages` (`api/endpoints.ts`), which takes its wait from the existing
-  `ApiError.retryAfterMs` (`src/api/errors.ts`, capped at one minute), that this design adds and the inbox and the audit download also
-  use: it stops at a limit of pages, items or bytes (here 50,000 events or 32 MiB), waits for `Retry-After` on a `429`
+  variant of the existing `collectPages` (`api/endpoints.ts`) that this design adds and that the inbox and the audit
+  download also use; it takes its wait from the existing `ApiError.retryAfterMs` (`src/api/errors.ts`, capped at one
+  minute): it stops at a limit of pages, items or bytes (here 50,000 events or 32 MiB), waits for `Retry-After` on a `429`
   and stops after three refusals, and reports whether it stopped early. Each item is written as one compact line as the
   route returned it; the file says it is the journal as of the last page read.
 
@@ -806,27 +812,30 @@ one statement as well.
 
 *Ended runs.* A run's end cancels its pending approvals in the run's own transaction
 (`crates/infra-postgres/src/execution.rs`), so a pending approval of an ended run should not exist; the probe
-`every_run_end_cancels_its_pending_approvals` is Task 050-4's first red test and checks every run-end path. The inbox's
+`every_run_end_cancels_its_pending_approvals` is Task 050-4's first red test and checks every run-end path: completion, failure, cancellation, termination, a
+run timeout, continue-as-new and a reset. The inbox's
 scan reads pending rows of runs that have not ended (a run-status predicate of the scan, a data filter like
 `status = 'PENDING'`, not the eligibility rule), and `may_decide` and `decide` keep their inputs. The decision's
 adapter (`crates/infra-postgres/src/approval_progress.rs`) today refuses an ended run before it reads the caller's
-principal, with a retryable `503`; that guard moves after authorization, so an ineligible caller is refused for
-eligibility and never learns that the run ended; its answer to an eligible caller stays the `503` it is today. No SQL
+principal, with a retryable `503`; that guard moves after authorization and reads the status captured before `decide`
+(which changes the status in memory), so an ineligible caller is refused for eligibility and never learns that the
+run ended, and an eligible caller still gets the `503` it gets today, with no receipt, route or outbox row written
+(`an_eligible_caller_on_an_ended_run_still_gets_503`, the row seeded). No SQL
 predicate repeats the eligibility rule; the snapshots never leave the use case.
 
-*Paging and access filters.* A page returns at most 2,000 rows that pass the scan's access and data predicates
-(namespace, `PENDING`, the run not ended, and 029's `visibleFolders` when it exists); the work of a page is bounded by
-the namespace's pending rows in the partial index, and `approval_inbox_rows_scanned` counts the rows that passed the
-predicates and were read. The use case keeps rows until it has `limit` items or the scan ends: when the page fills, the
-cursor is the key (`deadline`, `request_id`) of its last item, so the rows scanned after it are read again by the next
-page; when the page does not fill, the cursor is the key of the last row scanned, so a page that drops every row it
-scanned still returns a cursor; it is null only when no row remains (Architecture decision 0144, decision 5). The test
+*Paging and access filters.* A page examines at most 2,000 pending rows of the namespace in key order: the statement
+takes them from the partial index in an inner query with `LIMIT 2000` after the cursor's key, and only then applies
+the data and access predicates (the run not ended, and 029's `visibleFolders` when it exists) and the joins, so the
+work of a page is bounded whatever the predicates drop, and `approval_inbox_rows_scanned` counts the rows examined.
+The use case keeps rows until it has `limit` items or the examined rows run out: when the page fills, the cursor is
+the key (`deadline`, `request_id`) of its last item; otherwise the key of the last row examined; it is null only when
+no row remains (Architecture decision 0144, decision 5). Because a cursor can then be the key of a row the caller may
+not see, the cursor is sealed: AES-256-GCM by the deployment's existing `KeyRing` of `crates/infra-secrets`
+(`SAGAT_SECRETS_KEYS`), with the associated data `approval-inbox-cursor`, the tenant, the namespace and the caller, so
+a caller learns nothing from it and cannot use another caller's. The tests:
 `a_full_page_resumes_after_its_last_item` (300 decidable rows inside the first 2,000, `limit=200`, all 300 found in
-two requests) holds it, with a publication twin. Because the cursor names a scanned row, every access filter is a predicate
-of the scan, never a filter after it: feature 029's `visibleFolders` is added to the statement's `WHERE` (an access
-filter, not the eligibility rule, which stays in the domain), so a row the caller may not see is never scanned and
-never named by a cursor. The test `a_cursor_never_names_a_row_in_a_hidden_folder` is written by whichever of this
-design and 029's slice 0 merges second; the publication inbox follows the same rule.
+two requests, with a publication twin), `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`, and
+`a_cursor_reveals_nothing_and_opens_only_for_its_caller`; the publication inbox follows the same rules.
 
 *Per-run list.* The run view does not use this route: the items of the existing
 `GET /runs/{runId}/approvals` gain the same optional `youMayDecide`, which the use case computes as
@@ -864,7 +873,10 @@ fills, the last row scanned when it does not); a port `PublicationInboxStore::op
 requester and last editor (for `may_decide`, never in the item) and the namespace's stored policy. The use case
 resolves the policy once per page (it is namespace-wide) by a pure function over the stored policy and the
 environment, extracted from `PublishingService::effective_policy` (`crates/application/src/publishing.rs`) and called
-by publication's recount and by the inbox alike, so no copy of the resolution exists in SQL; it then computes
+by publication's recount and by the inbox alike; the adapter
+`crates/infra-postgres/src/versioning.rs::effective_policy`, which `DefinitionService::publish` reaches through
+`publication_policy`, is changed to return the stored value and the environment and to call the same function, so
+the resolution exists once; it then computes
 `approvalsRequiredNow` and keeps the `APPROVED` requests with fewer approvals than that; a migration adds `publication_requests_open_requested_idx ON publication_requests
 (tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`.
 
@@ -878,7 +890,7 @@ test `the_publication_inbox_item_has_exactly_its_fields` holds the list. The ite
 (`PublicationRequest` gains the property).
 
 **Metrics.** `approval_inbox_requests_total{outcome}` and `publication_inbox_requests_total{outcome}` (`outcome` in
-`ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram); no tenant, namespace, workflow
+`ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram of the rows a page examined); no tenant, namespace, workflow
 or subject label.
 
 **Studio.** `features/inbox/`, its refresh built on the Studio's existing pattern (TanStack Query's
@@ -963,7 +975,7 @@ file with `ALL`; `SAGAT_CONTRACT_BASELINE_BLESS=1` rewrites the JSON after the d
 | Risk | Mitigation |
 |---|---|
 | The inbox adds a disclosure | It adds none beyond what the caller can already read: an approval's policy is in the workflow version (`definition:read`), and the initiator and deciders are actors of the journal (`run:read`); the inbox returns only the caller's own eligibility, and a contract test holds its item to its field list (Architecture decision 0144) |
-| The inbox scan grows with pending approvals | A partial index in deadline order and a bounded scan per page with a cursor |
+| The inbox scan grows with pending approvals | A partial index in deadline order; each page examines at most 2,000 rows before any predicate, with a sealed cursor; the performance journey includes a caller who sees one folder of many |
 | A legacy node is lost on save | The canonical form keeps unknown members; a test saves and reloads one |
 | A capability shown by one replica is refused by another | The server's validation decides; the problem appears at validation (Gap 050-001) |
 | Parallel Studio branches rewrite the same files | The order of Technical Plan 1; new primitives in new files |
@@ -1070,8 +1082,9 @@ primitive goes in a new file of `src/ui/`.
   `an_ended_run_is_left_out_of_the_inbox` (the inconsistent row seeded directly), `a_full_page_resumes_after_its_last_item`,
   `a_settled_approval_is_not_flagged_decidable`, `a_pending_approval_of_an_ended_run_is_not_flagged_decidable`,
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
-  `an_inbox_page_is_one_statement`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
-  row seeded directly), `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
+  `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`,
+  `a_cursor_reveals_nothing_and_opens_only_for_its_caller`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
+  row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
   Verification: `cargo test -p sagat-domain approval`;
   `cargo test -p sagat-tests --test integration_studio_catch_up --test contract_rest_workflow_studio`, and again with
@@ -1092,7 +1105,8 @@ primitive goes in a new file of `src/ui/`.
   Refs: Requirement 050-011
 - [ ] T050-6 Server builder: the body scope on the `IrError` variants of Technical Plan 4 and the
   `/bodies/{name}/nodes/{index}` pointer in `problems_of`.
-  Red tests: `a_body_problem_names_its_body_and_index` and `a_body_problem_keeps_its_node_id` (`crates/application`
+  Red tests: `a_body_problem_names_its_body_and_index`, `a_body_problem_keeps_its_node_id` and
+  `a_body_without_its_return_is_placed_in_the_body_even_when_its_entrypoint_id_is_a_root_id` (`crates/application`
   unit tests of `definitions.rs`).
   Verification: `cargo test -p sagat-application definitions`; `cargo test -p sagat-infra-ir`.
   Refs: Requirement 050-003
@@ -1188,10 +1202,12 @@ primitive goes in a new file of `src/ui/`.
   starts the server with `Options.collection_operators` and the engine with the matching environment, and sets the
   tenant's collection capacity through `PUT /quotas/iteration_concurrency` (a collection admits no iteration while it
   is unset); the job already declares 14 journeys of up to 240 seconds each (56 minutes) against its 60-minute cap
-  (`studio_journeys.rs`), so the new journeys run as a second job selected with `SAGAT_STUDIO_GREP`, each within the
-  same 240 seconds.
-  Verification: `cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys` runs the
-  existing journeys unchanged.
+  (`studio_journeys.rs`), so the new journeys carry the title prefix `@catch-up` and run as a second job selected with
+  `SAGAT_STUDIO_GREP=@catch-up`, each within the same 240 seconds, while the existing job excludes them with a new
+  `SAGAT_STUDIO_GREP_INVERT=@catch-up` that the harness passes as `--grep-invert`.
+  Verification: `npx --prefix frontend/e2e playwright test --list --grep-invert @catch-up` lists exactly the existing
+  14 journeys; `cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys` runs them
+  unchanged.
   Refs: Success criterion 050-001
 - [ ] T050-13 Studio builder, after the tasks whose journeys it runs and Task 050-19: journeys in `frontend/e2e/tests/`
   driven by `e2e_workflow_studio`: the journey of Success criterion 050-001, the journeys named by the requirements,
@@ -1202,11 +1218,12 @@ primitive goes in a new file of `src/ui/`.
 - [ ] T050-14 Server builder, with the Studio builder's browser part: the performance journey. A new target
   `perf_studio_catch_up` (`tests/performance/studio-catch-up/main.rs`) seeds 10,000 pending approvals and a run of
   10,000 iterations of an eight-step body through the test support as the schema owner, times the inbox and audit
-  pages, and measures the inbox routes' latency at a fixed rate of 50 requests per second from one tenant, the worst
+  pages (with, once feature 029's folders exist, a caller who sees one folder of many), and measures the inbox routes' latency at a fixed rate of 50 requests per second from one tenant, the worst
   case Technical Plan 6 bounds for 300 open inboxes, against the tenant budget (no copy of the Studio's schedule); the existing `frontend/e2e/tests/perf.spec.ts`, which already benchmarks a run
   of about 10,000 nodes when `STUDIO_PERF=1`, is extended with the graph's size and parse time and the inbox page. Both
-  report to `tests/performance/reports/workflow-studio.md` through `scripts/perf-report.mjs`, the report Decision
-  050-001's condition also reads.
+  report to `tests/performance/reports/workflow-studio.md` through `frontend/e2e/scripts/perf-report.mjs`, which gains
+  a second input (the Rust target's `perf_studio_catch_up.json`) and the sections for it, the report Decision 050-001's
+  condition also reads.
   Verification: `cargo test -p sagat-tests --test perf_studio_catch_up --locked -- --ignored --nocapture`;
   `STUDIO_PERF=1 npm --prefix frontend/e2e test -- perf.spec.ts`.
   Refs: Non-functional requirement 050-002

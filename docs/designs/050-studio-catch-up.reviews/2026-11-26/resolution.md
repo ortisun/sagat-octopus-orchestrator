@@ -117,3 +117,15 @@ All five findings are fixed.
 | 3 | Nit | Fixed: the row is seeded | Task 050-4 |
 | 4 | Nit | Fixed: named as the one deliberate change, in the requirement and the decision record | Non-functional requirement 050-003, Architecture decision 0144 |
 | 5 | Nit | Fixed: the `drain_iteration` rule first; the counts asserted mid-drain | Technical Plan 5, Task 050-9 |
+
+## egm-review re-read, round 1 (`approval/reread-1-egm-review.md`, at `9c893782`)
+
+All ten findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the body loop of `structured_definition_with_policy` is the seventh site; the return problem is the server's; a test with a colliding entrypoint id | Technical Plan 4, Task 050-6 |
+| 2 | Major | Fixed: the new journeys are tagged `@catch-up`, run by a second job and excluded from the first with `SAGAT_STUDIO_GREP_INVERT`; the list verified | Task 050-19 |
+| 3 | Major | Fixed: the guard reads the status captured before `decide`; `an_eligible_caller_on_an_ended_run_still_gets_503` | Technical Plan 6, Task 050-4 |
+| 4 | Major | Fixed (the stronger option): a page examines at most 2,000 rows in an inner query before any predicate; the cursor is sealed by the deployment's `KeyRing` with the caller as associated data; the histogram counts examined rows; two tests and a performance case; Architecture decision 0144 decisions 4 and 5 | Technical Plan 6, Risks, Metrics, Architecture decision 0144 |
+| 5 to 10 | Nit | Fixed: the adapter's `effective_policy` routed through the pure function; the report script's second input; the sentence rephrased; the seven run-end paths listed; the codec returns its index map; the name derived from `reset_reapply_enabled()` | Technical Plans 3 to 6, Tasks 050-4, 050-14 |

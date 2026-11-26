@@ -144,3 +144,12 @@ All ten findings are fixed.
 | 8 | Nit | Fixed: a tombstone of the attempt id outlives the purged code | Requirement 013-009, Technical Plan 6 |
 | 9 | Nit | Fixed: re-read under the shared fence, restart with the exclusive one; a barrier test | Technical Plan 4, Task 013-17 |
 | 10 | Nit | Fixed: the provider's path after a `409` named, the refusal does not count toward `scimFailing`, the fixtures show each provider | Technical Plan 6 |
+
+## egm-review re-read, round 1 (`approval/reread-1-egm-review.md`, at `9c893782`)
+
+All eight findings are fixed.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the confirmation takes the connection row, re-checks it, takes the advisory lock, then the membership; the path in `lock_order.rs`; a barrier test; Architecture decision 0050's addition | Technical Plan 4, Architecture decision 0050, Task 013-9 |
+| 2 to 8 | Nit | Fixed: the two tests in Task 013-9; `signin_refresh_generations` and the code row kept with its identity cleared; `identity_connection_health` written outside the request; the gauge `identity_connections_scim_failing`; a guarded outcome for recomputation callers; the lock order reworded; the compare-and-set rules stated | Technical Plans 3, 4, 6, 11 and 13 |
