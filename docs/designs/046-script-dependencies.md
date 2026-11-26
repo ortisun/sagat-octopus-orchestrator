@@ -240,7 +240,7 @@ Any answer must keep these constraints:
 | Lock | 256 KiB (the existing lockfile ceiling) and 2,000 entries; the probe of Task 046-12 measures real locks for two targets |
 | Layer | 1 GiB by default, 4 GiB at the platform ceiling; 200,000 files; paths of 1,024 bytes |
 | Resolve job | 300 s; 1 GiB forwarded; 4,000 forwarded requests |
-| Install job | 600 s |
+| Install job and materialization | 120 s plus 20 s per 100 MiB of the layer ceiling (about 16 minutes at 4 GiB) |
 | Runner caches | 50 GiB of volumes and 10 GiB of files by default |
 | Advisory snapshot | 200,000 records per ecosystem, 64 KiB per record, 2 GiB uncompressed per archive |
 
@@ -291,7 +291,7 @@ None blocks the design. Three defaults wait on measurements (Gaps 046-003 to 046
 None is open. Architecture decisions 0120 and 0121 are accepted with the approval of this design, under Owner decision
 2026-11-24-4 (Owner decision 2026-11-24-312), on the approval rule of Owner decision 2026-11-25-2 (pull request 284). Every other choice,
 including the read-only mount that relaxes Architecture decision 0013 (Decision 046-009, a partial supersession), is
-recorded in research.md as Decisions 046-001 to 046-073 with the register's literal marker "delegate (OD-2026-11-24-4)".
+recorded in research.md as Decisions 046-001 to 046-074 with the register's literal marker "delegate (OD-2026-11-24-4)".
 
 ## Critical User Journeys (CUJs)
 
@@ -382,12 +382,14 @@ version. Every transition is one transaction fenced by the job's lease token; a 
   retryable.
 - **An install completes.** One transaction: the job row, then the version row (`BUILDING` required); record the target's
   digest; if this install refused the version (size, metadata or identity mismatch, or its last attempt failed), mark the
-  version `FAILED` and nothing else. No transaction writes a sibling's row: a sibling's completion finds the version no
-  longer `BUILDING` and finishes its own job as cancelled. The unique key of dependency jobs is
+  version `FAILED`, then fail the version's build job (`FOR UPDATE SKIP LOCKED` on its `QUEUED` row; the build claim
+  skips locked rows too) and set its `QUEUED` sibling dependency jobs `CANCELLED` the same way. No transaction waits on a
+  sibling's row: a sibling already `RUNNING`, or one a claim held at that moment, finds the version no longer `BUILDING`
+  at its completion or claim and ends `CANCELLED` itself. The unique key of dependency jobs is
   `(tenant, version, phase, target)` with `NULLS NOT DISTINCT`.
 - **The build** waits until every install job of the version succeeded. The build claim, the dependency-job claim and the
-  `script_jobs` quota count only `RESOLVE` and `INSTALL` jobs of versions that are `BUILDING`, so the jobs of a refused
-  version stop counting at once. `BACKFILL` jobs are the exception: the dependency-job claim offers them on `READY`
+  `script_jobs` quota count only `RESOLVE` and `INSTALL` jobs and build jobs of versions that are `BUILDING` (the quota
+  query joins the version state for both tables), so the jobs of a refused version stop counting at once. `BACKFILL` jobs are the exception: the dependency-job claim offers them on `READY`
   versions (phase `backfill`, only to runners that declare `script-dependencies-v1`), they count in the backfill pass's
   own bound of 4 running per target instead of a tenant's `script_jobs`, and their completion requires the version
   `READY` and writes only the layer record (Technical Plan 9).
@@ -407,8 +409,9 @@ install jobs and the build job directly.
 **Where the evaluation runs.** The evaluation is pure code in the application. Each store call that commits a decision
 (resolve completion, an author-lock publication, the finish) takes the snapshot, policy and reservation revisions and the
 earliest waiver expiry the application evaluated against, locks their rows `FOR SHARE` itself, compares, and answers
-`StaleInputs` when any differs or the waiver time has passed; the application then evaluates again and retries
-(`crates/infra-postgres/src/scripts.rs`, `finish_build` and `finish_build_cached` gain these parameters).
+`StaleInputs` when any differs or the waiver time has passed; the application then evaluates again and retries, at
+most 5 times in a row before the job fails retryable (`crates/infra-postgres/src/scripts.rs`, `finish_build` and
+`finish_build_cached` gain these parameters).
 
 ### 2. The manifest and the lockfile gate
 
@@ -444,7 +447,7 @@ as the registries mark them. Allow and deny rules, waivers and advisories are no
 applies them.
 
 Tokens are EdDSA web tokens signed with the package token key (`SAGAT_PACKAGE_TOKEN_KEY`, not the script signing key): a
-job grant bound to one job attempt, valid until the job's deadline (at most 10 minutes), and a service token for the
+job grant bound to one job attempt, valid until the job's deadline (300 s for a resolve; 120 s plus 20 s per 100 MiB for an install or a materialization), and a service token for the
 control plane. The gateway never calls the control plane.
 
 The metadata endpoint also answers, for each (ecosystem, name, version, file name), the hash the registry's own document
@@ -559,10 +562,13 @@ would advertise it and the lease check would never see it. So the transaction th
 block pass reads (the block row's `steps_failed_at` is null until the pass is done with it); that pass fails the ready
 script steps of the blocked artifact in the affected namespaces, in batches, through a new application operation
 `fail_ready_step` (`crates/application/src/worker.rs`), not the worker-session `reject_input`. Its boundary is one
-transaction per step: lock the step row `FOR UPDATE`, recheck that it is ready, unleased and still blocked (or still
-without a layer, for `LAYER_UNAVAILABLE`), then write the journal event, the next work, the outbox row and the audit
+transaction per step, in the engine's lock order (the run's chain, then the run row, then the step row `FOR UPDATE`, as
+the lease path takes them in `crates/infra-postgres/src/execution.rs`): recheck that the step is ready, unleased and
+still blocked (or still without a layer, for `LAYER_UNAVAILABLE`), then write the journal event, the next work, the outbox row and the audit
 record with the system actor `system:engine`; a step leased meanwhile is left to the lease-time admission. The pass then
-sets `steps_failed_at`. With `blockNewAtLease`, a finding at or above the threshold without a waiver
+sets `steps_failed_at`. A step of that artifact that becomes ready after the pass is failed when a runner asks to
+materialize it: the materialization route, finding a block for the activity's namespace, fails that activity through
+`fail_ready_step` before it answers `403`. With `blockNewAtLease`, a finding at or above the threshold without a waiver
 blocks that namespace.
 
 ### 7. The advisory snapshot
@@ -574,7 +580,9 @@ Non-functional requirement 046-004. A record is malicious when its identifier or
 database-specific type says malware; severity is the GitHub advisory label, else the CVSS (Common Vulnerability Scoring
 System) base score mapped to the same labels, else unrated.
 
-An import begins with a barrier: one short transaction takes the snapshot row `FOR UPDATE`, which waits for every
+An import begins with a barrier: one short transaction takes the snapshot row `FOR UPDATE` (with a `lock_timeout` of
+5 s, retried with backoff; the barrier and the switch alert when they have not had the lock for 10 minutes, so steady
+shared lockers cannot delay malware blocking unseen), which waits for every
 writer of `script_locked_packages` (each takes that row `FOR SHARE` before its first insert and holds it to its commit),
 records the highest `locked_seq` of the table (an identity column declared with `CACHE 1`, so values are handed out in
 order across sessions) as the import's mark, and commits. The migration seeds one snapshot row per ecosystem, so the row
@@ -587,10 +595,10 @@ snapshot of that ecosystem or holds at least 1 percent fewer records (checked ag
 inserts a block for every artifact that locks a precomputed pair, whatever its `locked_seq`; and inserts one
 re-evaluation row per tenant concerned. Range evaluation never runs under that lock: as `StaleInputs` does for the
 finish, the application (`crates/application/src/scripts/packages.rs`, through the `PackageRules` port) reads the rows
-above the mark, evaluates them outside any lock, and passes the switch the pairs it found together with the highest
-`locked_seq` it read; the store's switch (`crates/infra-postgres`) refuses with `StaleInputs` when a row above that
-value exists, and the application evaluates the new rows and calls again (a bounded number of times, then the import
-is held for an operator). An import that would newly block more than 50 artifacts is held for an
+above the mark, evaluates them outside any lock, and passes the switch the pairs it found together with the set of
+`locked_seq` values it evaluated; the store's switch (`crates/infra-postgres`) refuses with `StaleInputs` when any row
+above the mark is not in that set (a writer that took a lower value and committed late included), and the application
+evaluates the missing rows and calls again, at most 5 times in a row, then the import is held for an operator. An import that would newly block more than 50 artifacts is held for an
 operator's confirmation (`advisory:import`) and an alert fires; while it is held, finishes and materializations refuse
 artifacts that lock a package its malicious records match, so a wide compromise is not delayed. Refusals and holds are
 audited. The old snapshot's rows are deleted afterwards. A malware block is released only through
@@ -640,16 +648,21 @@ A layer record is a separate signed statement per (artifact digest, target): `sa
 digest ‖ target ‖ layer digest ‖ unpacker`, Ed25519 with the script signing key, kept in `script_layer_records`, which is
 the one place per-target digests live once a version is `READY`. Because records are separate from the bundle, a
 deployment that adds a target later runs a backfill pass (leased, the platform operator starts it, audited): it inserts
-install jobs of the phase `BACKFILL` for `READY` versions; a backfill completion signs and inserts the new record in its own
-transaction and does not touch the version's state; nothing is republished.
+one install job of the phase `BACKFILL` per (artifact, target) lacking a record, on the earliest `READY` version of that
+artifact; a backfill completion signs and inserts the new record in its own transaction and does not touch the version's
+state; a record already present with the same layer digest answers `AlreadyDone`, and one with a different digest fails
+the job with `LAYER_DIGEST_MISMATCH` and an alert (layers are reproducible, so this is a defect to explain); nothing is
+republished.
 
 The finishing transaction of a bundle version 5, on the new-build path and on the cache-hit path
 (`finish_build_cached` gains these steps):
 
 1. takes the version row, then the ecosystem's snapshot row, the namespace's policy row and the tenant's reservation
    revision `FOR SHARE`;
-2. if any differs from the revisions stored with the report, re-runs the evaluation on the stored metadata (no network)
-   and replaces the findings; a changed verdict refuses the version;
+2. compares them, and the earliest waiver expiry, with what the application passed (it evaluated on the stored
+   metadata, no network, just before the call); on any difference, or a waiver expiry passed, it answers `StaleInputs`
+   and changes nothing, and the application evaluates again and calls again; after 5 such answers in a row the build
+   job fails retryable and the next claim starts over; a changed verdict refuses the version;
 3. writes the SBOM to `script_version_sboms` (CycloneDX 1.5, at most 4 MiB);
 4. writes, for a new build, the provenance to `script_build_provenance` (this design's migration creates the table with
    feature 023's columns; its envelope names the lock and SBOM digests and marks the runner-reported fields, so it stays
@@ -941,7 +954,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `crates/infra-packages/src/advisories.rs`, `crates/application/src/scripts/packages.rs`, migrations. Tests:
   `matcher_agrees_with_the_version_order_*`, `an_older_snapshot_is_refused`, `a_large_import_is_held`,
   `the_switch_rechecks_age_under_the_lock`, `a_finish_between_staging_and_switch_is_matched`,
-  `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched` (held-lock tests, the writer's transaction held
+  `a_lock_written_by_a_transaction_open_across_the_barrier_is_matched`,
+  `a_late_writer_with_a_lower_sequence_is_evaluated_before_the_switch` (held-lock tests, the writer's transaction held
   open with its `FOR SHARE` while the import starts),
   `a_held_import_refuses_matching_finishes`.
   Refs: Requirement 046-008, Requirement 046-009
@@ -976,6 +990,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   `crates/infra-postgres/src/{scripts,quotas}.rs`. Tests: `framework_only_versions_keep_their_build_key`,
   `resolve_again_makes_a_new_version`, `an_author_lock_is_validated_synchronously`,
   `a_refused_install_and_a_sibling_completion_do_not_deadlock` (a barrier),
+  `a_refused_install_releases_the_quota_count` (asserting the count), `a_queued_sibling_of_a_refused_version_is_cancelled`,
+  `a_backfill_of_a_shared_artifact_records_once`,
   `a_target_added_later_gets_records_without_republishing`, `a_refused_install_stops_the_build_job_and_the_quota`,
   `a_duplicate_completion_changes_nothing`, `an_undeclared_import_fails_at_import_time_and_changes_nothing`.
   Refs: Requirement 046-002, Requirement 046-003, Requirement 046-008
@@ -1021,7 +1037,8 @@ Builder A owns `crates/domain`, `crates/application`, `crates/infra-packages`, `
   Refs: Requirement 046-009, Requirement 046-013, Requirement 046-014
 - [ ] T046-17 The typed admission on both lease paths, `reject_input`, `Failure::Denied` with its reason, the block pass
   for ready steps through `fail_ready_step`; design 038's budget test with a script-step shape. Tests:
-  `a_malware_import_blocks_the_next_lease`, `a_lease_racing_the_block_pass_is_left_to_admission` (a barrier),
+  `a_malware_import_blocks_the_next_lease`, `a_lease_racing_the_block_pass_is_left_to_admission` (a barrier between the
+  run lock and the step lock), `a_step_ready_after_the_block_pass_fails_at_materialization`,
   `a_blocked_child_script_step_fails_at_lease`, `a_blocked_step_with_no_materialized_runner_fails`,
   `an_attempt_already_started_finishes`, `activation_requires_the_block_check`.
   Refs: Requirement 046-009, Requirement 046-020

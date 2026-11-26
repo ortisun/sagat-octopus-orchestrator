@@ -37,7 +37,7 @@ severity), naming packages and versions, never file content.
 `SCRIPT_DEPENDENCIES_UNAVAILABLE` (`422`) answers a manifest or a package-bearing lock while `script-dependencies-v1` is
 not activated.
 
-## Job failures (kind `resolve` or `install`)
+## Job failures (kind `resolve`, `install` or `backfill`)
 
 | Code | Retryable | When |
 |---|---|---|
@@ -45,9 +45,10 @@ not activated.
 | `PACKAGE_GATEWAY_UNAVAILABLE` | yes | a forwarded request was refused, timed out, or answered `502`, `503` or `504` |
 | `PACKAGE_FILE_UNAVAILABLE` | yes | an install fetch failed in transport or got a file whose hash differs from the lock |
 | `INSTALL_FAILED` | no | the unpacker refused an archive (`details.rule`, including a name or version that differs from the lock entry) or the verify step's digest did not match |
+| `LAYER_DIGEST_MISMATCH` | no | a backfill's layer digest differs from the record already signed for that (artifact, target); an alert fires |
 
 A retryable failure re-queues the job with `not_before` (15 s times the attempt, feature 005's rule); after the last
-attempt the version is `FAILED`.
+attempt the version is `FAILED` (a backfill job only ends `FAILED`; its `READY` version is untouched).
 
 ## Run failures (a script step)
 
