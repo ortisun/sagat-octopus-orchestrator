@@ -108,7 +108,9 @@ From the code and documents on `develop` at `546d5aa5`:
   built with is not applied (its own contract migrations are never required, since a contract runs only after the fleet
   is on N), or `BINARY_TOO_OLD` when its release is older than the effective oldest compatible release; it then writes
   nothing but its registry heartbeat and the release of its shards, and answers 503. The registry's functions in their
-  new versions, `instance_register_v2` and `instance_heartbeat_v2`, refuse such a process in the transaction that already
+  new versions, `instance_register_v2` and `instance_heartbeat_v2`, return the requirement set with the epoch when a
+  registration succeeds or the epoch has moved (the gate keeps it, design 049's Task 049-5), and refuse such a process in
+  the transaction that already
   reads the requirement epoch, so that an activation and a registration cannot race. Every entry point that opens the
   database calls the handshake: the control plane, the engine, each command of `control-plane` (the `secret-cleanup` job
   included) and `migrate`, checked by `scripts/check-architecture.py`. The handshake tests run as the runtime role.
@@ -132,18 +134,25 @@ From the code and documents on `develop` at `546d5aa5`:
   design 049's dated journal buckets (harmless: a legacy root created by a process that has not yet learned of the
   activation is valid and processed by every release) and design 052's ready queue (which states its own rule).
 - **Requirement 053-008 A deactivation drains first.** `platform_requirement_deactivate_v2` MUST work in two phases. The
-  first moves the capability to `draining` and records `draining_since`; processes stop starting new uses of it at their
-  next heartbeat. The second removes it and is refused until every live process has heartbeated after `draining_since`
-  (at least 12 s, the heartbeat's jittered bound), the drain check its design states passes (none for design 049's capability, which is permanent), and no contract migration naming the capability is applied. Only after the second phase may the
-  binaries roll back to N-1. A capability whose design declares it permanent is refused by both phases, and by the
-  registry's older `platform_requirement_remove`, whose guard trigger (`platform_requirements_guard`) refuses the delete
-  or the move to `draining` of a permanent row; a row is permanent by the check `permanent = (capability IN (...))`,
-  rewritten by the migration that adds a permanent capability, so the database sets the value at activation: in 0.3.0, design
-  049's `journal-buckets-v1`, since a binary of the release before it cannot read a dated run's content.
+  first moves the capability to `draining`, records `draining_since`, appends a history row and moves the requirement
+  epoch, so that every process learns of it at its next heartbeat (processes learn of a change only when the epoch
+  moves); a process treats a `draining` capability as inactive and starts no new use of it. The registry's guard
+  (`platform_requirements_guard`) allows only that one update, from `active` to `draining` on a row that is not
+  permanent, and its deferred epoch check covers updates as well as inserts and deletes. The second phase removes the
+  row and is refused until every live process has heartbeated after `draining_since` (at least 12 s, the heartbeat's
+  jittered bound), the drain check its design states passes, and no contract migration naming the capability is
+  applied. Only after the second phase may the binaries roll back to N-1. A capability whose design declares it
+  permanent is refused by both phases and by the registry's older `platform_requirement_remove`: the guard refuses the
+  delete or the move to `draining` of a permanent row. `platform_requirement_activate_v2` writes `permanent` from the
+  list of permanent capabilities, and a check, `permanent = (capability IN (...))`, rewritten by the migration that adds
+  a permanent capability (and written `permanent = false` while the list is empty), refuses a wrong value. In 0.3.0 the
+  list holds design 049's `journal-buckets-v1`, whose drain check would be "no run of a dated bucket exists", since a
+  binary of the release before it cannot read a dated run's content.
 - **Requirement 053-009 Old and new writers run together.** `scripts/test-mixed-writers.py` MUST run engines and control
   planes of N-1 (built from its release's tag) and N on one database under the chain shape: apply N's migrations during
   the load, roll the processes one at a time, activate N's capabilities that are not permanent, deactivate them in both
-  phases and roll one process back to N-1, then roll it forward and activate the permanent ones, and pass the integrity oracle, with the 99th percentile transition latency during the migrations
+  phases and roll one process back to N-1, then roll it forward and activate the permanent ones, and pass the integrity
+  oracle, with the 99th percentile transition latency during the migrations
   no more than 2 s (the lock timeout) above a baseline run. Release N MUST NOT be published unless it passes against N-1.
   The test first gates a release when 0.3.0 is N-1, since 0.2.x binaries have no handshake; until then it runs in CI with
   both sides built from `develop` at two commits, which proves the migration rules and the oracle but not the version
@@ -247,9 +256,9 @@ Rollback before step 3 rolls the binaries back onto N's schema; after it, the tw
 | `platform_requirements` (new columns) | `state text` (`active`, `draining`), `introduced_in text`, `draining_since timestamptz`, `permanent boolean not null default false` | as the table today (read) |
 
 **Order of the build.** Task 053-2 (the lint) before any other migration of designs 048, 049 and 052; Task 053-5 before
-design 049's Task 049-13 (the permanent column) and Task 053-3 before its Task 049-14 (the handshake granted to the
-retirement role); design 051's
-driver (its Task 051-2) before Task 053-6.
+design 049's Task 049-13 (the permanent column) and Task 053-3 before its Tasks 049-5 (the requirement set returned at
+registration) and 049-14 (the handshake granted to the retirement role); design 051's driver (its Task 051-2) before Task
+053-6.
 
 ## Risks and Mitigations
 
@@ -315,7 +324,7 @@ Each task names its files and tests.
   Refs: Requirement 053-004, Requirement 053-005, Success criterion 053-003
 - [ ] T053-4 Write `control-plane migrate`'s own loop (the confirmation, the bounded retry on `55P03`, the bounded invalid-index check, the contract refusals, the release check) in `apps/control-plane/src/lib.rs` and `crates/infra-postgres/src/lib.rs`, with the tests `a_failed_concurrent_index_build_is_retried_three_times_then_named` and `a_lock_held_longer_than_the_retries_ends_migrate_naming_the_table`.
   Refs: Requirement 053-003
-- [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, the column `permanent` with its check, the guard's refusal of a permanent row's delete or drain, with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation`, `the_second_phase_waits_for_every_live_process_to_heartbeat` and `a_permanent_capability_refuses_both_deactivation_phases` (which also calls `platform_requirement_remove`), held by barriers.
+- [ ] T053-5 Add the capability state columns, `sagat_oldest_compatible()`, `platform_requirement_activate_v2` and the two-phase `platform_requirement_deactivate_v2` with the contract refusal, the column `permanent` with its check, the guard's single allowed update and its refusal of a permanent row's delete or drain, the epoch moved by the first phase, `activate_v2` writing `permanent` (the check written `permanent = false` while no capability is permanent), with the tests `the_oldest_compatible_release_follows_two_capabilities_and_a_deactivation`, `the_second_phase_waits_for_every_live_process_to_heartbeat` and `a_draining_capability_stops_new_uses_at_the_next_heartbeat` and `a_permanent_capability_refuses_both_deactivation_phases` (which also calls `platform_requirement_remove`) run here against a test-only capability added to the lists in a disposable database, and again by design 049's Task 049-13 against `journal-buckets-v1`, held by barriers.
   Refs: Requirement 053-006, Requirement 053-007, Requirement 053-008
 - [ ] T053-6 Write `scripts/test-mixed-writers.py` and add it to the release workflow on a free standard runner; it uses design 051's driver (Task 051-2) and publishes its run with the runner named.
   Refs: Requirement 053-009, Success criterion 053-001
