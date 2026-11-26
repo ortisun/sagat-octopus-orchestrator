@@ -48,9 +48,9 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 5. A page MUST examine a bounded number of pending rows, counted before any data or access predicate; when the bound
    is reached before the page is full, the answer returns what it found and a cursor to continue, never an error and
    never an unbounded scan. When the page fills, the cursor is the key of its last item; when it does not, the key of
-   the last row examined; it is null only when no row remains. The cursor is sealed with AES-256-GCM under a purpose key
+   the last row examined; it is null only when no row remains. The cursor is sealed with AES-256-GCM-SIV under a purpose key
    derived by HKDF-SHA256 from the deployment's key ring (labels `approval-inbox-cursor` and
-   `publication-inbox-cursor`), with the tenant, the namespace and the caller as associated data, so it reveals no row
+   `publication-inbox-cursor`, the key id and the tenant as `info`), with the tenant, the namespace and the caller as associated data, so it reveals no row
    key and opens only for its caller; without a key ring the routes answer `503` and never return an unsealed cursor.
 6. The same holds for a namespace list of the open publication requests that still need an approval under the current
    effective policy (`PENDING`, and `APPROVED` with fewer approvals than now required), ordered by request time, with

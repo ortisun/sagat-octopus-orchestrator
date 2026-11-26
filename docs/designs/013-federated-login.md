@@ -420,8 +420,10 @@ already has.
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (opaque and unsigned, `<sid>.<generation>.<32 random bytes>`, stored as a hash per
   generation, one use, rotated on every refresh by compare-and-set on its generation; the access token is signed with
-  a handle obtained before the transaction; a token whose session exists and whose generation is below the current one
-  is a reuse however long ago it was rotated; a reuse, within 30 seconds of its rotation, of a generation whose later generations
+  a handle obtained before the transaction; every path, the grace included, first checks the presented secret against the stored hash
+  of its generation, and a token that fails is `invalid_grant` with no effect on the session and the same answer
+  whether or not the session exists; a token that passes and whose generation is below the current one is a reuse
+  however long ago it was rotated; a reuse, within 30 seconds of its rotation, of a generation whose later generations
   have all never been used issues a new successor and retires the unused ones, which covers a lost response, and a
   second lost response in a row (`two_lost_refresh_responses_keep_the_session`);
   any other reuse revokes the session and is audited; the CLI holds a file lock around a refresh and re-reads the key
@@ -832,8 +834,8 @@ stays one row |
 | `signin_attempts` | link and test attempts only (a sign-in attempt lives in its sealed cookie): tenant, id, connection, purpose (`LINK`, `TEST`), the subject that started it, the start address hash, browser binding hash, state, nonce, the provider-side verifier, SAML request id, the connection revision, the verified identity once the callback completed, created, expires (10 minutes), used at | created only by an authenticated caller; at most 20 live per tenant; purged at expiry |
 | `signin_codes` | tenant, code hash, attempt id (unique per tenant, so a second callback of one attempt is refused), the verified identity, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
 | `signin_sessions` | tenant, id, subject, connection, the connection's `session_epoch` at creation, client, cookie hash (Studio) or refresh token hash and its generation (CLI), and for the CLI's grace the rows of
-`signin_refresh_generations` (session, generation, hash, rotated at, used at; kept 30 seconds after their rotation;
-reuse detection needs no row, because the token names its session and generation), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
+`signin_refresh_generations` (session, generation, hash, rotated at, used at; the hash of every generation is kept until the session ends, about
+2,000 rows for a 7-day session refreshed every 5 minutes, and only the grace's bookkeeping uses the 30-second window), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
 | `scim_tokens` | tenant, connection, hash, created, last used, revoked | at most 2 in force |
 | `scim_resources` | tenant, connection, kind, SCIM id, the immutable matching value, the membership subject or external group, version (for `ETag`) | |
@@ -1641,6 +1643,7 @@ revocation of custom grants do not exist; Task 013-17 adds them with 029.
   `a_lost_refresh_response_keeps_the_session`, `two_lost_refresh_responses_keep_the_session`,
   `a_reuse_an_hour_after_rotation_revokes_the_session`,
   `a_stolen_refresh_token_used_first_revokes_the_session_when_the_owner_returns`,
+  `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor`,
   `a_reuse_after_the_successor_was_used_revokes_the_session`, `an_attempt_sealed_after_a_rotation_opens_on_every_replica`,
   `signing_inside_a_transaction_does_no_io`, `a_redemption_with_a_revoked_key_handle_rolls_back_with_the_code_unspent`,
   `a_test_confirmation_racing_a_redemption_of_the_same_subject_does_not_deadlock` (barrier),

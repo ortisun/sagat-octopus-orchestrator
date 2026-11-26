@@ -165,3 +165,9 @@ All eight findings are fixed.
 
 The deadlock the reviewer noted outside its lens is fixed too: the link and test confirmation takes the advisory lock
 first, then the connection row, as redemption does, and Architecture decision 0050's addition says so.
+
+## Security re-read, round 5 (`approval/reread-5-security.md`, at `86b9f140`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: every generation's hash is kept until the session ends; every path, the grace included, checks the presented secret first, and a failure is `invalid_grant` with no effect and the same answer whether the session exists; `a_forged_lower_generation_does_not_revoke_the_session`, `a_forged_token_within_the_grace_gets_no_successor` | Requirement 013-026, Technical Plan 3, Task 013-9 |

@@ -137,3 +137,11 @@ All ten findings are fixed.
 | 1 | Major | Fixed: a purpose key derived by HKDF-SHA256 from the ring's active key, labels `approval-inbox-cursor` and `publication-inbox-cursor` | Technical Plan 6, Architecture decision 0144 decision 5 |
 | 2 | Nit | Fixed: `503` without a ring and never an unsealed cursor; 512 bytes; one `400`; two tests | Technical Plan 6, Task 050-4 |
 | 3 | Nit | Fixed: the count of hidden rows per window is stated as the one aggregate disclosed, under Requirement 029-017 | Technical Plan 6, Architecture decision 0144 decision 4, Risks |
+
+## Security re-read, round 4 (`approval/reread-4-security.md`, at `86b9f140`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Nit | Fixed: AES-256-GCM-SIV (no random-nonce bound) and the tenant in the HKDF `info`, so each tenant's cursors have their own key | Technical Plan 6, Architecture decision 0144 |
+| 2 | Nit | Fixed: `KeyRing::derive_purpose_key(label, info)` named, zeroized and redacted; `a_cursor_does_not_open_under_the_secrets_key` | Technical Plan 6, Task 050-4 |
+| 3 | Nit | Fixed: the publication twins, `an_approval_cursor_does_not_open_on_the_publication_list` and `an_oversized_cursor_is_refused_before_decoding` | Tasks 050-4, 050-5 |

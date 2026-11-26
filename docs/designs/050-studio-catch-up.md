@@ -830,9 +830,12 @@ work of a page is bounded whatever the predicates drop, and `approval_inbox_rows
 The use case keeps rows until it has `limit` items or the examined rows run out: when the page fills, the cursor is
 the key (`deadline`, `request_id`) of its last item; otherwise the key of the last row examined; it is null only when
 no row remains (Architecture decision 0144, decision 5). Because a cursor can then be the key of a row the caller may
-not see, the cursor is sealed with AES-256-GCM under a purpose key derived by HKDF-SHA256 from the active key of the
-deployment's `KeyRing` (`SAGAT_SECRETS_KEYS`), with the label `approval-inbox-cursor` (and `publication-inbox-cursor`
-for the publication list) and the ring's key id, so the secrets key's own nonce budget is untouched and rotation
+not see, the cursor is sealed with AES-256-GCM-SIV (no random-nonce bound; the RustCrypto `aes-gcm-siv` crate, beside the `aes-gcm`
+the workspace already uses) under a purpose key derived by HKDF-SHA256 from
+the active key of the deployment's `KeyRing` (`SAGAT_SECRETS_KEYS`) by a new `KeyRing::derive_purpose_key(label,
+info)` in `crates/infra-secrets` (zeroized on drop, redacted in `Debug`), with the label `approval-inbox-cursor` (and
+`publication-inbox-cursor` for the publication list) and, as `info`, the ring's key id and the tenant, so each tenant's
+cursors have their own key, so the secrets key's own nonce budget is untouched and rotation
 follows the ring; the associated data is the tenant, the namespace and the caller, so a cursor reveals no row key and
 opens only for its caller. Without a key ring the two inbox routes answer `503` with a remediation naming the setting
 and never return an unsealed cursor (`without_a_key_ring_the_inbox_returns_no_unsealed_cursor`); a `cursor`
@@ -1092,7 +1095,8 @@ primitive goes in a new file of `src/ui/`.
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`, `a_page_stops_at_the_scan_bound_and_continues`,
   `an_inbox_page_is_one_statement`, `a_page_examines_at_most_two_thousand_rows_whatever_the_folders`,
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller`, `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
-  `an_unopenable_cursor_is_a_malformed_cursor`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
+  `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_does_not_open_under_the_secrets_key`,
+  `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
   Verification: `cargo test -p sagat-domain approval`;
@@ -1105,7 +1109,9 @@ primitive goes in a new file of `src/ui/`.
   Red tests: `publication_may_decide_equals_decide` (property, `crates/domain`); in `integration_studio_catch_up`:
   `the_requester_and_the_last_editor_may_not_decide`, `a_person_who_decided_may_not_decide_again`,
   `a_policy_raised_after_an_approval_lists_the_request_for_another_approver`, `an_approver_may_decide`,
-  `paging_holds_across_a_supersede`, `a_publication_inbox_page_is_one_statement`;
+  `paging_holds_across_a_supersede`, `a_publication_inbox_page_is_one_statement`, the publication twins of
+  `a_cursor_reveals_nothing_and_opens_only_for_its_caller` and `without_a_key_ring_the_inbox_returns_no_unsealed_cursor`,
+  `an_approval_cursor_does_not_open_on_the_publication_list`;
   `the_publication_inbox_item_has_exactly_its_fields` (`rest/approvals_inbox.rs`); the battery entry, with the route
   removed from `not_built`.
   Verification: `cargo test -p sagat-domain versioning`;
