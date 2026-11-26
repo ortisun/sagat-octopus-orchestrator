@@ -442,7 +442,7 @@ one after the other, with the owner's row and no conclusion of the author's. Eac
 | Major 2: feature 020's design contradicts 5.1.0 while its plan read Pass | Fixed: the plan reads "Requires design change", Task 020-063 brings the design to 5.1.0 before Tasks 020-044 to 020-048, the data model is annotated |
 | Major 3 (security): the retention role's credential had no home | Fixed: no process that holds the runtime credential or runs tenant code holds it |
 | Major 4 (security): the runtime role could forge the stub | Fixed: only the retention role's function writes the stub and the purge state, a trigger refuses any other writer, and retirement judges "purged" by that role's records |
-| Major 5 (security and the owner's words): an archive may keep no values; the notice period had holes | Fixed: the text says what the archive keeps and that values above the policy's level leave with no copy; the notice period covers creating a policy, re-crediting the destination and narrowing what the archive keeps. The level itself is put to the owner (follow-ups) |
+| Major 5 (security and the owner's words): an archive may keep no values; the notice period had holes | Fixed: the text says what the archive keeps and that values above the policy's level leave with no copy; the notice period covers creating a policy, re-credentialing the destination and narrowing what the archive keeps. The level itself is put to the owner (follow-ups) |
 | Major 6: "the base's scenarios" could make the gate impossible to pass | Fixed: the base's scenario definitions, each built by the side it measures |
 | minor 1: no path finished an abandoned mark-only purge | Fixed |
 | minor 2: the coverage check needed appends refused | Fixed: the stub refuses every later append |
