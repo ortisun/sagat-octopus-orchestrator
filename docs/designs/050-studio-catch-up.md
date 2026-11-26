@@ -863,19 +863,25 @@ The use cases seal and open cursors through a port, `InboxCursorSealer`, whose m
 seal(scope, key) -> Result<String, SealerError>`, `async open(scope, &str) -> Result<Option<key>, SealerError>`) in
 `crates/application/src/approval_inbox.rs`, shared by both inbox use cases; its adapter is
 `crates/infra-postgres/src/inbox_cursor.rs`, wired by `apps/control-plane` and `tests/support/api.rs`, so no
-dependency edge is added. The adapter loads the keys at start and seals with the newest. It reads the table again on a
-timer every minute, and once on a cursor whose key id it does not know, single-flight and at most once a minute; the
-start-up and timer reads do not use that on-demand budget. Every read runs outside any transaction, and a failed read
-keeps the cached keys. The adapter takes its clock as a parameter, so tests move time instead of waiting. A cursor
-whose key id is still unknown after the on-demand read, or arrives when this minute's on-demand read is spent, is
-answered as a malformed cursor (`400`), which costs the Studio only a fresh first page; when the on-demand read itself
-fails, or the table is empty, `SealerError::Unavailable` answers `503` with `Error.code` `UNAVAILABLE`,
+dependency edge is added. The adapter loads the keys at start and reads the table again on a timer every minute,
+outside any transaction; a failed read keeps the cached keys. Each read takes every key's age from the database
+(`now() - created_at`), so no replica's clock is compared with another's, and the adapter adds the time elapsed on its
+own monotonic clock, which tests move instead of waiting. It seals with the newest key older than two timer periods
+(two minutes), or with the oldest key when none is that old, as with the first key; so every replica whose reads
+succeed holds a key before any cursor uses it, and the adapter never reads on demand. A `rotate` while the newest key
+is younger than two minutes is refused, so a sealing key always remains. A cursor whose key id is not a positive
+integer of at most 19 digits is refused before any lookup, and one whose key id the replica does not hold is answered
+as a malformed cursor (`400`), which costs the Studio only a fresh first page. With no key loaded (an empty table, or
+no successful read since start), `SealerError::Unavailable` answers `503` with `Error.code` `UNAVAILABLE`,
 `details.reason` `INBOX_CURSOR_KEYS_UNAVAILABLE`, retryable, and `Retry-After` set to the seconds until the next timer
-read, and the metric outcome is `unavailable`. With an empty table start-up still succeeds. Tests:
-`a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `an_unknown_key_id_with_a_failed_read_is_unavailable`,
-`an_unknown_key_id_with_the_read_spent_is_a_malformed_cursor`, `migrate_after_two_rotations_creates_no_key`.
+read, and the metric outcome is `unavailable`; start-up still succeeds. Tests:
+`a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`,
+`a_rotate_within_two_minutes_of_the_last_is_refused`, `an_unknown_key_id_is_a_malformed_cursor_without_a_read`,
+`a_replica_with_no_key_loaded_is_unavailable`, `migrate_after_two_rotations_creates_no_key`.
 
-*Cursor refusals.* A `cursor` parameter over 512 bytes is refused before decoding, and every cursor that does not open
+*Cursor refusals.* Admission (the namespace, `run:read` and `approval:read`, or `definition:read` for the publication
+inbox) runs before the cursor is decoded or opened, so a caller refused there never reaches the key cache
+(`a_cursor_refusal_never_precedes_the_namespace_refusal`). A `cursor` parameter over 512 bytes is refused before decoding, and every cursor that does not open
 (another caller's, a replaced key, tampered) gets the same `400` as a malformed one; the Studio then starts again from
 the first page. Because the bound is counted before the folder predicate, a page
 that is not full tells a folder-restricted caller how many hidden pending rows its window held, a count feature 029
@@ -953,7 +959,8 @@ seconds when the list changes, when the person decides or asks to refresh, and w
 again. The time of the last refresh is shown. A refresh that fails (a `503`, such as
 `INBOX_CURSOR_KEYS_UNAVAILABLE`, or a network error) keeps the last list, says "could not refresh, temporarily
 unavailable" with the time of the last good refresh, and doubles the interval as an unchanged list does, waiting at
-least the `Retry-After` it was given. Deciding uses the existing operations; an item that settled meanwhile
+least the `Retry-After` it was given. A `401`, `403` or `404` is not a failed refresh: it clears the list, so the
+page never keeps showing items the person can no longer read. Deciding uses the existing operations; an item that settled meanwhile
 shows its new status instead of an error.
 
 The load this puts on a tenant: one open inbox sends at most five requests per refresh, so at the base interval at most
@@ -1146,9 +1153,10 @@ primitive goes in a new file of `src/ui/`.
   one live row: the first page is empty with a cursor, the second returns the live row),
   `a_cursor_reveals_nothing_and_opens_only_for_its_caller`,
   `an_unopenable_cursor_is_a_malformed_cursor`, `a_cursor_sealed_under_a_dropped_key_is_a_malformed_cursor` (two rotations back),
-  `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `an_unknown_key_id_with_a_failed_read_is_unavailable`,
-  `an_unknown_key_id_with_the_read_spent_is_a_malformed_cursor`, `migrate_after_two_rotations_creates_no_key`,
-  `two_concurrent_rotations_leave_the_two_newest_keys`, `the_runtime_role_cannot_write_the_cursor_key`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
+  `a_cursor_sealed_by_a_replica_after_a_rotation_opens_on_another`, `a_new_key_seals_only_after_two_timer_periods`,
+  `a_rotate_within_two_minutes_of_the_last_is_refused`, `an_unknown_key_id_is_a_malformed_cursor_without_a_read`,
+  `a_replica_with_no_key_loaded_is_unavailable`, `migrate_after_two_rotations_creates_no_key`,
+  `two_concurrent_rotations_leave_the_two_newest_keys`, `a_cursor_refusal_never_precedes_the_namespace_refusal`, `the_runtime_role_cannot_write_the_cursor_key`, `the_cursor_key_is_created_by_migrate_and_never_printed`,
   `an_oversized_cursor_is_refused_before_decoding`, `an_ineligible_caller_on_an_ended_run_is_refused_for_eligibility` (the inconsistent
   row seeded directly), `an_eligible_caller_on_an_ended_run_still_gets_503`, `the_per_run_list_flags_the_callers_own_eligibility_only`; in `contract_rest_workflow_studio`: `the_inbox_never_names_a_policy_member`
   (`rest/approvals_inbox.rs`); the battery entry; `the_runtime_role_can_read_the_inbox`.
@@ -1250,7 +1258,8 @@ primitive goes in a new file of `src/ui/`.
   `a_settled_item_shows_its_status_not_an_error`, `the_inbox_refreshes_only_while_visible`,
   `a_bad_cursor_ends_the_refresh_and_the_next_starts_from_the_first_page`,
   `only_the_tab_in_view_is_refreshed`, `an_unchanged_list_doubles_the_interval_up_to_four_minutes`,
-  `a_route_not_found_says_the_page_is_not_available`, `an_unavailable_inbox_keeps_the_last_list_and_backs_off`.
+  `a_route_not_found_says_the_page_is_not_available`, `an_unavailable_inbox_keeps_the_last_list_and_backs_off`,
+  `a_lost_permission_clears_the_inbox`.
   Verification: `(cd frontend/apps/studio && npm test -- inbox)`.
   Refs: Requirement 050-012
 - [ ] T050-11 Server builder: `AuditAction` and `AuditAction::ALL` built from one table (`crates/domain/src/audit.rs`);
