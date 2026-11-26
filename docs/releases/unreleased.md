@@ -37,11 +37,14 @@ ADR-0096). Off by default; nothing changes for a definition that does not declar
    compose overlay `compose.flow-control.yaml`). A process with a switch on and no file, or with a file that lacks a
    version the database has in force, does not start. The images' group is now gid 10001.
 2. Turn on `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED`, `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`, or both, and restart.
+   The Helm chart (`flowControl.concurrencyKeys`) and the compose overlay set only the first one: the rate switch has no
+   chart value yet (gap G022-036, runbook section 6).
 3. Activate the digest key version (`SELECT * FROM flow_control_key_activate(1::smallint, '<your name>');`), then each
    capability for the fleet: `control-plane flow-control-activate --capability concurrency-keys --operator <your name>`
    and `--capability rate-limits`, as the schema-owning role. Until then publication and starts that use one are
    refused `422 VALIDATION_FAILED`, `FLOW_CONTROL_ACTIVATION_PENDING`; afterwards a process without the capability
-   answers `503`, `BINARY_CAPABILITY_MISSING`.
+   answers `503`, `BINARY_CAPABILITY_MISSING`. The digest-key commands are SQL functions of the schema owner only, with
+   no API, command or metric yet (gap G022-006, runbook section 1.3).
 4. To turn one off, switch it off and keep the key file mounted: a switched-off process that holds the file still lists
    the gate and drains what was admitted (D022-062).
 
@@ -52,9 +55,14 @@ shown only as a label. In a run, to a caller who may disclose every field the ke
 to a caller with the namespace's reveal grant, every other reader getting one row per group instead (`view: GROUPS`,
 D022-086). Publication refuses a key over a `secret` field (`FLOW_CONTROL_KEY_SECRET`) and warns one over a `pii` or an
 unclassified field (`FLOW_CONTROL_KEY_PII`). New series `concurrency_acquisitions_total` and
-`rate_limit_decisions_total` (by `scope` and `outcome`); the wait histograms, waiter gauges, grant lag and unleased grants,
-and the three alerts `CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING` and `RATE_LIMIT_QUEUE_SATURATED`, are
-documented in the runbook and built by task T022-082.
+`rate_limit_decisions_total` (by `scope` and `outcome`), `concurrency_wait_seconds` and `rate_limit_wait_seconds`,
+`concurrency_waiters` and `rate_limit_waiters`, `rate_limit_grant_lag_seconds` and `rate_limit_unleased_grants`, and the
+scheduler actions `gate_grant`, `gate_timeout`, `rate_lease` and `rate_purge`. Four new alerts of the engine's monitor,
+one per namespace and group: `CONCURRENCY_QUEUE_STUCK` and `RATE_LIMIT_QUEUE_SATURATED` (warning),
+`RATE_LIMIT_GRANT_LAGGING` and `FLOW_CONTROL_WAITER_ORPHANED` (critical); the alert kind enumeration of the OpenAPI and
+AsyncAPI contracts gains these four values, so a client that refuses an unknown kind must be updated. Each has a section
+in the runbook (task T022-082, built and not yet ticked). No alert says that the database clock went back: grants then
+pause until it catches up (runbook section 12).
 
 New namespace quota resources, each a namespace's value, else the tenant's default, else the deployment's (default /
 hard ceiling): `queued_runs` (1,000 / 10,000), `flow_control_key_waiters` (100 / 10,000, always below `queued_runs`),

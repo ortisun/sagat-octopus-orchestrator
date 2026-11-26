@@ -2131,6 +2131,28 @@ taken after `git grep D022-04` on every `origin/*` branch.
      group; the group filter is sent as typed and the platform's `422` is shown, so the Studio keeps no second copy of
      the derived-group rule. The namespace's `queuedRuns` is shown once per listing, as the platform reads it.
 
+
+### Decisions of the documentation slice (2026-11-26)
+
+- **D022-117 — The runbook states the alert conditions the monitor reads, where they differ from the plan's wording
+  or from decision D022-077 item 7 (2026-11-26; tasks T022-061 and T022-088; FR-022-049, NFR-022-005).** Delegate
+  (OD-2026-11-24-4). Writing the runbook against the code found two disagreements:
+  1. *`CONCURRENCY_QUEUE_STUCK`.* The plan ("Observability") says "oldest waiter older than its key's longest holder by
+     a threshold while capacity is zero"; decision D022-077 item 7 worded it "a waiter older than the threshold and no
+     grant in that time"; the monitor (`crates/infra-postgres/src/operations.rs`, `STUCK_ALERT_SQL`) fires when the
+     key's oldest eligible waiter queued more than the threshold ago and more than the threshold before the key's oldest
+     current holder took its permit, with the holders at the waiter's own limit. That is the plan's condition. The two
+     wordings part when a holder was granted within the last threshold, long after the waiter queued: the monitor fires,
+     item 7's wording would not. Options: (a) document the plan's condition, as built and as its test pins it (a holder
+     older than the waiter is quiet, a younger one fires); (b) change the code to item 7's wording. Chosen (a): a grant
+     made after the waiter queued went past it, however recent; a recent grant to someone else is the condition, not a
+     sign of health. Test: `alerts::a_waiter_passed_over_by_every_holder_raises_concurrency_queue_stuck_until_it_leaves`.
+  2. *`RATE_LIMIT_GRANT_LAGGING` and the clock.* The plan ("Observability (rate limits)") says the alert covers "the
+     pass is not keeping up or the clock went back". As built it reads the key's next-eligible hint, which a database
+     clock set back moves into the future with the grants, so it stays quiet then (gap G1183, accepted). Chosen: the
+     runbook says plainly that it does not cover the clock and gives the query that does (sections 9 and 12); the plan's
+     sentence is revised when the approved texts are next re-approved.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -2194,6 +2216,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1194 | The pinned operation baseline of `contract_iceberg_writes` digests each operation without following `$ref`, so a change to a shared parameter or schema (as the quota enum of D022-040) moves no digest; `contract_flow_control_step_policies::quotas` pins this enum to the code instead. | Accepted |
 | G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). *O1170 answered 2026-11-19 (OD-2026-11-19-2). Also out of date since the force (D022-046): FR-022-056's "no key is ever split between two rows" and SC-022-028 (a forced rotation splits a key into at most two rows), and `data-model.md` lacks `flow_control_key_forced_retirements`. The texts, and the bound of D022-047 in `contracts/errors.md`, are revised when the approved texts are next re-approved (a change makes them drafts again).* | Open; re-approval of the texts |
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
+| G022-036 | The deployment files cannot turn the rate gate on: the Helm chart has one switch, `flowControl.concurrencyKeys` (`infra/helm/values.yaml`, `templates/_helpers.tpl` `sagat.flowControl.env`), and no value for `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`; its comment still says "The rate gate is not served by this release"; the overlay `infra/docker/compose.flow-control.yaml` sets the concurrency switch only. The runbook (section 6) says so and gives the local workaround (found 2026-11-26, task T022-088). | Open; a chart value `flowControl.rateLimits` and the overlay's variable |
+| G022-037 | An orphaned waiter (alert `FLOW_CONTROL_WAITER_ORPHANED`) is removed by a hand `DELETE` as the schema owner, with no API, command or audit record, while NFR-022-005 asks an audited API for every operator action; the same holds for the digest-key commands (G022-006). The runbook (section 14) tells the operator what to keep in the change record (found 2026-11-26, task T022-061). | Open; with G022-006's operator role |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 
 ## Owner questions
