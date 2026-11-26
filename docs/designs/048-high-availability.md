@@ -216,7 +216,8 @@ From the code and documents on `develop` at `546d5aa5`:
   `DATABASE_UNCONFIRMED` and the time, refuses the connection (unless it is the registry's or a waiting command's) and
   signals the confirmation task. An unknown commit outcome (Requirement 048-012) and an unavailable `25006`
   (Requirement 048-011) set the reason and the time only, superseding nothing. Setting a reason, one already set
-  included, records the counter's current value, which is what "set before its ticket" compares. The pools' `before_acquire` hook
+  included, records the counter's current value; a ticket is the counter's value after its increment, and a reason is
+  "set before" a ticket when its recorded value is less than the ticket. The pools' `before_acquire` hook
   discards, without a statement, every connection created before `identity_changed_at` plus the connect timeout of 3 s,
   since a connection's creation is stamped after its `after_connect` returns.
   The confirmation task lives as long as the process and is driven by state, not by signals alone: while the reason is
@@ -231,8 +232,8 @@ From the code and documents on `develop` at `546d5aa5`:
   still used). When it is applied, the process clears the reason, under the gate's lock, only if its read showed the
   server not in recovery, `synchronous_commit` on and, when required, synchronous standby names present, only the reasons
   set before its ticket (a null token counts as a different identity), and no report
-  with a later ticket has shown a different identity; it then sets the returned identity as confirmed and removes it from
-  the superseded set, where a stale null report may have put it. A pass that commits but does not clear waits 1 s before
+  with a later ticket has shown a different identity; only when it clears does it set the returned identity as confirmed
+  and remove it from the superseded set. A pass that commits but does not clear waits 1 s before
   the next. Since a standby
   receives WAL in order, everything committed before that write is then on a standby. Then the process sends a registry
   heartbeat at once, so that readiness returns. Pools are built lazily (`connect_lazy_with`); a process starts by
@@ -366,12 +367,14 @@ From the code and documents on `develop` at `546d5aa5`:
 - **Success criterion 048-002** The median time to the first committed transition is reported for each fault; for the
   primary's container stopped and a node lost on Compose, it is within 60 s.
 - **Success criterion 048-003** In the Compose drill, run with the HA examples' lease time to live of 90 s, no delivered
-  lease expires whose worker's longest gap between successful heartbeats is under the time to live less 5 s (85 s: the
-  1 s the SDK keeps back and 4 s for a request's latency and the clocks), no completed activity is repeated, and no
-  review item is created except for a claim whose commit outcome was unknown, for workers on SDKs that carry Task
-  048-11. Every repetition of faults (1), (2), (4), (5) and (6) is expected to qualify (their outage, P + R + E + 17 s,
-  stays under 85 s when the target of Requirement 048-040 holds); a fault with no qualifying repetition fails the drill.
-  Longer gaps are reported. This gates the release from the first release that ships those SDKs.
+  lease expires whose own longest gap between successful heartbeats (for an expired lease, the open gap ending at its
+  expiry) is under the time to live less 5 s (85 s: the 1 s the SDK keeps back and 4 s for a request's latency and the
+  clocks), no completed activity is repeated, and no review item is created except for a claim whose commit outcome was
+  unknown, for workers on SDKs that carry Task 048-11. A repetition qualifies when every delivered lease's longest gap
+  is under 85 s; every repetition of faults (1), (2), (4), (5) and (6) is expected to (a lease's gap is the outage, P + R
+  + E + 17 s, plus at most one jittered heartbeat interval, 12 s: under the target, 60 + 12 = 72 s, below 85 s); a
+  fault with no qualifying repetition fails the drill. Longer gaps are reported. This gates the release from the first
+  release that ships those SDKs.
 
 ### User stories
 
@@ -616,12 +619,12 @@ Each task names its files and tests; the metrics of a behaviour come with it.
   Refs: Requirement 048-011, Requirement 048-012, Non-functional requirement 048-001
 - [ ] T048-9 Make the serving gate keep a set of reasons beside its epoch and capability state, make every `UNAVAILABLE` before authentication (`crates/api-http/src/limits.rs`, the public readiness, the authenticator's mapping in `crates/api-http/src/error.rs` and `extract.rs` at those call sites only, since `unavailable()` also serves after authentication, the webhook ingress in `routes/events.rs` and `auth/webhooks.rs`, `crates/api-grpc/src/limits.rs` and `service.rs`, `REGISTRY_SILENT` moved after authentication) one constant answer, `Retry-After` of 2 s and no reason, with one test asserting identical status, headers and body for each cause (a closed gate, a failed storage ping, a silent registry, a failed fetch of the identity provider's keys, a failed session lookup, a webhook whose verifier cannot fetch keys), and amend what states the old public reason (`docs/runbooks/instance-registry.md`, `docs/runbooks/control-plane.md`, `specs/001-platform-foundation/contracts/openapi.yaml`, `specs/018-schedules-bulk-operations/contracts/errors.md`, `specs/022-flow-control-step-policies/contracts/errors.md`, `tests/contract/schedules-bulk-operations/errors.rs`, `tests/integration/schedules-bulk-operations/instances_rest.rs`, `tests/integration/schedules-bulk-operations/instances_process.rs`, `tests/support/api.rs`, the doc comments of `crates/api-http/src/lib.rs` and `limits.rs`, and the hint branch of `crates/api-http/src/error.rs` that becomes dead), with a back-link in Architecture decision 0082 once Architecture decision 0130 is accepted, readiness check the gate before storage, and every path check the gate before acquiring, with `a_re_registration_does_not_reopen_a_gate_another_reason_holds` and the reasons in the contracts.
   Refs: Requirement 048-014
-- [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate`, `an_unknown_outcome_after_a_confirmations_ticket_is_not_cleared_by_it`, `the_registry_connection_reconnects_after_a_stale_null_report` (a barrier), `a_connection_to_a_superseded_server_is_refused`, `a_stale_null_read_does_not_supersede_a_fresh_confirmation` (a barrier between the read and its report), `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
+- [ ] T048-10 First, the proving test `a_backend_killed_empties_the_unlogged_marker_and_keeps_the_start_time` (and after a promotion). Then `server_incarnation`, `sagat_server_identity()`, `instance_confirm_durability()`, the registry's columns, `DatabaseIdentity` and its port, the hooks, lazy pools, the confirmation task, the gate on an unknown outcome and on an unavailable `25006`, the registry's re-read of the standby names, and the wait of the commands of `control-plane`, with `a_primary_restarted_in_place_is_not_read_before_its_standby_catches_up`, `a_confirmation_overtaken_by_a_second_change_does_not_open_the_gate` and `an_unknown_outcome_after_a_confirmations_ticket_is_not_cleared_by_it` (each with a barrier between the confirmation's ticket and its apply), `the_registry_connection_reconnects_after_a_stale_null_report` (a barrier), `a_connection_to_a_superseded_server_is_refused`, `a_stale_null_read_does_not_supersede_a_fresh_confirmation` (a barrier between the read and its report), `a_process_starts_and_confirms_on_a_lazy_pool` and `the_standby_names_emptied_at_run_time_close_the_gate`, run as the runtime role.
   Refs: Requirement 048-011, Requirement 048-013, Requirement 048-014
 - [ ] T048-11 Add the report retry window, the heartbeat retry within the lease's remainder and the register of SDK releases to `sdks/SPEC.md` and the six SDKs, the fault action `unavailableForMs` and the field `reportRetryWindowMs` in the six fault engines, and the scenario `report-through-failover` with its negative case.
   Refs: Requirement 048-015, Requirement 048-016
 - [ ] T048-12 Hold the lost-lease pass for 30 s after a confirmation (`crates/scheduler`), with `the_lost_lease_pass_waits_after_a_confirmation`, and the HA examples' lease time to live.
-  Refs: Requirement 048-016
+  Refs: Requirement 048-002, Requirement 048-016
 - [ ] T048-13 Add the two alerts with one rule file per manager, their rule tests in CI's `promtool` step, and the exporters' allow-list in the observability contract test.
   Refs: Requirement 048-012, Requirement 048-013
 - [ ] T048-14 Extend `dr_acked_workload` and `dr_verify` with the ledger's key and content and the open-loop rate, write `infra/dr/ha-drill.sh` with the six faults, the negative control and the revocation check (with the probe's `infra/dr/compose.ha-probe.yaml`, whose `pg_hba` line the drill writes to a node-local file that the reference's `pg_hba` includes with `include_if_exists`, placed before any line that rejects (a missing file changes nothing), and removes in a `trap` that then reloads PostgreSQL and asserts that a connection from the probe's subnet is refused, so that an aborted drill leaves nothing behind; the drill also asserts, as a positive control, that the probe answered at least one authorized request through `db-probe` after the isolation began), the `ha-drill` job on a free standard runner in the release workflow, replace `drill.sh`'s constant, and publish its section of the report with the runner named.
