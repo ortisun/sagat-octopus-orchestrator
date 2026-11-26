@@ -839,3 +839,20 @@ then usage rows.
 - Invariant 22 (restated): `run.finished.namespace_dispatch` is present exactly when a dispatch row for this source run
   exists, and is `PENDING` exactly when that row's `lineage_first` is true (`SUPPRESSED_LINEAGE` otherwise); a later
   redrive does not change it.
+
+### Revision of 2026-11-26 after the second security re-read (decisions D022-286 to D022-294)
+
+- `memberships` gains a second trigger, `AFTER UPDATE OF role ... FOR EACH ROW WHEN (OLD.role IS DISTINCT FROM
+  NEW.role)`, `ENABLE ALWAYS`, that deletes every `run_recovery_namespaces` row of the subject in the tenant, as
+  `memberships_role_change_revokes_reveal_grants` does for reveal grants (D022-286).
+- The functions of both `memberships` triggers (the activation gate of D022-276 and the role change) are `SECURITY
+  DEFINER`, `SET search_path = pg_catalog, pg_temp`, name `public.platform_requirements`, `public.memberships` and
+  `public.run_recovery_namespaces` with their schema, and are `REVOKE ALL ... FROM PUBLIC` (D022-290).
+- `bindRunRecovery` reads the subject's role through `sagat_lock_memberships` (`FOR SHARE`) in its own transaction
+  before the insert (D022-286).
+- The membership statement loads the bound set with each namespace's id and slug, so a namespace addressed by id or
+  slug is checked against the scope before any lookup (D022-294).
+- The completion of a pending reset (`recheck_requester`) reads the actor's binding row of the entry's namespace `FOR
+  SHARE` after `sagat_lock_memberships` when the role is namespace-bound (D022-288).
+- The migration that widens `memberships_role_valid` and adds both triggers lands with task T022-256, not before it
+  (D022-291).

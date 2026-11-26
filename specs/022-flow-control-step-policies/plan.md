@@ -1065,12 +1065,20 @@ The design:
 | A principal rebuilt from a stored member | through `Membership::principal()`, so it carries the scope (the reset completion, `crates/application/src/reset_completion.rs:361`) |
 | A write by a bound subject | its binding row `FOR SHARE` in slot 4a after the memberships (ADR-0050 decision 7 as written 2026-11-26), so a revocation that commits first refuses it |
 | Evidence | domain tests of the scope (T022-256); the battery of every route as a `RunRecovery` subject (T022-257); the fitness rule (T022-258); the slot-4a lock and the replay after a revocation (T022-259) |
+| The role-only check (added 2026-11-26, D022-287) | `Principal::check_role_before_lookup(permission)`, returning `()`, called only in `authz.rs` and `api_admission.rs`; every other `.grants(` on an allow list by enclosing function; `Membership::restore` only in `crates/infra-postgres/src/identity.rs` |
+| A pending reset (added 2026-11-26, D022-288) | completed with the re-read membership's principal and `authorize_in(entry.namespace_id, ..)`; `AppError::OutsideNamespaceScope` maps to `AUTHORITY_REVOKED`; `recheck_requester` reads the binding row `FOR SHARE` |
+| A role change (added 2026-11-26, D022-286) | removes the subject's bindings (an `AFTER UPDATE OF role` trigger); a bind reads the role under the membership's lock |
+| A miss and a denial (added 2026-11-26, D022-294) | for a bound principal, a namespace by id or slug is checked against the scope before any lookup; a run, workflow or request miss and a hit outside the scope give the same denial record, its work off the response path |
+| From slice 2 (added 2026-11-26, D022-291) | the role is namespace-bound with an empty scope; the widening migration lands with T022-256; the manifest of `failure-handler-v1` names the scope's artefacts |
 
 The binding is read on every request: the `Caller` extractor authenticates each request
 (`crates/api-http/src/extract.rs:52`, `:88`) and the membership is read in one statement with no cache
 (`crates/infra-postgres/src/identity.rs:362-377`). A replay is checked again: the start route admits before the use
 case (`crates/api-http/src/routes/execution.rs:474-480`) and `start_with` resolves its namespace (`runs.rs:1391`)
-before every receipt lookup (`:1424`, `:1699`, `:1768`).
+before every receipt lookup (`:1424`, `:1699`, `:1768`). An open event stream authenticates its subject again every
+30 seconds and reads the run with that principal on each poll (`crates/api-http/src/streams.rs:50`,
+`crates/api-http/src/routes/execution.rs:1385-1400`); its maximum lifetime is 15 minutes (`streams.rs:49`), so a revoked
+binding ends it within one re-check once `RunService::get` checks the scope (D022-296).
 
 **The binding's table and routes (D022-273, D022-274, D022-276).** `run_recovery_namespaces` follows `worker_bindings`
 (grants SELECT, INSERT and DELETE; composite foreign keys to `namespaces` and to `memberships`, `ON DELETE CASCADE`; the
@@ -1152,6 +1160,9 @@ of the change), and `run_recovery.namespace_denied` (resource type `namespace`, 
 | A binding is revoked between a request's authentication and its write (added 2026-11-26, D022-277) | The write's slot-4a read finds no row: the opaque `404`, rolled back | `slot_order.rs` case, both orders (T022-259) |
 | A start is replayed after its subject's binding was revoked (added 2026-11-26, D022-277) | The opaque `404`; nothing created | Integration test (T022-259) |
 | `failure-handler-v1` switched off while `RunRecovery` subjects are bound (added 2026-11-26, D022-276) | Every such subject bound to no namespace; the rows kept and in force again on re-activation | Integration test (T022-253) |
+| A `RunRecovery` member's role is changed and changed back (added 2026-11-26, D022-286) | Its bindings removed by the first change; bound to no namespace until an administrator binds again | Integration test (T022-261) |
+| A `RunRecovery` reset waits as a pending reset; the binding is revoked before the source ends (added 2026-11-26, D022-288) | The entry fails `AUTHORITY_REVOKED`; without the revocation it completes | Integration test (T022-262) |
+| A `RunRecovery` event stream is open when its binding is revoked (added 2026-11-26, D022-296) | `reconnect` within one 30-second re-check | Integration test (T022-259) |
 | Publication of a workflow with a database node against a test admission of its draft | No cycle (the draft row is not locked) | `slot_order.rs` case (D022-222) |
 | The dispatcher crashes inside an admission | The attempt is already counted; `DEAD` after 12 | Fault test (D022-223) |
 | Two failing runs of one lineage commit at once | Both reach their terminal status; one live dispatch row and one suppressed row | Fault test with a held commit (D022-242) |
@@ -1200,7 +1211,7 @@ four; the surfaces (decision D022-221).
 
 ### Size
 
-*Revised 2026-11-26:* 61 new tasks (T022-200 to T022-260; the re-reads added T022-256 to T022-260), riding in the slices
+*Revised 2026-11-26:* 63 new tasks (T022-200 to T022-262; the re-reads added T022-256 to T022-262), riding in the slices
 they serve; the estimate of pull requests stands.
 
 *Revised 2026-11-25:* 38 new tasks (T022-200 to T022-237; the rulings added T022-224 to T022-237) beside the 43 open

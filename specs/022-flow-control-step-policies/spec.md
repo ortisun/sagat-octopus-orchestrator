@@ -598,6 +598,11 @@ Added after the review of 2026-11-13:
   unbinds with `membership:manage`, audited; the role (stored as `run-recovery`) cannot be given before
   `failure-handler-v1` is active, and switching the capability off binds every such subject to no namespace, the rows
   kept.
+  *Amended 2026-11-26 after the second security re-read, delegate (OD-2026-11-24-4; decisions D022-286 to D022-296):* a
+  change of a member's role removes its bindings; a pending reset of a bound subject completes only inside its binding
+  and otherwise fails `AUTHORITY_REVOKED`; the role acts nowhere before its scope is built; a refusal outside the
+  binding answers exactly as a missing resource does, in body and in time; an open event stream is cut within its
+  30-second re-check.
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose

@@ -78,3 +78,28 @@ finding is fixed in the design; none is accepted or deferred. "Plan" is `plan.md
   findings judged fixed, a sample was checked and holds (`crates/domain/src/identity.rs:313-315`,
   `crates/api-http/src/core.rs:35`, `crates/infra-postgres/src/execution.rs:5726-5735`,
   `crates/domain/src/execution/command.rs:2483`); the rest was not checked again.
+
+## Second security re-read (of `9960a3c1`)
+
+Where each item of [design-fixes-2-rereview-security-reviewer.md](design-fixes-2-rereview-security-reviewer.md) now
+lives. Decisions in `research.md`, "Decisions of the second security re-read of 2026-11-26", delegate
+(OD-2026-11-24-4); every item fixed, none accepted or deferred. "Tasks" here is `tasks.md`, subsection "Revision of
+2026-11-26 after the second security re-read"; "data model" is its subsection of the same name. Code facts checked at
+`ddbac141`; every code claim of the record was checked and holds (see the note below on `:1276`).
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Minor 1: a role change leaves the bindings in place | D022-286 | ADR-0136 decision 4 (revision of the second re-read); data model (the role-change trigger, the bind under `sagat_lock_memberships`); `contracts/errors.md` (the bind's `422` after a concurrent role change); plan, failure matrix (a role changed and changed back) and the scope table; tasks T022-261, T022-253 as it reads now |
+| Minor 2: the fitness rule matches four permission names; `Membership::restore` is public; the role-only method is not named | D022-287 | tasks T022-258 as it reads now (every `.grants(` judged by enclosing function, the allow list of the tree's sites; `check_role_before_lookup` callers; `Membership::restore(` confined), T022-256 as it reads now; plan, the scope table ("The role-only check") |
+| Minor 3: the pending reset completion is not covered | D022-288 | ADR-0136 decision 4; ADR-0050 decision 7 (the paragraph of 2026-11-26, the completion's re-check in slot 4a); data model; `contracts/errors.md` (pending resets, `AUTHORITY_REVOKED`); plan, failure matrix and the scope table; spec FR-022-014 line after the second re-read; tasks T022-262 |
+| Minor 4: the battery accepts "`403` or the opaque `404`" | D022-289 | tasks T022-257 as it reads now (status and body equal to those of a missing identifier); `contracts/errors.md` (the revised `404` row) |
+| Minor 5: the activation trigger's function attributes are unspecified | D022-290 | data model (both trigger functions: `SECURITY DEFINER`, pinned search path, schema-qualified names, `REVOKE ALL ... FROM PUBLIC`, `ENABLE ALWAYS`); ADR-0136 decision 4; tasks T022-253 as it reads now, T022-261 |
+| Minor 6: merge order could open a window | D022-291 (both the reviewer's fix and a stronger one: the role is namespace-bound with an empty scope from slice 2) | tasks T022-011 and T022-240, T022-249, T022-253 as they read now and the slice sentence; data model (the migration lands with T022-256); plan, the scope table ("From slice 2"); ADR-0136 decision 4 |
+| Nit 1: T022-256 does not pin the scope class of the role's permissions | D022-292 | tasks T022-256 as it reads now (the domain test) |
+| Nit 2: the revised `404` row says "before any other refusal of the route" | D022-293 | `contracts/errors.md` (the row reworded: after the role check, before every other refusal) |
+| Nit 3: the denial audit is written only when the resource exists, so time tells existing slugs | D022-294 | data model (the bound set loaded with slugs); plan, the scope table ("A miss and a denial"); `contracts/errors.md` (the revised `404` row); tasks T022-256 as it reads now |
+| Nit 4: `tasks.md` still says "machine identity" in T022-228's reversed amendment | D022-295 | `tasks.md`, T022-228's amendment of 2026-11-25 struck whole |
+| Suspicion: the event stream's maximum lifetime sets the revocation window | D022-296: the maximum lifetime is 15 minutes (`crates/api-http/src/streams.rs:49`), but the window is the 30-second re-check (`streams.rs:50`; `crates/api-http/src/routes/execution.rs:1385-1400`), once `RunService::get` checks the scope | research D022-277 (completed); plan, "The namespace scope of a principal" and the failure matrix; spec FR-022-014 line; tasks T022-259 and T022-256 as they read now |
+
+Note on the suspicion's citation: `crates/api-http/src/routes/execution.rs:1276` is not stale; it is the call of
+`stream_deadline`, whose body is at `:1304`. Both are cited now.

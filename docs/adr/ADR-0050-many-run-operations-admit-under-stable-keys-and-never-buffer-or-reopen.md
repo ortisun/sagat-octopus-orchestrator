@@ -141,7 +141,8 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    slot-4a draft-executions key; an admission or a command on an existing run whose actor's role is namespace-bound
    (`RunRecovery`) reads the actor's `run_recovery_namespaces` row `FOR SHARE` in slot 4a after the memberships, and the
    revocation that deletes it takes only its audit and usage rows after it, so it joins no cycle (a `slot_order.rs` case,
-   task T022-259).
+   task T022-259). *Added 2026-11-26 (decision D022-288):* the completion of a pending reset of such an actor reads the
+   same row in its re-check of the requester, right after `sagat_lock_memberships`, in slot 4a.
 
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists

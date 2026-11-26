@@ -41,7 +41,8 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | A publication approval or an approval decision by a subject whose only role is `RunRecovery` (added 2026-11-25, decision D022-244) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_APPROVE` | no |
 | A redrive of a dispatch by a `RunRecovery` subject (added 2026-11-25, decision D022-266) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_REDRIVE` | no |
 | Any route called by a `RunRecovery` subject outside the namespaces it is bound to (added 2026-11-25, decision D022-266) | 404 | `NOT_FOUND` | — (opaque) | no |
-| *Revised 2026-11-26 (decisions D022-272, D022-275):* the row above is answered by the principal's scope check, before any other refusal of the route (`RECOVERY_ROLE_MAY_NOT_REDRIVE` included), and audited `run_recovery.namespace_denied` and counted; a subject with no binding row is bound to no namespace | 404 | `NOT_FOUND` | — (opaque) | no |
+| *Revised 2026-11-26 (decisions D022-272, D022-275; reworded D022-293):* the row above is answered by the principal's scope check, after the role check of the operation's permissions (a `403` for a permission the role does not hold) and before every other refusal, `RECOVERY_ROLE_MAY_NOT_REDRIVE` included; audited `run_recovery.namespace_denied` and counted, with the same body and the same work on the response path as for an identifier that does not exist (D022-289, D022-294); a subject with no binding row is bound to no namespace | 404 | `NOT_FOUND` | — (opaque) | no |
+| `bindRunRecovery` while a concurrent change of the subject's role has committed (added 2026-11-26, decision D022-286; the bind reads the role under the membership's lock, and a role change removes the subject's bindings) | 422 | `VALIDATION_FAILED` | `NOT_A_RECOVERY_SUBJECT` | no |
 | A write (start, reset, rerun, a command on a run) by a `RunRecovery` subject whose binding was revoked after the request was authenticated (added 2026-11-26, decision D022-277; the slot-4a read finds no row) | 404 | `NOT_FOUND` | — (opaque) | no |
 | A route of a namespace-scoped permission that a `RunRecovery` principal reaches without a namespace (added 2026-11-26, decision D022-272: a defect the battery catches, never a contract; fail closed) | 403 | `FORBIDDEN` | — | no |
 | `bindRunRecovery` for a subject that is not a member of the tenant with the role `run-recovery` (added 2026-11-26, decision D022-274) | 422 | `VALIDATION_FAILED` | `NOT_A_RECOVERY_SUBJECT` | no |
@@ -64,6 +65,11 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 refused by a trigger on `memberships`; the provisioning command reports `FLOW_CONTROL_ACTIVATION_PENDING` and writes
 nothing. Switching the capability off refuses nothing: every `RunRecovery` subject is then bound to no namespace (the
 `404` row above), and its rows are kept.
+
+*Added 2026-11-26 (decision D022-288): pending resets (018's reasons, reused).* A pending reset whose requester is a
+`RunRecovery` subject fails `AUTHORITY_REVOKED` when, at its completion, the entry's namespace is outside the
+requester's binding (the scope refusal, never `ADMISSION_REFUSED`), and also when the binding row is gone at the
+re-check in the admission transaction.
 
 *Added 2026-11-25 (decision D022-233):* the checks of a test-run request run in this order: the namespace from the
 authenticated context, `404` for the workflow, the `prod` or review `403`, then a `fromRun` `404` before

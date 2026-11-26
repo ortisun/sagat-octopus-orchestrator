@@ -2949,7 +2949,8 @@ Each decision is delegate (OD-2026-11-24-4). The code facts below were checked o
   memberships, and refuses with the opaque `404` when it is gone; the revocation deletes the row and takes only its audit
   and usage rows after it, so no cycle. A replay found at the receipt (slot 2) creates nothing and needs no lock. An event
   stream opened before a revocation ends at its token's expiry or its maximum lifetime (`stream_deadline`,
-  `crates/api-http/src/routes/execution.rs:1276`), as a stream of a removed membership does today. Evidence: a
+  `crates/api-http/src/routes/execution.rs:1276`), as a stream of a removed membership does today. *(Completed
+  2026-11-26 by D022-296: the window is the stream's 30-second re-check, not its 15-minute lifetime.)* Evidence: a
   `slot_order.rs` case of a `RunRecovery` admission against a revocation of its binding, both orders; an integration test
   of a replay after a revocation (`404`, nothing created).
 - **D022-278 — The overdue no-op belongs to the pass, not to a stop reason (architecture Major 1; restates D022-262).**
@@ -3009,6 +3010,103 @@ Each decision is delegate (OD-2026-11-24-4). The code facts below were checked o
   table is named a table of its own; the stored value of the role is `run-recovery` (the stored spellings are lowercase
   with hyphens, `crates/domain/src/identity.rs:731`, migration `20261124000000_database_executor.up.sql:4`); the
   "Decided by" lines of ADR-0135, ADR-0136, ADR-0137 and ADR-0146 say they were accepted (D022-271).
+
+### Decisions of the second security re-read of 2026-11-26
+
+The security reviewer re-read the fixes of `9960a3c1`
+([reviews/2026-11-26/design-fixes-2-rereview-security-reviewer.md](reviews/2026-11-26/design-fixes-2-rereview-security-reviewer.md)):
+every earlier item fixed, no Blocker or Major, six minors, four nits and a suspicion on the backstops. Each is fixed in
+the design; none is accepted or deferred. Where each lives is in the second part of
+[reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md). Each decision is
+delegate (OD-2026-11-24-4). The code facts were checked on this branch at `ddbac141`.
+
+- **D022-286 — A role change removes the subject's `RunRecovery` bindings (minor 1).** Delegate (OD-2026-11-24-4). The
+  foreign key to `memberships` cascades on delete only, so a member moved off `run-recovery` and back would find its
+  bindings again without a new audited bind. The platform closed the same hole for reveal grants
+  (`migrations/20261220000000_reveal_grants_role_change.up.sql:1-27`), and the fix follows it: an `AFTER UPDATE OF role`
+  trigger on `memberships`, `WHEN (OLD.role IS DISTINCT FROM NEW.role)`, `ENABLE ALWAYS`, deletes every
+  `run_recovery_namespaces` row of the subject in the tenant, through a function with the attributes of D022-290. And
+  `bindRunRecovery` reads the subject's role through `sagat_lock_memberships` (`FOR SHARE`) in its own transaction, so
+  a role change either commits first (the bind answers `422 NOT_A_RECOVERY_SUBJECT`) or waits for the bind and then
+  removes what it wrote.
+- **D022-287 — The fitness rule judges every role-only check, and the constructors are closed (minor 2).** Delegate
+  (OD-2026-11-24-4). Matching the four permission names misses a check written with a variable
+  (`crates/infra-postgres/src/execution/resets.rs:675`, `crates/application/src/batch_executor.rs:443`,
+  `crates/application/src/payload_disclosure.rs:625`, `crates/infra-postgres/src/database.rs:44`). Task T022-258 now
+  refuses every `.grants(` in production code outside `crates/domain/src/identity.rs` unless its enclosing function is on
+  the rule's allow list, each entry with its argument (a permission no namespace-bound role holds, or a stored role
+  checked again in a transaction that also reads the binding). The sites on the tree at `ddbac141`, by enclosing
+  function: `batch_executor.rs` `item`; `event_payloads.rs` `authorize`; `payload_disclosure.rs` `evaluate`; `runs.rs`
+  `reveal_permit_labels`; `schedule_firing.rs` `backfill_step` and `fire`; `crates/domain/src/execution/approval.rs`
+  `authorize_decision`; `crates/domain/src/secrets.rs` `may_use`; in `crates/infra-postgres/src`, `database.rs`
+  `current_permission`, `database/admission.rs` `check_definition`, `event_payloads.rs` `list_dead_letters`,
+  `execution/resets.rs` `recheck_requester`, `reveal_grants.rs` `actor_can_manage`, `grant_reveal` and
+  `role_can_use_reveal_grant`, `schedules.rs` `recheck_authority`, `workers.rs` `create_session`. The resolvers' role-only
+  check is named `Principal::check_role_before_lookup(permission)`: it returns `()`, grants nothing, and the rule allows
+  its callers only in `crates/application/src/authz.rs` and `crates/application/src/api_admission.rs`.
+  `Membership::restore` (public, one production caller, `crates/infra-postgres/src/identity.rs:683`) takes the bound set
+  and the rule refuses `Membership::restore(` in production code outside that file, so no principal of a stored member is
+  built around the membership statement.
+- **D022-288 — A pending reset of a `RunRecovery` subject completes inside its binding and fails `AUTHORITY_REVOKED`
+  outside it (minor 3).** Delegate (OD-2026-11-24-4). Today `complete_reset` calls `authorize`
+  (`crates/application/src/runs/pending_reset.rs:486-488`), which D022-272 makes `Forbidden` for a bound principal, mapped
+  to `AUTHORITY_REVOKED` (`crates/application/src/reset_completion.rs:225`): every `RunRecovery` reset that waits would
+  fail; and an opaque `NotFound` maps to `ADMISSION_REFUSED` (`:255`). The fix: the completion's principal comes from the
+  re-read membership through `Membership::principal()` (replacing `Principal::new` at `reset_completion.rs:361`);
+  `complete_reset` calls `authorize_in(entry.namespace_id, permission)`; the scope refusal is its own error,
+  `AppError::OutsideNamespaceScope`, which the HTTP layer answers with the opaque `404` body and `failure_of` maps to
+  `AUTHORITY_REVOKED`; and `recheck_requester` (`crates/infra-postgres/src/execution/resets.rs:655-681`), which checks
+  only the stored role under `sagat_lock_memberships`, also reads the subject's binding row of the entry's namespace
+  `FOR SHARE` when the role is namespace-bound (slot 4a), a missing row being `AUTHORITY_REVOKED`. Evidence (task
+  T022-262): a `RunRecovery` reset in namespace A that waits completes; the same reset with the binding revoked before
+  the source ends fails `AUTHORITY_REVOKED`.
+- **D022-289 — The `RunRecovery` battery compares with a missing identifier (minor 4).** Delegate (OD-2026-11-24-4).
+  "`403` or the opaque `404`" would pass an operation that tells an existing resource from a missing one. Task T022-257
+  now requires, for every operation, that the status and the body for namespace B's real identifier equal those for an
+  identifier that does not exist, compared as the cross-tenant battery compares them
+  (`tests/contract/security-multitenancy/rest/battery.rs:7-8`); an operation whose permissions the role does not hold is
+  `403` for both.
+- **D022-290 — The functions of the `memberships` triggers are pinned (minor 5).** Delegate (OD-2026-11-24-4). The writer
+  of `memberships` is not the owner (`reveal_grants_role_change.up.sql:7-8`) and `platform_requirements` is revoked from
+  PUBLIC (`migrations/20270113000000_instance_registry.up.sql:385-404`). The activation trigger of D022-276 and the
+  role-change trigger of D022-286 run functions that are `SECURITY DEFINER`, `SET search_path = pg_catalog, pg_temp`,
+  name every table with its schema (`public.platform_requirements`, `public.run_recovery_namespaces`), are `REVOKE ALL
+  ... FROM PUBLIC` (no role may execute them; only the triggers run them), and whose triggers are `ENABLE ALWAYS`, as the
+  reveal-grant precedent.
+- **D022-291 — The role can never act before its scope exists (minor 6).** Delegate (OD-2026-11-24-4). The role enters
+  the catalog in slice 2 (T022-011, T022-240), and the third rulings put T022-253 (the CHECK widening and the
+  activation trigger) before T022-256 in slice 13. Two fixes, the second the stronger: (a) the migration that widens
+  `memberships_role_valid` and adds the activation and role-change triggers lands in the pull request of T022-256, not
+  before it; (b) from slice 2 the role is declared namespace-bound and every principal of it is built with an empty
+  scope, so `authorize` refuses its namespace-scoped permissions and nothing grants it anything until T022-256 loads the
+  bound set. The manifest of `failure-handler-v1` (D022-256, task T022-249) names the scope's artefacts: the migration of
+  T022-253, the tests of T022-256 and the battery of T022-257, so the capability cannot be listed, and the role cannot be
+  given (D022-276), while any is missing.
+- **D022-292 — The scope class of the role's permissions is pinned by a test (nit 1).** Delegate (OD-2026-11-24-4). A
+  domain test of T022-256: every permission a namespace-bound role holds is classed namespace.
+- **D022-293 — The order of the refusals, stated as the resolvers give it (nit 2).** Delegate (OD-2026-11-24-4). The
+  revised `404` row of `contracts/errors.md` read "before any other refusal of the route", but the resolvers check the
+  role first: it now reads "after the role check of the operation's permissions (a `403` for a permission the role does
+  not hold) and before every other refusal, `RECOVERY_ROLE_MAY_NOT_REDRIVE` included".
+- **D022-294 — A miss and a denial cost the response the same (nit 3).** Delegate (OD-2026-11-24-4). The denial write is
+  already off the response path (`record_denial`, `crates/infra-postgres/src/identity.rs:588-616`), but a miss also runs
+  the `*_exists_outside` query on the response path, so the time of a `404` could tell an existing namespace from a
+  missing one. For a namespace-bound principal: a namespace addressed by id or slug is checked against the bound set
+  before any lookup (the set is loaded with each namespace's id and slug), so an unbound namespace is refused at once,
+  existing or not; a run, workflow or request whose namespace must be looked up gives, on a miss and on a hit outside the
+  scope alike, one denial record `run_recovery.namespace_denied` whose work, the cross-tenant existence query included,
+  runs off the response path in the bounded denial task.
+- **D022-295 — The reversed amendment of T022-228 struck (nit 4).** Delegate (OD-2026-11-24-4). The amendment of
+  2026-11-25 (D022-241, reversed by D022-242) is struck whole, its "machine identity" with it.
+- **D022-296 — The revocation window of an event stream is thirty seconds (the suspicion; completes D022-277).**
+  Delegate (OD-2026-11-24-4). The stream's maximum lifetime is 15 minutes (`StreamLimits::default`,
+  `crates/api-http/src/streams.rs:49`; the deadline is computed by `stream_deadline`,
+  `crates/api-http/src/routes/execution.rs:1304`, called at `:1276`), but it is not the window: an open stream
+  authenticates its subject again every 30 seconds (`recheck`, `streams.rs:36`, `:50`; `execution.rs:1385-1398`) and reads
+  the run with the principal it got back on every poll (`execution.rs:1400`). Once T022-256 routes `RunService::get`
+  (`crates/application/src/runs.rs:2430`, `authorize(RunRead)` today) through `authorize_in`, a revoked binding ends the
+  stream at the next re-check: within 30 seconds by default, never later than its token's expiry or 15 minutes. Evidence
+  (task T022-259): a stream of a `RunRecovery` subject ends with `reconnect` after a revocation, within one re-check.
 
 ## Gaps
 
