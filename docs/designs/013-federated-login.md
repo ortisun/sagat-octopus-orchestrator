@@ -1539,9 +1539,12 @@ written plus one, never reused, the highest also kept in the document), material
   (`an_identity_key_ring_never_prints_key_material`, with every key, document and tag built from distinctive bytes:
   the `{:?}` and `{:#?}` output of a `RingKey`, a `PurposeKey`, a `RingDocument`, a `Tag` and a `RefreshMac` must be
   exactly `[REDACTED]`; and in the `{:?}` and `{:#?}` output of the ring and both adapters, and in the errors, audit
-  rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 and a material of 31 bytes,
-  and of a cancelled rotation and a `revoke` that loses five check-and-sets, the distinctive bytes must appear in no
-  form: lowercase or uppercase hex, standard or URL-safe base64 with or without padding, or the decimal byte list).
+  rows and log lines of documents with two `ACTIVE` keys, a material that is not base64 (the base64 of distinctive
+  bytes with one invalid character inserted) and a material of 31 bytes, and of a cancelled rotation and a `revoke`
+  that loses five check-and-sets, none of these may appear: the distinctive bytes, and the `cli-refresh` purpose keys
+  the test derives from them independently (HKDF-SHA256, `info` `cli-refresh`, no salt), in lowercase or uppercase
+  hex, standard or URL-safe base64 with or without padding, or the decimal byte list; nor the stored text of the
+  malformed material, verbatim or any 16-character window of it).
 - *The rule.* An architecture rule (Technical Plan 2) keeps the label literals `"cli-refresh"` and `"signin-attempt"`
   in the module as `P::LABEL`, refuses outside it any string literal containing `rings/`, any call of `read_versioned`
   or `write_cas` and any `impl RingPurpose`, refuses any widening of the visibility of `openbao.rs`'s request helper,
