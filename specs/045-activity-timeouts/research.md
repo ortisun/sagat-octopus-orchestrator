@@ -154,6 +154,13 @@ place. Every owner question below was decided under the owner's delegation (Owne
   locks queue in order, so publications cannot starve the operator, and the runtime role takes no row lock on the registry. It refines
   Architecture decision 0082 decision 1, and features 020, 029 and 031 may use the same function.
 
+## Notes for other features (2026-11-26)
+
+- **For feature 022 (relayed by the coordinating session, which owns 022):** in FR-022-036, after "a concurrency key with
+  `ENCODING_READ_BY_CONCURRENCY_KEY`", add "and a rate-limit key with `ENCODING_READ_BY_RATE_LIMIT_KEY`" (feature 031's readiness
+  review, Decision 031-009). Also from this design: Task 045-10 builds the close cutoff into 022's waiter deadline, its one timeout
+  routine and its grant (Requirement 045-011), once 022's gates land.
+
 ## Gaps
 
 - **Gap 045-005 — An attempt leased less than 18 s before its close deadline is not provisional** under protocol 1.8 (architecture review

@@ -87,7 +87,9 @@ proposed with this design. The register of decisions, gaps and questions is `spe
   `heartbeatTimeoutMs` (or the platform's 30 s); a renewal never moves it past the attempt deadline.
 - **This design's level of a version.** 0 when the version uses none of its fields; 1 when it uses some; 2 when it also needs
   protocol 1.9 hosts (`heartbeatFrom: "handler"`, or a `heartbeatTimeoutMs` below 30,000 ms). Publication records it
-  (`workflow_versions.activity_timeouts_level`). Only a version of level 1 or 2 is read with these rules; a version of level 0 is run
+  (`workflow_versions.activity_timeouts_level`). For a code version of design 044 the level is the one its envelope declares
+  (`timeoutLevel`: `"none"`, `"timeouts"` or `"protocol"`, for 0, 1 and 2), and publication holds the requirements of that level
+  exactly as for a graph version. Only a version of level 1 or 2 is read with these rules; a version of level 0 is run
   exactly as today, whatever its stored document contains: the store returns a stored document with its level, `parse_stored` and
   `DefinitionCache::get_or_parse` take the level, and at level 0 the codec drops the keys without validating them.
 - **Outcome-unknown codes.** The seven codes for which `FailureCode::leaves_outcome_unknown` holds (`crates/domain/src/execution/event.rs`):
@@ -284,8 +286,8 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
 - Patterns or prefixes in the retry lists (Alternatives Considered).
 - **Buffered signals.** The roadmap assessment also names "buffered signals (an early signal is refused today)". Feature 018 does not
   cover them (its spec lists them under Out of scope, on Architecture decision 0050 decision 4 and Architecture decision 0030
-  decision 17). They share no mechanism with this design (no timer, no lease, a fleet switch of their own) and belong to a design of
-  their own, which design 044 (workflow as code) will depend on.
+  decision 17). They share no mechanism with this design (no timer, no lease, a fleet switch of their own) and are design 054
+  (`docs/designs/054-buffered-signals.md`), on which design 044 (workflow as code) depends.
   [Architecture decision 0111](../adr/ADR-0111-a-version-may-declare-buffered-signals-kept-in-a-bounded-per-run-inbox.md) is its
   proposal (Decision 045-009).
 - Workflow as code: design 044 decides how its activity calls carry these options.
@@ -298,10 +300,9 @@ The roadmap assessment of 2026-11-11 (`docs/roadmap-assessment-2026-11-11.md`, T
 
 ## Owner decisions needed
 
-One open, for the coordinating session to obtain: an owner row whose `Covers` names Tasks 045-1, 045-7, 045-10, 045-13, 045-16 and
-045-19, which build into features 006 (protocol 1.8, lease withdrawal) and 022 (gates); Rule 5 of `scripts/check-design-docs.py`
-accepts only an owner's row as a gate, and those six tasks carry `Owner-gate: OD-2026-11-24-1` until it exists. Everything else is
-decided. The owner's decisions this design rests on: Owner decision 2026-11-24-1 (the scope), Owner decision 2026-11-20-6 and Owner
+None open. Tasks 045-1, 045-7, 045-10, 045-13, 045-16 and 045-19 build into features 006 (protocol 1.8, lease withdrawal) and 022
+(gates); they are gated by Owner decision 2026-11-26-560, a delegate's row under Owner decision 2026-11-24-4 whose `Covers` names
+them. The owner's decisions this design rests on: Owner decision 2026-11-24-1 (the scope), Owner decision 2026-11-20-6 and Owner
 decision 2026-11-24-4 (the delegation of its questions, of its architecture decision and of its approval), Owner decision 2026-11-15-8
 (the register of protocol minors). Each question below was decided under that delegation and is recorded with its options and
 reasoning in `specs/045-activity-timeouts/research.md`:
@@ -314,7 +315,7 @@ reasoning in `specs/045-activity-timeouts/research.md`:
 - Owner question 045-006: which node kinds? `activity` and `script`, root and body (Decision 045-006).
 - Owner questions 045-007 and 045-008 (buffered signals across continuation; opt-in buffering) moved with buffered signals to their
   own design (Decisions 045-007 and 045-008).
-- Owner question 045-009: where do buffered signals belong? A design of their own (Decision 045-009).
+- Owner question 045-009: where do buffered signals belong? A design of their own, design 054 (Decision 045-009).
 - Decided during the reviews: an operator's retry of a known failure clears the close deadline (Decision 045-018); a pause removes the
   start deadline and the resume gives a full window (Decision 045-019); the close floor and cutoff (Decision 045-021); the protocol
   requirement (Decision 045-022); the minimum heartbeat timeout of 18,000 ms (Decision 045-024); a withdrawal's fresh window
@@ -431,7 +432,8 @@ store computes each deadline once, from the transition's `db_now` and the defini
 the event and the column in one statement; they are the named exceptions of the static check (Task 045-20). The row-shape predicates at the top of
 `execution.rs` (the conditions that say a row holds no work) include the new columns. The loaders that restore a step (the root load,
 `RUN_FOR_CLAIM` in `execution.rs`, the path snapshot reader) select them, and `StepState` gains `start_deadline`, `start_window`,
-`close_deadline` and `close_cutoff`, with `StepState::restore` taking them. `min_protocol_minor` is not domain state: it is an
+`close_deadline` and `close_cutoff`, with `StepState::restore` taking them. `min_protocol_minor` is not domain state: this design owns the column (design 044 depends on it, Gap 044-020; any later
+feature that needs a per-step minor writes the larger of its own and the value already there); it is an
 adapter-only hint for the candidate query, written from the definition, and the domain's lease predicate reads the node's required
 host features (`StepTimeouts::required_host_features()`) against the session's.
 
@@ -740,8 +742,10 @@ lost its heartbeat: the outcome is unknown, so the platform is asking `findExpor
   of that level answers `422` with the reason `ACTIVITY_TIMEOUTS_NOT_ACTIVE`. Once recorded, a binary without the capability serves
   nothing (the closed gate).
 - **The publication hold.** A `SECURITY DEFINER` function, `platform_requirement_hold(capability text) RETURNS boolean`, with `SET
-  search_path = pg_catalog, pg_temp`, schema-qualified names, the capability checked against the closed list, and `REVOKE ALL ... FROM
-  PUBLIC` before `EXECUTE` is granted to `sagat_app`, follows `lease_withdrawal_required()` of Architecture decision 0098's build: it
+  search_path = pg_catalog, pg_temp`, schema-qualified names, and `REVOKE ALL ... FROM PUBLIC` before `EXECUTE` is granted to
+  `sagat_app`, and with no list of capabilities in its body (the table's closed `CHECK` already bounds them, so a later feature adds a
+  capability without changing the shared body; the body is the one design 044 gives in its Decision 044-206, and whichever design
+  lands first creates it), follows `lease_withdrawal_required()` of Architecture decision 0098's build: it
   reads the requirement's own row `FOR SHARE` and returns true only when the requirement is recorded for both control planes and
   engines. The store's publication (`publish` in `crates/infra-postgres/src/definitions.rs`) takes the capabilities the version's level
   needs and calls the hold inside its own transaction, just before its commit, under a `lock_timeout`; a refusal is a typed store error
@@ -926,7 +930,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   and the rows of `docs/engineering/architecture-principles.md` for the checks of Task 045-20. The contract suites fail on the new
   baselines until slices 2 and 3.
   Refs: Requirement 045-001, Requirement 045-002, Requirement 045-014, Non-functional requirement 045-004
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: OD-2026-11-26-560
 - [ ] T045-2 Domain types: `StepTimeouts` on `Node`, `RetryRules` with `for_code` and `CodeRule`, the effective policies built through
   `RetryPolicy::new` with the overlay rule, `activity_timeouts_level`, and their validation (bounds, contradictions, the close floor
   plus 1,000 ms, reserved and duplicated codes, invalid overrides). Unit tests first, one per refusal and per boundary value (10,000
@@ -964,7 +968,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   passes; a store test per column. The withdrawal's start deadline is built by whichever of this design and pull request #260 lands
   second.
   Refs: Requirement 045-003, Requirement 045-004, Requirement 045-005, Requirement 045-006, Requirement 045-021, Non-functional requirement 045-001
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: OD-2026-11-26-560
 - [ ] T045-8 The `step_deadlines` pass in `crates/scheduler` (`MaintenanceStore::due_step_deadlines`, `Condition::StepDeadlinePassed`,
   its report field, its registration in the tick and its lag gauge, root and path transactions, the metrics and the no-op counter);
   the retries pass ends a `RETRY_WAIT` step past its cutoff; the lost-lease pass records the deadline cause (`LostLease.deadline`,
@@ -982,7 +986,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   races of Technical Plan 7; the runtime role's grants on 022's tables checked and every statement scoped by `tenant_id`. Built by
   whichever of 022's gate and this design lands second (the counterpart task in `specs/022-flow-control-step-policies/tasks.md`).
   Refs: Requirement 045-011
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: OD-2026-11-26-560
 - [ ] T045-11 `crates/api-http` and the fleet requirements: `RuntimeNode`'s deadlines and cause and `RuntimeGraph.serverTime`, the
   publication reasons in the problem body (contract test first, `contract_rest_durable_execution`); the capability
   `activity-timeouts-v1` in both process kinds and the floor for a rollback (registry tests first, in `apps/control-plane/src/registry.rs`
@@ -997,7 +1001,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   its claim and a flagged lease acknowledged at 12 s, and the delay cases of `retry-by-code` (the behaviour `fails` extended with
   `nextRetryDelayMs`, 1.9 only).
   Refs: Requirement 045-006, Requirement 045-016
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: OD-2026-11-26-560
 - [ ] T045-14 The Studio: the inspector's fields, validation and two warnings, the map of timeout codes to sentences, the deadlines on a
   run's step against the view's server time; component tests first, then the journeys.
   Refs: Requirement 045-014
@@ -1012,7 +1016,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   column relative to `db_now` with a margin, never by sleeping); every suite also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`. The
   withdrawal cases are built by whichever of this design and pull requests #260 and #264 lands second.
   Refs: Requirement 045-010, Requirement 045-012, Requirement 045-021
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: OD-2026-11-26-560
 - [ ] T045-17 Measure Non-functional requirement 045-002 (1,000 deadlines in one second, and a one-tenant flood of 100,000), the beat rate
   at the minimum heartbeat timeout, the pause of a run with 10,000 path rows, a paused flood, and the index build, in a new
   suite `perf_activity_timeouts` (`tests/performance/activity-timeouts/`, its `[[test]]` entry); record them with their
@@ -1027,7 +1031,7 @@ changes every caller of a signature it changes, so the workspace builds after ea
   `next_retry_delay_ms` validated, refused below 1.9 and passed to the domain, and the capability `activity-timeouts-protocol-v1` listed
   only by a build that offers it. Contract test of the descriptor first (`contract_grpc_durable_execution`).
   Refs: Requirement 045-006, Requirement 045-008, Requirement 045-016, Requirement 045-017, Non-functional requirement 045-004
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: OD-2026-11-26-560
 - [ ] T045-20 The fitness checks: a parity test of claim eligibility (the candidate query's hint against the domain's predicate over the
   same rows, at a fixed clock); a rule in `scripts/check-architecture.py`, with its fixtures, that the columns `start_deadline_at`,
   `close_deadline_at`, `close_cutoff_at`, `attempt_deadline_cause` and, for level-1 and level-2 versions, `attempt_deadline_at` are

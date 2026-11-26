@@ -664,7 +664,10 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
-  | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
+  | 1.8 | Delivery acknowledgement (`AcknowledgeTasks`, `acknowledge_before_start`) | feature 006, Architecture decision 0099, OD-2026-11-21-6 (reserved) |
+  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` and `heartbeat_from_handler`, `FailStepRequest.next_retry_delay_ms`) | design 045 (named; taken when its contract merges) |
+  | 1.10 to 1.12 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges) |
+  | next | Draft 031's codec minor (`TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7) and drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges, and a host of a later minor carries 1.7, the 1.8 host procedure and 1.9 | |
 
 ## 10. Observability and safety
 

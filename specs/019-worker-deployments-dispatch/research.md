@@ -509,6 +509,9 @@ OD-2026-11-24-4 and OD-2026-11-20-6.
   key are 022's to show.
 - **G019-005 — No token-only completion.** A system without a platform identity cannot complete an attempt (O1041); a
   future per-endpoint opt-in needs its own threat review.
+- **G019-006 — Push to AWS Lambda and Cloud Run is not tested against the real services.** The deployment-gated runs of T019-051
+  need cloud accounts, which the project does not have (Owner decision 2026-11-25-1); until then push is proven against the local
+  test doubles only, and the release notes say so. Recorded 2026-11-26 on the coordinating session's decision.
 
 ### Checklist acceptance
 
