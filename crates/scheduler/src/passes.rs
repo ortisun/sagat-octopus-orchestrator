@@ -1191,6 +1191,16 @@ where
         report
     }
 
+    /// Feature 018: the release of the start delays alone (`FR-018-023`), as a tick runs it (a test hook, as
+    /// [`Self::grant_gates`]): a test that records every write of the database while it runs sees the release's writes
+    /// and no other pass's (the lease recording of feature 022 writes in every tick, in a transaction of its own).
+    #[doc(hidden)]
+    pub async fn release_starts(&self) -> Report {
+        let mut report = Report::default();
+        self.start_releases(&self.view(), &mut report).await;
+        report
+    }
+
     /// Advances one collection by one durable transition under the scheduler's current shard
     /// lease. The automatic pass uses the same operation; callers may also request an immediate
     /// transition while worker completions interleave safely.
