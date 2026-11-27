@@ -1,8 +1,14 @@
 # OpenTelemetry for the three signals, and OpenBao as the key and secret authority
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
-*   **Date:** 2026-11-26
+*   **Status:** Approved
+*   **Date:** 2026-11-27
+*   **Reviewed-commit:** a6002f91db92d8df89bb5487d6e9e6cbaa20ef05
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.332
+*   **Reports:** docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-27/approval/egm-review.md sha256:b73146f25b64f6c19c61a9278d77ce01c4fbf3214439738c2a3da1620a901651; docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-27/approval/architecture.md sha256:87681bbb4db479d6e91124edfc15bc3e4603e61f3c2c0d525569712184a85a9e; docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-27/approval/security.md sha256:788869ac7546c3a79247c52144052870d603c1e36f9393df321ead60b8f0a3ab; docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-27/approval/correctness.md sha256:8d9638bbf00317fe06eb56f9d9ab3a43a489d2d94e8a8d0974a3dd29a613c06d
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 10; OD-2026-11-27-170, OD-2026-11-27-171, OD-2026-11-27-172, OD-2026-11-27-173, OD-2026-11-27-174, OD-2026-11-27-175, OD-2026-11-27-176, OD-2026-11-27-177, OD-2026-11-27-178, OD-2026-11-27-179
 
 --------------------------------------------------------------------------------
 
@@ -1823,7 +1829,53 @@ Two lanes that can run at the same time; where they touch the same file the orde
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T015-36 A ring key id may hold values of two materials: `reseal-secrets --to transit` adds the check value of
+  every key of its ring to `retired_ring_check_values` in its first transaction, as it adds the ids, and Technical Plan
+  5 and the passage section say so; a Task 015-12 test seals under one id with two materials and sees the passage
+  finish after a re-seal with the second ring.
+  Refs: Requirement 015-015
+- [ ] T015-37 The key cache moves into `crates/application` as a wrapper of `EnvelopeKeys`: `Cacheable::Current` and each
+  `unwrap_batch` item carry a `KeyRef { entry, row_id, issued_at }`; the refresh reads current wrapped keys through a
+  `current_wrapped(row_ids)` part of every re-seal inventory entry (implemented in `crates/infra-postgres`, granted to
+  `sagat_app`); `resolve_secrets` looks rows up through the wrapper; Task 015-13 tests it there.
+  Refs: Requirement 015-017
+- [ ] T015-38 A gate closed by the key-authority configuration is an input of the registry member's decision in the same
+  cycle, with the `details.reason` value `KEY_AUTHORITY_CONFIGURATION`, a gauge, an alert and a log line without key
+  material, recorded as an amendment of ADR-0082 in ADR-0152 and ADR-0082; a test that a heartbeat never reopens a gate
+  the mode closed.
+  Refs: Requirement 015-010
+- [ ] T015-39 A fitness check that every sealed column is in the re-seal inventory: a privilege-audit row that fails
+  for any table with a sealed-column shape (`nonce` with `key_id` or `wrapped_key`) not registered in
+  `key_authority_reseal_inventory`, with a negative fixture, a row in `docs/engineering/architecture-principles.md` and
+  its citation in ADR-0152's "Enforced by".
+  Refs: Requirement 015-015
+- [ ] T015-40 Record feature 032's dependency in its own register: a gap in `specs/032-multi-region-failover/research.md`
+  citing Gap 015-006 and the `key_info` replacement, a note on its operator command row, and a Task 015-32 test that
+  feature 032's readiness check passes for a `transit` cell.
+  Refs: Requirement 015-012
+- [ ] T015-41 `finish-return` refuses while an artifact's only `local` signature row was made by a script-signing key
+  recorded at `begin-migration` in a grow-only `retired_script_key_ids`; a control plane holding such a key keeps its
+  gate closed in `returning`; a test in Task 015-15.
+  Refs: Requirement 015-015
+- [ ] T015-42 A process lists `key-authority-return-v1` only when no key of its ring has a recorded check value or id,
+  and `begin-return` refuses while a live registry row's `ring_check_values` overlaps the retired ones; a Task 015-18
+  test with a reused ring sees `begin-return` refused and no gate closed.
+  Refs: Requirement 015-015
+- [ ] T015-43 ADR-0152 decision 1 states the offline ring of way-in step 9 (no platform process holds a local key once
+  the registry requirement is recorded; the ring is kept offline, apart from the pre-migration backups, until the last
+  of them expires, then destroyed) and writes "registry requirement" in full.
+  Refs: Requirement 015-010
+- [ ] T015-44 Emit `script_runner_legacy_requests_total` (one increment per `/script-runner/` request without the
+  `Sagat-Runner-Trust` header or with `configured-v1`, no labels) in Task 015-15, with its test.
+  Refs: Requirement 015-013
+- [ ] T015-45 `scripts resign` also verifies an existing target-signer row and reports one that does not verify; the
+  signer trigger sets `signed_at` to `clock_timestamp()` and refuses a `transit` row above the newest recorded
+  `sagat-scripts` version; the rebuild path signs only when the stored language and every field a runner uses equal
+  what it built; tests in Task 015-15 (security approval read Nits 1 and 2).
+  Refs: Requirement 015-013
+- [ ] T015-46 Restore the original text of the register row of Owner question 015-006 and append a dated line that
+  supersedes it, citing Owner decision 2026-11-26-115.
+  Refs: Requirement 015-012
 
 ### Verification Plan
 
