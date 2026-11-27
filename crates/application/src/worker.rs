@@ -3552,7 +3552,11 @@ mod tests {
             );
         }
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, proofs(false, true, true, true), raised),
+            super::protocol_ceiling(
+                Role::DatabaseRunner,
+                proofs(false, true, true, true),
+                raised
+            ),
             6
         );
         // a worker that offers 1.8 is agreed at 1.8 under the raised ceiling and at this build's own below it
