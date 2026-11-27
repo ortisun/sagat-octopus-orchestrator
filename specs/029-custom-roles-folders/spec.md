@@ -27,8 +27,9 @@ future authorization decision". This feature is that decision. It adds:
 
 1. **Custom roles**: named sets of assignable permissions, owned by the tenant or one namespace, assigned
    to members or groups, tenant-wide or in one namespace. They only add to the built-in role.
-2. **Local groups** of tenant members. Identity-provider groups are specified as a contract only and stay
-   out until a source feature exists (013 excludes SCIM and group mapping today).
+2. **Local groups** of tenant members, and **external groups** that design 013 (federated login) delivers from an
+   identity provider through SCIM under contracts/group-source.md; this feature evaluates both
+   kinds the same way and builds no source of its own.
 3. **Folders**: flat containers inside a namespace for workflows (with their runs), scripts and database
    connections, with an access list of fixed levels bounded by the built-in `developer` role. `open` by
    default (organizes, may add access); `restricted` on request, after which only the list decides who
@@ -44,10 +45,11 @@ restriction. No change to the workflow IR, the worker
 protocol, AsyncAPI, run transitions, the scheduler, external effects or ADR-0033 audiences. Nothing here is
 implemented.
 
-**Ownership boundaries.** Identity-provider groups (claims or SCIM) belong to feature 013 (draft, sibling
-worktree), whose Out of Scope lists SCIM and provider-group mapping; this feature only states the contract
-a source must meet (O1440). Member creation and removal have no surface today (G290); this feature consumes
-memberships as they are (O1442). Integration resources (021, which adopts folder placement for resources)
+**Ownership boundaries.** Identity-provider groups (SCIM in 0.3.0) belong to design 013
+(`docs/designs/013-federated-login.md`), which meets the contract this feature states (contracts/group-source.md,
+amended 2026-11-24; SCIM is the source kind built in 0.3.0); O1440 is answered that way. Member creation, suspension and removal are
+design 013's (just-in-time provisioning, SCIM and the member routes, which close G290); this feature consumes
+memberships as they are (O1442 answered). Integration resources (021, which adopts folder placement for resources)
 and apps (027) adopt the folder contract in their own features. Approval eligibility (FR-014-007) keeps
 naming subjects and built-in roles (G1448). Built-in roles are additive: other drafts add machine roles
 (021 `integration-runner`, 025 `agent-runner`, 020's machine identity if adopted) and add grants to existing
@@ -58,7 +60,9 @@ roles; permissions added by 018, 019, 020, 021, 022, 024, 025, 026, 027, 028, 03
 - **Built-in role**: one per membership; seven in code today: `admin`, `developer`, `operator`, `viewer`
   (human) and `worker`, `runner`, `database-runner` (machine). The set is additive: other features add
   machine roles and grants; this feature removes or narrows none. Only the four human roles can be principals.
-- **Permission catalog**: 48 permissions today, 53 with this feature, more as other drafts merge; each is `assignable` or `reserved`,
+- **Permission catalog**: 53 permissions on `develop` at 2026-11-24 (feature 018 added `schedule:read`, `schedule:write`,
+  `schedule:operate` and `run:batch`, feature 035 `database:browse`), 58 with this feature, more as other features
+  merge (design 013 adds `identity:manage`); each is `assignable` or `reserved`,
   meaningful at `tenant` and/or `namespace` scope, and possibly an **item permission** for given item
   kinds, either a **level** permission (a folder level may confer it) or a **sensitive** one (never).
 - **Custom role**: tenant role or namespace role; a permission set with a revision.
@@ -248,10 +252,11 @@ workflow as listed and unlisted publisher; write a connection as a non-administr
 3. **Given** a non-administrator holding `database:manage` through a custom role, **When** they write a
    connection that selects a secret they may not use, **Then** it is refused as for a missing secret.
 
-### US08 — Identity-provider groups stay out until a source exists (Priority: P3)
+### US08 — Identity-provider groups arrive only through design 013's sources (Priority: P3)
 
-Until an approved source feature implements contracts/group-source.md (O1440), provider groups grant
-nothing and cannot be created here.
+Design 013 implements contracts/group-source.md (O1440 answered). A group or role claim inside a token grants
+nothing; an external group exists only as rows a source wrote, and cannot be created or edited through this
+feature's routes.
 
 **Why this priority**: prevents a premature or claim-based group path that could not be revoked in time.
 
@@ -261,8 +266,11 @@ nothing and cannot be created here.
 
 1. **Given** a group or role claim inside an access token, **When** the token is used, **Then** it confers
    nothing.
-2. **Given** a request to create a group with an external source, **When** it is sent, **Then** `422`
-   `ACCESS_CAPABILITY_DISABLED`.
+2. **Given** a request to create a group with an external source, or to change the members of an external
+   group, through this feature's routes, **When** it is sent, **Then** `422` `EXTERNAL_GROUP_READ_ONLY`.
+3. **Given** an external group whose source is fresh and an assignment that names it, **When** a member is
+   evaluated, **Then** the group counts as a local one would; past its source's freshness bound it counts for
+   nothing.
 
 ### Edge Cases
 
@@ -338,9 +346,11 @@ nothing and cannot be created here.
   (`GROUP_IN_USE`); deleting a membership MUST remove the subject from every group in the same transaction.
   Adding a member MUST satisfy `canAddMember` and MUST be audited as a widening of every operation list and
   restricted-folder entry that names the group.
-- **FR-029-009**: Identity-provider groups MUST NOT be implemented by this feature. Token group or role
-  claims MUST NOT confer any permission, and creating a group with an external source MUST be refused
-  (`ACCESS_CAPABILITY_DISABLED`). A future source MUST meet contracts/group-source.md (O1440).
+- **FR-029-009**: Identity-provider group sources MUST NOT be implemented by this feature; design 013 implements
+  them under contracts/group-source.md (O1440). Token group or role claims MUST NOT confer any permission by
+  themselves. An external group and its members MUST be read-only through this feature's routes
+  (`EXTERNAL_GROUP_READ_ONLY`); a fresh external group membership MUST be evaluated like a local one, and a stale
+  one MUST confer nothing (fail closed).
 
 **Folders and items**
 
@@ -449,8 +459,8 @@ nothing and cannot be created here.
 **Lifecycle, surfaces and contracts**
 
 - **FR-029-024**: Changing a membership's built-in role MUST remove, in the same transaction and audited,
-  the subject's direct assignments, group memberships, folder entries and list entries (as 016 D663 does
-  for reveal grants; O1441).
+  the subject's direct assignments, local group memberships, folder entries and list entries (as 016 D663 does
+  for reveal grants; O1441). External group memberships (design 013) stay, because their source owns them.
 - **FR-029-025**: A manifest entry MAY name a folder (additive); manifest placement MUST go through the move
   rules and MUST NOT create folders or change entries. Promotion MUST resolve the destination target's
   visibility first (FR-029-017); promoting a workflow from a restricted folder MUST name a destination
@@ -480,12 +490,14 @@ nothing and cannot be created here.
   (FR-007-010).
 - **FR-029-032** *(CLI)*: `sagat access` MUST cover roles, assignments, groups, folders, entries, moves,
   operation lists and explanation with REST semantics and errors.
-- **FR-029-033** *(SDKs)*: The five SDKs MUST surface the new reasons without new error codes and pass
+- **FR-029-033** *(SDKs)*: The six SDKs MUST surface the new reasons without new error codes and pass
   shared scenarios for a custom grant, a hidden item, an operation-list refusal and revocation; the worker
   protocol and IR MUST NOT change.
 - **FR-029-034** *(compatibility)*: Migrations, OpenAPI and manifest changes MUST be additive; for a tenant
-  with no access objects every response MUST be unchanged except the additive `accessControl` capabilities
-  of `GET /version` (`folder` is omitted when absent); down migrations MUST refuse while access rows exist.
+  with no access objects every response MUST be unchanged except the additive capability names of
+  `GET /version` (`access.custom-roles`, `access.folders.<kind>`, `access.restricted.<kind>`,
+  `access.operation-lists`, in the one capability list of design 050, Architecture decision 0143) and the optional
+  `folder` (omitted when absent); down migrations MUST refuse while access rows exist.
 - **FR-029-035** *(tenant boundary)*: Every row MUST carry its tenant (and namespace where scoped) in keys
   and composite foreign keys; every identifier MUST resolve inside the authenticated tenant; another
   tenant's subject, group, role, folder or item MUST be indistinguishable from a missing one, with the probe
@@ -498,8 +510,8 @@ nothing and cannot be created here.
   otherwise (017 lets the catalog writer select any secret; only `admin` held `database:manage` until now).
 - **FR-029-037** *(binary guard)*: Restricted mode and operation lists MUST be usable only when every
   serving binary honours them, through feature 018's instance-capability registry (018 data-model,
-  "Instance-capability registry"; T018-080), deployed fleet-wide in a release before this feature's
-  narrowing: every control-plane process registers before serving and heartbeats, and re-checks the
+  "Instance-capability registry"; T018-080, built on `develop` and shipped in release 0.3.0 with this
+  feature): every control-plane process registers before serving and heartbeats, and re-checks the
   requirements on every API admission and stream re-evaluation (`503` `BINARY_CAPABILITY_MISSING` while it
   lacks a recorded capability). Activating `access-narrowing-v1` (kind `CONTROL_PLANE`) MUST be an audited
   operator act of a deployment administrator through 018's activation command, refused while any live
@@ -575,7 +587,7 @@ nothing and cannot be created here.
   FR-029-024, FR-029-027.
 - **SC-029-008**: A run stream of an item that becomes hidden to its caller ends within 30 seconds in 100%
   of trials and discloses nothing afterwards. Traces: FR-029-021.
-- **SC-029-009**: All five SDKs pass the shared access scenarios with identical normalized outcomes and no
+- **SC-029-009**: All six SDKs pass the shared access scenarios with identical normalized outcomes and no
   new error code. Traces: FR-029-028, FR-029-033.
 - **SC-029-010**: A real-browser journey creates a role, a group and a restricted folder with preview,
   moves a workflow and shows an explanation; automated accessibility checks report no AA violation. Traces:
@@ -600,16 +612,17 @@ nothing and cannot be created here.
 
 ## Assumptions
 
-- Human identities authenticate as today (001; 013 draft); machine identities keep built-in roles and
-  bindings and are never principals here.
-- Members exist (operator provisioning or test support, G290).
+- Human identities authenticate as today (001) or through design 013's federated sign-in; machine identities keep
+  built-in roles and bindings and are never principals here.
+- Members come from design 013 (just-in-time provisioning, SCIM, the member routes) or from operator provisioning.
 - Access changes are rare compared with authorization reads; serializing access writes per tenant is
   acceptable, to be confirmed by the benchmark.
 - Folder levels are fixed in this increment.
 - "Resources" in the input means 017 connections today and 021 resources when that feature adopts the
   contract; "apps" means 027 apps under the same condition.
-- Upgrades pass through the release that ships 018's instance-capability registry before restriction is
-  enabled (018 G1607).
+- Restriction stays disabled until the operator activates `access-narrowing-v1`, which the registry refuses while
+  any live control plane lacks it; since the registry and this feature ship together in 0.3.0, no earlier release
+  is needed (018 G1607 is met by that refusal).
 
 ## Dependencies
 
@@ -650,3 +663,20 @@ reads or worker bindings; per-run or per-version access lists; any change to ADR
 
 See [research](research.md), [plan](plan.md), [data model](data-model.md), [contracts](contracts/README.md),
 [quickstart](quickstart.md), [tasks](tasks.md) and the [requirements checklist](checklists/requirements.md).
+
+## Readiness against `develop` (2026-11-24)
+
+Re-read against `develop` at `2c94064f`. The owner questions are answered and ADR-0064 is accepted under Owner decision
+2026-11-24-4 (research.md, "Readiness decisions", Decision 029-001 to Decision 029-007; `docs/owner-decisions.md`,
+OD-2026-11-24-710 to OD-2026-11-24-714):
+
+- **O1440 — design 013 delivers identity-provider groups**, from SCIM (sign-in assertions deferred), under the amended
+  group-source contract (SCIM in 0.3.0; the assertion kind deferred).
+- **O1441 — yes**, a built-in role change revokes the subject's custom grants (FR-029-024), including a change made by
+  design 013's group-to-role mapping; the mapping changes a role only when its stored inputs change and never a role
+  an administrator pinned, so a directory cannot make it flap.
+- **O1442 — design 013 delivers member management** (just-in-time provisioning, SCIM, the member routes); this feature
+  consumes memberships.
+
+The plan's "Readiness against `develop`" lists what else changed; the build slices are in [tasks.md](tasks.md).
+

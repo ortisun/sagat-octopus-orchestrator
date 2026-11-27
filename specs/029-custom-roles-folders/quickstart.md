@@ -21,8 +21,9 @@ They prove the documents are well formed, not that the design works.
 A stack as in `docs/quickstarts/README.md` (Compose with PostgreSQL, control plane, engine, development
 identity provider), tenant `acme`, namespaces `payments` and `orders` (the workflow `invoice-run`
 published in both), and members with these built-in roles: `admin-1` (admin), `dev-1` and `dev-2`
-(developer), `op-1` (operator), `view-1` (viewer). There is no supported member-creation surface (G290,
-O1442): the e2e suite inserts members through `tests/support`; a manual run inserts `memberships` rows as
+(developer), `op-1` (operator), `view-1` (viewer). Members are created through design 013's member routes
+(`POST /members`) once it is built (G290, O1442); until then the e2e suite inserts members through
+`tests/support`; a manual run inserts `memberships` rows as
 the database owner in a development database only. Tokens: `sagat dev token --subject <SUBJECT>`. The
 `worker dev` helper (feature 012) serves `invoice-run`, `refund-run` and `payroll-run` with canned answers; `payroll-run`
 declares the Update `approveOverride` and the Query `status`. Synthetic data only.
@@ -75,7 +76,7 @@ Expected audit rows (`api /audit`): `role.created`, `role.assigned` ×2, `group.
 Step 3's restriction succeeds only after a deployment administrator has activated `access-narrowing-v1`
 through feature 018's instance-capability registry (its audited operator command; refused while any live
 control-plane instance lacks the capability) and the workflow and run kinds are enabled in `api /version`
-(`accessControl.restrictedFolders`); before that it answers `422` `ACCESS_CAPABILITY_DISABLED`.
+(the capability `access.restricted.workflow`); before that it answers `422` `ACCESS_CAPABILITY_DISABLED`.
 
 ## Failure scenarios
 
@@ -122,6 +123,6 @@ by `dev-2` on a `payroll-run` run ends within 30 seconds after `dev-2` leaves `p
 
 ## What this walkthrough does not prove
 
-Fault injection, the opacity battery over every operation, the escalation matrix, the five-SDK scenario,
+Fault injection, the opacity battery over every operation, the escalation matrix, the six-SDK scenario,
 the external group source and the benchmark have their own suites (tasks.md). A passing walkthrough is one
 happy path and a handful of refusals, not the guarantees of the specification.

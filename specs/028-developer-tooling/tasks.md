@@ -11,7 +11,7 @@ named evidence (a test and its result, a command and its output); a partly done 
 - [ ] T028-002 [P] Scaffold `apps/test-server`, `crates/infra-testing`, `crates/infra-git`; add to the workspace; extend `scripts/check-architecture.py` (only `apps/test-server` and `tests` may depend on `sagat-infra-testing`; only `tests` on `sagat-test-server`) with negative cases in `scripts/tests/test_check_architecture.py`; add `scripts/check-production-image.py` (CI job) that fails when the `cargo build -p` list or a `COPY --from=builder` line of `infra/docker/Dockerfile` names the test server, or when `cargo tree -p sagat-control-plane -p sagat-execution-engine` contains `sagat-infra-testing`. — FR-028-001, 002 — evidence: both checks pass on the tree and fail on each negative fixture.
 - [ ] T028-003 [P] Add `gitsync:manage`, `gitsync:read` and the reserved actor `system:git-sync` in `crates/domain/src/identity.rs` with the role grants of plan.md; domain tests and the `AuthContext` contract case. `testing:clock` is **not** added here (T028-017). — FR-028-013, 030 — evidence: `cargo test -p sagat-domain identity`; a test that no production role lists `testing:clock`.
 - [ ] T028-004 [P] Create `tests/{integration,fault,contract,e2e}/developer-tooling/` and register `integration_developer_tooling`, `fault_developer_tooling`, `contract_developer_tooling`, `e2e_developer_tooling` in `tests/Cargo.toml`. — FR-028-045 — evidence: empty targets compile.
-- [ ] T028-005 Merge the contract drafts ([contracts/README.md](contracts/README.md)): new `specs/001-platform-foundation/contracts/testing.openapi.yaml`; Git sync and catalog paths, `PlatformVersion.capabilities` and alert kinds in `openapi.yaml`; alert kinds in `events.asyncapi.yaml` with the baseline regenerated on purpose; `sdks/error-catalog.json` v2 and its five copies; `template-index.schema.json`; `npm run api` in `frontend/apps/studio`; regenerate `docs/reference/api.md`. — FR-028-045 — evidence: `contract_platform_foundation`, `contract_asyncapi_events_webhooks_messaging`, `npm run check:api`, `contract_developer_experience`.
+- [ ] T028-005 Merge the contract drafts ([contracts/README.md](contracts/README.md)): new `specs/001-platform-foundation/contracts/testing.openapi.yaml`; Git sync and catalog paths, `PlatformVersion.capabilities` and alert kinds in `openapi.yaml`; alert kinds in `events.asyncapi.yaml` with the baseline regenerated on purpose; `sdks/error-catalog.json` v2 and its copies in the six SDKs; `template-index.schema.json`; `npm run api` in `frontend/apps/studio`; regenerate `docs/reference/api.md`. — FR-028-045 — evidence: `contract_platform_foundation`, `contract_asyncapi_events_webhooks_messaging`, `npm run check:api`, `contract_developer_experience`.
 
 ## Phase 2 — Foundational: two time classes (blocks every story)
 
@@ -35,11 +35,11 @@ named evidence (a test and its result, a command and its output); a partly done 
 - [ ] T028-018 [US01] Contract tests of `testing.openapi.yaml` against the test server; every `/testing/*` path is `404 ROUTE_NOT_FOUND` on the production composition; test-server tokens refused by production. — FR-028-002, 013 — evidence: `contract_developer_tooling testing_api`.
 - [ ] T028-019 [US01] `tests/fault/developer-tooling/clock.rs`: crash after the clock commit before the pass; two concurrent advances; `JUMP` over a leased attempt (late report `STALE_ATTEMPT`); timer vs signal at one stop (20 rounds); restart. — FR-028-004..008, SC-028-004 — evidence: fault suite.
 - [ ] T028-020 [US01] Shifted-clock mode in `tests/support` (test-server composition, 400-day offset) over the durable-execution, sagas (including failed compensation) and workflow-primitives integration suites; daily cron `STEP` (30 runs) vs `JUMP` (1 run); a DST transition of an IANA zone. — FR-028-008, SC-028-003, SC-028-004 — evidence: suites equal to the zero-offset run.
-- [ ] T028-021 [P] [US01] `ClientConfig.clock` in the five SDKs (duration options only); unit tests that heartbeat and backoff stay monotonic. — FR-028-010 — evidence: each SDK's unit suite.
+- [ ] T028-021 [P] [US01] `ClientConfig.clock` in the six SDKs (duration options only); unit tests that heartbeat and backoff stay monotonic. — FR-028-010 — evidence: each SDK's unit suite.
 - [ ] T028-022 [US01] `TestEnvironment` in TypeScript and Go (connect, capability check, clients, workers bound by name, `now`, `advance`, `skip`, `waitForCompletion`, `createNamespace`). — FR-028-009 — evidence: SDK unit suites.
-- [ ] T028-023 [US01] `TestEnvironment` in Python, C# and Java. — FR-028-009 — evidence: SDK unit suites.
-- [ ] T028-024 [US01] Conformance `time-skipping`, `time-skipping-blocked`, `time-skipping-cron`, `time-skipping-race` in `tests/contract/sdk-conformance/scenarios/`; the harness boots the test-server composition; goldens reviewed by a person. — FR-028-009, SC-028-001 — evidence: `sdk_conformance` passes in five SDKs.
-- [ ] T028-025 [P] [US01] Activity test context in the five SDKs reusing the host's mapping; `tests/contract/sdk-conformance/fixtures/activity-context.json` with copy-equality tests. — FR-028-011 — evidence: five unit suites run the fixture.
+- [ ] T028-023 [US01] `TestEnvironment` in Python, C#, Java and Rust (feature 034). — FR-028-009 — evidence: SDK unit suites.
+- [ ] T028-024 [US01] Conformance `time-skipping`, `time-skipping-blocked`, `time-skipping-cron`, `time-skipping-race` in `tests/contract/sdk-conformance/scenarios/`; the harness boots the test-server composition; goldens reviewed by a person. — FR-028-009, SC-028-001 — evidence: `sdk_conformance` passes in six SDKs.
+- [ ] T028-025 [P] [US01] Activity test context in the six SDKs reusing the host's mapping; `tests/contract/sdk-conformance/fixtures/activity-context.json` with copy-equality tests. — FR-028-011 — evidence: five unit suites run the fixture.
 - [ ] T028-026 [US01] CLI `sagat test-server start|stop|status|advance` (scratch database create/drop, `--json`) in `apps/cli/src/test_server.rs`; tests `apps/cli/tests/test_server.rs`. — FR-028-001, 029 — evidence: CLI tests.
 - [ ] T028-027 [US01] `examples/time-skipping/` (reminder with timer, retries and approval expiry; a test per SDK), `docs/quickstarts/testing.md`, `docs/runbooks/test-server.md`; wall time per language in `tests/performance/reports/developer-tooling.md`. — SC-028-001 — evidence: example tests; report with environment.
 
@@ -47,13 +47,13 @@ named evidence (a test and its result, a command and its output); a partly done 
 
 ## Phase 4 — US02 Interceptors (P1)
 
-- [ ] T028-028 [US02] Merge [sdk-interceptors.md](contracts/sdk-interceptors.md) into `sdks/SPEC.md` §12 and add the catalog code to the five embedded catalogs. — FR-028-022..024 — evidence: catalog equality tests.
+- [ ] T028-028 [US02] Merge [sdk-interceptors.md](contracts/sdk-interceptors.md) into `sdks/SPEC.md` §12 and add the catalog code to the six embedded catalogs. — FR-028-022..024 — evidence: catalog equality tests.
 - [ ] T028-029 [P] [US02] TypeScript: client and worker interceptors (observe and decorate; no payload transform, decision C5) with their position on the application side of a data converter; unit tests for order, once per call, added headers, protected fields and headers, refused payload changes, failure mapping. — FR-028-019..023 — evidence: `npm test` in `sdks/typescript`.
 - [ ] T028-030 [P] [US02] Go: same. — FR-028-019..023 — evidence: `go test -race ./...`.
 - [ ] T028-031 [P] [US02] Python: same. — FR-028-019..023 — evidence: `pytest`, `mypy`.
 - [ ] T028-032 [P] [US02] C#: same, with dependency-injection registration. — FR-028-019..023 — evidence: `dotnet test`.
 - [ ] T028-033 [P] [US02] Java: same. — FR-028-019..023 — evidence: `./mvnw -q verify`.
-- [ ] T028-034 [US02] Conformance `interceptors` and `interceptor-coverage` with `dropResponse` faults on `POST /runs` and `CompleteStep`; reviewed goldens. — FR-028-019..024, SC-028-005 — evidence: `sdk_conformance` in five SDKs.
+- [ ] T028-034 [US02] Conformance `interceptors` and `interceptor-coverage` with `dropResponse` faults on `POST /runs` and `CompleteStep`; reviewed goldens. — FR-028-019..024, SC-028-005 — evidence: `sdk_conformance` in six SDKs.
 - [ ] T028-035 [US02] Interceptor sections in `docs/runbooks/sdk-observability.md` and each SDK README; a note for feature 031 on the fixed order (chain, converter, transport). — FR-028-024, 045 — evidence: `contract_developer_experience` doc checks.
 
 ## Phase 5 — US03 History replay (P2; starts when feature 020's export is accepted)
@@ -63,7 +63,7 @@ named evidence (a test and its result, a command and its output); a partly done 
 - [ ] T028-038 [US03] `crates/application/src/history_replay.rs`, the codec adapter in `crates/infra-testing`, route `/v1/testing/history-replays` with bounds and audit; integration tests (compatible, gap, unknown type, changed status, unsupported capability, oversize). — FR-028-014..016 — evidence: `integration_developer_tooling replay`.
 - [ ] T028-039 [US03] Corpus test: export the conformance corpus runs with 020's exporter and replay with zero divergences. — SC-028-006 — evidence: `integration_developer_tooling replay_corpus`.
 - [ ] T028-040 [US03] CLI `sagat history replay|answers|compare` (`apps/cli/src/history.rs`) with a classification canary (no undisclosed value written). — FR-028-017, 018 — evidence: `apps/cli/tests/history.rs`.
-- [ ] T028-041 [US03] `replayHistory` in the five test environments; conformance `history-replay`. — FR-028-018 — evidence: `sdk_conformance` in five SDKs.
+- [ ] T028-041 [US03] `replayHistory` in the six test environments; conformance `history-replay`. — FR-028-018 — evidence: `sdk_conformance` in six SDKs.
 
 ## Phase 6 — US04 VS Code extension (P2)
 
@@ -117,3 +117,24 @@ feature 020 and uses the test server of US01. US04 needs T028-042 and uses US01'
 actions. US05 and US06 need Phase 1 and T028-005 only (US05 also T028-073); US06's bundled catalog includes the US01
 example. Feature 031 depends on this feature only for the order of its data converter relative to the interceptor
 chains (decision C5); neither blocks the other.
+
+## Follow-up tasks (2026-11-24)
+
+- [ ] T028-075 [P] [US02] Rust (`sdks/rust`, feature 034): client and worker interceptors as T028-029, held to the same conformance scenarios; the four Rust lock files move together. — FR-028-019..024 — evidence: `cargo test` in `sdks/rust`, `interceptors` conformance in six SDKs.
+- [ ] T028-076 [US01] Code workers (design 044) in the test environment: a `TestEnvironment` registers code workflow types beside activities, and time skipping drives code runs as graph runs (their workflow time is the journal's). — FR-028-009 — evidence: conformance `time-skipping` with a code workflow in each SDK that offers the procedural model. Depends on design 044's runtime in that SDK.
+
+## Build slices (2026-11-24)
+
+Two builders run the feature in parallel without touching the same crates, SDKs or frontend folders.
+
+| Slice | Tasks | Paths it may change | Starts after |
+|---|---|---|---|
+| 0, one builder | T028-002, T028-003, T028-004, T028-005 (T028-001 is answered: see research.md, "Readiness decisions") | the workspace `Cargo.toml` (new crates), `crates/domain/src/identity.rs`, `tests/`, `specs/001-platform-foundation/contracts/`, `frontend/apps/studio/src/api/schema.d.ts` | — |
+| Lane A, the server builder | A1: T028-006 to T028-012 (time classes). A2: T028-013 to T028-020 (test server). A3: T028-062 to T028-066 (the hub index, before design 047's hub slice, which extends it). A4: T028-049 to T028-059, T028-073, T028-074 (Git sync). A5: T028-036 to T028-039 (replay, once the history document is settled, Decision 028-006) | `crates/domain/src/{time,testing,gitsync,templates,manifest}.rs`, `crates/domain/src/execution/replay_check.rs`, `crates/application/src/{clock,testing,history_replay,gitsync,templates}.rs`, `crates/infra-postgres`, `crates/infra-testing`, `crates/infra-git`, `crates/infra-ir/src/manifest.rs`, `crates/scheduler/src/gitsync.rs`, `crates/api-http/src/routes/{gitsync,templates}.rs`, `apps/test-server`, `apps/control-plane`, `apps/execution-engine`, and `apps/cli/src/manifest.rs` for T028-073 only | slice 0 |
+| Lane B, the clients builder | B1: T028-021, T028-025, T028-028 to T028-035, T028-075 (no server change needed). B2: T028-042, then T028-043 to T028-048 once design 050's editor slice has merged. B3 (after A2): T028-022 to T028-024, T028-026, T028-027, T028-076. B4 (after A3, A4, A5): T028-040, T028-041, T028-060, T028-067 | `sdks/` (six SDKs), `apps/cli/src/{output,history,test_server,template}.rs` and the command modules (never `manifest.rs` while T028-073 is open), `frontend/packages/workflow-graph`, `frontend/apps/vscode-extension`, `frontend/apps/studio/src/features/{gitsync,templates}`, `examples/time-skipping/` | slice 0 |
+| Join | T028-061, T028-068 to T028-072 | tests, reports, documents | both lanes |
+
+Across features: T028-073 moves the manifest rules out of `apps/cli/src/manifest.rs`; feature 027's T027-036 and feature
+029's T029-040 add `apps` and `folder` entries to the manifest, so they follow T028-073. T028-043 moves
+`canvasModel.ts` and `layout.ts` into a package, so it follows design 050's editor slice (Tasks 050-6 to 050-8).
+

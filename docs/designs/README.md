@@ -9,6 +9,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 
 | Number | Design | Status | Tasks ticked |
 |---|---|---|---|
+| 013 | [Federated login: each organization signs in through its own OIDC or SAML provider](013-federated-login.md) | Approved | 0 of 26 |
 | 038 | [Claim and transition efficiency](038-claim-transition-efficiency.md) | Draft | 0 of 11 |
 | 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 1 |
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Draft | 0 of 1 |
@@ -19,6 +20,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Approved | 0 of 20 |
 | 048 | [A reference high-availability topology for PostgreSQL, and the platform's side of a failover](048-high-availability.md) | Approved | 0 of 19 |
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Approved | 0 of 20 |
+| 050 | [The Studio catch-up: every executable node kind, the approvals inbox, the audit log](050-studio-catch-up.md) | Approved | 0 of 22 |
 | 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Approved | 0 of 15 |
 | 052 | [Hot-path dispatch: a bounded and spread poll, wake on commit, and a throughput gate](052-hot-path-dispatch.md) | Approved | 0 of 13 |
 | 053 | [Rolling upgrades with old and new writers on one database](053-rolling-upgrades.md) | Approved | 0 of 8 |

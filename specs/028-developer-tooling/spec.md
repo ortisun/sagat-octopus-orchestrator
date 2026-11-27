@@ -9,8 +9,8 @@
 **Input**: Bring the developer tooling of Temporal and Windmill to the platform without a second engine. (1) A
 time-skipping test environment: an SDK test harness over the **real engine** with an injectable clock
 (`crates/application/src/clock.rs`), where virtual time can be advanced only in a test deployment and never in
-production, held to the five-SDK conformance suite, plus replay checks over exported run histories (feature 020).
-(2) SDK interceptors/middleware: client and worker hooks in the five SDKs; feature 031 orders its payload codec
+production, held to the six-SDK conformance suite, plus replay checks over exported run histories (feature 020).
+(2) SDK interceptors/middleware: client and worker hooks in the six SDKs; feature 031 orders its payload codec
 stage against them (coordinator decision C5: 031 owns the only stage that transforms payload bytes). (3) A VS Code extension that validates the IR, previews the graph, runs and tests workflows and follows
 their logs through the CLI. (4) Bidirectional Studio↔Git sync: a repository per namespace; a Studio publication
 produces a commit or pull request in the feature-011 manifest format; repository changes create drafts; conflicts
@@ -51,13 +51,13 @@ procedural model that does run workflow code in an SDK (design 044, Owner decisi
 ### US01 — Test a long-waiting workflow in seconds on the real engine (Priority: P1)
 
 A developer tests a workflow that waits 30 days for a reminder, retries a step with exponential backoff and
-expires an approval, in any of the five SDKs, in seconds and against the same engine that runs production.
+expires an approval, in any of the six SDKs, in seconds and against the same engine that runs production.
 
 **Why this priority**: Durable workflows are about time; a test that waits real days is never written, and a
 test against a fake engine proves nothing about the real one (ADR-0019).
 
 **Independent Test**: Start a test server, run the same reminder/retry/approval-expiry workflow through each SDK's
-test environment with automatic time skipping, and compare the normalized journals across the five languages and
+test environment with automatic time skipping, and compare the normalized journals across the six languages and
 with a run of the same workflow whose timers were short and real.
 
 **Acceptance Scenarios**:
@@ -84,11 +84,11 @@ with a run of the same workflow whose timers were short and real.
 ### US02 — Wrap client and worker calls with interceptors in any SDK (Priority: P1)
 
 A developer adds logging, metrics, tracing, gateway headers or authorization checks around every client call and
-every activity execution, in the same way in the five SDKs. Interceptors observe and decorate calls; they never
+every activity execution, in the same way in the six SDKs. Interceptors observe and decorate calls; they never
 transform payload bytes — that is feature 031's data converter, which runs between the interceptors and the transport
 (coordinator decision C5).
 
-**Why this priority**: Applications need one ordered place for cross-cutting concerns in five languages, and feature
+**Why this priority**: Applications need one ordered place for cross-cutting concerns in six languages, and feature
 031 needs a fixed ordering of its codec stage relative to that place; without it each SDK would grow its own hooks.
 
 **Independent Test**: Register two recording interceptors and a decorating interceptor that adds a gateway header in
@@ -254,7 +254,7 @@ refused before anything is created.
   deployment, and MUST hold exactly one tenant.
 - **FR-028-002 — Never in production:** Production composition roots MUST refuse to serve a database that carries
   the test-deployment marker or a non-canonical workflow-time function, MUST NOT expose testing routes (they answer
-  `404 ROUTE_NOT_FOUND`) and MUST NOT advertise the `virtual-clock` capability. The production image MUST NOT contain
+  `404 ROUTE_NOT_FOUND`) and MUST NOT advertise the `testing.virtual-clock` capability. The production image MUST NOT contain
   the test server binary and no production binary MAY depend on the test-only crates. Each rule MUST have an
   automated check that fails the build or the start (start-up refusal, route test, a CI check of the image's build
   and copy lines, and a dependency-tree check of the production binaries).
@@ -290,8 +290,8 @@ refused before anything is created.
   boundaries, leases and fencing; the journal MUST record workflow-time instants; replay MUST equal the projection;
   races MUST keep "first commit wins". The existing engine suites MUST pass unchanged with a zero offset and the
   shifted-clock regression suite MUST pass with a non-zero offset.
-- **FR-028-009 — SDK test environment:** Each of the five SDKs MUST offer a test environment that connects to a test
-  server, checks its `virtual-clock` capability, creates clients and worker hosts configured for it (binding the
+- **FR-028-009 — SDK test environment:** Each of the six SDKs MUST offer a test environment that connects to a test
+  server, checks its `testing.virtual-clock` capability, creates clients and worker hosts configured for it (binding the
   worker's activity names through the public binding API), and exposes `now`, `advance`, `skip`,
   `waitForCompletion` with time skipping and namespace creation. Behaviour MUST be held to shared conformance
   scenarios.
@@ -365,7 +365,7 @@ refused before anything is created.
   that raises MUST be treated exactly as the handler raising that error. Neither MAY stop the host's loop or drop a
   leased task silently.
 - **FR-028-024 — Interceptor conformance and documentation:** `sdks/SPEC.md` MUST gain the interceptor contract and
-  the five SDKs MUST pass shared scenarios for order, once-per-call bytes and decorations under lost responses,
+  the six SDKs MUST pass shared scenarios for order, once-per-call bytes and decorations under lost responses,
   protected fields, error mapping and coverage of every client operation and task kind.
 
 **VS Code extension (US04)**
@@ -526,8 +526,8 @@ All evidence below is required future evidence, not completed tests.
 ### Measurable Outcomes
 
 - **SC-028-001** (FR-028-001, 004..011): The reminder/retry/approval-expiry workflow reaches its terminal state through
-  each of the five SDKs' test environments with identical normalized journals, and with the same event types and order
-  as a real-time run with short timers; the shared activity-context fixture passes in all five SDKs; wall time per
+  each of the six SDKs' test environments with identical normalized journals, and with the same event types and order
+  as a real-time run with short timers; the shared activity-context fixture passes in all six SDKs; wall time per
   language is recorded with its environment as a benchmark criterion (target under 60 seconds on the reference CI
   runner).
 - **SC-028-002** (FR-028-002, 012): 100% of the production-refusal checks pass: production control plane and engine exit
@@ -540,13 +540,13 @@ All evidence below is required future evidence, not completed tests.
 - **SC-028-004** (FR-028-005..007): a daily cron fires 30 times over a 30-day `step` advance and once over a `jump`; a
   timer/signal race at a stop is decided by the first commit in 20 of 20 rounds; a crash between the clock commit and the
   pass loses no due item; a blocked advance never moves the clock.
-- **SC-028-005** (FR-028-019..024): in all five SDKs the conformance scenario shows identical interceptor order, identical
+- **SC-028-005** (FR-028-019..024): in all six SDKs the conformance scenario shows identical interceptor order, identical
   request bytes and decorations across every retry under lost responses, refused protected-field and payload changes,
   the error mapping above and every client operation and task kind reaching the chain; the golden is reviewed by a
   person.
 - **SC-028-006** (FR-028-014..018): the exported histories of the conformance corpus replay with zero divergences on the
   build under test; each injected corruption (gap, unknown type, changed status, unsupported capability) yields its typed
-  report; the replay call passes in five SDKs; derived answers contain no undisclosed value (canary test).
+  report; the replay call passes in six SDKs; derived answers contain no undisclosed value (canary test).
 - **SC-028-007** (FR-028-025..029): for the 012 diagnostics corpus the extension's positions, codes and help equal the
   CLI's; a token canary never appears in a child-process argument, a setting, the webview or a log; an untrusted
   workspace exposes no executing command; the webview passes an automated accessibility check.
@@ -616,3 +616,12 @@ Recorded with recommended defaults in [research.md](research.md#owner-questions)
 published), O1401 (whether a merge may publish automatically), O1402 (whether operators may add catalog indexes).
 The [checklist](checklists/requirements.md) records the specification's quality review. No task or success criterion
 is complete because this document exists.
+
+## Readiness against `develop` (2026-11-24)
+
+O1400, O1401 and O1402 are answered and ADR-0063 is accepted under Owner decision 2026-11-24-4 (research.md,
+"Readiness decisions"; `docs/owner-decisions.md`, OD-2026-11-24-705 to OD-2026-11-24-708): GitHub Releases now and the
+marketplaces when the owner opens the accounts; no automatic publication on merge; operator indexes with pinned keys.
+Wherever this specification says five SDKs it now says six (the Rust SDK, feature 034). The plan's "Readiness against
+`develop`" lists what else changed and how the build follows it.
+
