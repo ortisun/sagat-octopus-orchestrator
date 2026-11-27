@@ -3,7 +3,8 @@
 **Status:** Accepted (2026-11-26), by delegate (OD-2026-11-24-4), on the approval of design 054 that day; implementation and its evidence pending (Enforced by)
 **Decided by:** delegate (OD-2026-11-24-4), accepting the agent's proposal made under the owner's delegation (Owner decision 2026-11-20-6, widened by Owner decision 2026-11-24-4), for designs 044, 045 and 054 of release 0.3.0 (Owner decision 2026-11-24-1); to be accepted with design 054 if it is approved
 **Refines / supersedes:** refines Architecture decision 0082 (the instance registry: who records and removes a requirement) and, on the branch of pull request #260, Architecture decision 0098 decision 8 (a requirement as a replay floor), whose floor becomes one row of the registry below; supersedes none.
-**Enforced by:** the tests of design 054's Task 054-18 in `integration_platform_foundation` (the function's privileges and configuration, a publication's hold against a concurrent removal, a removal refused by a registered floor and allowed once the floor clears, two capabilities registered at once); each design's own floor test. Until they exist the rules are review-only.
+**Enforced by:** the tests of design 054's Task 054-18 in `integration_platform_foundation` (`requirement_hold`: the function's privileges and configuration, its body against the text of the amendment below, a publication's hold against a concurrent removal, a removal refused by a registered floor and allowed once the floor clears, two capabilities registered at once, and the two held-lock tests of the amendment); the capability-list test of `crates/infra-postgres/tests/capability_lists.rs` and its rule in `scripts/check-architecture.py`; each design's own floor test.
+**Amended:** 2026-11-27, a fairness gate before the epoch (section "Amendment" below; Owner decision 2026-11-26-564).
 
 ## Context
 
@@ -28,6 +29,73 @@ Three 0.3.0 designs add a fleet requirement that publication must hold and whose
 - The trigger runs dynamic SQL, bounded to `regprocedure` values only a migration can insert.
 - Whether the requirement epoch `FOR SHARE` lets a continuous stream of publications starve the operator's activate and remove is settled by a held-lock test written before any publication uses the hold (Tasks 045-21 and 054-20, Owner decision 2026-11-26-564); if they starve, this record is amended with a fairness gate before the epoch in the lock order.
 - Designs 044 and 045 cite this record in their next revisions (design 054, Gaps 054-007 and 054-010); Architecture decision 0098's floor becomes a row when both are built.
+
+## Amendment (2026-11-27): a fairness gate before the epoch
+
+Accepted 2026-11-27 by delegate (OD-2026-11-24-4), under Owner decision 2026-11-26-564, which settled in advance that this record is
+amended in place if the test shows starvation. Decision 1's hold, its registry of floors and its lock order otherwise stand.
+
+**What the evidence shows.** PostgreSQL 16 (the version the platform and its tests run, `postgres:16-alpine`) lets a new `FOR SHARE`
+locker of a row that only other transactions share-lock go ahead of a transaction that already waits for `FOR UPDATE` on that row:
+the new locker never sleeps, and the waiter wakes, finds the row share-locked again and waits again. `lock_timeout` restarts on
+every such wait, so the waiter is not even refused within its bound: it waits until its `statement_timeout`. A probe on 2026-11-27
+(PostgreSQL 16.15, four sessions relaying `FOR SHARE` on one row, the next granted before the previous commits) granted 48 share
+locks after a `FOR UPDATE` was seen waiting, and the `FOR UPDATE` with `lock_timeout = 2s` was still waiting after 10 s. With the
+gate below, no share request made after the exclusive one was seen waiting was granted before the exclusive one committed, and it
+committed at once. The repository's tests of this are
+`integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
+`...::a_removal_commits_under_a_continuous_stream_of_holds`; a publication that holds a requirement on every request would
+otherwise leave the operator unable to activate or remove any requirement, because the epoch is one row shared by all of them.
+
+1. **The gate.** One transaction-scoped advisory lock on the fixed key `hashtextextended('sagat:platform_requirement_epoch:gate',
+   0)` comes before the epoch in the registry's lock order. Every function that takes the epoch `FOR UPDATE` on the operator's
+   behalf (`platform_requirement_activate`, `platform_requirement_remove`, `platform_requirement_lock`) MUST first take the gate
+   exclusively (`pg_advisory_xact_lock`); every function that waits for the epoch `FOR SHARE` (`platform_requirement_hold`,
+   `instance_register`) MUST first take it shared (`pg_advisory_xact_lock_shared`). The lock manager queues a shared request behind
+   a waiting exclusive one, so a hold or a registration that comes after the operator's command waits for it, and the command waits
+   only for the holds granted before it. The epoch `FOR SHARE` stays in the hold: it is what makes a removal that took the epoch
+   wait for a publication that is committing.
+2. **The lock order** is now: the gate, then the requirement epoch row, then the advisory lock that counts the registered instances,
+   then rows. No function waits for the gate while it holds a later lock.
+3. **The hold's body**, which replaces decision 1's text and is the text every later migration compares with (decision 3's drift
+   guard; the repository's test of it reads this block):
+
+   ```sql
+   CREATE FUNCTION public.platform_requirement_hold(capability text) RETURNS boolean
+   LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+   DECLARE
+       v_kinds text[];
+   BEGIN
+       IF NOT EXISTS (SELECT 1 FROM public.platform_requirement_floors f
+                       WHERE f.capability = platform_requirement_hold.capability) THEN
+           RAISE EXCEPTION 'no floor is registered for this capability' USING ERRCODE = 'invalid_parameter_value';
+       END IF;
+       PERFORM pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+       PERFORM 1 FROM public.platform_requirement_epoch e WHERE e.only_row FOR SHARE;
+       SELECT r.kinds INTO v_kinds FROM public.platform_requirements r
+        WHERE r.capability = platform_requirement_hold.capability;
+       RETURN FOUND AND v_kinds @> ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']::text[];
+   END;
+   $$;
+   ```
+
+4. **The floor's isolation check** applies to a capability that has a floor row: the trigger refuses a removal outside `READ
+   COMMITTED` only when it is about to read a floor, since only that read needs the committed versions. A removal of a capability
+   with no floor behaves as before this record.
+5. **The floors' closed list.** `platform_requirement_floors.capability` is bounded by a fourth closed check,
+   `platform_requirement_floors_capability_known`, which lists exactly what the three checks of the registry list; the repository's
+   capability-list test and its rule in `scripts/check-architecture.py` cover it, so a design that adds a capability restates four
+   lists.
+
+What the gate does not cover, recorded as Gap 045-006 in `specs/045-activity-timeouts/research.md`: the beat of a process
+(`instance_heartbeat_reporting_change`) reads the epoch `FOR SHARE SKIP LOCKED` without the gate, because it never waits, so beats
+can still overlap an operator's wait; and the automatic handover's function takes the epoch `FOR UPDATE` without the gate, so it can
+wait for holds as the operator did before this amendment. Neither breaks a guarantee of this record: the first only lengthens a wait
+that the beat rate bounds, the second is a one-time job that retries.
+
+A role that may call `pg_advisory_xact_lock` (every role, by default) can take the gate itself. That gives the runtime role no new
+power: it can already hold the epoch for the length of a transaction through the hold or a registration, and it can already take the
+advisory lock that counts registrations.
 
 ## Evidence
 

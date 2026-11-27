@@ -62,6 +62,26 @@ The release-blocking criteria below are tested for what exists: cross-tenant rea
 and quota bypass are in the battery and fail the build; sandbox escape, unauthorized script execution,
 incorrect webhook signature and replay of financial requests join it with the features that create them.
 
+## The publication hold of the fleet requirements
+
+[ADR-0112](../adr/ADR-0112-fleet-requirements-share-one-publication-hold-and-one-registry-of-replay-floors.md) gives the runtime role
+one function of the operator's registry, `platform_requirement_hold(capability)`, so that a publication that needs a fleet
+requirement (designs 044, 045 and 054) keeps the operator from removing it until the publication commits. What that power is, and
+what it is not:
+
+- The runtime role can hold the registry's gate shared and the requirement epoch `FOR SHARE` for the length of one of its own
+  transactions, for any capability that has a floor (the function refuses the others). That delays an operator's activation or
+  removal of any requirement by at most that transaction; the command's own bound (2 s for a lock, 3 s for a statement) then refuses
+  it and the operator retries. It cannot record, remove or change a requirement, and it neither reads nor writes the registry of
+  floors (`platform_requirement_floors`), which only a migration writes.
+- A stream of publications cannot starve the operator: the gate is a transaction advisory lock that the operator's commands take
+  exclusively and the holds take shared, and PostgreSQL's lock manager makes a shared request wait behind a waiting exclusive one
+  (ADR-0112, amendment of 2026-11-27; tested by `integration_platform_foundation::requirement_hold`).
+- Every role may take any advisory lock, the gate's key included, so a compromised runtime role could hold the gate exclusively and
+  stop registrations and operator commands while its session lasts. That is not a new power: it can already take the advisory lock
+  that counts registrations, and hold the epoch through a registration it never commits. A process that cannot register stays out
+  of service, which fails closed.
+
 ## Disclosure boundaries
 
 Credential delivery to a leased executor is distinct from payload disclosure to a reader.
