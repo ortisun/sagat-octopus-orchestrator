@@ -200,6 +200,11 @@ const ALLOWED: &[Allowed] = &[
         reason: "apply_content_delta, unused (see the INSERT entry)",
     },
     Allowed {
+        file: CONTENT_USAGE,
+        need: "UNRESOLVED placeholder {}",
+        reason: "the advisory-lock fence of the content ledger (design 041): the formatted text is only calls of pg_advisory_xact_lock_shared and pg_advisory_xact_lock over numbered placeholders built right above, every key bound; an advisory lock reads no table and needs no grant",
+    },
+    Allowed {
         file: "crates/infra-postgres/src/telemetry.rs",
         need: "UNRESOLVED placeholder {condition}",
         reason: "a predicate chosen by the caller among literals of the same file; the statement is a plain SELECT of run_events, which is audited as written",
