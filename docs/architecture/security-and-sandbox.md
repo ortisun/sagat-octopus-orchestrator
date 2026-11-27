@@ -69,18 +69,18 @@ one function of the operator's registry, `platform_requirement_hold(capability)`
 requirement (designs 044, 045 and 054) keeps the operator from removing it until the publication commits. What that power is, and
 what it is not:
 
-- The runtime role can hold the registry's gate shared and the requirement epoch `FOR SHARE` for the length of one of its own
-  transactions, for any capability that has a floor (the function refuses the others). That delays an operator's activation or
-  removal of any requirement by at most that transaction; the command's own bound (2 s for a lock, 3 s for a statement) then refuses
-  it and the operator retries. It cannot record, remove or change a requirement, and it neither reads nor writes the registry of
-  floors (`platform_requirement_floors`), which only a migration writes.
-- A stream of publications cannot starve the operator: the gate is a transaction advisory lock that the operator's commands take
-  exclusively and the holds take shared, and PostgreSQL's lock manager makes a shared request wait behind a waiting exclusive one
-  (ADR-0112, amendment of 2026-11-27; tested by `integration_platform_foundation::requirement_hold`).
-- Every role may take any advisory lock, the gate's key included, so a compromised runtime role could hold the gate exclusively and
-  stop registrations and operator commands while its session lasts. That is not a new power: it can already take the advisory lock
-  that counts registrations, and hold the epoch through a registration it never commits. A process that cannot register stays out
-  of service, which fails closed.
+- The runtime role can hold the registry's gate (`platform_requirement_gate` in `SHARE MODE`) and the requirement epoch `FOR SHARE`
+  for the length of one of its own transactions, through the hold or a registration, for any capability that has a floor (the
+  hold refuses the others). That delays an operator's activation or removal of any requirement by at most that transaction; the
+  command's own bound (2 s for a lock, 3 s for a statement) then refuses it and the operator retries. It cannot lock the gate
+  itself (it has no privilege on the table, and `LOCK TABLE` checks one), record, remove or change a requirement, or read or write
+  the registry of floors (`platform_requirement_floors`), which only a migration writes.
+- A stream of publications cannot starve the operator: the operator's commands lock the gate `IN EXCLUSIVE MODE`, and PostgreSQL's
+  lock manager makes a `SHARE` request wait behind a waiting `EXCLUSIVE` one (ADR-0112, amendment of 2026-11-27; tested by
+  `integration_platform_foundation::requirement_hold`).
+- A floor runs as the schema owner inside a removal, so the registry admits only a `SECURITY DEFINER` function with the fixed search
+  path, no argument, a boolean result, the trigger's owner and no overload, checks it again before each call, and refuses a hand
+  deletion or truncation of a floor. A floor that can no longer be called refuses the removal: it fails closed.
 
 ## Disclosure boundaries
 

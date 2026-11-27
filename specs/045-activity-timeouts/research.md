@@ -172,8 +172,11 @@ place. Every owner question below was decided under the owner's delegation (Owne
   `20270218000000_requirement_hold` (the hold as the runtime role; `platform_requirement_activate`, and `platform_requirement_lock`
   then `platform_requirement_remove` as `PgInstanceStore::remove` runs them) committed the operator's command at once and every hold
   requested after it waited read the new epoch. Options: (a) an operator-intent row that a new hold reads; (b) a transaction-scoped
-  advisory lock, shared for readers, exclusive for the operator. Chosen (b), delegate (Owner decision 2026-11-24-4): the lock
-  manager's queue is fair by construction and costs one call per function, while (a) needs a row the operator commits in a
+  advisory lock, shared for readers, exclusive for the operator; (c) a lock on an empty table, `SHARE MODE` for readers,
+  `EXCLUSIVE MODE` for the operator. First chosen (b), then (c) after the security review of the same day (its Nit 1: any role can
+  take an advisory lock, outside a transaction too, and other features hash tenant-chosen text into the same key space); a probe
+  showed (c) as fair as (b). Chosen (c), delegate (Owner decision 2026-11-24-4): the lock manager's queue is fair by construction
+  for both, `LOCK TABLE` checks privileges so only the owner's functions can take the gate, and it costs one statement per function, while (a) needs a row the operator commits in a
   transaction of its own before its command and clears after it, and a crash between the two leaves every publication refused until
   someone clears it. The gate is first in the registry's lock order; ADR-0112 is amended in place (its amendment of 2026-11-27, with
   the hold's new body). The repository's evidence is `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds`
@@ -218,6 +221,20 @@ place. Every owner question below was decided under the owner's delegation (Owne
   because it is the criterion Owner decision 2026-11-26-564 states; the ordering test of a hold after a removal calls the function with
   no bound (fixed). The lock-order harness (`tests/support/lock_order.rs`) has no slot for the gate: Gap 045-008.
 
+- **Decision 045-035 — The security review of the prerequisite** (2026-11-27, `security-reviewer`, no Blocker and no Major; every
+  finding fixed, as security findings always are). Nit 1 (the advisory gate's key space is open to every role and to hashed
+  tenant text): the gate is a lock on the empty table `platform_requirement_gate`, which only its owner can lock (Decision 045-029).
+  Nit 2 (a floor's function checked only when registered): the floor trigger checks it again before each call and refuses the
+  removal when it is no longer admissible. Nit 3 (set-returning functions and floors that do not run as their owner admitted): a
+  floor must be a plain function, `SECURITY DEFINER` with the fixed search path, with no overload. Nit 4 (a hand edit could delete a
+  floor): a row is deleted only under the down migration's flag `sagat.floor_change`, and the table cannot be truncated. Nit 5 (an
+  answer a caller could ignore, and a savepoint that releases the hold): the helper returns the `#[must_use]` `Held`, and its
+  documentation forbids a savepoint around it; a fitness rule that every publication path calls it is Task 045-5's (Gap 045-008).
+  Nit 6 (an overload created in `public` by a role that may create there makes the floor's call ambiguous): the admissibility check
+  refuses a floor with an overload, so such a removal fails closed and names the cause. Tests:
+  `requirement_hold::a_floor_names_only_an_admissible_function` and
+  `...::a_floor_is_removed_only_by_a_migration_and_checked_again_before_each_call`.
+
 ## Notes for other features (2026-11-26)
 
 - **For feature 022 (relayed by the coordinating session, which owns 022):** in FR-022-036, after "a concurrency key with
@@ -247,8 +264,8 @@ place. Every owner question below was decided under the owner's delegation (Owne
   review, Blocker 1: the automatic handover is no longer outside it, see Decision 045-034). The beat of a process
   (`instance_heartbeat_reporting_change`) takes the epoch `FOR SHARE SKIP LOCKED` without the gate, because it must never wait; beats
   can therefore still overlap an operator's wait for the epoch, bounded by the beat rate (one beat per process every few seconds,
-  at most 1,000 registered processes). A follow-up can give the beat `pg_try_advisory_xact_lock_shared`, which never waits and fails
-  while the operator waits or holds.
+  at most 1,000 registered processes). A follow-up can give the beat `LOCK TABLE platform_requirement_gate IN SHARE MODE NOWAIT`, which never
+  waits and fails while the operator waits or holds.
 - **Gap 045-007 — The design texts of Task 045-21 are not yet revised** (2026-11-27). Task 045-21 also asks for a re-approved revision
   of Technical Plan 13 and Tasks 045-5 and 045-6 (and design 054's Technical Plan 15 and Task 054-18 follow, its Task 054-20):
   the hold's body and the gate of ADR-0112's amendment, the floor as a row of `platform_requirement_floors` with a function on

@@ -11,9 +11,10 @@
 --    answers true. A capability with no floor row is removed as before.
 -- 3. `platform_requirement_hold(capability)`: what a publication calls as its last statement before its commit. Its body is the
 --    text of ADR-0112's amendment, compared by the drift guard of every later migration that finds it.
--- 4. The gate: a transaction advisory lock on one fixed key, before the epoch in the registry's lock order, taken exclusively by
---    the operator's three functions and shared by the hold and a registration. PostgreSQL 16 lets a new FOR SHARE of a row go
---    ahead of a waiting FOR UPDATE; its lock manager does not let a shared advisory request go ahead of a waiting exclusive one.
+-- 4. The gate: a lock on the empty table `platform_requirement_gate`, before the epoch in the registry's lock order, taken IN
+--    EXCLUSIVE MODE by the operator's three functions and IN SHARE MODE by the hold and a registration. PostgreSQL 16 lets a new
+--    FOR SHARE of a row go ahead of a waiting FOR UPDATE; its lock manager does not let a SHARE request go ahead of a waiting
+--    EXCLUSIVE one.
 --    The three operator functions and the registration are rewritten in place with their bodies of `20270113000000` and the gate
 --    as their first lock; `CREATE OR REPLACE` keeps their owner and grants, and restates their configuration.
 --
@@ -31,6 +32,12 @@ CREATE TABLE platform_requirement_floors (
                        'lease-withdrawal-v1', 'lease-withdrawal-v2'))
 );
 
+-- The gate of ADR-0112's amendment: an empty table that no role but its owner may lock. The operator's functions and the automatic
+-- handover lock it IN EXCLUSIVE MODE, the hold and a registration IN SHARE MODE, before the epoch; the lock manager queues a SHARE
+-- request behind a waiting EXCLUSIVE one. A relation lock, not an advisory lock, because LOCK TABLE checks privileges: no other
+-- role can take the gate, and no hashed advisory key of another feature can collide with it (security review of 2026-11-27).
+CREATE TABLE platform_requirement_gate ();
+
 -- Removes a requirement only when its floor allows it. SECURITY INVOKER: it runs as whoever deletes the row, which is the owner,
 -- inside `platform_requirement_remove`.
 CREATE FUNCTION platform_requirement_floor() RETURNS trigger
@@ -47,6 +54,10 @@ BEGIN
         RAISE EXCEPTION '% is removed only under READ COMMITTED (this transaction runs under %): a stricter level keeps a snapshot that cannot see a version committed meanwhile', OLD.capability, current_setting('transaction_isolation')
             USING ERRCODE = 'restrict_violation';
     END IF;
+    IF NOT public.platform_requirement_floor_admissible(v_holds) THEN
+        RAISE EXCEPTION 'FLOOR_HELD: % cannot be removed: its floor (%) is no longer a function the registry admits', OLD.capability, v_holds::oid
+            USING ERRCODE = 'restrict_violation';
+    END IF;
     EXECUTE format('SELECT %s', v_holds) INTO v_held;
     IF v_held IS DISTINCT FROM false THEN
         RAISE EXCEPTION 'FLOOR_HELD: % cannot be removed while its floor holds (%): a build without it cannot honour what depends on it', OLD.capability, v_holds
@@ -56,30 +67,61 @@ BEGIN
 END;
 $$;
 
--- Admits a floor's function only with no argument, a boolean result and the owner of the floor trigger: the trigger calls it by
--- name, so nothing else may be named.
+-- Whether `p_holds` may be a floor: a plain function (not a procedure, an aggregate or a set-returning function) with no argument,
+-- a boolean result, the owner of the floor trigger, run as that owner with the fixed search path, and the only function of its
+-- schema with that name (an overload with defaults would make the trigger's call ambiguous). Read when a floor is registered and
+-- again before each call, because a function can be dropped, replaced or given to another owner after it was registered.
+CREATE FUNCTION platform_requirement_floor_admissible(p_holds regprocedure) RETURNS boolean
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_proc p
+         WHERE p.oid = p_holds
+           AND p.prokind = 'f' AND NOT p.proretset AND p.pronargs = 0
+           AND p.prorettype = 'pg_catalog.bool'::pg_catalog.regtype
+           AND p.prosecdef
+           AND p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp']
+           AND p.proowner = (SELECT t.proowner FROM pg_catalog.pg_proc t
+                              WHERE t.oid = 'public.platform_requirement_floor()'::pg_catalog.regprocedure)
+           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc o
+                            WHERE o.pronamespace = p.pronamespace AND o.proname = p.proname AND o.oid <> p.oid))
+$$;
+
+-- Admits a floor only through `platform_requirement_floor_admissible`.
 CREATE FUNCTION platform_requirement_floors_check() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$
-DECLARE
-    v_args   smallint;
-    v_result oid;
-    v_owner  oid;
 BEGIN
-    SELECT p.pronargs, p.prorettype, p.proowner INTO v_args, v_result, v_owner FROM pg_proc p WHERE p.oid = NEW.holds;
-    IF NOT FOUND OR v_args <> 0 OR v_result <> 'pg_catalog.bool'::regtype
-       OR v_owner <> (SELECT p.proowner FROM pg_proc p WHERE p.oid = 'public.platform_requirement_floor()'::regprocedure) THEN
-        RAISE EXCEPTION 'a floor names a function with no argument, a boolean result and the owner of platform_requirement_floor()'
+    IF NOT public.platform_requirement_floor_admissible(NEW.holds) THEN
+        RAISE EXCEPTION 'a floor names a plain function with no argument and a boolean result, owned by the owner of platform_requirement_floor(), SECURITY DEFINER with search_path pg_catalog, pg_temp, and with no overload'
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
     RETURN NEW;
 END;
 $$;
 
+-- A floor is removed only by the down migration of the design that registered it, which sets `sagat.floor_change` for its own
+-- transaction; a hand edit of the owner is refused, as the registry's own guards refuse one (a seat belt, not a secret).
+CREATE FUNCTION platform_requirement_floors_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF coalesce(current_setting('sagat.floor_change', true), '') <> 'migration' THEN
+        RAISE EXCEPTION 'a floor is removed only by the down migration of the design that registered it'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
 CREATE TRIGGER platform_requirement_floors_check BEFORE INSERT OR UPDATE ON platform_requirement_floors
     FOR EACH ROW EXECUTE FUNCTION platform_requirement_floors_check();
+CREATE TRIGGER platform_requirement_floors_guard BEFORE DELETE ON platform_requirement_floors
+    FOR EACH ROW EXECUTE FUNCTION platform_requirement_floors_guard();
+CREATE TRIGGER platform_requirement_floors_no_truncate BEFORE TRUNCATE ON platform_requirement_floors
+    FOR EACH STATEMENT EXECUTE FUNCTION execution_reject_mutation();
 CREATE TRIGGER platform_requirement_floor BEFORE DELETE ON platform_requirements
     FOR EACH ROW EXECUTE FUNCTION platform_requirement_floor();
 ALTER TABLE platform_requirement_floors ENABLE ALWAYS TRIGGER platform_requirement_floors_check;
+ALTER TABLE platform_requirement_floors ENABLE ALWAYS TRIGGER platform_requirement_floors_guard;
+ALTER TABLE platform_requirement_floors ENABLE ALWAYS TRIGGER platform_requirement_floors_no_truncate;
 ALTER TABLE platform_requirements ENABLE ALWAYS TRIGGER platform_requirement_floor;
 
 CREATE FUNCTION public.platform_requirement_hold(capability text) RETURNS boolean
@@ -91,7 +133,7 @@ BEGIN
                     WHERE f.capability = platform_requirement_hold.capability) THEN
         RAISE EXCEPTION 'no floor is registered for this capability' USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    PERFORM pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    LOCK TABLE public.platform_requirement_gate IN SHARE MODE;
     PERFORM 1 FROM public.platform_requirement_epoch e WHERE e.only_row FOR SHARE;
     SELECT r.kinds INTO v_kinds FROM public.platform_requirements r
      WHERE r.capability = platform_requirement_hold.capability;
@@ -105,7 +147,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_epoch bigint;
 BEGIN
-    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    LOCK TABLE public.platform_requirement_gate IN EXCLUSIVE MODE;
     SELECT e.epoch INTO STRICT v_epoch FROM public.platform_requirement_epoch e FOR UPDATE;
     RETURN v_epoch;
 END;
@@ -122,7 +164,7 @@ DECLARE
     v_examples uuid[];
 BEGIN
     v_kinds := coalesce(ARRAY(SELECT DISTINCT k FROM unnest(p_kinds) AS k ORDER BY k), '{}');
-    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    LOCK TABLE public.platform_requirement_gate IN EXCLUSIVE MODE;
     SELECT e.epoch INTO STRICT v_epoch FROM public.platform_requirement_epoch e FOR UPDATE;
     SELECT r.kinds INTO v_existing FROM public.platform_requirements r WHERE r.capability = p_capability;
     IF FOUND THEN
@@ -160,7 +202,7 @@ DECLARE
     v_epoch bigint;
     v_kinds text[];
 BEGIN
-    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    LOCK TABLE public.platform_requirement_gate IN EXCLUSIVE MODE;
     SELECT e.epoch INTO STRICT v_epoch FROM public.platform_requirement_epoch e FOR UPDATE;
     SELECT r.kinds INTO v_kinds FROM public.platform_requirements r WHERE r.capability = p_capability;
     IF NOT FOUND THEN
@@ -202,7 +244,7 @@ BEGIN
         RAISE EXCEPTION 'the automatic handover names its run' USING ERRCODE = 'invalid_parameter_value';
     END IF;
     v_actor := 'system:handover-job:' || p_run::text;
-    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    LOCK TABLE public.platform_requirement_gate IN EXCLUSIVE MODE;
     SELECT e.epoch INTO STRICT v_epoch FROM public.platform_requirement_epoch e FOR UPDATE;
     SELECT h.state INTO STRICT v_state FROM public.schedule_trigger_handover h;
     IF v_state = 'HANDED_OVER' THEN
@@ -279,7 +321,7 @@ BEGIN
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
     v_hash := sha256(p_token);
-    PERFORM pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    LOCK TABLE public.platform_requirement_gate IN SHARE MODE;
     SELECT e.epoch INTO STRICT v_epoch FROM public.platform_requirement_epoch e FOR SHARE;
     v_caps := coalesce(ARRAY(SELECT DISTINCT c FROM unnest(p_capabilities) AS c ORDER BY c), '{}');
     SELECT coalesce(array_agg(r.capability ORDER BY r.capability), '{}') INTO v_missing
@@ -330,15 +372,17 @@ BEGIN
 END;
 $$;
 
--- Grants. The floors are the migration role's: the runtime role neither reads nor writes them, and calls only the hold.
-REVOKE ALL PRIVILEGES ON platform_requirement_floors FROM PUBLIC;
+-- Grants. The floors and the gate are the migration role's: the runtime role cannot read, write or lock them, and calls only the hold.
+REVOKE ALL PRIVILEGES ON platform_requirement_floors, platform_requirement_gate FROM PUBLIC;
+REVOKE ALL ON FUNCTION platform_requirement_floor_admissible(regprocedure) FROM PUBLIC;
+REVOKE ALL ON FUNCTION platform_requirement_floors_guard() FROM PUBLIC;
 REVOKE ALL ON FUNCTION platform_requirement_floor() FROM PUBLIC;
 REVOKE ALL ON FUNCTION platform_requirement_floors_check() FROM PUBLIC;
 REVOKE ALL ON FUNCTION platform_requirement_hold(text) FROM PUBLIC;
 DO $grants$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app') THEN
-        REVOKE ALL PRIVILEGES ON platform_requirement_floors FROM sagat_app;
+        REVOKE ALL PRIVILEGES ON platform_requirement_floors, platform_requirement_gate FROM sagat_app;
         GRANT EXECUTE ON FUNCTION platform_requirement_hold(text) TO sagat_app;
     END IF;
 END $grants$;

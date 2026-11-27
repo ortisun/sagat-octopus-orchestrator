@@ -17,7 +17,7 @@ use sagat_application::error::StoreError;
 use sagat_application::instances::{Activated, Activation, Capability, InstanceKind, Removed};
 use sagat_domain::identity::Subject;
 use sagat_infra_postgres::{
-    HOLD_LOCK_TIMEOUT, OperatorBounds, PgInstanceStore, REQUIREMENT_BUSY, hold_requirement,
+    HOLD_LOCK_TIMEOUT, Held, OperatorBounds, PgInstanceStore, REQUIREMENT_BUSY, hold_requirement,
 };
 use sqlx::PgPool;
 use tokio::sync::oneshot;
@@ -32,8 +32,8 @@ const OTHER: Capability = Capability::AccessNarrowingV1;
 const BOTH: [InstanceKind; 2] = [InstanceKind::ControlPlane, InstanceKind::ExecutionEngine];
 const RESTRICT_VIOLATION: &str = "23001";
 const INVALID_PARAMETER_VALUE: &str = "22023";
-/// The gate of ADR-0112's amendment, as every function that takes it writes it.
-const GATE: &str = "hashtextextended('sagat:platform_requirement_epoch:gate', 0)";
+/// The gate of ADR-0112's amendment, as every function that takes it writes it (followed by its mode).
+const GATE: &str = "LOCK TABLE public.platform_requirement_gate IN ";
 
 /// A floor for [`HELD`] that holds while the one row of `test_floor_state` says so (it starts `false`), registered as a
 /// design's migration registers its own: a `SECURITY DEFINER` function with a fixed search path and no grant.
@@ -272,23 +272,14 @@ async fn the_gate_comes_before_the_epoch_in_every_function_that_waits_for_it() {
         ("platform_requirement_lock()", "pg_advisory_xact_lock("),
         (
             "platform_requirement_activate(text, text[], text)",
-            "pg_advisory_xact_lock(",
+            "EXCLUSIVE MODE;",
         ),
-        (
-            "platform_requirement_remove(text, text)",
-            "pg_advisory_xact_lock(",
-        ),
-        (
-            "platform_requirement_hold(text)",
-            "pg_advisory_xact_lock_shared(",
-        ),
-        (
-            "schedule_trigger_handover_auto(uuid)",
-            "pg_advisory_xact_lock(",
-        ),
+        ("platform_requirement_remove(text, text)", "EXCLUSIVE MODE;"),
+        ("platform_requirement_hold(text)", "SHARE MODE;"),
+        ("schedule_trigger_handover_auto(uuid)", "EXCLUSIVE MODE;"),
         (
             "instance_register(uuid, bytea, text, text, text, text[])",
-            "pg_advisory_xact_lock_shared(",
+            "SHARE MODE;",
         ),
     ] {
         let source: String =
@@ -297,7 +288,7 @@ async fn the_gate_comes_before_the_epoch_in_every_function_that_waits_for_it() {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap_or_else(|error| panic!("{function}: {error}"));
-        let gate = format!("pg_catalog.{lock}pg_catalog.{GATE})");
+        let gate = format!("{GATE}{lock}");
         let at = source
             .find(&gate)
             .unwrap_or_else(|| panic!("{function} takes the gate with {lock}"));
@@ -337,7 +328,7 @@ async fn the_hold_answers_true_only_for_a_requirement_of_both_kinds() {
     let runtime = db.runtime_pool().await;
     let held = |runtime: PgPool| async move {
         let mut tx = runtime.begin().await.expect("a transaction");
-        let active = hold_requirement(&mut tx, HELD).await.expect("the hold");
+        let active = hold_requirement(&mut tx, HELD).await.expect("the hold") == Held::Active;
         tx.commit().await.expect("commit");
         active
     };
@@ -366,7 +357,10 @@ async fn the_hold_restores_the_lock_bound_of_its_transaction() {
         .execute(&mut *tx)
         .await
         .expect("a bound of the transaction");
-    assert!(!hold_requirement(&mut tx, HELD).await.expect("the hold"));
+    assert_eq!(
+        hold_requirement(&mut tx, HELD).await.expect("the hold"),
+        Held::NotActive
+    );
     let bound: String = sqlx::query_scalar("SELECT current_setting('lock_timeout')")
         .fetch_one(&mut *tx)
         .await
@@ -387,10 +381,11 @@ async fn a_removal_that_waits_for_a_hold_sees_what_the_publication_committed() {
         .execute(&mut *publication)
         .await
         .expect("the version");
-    assert!(
+    assert_eq!(
         hold_requirement(&mut publication, HELD)
             .await
-            .expect("the hold")
+            .expect("the hold"),
+        Held::Active
     );
     let (pid, removal) = removal(&db.pool, HELD).await;
     until(
@@ -582,19 +577,25 @@ async fn a_floor_is_read_only_under_read_committed() {
     tx.commit().await.expect("commit");
 }
 
-/// ADR-0112 decision 2: a floor names a function with no argument, a boolean result and the owner of the floor trigger.
+/// ADR-0112 decisions 2 and 3 (and the security review of 2026-11-27): a floor names a plain function with no argument, a boolean
+/// result and the owner of the floor trigger, run as its owner with the fixed search path, and with no overload.
 #[tokio::test]
-async fn a_floor_names_only_a_function_with_no_argument_a_boolean_result_and_the_trigger_owner() {
+async fn a_floor_names_only_an_admissible_function() {
     let db = migrated_db().await;
     for statement in [
-        "CREATE FUNCTION test_floor_with_argument(n integer) RETURNS boolean LANGUAGE sql AS 'SELECT false'",
-        "CREATE FUNCTION test_floor_of_text() RETURNS text LANGUAGE sql AS 'SELECT ''false'''",
-        "CREATE FUNCTION test_floor_of_another_owner() RETURNS boolean LANGUAGE sql AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_with_argument(n integer) RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_of_text() RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT ''false'''",
+        "CREATE FUNCTION test_floor_of_a_set() RETURNS SETOF boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_as_its_caller() RETURNS boolean LANGUAGE sql SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_with_any_path() RETURNS boolean LANGUAGE sql SECURITY DEFINER AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_overloaded() RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_overloaded(n integer DEFAULT 0) RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_of_another_owner() RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
         "DO $$ BEGIN \
          PERFORM pg_advisory_xact_lock(hashtextextended('sagat:test:floor-owner', 0)); \
          CREATE ROLE sagat_test_floor_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
         "ALTER FUNCTION test_floor_of_another_owner() OWNER TO sagat_test_floor_owner",
-        "CREATE FUNCTION test_floor_fine() RETURNS boolean LANGUAGE sql AS 'SELECT false'",
+        "CREATE FUNCTION test_floor_fine() RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT false'",
     ] {
         sqlx::query(statement)
             .execute(&db.pool)
@@ -604,6 +605,10 @@ async fn a_floor_names_only_a_function_with_no_argument_a_boolean_result_and_the
     for holds in [
         "test_floor_with_argument(integer)",
         "test_floor_of_text()",
+        "test_floor_of_a_set()",
+        "test_floor_as_its_caller()",
+        "test_floor_with_any_path()",
+        "test_floor_overloaded()",
         "test_floor_of_another_owner()",
     ] {
         let refused = sqlx::query(
@@ -641,6 +646,57 @@ async fn a_floor_names_only_a_function_with_no_argument_a_boolean_result_and_the
     assert_eq!(code_of(&unknown), "23514", "{unknown}");
 }
 
+/// The security review of 2026-11-27: a floor is removed only by a migration, never by a hand edit or a truncation, and a floor
+/// whose function stopped being admissible after it was registered (here an overload that would make the call ambiguous) refuses
+/// the removal instead of running something else.
+#[tokio::test]
+async fn a_floor_is_removed_only_by_a_migration_and_checked_again_before_each_call() {
+    let db = migrated_db().await;
+    floor_read_from_a_table(&db.pool).await;
+    record_for_both(&db.pool, HELD).await;
+    for statement in [
+        "DELETE FROM platform_requirement_floors",
+        "TRUNCATE platform_requirement_floors",
+    ] {
+        let refused = sqlx::query(statement)
+            .execute(&db.pool)
+            .await
+            .expect_err("a hand edit is refused");
+        assert_eq!(
+            code_of(&refused),
+            RESTRICT_VIOLATION,
+            "{statement}: {refused}"
+        );
+    }
+    sqlx::query(
+        "CREATE FUNCTION test_floor_holds(n integer DEFAULT 0) RETURNS boolean LANGUAGE sql AS 'SELECT false'",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("an overload made after the floor was registered");
+    let (_, removal) = removal(&db.pool, HELD).await;
+    let (code, text) = removal
+        .await
+        .expect("the removal ended")
+        .expect_err("refused: the floor is no longer admissible");
+    assert_eq!(code, RESTRICT_VIOLATION, "{text}");
+    assert!(
+        text.contains("no longer a function the registry admits"),
+        "{text}"
+    );
+    assert!(is_recorded(&db.pool, HELD).await);
+    let mut migration = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET LOCAL sagat.floor_change = 'migration'")
+        .execute(&mut *migration)
+        .await
+        .expect("the flag of a down migration");
+    sqlx::query("DELETE FROM platform_requirement_floors WHERE capability = 'payload-encoding-v1'")
+        .execute(&mut *migration)
+        .await
+        .expect("a down migration removes its floor");
+    migration.commit().await.expect("commit");
+}
+
 // -------------------------------------------------------------------------------------------------------------------------
 // The held-lock tests of Task 045-21 and Task 054-20 (Owner decision 2026-11-26-564).
 // -------------------------------------------------------------------------------------------------------------------------
@@ -670,8 +726,9 @@ async fn request_hold(pool: &PgPool, after_the_command_waited: bool) -> Hold {
             .await
             .expect("pid");
         let _ = pid_sender.send(own);
-        assert!(
+        assert_eq!(
             hold_requirement(&mut tx, HELD).await.expect("the hold"),
+            Held::Active,
             "the publication's requirement stays recorded"
         );
         let seen: i64 = sqlx::query_scalar("SELECT epoch FROM platform_requirement_epoch")

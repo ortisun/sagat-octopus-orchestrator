@@ -14,6 +14,8 @@ DROP TRIGGER platform_requirement_floor ON platform_requirements;
 DROP TABLE platform_requirement_floors;
 DROP FUNCTION platform_requirement_floor();
 DROP FUNCTION platform_requirement_floors_check();
+DROP FUNCTION platform_requirement_floors_guard();
+DROP FUNCTION platform_requirement_floor_admissible(regprocedure);
 
 -- The operator's three functions and the registration, as `20270113000000` (and `20270208000200` for the bound of the removal)
 -- left them: without the gate.
@@ -237,3 +239,6 @@ BEGIN
                         c.out_live, coalesce(v_tenants, 0);
 END;
 $$;
+
+-- The gate, once no function names it.
+DROP TABLE platform_requirement_gate;

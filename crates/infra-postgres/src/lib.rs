@@ -97,9 +97,9 @@ pub use handover_role::{
 };
 pub use identity::PgIdentityStore;
 pub use instances::{
-    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep, HOLD_LOCK_TIMEOUT, OperatorBounds,
-    PgInstanceStore, REQUIREMENT_BUSY, capability_census, census_step, hold_requirement,
-    may_activate, requirement_recorded,
+    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep, HOLD_LOCK_TIMEOUT, Held,
+    OperatorBounds, PgInstanceStore, REQUIREMENT_BUSY, capability_census, census_step,
+    hold_requirement, may_activate, requirement_recorded,
 };
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;

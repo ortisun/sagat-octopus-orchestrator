@@ -42,20 +42,21 @@ every such wait, so the waiter is not even refused within its bound: it waits un
 (PostgreSQL 16.15, four sessions relaying `FOR SHARE` on one row, the next granted before the previous commits) granted 48 share
 locks after a `FOR UPDATE` was seen waiting, and the `FOR UPDATE` with `lock_timeout = 2s` was still waiting after 10 s. With the
 gate below, no share request made after the exclusive one was seen waiting was granted before the exclusive one committed, and it
-committed at once. The repository's tests of this are
+committed at once; a lock on an empty table, `SHARE MODE` against `EXCLUSIVE MODE`, behaved the same. The repository's tests of this are
 `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
 `...::a_removal_commits_under_a_continuous_stream_of_holds`; a publication that holds a requirement on every request would
 otherwise leave the operator unable to activate or remove any requirement, because the epoch is one row shared by all of them.
 
-1. **The gate.** One transaction-scoped advisory lock on the fixed key `hashtextextended('sagat:platform_requirement_epoch:gate',
-   0)` comes before the epoch in the registry's lock order. Every function that takes the epoch `FOR UPDATE` on the operator's
-   behalf (`platform_requirement_activate`, `platform_requirement_remove`, `platform_requirement_lock`), and the automatic handover
-   (`schedule_trigger_handover_auto`, ADR-0091), which takes the epoch and then calls the activation, MUST first take the gate
-   exclusively (`pg_advisory_xact_lock`); every function that waits for the epoch `FOR SHARE` (`platform_requirement_hold`,
-   `instance_register`) MUST first take it shared (`pg_advisory_xact_lock_shared`). The lock manager queues a shared request behind
-   a waiting exclusive one, so a hold or a registration that comes after the operator's command waits for it, and the command waits
-   only for the holds granted before it. The epoch `FOR SHARE` stays in the hold: it is what makes a removal that took the epoch
-   wait for a publication that is committing.
+1. **The gate.** A lock on the empty table `platform_requirement_gate` comes before the epoch in the registry's lock order. Every
+   function that takes the epoch `FOR UPDATE` on the operator's behalf (`platform_requirement_activate`, `platform_requirement_remove`,
+   `platform_requirement_lock`), and the automatic handover (`schedule_trigger_handover_auto`, ADR-0091), which takes the epoch and
+   then calls the activation, MUST first take the gate `IN EXCLUSIVE MODE`; every function that waits for the epoch `FOR SHARE`
+   (`platform_requirement_hold`, `instance_register`) MUST first take it `IN SHARE MODE`. The lock manager queues a `SHARE` request
+   behind a waiting `EXCLUSIVE` one, so a hold or a registration that comes after the operator's command waits for it, and the
+   command waits only for the holds granted before it. The epoch `FOR SHARE` stays in the hold: it is what makes a removal that
+   took the epoch wait for a publication that is committing. The gate is a table, not an advisory lock, because `LOCK TABLE` checks
+   privileges: no role but the table's owner can take it (the functions run as that owner), and no hashed advisory key of another
+   feature, some built from tenant-chosen text, can collide with it (security review of 2026-11-27, Nit 1).
 2. **The lock order** is now: the gate, then the requirement epoch row, then the advisory lock that counts the registered instances,
    then rows. No function waits for the gate while it holds a later lock.
 3. **The hold's body**, which replaces decision 1's text and is the text every later migration compares with (decision 3's drift
@@ -71,7 +72,7 @@ otherwise leave the operator unable to activate or remove any requirement, becau
                        WHERE f.capability = platform_requirement_hold.capability) THEN
            RAISE EXCEPTION 'no floor is registered for this capability' USING ERRCODE = 'invalid_parameter_value';
        END IF;
-       PERFORM pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+       LOCK TABLE public.platform_requirement_gate IN SHARE MODE;
        PERFORM 1 FROM public.platform_requirement_epoch e WHERE e.only_row FOR SHARE;
        SELECT r.kinds INTO v_kinds FROM public.platform_requirements r
         WHERE r.capability = platform_requirement_hold.capability;
@@ -80,7 +81,12 @@ otherwise leave the operator unable to activate or remove any requirement, becau
    $$;
    ```
 
-4. **The floor's isolation check** applies to a capability that has a floor row: the trigger refuses a removal outside `READ
+4. **The floor's checks.** A floor's function is admitted only when it is a plain function (not a procedure, an aggregate or a
+   set-returning function) with no argument and a boolean result, owned by the floor trigger's owner, `SECURITY DEFINER` with
+   `search_path = pg_catalog, pg_temp`, and with no overload in its schema; the floor trigger checks it again before each call,
+   since a function can be dropped, replaced or given away after it was registered, and refuses the removal when it no longer
+   is. A floor row is deleted only by the down migration of the design that registered it (the transaction flag
+   `sagat.floor_change`), and the table cannot be truncated. The floor's isolation check applies to a capability that has a floor row: the trigger refuses a removal outside `READ
    COMMITTED` only when it is about to read a floor, since only that read needs the committed versions. A removal of a capability
    with no floor behaves as before this record.
 5. **The floors' closed list.** `platform_requirement_floors.capability` is bounded by a fourth closed check,
@@ -96,9 +102,8 @@ What the gate does not cover, recorded as Gap 045-006 in `specs/045-activity-tim
 (`instance_heartbeat_reporting_change`) reads the epoch `FOR SHARE SKIP LOCKED` without the gate, because it never waits, so beats
 can still overlap an operator's wait. That breaks no guarantee of this record: it only lengthens a wait that the beat rate bounds.
 
-A role that may call `pg_advisory_xact_lock` (every role, by default) can take the gate itself. That gives the runtime role no new
-power: it can already hold the epoch for the length of a transaction through the hold or a registration, and it can already take the
-advisory lock that counts registrations.
+No role but the gate's owner may lock it, so the runtime role reaches it only through the hold and a registration, for the length
+of its own transaction: that delays an operator's command by at most that transaction, which the command's bounds then refuse.
 
 ## Evidence
 

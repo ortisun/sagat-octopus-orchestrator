@@ -7,8 +7,8 @@
 //! (`activate`, `remove`) calls functions the runtime role cannot execute: it runs with the schema-owning role, as
 //! `provision-tenant` does, and the feature's own activation runs in the same transaction through the closure it passes.
 //!
-//! Locks, in the order the functions take them: the gate of ADR-0112's amendment (a transaction advisory lock, shared to
-//! register or to hold a requirement for a publication, exclusive to change a requirement, so that a stream of holds cannot
+//! Locks, in the order the functions take them: the gate of ADR-0112's amendment (the table `platform_requirement_gate`, SHARE to
+//! register or to hold a requirement for a publication, EXCLUSIVE to change a requirement, so that a stream of holds cannot
 //! starve the operator), the requirement epoch row (`FOR SHARE` to register or hold, `FOR UPDATE` to change a requirement),
 //! the advisory lock that counts the table, then rows.
 //!
@@ -474,11 +474,25 @@ pub const HOLD_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 /// The reason of the [`StoreError::Unavailable`] of [`hold_requirement`] when its wait reached [`HOLD_LOCK_TIMEOUT`].
 pub const REQUIREMENT_BUSY: &str = "REQUIREMENT_BUSY";
 
+/// What the publication hold answered. `#[must_use]`: a publication that does not look at it publishes under a requirement
+/// that may not be recorded.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// The requirement is recorded for control planes and engines, and cannot be removed before the publication commits.
+    Active,
+    /// It is not: the publication is refused `CAPABILITY_NOT_ACTIVE`.
+    NotActive,
+}
+
 /// The publication hold of ADR-0112 (decision 1 and its amendment of 2026-11-27), called by a publication in its own
-/// transaction as its last statement before its commit: it takes the registry's gate shared and the requirement epoch `FOR
+/// transaction as its last statement before its commit: it takes the registry's gate (`platform_requirement_gate` in SHARE MODE) and the requirement epoch `FOR
 /// SHARE` until the transaction ends, so a removal of `capability` cannot commit between this answer and the publication's
-/// commit, and answers whether `capability` is recorded for both control planes and engines. `false` is the publication's
-/// refusal `CAPABILITY_NOT_ACTIVE` with the capability named, which is the caller's to give.
+/// commit, and answers whether `capability` is recorded for both control planes and engines. [`Held::NotActive`] is the
+/// publication's refusal `CAPABILITY_NOT_ACTIVE` with the capability named, which is the caller's to give.
+///
+/// It must not run inside a savepoint that may be rolled back: `ROLLBACK TO SAVEPOINT` releases the locks taken after the
+/// savepoint, and the publication would commit with an answer nothing protects.
 ///
 /// Each lock wait of the hold (the gate, then the epoch) is bounded by [`HOLD_LOCK_TIMEOUT`], set just before the hold and set
 /// back to the transaction's own value after it, so no earlier statement of the publication is limited by it. It takes the
@@ -492,7 +506,7 @@ pub const REQUIREMENT_BUSY: &str = "REQUIREMENT_BUSY";
 pub async fn hold_requirement(
     publication: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     capability: Capability,
-) -> Result<bool, StoreError> {
+) -> Result<Held, StoreError> {
     let conn: &mut sqlx::PgConnection = publication;
     let previous: String = sqlx::query_scalar("SELECT current_setting('lock_timeout')")
         .fetch_one(&mut *conn)
@@ -513,7 +527,11 @@ pub async fn hold_requirement(
         .execute(&mut *conn)
         .await
         .map_err(store_error)?;
-    Ok(active)
+    Ok(if active {
+        Held::Active
+    } else {
+        Held::NotActive
+    })
 }
 
 /// The two refusals of the hold that are its own: a wait over its bound (`55P03`) and a capability with no floor (`22023`).
