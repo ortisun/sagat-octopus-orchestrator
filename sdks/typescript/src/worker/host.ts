@@ -18,6 +18,10 @@ import {
   type WriteBlobOptions,
 } from './activity.js';
 import { WorkerRpc, checkGrpcConfig, type TaskLease, type WriteBlobRequest } from './grpc.js';
+import {
+  AttemptCapture, CaptureSession, hostStarted, hostStopped, isStepLogLevel, outcomeOfError, processCapture,
+  type StepLogCarry, type StepLogDropReason, type StepLogOptions,
+} from './step-logs.js';
 import type * as grpc from '@grpc/grpc-js';
 
 export interface WorkerConfig {
@@ -46,6 +50,8 @@ export interface WorkerConfig {
   interceptors?: grpc.Interceptor[];
   /** Called for each thing that happens in the host: the hook for metrics. */
   onEvent?: (event: WorkerEvent) => void;
+  /** Step-log capture at protocol 1.7 (SPEC §6.9): on, at `info`, unless said otherwise. */
+  stepLogs?: StepLogOptions;
 }
 
 export type WorkerTransport = 'auto' | 'poll' | 'stream';
@@ -60,7 +66,9 @@ export type WorkerEvent =
   | { type: 'task.dropped'; taskId: string; reason: string }
   | { type: 'heartbeat'; taskId: string }
   | { type: 'receive.failed'; code: string }
-  | { type: 'reconnect' };
+  | { type: 'reconnect' }
+  /** Step-log records the SDK dropped for an attempt, by reason (SPEC §6.9), once when the attempt ends. */
+  | { type: 'steplogs.dropped'; taskId: string; reason: StepLogDropReason; records: number };
 
 type Kind = 'activity' | 'compensation' | 'reconciler';
 
@@ -79,6 +87,10 @@ const MAX_HAND_BACKS = 8;
 // The first protocol minor on which the host hands a lease back: its server reserves TASK_NOT_STARTED, and an older one
 // would record it as an ordinary failure that spends the attempt (decision D006-080).
 const HAND_BACK_MINOR = 8;
+// The first protocol minor of step logs (design 041, SPEC §6.9).
+const STEP_LOG_MINOR = 7;
+// The one local line per process when the server stops capture or the secret set is full (SPEC §6.9).
+const warnedOnce = new Set<string>();
 const CODE = /^[A-Z0-9_]{1,64}$/;
 
 function minorOf(version: string): number {
@@ -154,6 +166,9 @@ export class WorkerHost {
   #handBackQueue: Array<{ lease: TaskLease; run: () => Promise<void>; drop: () => void }> = [];
   #handBackNext = 0;
   #handBacksRunning = 0;
+  // Step-log capture: the session's state from its registration, and the attempts that capture now (SPEC §6.9).
+  #captureSession = new CaptureSession(false);
+  readonly #captures = new Set<AttemptCapture>();
   // Called with the number of leases after a poll answer or a stream frame is read and before it is looked at; unset
   // except in the tests, which hold the loop there while `stop` begins.
   private frameReceived: ((leases: number) => Promise<void> | void) | undefined;
@@ -166,6 +181,9 @@ export class WorkerHost {
     }
     if (config.transport !== undefined && !['auto', 'poll', 'stream'].includes(config.transport)) {
       throw new SagatError({ code: 'VALIDATION_FAILED', message: 'transport is auto, poll or stream' });
+    }
+    if (config.stepLogs?.level !== undefined && !isStepLogLevel(config.stepLogs.level)) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'stepLogs.level is trace, debug, info, warn or error' });
     }
     this.log = safeLogger(config.logger ?? silentLogger);
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
@@ -248,6 +266,7 @@ export class WorkerHost {
     }
     this.running = true;
     this.stopping = false;
+    hostStarted();
     this.loop = this.run();
   }
 
@@ -292,8 +311,10 @@ export class WorkerHost {
     }
     const pending = Promise.all([...[...this.inflight.values()].map((task) => task.done), ...this.#handBacks.values()]);
     if ((await within(pending, grace - Date.now())) === 'late') {
+      // The attempts left send what they buffered once, as one batch each, before their tokens are cancelled (SPEC §6.9).
+      const flushed = Promise.all([...this.#captures].map((capture) => capture.flushOnShutdown(1500)));
       for (const task of this.inflight.values()) task.abort.abort('shutdown');
-      await Promise.race([pending, sleep(2000).catch(() => undefined)]);
+      await Promise.race([Promise.all([pending, flushed]), sleep(2000).catch(() => undefined)]);
     }
     // The hand-backs still waiting their turn when the grace ends are not made: their leases lapse.
     const left = this.#handBackQueue.slice(this.#handBackNext);
@@ -308,6 +329,7 @@ export class WorkerHost {
     for (const stopBeat of this.#beats) stopBeat();
     this.#beats.clear();
     this.running = false;
+    hostStopped();
     this.#rpc?.close();
     this.#rpc = undefined;
   }
@@ -333,6 +355,10 @@ export class WorkerHost {
         this.workerId = response.worker_id;
         this.#session = response.session_token;
         this.accepted = response.accepted_protocol_version;
+        // A new session: the policy of this registration, for the attempts dispatched from now on (SPEC §6.9).
+        this.#captureSession = new CaptureSession(
+          minorOf(this.accepted) >= STEP_LOG_MINOR && response.step_logs?.enabled === true && this.#config.stepLogs?.capture !== false,
+        );
         this.streamUnavailable = false;
         this.log.info('worker registered', { worker: this.#config.workerName, protocol: this.accepted });
         this.#emit({ type: 'registered', protocolVersion: this.accepted });
@@ -650,6 +676,14 @@ export class WorkerHost {
       this.#beats.delete(stopBeat);
     });
 
+    const capture = this.#capture(lease, minor);
+    const task = lease.task_id;
+    // The attempt's logger: capture first, then the host's logging as it always was (SPEC §6.9).
+    const logAt = (level: 'trace' | 'debug' | 'info' | 'warn' | 'error', host: 'debug' | 'info' | 'warn' | 'error') =>
+      (message: string, fields?: Record<string, unknown>, error?: unknown): void => {
+        capture?.log(level, message, fields, error);
+        this.log[host](message, { ...fields, task });
+      };
     let secretsCache: Promise<Secrets> | undefined;
     const secretsHolder: { dispose?: () => void; finished?: boolean } = {};
     // The secrets are wiped and refused when the handler is done, however it ended.
@@ -681,10 +715,11 @@ export class WorkerHost {
       },
       signal: abort.signal,
       log: {
-        debug: (message, fields) => this.log.debug(message, { ...fields, task: lease.task_id }),
-        info: (message, fields) => this.log.info(message, { ...fields, task: lease.task_id }),
-        warn: (message, fields) => this.log.warn(message, { ...fields, task: lease.task_id }),
-        error: (message, fields) => this.log.error(message, { ...fields, task: lease.task_id }),
+        trace: logAt('trace', 'debug'),
+        debug: logAt('debug', 'debug'),
+        info: logAt('info', 'info'),
+        warn: logAt('warn', 'warn'),
+        error: logAt('error', 'error'),
       },
       secrets: () => {
         // Asked for by code the handler left behind, after it returned: refused, and nothing is fetched.
@@ -726,7 +761,28 @@ export class WorkerHost {
     // The handler is done: what it was given is wiped now, not when the report is made (SPEC §6.7).
     secretsHolder.finished = true;
     secretsHolder.dispose?.();
+    // Its logger captures nothing more; the report carries what it captured (SPEC §6.9).
+    capture?.end();
+    let carried = false;
+    const carry = async (): Promise<StepLogCarry | undefined> => {
+      carried = true;
+      return capture?.carry();
+    };
+    try {
+      await this.#settle(lease, minor, started, registered, kind, result, failure, leftToLapse, state, carry);
+    } finally {
+      if (!carried) capture?.discard();
+      if (capture) this.#captures.delete(capture);
+    }
+  }
 
+  /** What the handler's end means for the report (SPEC §6.4, §6.5), with the attempt's carry when it reports. */
+  async #settle(
+    lease: TaskLease, minor: number, started: number, registered: Registered, kind: TaskKind, handled: unknown,
+    failure: ActivityFailure | undefined, leftToLapse: boolean, state: { lost: boolean },
+    carry: () => Promise<StepLogCarry | undefined>,
+  ): Promise<void> {
+    let result = handled;
     if (leftToLapse) {
       this.log.info('the host stopped: the cancelled activity is not reported, its lease will lapse', { task: lease.task_id });
       return;
@@ -740,7 +796,7 @@ export class WorkerHost {
       // TASK_NOT_STARTED is the host's word that no handler ran (SPEC §6.2): a handler that uses it reports an ordinary
       // failure, with its own message and retryable.
       const code = failure.code === 'TASK_NOT_STARTED' ? 'WORKER_ERROR' : failure.code;
-      await this.fail(lease, minor, code, failure.message, failure.retryable, started);
+      await this.fail(lease, minor, code, failure.message, failure.retryable, started, undefined, await carry());
       return;
     }
 
@@ -748,7 +804,7 @@ export class WorkerHost {
       const verdict = result as Partial<Verdict> | undefined;
       const effect = verdict?.effect;
       if (effect !== 'applied' && effect !== 'not_applied' && effect !== 'unknown') {
-        await this.fail(lease, minor, 'RECONCILIATION_ANSWER_INVALID', 'a reconciler answers applied, notApplied or unknown', false, started);
+        await this.fail(lease, minor, 'RECONCILIATION_ANSWER_INVALID', 'a reconciler answers applied, notApplied or unknown', false, started, undefined, await carry());
         return;
       }
       result = effect === 'applied' && (verdict as { output?: unknown }).output !== undefined
@@ -762,24 +818,58 @@ export class WorkerHost {
         this.ensureBlobAttempt(minor, { finished: false });
       } catch {
         await this.fail(lease, minor, minor < 3 ? 'UNSUPPORTED_PROTOCOL' : 'OUTPUT_INVALID',
-          minor < 3 ? 'blob output requires worker protocol 1.3' : 'the blob output descriptor is malformed', false, started);
+          minor < 3 ? 'blob output requires worker protocol 1.3' : 'the blob output descriptor is malformed', false, started, undefined, await carry());
         return;
       }
-      await this.complete(lease, minor, '', started, result.descriptor);
+      await this.complete(lease, minor, '', started, result.descriptor, await carry());
       return;
     }
     let output: string;
     try {
       output = result === undefined ? '' : encodeJson(result);
     } catch (error) {
-      await this.fail(lease, minor, 'OUTPUT_INVALID', error instanceof SagatError ? error.message : 'the output is not JSON', false, started);
+      await this.fail(lease, minor, 'OUTPUT_INVALID', error instanceof SagatError ? error.message : 'the output is not JSON', false, started, undefined, await carry());
       return;
     }
     if (Buffer.byteLength(output) > MAX_OUTPUT_BYTES) {
-      await this.fail(lease, minor, 'PAYLOAD_TOO_LARGE', 'the output is over 256 KiB', false, started);
+      await this.fail(lease, minor, 'PAYLOAD_TOO_LARGE', 'the output is over 256 KiB', false, started, undefined, await carry());
       return;
     }
-    await this.complete(lease, minor, output, started);
+    await this.complete(lease, minor, output, started, undefined, await carry());
+  }
+
+  /**
+   * The capture of an attempt when its session captures (SPEC §6.9), on the channel of this run of the host: a batch
+   * still on its way after `stop` never opens another one.
+   */
+  #capture(lease: TaskLease, minor: number): AttemptCapture | undefined {
+    const session = this.#captureSession;
+    if (!session.enabled || session.stopped || processCapture.secrets.full) return undefined;
+    const rpc = this.#channel();
+    const capture = new AttemptCapture({
+      session: () => ({ workerId: this.workerId, token: this.#session }),
+      append: async (request, deadlineMs) => {
+        if (this.#rpc !== rpc) return { kind: 'error', status: 'CANCELLED', retryAfterMs: null };
+        try {
+          const answer = await rpc.appendStepLogs(request as never, deadlineMs);
+          return { kind: 'answer', verdict: answer.verdict, stopReason: answer.stop_reason, retryAfterMs: answer.retry_after_ms };
+        } catch (error) {
+          return outcomeOfError(error);
+        }
+      },
+      timeoutMs: this.#config.timeoutMs ?? 30_000,
+      dropped: (reason, records) => this.#emit({ type: 'steplogs.dropped', taskId: lease.task_id, reason, records }),
+      warnOnce: (message) => {
+        if (warnedOnce.has(message)) return;
+        warnedOnce.add(message);
+        this.log.warn(message);
+      },
+    }, session, {
+      task_id: lease.task_id, run_id: lease.run_id, step_id: lease.step_id, attempt: lease.attempt,
+      generation: lease.generation, lease_token: lease.lease_token, instance: instanceOf(lease, minor),
+    }, this.#config.stepLogs?.level ?? 'info');
+    this.#captures.add(capture);
+    return capture;
   }
 
   private ensureBlobAttempt(minor: number, holder: { finished?: boolean }): void {
@@ -957,7 +1047,7 @@ export class WorkerHost {
     }
   }
 
-  private async complete(lease: TaskLease, minor: number, output: string, started: number, blob?: BlobDescriptor): Promise<void> {
+  private async complete(lease: TaskLease, minor: number, output: string, started: number, blob?: BlobDescriptor, carry?: StepLogCarry): Promise<void> {
     try {
       const answer = await this.withRetries(() =>
         this.#channel().completeStep(
@@ -974,6 +1064,8 @@ export class WorkerHost {
             output_sha256: blob?.sha256 ?? '',
             traceparent: lease.traceparent,
             instance: instanceOf(lease, minor),
+            // The same carry on every resend of the report (SPEC §6.9).
+            ...(carry && minor >= STEP_LOG_MINOR ? { step_logs: carry } : {}),
           },
           lease.traceparent || undefined,
         ),
@@ -989,7 +1081,9 @@ export class WorkerHost {
     }
   }
 
-  private async fail(lease: TaskLease, minor: number, code: string, message: string, retryable: boolean, started: number, rpc?: WorkerRpc): Promise<void> {
+  private async fail(
+    lease: TaskLease, minor: number, code: string, message: string, retryable: boolean, started: number, rpc?: WorkerRpc, carry?: StepLogCarry,
+  ): Promise<void> {
     const safeCode = CODE.test(code) ? code : 'WORKER_ERROR';
     try {
       const answer = await this.withRetries(() =>
@@ -1007,6 +1101,7 @@ export class WorkerHost {
             retryable,
             traceparent: lease.traceparent,
             instance: instanceOf(lease, minor),
+            ...(carry && minor >= STEP_LOG_MINOR ? { step_logs: carry } : {}),
           },
           lease.traceparent || undefined,
         ),
@@ -1041,6 +1136,14 @@ export class WorkerHost {
       },
       lease.traceparent || undefined,
     );
+    // Every value the process resolves joins its secret set before any handler can see it (SPEC §6.7, §6.9).
+    if (processCapture.secrets.add(answer.secrets.map((secret) => secret.value))) {
+      const line = 'the secret set of the process is full: step-log capture stops for the process';
+      if (!warnedOnce.has(line)) {
+        warnedOnce.add(line);
+        this.log.warn(line);
+      }
+    }
     // The handler returned while this was on its way: nothing of it is kept.
     if (holder.finished) {
       for (const secret of answer.secrets) Buffer.from(secret.value).fill(0);

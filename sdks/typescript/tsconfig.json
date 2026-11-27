@@ -25,6 +25,7 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "conformance/**/*.ts",
-    "examples/**/*.ts"
+    "examples/**/*.ts",
+    "bench/**/*.ts"
   ]
 }
