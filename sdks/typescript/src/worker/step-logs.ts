@@ -616,7 +616,7 @@ export class AttemptCapture {
         this.#tick = setInterval(() => this.#onTick(), LIMITS.flushMs);
         this.#tick.unref?.();
       }
-      if (this.#buffer.length >= LIMITS.flushRecords && !this.#inFlight) this.#send(this.#cut(this.#buffer.length));
+      if (this.#buffer.length >= LIMITS.flushRecords && !this.#inFlight && !this.#batchesStopped) this.#send(this.#cut(this.#buffer.length));
     } catch {
       // A bug of the capture path costs the record, never the activity.
     }

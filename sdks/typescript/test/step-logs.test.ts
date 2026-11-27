@@ -496,6 +496,23 @@ test('UNIMPLEMENTED stops the batches of the attempt, and the report carries the
   assert.deepEqual(drops.sort(), [['report_deadline', 80], ['send_failed', 256]]);
 });
 
+test('after UNIMPLEMENTED no call cuts another batch, however many records it buffers', async () => {
+  fake.appendAnswers = [{ code: grpc.status.UNIMPLEMENTED }];
+  const h = host();
+  h.registerActivity('work', async (_input, context) => {
+    for (let n = 1; n <= 256; n++) context.log.info(`line ${n}`);
+    await until(() => fake.of('appendStepLogs').length === 1, 'the refused batch');
+    await new Promise((resolve) => setImmediate(resolve));
+    for (let n = 257; n <= 800; n++) context.log.info(`line ${n}`);
+    return { ok: true };
+  });
+  await h.start();
+  fake.leases = [lease()];
+  await until(() => fake.of('completeStep').length === 1, 'the report');
+  assert.equal(fake.of('appendStepLogs').length, 1);
+  assert.equal(fake.of('completeStep')[0]!.request['step_logs'].highest_sequence, 800);
+});
+
 test('a lost answer to a carrying report sends the same carry again, and a failure carries too', async () => {
   fake.completeFailures = [grpc.status.UNAVAILABLE];
   await runOne(3);
