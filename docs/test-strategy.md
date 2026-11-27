@@ -35,7 +35,9 @@ merges a pull request would prove again what the pull request proved):
   execution and run modules of `crates/application` changes (constitution 4.4.0, OD-2026-11-12-4). The same change will
   also run design 052's throughput regression gate (constitution 5.1.0, Owner decision 2026-11-25-3): base and head
   alternated on the standard hosted runner, failing on a slowdown beyond the minimum detectable effect of its recorded
-  pilot. The gate is not built yet (Task 052-14); until it is, nothing runs it.
+  pilot. The gate is not built yet (Task 052-11); until it is, nothing runs it. Design 052's chart checker
+  (`scripts/check-chart-wake.py`) will run in the `documentation` job on every pull request (constitution 5.1.0); until
+  it does, it runs in the `architecture` job and at every full run and release.
   The step logs of design 041 (constitution 4.5.0, OD-2026-11-15-10; task T041-32): a file of the server's step-log code
   (a `step_logs` module or directory of any crate, a `step_log*` migration, the gRPC limits and service, the execution
   and scripts routes, the scripts service, the maintenance store and the scheduler's passes) selects

@@ -64,6 +64,9 @@ spec:
             - {name: SAGAT_SHARD_LEASE_SECS, value: {{ $e.shardLeaseSeconds | quote }}}
             - {name: SAGAT_SCHEDULER_CONCURRENCY, value: {{ $e.schedulerConcurrency | quote }}}
             - {name: SAGAT_SCHEDULER_BATCH, value: {{ $e.schedulerBatch | quote }}}
+            - {name: SAGAT_SCHEDULES_ENABLED, value: {{ .Values.schedules.enabled | quote }}}
+            # exported only, for the alert on a job that never writes (D2270); nothing the engine does depends on it
+            - {name: SAGAT_SCHEDULES_AUTO_HANDOVER, value: {{ include "sagat.autoHandover.enabled" . | quote }}}
             {{- if .Values.workerPools }}
             - {name: SAGAT_WORKER_POOLS, value: {{ include "sagat.workerPools" . | quote }}}
             {{- end }}

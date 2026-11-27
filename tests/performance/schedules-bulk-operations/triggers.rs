@@ -59,6 +59,11 @@ fn cron_workflow(name: &str) -> Value {
 
 /// `triggers` cron triggers over 200 invented tenants, a schedule equal to each but every four-thousandth, as `trigger_scale.rs`.
 async fn seed_steady(pool: &PgPool, triggers: usize) -> Duration {
+    seed_steady_over(pool, triggers, 200).await
+}
+
+/// [`seed_steady`] over `tenants` invented tenants.
+async fn seed_steady_over(pool: &PgPool, triggers: usize, tenants: usize) -> Duration {
     let seeding = Instant::now();
     for table in ["workflow_triggers", "schedules", "schedule_revisions"] {
         sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -75,11 +80,12 @@ async fn seed_steady(pool: &PgPool, triggers: usize) -> Duration {
         .expect("replica role");
     sqlx::query(
         "INSERT INTO workflow_triggers (id, tenant_id, namespace_id, workflow_id, version_id, kind, cron, timezone) \
-         SELECT gen_random_uuid(), md5((n % 200)::text)::uuid, md5('namespace')::uuid, md5('workflow')::uuid, \
+         SELECT gen_random_uuid(), md5((n % $2)::text)::uuid, md5('namespace')::uuid, md5('workflow')::uuid, \
                 md5('version')::uuid, 'cron', (n % 60)::text || ' * * * *', 'UTC' \
            FROM generate_series(1, $1) AS n",
     )
     .bind(i64::try_from(triggers).expect("small"))
+    .bind(i64::try_from(tenants).expect("small"))
     .execute(&mut *conn)
     .await
     .expect("the triggers");
@@ -636,5 +642,166 @@ pub async fn steady_state(scenario: &str, sizes: &[usize]) {
 pub async fn backlog(scenario: &str, sizes: &[usize], budget: Duration) {
     for size in sizes {
         after_upgrade(&format!("{scenario}-{size}"), *size, budget).await;
+    }
+}
+
+/// The tenant set of the audit under the lock (G2248, ADR-0091 decision 7): at `triggers` converged cron triggers of `tenants`
+/// tenants, the statement the move runs under the table lock to record one row per tenant that has a cron trigger, and the whole
+/// move (`schedule_trigger_handover_record`, the census, the tenant set and the state) in the activation's transaction, each in a
+/// transaction that is rolled back so that every sample starts from the same `LEGACY` row. As the owner, which the move runs as.
+async fn tenant_set(scenario: &str, triggers: usize, tenants: usize) {
+    let before = load_now();
+    let b = bench().await;
+    let environment = environment(&b.w.db.pool).await;
+    let seeded_in = seed_steady_over(&b.w.db.pool, triggers, tenants).await;
+    converge_the_stragglers(&b.w.db.pool).await;
+    sqlx::query("ANALYZE workflow_triggers")
+        .execute(&b.w.db.pool)
+        .await
+        .expect("analyze");
+    let distinct: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT tenant_id) FROM workflow_triggers WHERE kind = 'cron'",
+    )
+    .fetch_one(&b.w.db.pool)
+    .await
+    .expect("tenants");
+    assert_eq!(distinct, i64::try_from(tenants).expect("small"));
+
+    let mut set_ms = Vec::new();
+    let mut move_ms = Vec::new();
+    let mut recorded = 0;
+    for _ in 0..SAMPLES {
+        // the tenant set alone, as the move writes it
+        let mut tx = b.w.db.pool.begin().await.expect("transaction");
+        let started = Instant::now();
+        let rows = sqlx::query(
+            "INSERT INTO schedule_trigger_handover_tenants (epoch, tenant_id, audit_id) \
+             SELECT 0, d.tenant_id, gen_random_uuid() \
+               FROM (SELECT DISTINCT t.tenant_id FROM workflow_triggers t WHERE t.kind = 'cron') d",
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("the tenant set")
+        .rows_affected();
+        set_ms.push(ms(started.elapsed()));
+        assert_eq!(rows, u64::try_from(tenants).expect("small"));
+        tx.rollback().await.expect("rollback");
+
+        // the whole move under the lock, as the operator's and the job's activation make it, after recording the requirement
+        let mut tx = b.w.db.pool.begin().await.expect("transaction");
+        let (outcome,): (String,) = sqlx::query_as(
+            "SELECT out_outcome FROM platform_requirement_activate('schedules-v1', ARRAY['EXECUTION_ENGINE'], 'perf')",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the requirement");
+        assert_eq!(outcome, "RECORDED");
+        let started = Instant::now();
+        let moved: Option<i32> = sqlx::query_scalar(
+            "SELECT schedule_trigger_handover_record('perf', 'OPERATOR', interval '10 minutes')",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the move");
+        move_ms.push(ms(started.elapsed()));
+        recorded = moved.expect("handed over in the sample");
+        tx.rollback().await.expect("rollback");
+    }
+    assert_eq!(recorded, i32::try_from(tenants).expect("small"));
+
+    // the check of convergence the wrapper makes under the lock before the move makes it again (correctness review of
+    // 2026-11-15, M1): its cost here, so that the two are seen beside the activation's 3 s
+    let (unconverged_ms, still): (Vec<f64>, bool) = timed(|| async {
+        sqlx::query_scalar("SELECT schedule_trigger_unconverged()")
+            .fetch_one(&b.w.db.pool)
+            .await
+            .expect("unconverged")
+    })
+    .await;
+    assert!(!still, "converged");
+
+    // the tenant audit after a committed handover (correctness review M2): the completion is one statement, under the 5 s
+    // statement timeout of the job's pool. The invented tenants become real ones first (an audit record names its tenant).
+    sqlx::query(
+        "INSERT INTO tenants (id, slug, created_at) \
+         SELECT DISTINCT t.tenant_id, 'perf-' || replace(t.tenant_id::text, '-', ''), now() \
+           FROM workflow_triggers t WHERE t.kind = 'cron' ON CONFLICT DO NOTHING",
+    )
+    .execute(&b.w.db.pool)
+    .await
+    .expect("the tenants");
+    let mut tx = b.w.db.pool.begin().await.expect("transaction");
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM platform_requirement_activate('schedules-v1', ARRAY['EXECUTION_ENGINE'], 'perf')",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("the requirement");
+    assert_eq!(outcome, "RECORDED");
+    let moved: Option<i32> = sqlx::query_scalar(
+        "SELECT schedule_trigger_handover_record('perf', 'OPERATOR', interval '10 minutes')",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("the move");
+    assert_eq!(moved, Some(i32::try_from(tenants).expect("small")));
+    tx.commit().await.expect("the handover commits");
+    let started = Instant::now();
+    let (written, total): (i32, i32) =
+        sqlx::query_as("SELECT out_written, out_tenants FROM schedule_trigger_handover_audit()")
+            .fetch_one(&b.w.db.pool)
+            .await
+            .expect("the tenant audit");
+    let audit_ms = ms(started.elapsed());
+    assert_eq!(
+        (written, total),
+        (recorded, recorded),
+        "one record per tenant"
+    );
+
+    let set = Summary::of(&set_ms).expect("samples");
+    let whole = Summary::of(&move_ms).expect("samples");
+    let fragment = json!({
+        "triggers": triggers, "tenants": tenants, "state": "converged (every cron trigger has its schedule)",
+        "seeded_in_s": seeded_in.as_secs_f64(),
+        "tenant_set_ms": summary_json(&set_ms),
+        "move_under_the_lock_ms": summary_json(&move_ms),
+        "unconverged_check_ms": summary_json(&unconverged_ms),
+        "audit_completion_ms": audit_ms,
+        "samples": SAMPLES,
+    });
+    let verdicts = [
+        Verdict::at_most(
+            "the_tenant_set_adds_at_most_100_ms_under_the_lock",
+            "p95 of the tenant set's statement (G2248: above it, the owner is asked)",
+            set.p95,
+            100.0,
+            "ms",
+        ),
+        Verdict::at_most(
+            "the_tenant_audit_completes_within_the_jobs_statement_timeout",
+            "the completion of every tenant's audit record, one statement (the job's pool: 5 s)",
+            audit_ms,
+            5_000.0,
+            "ms",
+        ),
+        Verdict::at_most(
+            "the_move_stays_within_the_activations_step_bound",
+            "slowest move under the lock (the census, the tenant set, the state; ADR-0091 decision 4: 3 s)",
+            move_ms.iter().copied().fold(0.0, f64::max),
+            3_000.0,
+            "ms",
+        ),
+    ];
+    println!(
+        "{scenario}: {triggers} triggers of {tenants} tenants: tenant set p50 {:.1} ms p95 {:.1} ms; whole move p50 {:.1} ms p95 {:.1} ms; audit {audit_ms:.1} ms",
+        set.p50, set.p95, whole.p50, whole.p95
+    );
+    conclude(scenario, environment, before, fragment, &verdicts);
+}
+
+pub async fn tenant_sets(scenario: &str, sizes: &[usize], tenants: usize) {
+    for size in sizes {
+        tenant_set(&format!("{scenario}-{size}-{tenants}"), *size, tenants).await;
     }
 }

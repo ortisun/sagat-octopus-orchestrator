@@ -431,17 +431,20 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   changes and of the packages that depend on them (and of the SDKs, the Studio and the scripts whose
   files it changes) and the integration suites that it changes, and, when it changes the code that
   runs a lease or a completion, the suite that budgets what they cost the database and, once
-  design 052 has built it, the throughput regression gate (the base and the head of the pull
-  request run the base's scenario definitions, that is its workload, rate and order, each built by
-  the side it measures, alternated, on the standard hosted runner, and the gate fails
-  on a slowdown larger than the minimum detectable effect that its recorded pilot measured on that
-  runner, by the rule design 052 states), and, when it
+  design 052 has built it, the throughput regression gate (the merge base and the head of the
+  pull request, alternated on the standard hosted runner, both driven by the merge base's scenario
+  and configuration; the gate fails on a slowdown larger than the minimum detectable effect that
+  its recorded pilot measured on that runner, by the rule design 052 states, and a pull request on
+  which that scenario cannot build or run passes as not comparable only with a pilot re-run on its
+  own branch), and, when it
   changes the code that captures, sends, stores or serves step logs (the server's step-log modules,
   the worker-protocol contract, or an SDK's capture code), the step-log suites (`integration_step_logs`;
   with it the budget suite for the server's step-log code and the SDK conformance suite for the
   worker-protocol contract and an SDK's capture code), and, when it changes a contract file
   (`specs/<feature>/contracts/`), the contract suites and the unit tests of the packages that read
-  it and of the packages that depend on those, and only those;
+  it and of the packages that depend on those, and, on every pull request once design 052 has built
+  it, that design's chart checker (it renders the Helm chart and fails on one that opens the
+  platform's broker channel without its credentials), and only those;
   `scripts/select-test-targets.py` decides which, deriving who reads a contract from the sources. A merge into
   `develop` starts no run: the push that merges a pull request would prove again what the pull
   request proved. A release MUST

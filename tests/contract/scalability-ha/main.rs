@@ -13,6 +13,7 @@ use regex::Regex;
 use serde_json::Value;
 
 mod database_chart;
+mod handover_chart;
 mod redis_chart;
 mod tls_chart;
 
@@ -484,8 +485,8 @@ fn control_plane_and_engine_egress_only_to_declared_dependencies() {
     let docs = render(&base());
     assert_eq!(
         of_kind(&docs, "NetworkPolicy").len(),
-        6,
-        "two ingress, two core egress and one policy per worker pool"
+        7,
+        "two ingress, two core egress, one policy per worker pool and the handover job's (ADR-0091)"
     );
 
     let control_plane = named(

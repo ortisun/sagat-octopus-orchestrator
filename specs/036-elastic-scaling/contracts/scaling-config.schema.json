@@ -110,6 +110,7 @@
     "source": {
       "type": "object",
       "required": ["name", "kind", "unit", "range", "intervalSeconds", "freshnessSeconds"],
+      "unevaluatedProperties": false,
       "properties": {
         "name": { "$ref": "#/$defs/name" },
         "kind": { "enum": ["METRICS_QUERY", "BROKER_QUEUE"] },

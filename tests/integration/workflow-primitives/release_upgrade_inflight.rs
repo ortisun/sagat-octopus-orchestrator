@@ -15,10 +15,14 @@ const RELEASE: &str = "bfda342073db71e84f30bdc79ccf3fbc97a7153c";
 
 pub(super) fn verify_overlays(build: &Value) {
     let overlays = build["overlays"].as_array().expect("verified overlay list");
-    let expected: [(&str, &[u8]); 6] = [
+    let expected: [(&str, &[u8]); 7] = [
         (
             "tests/fixtures/release-upgrade/callback_cutover.rs",
             include_bytes!("../../fixtures/release-upgrade/callback_cutover.rs"),
+        ),
+        (
+            "tests/fixtures/release-upgrade/cron_trigger.rs",
+            include_bytes!("../../fixtures/release-upgrade/cron_trigger.rs"),
         ),
         (
             "tests/fixtures/release-upgrade/cutover.rs",
@@ -178,7 +182,7 @@ async fn run_profile(mode: control::ProfileMode) {
         progress.enter("normal migration and current runtime-role endpoint");
         sagat_infra_postgres::migrate(&db.pool).await.expect("current normal migration");
         let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current migration boundary");
-        assert_eq!(after,20270210000100);
+        assert_eq!(after,20270211000300);
         let api=support::api::start_on_db(db,Options {runtime_role:true,..Options::default()}).await;
         let role:String=sqlx::query_scalar("SELECT current_user").fetch_one(&api.api_pool).await.expect("current service role");
         assert_eq!(role,"sagat_app");

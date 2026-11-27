@@ -14,10 +14,13 @@ New test targets (T030-003): `contract_service_operations`, `integration_service
 
 ## Phase 1 — Setup and governance
 
-- [ ] T030-001 Obtain the owner's acceptance of ADR-0065 and answers (or confirmed defaults) to
+- [x] T030-001 Obtain the owner's acceptance of ADR-0065 and answers (or confirmed defaults) to
   O1480–O1482; the coordinator records them in `docs/owner-decisions.md` and the ADR index. All FR.
   Files: `docs/adr/ADR-0065-*.md`, `specs/030-cross-namespace-services/research.md`. Evidence: dated
   owner decision; ADR status changed from Proposed.
+  Evidence (2026-11-24): under the owner's delegation (Owner decision 2026-11-24-4), ADR-0065 is
+  `Accepted (2026-11-24)` with its two refinements (research.md, Decision 030-007); O1480 (a), O1481 (a)
+  and O1482 (b) are decided in research.md with their reasoning; the ADR index row reads Accepted.
 - [ ] T030-002 Record the approved dependencies in the dependent specs: 002 (`runs.service_call_depth`,
   child inheritance), 014 (capability gate, quiescence), 016 (carrier extension, G1493), 009 (catalog
   and quotas), 011 (pins on promotion). FR-030-007, 021, 024, 026, 027. Files: the `spec.md` of those
@@ -47,7 +50,7 @@ New test targets (T030-003): `contract_service_operations`, `integration_service
   mapping. FR-030-001..006, 015, 019, 026. Files: `crates/domain/src/services.rs`,
   `crates/domain/tests/services.rs`. Evidence: unit and property tests.
 - [ ] T030-010 [P] `OperationId::derive` and handler run id derivation, domain-separated and
-  length-delimited. FR-030-010. Evidence: stability vectors shared with the five SDK test suites;
+  length-delimited. FR-030-010. Evidence: stability vectors shared with the six SDK test suites;
   collision property test.
 - [ ] T030-011 `NodeKind::ServiceCall` and definition validation (root only, required fields, sync
   and saga rules, 64-node ceiling). FR-030-007, 019, 036. Files: `crates/domain/src/workflow.rs`.
@@ -218,9 +221,9 @@ New test targets (T030-003): `contract_service_operations`, `integration_service
   `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/FlowServiceCall.cs`,
   `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/ServiceCallOptions.java`.
   Evidence: SDK unit tests.
-- [ ] T030-053 Conformance scenarios of `contracts/conformance.md` with reviewed goldens in all five
+- [ ] T030-053 Conformance scenarios of `contracts/conformance.md` with reviewed goldens in all six
   SDKs. FR-030-034. Evidence: `cargo test -p sagat-tests --test sdk_conformance -- --ignored` output
-  for all five languages (SC-030-002, SC-030-009).
+  for all six languages (SC-030-002, SC-030-009).
 - [ ] T030-054 [P] CLI `sagat service`, `sagat service-endpoint`, `sagat service-operation`; `sdks/SPEC.md`
   §7.2. FR-030-034. Files: `apps/cli/src/services.rs`, `apps/cli/src/args.rs`. Evidence: CLI tests.
 - [ ] T030-055 [US09] `compensateWith`/`irreversible` rules and the derived compensation instance
@@ -250,6 +253,56 @@ New test targets (T030-003): `contract_service_operations`, `integration_service
 - [ ] T030-064 Enable the capability by deployment setting after T030-063; the coordinator updates
   `docs/traceability.md`, `docs/roadmap.md` and `SPECIFICATION-INDEX.md`. FR-030-035. Evidence:
   owner approval of enablement.
+
+## Tasks added by the readiness review (2026-11-24)
+
+- [ ] T030-071 [P] Rust builder and client (`callService`, the `service(...)` contract builder), as the
+  other five. FR-030-034. Files: `sdks/rust/src/` (workflow builder and client modules). Evidence: SDK
+  unit tests; shared id vectors; the conformance scenarios of T030-053 in Rust.
+- [ ] T030-072 [US01] Contract revisions and endpoint revisions through feature 011's publication-request
+  flow in a namespace whose policy asks for approvals (O1482 (b)); pause and resume stay immediate.
+  FR-030-040. Files: `crates/application/src/services.rs`, `crates/application/src/versioning.rs` (a
+  request kind per document), `crates/infra-postgres/` (request kinds). Evidence: integration tests in
+  `integration_service_operations` (author cannot approve, an approved request applies once, a rejected
+  one applies nothing) and in `integration_gitops_versioning`.
+- [ ] T030-073 [US02] The handler run's start through design 043's run-input gate (creator label
+  `service`), its refusals mapped to `START_REFUSED` (`OPERATION_INPUT_INVALID`,
+  `RUN_INPUT_SCHEMA_UNUSABLE`) and its transient refusals to a deferral without attempts; the caller's
+  scheduling check with the same validator. FR-030-002, 009, 011. Files:
+  `crates/application/src/service_operations.rs`. Evidence: the architecture check that every creator is
+  given the gate (`scripts/check-architecture.py`) passes with the new creator; an integration test per
+  refusal.
+
+## Build slices (2026-11-24)
+
+Two builders, lane A (the server: `crates/domain`, `crates/infra-ir`, `crates/infra-schema`,
+`crates/infra-postgres`, `crates/application`, `crates/scheduler`, `crates/api-http`, `crates/telemetry`,
+`apps/control-plane`, `apps/execution-engine`, and the suites `tests/{integration,fault,security,performance,e2e}/service-operations/`)
+and lane B (the edges: the six `sdks/<language>`, `frontend/apps/studio`, `apps/cli`, `docs/`, and
+`tests/contract/sdk-conformance/`). The lanes never touch the same crate at once. Slice 0 is done first by
+either builder, because it is the contracts the others read (documentation first).
+
+| Slice | Lane | Tasks | Crates and files | Depends on | Gate test |
+|---|---|---|---|---|---|
+| 0 | either | T030-002, 003, 005, 006, 007, 008 | `specs/001-platform-foundation/contracts/`, `sdks/SPEC.md`, other features' `spec.md` notes, `tests/Cargo.toml` | T030-001 (done) | `contract_service_operations` schema tests; OpenAPI lint; the AsyncAPI baseline diff read |
+| A1 | A | T030-004, 009, 010, 011, 012 | `crates/domain` | slice 0 | domain unit tests; `scripts/check-architecture.py` |
+| A2 | A | T030-013, 014, 015, 021, 041 | `crates/infra-ir`, `crates/infra-schema`, `crates/infra-postgres` | A1 | `integration_platform_foundation` (migrations as the runtime role, privilege audit) |
+| A3 | A | T030-016, 017, 018, 019, 072 | `crates/application`, `crates/api-http`, `crates/domain` (permissions) | A2; feature 011's request flow | `integration_service_operations` (US01) |
+| A4 | A | T030-020, 070, 022, 023, 024, 025, 073 | `crates/application`, `crates/scheduler`, `crates/infra-postgres` | A3; design 043 (built) | `integration_service_operations` (US02); the creator rule of `scripts/check-architecture.py` |
+| A5 | A | T030-026, 027, 028, 029, 030, 031, 068 | `crates/scheduler`, `crates/application`, fault suites | A4; 018's reset-rule registry (built) | `fault_service_operations` |
+| A6 | A | T030-032 to 037, 066, 067, 069 | `crates/application`, security suites | A5; 031's registry for T030-067 | `security_service_operations` |
+| A7 | A | T030-038, 039, 040, 065, 041's limits, 042, 043, 044, 045 | `crates/application`, `crates/scheduler` | A6 | `integration_service_operations` (US05 to US07) |
+| A8 | A | T030-046, 047, 048, 055, 056, 057 | `crates/telemetry`, `crates/api-http`, `crates/application` | A7 | `integration_observability_operations`, US09 tests |
+| B1 | B | T030-051, 052, 071 | `sdks/typescript`, `sdks/go`, `sdks/python`, `sdks/dotnet`, `sdks/java`, `sdks/rust` | slice 0 | each SDK's checks of `sdks/AGENTS.md` |
+| B2 | B | T030-049, 050 | `frontend/apps/studio` | slice 0 (types from `openapi.yaml`); its journeys need A4 | `npm run check:api && npm test` |
+| B3 | B | T030-054 | `apps/cli`, `sdks/SPEC.md` | A3 (routes exist) | CLI tests |
+| B4 | B | T030-053 | `tests/contract/sdk-conformance/` | A4 and B1 | `sdk_conformance` for the `service-*` scenarios in six languages |
+| B5 | B | T030-058, 059, 060 | `docs/` | A7 | `contract_developer_experience`, `scripts/check-docs-index.py` |
+| last | either | T030-061, 062, 063, 064 | `tests/performance/`, compatibility suites | every slice | the release gates of T030-063 |
+
+Cross-feature order: design 043's gate is built; 018's registries are built; 031's encoded-field registry
+must exist before T030-067; feature 016's consolidated FR-016-002 amendment before T030-037 and T030-069;
+design 045 only shares names, so neither waits for the other.
 
 ## Dependencies and parallelism
 
@@ -283,4 +336,7 @@ New test targets (T030-003): `contract_service_operations`, `integration_service
 | FR-030-037 | T030-065 |
 | FR-030-038 | T030-068 |
 | FR-030-039 | T030-067 |
+| FR-030-040 | T030-072 |
+| FR-030-002, 009, 011 (043 gate) | T030-073 |
+| FR-030-034 (Rust) | T030-071 |
 | NFR-030-001..006 | T030-029..031, 034..036, 061, 062, 041 |

@@ -158,6 +158,9 @@ where
                 ResolvedGrant::Lake(lake)
             }
         };
+        // the pin and the audit commit only while the process may hand the credential out (decision D006-100): a refusal
+        // drops the transaction, which rolls both back
+        self.capability_window_holds()?;
         tx.persist(&[], effects).await?;
         tx.commit().await?;
         Ok(crate::database::ResolvedDatabase {

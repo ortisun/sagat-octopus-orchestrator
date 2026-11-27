@@ -309,9 +309,11 @@ impl InstanceStore for PgInstanceStore {
         instance: Uuid,
         token: &InstanceToken,
     ) -> Result<Heartbeat, StoreError> {
+        // the beat that never waits for the epoch and says when an operator's change holds it (feature 006, decision
+        // D006-098; migration `20270211000300_instance_heartbeat_reporting_change`)
         let row = sqlx::query(
-            "SELECT out_found, out_epoch, out_live_kinds, out_live_counts \
-             FROM instance_heartbeat($1, $2)",
+            "SELECT out_found, out_epoch, out_live_kinds, out_live_counts, out_change_in_progress \
+             FROM instance_heartbeat_reporting_change($1, $2)",
         )
         .bind(instance)
         .bind(token.as_bytes().as_slice())
@@ -323,6 +325,7 @@ impl InstanceStore for PgInstanceStore {
         Ok(Heartbeat {
             found: col(&row, "out_found")?,
             epoch: col(&row, "out_epoch")?,
+            change_in_progress: col(&row, "out_change_in_progress")?,
             live: kinds
                 .into_iter()
                 .zip(counts)
@@ -440,11 +443,39 @@ pub async fn may_activate(conn: &mut sqlx::PgConnection) -> Result<bool, StoreEr
     .map_err(store_error)
 }
 
+/// Whether `capability` is a recorded requirement of every kind in `kinds` (feature 006, decision D006-096: an entry of
+/// `control-plane capability-activate` that follows another).
+///
+/// # Errors
+/// The store's.
+pub async fn requirement_recorded(
+    conn: &mut sqlx::PgConnection,
+    capability: Capability,
+    kinds: &[InstanceKind],
+) -> Result<bool, StoreError> {
+    let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = $1 AND kinds @> $2::text[])",
+    )
+    .bind(capability.as_str())
+    .bind(&kinds)
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)
+}
+
+/// The refusal of [`census_step`] when the requirement the activation follows is not recorded for every kind under the lock.
+pub const FOLLOWED_REQUIREMENT_MISSING: &str =
+    "the requirement this one follows is not recorded for every kind";
+
 /// The feature step of an activation that only checks the fleet again under the epoch lock: `judge` is handed the census and
-/// says whether to refuse (keeping its own reasons).
+/// says whether to refuse (keeping its own reasons). With `follows`, the step first reads that requirement again, under the
+/// same lock its removal takes, and refuses with [`FOLLOWED_REQUIREMENT_MISSING`] unless it is recorded for every kind
+/// (decision D006-096).
 pub fn census_step<J>(
     capability: Capability,
     kinds: &'static [InstanceKind],
+    follows: Option<Capability>,
     judge: J,
 ) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send
 where
@@ -452,6 +483,11 @@ where
 {
     move |conn| {
         Box::pin(async move {
+            if let Some(follows) = follows
+                && !requirement_recorded(conn, follows, &InstanceKind::ALL).await?
+            {
+                return Err(StoreError::StateConflict(FOLLOWED_REQUIREMENT_MISSING));
+            }
             let census = capability_census(conn, capability, kinds).await?;
             if judge(&census) {
                 return Err(StoreError::StateConflict(

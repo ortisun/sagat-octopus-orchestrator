@@ -358,6 +358,7 @@ async fn bounded_public_collection_finishes_in_input_order_after_restart_and_los
                 .complete_step(worker_request(
                     &api,
                     CompleteStepRequest {
+                        step_logs: None,
                         task_id: task.task_id.clone(),
                         run_id: task.run_id.clone(),
                         step_id: task.step_id.clone(),
@@ -545,6 +546,7 @@ async fn serve_until_finished(
                 .complete_step(worker_request(
                     api,
                     CompleteStepRequest {
+                        step_logs: None,
                         task_id: task.task_id.clone(),
                         run_id: task.run_id.clone(),
                         step_id: task.step_id.clone(),

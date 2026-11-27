@@ -77,9 +77,9 @@ later SC-036-010 to 012, 014 to 016.
 
 **Dependencies.** 001 (foundation), 002 (execution, claim path), 004 (events, inbox and connectors),
 008 (observability), 009 (tenancy, quotas, audit), 010 (shards, pools, packaging and the benchmark harness).
-Feature 019 (proposed, not approved) routes work to worker deployments and excludes autoscaling of its push functions and warm pools;
+Feature 019 (approved for implementation on 2026-11-11, not built) routes work to worker deployments and excludes autoscaling of its push functions and warm pools;
 this feature does not depend on it, defines pool signals on the pool concept that exists today, and leaves the
-signals of 019's deployments to be added through FR-036-005 when 019 is approved. Feature 033 (Redis Streams)
+signals of 019's deployments to be added through FR-036-005 when 019 is built. Feature 033 (Redis Streams)
 is outbound and internal only and has no inbound consumer to scale; any transport added later falls under
 FR-036-005. Feature 032 (multi-region) is out of scope here.
 
@@ -262,9 +262,11 @@ nothing changes automatically.
 
 ### User Story 5 (US05) - Manage signals and policies programmatically (Priority: P1)
 
-A program (an operator's controller, a deployment pipeline, a tenant's automation) uses the management
-interface to define, read, update and delete policies and signals, to ask what a policy would decide for given
-values without applying it, to override a decision for a limited time, and to publish its own signals.
+A program of an operator (a controller, a deployment pipeline) uses the management interface to define, read,
+update and delete policies and signals, to ask what a policy would decide for given values without applying it,
+to override a decision for a limited time, and to publish its own signals. A tenant's automation only reads its
+connectors' lag and adjusts their consumption (FR-036-023); in the first delivery only operators publish custom
+signals (FR-036-024). *Corrected 2026-11-24, security checklist items CHK016 and CHK017.*
 
 **Why this priority**: The owner requires programmatic control as a peer of configuration, not an afterthought.
 
@@ -630,7 +632,8 @@ make each source fail in turn and verify that the signal becomes unavailable and
   be listed and a previous one restored.
 - **FR-036-019**: The same model, validation and versioning MUST be available through the management
   interface: create, read, update and delete policies and custom signals. Everything that can be declared by
-  configuration can be declared programmatically by an operator, and the reverse; what a tenant can do
+  configuration can be declared programmatically by an operator, and the reverse, except the configuration-only
+  limits of FR-036-064 (corrected 2026-11-24, checklist item CHK004); what a tenant can do
   programmatically about scaling is limited to FR-036-023. The **management interface** is the
   platform's documented, versioned REST contract, checked by contract tests like the other public contracts,
   together with the operator command line; the official SDKs do not expose it in this feature (O1708).
@@ -814,12 +817,24 @@ make each source fail in turn and verify that the signal becomes unavailable and
   so that a name cannot be rebound to an address that was not intended. Redirects are never followed and
   proxies from the environment are ignored. Where the deployment restricts its network the destination MUST
   also be allowed there explicitly. A source whose destination is not allowed is refused at declaration, and the
-  check is repeated at every query.
+  check is repeated at every query. *Added 2026-11-24 (checklist item CHK014):* a forbidden address is any
+  address of the egress guard's forbidden classes, and with `allowPrivate` only the private class is lifted:
+  link-local and cloud-metadata addresses (169.254.0.0/16, `fd00:ec2::254`), unspecified, loopback, multicast,
+  broadcast and IPv4-mapped IPv6 forms of any of these stay forbidden. Every endpoint a broker advertises (Kafka
+  metadata, NATS `connect_urls`) or a region derives (an SQS endpoint) MUST pass the same allowlist before it is
+  connected to. Allowlist entries and destinations are compared in canonical form: the host in lower case
+  without a trailing dot, the port explicit (the scheme's default when omitted), and an address literal parsed
+  as an address (decimal, octal and short IPv4 notations are refused as literals).
 - **FR-036-058**: The credentials of a source MUST be references to secrets, resolved at use, and MUST NOT
   appear in a source declaration, a policy, a decision record, a log, a metric or a response. A destination with
   embedded user information, or a destination query string or query text with a parameter named like a
-  credential (`token`, `password`, `secret`, `authorization`, `api_key` and the like), is refused at
-  declaration; the platform does not promise to recognise a credential in free text (G1718). A source with
+  credential, is refused at declaration; the names are a closed list compared without regard to case and
+  ignoring `-` and `_` (`token`, `access_token`, `password`, `passwd`, `pwd`, `secret`, `client_secret`,
+  `authorization`, `auth`, `api_key`, `apikey`, `key`, `signature`, `sig`, `credential`, `x_amz_credential`,
+  `x_amz_security_token`, `x_amz_signature`; closed on 2026-11-24, checklist item CHK029), and `servers` and
+  `queueUrl` are destinations under this rule and FR-036-057. A source declaration is a closed object: an
+  unknown field is refused (the configuration schema and the operator contract both close it). The platform does
+  not promise to recognise a credential in free text (G1718). A source with
   credentials MUST use an encrypted connection (TLS 1.2 or later, the certificate chain and the host name
   validated against the system trust roots and any roots the operator names in configuration) and is refused
   otherwise; a certificate error is a refusal, never a warning.
@@ -850,7 +865,14 @@ make each source fail in turn and verify that the signal becomes unavailable and
   refused by the operator interface, and a token issued for operators MUST be refused by the tenant interface.
   Tokens accepted by the operator interface are short-lived (a lifetime above one hour is refused); access is
   revoked by expiry and by rotating the verification keys of the operator audience; and every operator action
-  records the token's subject and identifier, so that the actions of a leaked token can be listed.
+  records the token's subject and identifier, so that the actions of a leaked token can be listed. *Added
+  2026-11-24 (checklist items CHK002 and CHK023):* operator tokens MUST come from an operator issuer configured
+  separately from the tenant issuers, with its own verification keys, so that rotating them revokes operator
+  tokens only; the process refuses to start when the operator issuer and audience equal a tenant's. The four
+  permissions travel in a named claim (`sagat_scaling_permissions`); a token without it, or with a value outside
+  the four, is refused. A token's lifetime is `exp - iat`, and a token without either is refused. The blast
+  radius of a leaked operator token is its own permissions, inside the configuration-only limits of FR-036-064,
+  from the peers of FR-036-063, until its expiry. The operator listener serves TLS only.
 - **FR-036-063**: The operator interface MUST be absent unless enabled by configuration. When enabled it MUST be
   reachable only from peers named explicitly in the deployment; an empty or unrestricted peer list is refused
   when the deployment is rendered or started.
@@ -859,9 +881,18 @@ make each source fail in turn and verify that the signal becomes unavailable and
   interface. The evaluator MUST validate every policy, source and signal version against them at each
   evaluation, and MUST refuse, and raise a condition for, one that violates them, so that rows written outside
   the management interface cannot take a unit past its ceilings or a source to a destination that is not allowed.
+  *Added 2026-11-24 (checklist item CHK024):* every replica's exporter MUST clamp each published desired capacity
+  to the configured floor and ceiling of its unit (which it reads from configuration, not from the database), and
+  MUST publish only a desired value written by a fenced decision (its decision identifier and lease generation
+  present and matching a decision record), so that a row written by a compromised runtime role cannot take the
+  autoscaler past the configuration; SC-036-021 covers these rows.
 - **FR-036-065**: Refused attempts on the operator interface, on a source declaration and on a cross-tenant read
-  MUST be audited, without the content of the request, and counted by reason on a metric that carries no tenant
-  identity.
+  or write (the consumption `PATCH` included, added 2026-11-24, checklist item CHK005) MUST be audited, without
+  the content of the request, and counted by reason on a metric that carries no tenant identity. A refusal on the
+  operator interface or a source declaration goes to the platform audit trail with the token's subject as actor
+  (or `anonymous`); a refused cross-tenant attempt goes to the audit trail of the caller's own tenant, with the
+  caller as actor, and never names the target. The platform audit trail is read through `GET /scaling/audit`
+  under `scaling:read` and the operator command line (CHK001).
 - **FR-036-066**: The actor of an audit record MUST be: the operator identity of the token, for a change through
   the interface; `configuration` with the digest of the document, for a change that comes from the
   configuration file (each applied version is recorded with a reason, the document's declared change note or its
@@ -1036,28 +1067,44 @@ make each source fail in turn and verify that the signal becomes unavailable and
   archival): named as future levers, and a limit of this feature's results.
 - A Studio view of signals, policies and decisions: the management interface and the operator command line
   come first; the view is a follow-up.
-- Autoscaling of push functions and warm pools of feature 019 until that feature is approved.
+- Autoscaling of push functions and warm pools of feature 019. Feature 019 was approved for implementation on
+  2026-11-11 (Owner decision 2026-11-11-1) and is not built; its own specification also leaves their autoscaling out.
 - Changing the delivery guarantees of any connector, or adopting broker-managed consumer groups.
 
 ## Owner questions
 
-Recorded with the recommended default in `research.md` at planning. The owner decides; until then the default
-below is what the specification assumes.
+Recorded with the recommended default in `research.md` at planning. Feature 036 is in release 0.3.0 (Owner decision
+2026-11-24-1), so its open questions fall under the delegation of Owner decision 2026-11-20-6; they were decided on
+2026-11-24 as recorded below and in `docs/owner-decisions.md` (Owner decisions 2026-11-24-500 to 2026-11-24-504).
 
-- **O1700 — Dedicated ingestion role.** Recommended: yes, as an optional deployment role; the default stays
-  "everything together".
-- **O1701 — Kafka consumption.** Recommended: keep positions in the platform's database with a balanced
-  assignment of partitions, and do not adopt broker consumer groups, so that the position and the admission
-  of the events stay one commit.
-- **O1702 — Default way to apply a resource change.** Recommended: rolling replacement by default; in place
-  only when the operator enables it for the role and the environment confirms support.
+- **O1700 — Dedicated ingestion role.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6), Owner decision
+  2026-11-24-500:* yes, as an optional deployment role; the default stays "everything together". Reason: a separate
+  role is the only way to scale readers of a busy connector without also scaling the scheduler and the worker-facing
+  interface, which is where the platform competes with Windmill's dedicated workers and Temporal's separate services;
+  keeping it optional costs nothing to a small deployment. Recommended: yes, as an optional deployment role; the
+  default stays "everything together".
+- **O1701 — Kafka consumption.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6), Owner decision
+  2026-11-24-501:* as recommended. Reason: a broker consumer group would make the offset commit a second authority
+  beside the inbox admission, which principle VII and Architecture decision 0012 forbid; the balanced rank share of
+  Architecture decision 0073 gives the balance a group would. Recommended: keep positions in the platform's database
+  with a balanced assignment of partitions, and do not adopt broker consumer groups, so that the position and the
+  admission of the events stay one commit.
+- **O1702 — Default way to apply a resource change.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6),
+  Owner decision 2026-11-24-502:* as recommended. Reason: a rolling replacement is supported by every Kubernetes
+  version the chart targets and keeps the disruption budget's guarantees; in-place resize depends on the cluster's
+  version and runtime, so it is opt-in where the environment confirms it. Recommended: rolling replacement by default;
+  in place only when the operator enables it for the role and the environment confirms support.
 - **O1703 — Who may define what.** *Answered by the owner on 2026-10-28 (option B):* operators define every
   policy; tenants read the lag and how scaling treats their own connectors (what the decisions mean for the connector, not the decision records) and adjust their in-flight parallelism and
   rate limit by hand within quota; no tenant controls replicas or resources. Recorded in
   `docs/owner-decisions.md`; specified by FR-036-023.
-- **O1704 — Custom signals.** Recommended, and following from O1703: a custom signal published by a tenant has
-  no automatic effect until an operator admits it to a policy, with a cap on its influence. Pending the
-  owner's confirmation.
+- **O1704 — Custom signals.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6), Owner decision
+  2026-11-24-503:* as recommended, and publication by tenants is not in the first delivery (the plan's gap G1700),
+  which settles the conflict security checklist item CHK016 named. Reason: a signal a tenant controls that scales a
+  shared role is a lever over other tenants' cost and capacity; admitting it only through an operator's policy with a
+  cap keeps principle V's boundary, and deferring the tenant endpoint keeps the first delivery's surface small.
+  Recommended, and following from O1703: a custom signal published by a tenant has no automatic effect until an
+  operator admits it to a policy, with a cap on its influence.
 - **O1705 — Rate limit of a connector.** *Resolved by a finding at planning, no decision needed:* the limit
   already holds across replicas, so there is nothing to opt into. The question rested on a wrong statement in
   the runbook. Specified by FR-036-013 (visibility and documentation only).
@@ -1075,7 +1122,12 @@ below is what the specification assumes.
 - **O1709 — Delivery order.** *Answered by the owner on 2026-10-28 (option B):* the first delivery is US01,
   US02, US03, US04, US05, US06, US10 and US13; US07, US09, US08, US12 and US11 follow. Recorded in
   `docs/owner-decisions.md`; described in the Context.
-- **O1710 — How an operator acts through the management interface.** *Raised by planning, not yet answered.*
+- **O1710 — How an operator acts through the management interface.** *Decided 2026-11-24, delegate (Owner decision
+  2026-11-20-6), Owner decision 2026-11-24-504: the separate operator listener and principal of Architecture decision
+  0074.* Reason: it is the only option in which a tenant's listener can never create or accept an operator, so a
+  misconfigured role cannot grant platform power through the tenant door, and the surface can be left off; the cost,
+  a second audience in the identity configuration (today `AuthConfig` and the development identity provider each hold
+  one audience), is a bounded task (T036-065 now carries it). Raised by planning:
   The REST API knows only tenant principals, and today's operator actions are owner-role commands. Options: a
   separate operator listener and principal (recommended, assumed by the plan and ADR-0074); an operator role on
   the tenant API; owner-role commands only with a read-only REST. See `research.md` O1710. If the owner chooses
@@ -1089,4 +1141,5 @@ below is what the specification assumes.
 The database remains the ceiling of the platform (every transition is a commit); more replicas move work
 between processes and do not make the server's commits cheaper. A single large run is one shard's work
 (feature 010, G254). Read replicas, journal partitioning and archival are the next levers and are not part of
-this feature.
+this feature: since 2026-11-24 they are designs 048 (what a standby may serve), 049 (journal partitioning) and feature
+020 (archival).

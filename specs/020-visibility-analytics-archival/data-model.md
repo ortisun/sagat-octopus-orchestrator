@@ -4,7 +4,7 @@ Draft. Every table is tenant-keyed, every foreign key carries the tenant, every 
 namespace. Grants are for the runtime role `sagat_app`; "definer" means a `SECURITY DEFINER` function
 with `search_path = pg_catalog, pg_temp`, every name qualified, `EXECUTE` revoked from `PUBLIC` and
 granted to `sagat_app` only (the ADR-0020/ADR-0027 pattern). *2026-11-26: constitution 5.1.0 makes the retention
-functions an exception: `purge_run_content` and the verified state are the retention role's, not `sagat_app`'s (T020-063).* Variable-size columns are added to
+functions an exception: `purge_run_content` and the verified state are the retention role's, not `sagat_app`'s (T020-070).* Variable-size columns are added to
 `crates/infra-postgres/storage-classification.json` in the same migration (ADR-0027). Migrations are
 additive; each `down` refuses while rows of the new feature exist rather than deleting customer data.
 
@@ -68,10 +68,13 @@ Grants: SELECT, INSERT, UPDATE, DELETE. Quota resource `run_views` (namespace co
 
 ## 2. Journal note (generalized `telemetry_pending`)
 
-Added columns (by the additive migration): `namespace_id uuid`, `moved_xid xid8 NOT NULL DEFAULT '1'`,
+Today's columns are `tenant_id`, `run_id`, `head_seq`, `applied_seq`, `behind_since` (foreign key to
+`runs` `ON DELETE CASCADE`). Added columns (by the additive migration): `namespace_id uuid`, `moved_xid xid8 NOT NULL DEFAULT '1'`,
 `moved_at timestamptz`, `tombstone_at timestamptz`. The **trigger and index are not created by the
-migration**: `control-plane analytics enable` (migration owner role, recorded in the migration history)
-installs a `BEFORE INSERT OR UPDATE` trigger that fills `namespace_id` from `runs` on insert and sets
+migration**: `control-plane visibility-activate --capability analytics-v1` (schema-owning role; it
+builds the index `CONCURRENTLY` first, then records the `analytics-v1` requirement of the instance
+registry and creates the trigger in the activation transaction; *corrected 2026-11-24*, research
+Decision 020-004) installs a `BEFORE INSERT OR UPDATE` trigger that fills `namespace_id` from `runs` on insert and sets
 `moved_xid = pg_current_xact_id()` and `moved_at = clock_timestamp()` when the row is inserted or
 `head_seq`/`tombstone_at` changes (the telemetry projector's own `applied_seq` updates do not move it),
 and the index `telemetry_pending_moved_idx ON (tenant_id, namespace_id, run_shard(run_id), moved_xid,
@@ -87,7 +90,7 @@ every journal-appending transaction moves the note (`assert_consistent`).
 | Table | Key | Content |
 |---|---|---|
 | `analytics_sinks` | `(tenant_id, namespace_id, id)` | `name` (unique per namespace), `current_revision`, `state` (`ACTIVE, PAUSED, AUTO_PAUSED, FAILING, THROTTLED, DELETED`), `state_reason` (closed), `disclosure_owner` (subject, for `PII`), `activation_xid xid8`, timestamps |
-| `analytics_sink_revisions` | `(tenant_id, sink_id, revision)` | `kind` (`OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, ICEBERG, STREAM, PULL`), `settings jsonb` (closed per kind, no credential, ≤ 16 KiB), `credentials_secret` (secret name or null), `record_kinds text[]`, `workflows uuid[]` (≤ 64), `batch_policy jsonb`, `max_level` (`INTERNAL, PII`), `start_position`, `actor`, `request_id`, `created_at`; immutable (ALWAYS trigger) |
+| `analytics_sink_revisions` | `(tenant_id, sink_id, revision)` | `kind` (`OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, ICEBERG, STREAM, PULL`), `settings jsonb` (closed per kind, no credential, ≤ 16 KiB), `connection_id` and `connection_revision` (the pinned 017 connection; set for the four connection-backed kinds, null otherwise), `record_kinds text[]`, `workflows uuid[]` (≤ 64), `batch_policy jsonb`, `max_level` (`INTERNAL, PII`), `start_position`, `actor`, `request_id`, `created_at`; immutable (ALWAYS trigger). *Corrected 2026-11-24:* no `credentials_secret` column (research Decision 020-002) |
 | `analytics_sink_cursors` | `(tenant_id, sink_id, shard)` | `after_xid xid8`, `after_tenant`, `after_run`, `next_batch_seq`, `oldest_pending_at`, backfill `after_run`/`upper_run`/`done`, `retention_gaps bigint` |
 | `analytics_envelope_cursors` | `(tenant_id, sink_id, kind)` | as above for `inbound_event`/`delivery` over `moved_xid` |
 | `analytics_sink_runs` | `(tenant_id, sink_id, run_id)` | `applied_seq`, `tombstoned`, `updated_at`; deleted for terminal, fully applied runs after the ledger window |
@@ -96,15 +99,21 @@ every journal-appending transaction moves the note (`assert_consistent`).
 | `analytics_exporter_bindings` | `(tenant_id, namespace_id, sink_id, subject)` | `created_by`, `created_at` |
 | `analytics_export_usage` | `(tenant_id, day)` | exported bytes (quota `analytics_export_bytes_per_day`) |
 
-Kind-specific settings: `POSTGRESQL` holds `connectionRef {name, revision}` of a 017 connection (the
-revision is pinned in the sink revision, like a run admission pin; no host or credential of its own);
-`CLICKHOUSE` holds `url`, `database`, `tablePrefix` and a credentials secret reference (ClickHouse is not a
-017 catalog engine, G1617), validated against the managed executor's destination policy; `STREAM` holds
-the id of a subscription dedicated to the sink (refused if it receives run events); `ICEBERG` holds
-`connectionRef {name, revision}` of a feature-035 Iceberg connection, `namespace` and `tablePrefix`; `PULL` holds lease
-settings. Exporter bindings name a subject whose role is `analytics-exporter` (for `PULL`) or
-`database-runner` (for `POSTGRESQL`, `CLICKHOUSE` and `ICEBERG`). `analytics_batches.kind` is `RECORDS` or `PROBE`
-(a zero-record batch a database-runner leases to run the sink's fixed probe statement).
+Kind-specific settings (*corrected 2026-11-24*, research Decision 020-002): every connection-backed kind
+holds `connectionRef {name, revision}` of a 017 connection of its kind (the revision is pinned in the
+sink revision, like a run admission pin; no host, URL or credential of its own; the sink's `max_level`
+must not exceed the connection's egress ceiling). `POSTGRESQL` adds `schema` and `tablePrefix`;
+`CLICKHOUSE` (a feature-035 `clickhouse` connection) adds `tablePrefix` (the database is the
+connection's); `OBJECT_STORAGE` (a feature-035 `object_storage` connection) adds `prefix` (under the
+connection's prefix) and `format` (`NDJSON_GZIP`, `PARQUET`, among the connection's formats); `ICEBERG`
+(a feature-035 `iceberg` connection) adds `namespace` and `tablePrefix`. `STREAM` holds the id of a
+subscription dedicated to the sink (refused if it receives run events); `PULL` holds lease settings.
+Exporter bindings name a subject whose role is `analytics-exporter` (for `PULL`) or `database-runner`
+(for `POSTGRESQL` and `CLICKHOUSE` on its `database` profile; `OBJECT_STORAGE`, `ICEBERG` and `CONNECTION`
+archives on its `lake` profile). `analytics_batches.kind` is `RECORDS` or `PROBE` (a zero-record batch a
+database-runner leases to run the sink's fixed probe). The export of an archival job to a `CONNECTION`
+destination is leased over the same service as a lease of kind `ARCHIVE`, held on the `archival_jobs`
+row itself (§6), not on a batch row.
 
 Constraints: one open batch per `(tenant_id, sink_id, shard)` (partial unique index `WHERE state IN
 ('PLANNED','LEASED')`); `shard BETWEEN 0 AND 63`; `generation ≥ 0`; lease columns all null or all set.
@@ -163,7 +172,8 @@ field; no sink receives `secret`.
 
 `(tenant_id, namespace_id)` PK; `hot_retention_days` (1..3650 or null), `archive` (`REQUIRED, NONE`),
 `archive_values` (`METADATA_ONLY, UP_TO_INTERNAL, UP_TO_PII`), `destination_kind` (`PLATFORM,
-OBJECT_STORAGE`), `destination_settings jsonb` (content), `credentials_secret`, `sink_hold_days`
+CONNECTION`), `connection_id` and `connection_revision` (an `object_storage` connection of feature 035,
+pinned; set only for `CONNECTION`), `destination_prefix` (≤ 256 bytes, no `..`), `sink_hold_days`
 (1..30), `revision`, `updated_by`, `updated_at`. Effective days = min(namespace, tenant default,
 operator ceiling) (quota resource `run_retention_days`, ADR-0027 resolution). Grants: SELECT, INSERT,
 UPDATE.
@@ -175,13 +185,16 @@ PURGED_WITHOUT_ARCHIVE, ERASED`), `archive_object text` (≤ 512 bytes, protecte
 `archive_sha256 bytea`. No constraint is relaxed: `input_digest` of a stub points to the tenant's
 tombstone payload (canonical `{"$purged":true}`, one row per tenant, inserted by the purge function), so
 an older engine reads a stub as a run without history. A stub keeps every other column;
-`correlation_id` and 018's `business_id` are set to null at purge (018's immutability trigger consults
-the purge authorization, G1103); `started_by` is replaced by `system:erased` only on erasure.
+`correlation_id` and 018's `business_id` are set to null at purge (018's guard `runs_business_id_guard`,
+`20270103000000_business_ids`, is replaced by this migration so that it consults the purge
+authorization, G1103); `started_by` is replaced by `system:erased` only on erasure. A chain stays found by
+`chain_segments` (`runs` has no chain column).
 
 ## 6. Archival jobs
 
 `archival_jobs`, PK `(tenant_id, run_id)`: `namespace_id`, `reason` (`RETENTION, ERASURE`), `state`,
-`attempts`, `next_attempt_at`, `lease_holder`, `lease_expires_at`, `object_key`, `object_size`,
+`attempts`, `next_attempt_at`, `lease_holder`, `lease_expires_at`, and for a `CONNECTION` destination the
+executor lease `lease_token_hash` and `lease_generation` (all lease columns null or all set), `object_key`, `object_size`,
 `object_sha256`, `values_level`, `requested_by`, `blocked_reason`, timestamps.
 
 ```
@@ -193,11 +206,17 @@ ELIGIBLE ──claim──▶ EXPORTING ──PUT ok──▶ EXPORTED ──HEA
 
 Each arrow is one transaction; object-store I/O happens between transactions with the job leased
 (`FOR UPDATE SKIP LOCKED`, expiry on the database clock). `PURGING` is entered only from `VERIFIED` or
-from `ELIGIBLE` when `archive = NONE`, and is not reversible. *(2026-11-26: constitution 5.1.0 admits only the path through `VERIFIED`; the `archive = NONE` arrow waits for the owner, Gap 1101.)*
+from `ELIGIBLE` when `archive = NONE`, and is not reversible *(2026-11-26: constitution 5.1.0 admits only the path through `VERIFIED`; the `archive = NONE` arrow waits for the owner, Gap 1101)*. For a `CONNECTION` destination
+(*added 2026-11-24*, research Decision 020-012), in `EXPORTING` a bound `database-runner` on the `lake`
+profile takes an `ARCHIVE` lease on the job row; it writes the object create-only, re-reads it and
+acknowledges with its size and SHA-256; `EXPORTED → VERIFIED` happens in that acknowledgement only when
+both equal the values the engine computed while streaming the document, else `BLOCKED(ARCHIVE_INTEGRITY)`.
+An archive holds the run's step-log lines (feature 041) that still exist only when `archive_values =
+UP_TO_PII`, otherwise each stream's metadata without text (FR-020-046).
 
 ### Purge privilege
 
-*2026-11-26: this section predates constitution 5.1.0, principle I, and changes under T020-063: the function is the
+*2026-11-26: this section predates constitution 5.1.0, principle I, and changes under T020-070: the function is the
 retention role's, it checks the archive's coverage of the journal under the lock, audits with its first transaction
 too, and writes the archive's size and SHA-256 on the stub.*
 
@@ -238,6 +257,9 @@ test.
 | 025 transcripts (`agent_transcript_entries`, tool inputs/results) and request staging blobs | FK run / attempt | purged with the run's content | same; data sent to providers stays outside (025 G1285) |
 | 026 `run_stream_events` | FK run | deleted (or earlier by `stream_retention_seconds`) | deleted |
 | 030 `service_operation_messages`, `service_operations` digests | FK to caller run and `payloads` | settled messages by 030's own retention; digests keep payloads | deleted for the erased run; handler run handled as its own run |
+| 041 `step_log_streams`, `step_log_lines` (added 2026-11-24) | `run_id` column, **no FK** (G041-004) | deleted in the run's purge, whatever their own expiry | deleted |
+| 035 `step_lease_blobs` (added 2026-11-24) | FK to `blobs` (restricts deletion) | a pinned blob is not a candidate while the pin exists (found by the catalog) | same |
+| 018 `run_resets`, pending resets (added 2026-11-24) | FK run | kept with the stub (a reset of a purged source is refused `RUN_PURGED`) | same |
 
 **Reference discovery.** Candidate payloads/blobs are checked against every foreign key that references
 `payloads` or `blobs` in `pg_catalog` (so 018 `schedule_revisions.input_digest`, `batch_jobs.payload_digest`

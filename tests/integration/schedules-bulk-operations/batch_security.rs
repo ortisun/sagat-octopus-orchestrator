@@ -111,7 +111,7 @@ async fn a_job_reaches_only_the_runs_of_its_own_namespace_whatever_ids_it_names(
         "security-foreign-ids",
     )
     .await;
-    select(&exec, &job).await;
+    select(&f, &exec, &job).await;
     for _ in 0..50 {
         let now = service(&f).get(&f.w.admin, job.id).await.expect("job");
         if matches!(now.state, JobState::Completed) {

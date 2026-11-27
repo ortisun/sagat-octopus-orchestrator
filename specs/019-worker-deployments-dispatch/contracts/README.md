@@ -17,3 +17,8 @@ is served by any build.
 Compatibility rules applied: REST `/v1` additive (new optional properties and operations only); protobuf fields
 added with new numbers in three consecutive minors, one per wire slice; IR fields optional and gated by enabled capabilities (ADR-0032); AsyncAPI
 enumerations only grow.
+
+Corrected 2026-11-24: the three minors are the next free ones of the register in `sdks/SPEC.md` §9 when the contract
+merges (1.10, 1.11 and 1.12 at the time of writing); `RegisterWorkerResponse.deployment_version_state` is field 5
+(field 4 is design 041's); each capability's surfaces are refused until its fleet requirement is recorded (ADR-0082,
+research D019-001).

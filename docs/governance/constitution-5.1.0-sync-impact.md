@@ -63,7 +63,7 @@ and `scripts/check-design-docs.py` checks only that the version rises.
 | Principle V, third bullet | ADD | — | A declared resource's non-secret settings and, for an OAuth credential, only its current access token; never a refresh token, client secret or private or signing key; a slot's secret reaches an executor only as a declared secret of the first set; the authorities that must agree; how each executor kind is bound; a workflow task is not such an executor | Same, in the owner's words; design 047, Technical Plan 12, narrowed (see Point 2) |
 | Principle V, "Both paths MUST validate …" | REWRITE | "Both paths"; "Managed database delivery MUST also verify …" | "Every path"; "Managed delivery (database and integration runner) MUST also verify …" | The third set is bound by the same checks |
 | Principle V, every other sentence | KEEP | — | Unchanged | — |
-| Development Workflow, CI gates | REWRITE (one clause added) | "… the suite that budgets what they cost the database, and, …" | "… the suite that budgets what they cost the database and, once design 052 has built it, the throughput regression gate (…), and, …" | Owner decision 2026-11-25-3, point 3 |
+| Development Workflow, CI gates | REWRITE (two clauses added) | "… the suite that budgets what they cost the database, and, …"; "… and of the packages that depend on those, and only those" | "… the suite that budgets what they cost the database and, once design 052 has built it, the throughput regression gate (…), and, …"; "…, and, on every pull request once design 052 has built it, that design's chart checker (…), and only those" (the checker is `scripts/check-chart-wake.py`; the constitution names no path that does not exist yet) | Owner decision 2026-11-25-3, point 3; the chart checker as a delegate reading (see Point 3) |
 | Every other unit | KEEP | — | Unchanged | — |
 | Footer | REWRITE | `Version: 5.0.0`, last amended 2026-11-24 | `Version: 5.1.0`, last amended 2026-11-26, this report, the adoption sentence | — |
 
@@ -187,11 +187,12 @@ run at all**, which is what an erasure is for. It is the owner's decision, becau
 meant to avoid exactly that end. The coordinating session cannot add it: Owner decision 2026-11-24-4 does not delegate
 amending the constitution.
 
-**What the text writes in that feature 020 left to the owner.**
-- "Without a policy every run is kept" answers owner question 1080 with its default; the owner's "under a namespace
-  retention policy" covers it.
-- "Turns the run row into a stub" fixes the shape of owner question 1082, but not its details (which fields stay, what
-  is cleared); those stay feature 020's, under that question.
+**How the text meets feature 020's own decisions.**
+- "Without a policy every run is kept" agrees with owner question 1080 as feature 020 decided it on 2026-11-24 under
+  the delegation (no default retention), and with the owner's "under a namespace retention policy".
+- "Turns the run row into a stub" agrees with owner question 1082 as feature 020 decided it the same day (stubs kept);
+  its details (which fields stay, what is cleared) stay feature 020's. ADR-0054 was accepted then too; its note records
+  where the constitution now differs from it.
 
 ## Point 2: the third declared set
 
@@ -230,26 +231,44 @@ token (security review, minor 1). Feature 021 can ask the owner for the wider se
 One sentence is added: "A workflow task of Principle IV is not such an executor". Principle IV says a workflow task
 carries no secret value, and the third set must not become a way around that.
 
-## Point 3: the throughput gate
+## Point 3: the throughput gate, and the chart checker beside it
 
-When a pull request changes the code that runs a lease or a completion, it runs the throughput regression gate as well
-as the budget suite. The scenario definitions are the base's (workload, rate and order), so that a pull request
-cannot edit what it is judged by, but each side builds them with its own code, so that a refactor of the hot path's
-interfaces does not make the gate impossible to pass (correctness review, Major 6). The constitution says the selector
-decides what a pull request runs, so `scripts/select-test-targets.py` must select the gate on design 038's files. Design
-052 does not say so yet; that is a follow-up for it (correctness review, minor 8). Requirement 052-030 and Task 052-14
-build the job. The gate compares the base and the head of the pull
-request on the same scenarios, alternated, on the standard hosted runner. It fails on a slowdown larger than the minimum
-detectable effect that its recorded pilot measured on that runner, by the rule design 052 states: six alternated pairs,
-the head's median slower by more than that effect, and slower in at least five pairs.
+**The gate.** When a pull request changes the code that runs a lease or a completion, it runs the throughput regression
+gate as well as the budget suite. The text follows Requirement 052-030 as design 052 was approved and merged:
+
+- `scripts/select-test-targets.py` sets the gate's `throughput_gate` output on design 038's hot-path files and on the
+  gate's own files, so the selector that the CI gates bullet names decides it;
+- the merge base and the head are alternated on the standard hosted runner, both driven by the merge base's scenario
+  and configuration, so that a pull request cannot edit what it is judged by (the security review's Nit);
+- the gate fails on a slowdown larger than the minimum detectable effect that its recorded pilot measured on that
+  runner, by the rule design 052 states (six alternated pairs, the head slower in all six and the median of the paired
+  differences beyond the threshold; ten pairs if the pilot's power is too low);
+- when the merge base's scenario cannot build or run against the head, the pull request passes as "not comparable"
+  only with a pilot re-run on its own branch. The first draft said "each built by the side it measures", which the
+  correctness review proposed (Major 6) before design 052 settled the case this way; the text now says what design 052
+  does.
 
 Two choices:
 
-- **"Once design 052 has built it."** The job does not exist yet. A MUST that no CI job can satisfy would put every
-  hot-path pull request out of compliance until it exists, so the obligation starts with the job.
+- **"Once design 052 has built it."** The job does not exist yet (Task 052-11). A MUST that no CI job can satisfy would
+  put every hot-path pull request out of compliance until it exists, so the obligation starts with the job.
 - **The thresholds stay in the design.** The constitution names what the gate compares and on what. The numbers belong
   to design 052, which measures them, so recalibrating after a new pilot needs no amendment. The owner's "Nada pago"
   (no paid runners, Owner decision 2026-11-25-1) is why the text says "the standard hosted runner".
+
+**The chart checker: a delegate reading, reported to the owner.** Design 052 (Task 052-6, Requirement 052-054) adds
+`scripts/check-chart-wake.py`, a static checker that renders the Helm chart with `helm template`, with the wake off,
+on NATS and on Redis. It fails on a chart that opens the platform's broker channel without its credentials Secret, or
+that opens broker egress from the control plane without the wake. It runs as a step of the `documentation` job on every
+pull request, so that a change of the chart alone is checked, and it never skips. The CI gates bullet enumerates what a
+pull request runs ("and only those"), so a check on every pull request needs the text.
+
+The owner's row names "a throughput regression gate"; it does not name the chart checker. The coordinating session
+reads the checker as part of design 052's gating that the owner approved in point 3. It is the same design's CI
+obligation, it guards the channel through which the throughput remedies work, and it costs seconds on the free runner.
+This reading is a delegate reading (Owner decision 2026-11-24-4), recorded here and reported to the owner, who can
+strike it. Striking it would move the checker back to the `architecture` job and the full runs, where design 052 runs
+it until this merges. Design 052's Task 052-10 checks that the text admits both, and records the merge commit.
 
 ## Point 4: design 044
 
@@ -298,11 +317,11 @@ The line above is the git blob of `docs/constitution.md` at 5.0.0. A principle b
 | Rule | Check today | Check to add, and where |
 |---|---|---|
 | The runtime role holds no `DELETE` or `TRUNCATE` on runs, steps, the journal or payloads | `scripts/check-architecture.py` (new in this change) reads every migration, up and down. It refuses a `GRANT` of `DELETE`, `TRUNCATE` or `ALL` on `runs`, `steps`, `run_events`, `payloads`, `run_payloads` or a monthly or legacy partition of them (named, through `ALL TABLES` or default privileges, with any `WITH` option or `GRANTED BY`) to `sagat_app` or `PUBLIC`; a role granted to `sagat_app` by `GRANT`, `CREATE ROLE … ROLE`/`IN ROLE` or `ALTER GROUP … ADD USER`; `OWNER TO sagat_app` and `REASSIGN OWNED … TO sagat_app`; and such a `GRANT` built for dynamic SQL, in one literal or through `format()` arguments. Block and line comments are skipped, and a last statement without its semicolon is read. It does not judge `GRANT EXECUTE` on a definer function that deletes journal rows, which is the purge's own pattern; the retention role's exclusivity (above) is checked by feature 020's tests. Tests are in `scripts/tests/test_check_architecture.py`. At run time, `crates/infra-postgres/src/privilege.rs` refuses `DELETE` on `run_events` and `payloads` only | the runtime check the security review asked for: `privilege.rs` extended to `DELETE` and `TRUNCATE` on `runs`, `steps` and every partition of the journal tables and `run_payloads` (through `pg_inherits`), which follows memberships and grants made outside migrations; it is feature 020's privilege sweep and needs a Rust build, so it is a follow-up |
-| Only the retention role can purge, record an archive as verified and write the stub | none (feature 020 not built) | feature 020, Task 020-063: the definer function's `EXECUTE` granted only to the retention role, a trigger that refuses any other writer of the stub and purge state, and tests that the runtime role can do neither |
+| Only the retention role can purge, record an archive as verified and write the stub | none (feature 020 not built) | feature 020, Task 020-070: the definer function's `EXECUTE` granted only to the retention role, a trigger that refuses any other writer of the stub and purge state, and tests that the runtime role can do neither |
 | Deletion only after a verified archive; only the two paths | none (neither path is built) | feature 020: the purge refuses an unverified archive (fault tests with a corrupted and a missing object); design 049: Task 049-14's crash and race tests |
 | The third set never releases a refresh token, client secret or private or signing key, nor a slot's secret | none (design 047 not built); `scripts/check-architecture.py` already keeps the `"grant_type"` literal inside `crates/infra-oauth` | design 047: the broker's canary tests across the protocol, logs and audit |
 | A workflow task is not an executor of the third set | none | design 044: the workflow task carries no secret (Requirement 044-003), and design 047's resolver refuses it |
-| The throughput gate | none (Task 052-14) | design 052: the `throughput-gate` job, which fails on the hand mutation and passes on its revert |
+| The throughput gate; the chart checker on every pull request | none (Tasks 052-11 and 052-6) | design 052: the `throughput-gate` job, which fails on the hand mutation and passes on its revert |
 | A deferred terminal command; the move clause | none (design 044 not built) | design 044's tests of `UNHANDLED_EVENTS` and of the move (ADR-0105) |
 
 `docs/engineering/architecture-principles.md` gains the row for the first rule.
@@ -325,7 +344,7 @@ The line above is the git blob of `docs/constitution.md` at 5.0.0. A principle b
   - `plan.md`: the Constitution Check reads Pass for the purge after a verified archive.
   - `research.md`: Gap 1101 is closed for the purge and open for `archive = NONE` and erasure, with the recommendation.
   - `checklists/requirements.md` and `tasks.md`: Task 020-061 is reworded and annotated, to be ticked with this pull
-    request once it merges. A new Task 020-063 brings the retention design to 5.1.0 before Tasks 020-044 to 020-048
+    request once it merges. A new Task 020-070 brings the retention design to 5.1.0 before Tasks 020-044 to 020-048
     start, and Task 020-052 (erasure) carries its own `Owner-gate:` line on Gap 1101 (correctness review, Major 2 and
     minor 9).
   - `plan.md`'s Constitution Check row now reads "Requires design change"; `data-model.md`'s grant note and "Purge
@@ -336,9 +355,9 @@ The line above is the git blob of `docs/constitution.md` at 5.0.0. A principle b
 
 Not changed, on purpose:
 
-- Designs 044, 047, 049 and 052 and feature 021's register live on other branches, which their agents own
-  (`feature/044-workflow-as-code`, `docs/windmill-parity-readiness`, `docs/scale-resilience-readiness`). Their changes
-  are follow-ups.
+- Designs 044, 049 and 052 are approved and on `develop`; an approved design doc returns to draft if its text changes,
+  so their changes are follow-ups for the agents that hold them, through their own follow-up tasks. Design 047 and
+  feature 021's register are on `docs/windmill-parity-readiness`, which their agent owns.
 - The 5.0.0 report keeps its follow-up "Retention in feature 020 still needs an amendment of Principle I": it records
   what was true on 2026-11-24.
 
@@ -364,10 +383,9 @@ Not changed, on purpose:
   - change the `Owner-gate:` lines of Tasks 049-11 and 049-14 to cite Owner decision 2026-11-25-3 once this merges.
 
   Task 049-18 is done by this text.
-- **Design 052**: replace "pending (Owner decision 2026-11-24-512)" in Open Question 2, its owner-decision list and its
-  Constitution Check, and change Task 052-14's `Owner-gate:` line to cite Owner decision 2026-11-25-3. Add to Task
-  052-14 that `scripts/select-test-targets.py` selects the gate on design 038's files, and that the gate runs the
-  base's scenario definitions built by each side. Task 052-15 is done by this text.
+- **Design 052** (merged): Task 052-10 checks that this text admits the gate as Requirement 052-030 writes it and the
+  chart checker's step on every pull request, and records the merge commit; Tasks 052-11 and the chart checker's move
+  into the `documentation` job then follow. The draft's Task 052-15 is done by this text.
 - **Design 044**: gaps 044-021, 044-024 and 044-025 close when this merges, and its Constitution Check for principles I
   and IV can drop the conditions they caused. Its move (ADR-0105) must also check that the target admits every accepted,
   unseen signal, update and cancellation, and the verification must reproduce a recorded deferred terminal command.
@@ -405,7 +423,7 @@ one after the other, with the owner's row and no conclusion of the author's. Eac
 | minor 2: the CI clause says the selector decides, and the report said it would not select the gate | Fixed: design 052 adds the gate to the selector's output |
 | minor 3: the exception covered only the first sentence of Principle I | Fixed: "the first and third sentences" |
 | minor 4: ADR-0054's note covered one section | Fixed: decisions 1 and 3 and rejected option 3, citing ADR-0132 on its branch |
-| minor 5: owner questions 1080 and 1082 answered by the text | Fixed: the report says what the text fixes (1080's default; the stub's shape) and what stays 1082's |
+| minor 5: owner questions 1080 and 1082 answered by the text | Fixed: the report says the text agrees with both as feature 020 decided them on 2026-11-24 (no default retention; stubs kept), and what stays 1082's |
 | minor 6: the adoption sentence cited the wrong authority | Fixed: Owner decision 2026-11-25-3 for merging without the owner, 2026-11-24-4 for the rest, security exceptions to the owner |
 | minor 7: "a PATCH amendment removes the slot secrets" was wrong | Moot: the slot secrets are out |
 | minor 8: stale lines in designs 049 and 052; `crates/infra-postgres/AGENTS.md` | Fixed: the follow-ups name the lines; the crate guide gains the rule |
@@ -439,11 +457,11 @@ one after the other, with the owner's row and no conclusion of the author's. Eac
 | Finding | Disposition |
 |---|---|
 | Major 1: the deferral covered only unseen events, not open obligations, which is gap 044-024's own case | Fixed: both causes are named |
-| Major 2: feature 020's design contradicts 5.1.0 while its plan read Pass | Fixed: the plan reads "Requires design change", Task 020-063 brings the design to 5.1.0 before Tasks 020-044 to 020-048, the data model is annotated |
+| Major 2: feature 020's design contradicts 5.1.0 while its plan read Pass | Fixed: the plan reads "Requires design change", Task 020-070 brings the design to 5.1.0 before Tasks 020-044 to 020-048, the data model is annotated |
 | Major 3 (security): the retention role's credential had no home | Fixed: no process that holds the runtime credential or runs tenant code holds it |
 | Major 4 (security): the runtime role could forge the stub | Fixed: only the retention role's function writes the stub and the purge state, a trigger refuses any other writer, and retirement judges "purged" by that role's records |
 | Major 5 (security and the owner's words): an archive may keep no values; the notice period had holes | Fixed: the text says what the archive keeps and that values above the policy's level leave with no copy; the notice period covers creating a policy, re-credentialing the destination and narrowing what the archive keeps. The level itself is put to the owner (follow-ups) |
-| Major 6: "the base's scenarios" could make the gate impossible to pass | Fixed: the base's scenario definitions, each built by the side it measures |
+| Major 6: "the base's scenarios" could make the gate impossible to pass | Fixed, as design 052 settled it when it merged: both sides run the merge base's scenario, and one that cannot build or run against the head passes as not comparable only with a pilot re-run |
 | minor 1: no path finished an abandoned mark-only purge | Fixed |
 | minor 2: the coverage check needed appends refused | Fixed: the stub refuses every later append |
 | minor 3: "accepts no further write" was stricter than the purge itself | Fixed: except the purge's and the retirement's own |
@@ -451,7 +469,7 @@ one after the other, with the owner's row and no conclusion of the author's. Eac
 | minor 5: the exceptions ignored the surviving-timeline rule | Fixed |
 | minor 6: the grant check missed `WITH ADMIN`/`INHERIT`/`SET`, `CREATE ROLE … ROLE`, `ALTER GROUP`, `REASSIGN OWNED`, partitions, `format()` arguments, and the report overclaimed | Fixed in the check, with tests seen failing first; the report now says what it does not judge (`GRANT EXECUTE` on a definer function) |
 | minor 7 (security): a slot's secret through the first set skipped the resource's checks | Fixed: "under that set's checks and the resource's authorities below" |
-| minor 8: the report credited design 052 with a selector change it does not make | Fixed: a follow-up for design 052 |
+| minor 8: the report credited design 052 with a selector change it does not make | Fixed: design 052 as merged now writes the selector's `throughput_gate` output, and Point 3 cites it |
 | minor 9: erasure lost its gate with Task 020-061 | Fixed: Task 020-052 carries its own `Owner-gate:` line |
 | minor 10: ADR-0054's note was incomplete | Fixed: decision 4 and the four added obligations |
 | minor 11: the move's check might not cover a deferred command | Fixed: "and any recorded deferral" |

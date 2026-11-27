@@ -23,7 +23,7 @@ cleanly. It uses one database connection of its own for this, besides the pool o
 
 | Table | Holds | Who writes it |
 |---|---|---|
-| `serving_instances` | one row per process start: `instance_id` (random), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`), `binary_version`, `capabilities`, `scheduler_owner` (an engine's name in `scheduler_members`, for correlation), `started_at`, `last_seen`, and the hash of a token only that process holds (the runtime role cannot read it) | the process itself, through three functions (`instance_register`, `instance_heartbeat`, `instance_deregister`), each of which touches a row only for the token that registered it |
+| `serving_instances` | one row per process start: `instance_id` (random), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`), `binary_version`, `capabilities`, `scheduler_owner` (an engine's name in `scheduler_members`, for correlation), `started_at`, `last_seen`, and the hash of a token only that process holds (the runtime role cannot read it) | the process itself, through its functions (`instance_register`, `instance_heartbeat_reporting_change`, which a build of feature 006's follow-up beats with, `instance_heartbeat`, which older builds beat with, and `instance_deregister`), each of which touches a row only for the token that registered it |
 | `platform_requirements` | what the platform requires: a `capability` and the `kinds` that must hold it, who recorded it and since when | only the operator functions |
 | `platform_requirement_epoch` | one number, moved by one in every transaction that records or removes a requirement | only the operator functions |
 | `platform_requirement_history` | every activation and removal: who the command said, which database role did it, what, which epoch, when (append-only; the runtime role cannot read it) | only the operator functions |
@@ -31,7 +31,7 @@ cleanly. It uses one database connection of its own for this, besides the pool o
 The capabilities are a closed list: `schedules-v1` (feature 018, the engine), `access-narrowing-v1` (029, the control plane) and
 `payload-encoding-v1` (031, both). **A process lists a capability when the process will honour it**: what its binary can do,
 narrowed by the passes its configuration turns on. An engine lists `schedules-v1` only when it runs the schedule pass
-(`SAGAT_SCHEDULES_ENABLED`); an engine started without it lists nothing, because after the handover of the cron triggers it
+(`SAGAT_SCHEDULES_ENABLED`, on unless it says `false`); an engine started with `false` lists nothing, because after the handover of the cron triggers it
 would fire neither.
 
 A process is **live** when it was seen in the last 30 seconds, on the database's clock (so replicas with skewed clocks agree).
@@ -95,6 +95,33 @@ is tried again at the next beat. After 30 seconds the line becomes an error and 
   heartbeat that succeeds reads the requirements and decides again. **This is a precondition for activating 029's or 031's
   capability:** the fleet must run builds that have this rule.
 
+**Capability calls stop sooner** (feature 006, decision D006-098; the amendment of ADR-0082 decision 5). An engine serves the
+calls that hand a worker data or let it store some (`ResolveSecrets`, `ResolveDatabase`, `ReadBlob`, `WriteBlob`) only while its
+last successful beat, or its registration, started at most **25 seconds** ago (the liveness window less 5 seconds) and was
+decided under the epoch it read. Past that, those calls are answered `UNAVAILABLE` with `x-sagat-error: REGISTRY_SILENT` and
+`retry-after-ms: 1000`, counted in `worker_capability_calls_refused_total{method, reason="REGISTRY_SILENT"}`, while heartbeats,
+reports (`CompleteStep`, `FailStep`, the hand-back) and claims keep flowing, whatever kind of failure silenced the registry. The
+heartbeat then tries every second, and the calls are served again once a beat and the gate's decision under its epoch have both
+succeeded. The reason: an activation counts a process live only when it was seen in the last 30 seconds, so an engine that it
+could not see must not hand out what a requirement recorded meanwhile might forbid. The gate is checked again inside the call's own
+transaction just before it commits what it records as handed out (the audit of a secret's or a credential's resolution,
+the pin of a database credential, the audit of a blob read), so a refusal records nothing; again before the answer's first
+byte and before each later item of a download; and before an upload's write starts (decision D006-100). The registry's
+connection carries a statement timeout of at most 5 seconds (the process's own when shorter; a setting of 0, which
+PostgreSQL reads as no timeout, is 5 seconds too), so a slow beat cannot use the window up. A beat that failed is tried
+again no later than 19 seconds after the last decision (the window less the statement timeout and a second), so one
+failed beat never stops a healthy engine's capability calls. The 25 seconds are measured on the monotonic clock and on
+the wall clock, whichever lapses first (a machine that was suspended does not keep serving on a stale decision). A
+process that registered while the table was full (`REGISTRY_FULL`) is counted by no activation, so it serves, but never
+capability calls (decision D006-100).
+
+**A beat during an operator's change.** The beat takes the epoch row `FOR SHARE SKIP LOCKED`
+(`instance_heartbeat_reporting_change`): it never waits for an activation or a removal, even one left open by hand SQL. When an
+operator's transaction holds the row, the beat reads the committed epoch plainly and reports a change in progress
+(`instance_heartbeats_change_in_progress_total{kind}`): it counts as a successful beat for liveness and readiness, it applies an
+epoch that moved, and it does not renew the 25 seconds, so capability calls stop if the change stays open that long. A change left
+open is visible as that counter growing on every process; end the operator's session (`pg_stat_activity`, section 6).
+
 **Readiness** also fails when the registry has not answered for more than 30 seconds, whatever the gate says (alert
 `SagatInstanceRegistrySilent` after a minute more). If the heartbeat itself ends (it panicked, it was aborted), the process stops:
 the control plane exits with an error, the engine fails as it does for any critical task.
@@ -110,6 +137,8 @@ still finishing its work.
 | `instance_registry_refusals_total{reason}` | counter | A process refused to serve or to be counted (`BINARY_CAPABILITY_MISSING`, `REGISTRY_FULL`, `REGISTRY_UNREACHABLE`), at start or when it learned of a requirement it lacks or failed closed. One-shot per event: use `SagatInstanceGateClosed` to see a process that stays refused. No instance id is a label |
 | `instance_registry_gate_open` | gauge | `1` while this process serves, `0` while its gate is closed. Per process |
 | `instance_registry_last_beat_age_seconds` | gauge | Seconds since the registry last answered this process; it grows while the registry does not answer. Per process |
+| `instance_heartbeats_change_in_progress_total{kind}` | counter | Beats that found an operator's activation or removal in progress (the epoch row held): they keep the process live but do not renew its capability decision (section 3). Growing on every process: a change left open |
+| `worker_capability_calls_refused_total{method, reason}` | counter | Capability calls an engine refused because its registry has been silent for 25 seconds (`reason="REGISTRY_SILENT"`; `method` is `ResolveSecrets`, `ResolveDatabase`, `ReadBlob` or `WriteBlob`). Section 3 |
 
 Alerts (`infra/observability/alerts.yaml`): `SagatInstanceGateClosed` (a gate closed for five minutes, runbook section 2) and
 `SagatInstanceRegistrySilent` (the last answer older than 30 seconds for a minute, section 3). The line in the log of the refused
@@ -175,7 +204,7 @@ on purpose by the owner.
 
 ### The first activation: the cron triggers (018)
 
-`control-plane schedule-trigger-handover` requires `schedules-v1` of every live execution engine and, in the same transaction, hands the cron triggers over from the legacy cron pass to the schedule pass. It takes `--operator`, `--expect-live N` and `--dry-run`, runs with the owner role, and is idempotent; the procedure, its refusals and the rollback hazard are in [`schedules.md`](schedules.md) section 6.
+`control-plane schedule-trigger-handover` requires `schedules-v1` of every live execution engine and, in the same transaction, hands the cron triggers over from the legacy cron pass to the schedule pass. By hand it takes `--operator`, `--expect-live N` and `--dry-run`/`--apply` and runs with the owner role. **From 0.3.0 the deployment's job runs it with `--auto` as the role `sagat_handover`** (ADR-0091, which amends ADR-0082 decision 1 for that role only): `sagat_handover` records `schedules-v1` for the engines through one wrapper function and can do nothing else in the registry (it cannot read `serving_instances` or call `platform_requirement_activate`; the wrapper does, as its owner, after it has computed every condition under the epoch lock). The history row names the actor `system:handover-job:<run id>` and the database user `sagat_handover`. `migrate` ensures and grants the role at every run. The procedure, the conditions, the reasons and the rollback hazard are in [`schedules.md`](schedules.md) section 6.
 
 ## 6. What the registry does not protect against
 
@@ -204,7 +233,7 @@ refuses it (G1011, G1607). The registry therefore ships **in a release before an
 1. Upgrade the whole fleet, control planes and engines, to a build that registers. Run `control-plane migrate` first.
 2. Check `serving_instances_live` equals the replicas you run, that no process of the old build is left, and that the engines
    list what you expect (`SELECT scheduler_owner, capabilities FROM serving_instances`): an engine lists `schedules-v1` only if
-   it runs with `SAGAT_SCHEDULES_ENABLED`.
+   it runs the schedule pass (`SAGAT_SCHEDULES_ENABLED` unset or `true`).
 3. Only then activate a feature through the registry.
 
 Rolling back below a recorded requirement is not supported: see "Rolling back" in section 5.
@@ -220,8 +249,9 @@ remain per-process settings with the rollout orders of their own runbooks; the r
 | Every replica of a kind answers `503 BINARY_CAPABILITY_MISSING` | A requirement for the kind was recorded and the build you run lacks it, or its configuration does not run the pass | Section 2; or remove the requirement (section 5), except `lease-withdrawal-v1` once a journal holds `step.lease_withdrawn` (it is refused: `docs/runbooks/lease-withdrawal.md`, Rollback) |
 | One replica answers `503 BINARY_CAPABILITY_MISSING`, the others serve | It is an old build that was silent at the activation and came back, or an engine started without the pass | Upgrade it, set the flag, or stop it |
 | An engine is refused after a restart that changed its flags | It no longer runs the pass that provides a required capability | Set the flag again, or remove the requirement if you mean to roll the feature back |
-| An activation is refused naming instance ids | Those processes are live and lack the capability (an engine without `SAGAT_SCHEDULES_ENABLED` is one of them) | Upgrade, set the flag, or stop them; query `serving_instances` for their version and capabilities |
+| An activation is refused naming instance ids | Those processes are live and lack the capability (an engine with `SAGAT_SCHEDULES_ENABLED=false` is one of them) | Upgrade, set the flag, or stop them; query `serving_instances` for their version and capabilities |
 | `serving_instances_live` is lower than the replicas you run | A replica is not beating (the log has `could not say this instance is alive`), it was refused, or the table was full when it started | Its log; the database; section 2 |
+| Workers get `UNAVAILABLE` `REGISTRY_SILENT` for secrets, databases or blobs while their heartbeats and reports pass | The engine's registry has not answered (or an operator's change has held the epoch) for 25 seconds | Section 3; the database, the lock waits on `serving_instances` rows, an operator session left open; the calls resume after the next beat that succeeds |
 | `SagatInstanceRegistrySilent` fires | The registry has not answered a process for more than 30 seconds | The database, and the lock waits on `serving_instances` rows; a lost connection leaves the process serving, any other failure closes its gate |
 | A row stays for a day after a process died | The process did not leave cleanly; the row is only bookkeeping and stops counting after 30 seconds | None. It is deleted by the day rule, or gives way when the table is full |
 | `REGISTRY_UNREACHABLE`, the process is alive and not ready | The migration has not run, or the database is down | `control-plane migrate`; the process registers at its next try (within a second) |
