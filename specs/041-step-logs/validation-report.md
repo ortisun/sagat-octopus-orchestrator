@@ -1005,3 +1005,23 @@ task T041-4 (`DropReason`, `validate_carry`, the quota resources) is built with 
   and rebuilt, the suite passes again (32).
 - `cargo test -p sagat-domain --locked step_logs`: 15 passed; `cargo clippy -p sagat-domain --all-targets` and
   `cargo clippy -p sagat-tests --test contract_platform_foundation` with `-D warnings`: clean.
+
+## 2026-11-27 — The cost of a logger call, per SDK (T041-15 to T041-20)
+
+Design 041 section 6 and `sdks/SPEC.md` §6.9 ("The cost of a call"): one captured call (formatting, redaction with a
+secret set of 1,024 values, the cuts and the size of the record) with an 8 KiB message, 1,000 warm-up calls then 10,000
+measured on the language's monotonic clock, run by hand on the machine of this report (an Apple silicon laptop shared
+with other builds), never in CI. The bound is a p99 under 1 ms. Each SDK's pull request fills its own item.
+
+- TypeScript (T041-15, `node dist/bench/step-logs.js` after `npx tsc -p tsconfig.json`): p50 0.083 ms, p99 0.131 ms,
+  max 0.487 ms (2026-11-27, after the review fixes; 0.27 ms and 0.29 ms before them). Under the bound.
+
+- Go (T041-16): recorded by its pull request.
+
+- Python (T041-17): recorded by its pull request.
+
+- C# (T041-18): recorded by its pull request.
+
+- Java (T041-19): recorded by its pull request.
+
+- Rust (T041-20): recorded by its pull request.
