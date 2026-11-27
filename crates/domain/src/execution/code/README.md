@@ -14,7 +14,7 @@ What the domain knows of a code run (design 044, workflow as code). Pure: no sto
   [chain.rs:CommandChain] [chain.rs:ChainedCommand] [chain.rs:ChainError]
 - `ActivityEnvelope` holds a code version's activity entries (`EntryName`: exact or `<stem>.*`; `PublisherFields`);
   `covering` finds a name's one entry and `admit` checks a command's repeated publisher fields against it, answering
-  the entries of its compensation and its lookup. [envelope.rs:ActivityEnvelope] [envelope.rs:ActivityEntry]
+  the entries of its compensation and its lookup. Construction takes the names of `approvalPolicies`. [envelope.rs:ActivityEnvelope] [envelope.rs:ActivityEntry]
   [envelope.rs:EntryName] [envelope.rs:AdmittedActivity] [envelope.rs:EnvelopeRefusal] [envelope.rs:EnvelopeError]
 
 ## Invariants
@@ -22,6 +22,8 @@ What the domain knows of a code run (design 044, workflow as code). Pure: no sto
   only an exact entry lists secrets; no entry is under `script.` or `sagat.`; every `compensateWith` and
   `reconcileWith` names a covered activity, whose own entry gives the derived step its secrets. [envelope.rs:ActivityEnvelope::new]
   [envelope.rs:ActivityEnvelope::covering]
+- A `requiresApproval` names a declared policy, and an entry covered by a broader prefix entry restates its
+  `requiresApproval`, `highRisk: true` and `irreversible: true` (Decision 044-253). [envelope.rs:ActivityEnvelope::new]
 - A command may repeat a publisher field of its covering entry only with the entry's value (secrets as sets); a field
   the entry does not set, or sets otherwise, is refused with its member (Decision 044-241). [envelope.rs:ActivityEnvelope::admit]
 

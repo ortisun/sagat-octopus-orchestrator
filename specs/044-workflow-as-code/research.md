@@ -843,6 +843,25 @@ the same lines of this register while both are open.
     prefixes are `script.` and `sagat.` exactly (`sag.*`, `scripts.*` and `sagatx.y` are ordinary names).
   - Decision 044-241's test `a_fragment_that_adds_a_secret_is_outside_the_envelope` is the fragment parse's (Task
     044-5); the domain's rule is held by `an_activity_command_cannot_carry_a_secret_of_another_activity_entry`.
+- **D044-253** (2026-11-27) The independent security review of pull request 296 (no Blocker or Major; three Minor, four
+  Nit) is answered by fixes, a security finding always being fixed:
+  - Minor 1: `canonical::rfc8785_i_json` refuses, with its JSON pointer, every number I-JSON cannot hold exactly (an
+    integer beyond 2^53 − 1 in magnitude, whether it arrives as an integer or as a double, and anything not a finite
+    double), so two values the server tells apart never print the same; every value a command carries or hashes goes
+    through it (Task 044-5), while `rfc8785` stays the total ECMAScript form the corpus vectors check
+    (`rfc8785_i_json_refuses_what_i_json_cannot_hold`, which also fails if `arbitrary_precision` is ever turned on).
+  - Minor 2: `ActivityEnvelope::new` takes the names of `approvalPolicies` and refuses a `requiresApproval` that names
+    none, so a typo cannot leave an activity ungated.
+  - Minor 3: entries do not inherit, so an entry that a broader prefix entry covers must restate that entry's
+    `requiresApproval`, `highRisk: true` and `irreversible: true`, or the envelope is refused
+    (`a_narrower_entry_restates_the_gates_of_a_broader_one`); publication approval then reads every gate on the entry
+    that governs a name.
+  - Nits: `AdmittedActivity` documents that its effective fields are its entry's; `CommandChain`'s debug form shows
+    its count, never the digest (Technical Plan 6.2); the entry-name bound and the repeatable fields of Technical Plan
+    5.1 are aligned in the contract (Decision 044-254 on the contracts branch).
+  - The suspicion on a moved run is the design's own rule: the overlay row of an accepted step is frozen at acceptance
+    with its version (Technical Plan 2), so its compensation's entry is the accepting version's; Task 044-31's
+    `every_command_kind_runs_through_every_path` holds it.
 
 ### Decisions while building the server lane: documents (2026-11-26)
 
