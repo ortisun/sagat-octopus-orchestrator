@@ -911,8 +911,8 @@ fourth part). Where this section and any above disagree, this section wins.
 |---|---|
 | `run_recovery_namespaces_namespace_fk` (named) | the key `(tenant_id, namespace_id)` → `namespaces (tenant_id, id)` `ON DELETE CASCADE` of 2026-11-26, now named so the bind can tell its violation from the membership key's: both raise SQLSTATE `23503`; the bind maps this one to the opaque `404` and `run_recovery_namespaces_membership_fk` to `422 NOT_A_RECOVERY_SUBJECT`, any other name to an internal error (D022-323) |
 | `run_recovery_namespaces_membership_fk` | unchanged; an out-of-band role change of a bound subject fails with SQLSTATE `23503` naming it, and no code of the platform translates it (D022-322) |
-| The unbind marker | `unbindRunRecovery` runs `SELECT set_config('sagat.unbind_audited', 'on', true)` (local to its transaction) before its delete, as `sagat.registry_change` is set (`crates/infra-postgres/migrations/20270113000000_instance_registry.up.sql:342`) (D022-320) |
-| Audit trigger (revised) | `AFTER DELETE ... FOR EACH ROW`, `ENABLE ALWAYS`; writes one `run_recovery.unbound` row (actor `system:provisioning`) for every delete unless `coalesce(current_setting('sagat.unbind_audited', true), '') = 'on'` and both the binding's membership `(tenant_id, subject, role)` and its namespace exist; reason "removed by a referential cascade" when a parent is gone, "removed outside the unbind route" otherwise. Its action, resource type and actor are the `as_str()` of the domain's `AuditAction` and `ResourceType` variants and `Subject::provisioning()`, checked by T022-266 (D022-320, D022-329) |
+| The unbind marker *(superseded 2026-11-27 after the fifth re-reads, D022-347: see below)* | ~~`unbindRunRecovery` runs `SELECT set_config('sagat.unbind_audited', 'on', true)` (local to its transaction) before its delete~~, as `sagat.registry_change` is set (`crates/infra-postgres/migrations/20270113000000_instance_registry.up.sql:342`) (D022-320) |
+| Audit trigger (revised) | `AFTER DELETE ... FOR EACH ROW`, `ENABLE ALWAYS`; writes one `run_recovery.unbound` row (actor `system:provisioning`) for every delete unless ~~`coalesce(current_setting('sagat.unbind_audited', true), '') = 'on'`~~ the marker equals the deleted row's key *(D022-347)* and both the binding's membership `(tenant_id, subject, role)` and its namespace exist; reason "removed by a referential cascade" when a parent is gone, "removed outside the unbind route" otherwise. Its action, resource type and actor are the `as_str()` of the domain's `AuditAction` and `ResourceType` variants and `Subject::provisioning()`, checked by T022-266 (D022-320, D022-329) |
 | Writers | `bindRunRecovery` (INSERT); `unbindRunRecovery` (DELETE, marked, audited by the route); a referential cascade from `memberships` or `namespaces`, and a direct delete out of band (both audited by the trigger) |
 
 ### The denial record of a bound principal (decision D022-316)
@@ -920,7 +920,44 @@ fourth part). Where this section and any above disagree, this section wins.
 For a namespace-bound principal, a scoped lookup of a run, a workflow, a request or an approval request that returns no
 row, and a namespace refused by the bound set (by id or slug), hand the identifier, its resource type and the
 operation's permission to the bounded denial task, then answer `NotFound`. The task, off the response path, reads
-whether the resource exists in the principal's tenant without the scope predicate, and only then writes
+whether the resource exists ~~in the principal's tenant~~ without the scope predicate *(and without the tenant predicate,
+2026-11-27 after the fifth re-reads, D022-345: see below)*, and only then writes
 `run_recovery.namespace_denied` (resource type `namespace`, the identifier of the namespace the resource is in, read by
 that query, and the permission, as D022-275 says) and increments `run_recovery_namespace_denials_total`. No row is
 written for a miss.
+
+## Revision of 2026-11-27 after the fifth re-reads (decisions D022-333 to D022-349)
+
+The fifth re-reads ([reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md), fifth
+part). Where this section and any above disagree, this section wins. No table or column changes; the marker, the
+trigger and the denial task change, and one lock order is stated.
+
+### `run_recovery_namespaces`: the unbind marker, revised (decision D022-347)
+
+| Column or rule | Notes |
+|---|---|
+| The unbind marker | `unbindRunRecovery` runs `SELECT set_config('sagat.unbind_audited', $1, true)` with the binding's key immediately before its delete, and `SELECT set_config('sagat.unbind_audited', '', true)` immediately after it, in its transaction; the key is the text `{tenant_id}:{subject}:{namespace_id}`, unambiguous because both identifiers are UUIDs of fixed length at either end; as `sagat.registry_change` is set and cleared around its statement (`crates/infra-postgres/migrations/20270113000000_instance_registry.up.sql:342`, `:348`, `:370`, `:375`) |
+| Audit trigger (revised) | as the revision of the fourth re-reads, except the skip: it writes no row only for a deleted row whose key, `OLD.tenant_id::text \|\| ':' \|\| OLD.subject \|\| ':' \|\| OLD.namespace_id::text`, equals `coalesce(current_setting('sagat.unbind_audited', true), '')` and whose membership `(tenant_id, subject, role)` and namespace both exist; every other delete, a second delete in the route's transaction included, is audited |
+| Grants | unchanged (D022-273): `sagat_app` holds SELECT, INSERT and DELETE; no unbind function |
+
+### The denial record of a bound principal, revised (decisions D022-345, D022-346)
+
+For a namespace-bound principal the resolver does not run the inline `*_exists_outside` query. Every scoped lookup that
+returns no row, and every namespace refused by the bound set, hands the identifier, its resource type and the
+operation's permission to the bounded denial task through a slot of the same `denial_slots` semaphore that
+`record_denial` uses; with no slot free, the hand-off increments `audit_denials_total{outcome="dropped"}`, warns
+without the identifier, and writes nothing. The task, holding its slot, reads whether the resource exists with neither
+the scope predicate nor the tenant predicate:
+
+| Existence | Record (written through `insert_denial_once`) | Counted |
+|---|---|---|
+| In the principal's tenant, outside the scope | `run_recovery.namespace_denied` (resource type `namespace`, the namespace the resource is in, the permission) | `run_recovery_namespace_denials_total`, `audit_denials_total` by outcome |
+| In another tenant | `CrossTenantAccessDenied` (`access.denied.cross_tenant`, withheld from the tenant), as today's resolvers write it | `security_denials_total` with that action, `audit_denials_total` by outcome |
+| Nowhere | none | nothing |
+
+### Lock order of a root claim (decision D022-333)
+
+A root claim's transaction takes, in order: the run row (`RUN_FOR_CLAIM`, `FOR UPDATE SKIP LOCKED`), the drain key of
+the claimer (shared), the claimer's binding key `binding:{tenant}:{namespace}:{subject}` (shared, new), then its
+`worker_sessions` row (`FOR UPDATE`), the order a scoped claim already takes. A binding replacement takes the binding key
+exclusively before it locks the subject's sessions, so the two meet on the key, never on the row.

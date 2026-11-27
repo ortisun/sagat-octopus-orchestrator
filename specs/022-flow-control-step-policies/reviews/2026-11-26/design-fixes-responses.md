@@ -221,5 +221,51 @@ worktree list` show the 022 branches `feature/022-step-policies` (this one), `fe
 `feature/022-sdk-builders`, each in its own worktree; this round changes documents of this branch only.
 
 Numbers: decisions D022-315 to D022-332 and tasks T022-268 to T022-271 are used; D022-333 to D022-340 and T022-272 to
-T022-280 are left free.
+T022-280 are left free. *(Used by the fifth re-reads below: D022-333 to D022-349 and T022-272.)*
 
+## Fifth re-reads (2026-11-27)
+
+Where each item of [design-fixes-5-rereview-security-reviewer.md](design-fixes-5-rereview-security-reviewer.md) and
+[design-fixes-5-rereview-architecture-reviewer.md](design-fixes-5-rereview-architecture-reviewer.md) (both of
+`1b2547d5e`) now lives. Decisions in `research.md`, "Decisions of the fifth re-reads of 2026-11-27", each delegate
+(OD-2026-11-24-4) and following the coordinating session's rulings of this round; every finding is fixed in the design,
+none accepted or deferred. "Plan" is `plan.md`, subsection "Revision of 2026-11-27 after the fifth re-reads" unless a
+row says otherwise; "data model" is `data-model.md`, section "Revision of 2026-11-27 after the fifth re-reads"; "tasks"
+is `tasks.md`, subsection "Revision of 2026-11-27 after the fifth re-reads". Code facts checked at `1b2547d5e`.
+
+Acceptance of the revisions of 2026-11-26 and 2026-11-27 to the accepted ADRs follows a narrow re-read of the fix of
+architecture new finding 1 (the root claim's lock order) and security new minor 1 (the start transaction's authority
+check); it is not recorded here.
+
+### Security
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Items of the fourth report: all fixed, minor 3 with the lock it relies on missing | no change, but minor 3's rest is new minor 1 | as new minor 1 |
+| New minor 1: the namespace-bound check is not inside the transaction that fences the start | D022-344 (`recheck_authority` admits only `role.grants(Permission::RunStart) && !role.is_namespace_bound() && ...`; the existing `AUTHORITY_REVOKED` branches answer for a firing, a backfill step and a trigger-now; the argument of the `schedules::recheck_authority` allow-list entry) | tasks T022-270 (three held-lock cases) and T022-258 as they read now; plan, the table and the failure matrix; ADR-0136 decision 4 and "Enforced by" (revision of the fifth re-reads); research D022-317 (marked) |
+| New minor 2: a bound principal's cross-tenant attempt is no longer specified | D022-345 (the resolver skips the inline `*_exists_outside` for a bound principal; the task checks existence without the scope and tenant predicates: `run_recovery.namespace_denied` in the tenant, `CrossTenantAccessDenied` in another tenant, nothing for a miss) | tasks T022-269 as it reads now (an other-tenant case); data model ("The denial record of a bound principal, revised"); plan, the table and the failure matrix; ADR-0136 decision 4; research D022-316 and the data model's section of the fourth re-reads (marked) |
+| Nit 3: a hand-off dropped under load is neither audited nor counted | D022-346 (the hand-off takes a slot of the same `denial_slots`; a drop increments `audit_denials_total{outcome="dropped"}`; the task writes through `insert_denial_once`) | tasks T022-269 as it reads now (a case with every slot held); data model (the same section); plan, the failure matrix |
+| Nit 4: the unbind marker departs from its precedent and is never cleared | D022-347 (the marker is the binding's key, set immediately before the route's delete and cleared immediately after; the trigger skips only a deleted row whose key equals it and whose parents both exist; the plain grants of D022-273 kept, the definer function rejected) | tasks T022-266 as it reads now (two deletes in one transaction); data model ("`run_recovery_namespaces`: the unbind marker, revised"); plan, the table, the failure matrix and the row of the fourth re-reads (marked); research D022-320 (marked) |
+| Nit 5: the `.granted_permissions(` rule exempts more than the `.grants(` rule | D022-348 (exempt only `crates/domain/src/identity.rs`) | tasks T022-258 as it reads now; plan, the table and the row of the fourth re-reads (marked); research D022-319 (marked) |
+
+### Architecture
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Acceptance condition: two text edits to ADR-0136 and ADR-0135 | D022-349 (ADR-0135 decision 2 lists the four argument kinds, `key-held` among them; ADR-0136 decision 5 and its Consequences strike "or a Signal-with-Start") | ADR-0135 decision 2, Status and "Enforced by"; ADR-0136 decision 5, Consequences, Status and "Enforced by"; ADR-0056 decision 2(a) and "Enforced by" |
+| Items of the fourth report: fixed, B's lock forms and current statements partly fixed, new 1 partly fixed | the rests are new findings 1 to 5 | as those rows |
+| New 1, Major: the root claim holds the worker's session row and can then run a lookup round | D022-333 (`claim_root_run` takes the claimer's binding key shared through `RunTx::hold_worker_binding` before `worker_session_room`, the scoped claim's order; task T022-272 in its own pull request, merged alone before slice 7, T022-210 not merging before it), D022-334 (the fourth argument kind `key-held`; an entry of kind `no-round` or `key-held` reached through a `RunTx` method names the method's application callers), D022-335 (T022-271's lease test replaced by a `slot_order.rs` case of a root claim refusing an input whose `onError` successor is cacheable with an entry the claimer produced, against a replacement of the claimer's binding, both orders) | tasks T022-272 (new), T022-210, T022-255 and T022-271 as they read now; plan, the table, the hot-path line and the failure matrix; data model ("Lock order of a root claim"); ADR-0135 decision 2; ADR-0056 decision 2(a); research D022-326 (the `worker_session_room` entry marked) |
+| New 2, minor: `PgRunTx::database_owner` argued from wrong premises; its red step cannot turn red | D022-336 (argued `key-held` by the lock at `crates/infra-postgres/src/execution/database.rs:38-47`; the red step removes that lock; the premises on `bindings.rs:91-93` and the protocol minor 6 corrected) | tasks T022-271 and T022-255 as they read now; plan, the failure matrix; research D022-326 (the `database_owner` entry marked) |
+| New 3, minor: `after-rounds` is false in transactions that run the engine twice | D022-337 (`after-rounds` reworded; `Scheduler::decide_grant`, `RunService::finish_start` and, found by the same reading, `WorkerService::claim_root_run` listed with their arguments; check (2) refuses a function reaching two engine entry points unless listed) | tasks T022-255 as it reads now; plan, the table; ADR-0135 decision 2; research D022-324 (marked) |
+| New 4, minor: the lock forms miss `INSERT ... ON CONFLICT DO UPDATE` and `DELETE` | D022-338 (both forms added; the registration, the replacement's delete and the expiry purge listed `no-round`; 47 statements; negative fixtures) | tasks T022-255 as it reads now; plan, the table; ADR-0056 decision 2(a); research D022-325 and D022-326 (marked) |
+| New 5, minor: the Signal-with-Start clause contradicts D022-310, and T022-239 cannot be built | D022-341 (struck in ADR-0136 and research; a Signal-with-Start made with the `RunRecovery` credential is a recovery start; who publishes the event of an ordinary run), D022-342 (T022-239's event published by the test with its own `event:publish` credential; the slice evidence line corrected) | ADR-0136 decision 5 and Consequences; research D022-243, D022-310, D022-327 and D022-328 (marked); spec FR-022-016, the line of the fourth re-reads (marked); plan, the rows of the third and fourth re-reads and the failure matrix (marked); tasks T022-239 (its line, the row of the fourth re-reads and the row as it reads now) and the slices 10 to 13 evidence line (marked) |
+| Nit 6: the allow list cannot be keyed by function alone | D022-339 (keyed by function and a `// step-lock: <name>` marker, a constant by its name; the claim's lock is the constant `RUN_FOR_CLAIM`) | tasks T022-255 as it reads now; plan, the table; research D022-326 (marked) |
+| Nit 7: check (2) as worded has gaps | D022-340 (matched by the transaction argument, whatever the receiver; `run_addressed` included as a precaution) | tasks T022-255 as it reads now; plan, the table; ADR-0056 decision 2(a); research D022-324 (marked) |
+| Nit 8: the unbind marker is transaction-wide | D022-347 | as security nit 4 |
+| Nit 9: D022-317's backfill filter citation | D022-343 (`schedule_firing.rs:459`) | research D022-317 and tasks T022-270 (marked) |
+
+Note on the architecture reviewer's scope check, which it could not run: at `1b2547d5e`, `git branch -a` and `git
+worktree list` show the 022 branches `feature/022-step-policies` (this one), `feature/022-throughput-control` and
+`feature/022-sdk-builders`, each in its own worktree; this round changes documents of this branch only.
+
+Numbers: decisions D022-333 to D022-349 and task T022-272 are used; D022-350 and T022-273 to T022-280 are left free.

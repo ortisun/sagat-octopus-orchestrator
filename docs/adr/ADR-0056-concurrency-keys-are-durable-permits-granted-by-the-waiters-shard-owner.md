@@ -17,7 +17,9 @@ lower-limit-waiter cases at run level, and the benchmark of one key with 1, 16 a
 *Added 2026-11-27 (feature 022 decision D022-330), for decision 2(a):* the `slot_order.rs` case of a binding replacement
 against a lease-expiry pass that releases a cacheable successor (task T022-254); the rule of
 `scripts/check-architecture.py` on step and session locks before the lookup round, with its negative fixtures (task
-T022-255); the tests that keep the arguments of its allow list (task T022-271).
+T022-255); the tests that keep the arguments of its allow list (task T022-271). *Added 2026-11-27 after the fifth
+re-reads (feature 022 decision D022-349):* the `slot_order.rs` case of a root claim against a replacement of the
+claimer's binding (task T022-272).
 
 ## Context
 
@@ -126,7 +128,10 @@ ceiling above the proposed defaults is published.
    KEY SHARE` and `UPDATE` of a `steps` or `worker_sessions` row in the adapter refused unless its enclosing function is
    on the rule's allow list with its argument, a deciding path being a transaction that runs `Engine::run`, whose callers
    the rule names; restated 2026-11-27 after the fourth re-reads, feature 022 decisions D022-324 to D022-326, task
-   T022-255) and a `slot_order.rs` case (a binding replacement against a lease-expiry pass that releases a cacheable
+   T022-255; *completed 2026-11-27 after the fifth re-reads, feature 022 decisions D022-333, D022-338 and D022-340:* every
+   `INSERT ... ON CONFLICT ... DO UPDATE` and `DELETE` of either table counted as well, `Engine::run_addressed` counted
+   as `Engine::run` is, as a precaution, and a root claim taking its claimer's binding key shared before its session
+   row, the order a scoped claim already takes) and a `slot_order.rs` case (a binding replacement against a lease-expiry pass that releases a cacheable
    successor, task T022-254).
 
    *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in

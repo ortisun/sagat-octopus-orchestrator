@@ -2648,8 +2648,8 @@ where a decision below says it reverses or supersedes part of one.
   starts through its own `child` nodes are handler-tree runs, and so are the runs of `child` nodes of a handler region
   (ruling "Handler phase" 5). Rejected: refusing fresh starts from handler runs (a notifier that opens a ticket workflow
   is the main use). *(Narrowed 2026-11-27 by D022-327: a start by a `RunRecovery` principal is a handler-tree run since
-  D022-310 and no longer loops; runs a handler causes through an event trigger or a Signal-with-Start stay bounded by the
-  budget alone.)*
+  D022-310 and no longer loops; runs a handler causes through an event trigger ~~or a Signal-with-Start~~ *(struck 2026-11-27 after the fifth re-reads, D022-341: a Signal-with-Start made with the credential is a recovery start)* stay
+  bounded by the budget alone.)*
 - **D022-244 — A built-in role `RunRecovery` is the only credential ADR-0136 accepts for recovery (ruling "Lineage" 4;
   same section; supersedes D022-228's "a machine identity").** Delegate (OD-2026-11-24-4). The prescribed credential, an
   Operator or a Developer subject, can approve publications and decide approvals, defeating four-eyes review
@@ -3387,8 +3387,8 @@ Three facts were checked by hand by the coordinating session on `postgres:16-alp
   failure of a recovery start is not dispatched again; it is listed and visible as every failed run is, and a member may
   rerun it. (b) was rejected: a budget defers, it never ends a loop. Evidence: one more T022-244 case (a `RunRecovery`
   start of a definition that continues as new refused `422`; a `RunRecovery` start that fails writes no dispatch row).
-  *(2026-11-27, D022-327: this narrows D022-243; runs a handler causes through an event trigger or a Signal-with-Start
-  stay bounded by the budget alone, and the cost is recorded in ADR-0136's consequences, D022-328.)*
+  *(2026-11-27, D022-327: this narrows D022-243; runs a handler causes through an event trigger ~~or a
+  Signal-with-Start~~ *(struck 2026-11-27 after the fifth re-reads, D022-341: a Signal-with-Start made with the credential is a recovery start)* stay bounded by the budget alone, and the cost is recorded in ADR-0136's consequences, D022-328.)*
 - **D022-311 — The budget line names the capability read (architecture nit G).** Delegate (OD-2026-11-24-4). The plan's
   hot-path line of a member's request names the membership statement with its bound set and its read of
   `platform_requirements` for `failure-handler-v1` (the bound set is empty while the capability is off, D022-276).
@@ -3460,7 +3460,10 @@ this branch at `ace26dc77`.
     namespace by the bound set (by id or slug, before any lookup, D022-294, or in `authorize_in`) hands the identifier,
     its resource type and the operation's permission to the bounded denial task, then answers `AppError::NotFound`;
   - the task, off the response path, runs the unscoped existence query (the same lookup without `AND namespace_id =
-    ANY($bound)`, in the principal's tenant, reading only whether a row exists), and writes `run_recovery.namespace_denied`
+    ANY($bound)`, ~~in the principal's tenant~~ without the tenant predicate either *(amended 2026-11-27 after the fifth
+    re-reads, D022-345: a hit in another tenant writes `CrossTenantAccessDenied`; the resolver skips its inline
+    `*_exists_outside` for a bound principal; the hand-off takes a slot of `denial_slots`, D022-346)*, reading only
+    whether a row exists), and writes `run_recovery.namespace_denied`
     and increments `run_recovery_namespace_denials_total` only when the resource exists in the tenant outside the
     scope; a miss writes nothing and counts nothing.
   The response path is the same for a miss and a hit (both hand the identifier to the task and answer `404`), so the
@@ -3483,12 +3486,14 @@ this branch at `ace26dc77`.
   behaviour" was therefore false for one handler, `ScheduleFiring::pay_obligation`; it is corrected to name it.
   Chosen (the ruling): in `fire` the filter of the stored membership becomes `!m.role().is_namespace_bound() && ...`
   (`:764`), so a namespace-bound authority goes to `revoke_authority` (the next time recorded `AUTHORITY_REVOKED`, the
-  schedule paused with its audit record) before any cancel or start; in `backfill_step` the same filter (`:456`) sends
+  schedule paused with its audit record) before any cancel or start; in `backfill_step` the same filter (~~`:456`~~ `:459`, corrected 2026-11-27, D022-343) sends
   it to `stop_backfill`, the backfill's own revocation branch (`:1642-1660`, audited "authority revoked"), because a
   backfill whose requester lost the authority stops rather than pausing the schedule. Why: a schedule acts for its
   creator with no binding a revocation could fence, so a role scoped to bound namespaces cannot be a schedule's
   authority. This is the argument of the `.grants(` and `Principal::new(` allow-list entries `ScheduleFiring::fire` and
-  `ScheduleFiring::backfill_step` (task T022-258): a namespace-bound role never reaches their checks.
+  `ScheduleFiring::backfill_step` (task T022-258): a namespace-bound role never reaches their checks *(true of the
+  unlocked read only, 2026-11-27 after the fifth re-reads, D022-344: a role change that commits after it is refused by
+  `recheck_authority` in the start transaction, which is the fence)*.
   `ScheduleFiring::trigger_once` builds its principal from the caller's role (`:286`, `:321`) and fails closed for a
   namespace-bound caller (an empty scope); it is unchanged. Evidence (task T022-270, cases of T022-256): a schedule
   whose creator's role became `run-recovery`, with an owed `CANCEL_OTHER` cancel, is paused `AUTHORITY_REVOKED` at its
@@ -3524,7 +3529,8 @@ this branch at `ace26dc77`.
   `Role::granted_permissions`, and its callers follow (`Role::grants`, `crates/domain/src/identity.rs:710`; the domain
   tests; `auth_context`, `crates/api-http/src/routes/identity.rs:49-54`; `current_worker_authorized`,
   `crates/infra-postgres/src/execution.rs:1392-1395`; `declared_operations::authorize`, `:252`; the last two rewritten
-  as `.grants(` by T022-258). T022-258 refuses `.granted_permissions(` in production code outside `crates/domain`, with
+  as `.grants(` by T022-258). T022-258 refuses `.granted_permissions(` in production code outside ~~`crates/domain`~~ `crates/domain/src/identity.rs`
+  *(narrowed 2026-11-27 after the fifth re-reads, D022-348)*, with
   one entry, `identity::auth_context` (the free function of `crates/api-http/src/routes/identity.rs`, which lists and
   grants nothing). D022-303's rule on `.permissions()` is superseded by this one. Evidence: the rule's negative fixture
   (a `.granted_permissions(` outside the list refused); a `.permissions()` of another type not flagged.
@@ -3532,7 +3538,9 @@ this branch at `ace26dc77`.
   amends D022-299).** Delegate (OD-2026-11-24-4). Checked: D022-299's trigger audits a delete only when a parent row is
   gone, so a direct `DELETE FROM run_recovery_namespaces ...` run by the owner, both parents present, writes nothing,
   against "no removal is audited twice or not at all". Chosen (the ruling): `unbindRunRecovery` runs `SELECT
-  set_config('sagat.unbind_audited', 'on', true)` (local to its transaction) before its delete and writes its own
+  set_config('sagat.unbind_audited', 'on', true)` (local to its transaction) before its delete *(superseded 2026-11-27
+  after the fifth re-reads, D022-347: the marker is the binding's key, set immediately before the delete and cleared
+  immediately after, and the trigger compares the deleted row's key with it)* and writes its own
   `run_recovery.unbound` row in that transaction (D022-274); the trigger audits every delete unless
   `coalesce(current_setting('sagat.unbind_audited', true), '') = 'on'` and both the binding's membership `(tenant_id,
   subject, role)` and its namespace still exist. The cases:
@@ -3593,18 +3601,23 @@ this branch at `ace26dc77`.
   things. (1) Every statement of the production code of `crates/infra-postgres/src` that takes a lock form of D022-325
   on a `steps` or `worker_sessions` row is refused unless its enclosing function (keyed as D022-303 says) is on the
   allow list with one of three kinds of argument: `after-rounds` (the function is called only from `persist`,
-  `persist_scoped_addressed` or `persist_path_addressed`, which run after every round of the commit; the script checks
+  `persist_scoped_addressed` or `persist_path_addressed`, which run after every round of the commit *(reworded 2026-11-27
+  after the fifth re-reads, D022-337: and either no round of the transaction follows it, or the rows it writes cannot be
+  `LEASED` or `RUNNING`; a fourth kind, `key-held`, D022-334)*; the script checks
   the callers by name); `not-leased` (the statement's predicate excludes `LEASED` and `RUNNING`, and a binding
   replacement changes no step's status, so the statement never waits on a row the replacement holds); `no-round` (the
   function's transaction runs neither `Engine::run` nor `Engine::run_addressed`, or runs them only for a transition that
   asks no lookup round; named, with the test that keeps it). (2) A call of `.run(` or `.run_addressed(` on a receiver
-  named `engine` (whitespace and line breaks allowed), or of `self.run(` and `self.run_addressed(` inside `impl
+  named `engine` *(2026-11-27 after the fifth re-reads, D022-340: any receiver, matched by the transaction argument;
+  D022-337: a function making two such calls on its transaction is refused unless listed)* (whitespace and line breaks
+  allowed), or of `self.run(` and `self.run_addressed(` inside `impl
   Engine`, in a function not on the list above, is refused, so a new deciding path fails the check until its locks are
   argued and it is listed. The list was found by a search for those calls and checked by hand; T022-255's first run
   confirms it.
 - **D022-325 — The lock forms the rule covers (architecture minor B, its rest; amends D022-308).** Delegate
   (OD-2026-11-24-4). The rule covers `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE` and `FOR KEY SHARE`, with or without
-  `OF`, `SKIP LOCKED` or `NOWAIT`, and every `UPDATE` of `steps` or `worker_sessions`, which locks each row it changes
+  `OF`, `SKIP LOCKED` or `NOWAIT`, and every `UPDATE` *(and, 2026-11-27 after the fifth re-reads, D022-338, every
+  `INSERT ... ON CONFLICT ... DO UPDATE` and `DELETE`)* of `steps` or `worker_sessions`, which locks each row it changes
   (`FOR NO KEY UPDATE`, or `FOR UPDATE` when a key column changes). A lock with `OF` counts when an alias it names is
   `steps` or `worker_sessions`; a lock without `OF` counts when either table is in the statement's `FROM` list (a table
   read only inside a subquery is not locked). All four are covered because a binding replacement's `UPDATE steps`
@@ -3614,7 +3627,8 @@ this branch at `ace26dc77`.
 - **D022-326 — The current hits, each with its argument or its exclusion by name (architecture minor B, its rest; the
   list D022-308 owed before slice 7).** Delegate (OD-2026-11-24-4). Found by reading every SQL literal of the
   production code of `crates/infra-postgres/src` at `ace26dc77` that names `steps` or `worker_sessions` after `FROM`,
-  `JOIN` or `UPDATE` and takes a lock form of D022-325: 44 statements. No function of a migration locks either table;
+  `JOIN` or `UPDATE` and takes a lock form of D022-325: 44 statements *(47 since 2026-11-27 after the fifth re-reads,
+  D022-338; entries keyed by function and statement marker, D022-339)*. No function of a migration locks either table;
   the three hits in migrations are one-time backfills. The allow list of T022-255 starts as:
   - `after-rounds`: `PgRunTx::upsert_step` (`execution.rs:8006`, from `persist`, `:5900`); `PgRunTx::upsert_scoped_instance`
     (`:7659`, from `persist_scoped_addressed`, `:6793`); `PgRunTx::ensure_node_kind` (`:4334`, from those two upserts,
@@ -3636,7 +3650,8 @@ this branch at `ace26dc77`.
     `database_results::selected` (free, `database_results.rs:104`, `FOR SHARE OF s`, `SUCCEEDED`);
     `scoped_events::prepare_delivery` (free, `execution/scoped_events.rs:164`): its statement has no status predicate,
     and the argument stays D022-308's, kept by the test that the row it locks is `WAITING`.
-  - Not a lock of either table: the `FOR UPDATE SKIP LOCKED` of `claim_reservation` (`execution.rs:2591`) locks `runs`,
+  - Not a lock of either table: the `FOR UPDATE SKIP LOCKED` of ~~`claim_reservation`~~ the constant `RUN_FOR_CLAIM`
+    *(corrected 2026-11-27, D022-339)* (`execution.rs:2591`) locks `runs`,
     since `steps` appears only in an `EXISTS` subquery; listed once so that the script's reading of a lock without `OF`
     is checked by hand.
   - `no-round`, by name:
@@ -3658,8 +3673,10 @@ this branch at `ace26dc77`.
     - `worker_session_room` (free, `execution.rs:994`, the claim's `worker_sessions ... FOR UPDATE`, reached through
       `PgRunTx::worker_session_room`, `:5279`, and `PgPathExecutionTx::worker_session_room`, `path.rs:102`): on a
       deciding path (`WorkerService::lease_one` runs `Engine::run`, `crates/application/src/worker.rs:1657`, `:1672`),
-      but a lease makes its step `LEASED` and releases no other step, so the transition asks no lookup round; kept by a
-      domain test that the progress of a lease never asks `Evaluation::CacheLookup` (task T022-271).
+      ~~but a lease makes its step `LEASED` and releases no other step, so the transition asks no lookup round; kept by a
+      domain test that the progress of a lease never asks `Evaluation::CacheLookup` (task T022-271)~~ *(superseded
+      2026-11-27 after the fifth re-reads, D022-333 to D022-335: the root claim's `reject_input` can ask the round, so the
+      entry is `key-held`, the claimer's binding key taken before the row, kept by a `slot_order.rs` case of T022-271)*.
     - `PgRunStore::use_session` (`workers.rs:381`, `:401`): its own transaction, opened by the store for
       `WorkerService::session` (`crates/application/src/worker.rs:866-880`), which runs no `Engine::run`.
     - `incident::record` (free, `scripts/incident.rs:137`, `LEASED` and `RUNNING` steps `FOR UPDATE`): its own
@@ -3668,20 +3685,23 @@ this branch at `ace26dc77`.
     - `PgRunTx::database_owner` (`execution/database.rs:51`, `FOR SHARE OF w`, the session of the reporting database
       executor, reached through `PgRunTx::database_executor_owns`, `execution.rs:5085`, and `database_snapshot`,
       `database.rs:402`): on a deciding path and before the round (`WorkerService::ensure_bound`,
-      `crates/application/src/worker.rs:2715-2726`, runs in the completion's transaction before `Engine::run`). Argued:
+      `crates/application/src/worker.rs:2715-2726`, runs in the completion's transaction before `Engine::run`).
+      *(Superseded 2026-11-27 after the fifth re-reads, D022-336: the two premises below do not hold; the entry is
+      `key-held`, argued by the shared lock of the subject's binding key at `database.rs:38-47`, and T022-271's red step
+      removes that lock.)* ~~Argued:
       the row is a database executor's session (`accepted_protocol_minor >= 6`); the lookup round's binding lock is that
       of a cache entry's producer, an activity worker, since database results are not cacheable (G1164); and an identity
       holds one binding profile in a tenant (`crates/infra-postgres/src/bindings.rs:91-93`), so the session is never one
       the producer's replacement locks. No test checks that premise today: task T022-271 adds the `slot_order.rs` case
-      that does, and if it fails the lock moves after the round in T022-210.
+      that does, and if it fails the lock moves after the round in T022-210.~~
 - **D022-327 — D022-310 narrows D022-243 (architecture minor 1).** Delegate (OD-2026-11-24-4). D022-243 kept the
   namespace dispatch budget as the bound of a handler that starts fresh runs, triggers or a Signal-with-Start, and
   rejected refusing fresh starts because a notifier that opens a ticket workflow is the main use; D022-310 made every
   start of a `RunRecovery` principal a handler-tree run. They agree once D022-310 is read as a narrowing:
   - a start through the `RunRecovery` credential no longer loops, since its run is never dispatched to the namespace
     handler;
-  - a run the handler causes through an event trigger, or through a Signal-with-Start, is not started by the
-    `RunRecovery` principal, so it is an ordinary run whose failure is dispatched, and the budget alone bounds that loop
+  - a run the handler causes through an event trigger~~, or through a Signal-with-Start,~~ *(struck 2026-11-27 after the fifth re-reads, D022-341: a Signal-with-Start made with the credential is a recovery start)* is not started
+    by the `RunRecovery` principal, so it is an ordinary run whose failure is dispatched, and the budget alone bounds that loop
     (D022-243 holds for it);
   - fresh starts stay allowed, which is what D022-243 protected: the notifier still opens its ticket workflow.
   The price, now written down: a ticket workflow started with the credential is a handler-tree run, so its own failure
@@ -3693,10 +3713,13 @@ this branch at `ace26dc77`.
   dispatch budget" is struck and replaced by two Bad consequences: the failure of a recovery start (a run a `RunRecovery`
   principal starts) is not dispatched to the namespace handler, though it is listed as every failed run is and a member
   may rerun it; and a definition that continues as new cannot be started by the role. A further line says that runs a
-  handler causes through an event trigger or a Signal-with-Start are bounded by the dispatch budget only. The plan's
+  handler causes through an event trigger ~~or a Signal-with-Start~~ *(struck 2026-11-27 after the fifth re-reads, D022-341: a Signal-with-Start made with the credential is a recovery start)* are bounded by the dispatch
+  budget only. The plan's
   failure-matrix row "A handler starts fresh runs that fail" reads "A handler causes fresh runs that fail through an
-  event trigger or a Signal-with-Start". T022-239's evidence is driven by an event trigger: a handler that publishes an
-  event whose trigger starts a workflow that fails (each such run an ordinary run of its own lineage) has its
+  event trigger ~~or a Signal-with-Start~~" *(struck 2026-11-27 after the fifth re-reads, D022-341: a Signal-with-Start made with the credential is a recovery start)*. T022-239's evidence is driven by an event trigger: ~~a
+  handler that publishes an event~~ an event published by the test with its own `event:publish` credential *(amended
+  2026-11-27 after the fifth re-reads, D022-342: the credential holds no `event:publish`)* whose trigger starts a workflow
+  that fails (each such run an ordinary run of its own lineage) has its
   dispatches deferred at the budget, none dropped, the alert raised.
 - **D022-329 — The cascade audit's row is checked against the domain's vocabulary (architecture nit 4).** Delegate
   (OD-2026-11-24-4). The audit trigger of D022-299 is the first SQL writer of `audit_records` (no migration inserts into
@@ -3727,6 +3750,284 @@ this branch at `ace26dc77`.
   REPEATABLE READ, fact 2); a role change refused by isolation level (a rule an operator meets by surprise, keeping a
   trigger whose correctness depends on how it reads); a one-column UPDATE grant so the runtime role can lock the binding
   row (it lets the role touch a row no route changes).
+
+### Decisions of the fifth re-reads of 2026-11-27
+
+The security and architecture reviewers re-read the fixes of `1b2547d5e`:
+[reviews/2026-11-26/design-fixes-5-rereview-security-reviewer.md](reviews/2026-11-26/design-fixes-5-rereview-security-reviewer.md)
+and
+[reviews/2026-11-26/design-fixes-5-rereview-architecture-reviewer.md](reviews/2026-11-26/design-fixes-5-rereview-architecture-reviewer.md).
+Security: no Blocker and no Major; two new minors and three nits. Architecture: no Blocker; one new Major, four new
+minors and four nits, and the amendments of 2026-11-26 and 2026-11-27 to the accepted ADRs acceptable once two text
+edits are made (D022-334 and D022-341 make them; D022-349 says where). Every finding is fixed in the design; none is
+accepted or deferred. Where each lives is in the fifth part of
+[reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md). Each decision is delegate
+(OD-2026-11-24-4) and follows the coordinating session's rulings of this round. The code facts below were checked on
+this branch at `1b2547d5e`.
+
+- **D022-333 — The root claim takes its claimer's binding key before its session row (architecture new finding 1,
+  Major; amends D022-326).** Delegate (OD-2026-11-24-4). Checked: `WorkerService::claim_root_run`
+  (`crates/application/src/worker.rs:1100`) locks the claiming session's row through `worker_session_room` (`:1146-1148`;
+  the statement is `FOR UPDATE`, `crates/infra-postgres/src/execution.rs:993-996`), then, in the same transaction, may
+  fail a step whose input cannot be made through `reject_input` (`worker.rs:1322`, `:1439`, `:1452`), which runs
+  `Engine::run` for a root step (`:1467-1486`). A failed step releases its `onError` successor
+  (`crates/domain/src/execution/plan.rs:124`, `:218`, `:941`), or, when it ends the run, opens the handler region,
+  decided by the same lookup and gate rounds (ADR-0136); once task T022-210 builds the lookup round, a cacheable
+  successor takes its entry producer's binding key shared (ADR-0135 decision 2). The producer is often the claiming
+  identity itself. A binding replacement of that identity holds the key exclusively and then locks the identity's
+  sessions `FOR UPDATE` (`crates/infra-postgres/src/bindings.rs:88-92`, `:221-223`): the claim holds the session row
+  and waits on the key, the replacement holds the key and waits on the row, and PostgreSQL aborts one of them, which
+  ADR-0056 decision 2(a) forbids. D022-326's argument for `worker_session_room` ("a lease makes its step `LEASED` and
+  releases no other step") missed the reject path. The scoped claim already takes the key first:
+  `WorkerService::claim_path` reads `bound_patterns` (`crates/application/src/worker/scoped_claims.rs:102`), which
+  holds the key (`crates/infra-postgres/src/execution/path.rs:120`), before `worker_session_room` (`scoped_claims.rs:112`). Options:
+  (a) take the key before the row in the root claim; (b) fail a step whose input cannot be made in a transaction of its
+  own after the claim commits; (c) let a claim's transaction leave the successor waiting for its lookup, decided by a
+  later commit. Chosen (a), the ruling: `claim_root_run` takes the claimer's binding key shared after `worker_drained`
+  and before `worker_session_room`, the order the scoped claim uses, through a new `RunTx::hold_worker_binding(subject)`.
+  `PgRunTx` implements it with `crate::bindings::hold_worker_binding` (`bindings.rs:15`) on the run's tenant and
+  namespace, which are those of the session row `worker_session_room` locks (`execution.rs:5279-5293`), and
+  `PgRunTx::bound_patterns` (`execution.rs:5296`) calls it instead of its own call. The lookup round's shared lock of the
+  same key is then a re-entry, which does not wait; a replacement of the claimer waits for the claim's commit, or the
+  claim waits for the replacement and then, when the replacement closed its session, finds it closed
+  (`worker_session_room` answers 0, nothing leased),
+  as the scoped claim does today. (b) was rejected: a step whose input cannot be made would stay `READY` across a commit
+  and be offered to the next poll before it fails, where today the failure and the claim commit together and nothing is
+  leased (`worker.rs:1311-1313`, `:1429-1431`). (c) was rejected: ADR-0135 decision 3 refuses a commit that leaves a cacheable step
+  waiting for its lookup, and an exception for one caller would be a second rule to keep. Slice: the change is task
+  T022-272, in its own pull request, merged alone before slice 7 opens; T022-210 does not merge before it. It changes the
+  lock order of the most frequent worker transaction for every run, gated or not and whatever capability is active, so it
+  is measured alone (one shared advisory lock more per root claim transaction, recorded as a hot-path line against
+  today's claim) and a regression is attributable to it. Before T022-210 it closes no deadlock, since no round exists,
+  and adds only the wait the scoped claim already has.
+- **D022-334 — A fourth argument kind, `key-held` (architecture new findings 1 and 2; amends D022-324 and D022-326).**
+  Delegate (OD-2026-11-24-4). The allow list of task T022-255 gains a kind: `key-held`, the statement locks a row whose
+  subject's binding key (`binding:{tenant}:{namespace}:{subject}`, the key a replacement of that subject takes
+  exclusively, `bindings.rs:88-92`) the transaction holds shared before the row lock. Why it holds: a binding
+  replacement takes its subject's key first, then locks only that subject's sessions in its namespace (`bindings.rs:221-223`)
+  and updates only the steps those sessions lease (`:245-246`); so the replacement of the row's subject waits for the key
+  this transaction holds and never holds the row, a replacement of another subject never locks the row, and the lookup
+  round's lock of the row's subject's key is a re-entry. How the script checks it:
+  - for a statement in the function that takes the key, a call of `hold_worker_binding(` precedes the statement in the
+    function's body; the inline advisory lock of `PgRunTx::database_owner`
+    (`crates/infra-postgres/src/execution/database.rs:40-47`) is rewritten as that call, the same statement on the same
+    key, so the check has one form;
+  - for a statement reached through a method of `RunTx` or `PathExecutionTx`, the entry names the method's application
+    callers; the script refuses any other caller of the method in `crates/application/src` and `crates/scheduler/src`,
+    and checks in each named caller that `.hold_worker_binding(` or `.bound_patterns(`, with the same subject argument,
+    precedes the method's call.
+  An entry of kind `no-round` whose statement is reached through such a method names the method's application callers
+  in the same way, and the script refuses any other caller (the ruling); no current `no-round` entry is reached so, once
+  the two entries below are `key-held`. The entries that move from `no-round` to `key-held`: `worker_session_room`
+  (reached through `RunTx::worker_session_room`, `PgRunTx` at `execution.rs:5279`, and
+  `PathExecutionTx::worker_session_room`, `path.rs:102`; its callers `WorkerService::claim_root_run`, after D022-333,
+  and `WorkerService::claim_path`) and `PgRunTx::database_owner` (D022-336). ADR-0135 decision 2's list of argument
+  kinds gains this one (D022-349). Evidence (task T022-255): negative fixtures of a `key-held` entry whose key is taken
+  after the statement, of an unnamed caller of `worker_session_room`, and of a named caller that takes the key after the
+  call, each refused.
+- **D022-335 — T022-271 keeps the `key-held` entries with two `slot_order.rs` cases (architecture new finding 1;
+  amends D022-326).** Delegate (OD-2026-11-24-4). The domain test "the progress of a lease never asks
+  `Evaluation::CacheLookup`" is dropped: it kept an argument the claim's reject path breaks, and it would have stayed green
+  while that path deadlocked. Task T022-271 now holds two cases of `tests/fault/schedules-bulk-operations/slot_order.rs`,
+  each run in both orders held by a lock:
+  - a root claim that refuses an input (a task input over `MAX_TASK_INPUT_BYTES`, failed `RUN_DATA_LIMIT` through
+    `reject_input`) whose `onError` successor is cacheable with a live entry the claiming identity produced, against a
+    replacement of the claimer's binding: no deadlock, both transactions end, and the claim leases nothing when the
+    replacement closed its session first; shown red once by removing the key take of D022-333 (the claim-first order then
+    ends with SQLSTATE `40P01`);
+  - a database executor's report that releases a cacheable successor whose entry the executor's subject produced,
+    against a replacement of that subject's binding: no deadlock; shown red once by removing the lock at
+    `crates/infra-postgres/src/execution/database.rs:40-47` (D022-336).
+  Both need the lookup round, so they land in slice 7 with T022-255 and T022-210.
+- **D022-336 — `PgRunTx::database_owner` is argued `key-held`, its earlier premises corrected (architecture new finding
+  2; amends D022-326).** Delegate (OD-2026-11-24-4). Checked: D022-326 argued the entry from two premises that do not
+  hold. `crates/infra-postgres/src/bindings.rs:91-93` is the end of the namespace key's lock (`:88-92`); the one-profile
+  rule is the profile key and its refusal (`:93-100`, `:154-158`), and it binds managed sessions only (`profile_matches
+  = !managed || ...`, `crates/infra-postgres/src/workers.rs:293-299`). `accepted_protocol_minor >= 6` does not identify
+  a database executor: an ordinary scoped worker on a database-capable store negotiates 6 as well
+  (`crates/application/src/worker.rs:82-84`); only the database-runner role offers managed activities (`worker.rs:105-108`,
+  `workers.rs:300-309`). What keeps the statement safe is that `database_owner` takes
+  `binding:{tenant}:{namespace}:{subject}` shared before it reads the session row `FOR SHARE OF w`
+  (`crates/infra-postgres/src/execution/database.rs:38-47`, the statement at `:51`): the entry is `key-held`, argued by
+  that lock. Making the executor's subject the producer keeps the case green while the lock is there, so the "shown red by
+  hand" step of T022-271 removes the lock instead (D022-335). D022-326's argument is marked.
+- **D022-337 — `after-rounds` reworded, and a transaction that runs the engine more than once is listed (architecture
+  new finding 3; amends D022-324).** Delegate (OD-2026-11-24-4). Checked: three transactions, in two functions, run the
+  engine twice. `Scheduler::decide_grant` runs `Engine::run` and then `Engine::deliver_held_signal`, which runs
+  `Engine::run` again (`crates/scheduler/src/passes.rs:6261-6283`; `crates/application/src/execution.rs:2275`).
+  `RunService::finish_start` (`crates/application/src/runs.rs:1876`) runs a reset and then `reapply`, which delivers
+  signals through `deliver_signal` (`runs.rs:2035-2059`; `crates/application/src/runs/reset.rs:741-769`), and, for a
+  Signal-with-Start, runs `Engine::start` and then delivers its signal (`runs.rs:2081-2084`, `:2158`). The first
+  `persist`'s step locks are held through the second call's rounds, so "run after every round of the commit" was false.
+  `after-rounds` now reads: the function is called only from `persist`, `persist_scoped_addressed` or
+  `persist_path_addressed`, and either no round of the transaction follows it, or the rows it writes cannot be `LEASED`
+  or `RUNNING`. The functions whose transaction runs the engine more than once, each with its argument:
+  - `Scheduler::decide_grant`: the second call runs only for the grant of a queued start's run-scope gates (`start`,
+    `passes.rs:6260`, `:6278`), so the run had no step before this transaction and none it writes is leased;
+  - `RunService::finish_start`, both its reset with reapplied signals and its Signal-with-Start: the run is created in
+    this transaction (a reset's new run, or the started run), so no session has leased any of its steps;
+  - `WorkerService::claim_root_run`, found by the same reading: it runs `lease_one` for each task it leases
+    (`worker.rs:1403`) and may then run `reject_input` in the same transaction (`:1322`, `:1439`); the steps its earlier
+    `persist` made `LEASED` are leased by the claimer's session, whose binding key the transaction holds (D022-333), and a
+    replacement of another subject updates only its own sessions' steps (`bindings.rs:245-246`), so its argument is
+    `key-held`. (`WorkerService::claim_path` writes through `persist_addressed` of its path transaction and runs neither
+    `Engine::run` nor `Engine::run_addressed`.)
+  Check (2) of T022-255 also refuses a function whose body makes two or more calls, on its transaction, of `.run(`,
+  `.run_addressed(` or a function that reaches them (a call inside a loop counts as two), unless the function is on this
+  list with its argument. The functions that reach them are computed by name over `crates/application/src` and
+  `crates/scheduler/src` to a fixed point (a function that passes its transaction to a member is a member), so
+  `RunService::reapply` is one; a name shared with an unrelated function makes the check refuse more, never less, and
+  such a hit is listed with its argument. The first run of the check confirms the list; a function it finds beyond these
+  three is argued in T022-255's pull request before the rule merges. Evidence: negative fixtures of a function that
+  calls two members on one transaction, and of an `after-rounds` entry whose function is followed by a second engine call
+  in an unlisted caller, both refused.
+- **D022-338 — The lock forms gain `INSERT ... ON CONFLICT ... DO UPDATE` and `DELETE` (architecture new finding 4;
+  amends D022-325 and D022-326).** Delegate (OD-2026-11-24-4). Checked: the registration's `INSERT INTO worker_sessions
+  ... ON CONFLICT (tenant_id, subject, worker_name) DO UPDATE` (`crates/infra-postgres/src/workers.rs:328-344`) locks
+  the row it conflicts with, and `DELETE FROM worker_sessions` (`crates/infra-postgres/src/bindings.rs:255`,
+  `crates/infra-postgres/src/maintenance.rs:1218`) locks each row it deletes as `FOR UPDATE` does. The forms of D022-325
+  gain both, for `steps` and `worker_sessions`. A plain `INSERT` stays out: it locks no existing row of either table, and
+  an insert into a table whose foreign key references `steps` takes `FOR KEY SHARE` on the step, which a binding
+  replacement's `UPDATE steps` of non-key columns (`bindings.rs:245`) does not conflict with. At `1b2547d5e` no other
+  statement of either form touches either table in `crates/infra-postgres/src` (every `INSERT INTO steps` there is
+  plain). The three statements, each `no-round`:
+  - `WorkerStore::create_session` for `PgRunStore` (`workers.rs:230`, the statement at `:328`): the registration's own
+    transaction, opened by the store (`:234`), which runs no `Engine::run`;
+  - `PgRunStore::replace_binding` (`bindings.rs:67`, the statement at `:255`): the replacement itself, the other party
+    of the rule, as its two entries of D022-326;
+  - `MaintenanceStore::purge_sessions` for `PgRunStore` (`maintenance.rs:1216`, the statement at `:1218`): one statement
+    on the pool, in no transaction of the engine.
+  The allow list starts with 47 statements. Evidence (task T022-255): negative fixtures of an `INSERT ... ON CONFLICT
+  ... DO UPDATE` and a `DELETE` of each table in an unlisted function, refused; a plain `INSERT`, not refused.
+- **D022-339 — Entries keyed by function and statement, constants by name (architecture nit 6; amends D022-326).**
+  Delegate (OD-2026-11-24-4). Checked: four functions have statements of two kinds:
+  `PgCollectionStore::checkpoint_collection_iteration` (`primitives.rs:2275` `no-round`, `:2362` `not-leased`);
+  `PgCollectionStore::drain_collection_iteration` (`:3026` `no-round`, `:3140` and `:3168` `not-leased`);
+  `PgLoopProgressStore::checkpoint` (`loop_progress.rs:1850` `no-round`, `:1947` and `:1976` `not-leased`);
+  `PgLoopProgressStore::drain_iteration` (`:2961` `no-round`, `:3026` `not-leased`). An entry of the step-lock rule is
+  keyed by its enclosing function (as D022-303 keys it) and a statement marker, a comment `// step-lock: <name>` on the
+  line above the statement's literal, the name unique within the function; a statement written in a constant or passed
+  to a macro is keyed by the constant's name. A locking statement without a marker in a listed function is refused. The
+  claim's `FOR UPDATE SKIP LOCKED` is the constant `RUN_FOR_CLAIM` (`crates/infra-postgres/src/execution.rs:2590-2594`,
+  used at `:401`), not a statement of `claim_reservation` (`:2462`): D022-326's line is corrected to name it. Evidence:
+  negative fixtures of a second locking statement added without a marker to a listed function, and of a marker reused
+  within one function, both refused.
+- **D022-340 — Check (2) matches a call by its transaction argument (architecture nit 7; amends D022-324).** Delegate
+  (OD-2026-11-24-4). Checked: rustfmt puts the receiver and `.run(` on separate lines
+  (`crates/application/src/execution.rs:2324-2325`, `:2368-2369`, `:2378-2379`), and a receiver may be bound to any
+  name. Check (2) matches `.run(` and `.run_addressed(` whatever the receiver and whatever whitespace or line breaks
+  come before the dot, when the first argument is a transaction: a name the function receives as a parameter of a type
+  bounded by `RunTx` or `PathExecutionTx`, or binds from a store's `begin` method, with or without `&mut` or `&mut *`.
+  `Engine::run_addressed` asks no round today (`execution.rs:2005-2032`), and ADR-0056 decision 2(a) named `Engine::run`
+  alone; it is included as a precaution, so that a round added to it later is covered from its first commit. Evidence:
+  negative fixtures of a call split across lines, of a receiver named other than `engine` and of a `.run_addressed(`,
+  each in an unlisted function, refused; a `.run(` whose first argument is no transaction, not refused.
+- **D022-341 — A Signal-with-Start made with the `RunRecovery` credential is a recovery start (architecture new finding
+  5; amends D022-243, D022-310, D022-327 and D022-328).** Delegate (OD-2026-11-24-4). Checked: a Signal-with-Start is a
+  start through the caller's principal (`StartVia::SignalWithStart`, `crates/domain/src/execution/event.rs:487`;
+  `RunService::signal_with_start`, `crates/application/src/runs.rs:1045`), and no workflow node performs one (`NodeKind`,
+  `crates/domain/src/workflow.rs:669-780`). D022-310 makes every admission of a principal that holds `RunRecovery` a
+  handler-tree run, so a Signal-with-Start made with the credential is a recovery start, and D022-327's clause calling it
+  ordinary contradicted it. A further fact: `signal_with_start` authorizes `Permission::RunSignal` (`runs.rs:1053`),
+  which the role does not hold (`run:read`, `run:start`, `run:operate` and `definition:read`, D022-275), so the call is
+  refused `403` today; were the role to gain `run:signal`, D022-310 would still make the run a recovery start. "or a
+  Signal-with-Start" is struck, marked, from ADR-0136 decision 5 and its Consequences, from D022-243, D022-310, D022-327
+  and D022-328, from the plan's rows and from the line of FR-022-016 of the fourth re-reads. An ordinary run a handler
+  causes is one a trigger starts for an event that a principal holding `event:publish` published: an outside system the
+  handler notifies, or an activity of the handler using a separately held credential. The `RunRecovery` credential holds
+  no `event:publish` (ADR-0136 decision 4; `Permission::EventPublish`, `crates/domain/src/identity.rs:491`), and no node
+  publishes an event. ADR-0136's Bad consequence "a recovery that needs one goes through an event trigger instead" names
+  who publishes it.
+- **D022-342 — T022-239's setup names who publishes the event (architecture new finding 5, its rest; amends
+  D022-328).** Delegate (OD-2026-11-24-4). T022-239's handler could not publish an event with its credential. Its setup
+  now: the triggering event is published by an outside system, the test with its own `event:publish` credential, not by
+  the handler; the trigger starts a workflow that fails, each run ordinary and of its own lineage, so each failure is
+  dispatched; beyond the namespace dispatch budget the dispatches are deferred, none dropped, the alert raised. The
+  slices 10 to 13 evidence line of the rulings of 2026-11-25 in tasks.md ("a handler starting fresh runs deferred by the
+  budget") is marked and reads "failing runs started by an event trigger, the event published by the test, deferred by
+  the budget".
+- **D022-343 — Citation (architecture nit 9).** Delegate (OD-2026-11-24-4). D022-317's backfill filter is at
+  `crates/application/src/schedule_firing.rs:459`, not `:456`; D022-317 and T022-270 are corrected, marked.
+- **D022-344 — The start transaction's authority check refuses a namespace-bound role (security new minor 1; completes
+  D022-317).** Delegate (OD-2026-11-24-4). Checked: `recheck_authority` (`crates/infra-postgres/src/schedules.rs:175-206`)
+  locks the authority's membership through `sagat_lock_memberships` (`:182`) and admits when `role.grants(Permission::RunStart)`
+  and the database permissions hold (`:194-200`); `run-recovery` holds `run:start`. Every schedule start that does not
+  act as `system:engine` runs it through `recheck_schedule_authority` (`crates/infra-postgres/src/execution.rs:1403-1421`,
+  called at `:1532`, `:1542` and `:1653`): a firing, a backfill step and a trigger-now. `fire` reads the membership
+  without a lock (`crates/application/src/schedule_firing.rs:759-768`), so a change of the authority's role to
+  `run-recovery` (allowed while the subject has no binding, D022-298) that commits between that read and the start
+  transaction passes D022-317's filter and is admitted by the check: one run per window in a namespace the subject is not
+  bound to. Chosen (the ruling): the check tests `role.grants(Permission::RunStart) && !role.is_namespace_bound() &&
+  ...`. The existing `AUTHORITY_REVOKED` branches do the rest: a firing goes to `revoke_authority`
+  (`schedule_firing.rs:1306`), a backfill step to `stop_backfill` (`:612`), and a trigger-now answers `403` naming
+  `run:start` (`:342`). D022-317's filters stay, as the early exit; the fence is this check, under the membership lock,
+  as FR-018-015 says. This is the argument of the `.grants(` allow-list entry `schedules::recheck_authority` (D022-287,
+  task T022-258): a namespace-bound role is refused in the check itself. D022-317's sentence "a namespace-bound role
+  never reaches their checks" is marked: true of the unlocked read only. Evidence (task T022-270), three held-lock cases:
+  hold the role update open, let `fire` pass its filter at a barrier, commit the update, then assert `AUTHORITY_REVOKED`
+  recorded, the schedule paused and no run created; the same for a backfill step (cancelled with its audit record,
+  nothing started) and for a Developer's trigger-now (`403` naming `run:start`, nothing started); each red on the check
+  without the new condition.
+- **D022-345 — The denial task of a bound principal looks for the resource in every tenant (security new minor 2;
+  amends D022-316).** Delegate (OD-2026-11-24-4). Checked: today the resolvers run `*_exists_outside` inline and write
+  `CrossTenantAccessDenied` through `record_cross_tenant` (`crates/application/src/api_admission.rs:412-424`, `:441-453`,
+  `:457-479`); D022-316 narrowed the task's query to the principal's tenant without saying whether the inline query
+  still runs, so a bound principal's attempt on another tenant's identifier was either not audited or audited on the
+  response path. Chosen (the ruling): for a bound principal the resolver skips the inline `*_exists_outside` and hands
+  the identifier to the task, which checks existence without the scope predicate and without the tenant predicate:
+  - a hit in the principal's tenant writes `run_recovery.namespace_denied` and increments
+    `run_recovery_namespace_denials_total`;
+  - a hit in another tenant writes `CrossTenantAccessDenied` (`access.denied.cross_tenant`,
+    `crates/domain/src/audit.rs:370`, withheld from the tenant, `:262`) and increments `security_denials_total` with
+    that action, as `record_denial` does today;
+  - a miss writes and counts nothing.
+  The response path is the same in the three cases. A tenant principal's paths are unchanged. Evidence (task T022-269):
+  an identifier of another tenant read by a bound principal writes exactly one cross-tenant row and no
+  `run_recovery.namespace_denied` row once the task drains, and its answer equals a miss's in status and body.
+- **D022-346 — The hand-off takes the same denial slots, and a drop is counted (security nit 3; amends D022-316).**
+  Delegate (OD-2026-11-24-4). Checked: `record_denial` counts `security_denials_total`, then takes a slot of
+  `denial_slots` with `try_acquire_owned`, and counts `audit_denials_total{outcome="dropped"}` and warns when none is
+  free (`crates/infra-postgres/src/identity.rs:588-598`). The hand-off of D022-316 takes a slot of the same
+  `denial_slots` before it spawns the task; when none is free it increments `audit_denials_total{outcome="dropped"}` and
+  warns, naming the resource type and never the identifier. It counts nothing else, since a dropped hand-off may be a
+  miss. The task, holding its slot, writes through `insert_denial_once` (`identity.rs:304`), the deduplicating insert
+  `record_denial` uses, and counts `audit_denials_total{outcome="accepted"}` or `{outcome="failed"}`; it does not call
+  `record_denial`, which would take a second slot. Evidence (task T022-269): with every slot held, a hand-off writes
+  nothing and moves `audit_denials_total{outcome="dropped"}` by one.
+- **D022-347 — The unbind marker is the binding's key, set immediately before the route's delete and cleared
+  immediately after (security nit 4, architecture nit 8; amends D022-320).** Delegate (OD-2026-11-24-4). Checked: the
+  precedent sets `sagat.registry_change` and clears it right after the protected statement
+  (`crates/infra-postgres/migrations/20270113000000_instance_registry.up.sql:342`, `:348`, `:370`, `:375`); D022-320 set
+  `'on'` for the rest of the transaction, so a later delete of another binding in that transaction, both parents
+  present, went unaudited. Chosen (the ruling): `unbindRunRecovery` runs `SELECT set_config('sagat.unbind_audited', $1,
+  true)` with the binding's key immediately before its delete, and `SELECT set_config('sagat.unbind_audited', '', true)`
+  immediately after it. The key is the text `{tenant_id}:{subject}:{namespace_id}`, which cannot be the same for two
+  bindings because both identifiers are UUIDs of fixed length at either end. The trigger skips its audit only for a
+  deleted row whose key, built the same way from `OLD`, equals `coalesce(current_setting('sagat.unbind_audited', true),
+  '')`, and whose membership and namespace both exist; it audits every other delete. The plain grants of D022-273 are
+  kept (`sagat_app` keeps SELECT, INSERT and DELETE, and the route writes its own audit row through the domain's types).
+  A `SECURITY DEFINER` unbind function that marks, deletes, audits and clears was rejected: it would be a second SQL
+  writer of the audit vocabulary beside the trigger (D022-329) and take the route's audit out of its typed writer, while
+  the marker scoped to one key and cleared after the delete already closes the gap. Evidence (task T022-266): a
+  transaction that runs the route's statements for one binding and then deletes another binding directly writes one row
+  for each (the second with the reason "removed outside the unbind route"); after the route's delete,
+  `current_setting('sagat.unbind_audited', true)` reads `''`.
+- **D022-348 — The `.granted_permissions(` rule exempts only `crates/domain/src/identity.rs` (security nit 5; amends
+  D022-319).** Delegate (OD-2026-11-24-4). The `.grants(` rule exempts only that file and lists the domain's other sites
+  (`crates/domain/src/execution/approval.rs` `authorize_decision`, `crates/domain/src/secrets.rs` `may_use`, D022-287),
+  so exempting the whole of `crates/domain` let a `role.granted_permissions().contains(..)` in those files escape both
+  rules. T022-258 refuses `.granted_permissions(` in production code outside `crates/domain/src/identity.rs`, with one
+  entry, `identity::auth_context`. Evidence: a negative fixture of a `.granted_permissions(` in another file of
+  `crates/domain/src`, refused.
+- **D022-349 — The texts of the accepted ADRs (architecture verdict: the two edits acceptance needs).** Delegate
+  (OD-2026-11-24-4). ADR-0135 decision 2 lists the four argument kinds: after every round of the transaction, or rows that
+  cannot be `LEASED` or `RUNNING`; a row that cannot be `LEASED` or `RUNNING`; a transaction that asks no lookup round;
+  and the row's subject's binding key held shared before the row lock, a claim taking its claimer's key before its
+  session row (D022-333, D022-334, D022-337). ADR-0136 decision 5 and its Consequences strike "or a Signal-with-Start"
+  and say that a Signal-with-Start made with the credential is a recovery start and who publishes the event of an
+  ordinary run (D022-341). ADR-0056 decision 2(a) follows: its lock forms gain `INSERT ... ON CONFLICT ... DO UPDATE` and
+  `DELETE`, and `Engine::run_addressed` is named as a precaution (D022-338, D022-340). The "Enforced by" lines of
+  ADR-0056 and ADR-0135 name task T022-272 beside T022-255 and T022-271.
 
 ## Gaps
 
