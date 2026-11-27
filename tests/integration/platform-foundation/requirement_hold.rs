@@ -269,7 +269,7 @@ async fn the_hold_is_the_text_of_the_architecture_decision() {
 async fn the_gate_comes_before_the_epoch_in_every_function_that_waits_for_it() {
     let db = migrated_db().await;
     for (function, lock) in [
-        ("platform_requirement_lock()", "pg_advisory_xact_lock("),
+        ("platform_requirement_lock()", "EXCLUSIVE MODE;"),
         (
             "platform_requirement_activate(text, text[], text)",
             "EXCLUSIVE MODE;",
