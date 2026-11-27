@@ -206,6 +206,8 @@ impl std::fmt::Debug for protocol::CompleteStepRequest {
         f.debug_struct("CompleteStepRequest")
             .field("attempt", &self.attempt)
             .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
             .finish_non_exhaustive()
     }
 }
@@ -214,6 +216,8 @@ impl std::fmt::Debug for protocol::FailStepRequest {
         f.debug_struct("FailStepRequest")
             .field("attempt", &self.attempt)
             .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
             .finish_non_exhaustive()
     }
 }
