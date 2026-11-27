@@ -70,6 +70,26 @@ async fn hold_keys(w: &World) -> Transaction<'static, Postgres> {
     key
 }
 
+/// Whether `task` waits for a lock (`true`) before it ends (`false`).
+async fn waits_or_ends<T>(w: &World, task: &tokio::task::JoinHandle<T>) -> bool {
+    crate::support::bounded::within(
+        "the task waits for a lock or ends".to_owned(),
+        std::time::Duration::from_secs(120),
+        async {
+            loop {
+                if !lock_waiters(w).await.is_empty() {
+                    return true;
+                }
+                if task.is_finished() {
+                    return false;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await
+}
+
 /// The backends of this database that wait for a lock.
 async fn lock_waiters(w: &World) -> Vec<i32> {
     sqlx::query_scalar(
@@ -543,9 +563,12 @@ async fn a_restarted_process_goes_on_with_the_queue() {
     }
 }
 
-/// Gap G022-013 (task T022-110), the takeover raced by a real keeper: alpha's keeper holds every shard with a lease of
-/// one second; its grant pass takes the queued start's run and its key's home-shard fence and waits for the key, which
-/// the test holds. Alpha's lease then runs out on the database clock, and beta's keeper takes over every shard it may:
+/// Gap G022-013 (task T022-110), the takeover raced by a real keeper: alpha's keeper holds every shard with a short
+/// lease; its grant pass takes the queued start's run and its key's home-shard fence and waits for the key, which the
+/// test holds. A lease that runs out before the pass takes its fence makes the pass skip the key (it grants nothing and
+/// waits for nothing); the attempt is then made again with a lease twice as long, so a loaded machine cannot fail the
+/// test and the lease still runs out on the database clock. Alpha's lease then runs out, and beta's keeper takes over
+/// every shard it may:
 /// the fenced one is skipped (`FOR UPDATE SKIP LOCKED` against the grant's `FOR SHARE`), so beta's grant pass cannot
 /// serve that key while alpha's grant is in flight. The key released, alpha's grant commits once; beta's next round
 /// takes the last shard, and its pass grants nothing again.
@@ -553,14 +576,6 @@ async fn a_restarted_process_goes_on_with_the_queue() {
 async fn a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_granted_twice() {
     let (w, workflow, holder) = held_key().await;
     let session = w.session(&["act.g"]).await;
-    let alpha = keeper(&w, "alpha", std::time::Duration::from_secs(1));
-    alpha.round().await.expect("alpha");
-    assert_eq!(alpha.placement().owned(), ShardSet::all());
-    let old_owner = scheduler(
-        &w,
-        SchedulerSettings::default(),
-        Some(alpha.placement().clone()),
-    );
     let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;
     let task = w.one_task(&session).await;
     w.complete(&session, &task, &json!({}))
@@ -573,8 +588,35 @@ async fn a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_gra
     let home =
         sagat_domain::sharding::Shard::new(u8::try_from(home).expect("a shard")).expect("a shard");
     let key = hold_keys(&w).await;
-    let grant = tokio::spawn(async move { old_owner.grant_gates().await });
-    barrier(&w, 1).await;
+    let mut lease = std::time::Duration::from_secs(1);
+    let grant = loop {
+        let alpha = keeper(&w, "alpha", lease);
+        alpha.round().await.expect("alpha");
+        // a lease that runs out inside the round leaves alpha short of a shard: that attempt is void too
+        if alpha.placement().owned() == ShardSet::all() {
+            let old_owner = scheduler(
+                &w,
+                SchedulerSettings::default(),
+                Some(alpha.placement().clone()),
+            );
+            let grant = tokio::spawn(async move { old_owner.grant_gates().await });
+            if waits_or_ends(&w, &grant).await {
+                break grant;
+            }
+            // the lease ran out before the pass took its fence: the pass skipped the key and granted nothing
+            let skipped = grant.await.expect("grant");
+            assert_eq!(
+                skipped.gates_granted, 0,
+                "a lapsed lease grants nothing: {skipped:?}"
+            );
+        }
+        assert_eq!(start_rows(&w, waiter).await, (0, 1), "still queued");
+        lease *= 2;
+        assert!(
+            lease <= std::time::Duration::from_secs(64),
+            "the grant pass never took its fence within a lease of {lease:?}"
+        );
+    };
     // alpha's leases (its shards' and its membership's) run out on the database clock; it does not renew them
     let expiry: i64 = sqlx::query_scalar(
         "SELECT (extract(epoch FROM greatest( \
