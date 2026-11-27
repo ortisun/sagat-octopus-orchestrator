@@ -111,10 +111,15 @@ A long step streams its earlier lines through `AppendStepLogs`, admitted in a cl
   fourth run (decision D041-127): ⌈batches per second × the batch's p99 service time / 0.7⌉ gave 7 with 1 replica and
   16 workers and 5 per replica with 8 replicas and 128 workers.
 
-A batch that finds no ticket free is answered `RETRY_LATER` at once and resent; it is lost only after 10 seconds.
+A batch that finds no ticket free is answered `RETRY_LATER` at once and resent; it is lost only after 10 seconds. It is
+counted `step_log_ticket_refusals_total`, never in `step_log_batches_total`, which counts what the ingest answered (a
+lock timeout or a quota refusal is a `retry_later` there). A call over the class cap is shed `RESOURCE_EXHAUSTED` with
+`retry-after-ms` before it is authenticated, counted `grpc_shed_total{class="logs"}`; `grpc_log_calls_in_flight` is
+the class's calls running now, apart from `grpc_in_flight`.
 **Raise `SAGAT_STEP_LOGS_TENANT_CALLS`** (and the cap with it, never above half the pool) when one tenant's long steps
-see sustained `step_log_batches_total{outcome="retry_later"}` and `SagatStepLogIngestShedding` fires while the database
-has headroom: two of the fourth run's eight valid rounds needed 10 tickets for a tenant at the benchmark's saturation.
+see a sustained rise of `step_log_ticket_refusals_total` and `SagatStepLogIngestShedding` fires while the database has
+headroom: two of the fourth run's eight valid rounds needed 10 tickets for a tenant at the benchmark's saturation. A
+value set above the cap is capped to it.
 
 ## 5. Who sees the step-log quota's usage
 
@@ -170,3 +175,18 @@ and after a crash of the database each can jump by up to 32 (PostgreSQL logs seq
 replica that loses shard 0 sets its gauge to 0 and stops publishing; the next holder starts from its own first read. A
 steady rise of `step_log_quota_lease_rows` means backends that charge and then live on idle: it is bounded by the
 backends that charged in the last 10 minutes.
+
+## 9. The deployment switch and protocol 1.7
+
+`SAGAT_STEP_LOGS_ENABLED` (true by default) is read by the execution engine. When it is false, a worker that registers
+at protocol 1.7 is told `StepLogPolicy.enabled = false`, and every batch is answered `STOP_CAPTURE` (`CAPTURE_OFF`)
+before any statement; nothing is stored or charged. A worker learns a change at its next registration. Turning it off
+is how to stop capture on a replica at once without a migration; the lines already stored stay until their expiry. Set
+it the same on every replica: a worker served by a replica with the switch on stores its batches there.
+
+The server offers 1.7 to an ordinary worker whose store proves the scoped, database and step-log paths, and serves the
+database runner and the script runner at most 1.6, since their batches are always refused. A worker that offers 1.6 or
+less is served at its own minor and never sends a batch. `GET /v1/version` reports the server's newest minor as
+`workerProtocol.maximum`, and `worker_registrations_total{protocol}` shows which minors the fleet is served at.
+Capture in a namespace is turned off by `step_log_attempt_records = 0`, which the policy reads at registration and
+every batch reads again.

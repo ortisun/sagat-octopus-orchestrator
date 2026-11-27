@@ -510,6 +510,10 @@ Server, each metric with exactly one producer (decision D041-128):
   script service (task T041-13).
 - `step_log_ingest_seconds`, `step_log_lock_timeouts_total` (a batch's `55P03`, whatever lock it met), and
   `step_log_quota_retries_total`: the ingest.
+- `step_log_ticket_refusals_total` (no label): the gRPC handler, one per batch answered `RETRY_LATER` because its
+  tenant's tickets (P3) were all taken; the ingest never sees such a batch, so `step_log_batches_total` does not count
+  it (decision D041-149). The Logs class itself is counted by the transport's `grpc_log_calls_in_flight` (a gauge) and
+  `grpc_shed_total{class="logs"}`.
 - `step_log_cross_tenant_check_failures_total` (no label): the ingest, when the check for a run of another tenant after
   a `LEASE` answer fails, so that a skipped cross-tenant audit is never silent (decision D041-148 (9)).
 - `step_log_quota_top_ups_total{outcome}` (`room`, `made`, `limit`, `busy`, `contended`, `error`): the store,
