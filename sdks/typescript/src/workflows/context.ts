@@ -760,7 +760,14 @@ class Run {
       return command('complete', '', { output }, false, false);
     }
     const error = outcome.error;
-    if (error instanceof WorkflowFailure) return command('fail', '', { code: error.code, message: error.safeMessage }, false, false);
+    if (error instanceof WorkflowFailure) {
+      // The message is an inline value of the completion (FailCommand.safe_message).
+      if (!this.blobsFit(this.blobValueSizes, this.alwaysInlineBytes + canonicalSize(error.safeMessage))) {
+        this.failTask(new InlineValuesExceeded('the failure message cannot be carried by one completion'));
+        return undefined;
+      }
+      return command('fail', '', { code: error.code, message: error.safeMessage }, false, false);
+    }
     if (error instanceof ContinueAsNewRequest) return command('continue_as_new', '', error.body, false, true);
     return command('acknowledge_cancellation', '', {}, false, false);
   }
@@ -1222,6 +1229,12 @@ function countScopeCommand(r: Run): void {
 function openSaga<T>(options: SagaOptions, body: (scope: SagaScope) => Promise<T>, parent: Scope | undefined): Promise<T> {
   const r = run('saga');
   if (parent && parent.state !== 'open') throw new TypeError(`the saga scope ${parent.id} is not open`);
+  if (options?.onCompensationFailure !== undefined && !['manual_review', 'fail'].includes(options.onCompensationFailure)) {
+    throw new TypeError('onCompensationFailure is manual_review or fail');
+  }
+  if (options?.cancelPolicy !== undefined && !['compensate_completed', 'wait_in_flight_then_compensate', 'abort_no_compensation'].includes(options.cancelPolicy)) {
+    throw new TypeError('cancelPolicy is compensate_completed, wait_in_flight_then_compensate or abort_no_compensation');
+  }
   if ([...r.scopes.values()].filter((scope) => scope.state !== 'closed').length >= MAX_OPEN_SCOPES) {
     throw new CommandBatchLimitExceeded(`a run has at most ${MAX_OPEN_SCOPES} open saga scopes`);
   }
@@ -1507,6 +1520,7 @@ export function uuid(): string {
 export function continueAsNew(input: unknown, options?: ContinueAsNewOptions): never {
   const r = run('continueAsNew');
   const taken = snapshot(input);
+  if (options?.version !== undefined && options.version !== 'same' && options.version !== 'active') throw new TypeError('version is same or active');
   const body: Record<string, unknown> = { input: taken.value, state: null, version: options?.version ?? 'same' };
   let size = taken.size;
   if (options && 'state' in options && options.state !== undefined) {

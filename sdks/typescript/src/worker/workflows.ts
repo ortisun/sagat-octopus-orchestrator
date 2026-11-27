@@ -15,7 +15,9 @@ import { hex } from '../workflows/chain.js';
 import type { HistoryEvent, WorkflowTaskFailure } from '../workflows/context.js';
 import { ActivationCutter } from '../workflows/history.js';
 import { checkWorkflowRuntime } from '../workflows/preconditions.js';
-import { MalformedHistory, blobRefsOf, blobValueOf, commandToWire, eventFromWire, failureToWire, type ValueCarrier } from '../workflows/protocol.js';
+import {
+  HistoryValuesExceeded, MAX_HISTORY_EVENTS, MalformedHistory, blobRefsOf, blobValueOf, commandToWire, eventFromWire, failureToWire, type ValueCarrier,
+} from '../workflows/protocol.js';
 import { WorkflowThread, WorkflowThreadError, type LoadedBundle, type RunHandle } from '../workflows/threaded.js';
 import { rfc8785 } from '../workflows/context.js';
 import type { Completion, PreparedCommand } from '../workflows/run.js';
@@ -59,6 +61,12 @@ export interface WorkflowTasksOptions {
 }
 
 const offerKey = (workflowType: string, codeDigest: string): string => `${workflowType}\n${codeDigest}`;
+
+/**
+ * What a cached context was made under: the code digest, the state bound and the gated entries its lease carried. A
+ * lease that carries any other reuses no context (Decision 044-324): a republished envelope changes the last two.
+ */
+const contextIdentity = (task: WorkflowTaskLease): string => JSON.stringify([task.code_digest, task.state_max_bytes, [...task.gated_entries].sort()]);
 
 /** The workflow tasks of one host: its offers, its workflow thread and bundles, and its cache of runs. */
 export class WorkflowTasks {
@@ -139,18 +147,19 @@ export class WorkflowTasks {
     const task = lease.workflow_task ?? undefined;
     const offer = task ? this.#offers.get(offerKey(task.workflow_type, task.code_digest)) : undefined;
     if (lease.task_kind !== 'WORKFLOW' || !task || !offer || task.run_id !== lease.run_id || task.lease_token !== lease.lease_token
+      || task.attempt !== lease.attempt || task.generation !== lease.generation || !(task.started_at_us > 0)
       || !(task.seed instanceof Uint8Array) || task.seed.length !== 32) {
       // No code of this host may answer it: it lapses, and the server leases it again (Decision 044-319).
       this.#options.log.warn('a workflow lease this host does not serve is left to lapse', { task: lease.task_id, kind: lease.task_kind });
       emit('DROPPED');
       return;
     }
-    let run: RunHandle | undefined = this.#cache.take(lease.run_id, task.window_start_seq, task.code_digest);
+    let run: RunHandle | undefined = this.#cache.take(lease.run_id, task.window_start_seq, contextIdentity(task));
     cacheHit = run !== undefined;
     try {
       const history = await this.#history(lease, task, cacheHit ? task.window_start_seq + 1 : 1);
       const startedEvent = lastStarted(history);
-      if (!startedEvent || (task.started_at_us > 0 && startedEvent.atUs !== task.started_at_us)) {
+      if (!startedEvent || startedEvent.atUs !== task.started_at_us) {
         throw new MalformedHistory('the history does not end at the workflow_task.started of the lease');
       }
       if (!run) {
@@ -173,14 +182,17 @@ export class WorkflowTasks {
         run = undefined;
         try {
           await accepted.commit(reported.outcome);
-          this.#cache.put(lease.run_id, accepted, task.code_digest);
+          this.#cache.put(lease.run_id, accepted, contextIdentity(task));
         } catch {
           accepted.dispose();
         }
       }
       emit(reported.outcome, reported.cause);
     } catch (error) {
-      if (error instanceof MalformedHistory) {
+      if (error instanceof HistoryValuesExceeded) {
+        // Counted: the run goes under review after its fifth failure, never by allocating what it names.
+        emit(...await this.#fail(lease, task, { cause: 'WORKFLOW_TASK_FAILED', exceptionType: 'HistoryValuesExceeded' }));
+      } else if (error instanceof MalformedHistory) {
         // A history this SDK cannot read cannot be replayed with certainty.
         emit(...await this.#fail(lease, task, { cause: 'NONDETERMINISM_RISK' }));
       } else if (error instanceof SagatError && error.code === 'STALE_ATTEMPT') {
@@ -232,10 +244,16 @@ export class WorkflowTasks {
 
   /** The visible history from `from`: the first page, then ReadHistory pages until the last (Technical Plan 4.2). */
   async #history(lease: TaskLease, task: WorkflowTaskLease, from: number): Promise<HistoryEvent[]> {
+    // A history over the largest a function is asked to replay belongs to no valid lease (Decision 044-324).
+    if (!Number.isSafeInteger(task.visible_count) || task.visible_count > MAX_HISTORY_EVENTS) {
+      throw new MalformedHistory(`a history of ${String(task.visible_count)} events is over ${MAX_HISTORY_EVENTS}`);
+    }
     const wire: WireHistoryEvent[] = [];
     let last = 0;
+    let read = 0;
     const take = (event: WireHistoryEvent): void => {
       if (!(event.seq > last)) throw new MalformedHistory(`history event ${String(event.seq)} is not after ${last}`);
+      if (++read > MAX_HISTORY_EVENTS) throw new MalformedHistory(`the history is over ${MAX_HISTORY_EVENTS} events`);
       last = event.seq;
       if (event.seq >= from) wire.push(event);
     };
@@ -243,13 +261,16 @@ export class WorkflowTasks {
     if (task.first_page.length < task.visible_count) {
       const next = Math.max(last, from - 1) + 1;
       last = next - 1;
+      let complete = false;
       for await (const page of this.#options.rpc().readHistory({
         task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
         read_token: '', from_seq: next,
       }, task.traceparent || undefined)) {
         for (const event of page.events) take(event);
-        if (page.last_page) break;
+        if (page.last_page) { complete = true; break; }
       }
+      // A stream that ended without its last page lost the rest: the lease lapses rather than answer a partial window.
+      if (!complete) throw new SagatError({ code: 'TRANSPORT', message: 'the history stream ended before its last page' });
     }
     const blobs = new Map<string, unknown>();
     for (const ref of blobRefsOf(wire)) blobs.set(ref.blobId, await this.#readBlob(lease, ref));
@@ -260,11 +281,19 @@ export class WorkflowTasks {
     const hash = createHash('sha256');
     const chunks: Buffer[] = [];
     let size = 0;
+    let header = false;
     for await (const part of this.#options.rpc().readBlob({
       task_id: lease.task_id, run_id: lease.run_id, step_id: WORKFLOW_STEP, attempt: lease.attempt, generation: lease.generation,
       lease_token: lease.lease_token, blob_id: ref.blobId,
     }, lease.traceparent || undefined)) {
-      if (!part.chunk) continue;
+      if (part.header) {
+        if (header || part.header.blob_id !== ref.blobId || part.header.size !== ref.size || part.header.sha256 !== ref.sha256) {
+          throw new MalformedHistory('a history blob stream does not match its reference');
+        }
+        header = true;
+        continue;
+      }
+      if (!part.chunk || !header) throw new MalformedHistory('a history blob stream is malformed');
       size += part.chunk.length;
       if (size > ref.size) throw new MalformedHistory('a history blob is larger than its reference');
       hash.update(part.chunk);

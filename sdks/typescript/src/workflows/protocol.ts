@@ -12,6 +12,17 @@ export class MalformedHistory extends Error {
   constructor(message: string) { super(message); this.name = 'MalformedHistory'; }
 }
 
+/** A history whose blob-carried values are over what a worker loads for one lease (Decision 044-324). */
+export class HistoryValuesExceeded extends Error {
+  constructor(message: string) { super(message); this.name = 'HistoryValuesExceeded'; }
+}
+
+/** The largest history a function is asked to replay (Non-functional requirement 044-001): 51,200 + 1,024 + 3 × 2,048. */
+export const MAX_HISTORY_EVENTS = 58_368;
+/** The bytes of one history blob a worker reads, and of all those of one lease (Decision 044-324). */
+export const MAX_HISTORY_BLOB_BYTES = 64 * 1024 * 1024;
+export const MAX_HISTORY_BLOBS_BYTES = 256 * 1024 * 1024;
+
 /** What a history payload holds once resolved: a value, a withheld value, or nothing. */
 export type PayloadValue = { value: unknown } | { redacted: true } | undefined;
 
@@ -71,14 +82,28 @@ function nodeNumber(node: unknown, what: string): number {
   return Number(match[1]);
 }
 
-/** The blobs the payloads of these events reference (wire form), each once. */
+/**
+ * The blobs the payloads of these events reference (wire form), each once, judged before any is read: a blob named twice
+ * with different claims is malformed, and their sizes are bounded one by one and in all (Decision 044-324).
+ */
 export function blobRefsOf(events: Iterable<Record<string, any>>): HistoryBlobRef[] {
   const refs = new Map<string, HistoryBlobRef>();
+  let total = 0;
   for (const event of events) {
     for (const payload of payloadsOf(event)) {
       const blob = record(payload?.['blob']);
       if (!blob || text(payload?.['placeholder']) !== '' || text(blob['blob_id']) === '') continue;
-      refs.set(blob['blob_id'], { blobId: blob['blob_id'], size: int(blob['size'] ?? 0, 'a blob size'), sha256: text(blob['sha256']) });
+      const ref = { blobId: blob['blob_id'] as string, size: int(blob['size'] ?? 0, 'a blob size'), sha256: text(blob['sha256']) };
+      if (ref.size < 0 || !/^[0-9a-f]{64}$/.test(ref.sha256)) throw new MalformedHistory('a history blob reference has no size or SHA-256');
+      const known = refs.get(ref.blobId);
+      if (known) {
+        if (known.size !== ref.size || known.sha256 !== ref.sha256) throw new MalformedHistory('a history blob is named twice with different claims');
+        continue;
+      }
+      if (ref.size > MAX_HISTORY_BLOB_BYTES) throw new HistoryValuesExceeded(`a history blob of ${ref.size} bytes is over ${MAX_HISTORY_BLOB_BYTES}`);
+      total += ref.size;
+      if (total > MAX_HISTORY_BLOBS_BYTES) throw new HistoryValuesExceeded(`the history's blobs are over ${MAX_HISTORY_BLOBS_BYTES} bytes in all`);
+      refs.set(ref.blobId, ref);
     }
   }
   return [...refs.values()];
@@ -245,12 +270,19 @@ const EVENT_BODIES = new Set([
 ]);
 
 const snake = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+/** The nesting an export line may have: the event's own depth is a handful; a payload is bytes, not nesting. */
+const MAX_LINE_DEPTH = 32;
 
-function fromJson(value: unknown, key: string): unknown {
-  if (Array.isArray(value)) return value.map((item) => fromJson(item, key));
+function fromJson(value: unknown, key: string, depth = 0): unknown {
+  if (depth > MAX_LINE_DEPTH) throw new MalformedHistory('a history line is nested too deep');
+  if (Array.isArray(value)) return value.map((item) => fromJson(item, key, depth + 1));
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [name, item] of Object.entries(value as Record<string, unknown>)) out[snake(name)] = fromJson(item, snake(name));
+    for (const [name, item] of Object.entries(value as Record<string, unknown>)) {
+      // An own key `__proto__` of a parsed line would set the converted object's prototype: it is no field of the mapping.
+      if (name === '__proto__') continue;
+      out[snake(name)] = fromJson(item, snake(name), depth + 1);
+    }
     if (key === 'json' || key === '') return out;
     if ('json' in out || 'blob' in out) out['value'] = 'json' in out ? 'json' : 'blob';
     return out;
@@ -381,16 +413,17 @@ export function commandToWire(command: PreparedCommand, commandNumber: number, c
     return wire;
   }
   switch (command.kind) {
-    case 'timer_cancel': case 'step_cancel': wire['target'] = { target: body['target'] }; break;
+    // Every identifier is the command's target, which the host checked; the body holds the same by construction.
+    case 'timer_cancel': case 'step_cancel': wire['target'] = { target: command.target }; break;
     case 'saga_open':
       wire['saga_open'] = {
-        scope: body['scope'], parent_scope: body['parentScope'] ?? '', on_compensation_failure: body['onCompensationFailure'], cancel_policy: body['cancelPolicy'],
+        scope: command.target, parent_scope: body['parentScope'] ?? '', on_compensation_failure: body['onCompensationFailure'], cancel_policy: body['cancelPolicy'],
       };
       break;
-    case 'saga_close': wire['saga_close'] = { target: body['scope'] }; break;
-    case 'saga_abort': wire['saga_abort'] = { target: body['scope'] }; break;
-    case 'marker_patch': wire['marker'] = { marker_id: body['markerId'] }; break;
-    case 'marker_side_effect': wire['marker'] = { marker_id: body['markerId'], side_effect_value: commandValue(body['value'], carrier) }; break;
+    case 'saga_close': wire['saga_close'] = { target: command.target }; break;
+    case 'saga_abort': wire['saga_abort'] = { target: command.target }; break;
+    case 'marker_patch': wire['marker'] = { marker_id: command.target }; break;
+    case 'marker_side_effect': wire['marker'] = { marker_id: command.target, side_effect_value: commandValue(body['value'], carrier) }; break;
     case 'set_state': wire['set_state'] = commandValue(body['state'], undefined); break;
     case 'update_accept': case 'update_reject':
       wire['update_decision'] = { admitted_seq: body['admittedSeq'], accepted: body['accepted'] === true, rejection_reason: body['accepted'] === true ? '' : body['reason'] };

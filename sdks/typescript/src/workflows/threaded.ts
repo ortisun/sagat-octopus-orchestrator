@@ -162,7 +162,8 @@ export class ThreadedRun implements RunHandle {
   get windowStart(): number { return this.#state.windowStart; }
   get acceptedCommands(): number { return this.#state.acceptedCommands; }
   get chain(): Uint8Array { return this.#state.chain; }
-  get broken(): boolean { return this.#state.broken; }
+  /** A run of a thread that ended is broken: its context went with the thread. */
+  get broken(): boolean { return this.#state.broken || this.#thread.dead; }
   get closed(): boolean { return this.#state.closed; }
   get deferredBodyDigest(): Uint8Array | undefined { return this.#state.deferredBodyDigest; }
 

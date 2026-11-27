@@ -287,7 +287,12 @@ export class WorkerHost {
         ...(this.#config.workflowCacheSize === undefined ? {} : { cacheSize: this.#config.workflowCacheSize }),
         ...(this.#config.activationDeadlineMs === undefined ? {} : { activationDeadlineMs: this.#config.activationDeadlineMs }),
       });
-      await tasks.load();
+      try {
+        await tasks.load();
+      } catch (error) {
+        await tasks.close();
+        throw error;
+      }
       this.#workflows = tasks;
     }
     warnIfNotSecure(this.#config.grpcUrl, this.log);
@@ -398,11 +403,22 @@ export class WorkerHost {
       const [bundle, manifest] = await Promise.all([readFile(bundlePath, 'utf8'), readFile(manifestPath, 'utf8')]);
       let parsed: unknown;
       try { parsed = JSON.parse(manifest); } catch { throw new SagatError({ code: 'VALIDATION_FAILED', message: `the workflow manifest ${basename(manifestPath)} is not JSON` }); }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray((parsed as { workflows?: unknown }).workflows)
+        || !(parsed as { workflows: unknown[] }).workflows.every((workflow) => workflow !== null && typeof workflow === 'object')) {
+        throw new SagatError({ code: 'VALIDATION_FAILED', message: `the workflow manifest ${basename(manifestPath)} is not a manifest` });
+      }
       const named = (parsed as { bundle?: unknown }).bundle;
       if (typeof named !== 'string' || resolve(dirname(manifestPath), named) !== resolve(bundlePath)) {
         throw new SagatError({ code: 'VALIDATION_FAILED', message: `the workflow manifest ${basename(manifestPath)} names another bundle than ${basename(bundlePath)}` });
       }
-      for (const workflow of verifyManifest(parsed as Parameters<typeof verifyManifest>[0], bundle)) {
+      let verified: ReturnType<typeof verifyManifest>;
+      try {
+        verified = verifyManifest(parsed as Parameters<typeof verifyManifest>[0], bundle);
+      } catch (error) {
+        // The manifest's own text (an SDK message naming versions and types) explains the refusal; nothing else is relayed.
+        throw new SagatError({ code: 'VALIDATION_FAILED', message: error instanceof Error && error.name === 'ManifestMismatch' ? error.message : 'the workflow manifest does not hold' });
+      }
+      for (const workflow of verified) {
         offers.push({ workflowType: workflow.workflowType, codeDigest: workflow.digest, bundleCode: bundle, filename: basename(bundlePath) });
       }
     }

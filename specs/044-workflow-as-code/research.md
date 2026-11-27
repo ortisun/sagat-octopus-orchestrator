@@ -1471,6 +1471,33 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
   evaluation allocates before it yields is bounded by its activation deadline only. delegate (OD-2026-11-24-4): Node
   gives no limit on a thread's external memory, and a check between evaluations is the tightest bound the runtime can
   keep without a host object in the context.
+- **D044-324** (2026-11-27) The independent security review of the worker side (commits up to f7da5b15; 2 Major, 3 Minor,
+  5 Nits, 3 suspicions) is fixed, each finding first seen failing by a test of
+  `sdks/typescript/test/workflows/security.test.ts`; none is settled without a fix:
+  - Major: a cached run kept the gated entries and the state bound of the lease that made it, so a republished envelope
+    that gates an activity under the same digest sent its input as a blob. A cached context is reused only under the
+    same code digest, `state_max_bytes` and set of gated entries; any change replays in a new context.
+  - Major: the history and its blobs were loaded into the worker's main thread without a bound. A lease's history is at
+    most 58,368 events (the largest history a function is asked to replay, Non-functional requirement 044-001, or it is
+    malformed), and its blobs are judged from their references before any is read: at most 64 MiB each and 256 MiB in
+    all; a history over either fails the workflow task `WORKFLOW_TASK_FAILED` with the exception type
+    `HistoryValuesExceeded` (counted, so the run goes under review after its fifth failure), never by allocating.
+  - Minor: the typed fields of a command went to the wire as the context's body gave them. The host now takes the marker
+    identifier and every command target from the checked target, and checks the context's answer for each typed kind
+    (failure and rejection codes against their pattern or closed list, a failure message at most 4,096 characters and
+    counted in the inline total, the saga-open fields against their values, an update's sequence against its target).
+  - Minor: the check that the history ends at the lease's S(k) could be skipped: a lease with no `started_at_us` is
+    dropped, and a `ReadHistory` stream that ends without `last_page` is a transport failure (the lease lapses).
+  - Minor: a blob named twice with different claims was checked once: it is a malformed history.
+  - Nits: a blob read checks its header against the reference; an export line's keys `__proto__` are ignored and its
+    nesting is bounded; a malformed manifest is `VALIDATION_FAILED`; a host that fails to load its bundles ends the thread
+    it started; a lease whose inner attempt or generation differ from its own is dropped; a cached run of a thread that
+    ended is never taken.
+  - Suspicion, settled otherwise (not a security matter): a re-emitted deferral names a blob-carried value by its
+    descriptor alone, which is what the corpus (`code-blob-values`, a cold worker) requires; whether the server accepts
+    a descriptor for a deferral it holds inline is the server lane's to say, reported to the coordinating session.
+    The other two suspicions (the depth of a history value, which the thread's clone bounds, and the server's own
+    refusal of a gated input as a blob) are answered by the Majors' fixes.
 - **G044-305** (2026-11-27) A TypeScript host that registers activities and workflow types together would speak minor
   1.10 for its activities too, which carries the host procedures of 1.7 (step logs) and 1.9 (activity timeouts) that
   the TypeScript activity host does not have yet; until it has them, such a host refuses to start and the activities

@@ -6,7 +6,7 @@
 import { bodyDigest, EMPTY_CHAIN, extendChain } from './chain.js';
 import {
   BLOB_CAPABLE_FIELD, canonicalSize, MAX_BLOB_CARRIED_BYTES, MAX_BLOBS, MAX_FUNCTION_COMMANDS, MAX_FUNCTION_METADATA_BYTES,
-  MAX_INLINE_BYTES, MAX_SIDE_EFFECT_BYTES, metadataSize, TERMINAL_KINDS,
+  MAX_FAILURE_MESSAGE, MAX_INLINE_BYTES, MAX_SIDE_EFFECT_BYTES, metadataSize, TERMINAL_KINDS,
   type ActivationResult, type ExpectedRecord, type HistoryEvent, type LogLine, type RunInit, type WorkflowCommand, type WorkflowTaskFailure,
 } from './context.js';
 import { appliedEvents, beginOf, type ReplayActivation } from './history.js';
@@ -233,7 +233,7 @@ export class CodeRun {
         const answer = call(JSON.stringify({ op: 'apply', event }));
         if (answer['stopped'] === true) break;
       }
-      return checkResult(call(JSON.stringify({ op: 'end' })));
+      return checkActivationAnswer(call(JSON.stringify({ op: 'end' })));
     } catch (error) {
       this.#broken = true;
       if (error instanceof ExternalMemoryExceeded) {
@@ -285,14 +285,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 // The answer comes from the context, whose code may have replaced the runtime's own checks: every field the host uses,
 // or that may reach a report, is checked here, and a field outside its pattern is dropped rather than relayed.
-function checkResult(answer: Record<string, unknown>): ActivationResult {
+/** Checks the context's answer to an activation (exported for the tests of this package). */
+export function checkActivationAnswer(answer: Record<string, unknown>): ActivationResult {
   const commands = answer['commands'];
   if (!Array.isArray(commands) || commands.length > MAX_COMPLETION_COMMANDS) throw new AnswerRefused('no command list');
   for (const command of commands as unknown[]) {
     if (!isRecord(command) || !KINDS.has(command['kind'] as string) || typeof command['target'] !== 'string' || !TARGET.test(command['target'])
       || !isRecord(command['body']) || typeof command['issuedBySdk'] !== 'boolean' || typeof command['alwaysInline'] !== 'boolean'
       || (command['commandNumber'] !== undefined && (!Number.isSafeInteger(command['commandNumber']) || (command['commandNumber'] as number) < 1))
-      || (command['sagaScope'] !== undefined && !/^s-[1-9][0-9]{0,15}$/.test(String(command['sagaScope'])))) {
+      || (command['sagaScope'] !== undefined && !/^s-[1-9][0-9]{0,15}$/.test(String(command['sagaScope'])))
+      || !typedBodyHolds(command['kind'] as string, command['target'], command['body'])) {
       throw new AnswerRefused('a malformed command');
     }
   }
@@ -323,6 +325,44 @@ function checkResult(answer: Record<string, unknown>): ActivationResult {
     result.logs.push({ level: line['level'] as LogLine['level'], message });
   }
   return result;
+}
+
+const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const SCOPE = /^s-[1-9][0-9]{0,15}$/;
+const REJECTION_REASONS = new Set(['VALIDATION_FAILED', 'HANDLER_NOT_REGISTERED']);
+const ON_COMPENSATION_FAILURE = new Set(['manual_review', 'fail']);
+const CANCEL_POLICIES = new Set(['compensate_completed', 'wait_in_flight_then_compensate', 'abort_no_compensation']);
+const MARKER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+/** Exactly the keys of each typed body, each within its pattern, list or bound (Decision 044-324). */
+function typedBodyHolds(kind: string, target: string, body: Record<string, unknown>): boolean {
+  const keys = (...names: string[]): boolean => Object.keys(body).every((key) => names.includes(key));
+  const seqOfTarget = (): boolean => Number.isSafeInteger(body['admittedSeq']) && String(body['admittedSeq']) === target;
+  switch (kind) {
+    case 'timer_cancel': case 'step_cancel': return keys('target') && body['target'] === target && /^c-[1-9][0-9]{0,15}$/.test(target);
+    case 'saga_open':
+      return keys('scope', 'parentScope', 'onCompensationFailure', 'cancelPolicy') && body['scope'] === target && SCOPE.test(target)
+        && (body['parentScope'] === null || (typeof body['parentScope'] === 'string' && SCOPE.test(body['parentScope'])))
+        && ON_COMPENSATION_FAILURE.has(body['onCompensationFailure'] as string) && CANCEL_POLICIES.has(body['cancelPolicy'] as string);
+    case 'saga_close': case 'saga_abort': return keys('scope') && body['scope'] === target && SCOPE.test(target);
+    case 'marker_patch': return keys('markerId') && body['markerId'] === target && MARKER.test(target);
+    case 'marker_side_effect': return keys('markerId', 'value') && body['markerId'] === target && MARKER.test(target) && 'value' in body;
+    case 'update_accept': return keys('admittedSeq', 'accepted') && seqOfTarget() && body['accepted'] === true;
+    case 'update_reject':
+      return keys('admittedSeq', 'accepted', 'reason') && seqOfTarget() && body['accepted'] === false && REJECTION_REASONS.has(body['reason'] as string);
+    case 'update_complete':
+      return seqOfTarget() && ((keys('admittedSeq', 'result') && 'result' in body)
+        || (keys('admittedSeq', 'failureCode') && typeof body['failureCode'] === 'string' && CODE.test(body['failureCode'])));
+    case 'consume_signals': return keys('signals') && Array.isArray(body['signals']) && target === '';
+    case 'set_state': return keys('state') && target === '';
+    case 'complete': return keys('output') && target === '';
+    case 'fail':
+      return keys('code', 'message') && target === '' && typeof body['code'] === 'string' && CODE.test(body['code'])
+        && typeof body['message'] === 'string' && body['message'].length <= MAX_FAILURE_MESSAGE;
+    case 'continue_as_new': return keys('input', 'state', 'version') && target === '' && (body['version'] === 'same' || body['version'] === 'active');
+    case 'acknowledge_cancellation': return keys() && target === '';
+    default: return true;
+  }
 }
 
 function checkNumbering(numbered: WorkflowCommand[], accepted: number): void {
@@ -362,7 +402,7 @@ function prepareChecked(commands: WorkflowCommand[], init: RunInit): PreparedCom
   let blobBytes = 0;
   for (const command of prepared) {
     const field = BLOB_CAPABLE_FIELD[command.kind];
-    for (const key of ['input', 'value', 'result', 'output', 'state', 'subject', 'signals']) {
+    for (const key of ['input', 'value', 'result', 'output', 'state', 'subject', 'signals', 'message']) {
       if (!(key in command.body)) continue;
       const size = canonicalSize(command.body[key]);
       if (key === field && command.valueAsBlob) { blobs++; blobBytes += size; } else inline += size;
