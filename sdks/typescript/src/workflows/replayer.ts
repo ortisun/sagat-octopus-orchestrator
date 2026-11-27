@@ -7,6 +7,7 @@
 import { hex } from './chain.js';
 import type { CommandKind, HistoryEvent } from './context.js';
 import { ActivationCutter, HistoryOrderError } from './history.js';
+import { MalformedHistory, eventFromProto3Json } from './protocol.js';
 import { WorkflowThread, type RunHandle } from './threaded.js';
 
 /** The export format versions this replayer reads. */
@@ -32,9 +33,7 @@ export class UnsupportedExportFormat extends Error {
   }
 }
 
-export class MalformedHistory extends Error {
-  constructor(message: string) { super(message); this.name = 'MalformedHistory'; }
-}
+export { MalformedHistory };
 
 export type ReplayVerdict =
   | { verdict: 'MATCH'; activations: number; commands: number; chain: string }
@@ -63,7 +62,8 @@ export async function readExport(lines: AsyncIterable<string> | Iterable<string>
     let value: unknown;
     try { value = JSON.parse(line); } catch { throw new MalformedHistory('a line of the history is not JSON'); }
     if (!header) { header = parseHeader(value); continue; }
-    events.push(parseEvent(value));
+    // An event line is `HistoryEvent` in the proto3 JSON mapping of worker.proto (Decision 044-320).
+    events.push(eventFromProto3Json(value));
   }
   if (!header) throw new MalformedHistory('the history has no header line');
   return { header, events };
@@ -81,17 +81,6 @@ function parseHeader(value: unknown): ExportHeader {
   const stateMaxBytes = record['stateMaxBytes'] ?? 0;
   if (!Number.isSafeInteger(stateMaxBytes) || (stateMaxBytes as number) < 0) throw new MalformedHistory('stateMaxBytes is a byte count');
   return { exportFormat: record['exportFormat'] as number, seed, gatedEntries: gated as string[], stateMaxBytes: stateMaxBytes as number };
-}
-
-// The export format's event lines are the worker protocol's `HistoryEvent` in the proto3 JSON mapping (Task 044-2);
-// until that contract merges they are read in the runtime's own model, with the same names.
-function parseEvent(value: unknown): HistoryEvent {
-  const event = value as Record<string, unknown> | null;
-  if (!event || typeof event !== 'object' || typeof event['kind'] !== 'string') throw new MalformedHistory('a history event has no kind');
-  const seq = typeof event['seq'] === 'string' ? Number(event['seq']) : event['seq'];
-  if (!Number.isSafeInteger(seq)) throw new MalformedHistory('a history event has no sequence');
-  const atUs = typeof event['atUs'] === 'string' ? Number(event['atUs']) : event['atUs'];
-  return { ...event, seq, ...(atUs === undefined ? {} : { atUs }) } as HistoryEvent;
 }
 
 export const Replayer = {

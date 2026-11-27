@@ -21,7 +21,7 @@ export {
 } from './context.js';
 export type {
   ActivityOptions, ActivityRetryPolicy, Cancellation, ChildOptions, CommandKind, CommandPromise, ContinueAsNewOptions,
-  HistoryEvent, SagaOptions, SagaScope, ScriptOptions, WaitOptions, WorkflowCommand, WorkflowContext, WorkflowFunction,
+  HistoryEvent, SagaOptions, SagaScope, ScriptOptions, SideEffectOptions, WaitOptions, WorkflowCommand, WorkflowContext, WorkflowFunction,
   WorkflowTaskFailure,
 } from './context.js';
 export { DEFAULT_CACHE_SIZE, WorkflowRunCache } from './cache.js';
@@ -34,6 +34,8 @@ export type { OpenWindow, ReplayActivation } from './history.js';
 export { checkWorkflowRuntime, WorkflowRuntimeUnavailable } from './preconditions.js';
 export { MalformedHistory, Replayer, UnsupportedExportFormat, readExport, replayEvents } from './replayer.js';
 export type { ExportHeader, ReplayOptions, ReplayVerdict } from './replayer.js';
+export { MalformedHistory as MalformedProtocolMessage, blobRefsOf, commandToWire, eventFromProto3Json, eventFromWire, eventToProto3Json, failureToWire } from './protocol.js';
+export type { HistoryBlobRef } from './protocol.js';
 export { CodeRun, prepare } from './run.js';
 export type { CodeRunOptions, Completion, CompletionAnswer, Failure, PreparedCommand, ReplayStep } from './run.js';
 export { ActivationDeadlineExceeded, InvalidWorkflowBundle, WorkflowBundle } from './sandbox.js';

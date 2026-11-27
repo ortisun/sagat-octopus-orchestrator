@@ -1448,6 +1448,14 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
 - **D044-321** (2026-11-27) A child whose run ended `PARTIAL` (`HistoryChildFinished.status`) rejects with
   `ChildWorkflowError` of status `partial`, beside `failed`, `cancelled` and `timed_out`. delegate (OD-2026-11-24-4): the
   protocol names the status; a function must be able to tell a partly compensated child from a failed one.
+- **D044-322** (2026-11-27) `sideEffect(compute, { id })` takes an optional marker identifier (the pattern of a patch
+  identifier, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`); without one the marker is `side-effect`, as Decision 044-305 fixed.
+  The corpus names its side effects (`fx-rate` in `code-cache-eviction`, `exchange-rate` in `vectors/chain.json`) while
+  `sdks/SPEC.md` 12.1 gives `sideEffect` no identifier, so no SDK could make the corpus's command; the identifier is
+  the marker's target, compared at replay like every target, so a reordered pair of side effects is reported at the
+  first one that moved instead of returning the other's recorded value. Reported to the coordinating session for the
+  server lane: `sdks/SPEC.md` 12.1 should name the option (or the corpus use `side-effect`). delegate (OD-2026-11-24-4):
+  an option is additive, keeps every call that names none, and makes the replay more precise.
 - **G044-305** (2026-11-27) A TypeScript host that registers activities and workflow types together would speak minor
   1.10 for its activities too, which carries the host procedures of 1.7 (step logs) and 1.9 (activity timeouts) that
   the TypeScript activity host does not have yet; until it has them, such a host refuses to start and the activities

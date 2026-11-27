@@ -74,7 +74,7 @@ export type HistoryEvent = EventBase & (
   | { kind: 'step.outcome'; commandNumber: number; status: 'completed' | 'failed' | 'timed_out' | 'cancelled'; output?: unknown; errorCode?: string; errorMessage?: string }
   | { kind: 'timer.fired'; commandNumber: number }
   | { kind: 'wait.outcome'; commandNumber: number; status: 'satisfied' | 'timed_out'; payload?: unknown }
-  | { kind: 'child.finished'; commandNumber: number; status: 'completed' | 'failed' | 'cancelled' | 'timed_out'; output?: unknown; errorCode?: string }
+  | { kind: 'child.finished'; commandNumber: number; status: 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'partial'; output?: unknown; errorCode?: string }
   | { kind: 'approval.decided'; commandNumber: number; decision: 'approved' | 'rejected' | 'expired' }
   | { kind: 'saga.outcome'; scope: string; outcome: 'compensated' | 'partial' | 'compensation_failed' }
   | { kind: 'signal.buffered'; name: string; payload?: unknown }
@@ -212,11 +212,11 @@ export class ActivityError extends Error {
   }
 }
 
-/** A child run that did not complete. */
+/** A child run that did not complete (`partial`: it ended with a saga only partly compensated, Decision 044-321). */
 export class ChildWorkflowError extends Error {
-  readonly status: 'failed' | 'cancelled' | 'timed_out';
+  readonly status: 'failed' | 'cancelled' | 'timed_out' | 'partial';
   readonly code: string | undefined;
-  constructor(status: 'failed' | 'cancelled' | 'timed_out', code: string | undefined) {
+  constructor(status: 'failed' | 'cancelled' | 'timed_out' | 'partial', code: string | undefined) {
     super(`the child run ended ${status}${code ? ` (${code})` : ''}`);
     this.name = 'ChildWorkflowError';
     this.status = status;
@@ -460,6 +460,8 @@ export interface SagaOptions {
   cancelPolicy?: 'compensate_completed' | 'wait_in_flight_then_compensate' | 'abort_no_compensation';
 }
 export interface ContinueAsNewOptions { version?: 'same' | 'active'; state?: unknown }
+/** `id`: the side effect's marker identifier, `side-effect` by default (Decision 044-322). */
+export interface SideEffectOptions { id?: string }
 
 /** A promise of a command's outcome, which `requestCancellation` can name. */
 export interface CommandPromise<T> extends Promise<T> { readonly commandNumber: number }
@@ -492,7 +494,7 @@ export interface WorkflowContext {
   setState(state: unknown): void;
   patched(id: string): boolean;
   deprecatePatch(id: string): void;
-  sideEffect<T>(compute: () => T): T;
+  sideEffect<T>(compute: () => T, options?: SideEffectOptions): T;
   now(): Date;
   random(): number;
   randomInt(n: number): number;
@@ -1451,8 +1453,10 @@ export function deprecatePatch(id: string): void {
 }
 
 /** Computes a value once and records it; a replay returns the recorded value instead of computing it again. */
-export function sideEffect<T>(compute: () => T): T {
+export function sideEffect<T>(compute: () => T, options?: SideEffectOptions): T {
   const r = run('sideEffect');
+  const markerId = options?.id ?? SIDE_EFFECT_MARKER_ID;
+  if (typeof markerId !== 'string' || !MARKER_ID.test(markerId)) throw new TypeError('a side effect identifier matches ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$');
   const record = r.replaying ? r.expected.get(r.next) : undefined;
   // A replay returns the recorded value instead of computing it again; the checks are the same live and replayed.
   let computed: T;
@@ -1474,7 +1478,7 @@ export function sideEffect<T>(compute: () => T): T {
   const { value: stored, size } = snapshot(computed);
   const value = stored as T;
   if (size > MAX_SIDE_EFFECT_BYTES) throw new InlineValuesExceeded(`a side-effect value is at most ${MAX_SIDE_EFFECT_BYTES} bytes, not ${size}`);
-  r.issue('marker_side_effect', SIDE_EFFECT_MARKER_ID, { markerId: SIDE_EFFECT_MARKER_ID, value: stored },
+  r.issue('marker_side_effect', markerId, { markerId, value: stored },
     { values: [{ size, inline: false, what: 'the side-effect value' }] });
   return value;
 }

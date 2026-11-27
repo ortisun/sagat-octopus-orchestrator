@@ -8,6 +8,7 @@
 import { bodyDigest, EMPTY_CHAIN, extendChain, hex } from './chain.js';
 import { TERMINAL_KINDS, type CommandKind, type EventOrigin, type HistoryEvent, type WorkflowTaskFailure } from './context.js';
 import { ActivationCutter } from './history.js';
+import { eventToProto3Json } from './protocol.js';
 import { replayEvents, type ExportHeader, type ReplayVerdict } from './replayer.js';
 import type { Completion, PreparedCommand } from './run.js';
 import { WorkflowThread, type LoadedBundle, type RunHandle } from './threaded.js';
@@ -144,12 +145,12 @@ export class WorkflowTestEnvironment {
 
   get outcome(): TestOutcome { return { ...this.#outcome, ...(this.#state === undefined ? {} : { state: this.#state }) }; }
 
-  /** The header and the events of the run's history, as an export writes them. */
+  /** The header and the events of the run's history, as an export writes them (the proto3 JSON mapping, Decision 044-320). */
   exportLines(): string[] {
     const header: ExportHeader = {
       exportFormat: 1, seed: this.#seed(), gatedEntries: this.#options.gatedEntries ?? [], stateMaxBytes: this.#options.stateMaxBytes ?? 0,
     };
-    return [JSON.stringify(header), ...this.history.map((event) => JSON.stringify(event))];
+    return [JSON.stringify(header), ...this.history.map((event) => JSON.stringify(eventToProto3Json(event)))];
   }
 
   /** Replays the history this environment produced against a bundle (the same one or a changed one). */
