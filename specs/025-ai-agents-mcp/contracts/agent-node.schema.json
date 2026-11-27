@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sagat:draft:025:agent-node",
   "title": "Draft fragment: additive `agent` node of Workflow IR v1",
-  "description": "Draft for feature 025, not part of the canonical contract. T025-002 merges these $defs into specs/001-platform-foundation/contracts/workflow.schema.json and adds {\"$ref\": \"#/$defs/agent\"} to node.oneOf. References to #/$defs/nodeId, #/$defs/expression, #/$defs/approvalPolicy, #/$defs/retry, #/$defs/name and #/$defs/duration resolve to the existing canonical definitions. Publication additionally checks: root graph only, no chainPolicy in the definition, enabled agent capability, model in the pinned provider revision, tool name uniqueness, closed and bounded schemas (byte and depth limits of plan.md), classification of referenced carrier paths against the provider's maxPromptClassification, and every effective limit against namespace and deployment ceilings.",
+  "description": "Draft for feature 025, not part of the canonical contract. Task 025-002 merges these $defs into specs/001-platform-foundation/contracts/workflow.schema.json and adds {\"$ref\": \"#/$defs/agent\"} to node.oneOf (the twentieth kind). References to #/$defs/nodeId, #/$defs/expression, #/$defs/approvalPolicy, #/$defs/retry, #/$defs/name, #/$defs/duration and #/$defs/databaseParameter resolve to the existing canonical definitions. Publication additionally checks: the platform requirement ai-agents-v1 is recorded in the instance registry (Architecture decision 0082; UNSUPPORTED_NODE with details.dependency ai-agents-v1 otherwise), a graph-model version, root graph only, no chainPolicy in the definition, model in the pinned provider revision, tool name uniqueness, closed and bounded schemas compiled by the design 043 validator (byte and depth limits of plan.md), classification of referenced carrier paths against the provider's maxPromptClassification (an EgressCeiling), the publisher's secret:use on every credential secret of every pinned provider and MCP-server revision, and every effective limit against namespace and deployment ceilings.",
   "$defs": {
     "agent": {
       "type": "object",
@@ -18,7 +18,7 @@
         "id": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,53}$",
-          "description": "At most 54 characters so that every derived id (<id>~m<turn>, <id>~t<turn>.<call> and its ~c/~r compensation and reconciliation, at most ten extra characters) fits the 64-character node id bound."
+          "description": "At most 54 characters so that every derived id (<id>~m<turn>, <id>~t<turn>.<call> and its ~c/~r compensation and reconciliation, at most ten extra characters) fits the 64-character node id bound. An agent node declares no step-output destinations (feature 035), so no <id>~d.<name> form exists for it."
         },
         "type": {
           "const": "agent"
@@ -58,7 +58,7 @@
         },
         "outputSchema": {
           "$ref": "#/$defs/agentClosedSchema",
-          "description": "Closed bounded schema of the final answer and classification carrier of output.result. Every field's effective level is at least the node's transcript level (the strictest level that can enter the transcript: internal for literals and tool descriptions, every referenced context carrier path, every tool result carrier); a looser x-sagat-classification annotation is refused at publication (CLASSIFICATION_LOOSENED); unannotated means pii. It cannot declare a feature-031 encoded location (ENCODING_NOT_PRODUCIBLE)."
+          "description": "Closed bounded schema of the final answer and classification carrier of output.result. Every field's effective level is at least the node's transcript level (the strictest level that can enter the transcript: internal for literals and tool descriptions, every referenced context carrier path, every tool result carrier); a looser x-sagat-classification annotation is refused at publication (CLASSIFICATION_LOOSENED); unannotated means pii. It cannot declare a feature-031 encoded location (ENCODING_NOT_PRODUCIBLE). Validated by the design 043 validator; a repair summary lists only its value-free rule and field pairs."
         },
         "budgets": {
           "$ref": "#/$defs/agentBudgets"
@@ -73,7 +73,8 @@
         "attemptTimeoutMs": {
           "type": "integer",
           "minimum": 1000,
-          "maximum": 900000
+          "maximum": 900000,
+          "description": "Deadline of each model-call attempt (default 120 s, hard ceiling 15 min); the runner also stops at the lease expiry. Renewing the lease does not extend it."
         },
         "stream": {
           "type": "object",
@@ -117,14 +118,14 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 2147483647,
-          "description": "Optional explicit revision; otherwise the current revision is pinned at admission."
+          "description": "Optional explicit revision; otherwise the current revision when the version is published. Either way publication records it in the published version (version_agent_pins) and admission copies it into the run; at admission and at every resolution the transcript level is also checked against the current revision's ceiling and the model against its allowlist, so a later restriction applies at once and a later revision never widens what the version may send (Decision 025-016)."
         },
         "id": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9._:/@-]+$",
-          "description": "Model id or alias from the provider revision's allowlist, e.g. claude-sonnet-5-5."
+          "description": "Model id or alias from the provider revision's allowlist, for example claude-sonnet-5-5."
         }
       }
     },
@@ -166,12 +167,14 @@
         "maxParallelToolCalls": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 16
+          "maximum": 16,
+          "description": "Tool calls run per turn (default 4, ceiling 16); requests beyond it get refusal results."
         },
         "maxRepairTurns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 3
+          "maximum": 3,
+          "description": "Validation summaries sent back for an invalid final answer (default 1, ceiling 3)."
         },
         "maxInputTokens": {
           "type": "integer",
@@ -238,11 +241,11 @@
             "write"
           ],
           "default": "write",
-          "description": "write (the default) requires approval or approval: \"none\"."
+          "description": "write (the default) requires approval or approval: \"none\". read without an approval policy is refused for child tools (the child workflow can write), for database execute tools, and for mcp tools whose pinned snapshot does not state readOnlyHint true (or states destructiveHint true); snapshot annotations only ever tighten this rule (WRITE_TOOL_APPROVAL_REQUIRED)."
         },
         "inputSchema": {
           "$ref": "#/$defs/agentClosedSchema",
-          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused). For child tools the child version's inputSchema is checked the same way."
+          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused) and no field may be annotated secret (SECRET_TOOL_INPUT). A tool-call approval is decidable only by a decider whose rights disclose every field (APPROVAL_INPUT_WITHHELD otherwise). For child tools the child version's inputSchema is checked the same way. Validated by the design 043 validator; an INVALID_INPUT result carries only its value-free rule and field."
         },
         "result": {
           "$ref": "#/$defs/expression",
@@ -255,7 +258,7 @@
             },
             {
               "const": "none",
-              "description": "Explicit acknowledgement that this write tool runs without a person's approval. Refused for operation tools; a version containing it cannot be exposed through MCP or a feature-026 public link (UNATTENDED_WRITE_TOOL)."
+              "description": "Explicit acknowledgement that this write tool runs without a person's approval. Refused for operation tools and database execute tools; a version containing it, or able to start a child workflow that contains it at any depth, cannot be exposed through MCP or a feature-026 public link, and such a child is refused at admission under a run those surfaces admitted (UNATTENDED_WRITE_TOOL)."
             }
           ],
           "description": "Required for effect: write (a policy or the string \"none\"); optional for read tools."
@@ -270,7 +273,7 @@
         },
         "outputSchema": {
           "$ref": "#/$defs/agentClosedSchema",
-          "description": "Closed carrier of the tool's result when the target declares none (MCP, database, operation tools); unannotated means pii. A result that does not validate is not sent to the model (TOOL_FAILED)."
+          "description": "Closed carrier of the tool's result when the target declares none (MCP, database, operation tools), and for a child tool the parent's carrier of the child's output; unannotated means pii. For a child tool each field's effective level is the stricter of its annotation and the child version's recorded output level (the written_level rule), refused at publication for a pinned child and at the child's admission for an active-version child (CLASSIFICATION_LOOSENED). A result that does not validate is not sent to the model (TOOL_FAILED)."
         }
       },
       "oneOf": [
@@ -323,7 +326,22 @@
               "const": "database"
             },
             "connectionRef": {
-              "type": "object"
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{2,63}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647
+                }
+              }
             },
             "operation": {
               "enum": [
@@ -337,7 +355,10 @@
             },
             "parameters": {
               "type": "array",
-              "maxItems": 256
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/databaseParameter"
+              }
             }
           },
           "required": [
@@ -346,7 +367,34 @@
             "statement",
             "inputSchema"
           ],
-          "description": "Feature-017 operation; parameters bind only from tool arguments (expression context `args`). execute requires approval."
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "execute"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "approval"
+                ],
+                "properties": {
+                  "approval": {
+                    "$ref": "#/$defs/agentToolApproval"
+                  },
+                  "effect": {
+                    "const": "write"
+                  }
+                }
+              }
+            }
+          ],
+          "description": "Feature-017 operation; parameters bind only from tool arguments (expression context `args`). execute is always effect write and requires an approval policy: approval \"none\" and effect read are refused (WRITE_TOOL_APPROVAL_REQUIRED)."
         },
         {
           "properties": {
@@ -355,16 +403,31 @@
             },
             "resource": {
               "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{2,63}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647
+                }
+              },
               "description": "Feature-021 resourceRef {name, revision?} (ADR-0055)."
             },
             "operation": {
               "type": "string",
               "maxLength": 64,
-              "description": "A feature-021 operation name, e.g. http.request."
+              "description": "A feature-021 operation name, for example http.request."
             },
             "request": {
               "type": "object",
-              "description": "The feature-021 operation body (http, graphql, s3, smtp or slack object) whose dynamic values are expressions over the tool arguments `args`."
+              "description": "The feature-021 operation body (http, graphql, s3, smtp or slack object) whose dynamic values are expressions over the tool arguments `args`. Closed by the feature-021 operation's own schema when 021 merges; refused until then."
             }
           },
           "required": [
@@ -397,7 +460,32 @@
           },
           "required": [
             "workflow"
-          ]
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "effect": {
+                    "const": "read"
+                  }
+                },
+                "required": [
+                  "effect"
+                ]
+              },
+              "then": {
+                "required": [
+                  "approval"
+                ],
+                "properties": {
+                  "approval": {
+                    "$ref": "#/$defs/agentToolApproval"
+                  }
+                }
+              }
+            }
+          ],
+          "description": "Starts a child run of a graph workflow. The arguments are the child's run input and pass the child row of the design 043 run-input gate: a refused input creates no child, the tool-call step fails with CHILD_INPUT_INVALID (or RUN_INPUT_SCHEMA_UNUSABLE) and the model receives TOOL_FAILED with that code and the value-free rule and field; the agent continues. effect read needs an approval policy. The child's unattended flag counts toward the parent's (a parent is unattended when a child it can start is), and under a run whose root MCP or a feature-026 public link admitted, an unattended child version is refused at its admission (UNATTENDED_WRITE_TOOL). A procedural workflow reaches an agent through such a child (Decision 025-012)."
         },
         {
           "properties": {
@@ -417,7 +505,7 @@
             "server",
             "tool"
           ],
-          "description": "Allow-listed tool of the server's snapshot pinned at publication; inputSchema comes from the snapshot and must be closed. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED)."
+          "description": "Allow-listed tool of the server's snapshot pinned at publication (the snapshot identifier and server revision are recorded in the published version); inputSchema comes from the snapshot and must be closed. effect read without an approval policy needs the snapshot's readOnlyHint true and no destructiveHint true. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED). An isError result reaches the model as MCP_TOOL_ERROR; its text is forwarded only when the node's transcript level is pii (Decision 025-008)."
         }
       ],
       "allOf": [
@@ -452,7 +540,9 @@
             ]
           }
         }
-      ]
+      ],
+      "unevaluatedProperties": false,
+      "description": "A tool the model may request. unevaluatedProperties false closes the object: only the common properties and those of the one oneOf branch that matched are allowed (a branch-level additionalProperties would refuse the common ones). Compensation and reconciliation by kind (Decision 025-011): activity declares compensateWith and reconcileWith; database execute with an unknown outcome waits in manual review (feature 017); child compensates through the child run's own saga; operation follows its feature-021 operation's recovery rule; mcp and script declare neither, so a write call of theirs is irreversible (compensating past it ends the run PARTIAL) and an unknown outcome waits in manual review."
     },
     "agentToolApproval": {
       "type": "object",
@@ -486,7 +576,7 @@
       }
     },
     "agentClosedSchema": {
-      "description": "Closed bounded vocabulary (ADR-0031 initial result vocabulary): one explicit type per schema; objects declare properties and additionalProperties:false with optional required; arrays declare items and maxItems; strings declare maxLength; optional enum, numeric bounds, description and x-sagat-classification. No $ref, combinators or open objects. Byte and depth bounds are checked by the adapter.",
+      "description": "Closed bounded vocabulary: a restriction of the design 043 run-input subset (specs/043-run-input-validation/contracts/input-schema-subset.md) plus closure, so every agent schema compiles in the platform's RunInputValidator (crates/infra-schema/src/run_input/) and no second validator exists. Allowed: one explicit type name per schema; objects declare properties and additionalProperties:false with optional required; arrays declare items and maxItems; strings declare maxLength; optional enum, minimum, maximum, description and x-sagat-classification. No $ref, combinators, pattern or open objects. Byte and depth bounds are checked by the adapter.",
       "type": "object",
       "required": [
         "type"

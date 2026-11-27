@@ -71,8 +71,9 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
 /// `ResolveSecrets`; 1.3 streaming blobs; 1.4 bounded task streams; 1.5 scoped execution identity;
-/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5).
-pub const PROTOCOL_MINOR: u32 = 6;
+/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5); 1.7 step logs
+/// (`AppendStepLogs`, `StepLogPolicy` and a report's `StepLogCarry`, design 041).
+pub const PROTOCOL_MINOR: u32 = 7;
 /// The newest minor a storage adapter may negotiate before it proves scoped claim and report.
 pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 /// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
@@ -80,13 +81,23 @@ pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
 /// Managed database capabilities first became available in protocol 1.6 (decision D600).
 pub const DATABASE_PROTOCOL_MINOR: u32 = 6;
+/// Step logs first became available in protocol 1.7 (design 041, OD-2026-11-15-8): `AppendStepLogs`, the
+/// `StepLogPolicy` of a registration and the `StepLogCarry` of a report. A batch is stored only for a session
+/// accepted at this minor or later.
+pub const STEP_LOG_PROTOCOL_MINOR: u32 = 7;
 
 /// The newest minor this session may negotiate. Scoped identity (1.5) needs a store that proves the
 /// scoped claim and report path; the managed database minor (1.6) is a superset of 1.5 for ordinary
 /// workers, so it needs both proofs. The dedicated database runner only ever handles root work, so
-/// it reaches 1.6 on a store that proves the database path alone.
-fn protocol_ceiling(role: Role, scoped: bool, database: bool) -> u32 {
-    if database && (scoped || role == Role::DatabaseRunner) {
+/// it reaches 1.6 on a store that proves the database path alone. Step logs (1.7) are a superset of 1.6 and need a
+/// third proof, the store of step logs; they are offered to an ordinary worker only: the database runner and the
+/// script runner keep 1.6, since the ingest refuses their batches (design 041 section 2, P1) and a minor whose calls
+/// a role is always refused is not offered to it (decision D041-149).
+fn protocol_ceiling(role: Role, scoped: bool, database: bool, step_logs: bool) -> u32 {
+    let machine_runner = matches!(role, Role::DatabaseRunner | Role::Runner);
+    if database && scoped && step_logs && !machine_runner {
+        STEP_LOG_PROTOCOL_MINOR
+    } else if database && (scoped || role == Role::DatabaseRunner) {
         DATABASE_PROTOCOL_MINOR
     } else if scoped {
         SCOPED_PROTOCOL_MINOR
@@ -224,6 +235,10 @@ pub struct WorkerSettings {
     pub session_ttl: Duration,
     /// What a worker is told to wait before polling again when nothing was available.
     pub idle_retry: Duration,
+    /// The deployment switch of step logs (`SAGAT_STEP_LOGS_ENABLED`, on by default; design 041 section 10): off, a
+    /// registration at 1.7 is told capture is off and the ingest answers every batch `STOP_CAPTURE` (`CAPTURE_OFF`).
+    /// The one value the registration policy and the ingest read, so that the two cannot disagree.
+    pub step_logs_enabled: bool,
 }
 
 impl Default for WorkerSettings {
@@ -232,6 +247,7 @@ impl Default for WorkerSettings {
             lease_ttl: Duration::from_secs(30),
             session_ttl: Duration::from_secs(3600),
             idle_retry: Duration::from_millis(500),
+            step_logs_enabled: true,
         }
     }
 }
@@ -402,6 +418,10 @@ pub struct Registered {
     pub session_token: Token,
     pub accepted_protocol_version: String,
     pub expires_at: OffsetDateTime,
+    /// The step-log policy of the session (`RegisterWorkerResponse.step_logs`, design 041 section 1): `None` below
+    /// protocol 1.7; otherwise whether capture is on, that is, the deployment switch is on and the namespace's
+    /// `step_log_attempt_records` is above 0. A hint for the worker: every batch is judged again by the ingest.
+    pub step_logs_enabled: Option<bool>,
 }
 
 /// A task handed to a worker.
@@ -839,6 +859,7 @@ where
             principal.role(),
             self.store.supports_scoped_worker_protocol(),
             self.store.supports_database_worker_protocol(),
+            self.store.supports_step_log_protocol(),
         );
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
             negotiate_protocol_details(&capabilities.protocol_version, server_minor)
@@ -934,6 +955,23 @@ where
             }
             return Err(AppError::NotBound);
         }
+        let step_logs_enabled = if accepted_protocol_minor < STEP_LOG_PROTOCOL_MINOR {
+            None
+        } else if self.settings.step_logs_enabled {
+            // Read without a policy fence: a hint, which the ingest's T3 reads again under its fences. Read before the
+            // session is created, so that a failed read leaves no session behind (the security review of task T041-7).
+            let records = self
+                .store
+                .effective_limit(
+                    principal.tenant_id(),
+                    Some(namespace.id()),
+                    QuotaResource::StepLogAttemptRecords,
+                )
+                .await?;
+            Some(records > 0)
+        } else {
+            Some(false)
+        };
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
         let proposed = Uuid::now_v7();
         let ttl = self.settings.session_ttl;
@@ -983,6 +1021,7 @@ where
             session_token: token,
             accepted_protocol_version,
             expires_at: self.clock.now() + ttl,
+            step_logs_enabled,
         })
     }
 
@@ -3264,18 +3303,77 @@ mod tests {
     #[test]
     fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
         use sagat_domain::identity::Role;
+        for step_logs in [false, true] {
+            for role in [Role::Worker, Role::Runner, Role::Admin] {
+                assert_eq!(super::protocol_ceiling(role, false, true, step_logs), 4);
+                assert_eq!(super::protocol_ceiling(role, true, false, step_logs), 5);
+            }
+            assert_eq!(
+                super::protocol_ceiling(Role::DatabaseRunner, false, true, step_logs),
+                6
+            );
+            assert_eq!(
+                super::protocol_ceiling(Role::DatabaseRunner, false, false, step_logs),
+                4
+            );
+        }
         for role in [Role::Worker, Role::Runner, Role::Admin] {
-            assert_eq!(super::protocol_ceiling(role, false, true), 4);
-            assert_eq!(super::protocol_ceiling(role, true, false), 5);
-            assert_eq!(super::protocol_ceiling(role, true, true), 6);
+            assert_eq!(super::protocol_ceiling(role, true, true, false), 6);
+        }
+    }
+
+    /// Design 041 section 1: 1.7 needs the three proofs (scoped, database and step logs) and is an ordinary worker's;
+    /// the database runner and the script runner keep 1.6, since the ingest refuses their batches (P1).
+    #[test]
+    fn step_logs_raise_the_ceiling_to_seven_for_an_ordinary_worker_only() {
+        use sagat_domain::identity::Role;
+        assert_eq!(PROTOCOL_MINOR, 7);
+        assert_eq!(super::STEP_LOG_PROTOCOL_MINOR, 7);
+        for role in [Role::Worker, Role::Admin, Role::Developer, Role::Operator] {
+            assert_eq!(
+                super::protocol_ceiling(role, true, true, true),
+                7,
+                "{role:?}"
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, false, true, true),
+                4,
+                "{role:?}"
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, true, false, true),
+                5,
+                "{role:?}"
+            );
+        }
+        for role in [Role::DatabaseRunner, Role::Runner] {
+            assert_eq!(
+                super::protocol_ceiling(role, true, true, true),
+                6,
+                "{role:?}"
+            );
         }
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, true),
-            6
+            negotiate_protocol_details(
+                "1.999",
+                super::protocol_ceiling(Role::Worker, true, true, true)
+            ),
+            Some(("1.7".to_owned(), 7))
         );
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, false),
-            4
+            negotiate_protocol_details(
+                "1.6",
+                super::protocol_ceiling(Role::Worker, true, true, true)
+            ),
+            Some(("1.6".to_owned(), 6)),
+            "a worker that offers 1.6 is served at 1.6"
+        );
+        assert_eq!(
+            negotiate_protocol_details(
+                "1.999",
+                super::protocol_ceiling(Role::DatabaseRunner, true, true, true)
+            ),
+            Some(("1.6".to_owned(), 6))
         );
     }
 
@@ -3308,7 +3406,6 @@ mod tests {
 
     #[test]
     fn scoped_identity_negotiation_is_gated_by_storage_support() {
-        assert_eq!(PROTOCOL_MINOR, 6);
         assert_eq!(ROOT_PROTOCOL_MINOR, 4);
         assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
         assert_eq!(

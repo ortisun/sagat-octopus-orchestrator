@@ -25,9 +25,10 @@ use sagat_domain::execution::{
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, TenantId};
 use sagat_domain::step_logs::{
-    AttemptCeilings, BatchInvalid, DropReason, Drops, FieldValue, MAX_TEXT_BYTES, MarkerReason,
-    Plan, PlanVerdict, REDACTED, RecordShape, SizedRecord, StepLogLevel, StopReason,
-    StreamCounters, TenantAllowance, canonical_fields, cut, normalise, plan_batch, validate_batch,
+    AttemptCeilings, BatchInvalid, DropReason, Drops, FieldValue, MAX_BATCH_BYTES,
+    MAX_BATCH_RECORDS, MAX_TEXT_BYTES, MarkerReason, Plan, PlanVerdict, REDACTED, RecordShape,
+    SizedRecord, StepLogLevel, StopReason, StreamCounters, TenantAllowance, canonical_fields, cut,
+    normalise, plan_batch, validate_batch,
 };
 use sagat_telemetry::{StepLogBatchOutcome, StepLogQuotaRefusalCause, StepLogRedactionRule};
 use time::OffsetDateTime;
@@ -37,8 +38,9 @@ use crate::clock::Clock;
 use crate::entropy::Token;
 use crate::error::{AppError, StoreError};
 
-/// The protocol minor a session must have been accepted at for its batches to be stored (protocol 1.7).
-pub const STEP_LOG_PROTOCOL_MINOR: u32 = 7;
+/// The protocol minor a session must have been accepted at for its batches to be stored (protocol 1.7); one
+/// constant, beside the other minors of the worker protocol.
+pub use crate::worker::STEP_LOG_PROTOCOL_MINOR;
 
 /// What `RETRY_LATER` asks the worker to wait before it sends the same batch again: a lock timeout, a quota-lease
 /// refusal, or no ticket free (design section 1; D041-061).
@@ -613,6 +615,42 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         self.enabled
     }
 
+    /// The pre-checks a transport runs before it builds the batch, on the request's counts alone (the security review
+    /// of task T041-7): P1, P2, and P4's bounds on the number of records and the encoded size, so that a request of
+    /// many tiny records is refused before it is copied, and the tenant's ticket (P3, the transport's) is never taken
+    /// for a caller P1 refuses. `Ok(None)`: go on to [`Self::append`], which applies every pre-check again. `Ok(Some)`:
+    /// the answer, already counted (`CAPTURE_OFF`).
+    ///
+    /// # Errors
+    /// As [`Self::append`]'s P1 and P4.
+    pub fn precheck(
+        &self,
+        principal: &Principal,
+        records: usize,
+        encoded_len: usize,
+    ) -> Result<Option<BatchAnswer>, AppError> {
+        authorize(principal)?;
+        if !self.enabled {
+            let answer = BatchAnswer::stop(StopReason::CaptureOff);
+            count_batch(answer.outcome(0));
+            return Ok(Some(answer));
+        }
+        let bound = if records == 0 {
+            Some(BatchInvalid::Empty)
+        } else if records > MAX_BATCH_RECORDS {
+            Some(BatchInvalid::TooManyRecords)
+        } else if encoded_len > MAX_BATCH_BYTES {
+            Some(BatchInvalid::TooLarge)
+        } else {
+            None
+        };
+        if let Some(invalid) = bound {
+            count_batch(StepLogBatchOutcome::Invalid);
+            return Err(AppError::NotAllowed(invalid_message(invalid)));
+        }
+        Ok(None)
+    }
+
     /// Stores one batch and answers what the worker does next.
     ///
     /// # Errors
@@ -931,7 +969,20 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         }
         .await;
         roll_back(tx).await;
-        if authorized(&read?, lease.activity.as_deref()) {
+        let read = match read {
+            Ok(read) => read,
+            Err(error) => {
+                // The caller is not known to be revoked: the first failure is answered (`RETRY_LATER` for a lock
+                // timeout, counted by the caller), never this read's (the correctness review of task T041-7).
+                tracing::warn!(
+                    kind = error.kind(),
+                    sqlstate = error.sqlstate(),
+                    "the authority read of a step-log batch after a failed T3 or T4 failed"
+                );
+                return Err(failure);
+            }
+        };
+        if authorized(&read, lease.activity.as_deref()) {
             Err(failure)
         } else {
             if matches!(failure, TxFailure::LockTimeout) {

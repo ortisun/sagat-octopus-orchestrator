@@ -81,8 +81,9 @@ parallel builders. Identity-provider groups and member management, which 029 wai
 
 013 (federated login) and 015 (OpenTelemetry and OpenBao) keep their numbers and get their specifications. The constitution
 is amended to admit this scope (OD-2026-11-24-2): version 5.0.0, described in its
-[Sync Impact Report](governance/constitution-5.0.0-sync-impact.md). Retention in 020 still needs its own amendment of
-principle I (ADR-0054), which 5.0.0 does not make.
+[Sync Impact Report](governance/constitution-5.0.0-sync-impact.md). Constitution 5.1.0 (Owner decision 2026-11-25-3)
+admits 020's per-run purge and 049's partition retirement after a verified archive, a third declared set of
+Principle V for 021 and 047, and design 052's throughput gate ([its report](governance/constitution-5.1.0-sync-impact.md)).
 
 **Parity drafts 018–032 (2026-10-26):** proposed to bring Temporal and Windmill capabilities into the platform's architecture. The owner approved 018 on 2026-10-29 and 019 to 032 for implementation on 2026-11-11 (Owner decision 2026-11-11-1); 019 to 032 are not built. Suggested order, for the owner to confirm: `{018, 019, 020, 022} → {021, 026, 028, 029} → {023, 024, 025, 027, 030, 031} → 032`, because 018 consumes 020's run selector, 025 and 027 consume 022's standalone steps and 026's Streams and forms, 031 uses 028's interceptors, 029's identity-provider groups wait for 013, and 032 needed a constitution amendment (made in 5.0.0 on 2026-11-24). The cross-feature notes are in [SPECIFICATION-INDEX.md](../SPECIFICATION-INDEX.md).
 

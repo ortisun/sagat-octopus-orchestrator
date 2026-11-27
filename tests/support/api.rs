@@ -303,6 +303,16 @@ pub struct Options {
     /// The ceiling hand-backs are judged by; this build's own by default (ADR-0099 decision 9). A test of the honoured
     /// hand-back raises it to 8 with the stored minor of its session.
     pub hand_back_ceiling: u32,
+    /// `SAGAT_STEP_LOGS_ENABLED` (design 041, P2; on by default, as in production): copied into `worker`'s
+    /// `step_logs_enabled`, which the registration policy reads, and given to the ingest, so that the two cannot
+    /// disagree.
+    pub step_logs_enabled: bool,
+    /// `SAGAT_STEP_LOGS_TENANT_CALLS` (design 041, P3): the batches of one tenant at once; the engine's default (7),
+    /// at most `grpc.max_log_calls`, as the engine caps it.
+    pub step_log_tenant_calls: usize,
+    /// Whether the worker API serves `AppendStepLogs` at all; off, it answers `UNIMPLEMENTED`, as an instance built
+    /// without the ingest does.
+    pub step_logs_served: bool,
 }
 
 impl Default for Options {
@@ -349,6 +359,9 @@ impl Default for Options {
             commit_probe: None,
             new_withdrawals: true,
             hand_back_ceiling: sagat_application::worker::PROTOCOL_MINOR,
+            step_logs_enabled: true,
+            step_log_tenant_calls: sagat_api_grpc::DEFAULT_STEP_LOG_TENANT_CALLS,
+            step_logs_served: true,
         }
     }
 }
@@ -650,12 +663,16 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         exec = exec.with_stream_limits(limits);
     }
     // The worker protocol shares the REST API's identity, budgets and database.
+    let worker_settings = WorkerSettings {
+        step_logs_enabled: options.step_logs_enabled,
+        ..options.worker
+    };
     let mut workers = WorkerService::new(
         executions.clone(),
         SystemClock,
         Engine::new(JsonEvaluator),
         SystemEntropy,
-        options.worker,
+        worker_settings,
     )
     .with_vault(keys.cipher())
     .with_database_content(
@@ -690,6 +707,25 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     }
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
+    }
+    // Design 041, protocol 1.7: the ingest on the API's pool, as the execution engine builds it.
+    if options.step_logs_served {
+        grpc = grpc
+            .with_step_logs(
+                Arc::new(sagat_application::step_logs::StepLogIngest::new(
+                    sagat_infra_postgres::PgStepLogStore::new(api_pool.clone()),
+                    SystemClock,
+                    options.step_logs_enabled,
+                )),
+                options
+                    .step_log_tenant_calls
+                    .min(options.grpc.max_log_calls.max(1)),
+                sagat_api_grpc::StepLogBudgets {
+                    subject: options.subject_rate_limit,
+                    tenant: options.rate_limit,
+                },
+            )
+            .expect("usable step-log budgets");
     }
     let grpc_config = options.grpc;
     let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -31,6 +31,10 @@ An `agent` node with `stream.tokens: true` implicitly declares and emits the cha
 
 - `text_delta` carries `textDelta`; `tool_requested` carries `callIndex` and `toolName`, never
   arguments; `turn_end` carries neither and marks the end of the attempt's output.
+- `toolName` is a tool name the node declares (the runner holds the declared names from the rendered
+  request) or the fixed marker `UNKNOWN_TOOL`; the name an undeclared request carried never reaches the
+  stream, since `toolName` is `internal` and the model writes the requested name (Decision 025-016).
+  The provider's tool-use id is never emitted.
 - Thinking or other provider-opaque content is never emitted.
 - With 026's per-reader projection (FR-026-018), a `run:read` holder sees no field of this channel
   (all are `internal` or `pii`), a holder of `payload:read-internal` sees kinds, turns and tool names,
@@ -46,7 +50,7 @@ An `agent` node with `stream.tokens: true` implicitly declares and emits the cha
   superseded attempt (FR-026-016); readers discard them.
 - Deltas are coalesced: at most one `text_delta` event per 100 ms or per 1 KiB of text, whichever
   comes first.
-- Budget (coordinator decision, review S6, aligned with 026's plan of 2026-10-27): 026 counts all
+- Budget (coordinator decision answering finding 6 of the security review of 2026-10-27, aligned with 026's plan of 2026-10-27): 026 counts all
   reserved `sagat.` channels of a run in a reserved pool apart from the author pool. The agent's budget
   is the effective `maxTurns` × the per-call caps: per model call 1,024 events and 1 MiB by default
   (4,096 events and 4 MiB hard), so 16,384 events and 16 MiB for one agent at the default 16 turns.

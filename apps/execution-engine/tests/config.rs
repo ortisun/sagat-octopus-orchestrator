@@ -439,6 +439,101 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     assert_eq!(config.grpc.max_in_flight, 13);
 }
 
+/// Design 041 section 1, decision D041-127 (data-model.md §6): the Logs class's cap is half the database pool rounded
+/// down and at least 1, the tenant's tickets 7 and never more than the cap.
+#[test]
+fn the_step_log_admission_defaults_follow_the_database_pool() {
+    let binary = parse(&[]).expect("config");
+    assert_eq!(
+        (binary.grpc.max_log_calls, binary.step_log_tenant_calls),
+        (5, 5),
+        "the binary's pool of 10: cap 5, tickets 7 capped at the cap"
+    );
+    let chart = parse(&[("SAGAT_DB_MAX_CONNECTIONS", "20")]).expect("config");
+    assert_eq!(
+        (chart.grpc.max_log_calls, chart.step_log_tenant_calls),
+        (10, 7),
+        "the chart's pool of 20: cap 10, tickets 7"
+    );
+    let small = parse(&[("SAGAT_DB_MAX_CONNECTIONS", "8")]).expect("config");
+    assert_eq!(
+        (small.grpc.max_log_calls, small.step_log_tenant_calls),
+        (4, 4),
+        "a pool of 8: cap 4, tickets 4"
+    );
+    let odd = parse(&[("SAGAT_DB_MAX_CONNECTIONS", "1")]).expect("config");
+    assert_eq!(
+        (odd.grpc.max_log_calls, odd.step_log_tenant_calls),
+        (1, 1),
+        "at least 1"
+    );
+    let set = parse(&[
+        ("SAGAT_DB_MAX_CONNECTIONS", "20"),
+        ("SAGAT_GRPC_MAX_LOG_CALLS", "6"),
+        ("SAGAT_STEP_LOGS_TENANT_CALLS", "9"),
+    ])
+    .expect("config");
+    assert_eq!(
+        (set.grpc.max_log_calls, set.step_log_tenant_calls),
+        (6, 6),
+        "an explicit cap is kept and the tickets never pass it"
+    );
+    let raised = parse(&[
+        ("SAGAT_DB_MAX_CONNECTIONS", "30"),
+        ("SAGAT_GRPC_MAX_LOG_CALLS", "12"),
+        ("SAGAT_STEP_LOGS_TENANT_CALLS", "10"),
+    ])
+    .expect("config");
+    assert_eq!(
+        (raised.grpc.max_log_calls, raised.step_log_tenant_calls),
+        (12, 10)
+    );
+    // The security review of task T041-7: a cap above half the pool would let log transactions hold the connections
+    // that lease calls need.
+    for (pool, cap) in [("10", "6"), ("10", "12"), ("20", "11"), ("1", "2")] {
+        assert!(
+            matches!(
+                parse(&[
+                    ("SAGAT_DB_MAX_CONNECTIONS", pool),
+                    ("SAGAT_GRPC_MAX_LOG_CALLS", cap)
+                ]),
+                Err(ConfigError::Invalid {
+                    name: "SAGAT_GRPC_MAX_LOG_CALLS",
+                    ..
+                })
+            ),
+            "a cap of {cap} over a pool of {pool} is refused"
+        );
+    }
+    assert!(
+        parse(&[
+            ("SAGAT_DB_MAX_CONNECTIONS", "1"),
+            ("SAGAT_GRPC_MAX_LOG_CALLS", "1")
+        ])
+        .is_ok(),
+        "a pool of 1 still allows one log call"
+    );
+    for name in ["SAGAT_GRPC_MAX_LOG_CALLS", "SAGAT_STEP_LOGS_TENANT_CALLS"] {
+        assert!(
+            matches!(parse(&[(name, "0")]), Err(ConfigError::Invalid { name: n, .. }) if n == name),
+            "{name} must be positive"
+        );
+    }
+}
+
+/// `SAGAT_STEP_LOGS_ENABLED` (design 041 section 10): on by default; an explicit false turns capture off for the
+/// registration policy and the ingest, which read the one value of the worker settings.
+#[test]
+fn step_logs_are_captured_by_default_and_an_explicit_false_turns_them_off() {
+    assert!(parse(&[]).expect("config").worker.step_logs_enabled);
+    let off = parse(&[("SAGAT_STEP_LOGS_ENABLED", "false")]).expect("config");
+    assert!(!off.worker.step_logs_enabled);
+    assert!(
+        parse(&[("SAGAT_STEP_LOGS_ENABLED", "maybe")]).is_err(),
+        "a value that is not a boolean is refused"
+    );
+}
+
 #[test]
 fn the_connection_limits_default_to_values_that_close_a_silent_socket_in_seconds() {
     let grpc = parse(&[]).expect("config").grpc;

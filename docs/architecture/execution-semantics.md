@@ -36,7 +36,7 @@ Substates: `WAITING_TIMER`, `WAITING_EVENT`, `WAITING_CHILD`, `WAITING_APPROVAL`
 its old token is stale and the uncertain outcome enters reconciliation/review rather than returning
 automatically to `READY`. Only known-failed, retry-eligible work receives another attempt.
 
-**Persistence:** append-only journal with a monotonic per-Run sequence; snapshots are an optimization and can be regenerated from the journal of decisions and retained data.
+**Persistence:** append-only journal with a monotonic per-Run sequence; snapshots are an optimization and can be regenerated from the journal of decisions and retained data. Since constitution 5.1.0 (principle I) a journal leaves the database only on two audited paths, after a verified archive: feature 020's per-run purge of a terminal, settled run under a namespace retention policy, and design 049's retirement of a month's partitions once every run in them is purged. Neither is built yet.
 
 ## Step identity and determinism
 

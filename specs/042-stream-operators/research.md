@@ -81,17 +81,24 @@ gap is closed by evidence, not by deletion. Measurements are added as dated sect
 | D042-158 | The chain's environment is built in parts: the variables of `items`, then those each stage adds, in stage order; a variable that cannot be read fails `items` or the first stage that reads it, at position 0. | 2026-11-15 |
 | D042-159 | Counts of the chain's metrics are asserted with a recorder of the test's own (`metrics::set_default_local_recorder` over `Metrics::detached`), so they are equalities: after a fenced then an entered try, `operator_elements_total{operator="take",outcome="kept"}` is 1 and `collection_chain_reentries_total{reason="fence"}` is 1. | 2026-11-15 |
 | D042-160 | FR-042-012's pin is measured from a raw JSON document; `serde_json` reads `-0` as the double `-0.0`, so the snapshot bytes keep `-0.0`, as they did before design 042. | 2026-11-15 |
+| D042-161 | Slices 2 to 5 enter release 0.3.0 (Owner decision 2026-11-24-1). The re-read of Task 042-44 against `develop` on 2026-11-26 found the dispatcher, `start_key`, the claim without an `attempts` increment and the 60-second claim as section 4 to 6 describe them (`crates/scheduler/src/events.rs`, `crates/application/src/dispatch.rs`, `crates/infra-postgres/src/dispatch.rs`). | 2026-11-26 |
+| D042-162 | The seal and the start are two transactions: the seal is short and fenced; the start takes feature 022's gate rows and may wait on its buffer; a crash between them leaves the window `SEALED` for the next pass under the same key. Closes G042-002. | 2026-11-26 |
+| D042-163 | A window is sealed past the transaction horizon of its deadline (`seal_horizon = pg_snapshot_xmax(...)` recorded at the first pass after `D`; seal once `pg_snapshot_xmin(...) >= seal_horizon`), and the admission statement takes its transaction id before `received_at` in one statement. Replaces `admissionGraceMs`: on PostgreSQL 16 (`infra/docker/compose.yaml`) there is no `transaction_timeout`, and the pool bounds a statement (5 seconds, `crates/infra-postgres/src/pool.rs`) but not a transaction. ADR-0153. | 2026-11-26 |
+| D042-164 | `maxMarks` 100,000 per chain by default and at most; at most 1,000,000 over a tenant's chains; the held-bytes quota `operator_held_bytes` 1 GiB (1,073,741,824 bytes) per tenant by default; `maxHoldMs` 60 seconds by default, at most 10 minutes. | 2026-11-26 |
+| D042-165 | The switches are also instance-registry capabilities, `collection-operators-v1` and `trigger-operators-v1` (ADR-0153, ADR-0082); publication refuses while the requirement is not recorded. Closes G042-006 and, once Task 042-54 is built, G042-140. | 2026-11-26 |
+| D042-166 | Feature 022's admission point (`decide_run_gates`, branch `feature/022-throughput-control`, not merged on 2026-11-26) is the only path by which a window starts a run; Tasks 042-3 and 042-22 start after it merges. | 2026-11-26 |
+| D042-167 | After the architecture review of the third revision (2026-11-26, round 1), under Owner decision 2026-11-24-4: every emission of a chain with a keyed stage, a window, `debounce` or `flatMap` is an `operator_windows` row (a window sealed at once when the chain has no window), so the apply writes `HELD` and only the start creates a run (the Blocker); the start is one transaction through the port, writing its `SEALED` window after the run as an ADR-0050 slot 8a row, with an outcome table for 022's answers and a 24-hour expiry; a pure domain module, an evaluator method and a store port for the trigger side; the chain lifecycle in `switch`; the input schema checked at publication and `RUN_INPUT_INVALID` at start; one definer function over `pgcrypto` for the HMAC key; the capability listed only where configured, a removal `verify`, and Gap 042-006 reopened for binaries before the registry; the collection capability in a small migration of slice 1; the `KEY_LIMIT` retry defined; the stale text of the first revisions corrected; the delivery outcome `BUFFERED` renamed `HELD`. | 2026-11-27 |
 
 ## Gaps
 
 | Id | Gap | State |
 |---|---|---|
 | G042-001 | `map` cannot build an object; the language has no object literal. | Open; a stated limit, kept by O042-005 |
-| G042-002 | Whether seal and run start can share one transaction. | Open; T042-2 |
-| G042-003 | A workflow with a `forEach` cannot have triggers (`published_collection_definition`), so a window cannot feed a collection yet. | Open; belongs to feature 014 or 039 |
+| G042-002 | Whether seal and run start can share one transaction. | Closed 2026-11-26: two transactions, D042-162 |
+| G042-003 | A workflow with a `forEach` cannot have triggers (`published_collection_definition`), so a window cannot feed a collection yet. | Open; taken over by design 039 |
 | G042-004 | The Studio does not know the `forEach` node. | Open |
 | G042-005 | The dispatcher is one queue for all tenants (G88 of feature 004); a key flood is bounded per event, not isolated. | Open; measured by T042-31 |
-| G042-006 | Nothing enforces that every scheduler replica knows `trigger-operators` before it is enabled. | Open; waits for the instance registry |
+| G042-006 | Nothing enforces that every scheduler replica knows `trigger-operators` before it is enabled. | Narrowed 2026-11-26 by D042-165 (Task 042-54); reopened 2026-11-27 (D042-167): a binary from before the instance registry does not register, so only the upgrade rule keeps it out; its over-delivery (one run per event) is the residual risk, accepted by Owner decision 2026-11-27-423 |
 | G042-007 | One hot key is serial by construction. | Open; reported by T042-33 |
 | G042-008 | A collection that fails at entry stops the run; its `onError` is not taken (as for a failing `items` today). | Open; a follow-up of its own for feature 014's collections |
 | G042-009 | The wall-time ceiling depends on the machine and could fail on a starved replica a chain another would finish. | Open; counted as `wall_time`, a defect to explain when it fires |
@@ -137,4 +144,12 @@ relayed by the coordinator, and how the second draft answers each are in
 `docs/designs/042-stream-operators.reviews/2026-11-13/`. D042-016 to D042-037 and G042-008 to G042-014 come from that
 review. D042-002 and D042-004 stand as decided by D042-012; D042-005's position order now governs only `skip` and `take`
 counts (D042-035).
+
+## 2026-11-26 — Third revision: slices 2 to 5 in release 0.3.0
+
+The owner put slices 2 to 5 in release 0.3.0 (Owner decision 2026-11-24-1) and delegated the open questions (Owner
+decision 2026-11-24-4). The refinements of O042-008 (a surrogate id, the key text only with the reveal right) and O042-009
+(`KEY_LIMIT` at once, retryable by an operator, no dead letter) are decided as Owner decisions 2026-11-26-131 and
+2026-11-26-130; the numbers of D042-164 as Owner decisions 2026-11-26-132 to 2026-11-26-134; the withdrawal of
+`admissionGraceMs` and ADR-0153 as Owner decisions 2026-11-26-135 and 2026-11-26-136.
 

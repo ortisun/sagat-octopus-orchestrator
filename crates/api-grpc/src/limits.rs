@@ -8,7 +8,9 @@
 //! When the engine is full it sheds, it does not queue: a queued heartbeat is a heartbeat that
 //! arrives after its lease expired, which turns overload into retries and more overload. Calls that
 //! find new work (`RegisterWorker`, `PollTasks`) are shed first, so the calls that keep work already
-//! leased alive (`Heartbeat`, `CompleteStep`, `FailStep`) keep a reserve.
+//! leased alive (`Heartbeat`, `CompleteStep`, `FailStep`) keep a reserve. `AppendStepLogs` (design 041) is a class
+//! of its own with its own counter and cap, so that a flood of log calls never moves the threshold at which discovery
+//! is shed, and at most that many of the pool's connections are in a log transaction at once.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -494,6 +496,11 @@ enum Class {
     /// Moves a blob for a step that is running: shed like a lease call, but it owns its time limit
     /// (a transfer legitimately outlasts a unary call) and its own cap on how many run at once.
     Transfer,
+    /// Stores the log records of a running attempt (`AppendStepLogs`, design 041 section 1): counted apart from every
+    /// other call, against its own cap (`SAGAT_GRPC_MAX_LOG_CALLS`), so that it never takes the places of the others
+    /// nor moves the threshold at which discovery is shed. A report's carry is not in this class: it is part of its
+    /// report.
+    Logs,
 }
 
 impl Class {
@@ -503,6 +510,7 @@ impl Class {
                 "Heartbeat" | "CompleteStep" | "FailStep" | "ResolveSecrets" | "ResolveDatabase",
             ) => Self::Lease,
             Some("WriteBlob" | "ReadBlob") => Self::Transfer,
+            Some("AppendStepLogs") => Self::Logs,
             // Registering and polling, and whatever a future method does until it is classified.
             _ => Self::Discovery,
         }
@@ -513,12 +521,17 @@ impl Class {
             Self::Discovery => "discovery",
             Self::Lease => "lease",
             Self::Transfer => "transfer",
+            Self::Logs => "logs",
         }
     }
 }
 
 struct Shared {
     in_flight: AtomicUsize,
+    /// Calls of the Logs class running at once, counted outside `in_flight`.
+    logs_in_flight: AtomicUsize,
+    /// Calls of the Logs class running at once above which the next is shed (`SAGAT_GRPC_MAX_LOG_CALLS`).
+    logs_max: AtomicUsize,
     /// Calls running at once, of any class.
     max: AtomicUsize,
     /// Calls running at once above which discovery calls are shed.
@@ -546,9 +559,23 @@ impl Shared {
     }
 
     fn admit(self: &Arc<Self>, class: Class) -> Option<Ticket> {
+        if class == Class::Logs {
+            let limit = self.logs_max.load(Ordering::Acquire);
+            let running = self.logs_in_flight.fetch_add(1, Ordering::AcqRel);
+            if running >= limit {
+                self.logs_in_flight.fetch_sub(1, Ordering::AcqRel);
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            metrics::gauge!("grpc_log_calls_in_flight").set((running + 1) as f64);
+            return Some(Ticket {
+                shared: Arc::clone(self),
+                logs: true,
+            });
+        }
         let limit = match class {
             Class::Discovery => self.discovery_max.load(Ordering::Acquire),
-            Class::Lease | Class::Transfer => self.max.load(Ordering::Acquire),
+            Class::Lease | Class::Transfer | Class::Logs => self.max.load(Ordering::Acquire),
         };
         let running = self.in_flight.fetch_add(1, Ordering::AcqRel);
         if running >= limit {
@@ -559,6 +586,7 @@ impl Shared {
         metrics::gauge!("grpc_in_flight").set((running + 1) as f64);
         Some(Ticket {
             shared: Arc::clone(self),
+            logs: false,
         })
     }
 }
@@ -566,10 +594,18 @@ impl Shared {
 /// A place among the calls running; released when the call ends, however it ends.
 pub(crate) struct Ticket {
     shared: Arc<Shared>,
+    /// A place of the Logs class, counted in `logs_in_flight`.
+    logs: bool,
 }
 
 impl Drop for Ticket {
     fn drop(&mut self) {
+        if self.logs {
+            let before = self.shared.logs_in_flight.fetch_sub(1, Ordering::AcqRel);
+            #[allow(clippy::cast_precision_loss)]
+            metrics::gauge!("grpc_log_calls_in_flight").set(before.saturating_sub(1) as f64);
+            return;
+        }
         let before = self.shared.in_flight.fetch_sub(1, Ordering::AcqRel);
         #[allow(clippy::cast_precision_loss)]
         metrics::gauge!("grpc_in_flight").set(before.saturating_sub(1) as f64);
@@ -585,12 +621,15 @@ pub struct Admission {
 
 impl Admission {
     /// `max` calls at once; discovery calls are shed above three quarters of it, so a reserve is
-    /// left for the calls that keep leased work alive.
+    /// left for the calls that keep leased work alive. The Logs class has a cap of its own,
+    /// [`crate::GrpcConfig`]'s default until [`Self::configure`] sets the server's.
     pub(crate) fn new(max: usize, unary_timeout: Duration) -> Self {
         let max = max.max(1);
         Self {
             shared: Arc::new(Shared {
                 in_flight: AtomicUsize::new(0),
+                logs_in_flight: AtomicUsize::new(0),
+                logs_max: AtomicUsize::new(crate::GrpcConfig::default().max_log_calls.max(1)),
                 max: AtomicUsize::new(max),
                 discovery_max: AtomicUsize::new((max * 3 / 4).max(1)),
                 unary_timeout_ms: AtomicU64::new(
@@ -634,9 +673,12 @@ impl Admission {
     }
 
     /// Reconciles the shared gate with the server's runtime configuration before it accepts calls.
-    pub(crate) fn configure(&self, max: usize, unary_timeout: Duration) {
+    pub(crate) fn configure(&self, max: usize, max_log_calls: usize, unary_timeout: Duration) {
         let max = max.max(1);
         self.shared.max.store(max, Ordering::Release);
+        self.shared
+            .logs_max
+            .store(max_log_calls.max(1), Ordering::Release);
         self.shared
             .discovery_max
             .store((max * 3 / 4).max(1), Ordering::Release);
@@ -736,6 +778,11 @@ mod tests {
         assert_eq!(class("CompleteStep"), Class::Lease);
         assert_eq!(class("FailStep"), Class::Lease);
         assert_eq!(
+            class("AppendStepLogs"),
+            Class::Logs,
+            "log calls are counted apart and never take the reserve"
+        );
+        assert_eq!(
             class("ResolveSecrets"),
             Class::Lease,
             "a step that is running is waiting for its secrets"
@@ -772,6 +819,50 @@ mod tests {
         drop(reserve);
         assert_eq!(shared.in_flight.load(Ordering::Acquire), 0, "nothing leaks");
         assert!(shared.admit(Class::Discovery).is_some());
+    }
+
+    /// Design 041 section 1: a full Logs class leaves discovery admission unchanged, a call over the Logs cap is shed,
+    /// and log calls never count toward the threshold at which discovery is shed.
+    #[test]
+    fn a_full_logs_class_leaves_discovery_admission_unchanged() {
+        let admission = Admission::new(8, Duration::from_secs(30));
+        admission.configure(8, 4, Duration::from_secs(30));
+        let shared = Arc::clone(&admission.shared);
+        let logs: Vec<_> = (0..4)
+            .map(|_| shared.admit(Class::Logs).expect("below the Logs cap"))
+            .collect();
+        assert!(
+            shared.admit(Class::Logs).is_none(),
+            "a fifth log call is shed at the cap of 4"
+        );
+        assert_eq!(shared.logs_in_flight.load(Ordering::Acquire), 4);
+        assert_eq!(
+            shared.in_flight.load(Ordering::Acquire),
+            0,
+            "log calls are counted apart"
+        );
+        let discovery: Vec<_> = (0..6)
+            .map(|_| {
+                shared
+                    .admit(Class::Discovery)
+                    .expect("discovery admits its six of eight with the Logs class full")
+            })
+            .collect();
+        assert!(
+            shared.admit(Class::Discovery).is_none(),
+            "and sheds the seventh, as without log calls"
+        );
+        let reserve: Vec<_> = (0..2)
+            .map(|_| shared.admit(Class::Lease).expect("the reserve is whole"))
+            .collect();
+        drop((logs, discovery, reserve));
+        assert_eq!(
+            shared.logs_in_flight.load(Ordering::Acquire),
+            0,
+            "nothing leaks"
+        );
+        assert_eq!(shared.in_flight.load(Ordering::Acquire), 0, "nothing leaks");
+        assert!(shared.admit(Class::Logs).is_some(), "a place is free again");
     }
 
     #[test]

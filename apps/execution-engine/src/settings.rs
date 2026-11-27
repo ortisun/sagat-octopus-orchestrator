@@ -10,8 +10,9 @@ use sagat_application::execution::BreakerPolicy;
 use sagat_application::operations::WorkerPool;
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
-    ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, flag_or, optional,
-    rate_limit_error, read_auth, read_rate_limit, read_secrets,
+    ConfigError, DEFAULT_DB_MAX_CONNECTIONS, Environment, Lookup, SUBJECT_RATE_VARS,
+    TENANT_RATE_VARS, flag, flag_or, optional, rate_limit_error, read_auth, read_rate_limit,
+    read_secrets,
 };
 use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobConfigError};
 use sagat_infra_connectors::redis::RedisConfig;
@@ -75,6 +76,9 @@ pub struct EngineConfig {
     /// Per-identity budget, charged before any database lookup.
     pub subject_rate_limit: RateLimitConfig,
     pub grpc: GrpcConfig,
+    /// Batches of one tenant running at once on this replica (`SAGAT_STEP_LOGS_TENANT_CALLS`, design 041 P3): 7 by
+    /// default, never more than the Logs class's cap, `grpc.max_log_calls` (decision D041-127).
+    pub step_log_tenant_calls: usize,
     pub worker: WorkerSettings,
     /// When the compensations of a provider operation that keeps failing stop being leased.
     pub breaker: BreakerPolicy,
@@ -361,6 +365,32 @@ fn reset_expiry(get: Lookup<'_>) -> Result<Duration, ConfigError> {
     Ok(given)
 }
 
+/// The admission of `AppendStepLogs` (design 041 section 1, decision D041-127, data-model.md §6): the Logs class's
+/// cap `SAGAT_GRPC_MAX_LOG_CALLS`, by default half of the database pool `SAGAT_DB_MAX_CONNECTIONS` (the one the
+/// shared configuration opens) rounded down and at least 1, and never more than that, "the most this design allows",
+/// so that log transactions never hold the connections lease calls need (a larger value is refused); and the tenant's
+/// tickets `SAGAT_STEP_LOGS_TENANT_CALLS`, 7 by default and never more than the cap, so that a second tenant keeps the
+/// rest of the class.
+fn step_log_admission(get: Lookup<'_>) -> Result<(usize, usize), ConfigError> {
+    let pool: u32 = optional(get, "SAGAT_DB_MAX_CONNECTIONS", DEFAULT_DB_MAX_CONNECTIONS)?;
+    let half = usize::try_from(pool / 2).unwrap_or(usize::MAX).max(1);
+    let cap = capacity(get, "SAGAT_GRPC_MAX_LOG_CALLS", half)?;
+    if cap > half {
+        return Err(ConfigError::Invalid {
+            name: "SAGAT_GRPC_MAX_LOG_CALLS",
+            reason: format!(
+                "must be at most half of SAGAT_DB_MAX_CONNECTIONS ({half} of a pool of {pool})"
+            ),
+        });
+    }
+    let tickets = capacity(
+        get,
+        "SAGAT_STEP_LOGS_TENANT_CALLS",
+        sagat_api_grpc::DEFAULT_STEP_LOG_TENANT_CALLS,
+    )?;
+    Ok((cap, tickets.min(cap)))
+}
+
 fn capacity(get: Lookup<'_>, name: &'static str, default: usize) -> Result<usize, ConfigError> {
     let value = positive(name, optional(get, name, default as u64)?)?;
     usize::try_from(value).map_err(|_| ConfigError::Invalid {
@@ -414,6 +444,7 @@ impl EngineConfig {
             };
 
         let grpc_defaults = GrpcConfig::default();
+        let (max_log_calls, step_log_tenant_calls) = step_log_admission(get)?;
         let grpc = GrpcConfig {
             request_timeout: Duration::from_secs(positive(
                 "SAGAT_GRPC_REQUEST_TIMEOUT_SECS",
@@ -454,6 +485,7 @@ impl EngineConfig {
                 grpc_defaults.max_connection_age,
             )?,
             max_in_flight: capacity(get, "SAGAT_GRPC_MAX_IN_FLIGHT", grpc_defaults.max_in_flight)?,
+            max_log_calls,
             transfer_timeout: seconds(
                 get,
                 "SAGAT_BLOB_TRANSFER_TIMEOUT_SECS",
@@ -499,6 +531,11 @@ impl EngineConfig {
                     u64::try_from(worker_defaults.idle_retry.as_millis()).unwrap_or(500),
                 )?,
             )?),
+            step_logs_enabled: flag_or(
+                get,
+                "SAGAT_STEP_LOGS_ENABLED",
+                worker_defaults.step_logs_enabled,
+            )?,
         };
 
         let breaker_defaults = BreakerPolicy::default();
@@ -960,6 +997,7 @@ impl EngineConfig {
             });
         }
         Ok(Self {
+            step_log_tenant_calls,
             grpc_addr: optional(
                 get,
                 "SAGAT_GRPC_ADDR",

@@ -71,7 +71,8 @@ that anything is built.
   runs only; the verified archive as sole copy; `archive = NONE` means deletion) — T020-061; US08/US09
   are gated on it (G1101). *2026-11-24: left open:* amending the constitution is not a delegate's act
   (Owner decision 2026-11-24-4 does not cover it); the text is proposed for constitution 5.0.0 (Owner
-  decision 2026-11-24-2) or a later MINOR amendment. Only User stories 020-08 and 020-09 wait for it.
+  decision 2026-11-24-2) or a later MINOR amendment. Only User stories 020-08 and 020-09 wait for it. *(2026-11-26:
+  made in constitution 5.1.0 without `archive = NONE` or erasure; see G1101 and Task 020-070.)*
 - [x] The `RunSelector` contract (contracts/list-query.md) is agreed with 018, its co-owner. Fixed
   2026-11-24: 018 is built, and the contract now pages, bounds and starts a selection exactly as 018's code
   does (`select_cursor`, `selection_bound_at`, `selection_horizon`; research Decision 020-006), with

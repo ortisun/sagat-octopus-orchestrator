@@ -833,6 +833,27 @@ pub async fn serve(
     if let Some(blobs) = blobs {
         worker_api = worker_api.with_blobs(blobs, engine.blob_transfer);
     }
+    // Design 041, protocol 1.7: `AppendStepLogs` on the replica's pool, whose size gives the store its wait slots, under
+    // the deployment switch the registration policy reads too (`SAGAT_STEP_LOGS_ENABLED`, P2).
+    if !engine.worker.step_logs_enabled {
+        tracing::warn!(
+            "SAGAT_STEP_LOGS_ENABLED=false: workers are told capture is off and every step-log batch is answered STOP_CAPTURE"
+        );
+    }
+    worker_api = worker_api
+        .with_step_logs(
+            Arc::new(sagat_application::step_logs::StepLogIngest::new(
+                sagat_infra_postgres::PgStepLogStore::new(pool.clone()),
+                SystemClock,
+                engine.worker.step_logs_enabled,
+            )),
+            engine.step_log_tenant_calls,
+            sagat_api_grpc::StepLogBudgets {
+                subject: engine.subject_rate_limit,
+                tenant: engine.rate_limit,
+            },
+        )
+        .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?;
     let grpc_stop = stop_rx.clone();
     let grpc_config = engine.grpc.clone();
     tasks.spawn("worker gRPC server", async move {

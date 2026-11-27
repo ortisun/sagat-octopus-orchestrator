@@ -19,7 +19,7 @@ the managed executor (or the platform's own outbox for streams) delivers at leas
 only with the sink's acknowledgement. (3) Retention is
 opt-in: terminal runs are archived, verified, then purged by one privileged function; the run row stays as
 a stub. Retention needs a MINOR amendment of constitution principle I (proposed in ADR-0054) before any of
-it is built. Each capability ships behind its own enablement and can be rolled back by disabling new use.
+it is built. *Note (2026-11-26, constitution 5.1.0, Owner decision 2026-11-25-3):* principle I now admits this feature's per-run purge under a namespace retention policy, only after a verified archive, with the obligations Task 020-070 brings into the design. Two things this feature proposes are not admitted: `archive = NONE` (deletion with no copy) and erasure (Requirement 020-037) before the policy's retention or without a verified archive; each needs the owner's further amendment (Gap 1101). Each capability ships behind its own enablement and can be rolled back by disabling new use.
 
 ## Technical context
 
@@ -286,7 +286,7 @@ Design checks, not implementation approval.
 
 | Principle | Status | Evidence / gate |
 |---|---|---|
-| I — durable atomic transitions | Pass (search, analytics); **Requires amendment** (retention) | Attribute rows and events in the transition transaction (T2/T3); analytics outside it. Retention removes whole journals of terminal runs and leaves the archive as the only copy (or no copy with `archive = NONE`): that changes principle I's obligations, so ADR-0054 proposes a MINOR amendment; US08/US09 start only after its PR is accepted (T020-061). T020-014, T020-015, T020-046, T020-047. |
+| I — durable atomic transitions | Pass (search, analytics); **Requires amendment** (retention); 2026-11-26: **Requires design change** to meet constitution 5.1.0 (T020-070: the retention role, the coverage check, the notice period, the archive's size and SHA-256 on the stub and on every read, the first-transaction audit); `archive = NONE` and erasure are not admitted (G1101) | Attribute rows and events in the transition transaction (T2/T3); analytics outside it. Retention removes whole journals of terminal runs and leaves the archive as the only copy (or no copy with `archive = NONE`): that changes principle I's obligations, so ADR-0054 proposes a MINOR amendment; US08/US09 start only after its PR is accepted (T020-061). T020-014, T020-015, T020-046, T020-047. |
 | II — pure domain, inward dependencies | Pass | Parser/AST/types in the domain without new dependencies; SQL in `infra-postgres`; sink clients only in `apps/database-runner` (035's crates), none in the engine or control plane; no new process (D1101, Decision 020-002); no empty mapper (the record schema is the one wire boundary). T020-006, T020-058. |
 | III — at-least-once effects | Pass | Sinks at least once with deterministic keys; no exactly-once claim; archive verified before delete; no compensation semantics changed. T020-029, T020-047. |
 | IV — pinned, compatible | Pass | Declarations pinned with the version; the shared new classification rules version applies only to new versions; additive contracts; six-SDK conformance; capabilities switched on through the instance registry (FR-020-045). T020-005, T020-020, T020-050, T020-063, T020-064. |

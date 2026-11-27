@@ -1,7 +1,8 @@
 //! Design 041, task T041-6: what the step-log suites share.
 //!
-//! * A *session fixture*: a worker registered the real way, its `worker_sessions` row raised to protocol minor 7 (the
-//!   negotiation of 1.7 is task T041-7's), and an attempt of a run leased to it.
+//! * A *session fixture*: a worker registered the real way at the world's minor, its `worker_sessions` row raised to
+//!   protocol minor 7 (the negotiation of 1.7 through the RPC is tested by the `rpc` module), and an attempt of a run
+//!   leased to it.
 //! * A *wrapper* of the store's transaction, [`Hooked`], with six hooks: fail before the commit; commit and then fail
 //!   as a lost answer would; hold after T2 (no lock held); hold after T3 (the policy fences and the attempt's stream
 //!   lock held, L1 and L1b); hold after T7 (the stream row held since T4, L2); hold after T8 (the writer's own quota
@@ -56,7 +57,7 @@ pub async fn one_activity(w: &World, node: &str) -> sagat_domain::definition::Wo
     .0
 }
 
-/// Raises a session to protocol minor 7, as the registration of a 1.7 worker will (task T041-7).
+/// Raises a session to protocol minor 7, as the registration of a 1.7 worker does.
 pub async fn accept_at_1_7(w: &World, session: &Session) {
     sqlx::query("UPDATE worker_sessions SET accepted_protocol_minor = 7 WHERE id = $1")
         .bind(session.worker_id)
