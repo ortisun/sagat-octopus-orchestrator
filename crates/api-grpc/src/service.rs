@@ -47,6 +47,7 @@ use crate::pb;
 use crate::request::{Attempt, idempotency_key, worker_id};
 use crate::server::AdmissionProvider;
 use crate::status::{invalid, to_status};
+use crate::step_logs::{StepLogAppender, StepLogBudgets, StepLogs};
 use crate::undelivered::{Abandonment, DeliveryProbe, PendingLeases, WithdrawalSink, Withdrawals};
 use tokio_util::sync::CancellationToken;
 
@@ -64,6 +65,9 @@ pub struct WorkerGrpc<St, S, C, E, R> {
     probe: Option<DeliveryProbe>,
     /// A barrier before a run's transaction that leased commits (tests only, decisions D006-008 and D006-092).
     commit_probe: Option<DeliveryProbe>,
+    /// `AppendStepLogs` (design 041, protocol 1.7): the ingest and the tenants' tickets. Without it the RPC answers
+    /// `UNIMPLEMENTED`, as an older replica would.
+    step_logs: Option<StepLogs>,
 }
 
 impl<St: Clone, S, C, E, R> Clone for WorkerGrpc<St, S, C, E, R> {
@@ -77,6 +81,7 @@ impl<St: Clone, S, C, E, R> Clone for WorkerGrpc<St, S, C, E, R> {
             withdrawals: self.withdrawals.clone(),
             probe: self.probe.clone(),
             commit_probe: self.commit_probe.clone(),
+            step_logs: self.step_logs.clone(),
         }
     }
 }
@@ -94,7 +99,32 @@ impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
             withdrawals: Withdrawals::default(),
             probe: None,
             commit_probe: None,
+            step_logs: None,
         }
+    }
+
+    /// Serves `AppendStepLogs` (design 041, protocol 1.7) with `ingest`, at most `tenant_calls` batches of one tenant
+    /// at once on this replica (P3, `SAGAT_STEP_LOGS_TENANT_CALLS`; at least 1), charged to `budgets`, buckets of their
+    /// own. Without it the RPC answers `UNIMPLEMENTED`.
+    ///
+    /// # Errors
+    /// [`sagat_api_http::RateLimitConfigError`] when a budget is not usable.
+    pub fn with_step_logs(
+        mut self,
+        ingest: Arc<dyn StepLogAppender>,
+        tenant_calls: usize,
+        budgets: StepLogBudgets,
+    ) -> Result<Self, sagat_api_http::RateLimitConfigError> {
+        self.step_logs = Some(StepLogs::new(ingest, tenant_calls, budgets)?);
+        Ok(self)
+    }
+
+    pub(crate) const fn core(&self) -> &St {
+        &self.core
+    }
+
+    pub(crate) const fn step_logs(&self) -> Option<&StepLogs> {
+        self.step_logs.as_ref()
     }
 
     /// The withdrawals in flight: a graceful shutdown waits for them once the server stopped serving (feature 006,
@@ -382,7 +412,7 @@ impl Drop for TaskBody {
     }
 }
 
-fn app(error: AppError) -> Status {
+pub(crate) fn app(error: AppError) -> Status {
     api(&ApiError::from(error))
 }
 
@@ -409,11 +439,11 @@ tokio::task_local! {
 }
 
 /// The RPC as named in the audit trail: the service and the method, never the request.
-fn rpc_name(method: &str) -> String {
+pub(crate) fn rpc_name(method: &str) -> String {
     format!("grpc WorkerService/{method}")
 }
 
-fn trace_of<T>(request: &Request<T>) -> TraceContext {
+pub(crate) fn trace_of<T>(request: &Request<T>) -> TraceContext {
     TraceContext::from_traceparent(
         request
             .metadata()
@@ -446,7 +476,7 @@ const fn code_label(code: Code) -> &'static str {
 
 /// Runs one call under a span carrying the trace id, and counts and times it. The `method` label
 /// comes from a fixed set of RPC names, so the metric cardinality is fixed.
-async fn observe<St: Core, T>(
+pub(crate) async fn observe<St: Core, T>(
     core: &St,
     method: &'static str,
     trace: TraceContext,
@@ -522,11 +552,28 @@ where
 {
     /// Who is calling: the bearer token of the `authorization` metadata, verified and resolved to a
     /// member of a tenant. The returned value holds the tenant's concurrency slot until dropped.
-    async fn authenticate<T>(&self, request: &Request<T>) -> Result<Authenticated, Status> {
+    pub(crate) async fn authenticate<T>(
+        &self,
+        request: &Request<T>,
+    ) -> Result<Authenticated, Status> {
+        self.authenticate_with(request, None).await
+    }
+
+    /// [`Self::authenticate`] charging `budgets` instead of the shared ones when given (step-log batches, decision
+    /// D041-150).
+    pub(crate) async fn authenticate_with<T>(
+        &self,
+        request: &Request<T>,
+        budgets: Option<sagat_api_http::Budgets<'_>>,
+    ) -> Result<Authenticated, Status> {
         let token = self.bearer(request)?;
-        let authenticated = authenticate_bearer(&self.core, token)
-            .await
-            .map_err(|e| api(&e))?;
+        let authenticated = match budgets {
+            None => authenticate_bearer(&self.core, token).await,
+            Some(budgets) => {
+                sagat_api_http::authenticate_bearer_with(&self.core, token, budgets).await
+            }
+        }
+        .map_err(|e| api(&e))?;
         let _ = DENIAL.try_with(|note| {
             *note
                 .principal
@@ -556,6 +603,11 @@ where
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,
 {
+    /// Whether the worker service's store addresses scoped instances (protocol 1.5).
+    pub(crate) fn supports_scoped_identity(&self) -> bool {
+        self.workers.supports_scoped_worker_protocol()
+    }
+
     /// Where a lease that was committed and not handed to the transport goes (decision D006-001).
     fn withdrawal_sink(&self) -> WithdrawalSink {
         WithdrawalSink::new(Arc::clone(&self.workers), self.withdrawals.clone())
@@ -614,8 +666,10 @@ where
                 worker_id: registered.worker_id.to_string(),
                 session_token: registered.session_token.expose().to_owned(),
                 accepted_protocol_version: registered.accepted_protocol_version,
-                // Feature 041: sent only at an accepted minor of 7, which T041-7 offers.
-                step_logs: None,
+                // Feature 041: sent only at an accepted minor of 7 or later (contracts.md §1).
+                step_logs: registered
+                    .step_logs_enabled
+                    .map(|enabled| pb::StepLogPolicy { enabled }),
             })
         })
         .await
@@ -1063,13 +1117,13 @@ where
         .await
     }
 
-    // Feature 041 builds this in T041-7 (`crates/api-grpc/src/step_logs.rs`); until then a
-    // worker that sends a batch stops capture for the attempt, as against an older replica.
+    // Feature 041, protocol 1.7: in a file of its own (`crates/api-grpc/src/step_logs.rs`), so that the test
+    // selector matches the step-log code by its path.
     async fn append_step_logs(
         &self,
-        _: Request<pb::AppendStepLogsRequest>,
+        request: Request<pb::AppendStepLogsRequest>,
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
-        Err(Status::unimplemented("AppendStepLogs"))
+        self.serve_append_step_logs(request).await
     }
     async fn resolve_database(
         &self,
@@ -1609,7 +1663,7 @@ fn require_supported_identity(
     }
 }
 
-fn attach_instance(
+pub(crate) fn attach_instance(
     attempt: &mut Attempt,
     identity: Option<&pb::ExecutionInstanceIdentity>,
     supports_scoped_identity: bool,

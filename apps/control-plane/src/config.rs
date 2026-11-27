@@ -224,6 +224,10 @@ pub struct Config {
     pub database: DatabaseConfig,
 }
 
+/// The database pool's size when `SAGAT_DB_MAX_CONNECTIONS` is not set. The execution engine derives the cap of its
+/// `AppendStepLogs` calls from the same value (design 041 section 1).
+pub const DEFAULT_DB_MAX_CONNECTIONS: u32 = 10;
+
 impl Config {
     /// # Errors
     /// [`ConfigError`] naming the first missing or invalid variable.
@@ -239,7 +243,8 @@ impl Config {
                 });
             }
         };
-        let max_connections: u32 = optional(get, "SAGAT_DB_MAX_CONNECTIONS", 10)?;
+        let max_connections: u32 =
+            optional(get, "SAGAT_DB_MAX_CONNECTIONS", DEFAULT_DB_MAX_CONNECTIONS)?;
         if max_connections == 0 {
             return Err(ConfigError::Invalid {
                 name: "SAGAT_DB_MAX_CONNECTIONS",
