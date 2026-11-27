@@ -264,6 +264,8 @@ impl Runner {
                     pools: vec![],
                     max_inflight,
                     protocol_version: "1.6".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             })
             .await

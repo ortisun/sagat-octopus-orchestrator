@@ -1,0 +1,168 @@
+{
+  "scenario": "code-nondeterminism",
+  "run": "main",
+  "runId": "79e70176-7b66-4677-b695-67c3546e1455",
+  "workflowType": "notify-order",
+  "seedHex": "070bf53d3e902d631721e77253977eb708a29c4f50663b96616c2ea99e0b38ae",
+  "input": {
+    "orderId": "ord-31"
+  },
+  "codeVersions": {
+    "v1": "sha256:8bda44227549b57a1fe57d76a6c51d275ff8000efc070132fb35de5cdfcb3971"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "worker": "A",
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "order.load",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "order.load"
+          },
+          "value": {
+            "orderId": "ord-31"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "order.load",
+            "input": {
+              "sha256": "fbc75b4bba53888ef700f852440e21cae9eef11ff57d7661d938ca5437198f3f",
+              "size": 20
+            }
+          },
+          "bodySha256": "fe602ffadced056e05fb7b9fc27897daa93abe20585f59effce9b6e28de6dc8c",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "0747f1db98c81c2a92ad845c5fc260c29be4ff8fe33d003f92916c73a6a87340",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "worker": "A",
+      "replayedChainHex": "0747f1db98c81c2a92ad845c5fc260c29be4ff8fe33d003f92916c73a6a87340",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "email.send",
+          "node": "c-2",
+          "fragment": {
+            "type": "activity",
+            "activity": "email.send"
+          },
+          "value": {
+            "orderId": "ord-31",
+            "to": "buyer@example.com"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "email.send",
+            "input": {
+              "sha256": "0a4d9e6ed303c8cd58f543b882928c54f8fdcaf2e28d871d1dcfbf52dfb0c12f",
+              "size": 45
+            }
+          },
+          "bodySha256": "2337e354a2124ae9f20489aa9db1037183d771872a4d40a84f4e822b29842172",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "b13db256fa301e32ee22a377c5faa80f3446a8e2a112d41661670da7706e72bf",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": null
+      },
+      "failedAttempts": [
+        {
+          "startedSeq": 12,
+          "nowUs": 1767225600001644,
+          "worker": "B",
+          "cause": "CAUSE_NONDETERMINISM",
+          "report": {
+            "commandNumber": 2,
+            "actualKind": "COMMAND_ACTIVITY",
+            "actualTarget": "sms.send",
+            "codeDigest": "sha256:8bda44227549b57a1fe57d76a6c51d275ff8000efc070132fb35de5cdfcb3971"
+          },
+          "expected": {
+            "kind": "COMMAND_ACTIVITY",
+            "target": "email.send",
+            "from": "the server's own record of command 2"
+          },
+          "replayFromSeq": 1
+        }
+      ],
+      "review": "NONDETERMINISM"
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 10,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    },
+    {
+      "seq": 13,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_NONDETERMINISM"
+    },
+    {
+      "seq": 14,
+      "journalKind": "step.needs_review",
+      "node": "~workflow",
+      "code": "NONDETERMINISM"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "order.load",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    },
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "email.send",
+      "commandNumber": 2,
+      "issuedSeq": 7,
+      "outcomeSeq": 11
+    }
+  ]
+}

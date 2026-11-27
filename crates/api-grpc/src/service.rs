@@ -1071,6 +1071,45 @@ where
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    // Design 044 (workflow as code, protocol 1.10): the contract of Task 044-2. The server lane fills
+    // these in (Tasks 044-8, 044-9, 044-13, 044-14, 044-29); until then each answers UNIMPLEMENTED.
+    type ReadHistoryStream = tokio_stream::Empty<Result<pb::ReadHistoryResponse, Status>>;
+    async fn complete_workflow_task(
+        &self,
+        _: Request<pb::CompleteWorkflowTaskRequest>,
+    ) -> Result<Response<pb::CompleteWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("CompleteWorkflowTask"))
+    }
+    async fn fail_workflow_task(
+        &self,
+        _: Request<pb::FailWorkflowTaskRequest>,
+    ) -> Result<Response<pb::FailWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("FailWorkflowTask"))
+    }
+    async fn read_history(
+        &self,
+        _: Request<pb::ReadHistoryRequest>,
+    ) -> Result<Response<Self::ReadHistoryStream>, Status> {
+        Err(Status::unimplemented("ReadHistory"))
+    }
+    async fn respond_worker_query(
+        &self,
+        _: Request<pb::RespondWorkerQueryRequest>,
+    ) -> Result<Response<pb::RespondWorkerQueryResponse>, Status> {
+        Err(Status::unimplemented("RespondWorkerQuery"))
+    }
+    async fn respond_replay_check(
+        &self,
+        _: Request<pb::RespondReplayCheckRequest>,
+    ) -> Result<Response<pb::RespondReplayCheckResponse>, Status> {
+        Err(Status::unimplemented("RespondReplayCheck"))
+    }
+    async fn release_sticky(
+        &self,
+        _: Request<pb::ReleaseStickyRequest>,
+    ) -> Result<Response<pb::ReleaseStickyResponse>, Status> {
+        Err(Status::unimplemented("ReleaseSticky"))
+    }
     async fn resolve_database(
         &self,
         request: Request<pb::ResolveSecretsRequest>,
@@ -1550,6 +1589,7 @@ fn step_response(ack: &StepAck) -> pb::StepCommandResponse {
         already_applied: ack.already_applied,
         step_status: ack.step_status.as_str().to_owned(),
         run_status: ack.run_status.as_str().to_owned(),
+        workflow_task: None,
     }
 }
 
@@ -1762,6 +1802,7 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
             .unwrap_or_default(),
         instance,
         target_instance,
+        workflow_work: None,
     }
 }
 

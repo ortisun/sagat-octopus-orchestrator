@@ -1,0 +1,155 @@
+{
+  "$comment": "Design 044, Technical Plan 2 and 4.5: the node specification of an accepted work command, stored in code_step_nodes and carried by the command's record in run_events.server_detail. It is the RFC 8785 canonical code-profile fragment without its business literals (input, subject, correlationKey, businessId, literal keys), merged with the covering envelope entry's publisher fields and tagged with the IR's apiVersion; never a payload, at most 1,024 bytes. Decoded only through IrCodec::parse_code_node_spec (crates/infra-ir). Task 044-5's a_node_spec_round_trips_through_the_codec holds the codec to this file; a change is reviewed (AGENTS.md rule 18).",
+  "specFormat": 1,
+  "maxBytes": 1024,
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "forbiddenKeys": [
+    "input",
+    "subject",
+    "correlationKey",
+    "businessId",
+    "idempotencyTemplate",
+    "destinations",
+    "onError",
+    "onTimeout",
+    "correlationExpr",
+    "outputSchema",
+    "inputSchema",
+    "policy",
+    "onApprove",
+    "onReject",
+    "onExpire",
+    "next",
+    "id"
+  ],
+  "kinds": {
+    "activity": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "activity",
+        "retry",
+        "compensationRetry",
+        "compensationTimeoutMs",
+        "timeoutMs",
+        "secrets",
+        "irreversible",
+        "highRisk",
+        "compensateWith",
+        "reconcileWith",
+        "requiresApproval"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "activity",
+        "activity": "payments.charge",
+        "retry": {
+          "maxAttempts": 3
+        },
+        "secrets": [
+          "payments-api"
+        ],
+        "highRisk": true,
+        "compensateWith": "payments.refund",
+        "reconcileWith": "payments.lookup",
+        "requiresApproval": "large-payments"
+      }
+    },
+    "script": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "artifactDigest",
+        "retry",
+        "timeoutMs",
+        "secrets",
+        "compensateWith"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "script",
+        "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "timer": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "durationMs"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "timer",
+        "durationMs": 86400000
+      }
+    },
+    "waitEvent": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "eventType",
+        "timeoutMs",
+        "lookbackMs"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "waitEvent",
+        "eventType": "payment.confirmed",
+        "timeoutMs": 600000
+      }
+    },
+    "child": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "workflowId",
+        "version",
+        "cancelPolicy"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "child",
+        "workflowId": "shipping",
+        "version": 3,
+        "cancelPolicy": "propagate"
+      }
+    },
+    "approval": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "policyName",
+        "timeoutMs"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "approval",
+        "policyName": "large-payments",
+        "timeoutMs": 86400000
+      }
+    },
+    "saga": {
+      "keys": [
+        "apiVersion",
+        "type",
+        "parentScope",
+        "onCompensationFailure",
+        "cancelPolicy"
+      ],
+      "example": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "type": "saga",
+        "parentScope": null,
+        "onCompensationFailure": "manual_review",
+        "cancelPolicy": "compensate_completed"
+      }
+    }
+  },
+  "companions": {
+    "$comment": "A forward c-<n> node with compensateWith or reconcileWith is stored with its derived companions c-<n>~c and c-<n>~r, whose specs are activity specs of the named activity carrying the secrets of that activity's own entry (Requirement 044-013).",
+    "suffixes": [
+      "~c",
+      "~r"
+    ]
+  }
+}

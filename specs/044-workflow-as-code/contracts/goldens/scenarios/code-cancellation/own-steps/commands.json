@@ -1,0 +1,180 @@
+{
+  "scenario": "code-cancellation",
+  "run": "own-steps",
+  "runId": "a091cdab-6943-4921-be05-607759c9a273",
+  "workflowType": "refund-review",
+  "seedHex": "994eef9e67ac44214ccac0d8cfc99799918af2ac6f061535ca81c713e264235b",
+  "input": {
+    "refundId": "r-31"
+  },
+  "codeVersions": {
+    "v1": "sha256:3862751003599c1a63c042b5fb1c76280f567434a0b0ee4fb28c53b9744adeaf"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "wait_event",
+          "target": "refund.confirmed",
+          "node": "c-1",
+          "fragment": {
+            "type": "waitEvent",
+            "eventType": "refund.confirmed",
+            "correlationKey": "r-31",
+            "timeoutMs": 86400000
+          },
+          "body": {
+            "type": "waitEvent",
+            "eventType": "refund.confirmed",
+            "correlationKey": "r-31",
+            "timeoutMs": 86400000
+          },
+          "bodySha256": "22ebc3edbc7461758798f38504c96d3cf8e7599e44b1e9b068dbf7d265d16abc",
+          "journalKind": "wait.started"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "approval",
+          "target": "refund-review",
+          "node": "c-2",
+          "fragment": {
+            "type": "approval",
+            "policyName": "refund-review"
+          },
+          "value": {
+            "refundId": "r-31",
+            "amountCents": 4200
+          },
+          "body": {
+            "type": "approval",
+            "policyName": "refund-review",
+            "subject": {
+              "sha256": "b487c9b7e6455c57fe8487bcb782d1f7bee6cbd64c3b3ece82d10a6ea6fd76ad",
+              "size": 38
+            }
+          },
+          "bodySha256": "6bee7f31bccfaa6da8dbd433955b55567bc4d4c385729fd4c762dbb6a58bc092",
+          "journalKind": "approval.opened"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "3d8f02dbd055b868a0d35e1327786c8a2a810a9bd1580e3da2cde515835271dc",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225601000959,
+      "notes": "The function cancels its own wait and approval; neither is held by a worker.",
+      "replayedChainHex": "3d8f02dbd055b868a0d35e1327786c8a2a810a9bd1580e3da2cde515835271dc",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "step_cancel",
+          "target": "c-1",
+          "node": "c-1",
+          "typed": {
+            "target": {
+              "target": "c-1"
+            }
+          },
+          "body": {
+            "target": "c-1"
+          },
+          "bodySha256": "2f524b3b4c4098535e2532a99d405a266dce7b76b650e850e104fb021ac96330",
+          "journalKind": "step.cancel_requested"
+        },
+        {
+          "commandNumber": 4,
+          "kind": "step_cancel",
+          "target": "c-2",
+          "node": "c-2",
+          "typed": {
+            "target": {
+              "target": "c-2"
+            }
+          },
+          "body": {
+            "target": "c-2"
+          },
+          "bodySha256": "adcc898e613139aef5dfd2c50742dc4acce8af21d70c8c4eef71c30aee92a5ed",
+          "journalKind": "step.cancel_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "76a480fb0b878c2e391a37e016912b4ce7e7a7a5306736019eb3153b227b35d2",
+      "commandCountAfter": 4
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": 13
+      },
+      "nowUs": 1767225601001781,
+      "notes": "Both commands reject with CommandCancelled; the function acknowledges.",
+      "replayedChainHex": "76a480fb0b878c2e391a37e016912b4ce7e7a7a5306736019eb3153b227b35d2",
+      "appliedThroughSeq": 13,
+      "commands": [
+        {
+          "commandNumber": 5,
+          "kind": "acknowledge_cancellation",
+          "target": "",
+          "typed": {
+            "acknowledgeCancellation": {}
+          },
+          "body": {},
+          "bodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 14,
+      "chainAfterHex": "02920b24a016e7ddb8fb4c4ee5260fe5c78ce42588735c65f60fd3e59c209efd",
+      "commandCountAfter": 5
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 16,
+      "journalKind": "run.finished",
+      "status": "CANCELLED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "wait_event",
+      "target": "refund.confirmed",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 10
+    },
+    {
+      "node": "c-2",
+      "kind": "approval",
+      "target": "refund-review",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 12
+    }
+  ]
+}

@@ -1,0 +1,149 @@
+{
+  "scenario": "code-failures",
+  "run": "uncaught-exception",
+  "runId": "9cc4d741-1a51-439c-a24a-b64e945a8b2b",
+  "workflowType": "invoice",
+  "seedHex": "4ff3da3aec9dd3ba2dd6232efe08d4d056a991f14f4803ed934a2a3b80d5acc5",
+  "input": {
+    "invoiceId": "inv-404"
+  },
+  "codeVersions": {
+    "v1": "sha256:9d73bb3fc9ce41c4627701604b37cd9fda647edbfb4953c92c4703fad7ef2ce4"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "invoice.load",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "invoice.load"
+          },
+          "value": {
+            "invoiceId": "inv-404"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "invoice.load",
+            "input": {
+              "sha256": "2a2db0db616c1c4f61b531fa733948c60e18f3a3ccc39db6047fa75417c23139",
+              "size": 23
+            }
+          },
+          "bodySha256": "15e94bca01514514e356aa6b918e5c623ed37d66b1ae854c122526ef5190c0ff",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "07bd3cd105e98f65798ab3ff549098d5b7b9734a96b30e47054e0d370eacaf07",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": null
+      },
+      "failedAttempts": [
+        {
+          "startedSeq": 7,
+          "nowUs": 1767225600000959,
+          "cause": "CAUSE_WORKFLOW_TASK_FAILED",
+          "exceptionType": "InvoiceMissing",
+          "consecutiveFailures": 1
+        },
+        {
+          "startedSeq": 9,
+          "nowUs": 1767225601013233,
+          "cause": "CAUSE_WORKFLOW_TASK_FAILED",
+          "exceptionType": "InvoiceMissing",
+          "consecutiveFailures": 2
+        },
+        {
+          "startedSeq": 11,
+          "nowUs": 1767225603025507,
+          "cause": "CAUSE_WORKFLOW_TASK_FAILED",
+          "exceptionType": "InvoiceMissing",
+          "consecutiveFailures": 3
+        },
+        {
+          "startedSeq": 13,
+          "nowUs": 1767225607037781,
+          "cause": "CAUSE_WORKFLOW_TASK_FAILED",
+          "exceptionType": "InvoiceMissing",
+          "consecutiveFailures": 4
+        },
+        {
+          "startedSeq": 15,
+          "nowUs": 1767225615050055,
+          "cause": "CAUSE_WORKFLOW_TASK_FAILED",
+          "exceptionType": "InvoiceMissing",
+          "consecutiveFailures": 5
+        }
+      ],
+      "review": "WORKFLOW_TASK_FAILED"
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 8,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_WORKFLOW_TASK_FAILED"
+    },
+    {
+      "seq": 10,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_WORKFLOW_TASK_FAILED"
+    },
+    {
+      "seq": 12,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_WORKFLOW_TASK_FAILED"
+    },
+    {
+      "seq": 14,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_WORKFLOW_TASK_FAILED"
+    },
+    {
+      "seq": 16,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_WORKFLOW_TASK_FAILED"
+    },
+    {
+      "seq": 17,
+      "journalKind": "step.needs_review",
+      "node": "~workflow",
+      "code": "WORKFLOW_TASK_FAILED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "invoice.load",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ]
+}

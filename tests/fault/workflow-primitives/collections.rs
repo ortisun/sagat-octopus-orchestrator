@@ -310,6 +310,8 @@ async fn bounded_public_collection_finishes_in_input_order_after_restart_and_los
                     pools: Vec::new(),
                     max_inflight: 32,
                     protocol_version: "1.5".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))
@@ -371,6 +373,7 @@ async fn bounded_public_collection_finishes_in_input_order_after_restart_and_los
                         output_sha256: String::new(),
                         traceparent: String::new(),
                         instance: task.instance.clone(),
+                        accept_workflow_task: false,
                     },
                 ))
                 .await
@@ -513,6 +516,8 @@ async fn serve_until_finished(
                     pools: Vec::new(),
                     max_inflight: 8,
                     protocol_version: "1.5".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))
@@ -559,6 +564,7 @@ async fn serve_until_finished(
                         output_sha256: String::new(),
                         traceparent: String::new(),
                         instance: task.instance.clone(),
+                        accept_workflow_task: false,
                     },
                 ))
                 .await

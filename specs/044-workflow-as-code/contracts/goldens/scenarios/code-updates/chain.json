@@ -1,0 +1,73 @@
+{
+  "runId": "82551db0-21c0-41d3-84bf-a9c067b2666f",
+  "activations": [
+    {
+      "k": 1,
+      "commandCountAfter": 1,
+      "chainHex": "97c93b3ce7e4b58c560db2991f84c628a01bcdc886cac98aabbbeff97b256ed6"
+    },
+    {
+      "k": 2,
+      "commandCountAfter": 4,
+      "chainHex": "330f64887a3673e26900555ebf057be0981ee0aebc82ba92914297cd9713a5cb"
+    },
+    {
+      "k": 3,
+      "commandCountAfter": 6,
+      "chainHex": "57afe78f72e0814ad7ef303cec930b34597560232887acf89f7b4ad4024561ad"
+    },
+    {
+      "k": 4,
+      "commandCountAfter": 7,
+      "chainHex": "3344feb6ac351b8c700286c73308861b310cc44cfcfc0cca6c3785e334946640"
+    },
+    {
+      "k": 5,
+      "commandCountAfter": 8,
+      "chainHex": "2d7967e78ec11b152a80945d6f2953dce539f775d8b79af05d51d1ab0144015b"
+    },
+    {
+      "k": 6,
+      "commandCountAfter": 9,
+      "chainHex": "b77e2ef1b896cfaf50496b51d97618fc67eb0151d40c8c1509247331355355b4"
+    }
+  ],
+  "commands": [
+    {
+      "commandNumber": 1,
+      "chainHex": "97c93b3ce7e4b58c560db2991f84c628a01bcdc886cac98aabbbeff97b256ed6"
+    },
+    {
+      "commandNumber": 2,
+      "chainHex": "dd7bd0fb7d4e81e7ac2591daa877b4ba659ff6fdb42250fac1c37ad03ce96da5"
+    },
+    {
+      "commandNumber": 3,
+      "chainHex": "2324d704675f62223e27668b127e1a085f508e8a75b28a0f07737246262e77a8"
+    },
+    {
+      "commandNumber": 4,
+      "chainHex": "330f64887a3673e26900555ebf057be0981ee0aebc82ba92914297cd9713a5cb"
+    },
+    {
+      "commandNumber": 5,
+      "chainHex": "bfde13201494a06daebd08cb394fd08dd12f3993a3b60380083003efa0520712"
+    },
+    {
+      "commandNumber": 6,
+      "chainHex": "57afe78f72e0814ad7ef303cec930b34597560232887acf89f7b4ad4024561ad"
+    },
+    {
+      "commandNumber": 7,
+      "chainHex": "3344feb6ac351b8c700286c73308861b310cc44cfcfc0cca6c3785e334946640"
+    },
+    {
+      "commandNumber": 8,
+      "chainHex": "2d7967e78ec11b152a80945d6f2953dce539f775d8b79af05d51d1ab0144015b"
+    },
+    {
+      "commandNumber": 9,
+      "chainHex": "b77e2ef1b896cfaf50496b51d97618fc67eb0151d40c8c1509247331355355b4"
+    }
+  ]
+}

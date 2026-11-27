@@ -1,0 +1,227 @@
+{
+  "scenario": "code-run-lifecycle",
+  "run": "main",
+  "runId": "a06d8108-90aa-4758-839e-5df26a943844",
+  "workflowType": "order",
+  "seedHex": "9eb2be687eafc30671468a406e1d3e07c6afd2070e886dc1e91430331fb20f82",
+  "input": {
+    "orderId": "ord-1001",
+    "sku": "SKU-7",
+    "quantity": 2,
+    "amountCents": 4590
+  },
+  "codeVersions": {
+    "v1": "sha256:43a6517b3db159866cad97c3aecd3d9d51bb4b414e9a66f922afdcc7fe1e780c"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "inventory.reserve",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "inventory.reserve",
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 1000,
+              "strategy": "exponential"
+            },
+            "timeoutMs": 30000
+          },
+          "value": {
+            "sku": "SKU-7",
+            "quantity": 2
+          },
+          "body": {
+            "type": "activity",
+            "activity": "inventory.reserve",
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 1000,
+              "strategy": "exponential"
+            },
+            "timeoutMs": 30000,
+            "input": {
+              "sha256": "aa2c41cc5cbbd10c8a1359c4dcc2bf29f4a586bfe726d5a1b3876f41d5bd77e4",
+              "size": 28
+            }
+          },
+          "bodySha256": "58034ee6131592952b6b124f47e5cdee079ebba5d5b2b530a1362303a4d9d120",
+          "journalKind": "step.released"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "payments.authorize",
+          "node": "c-2",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.authorize",
+            "timeoutMs": 30000
+          },
+          "value": {
+            "orderId": "ord-1001",
+            "amountCents": 4590
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.authorize",
+            "timeoutMs": 30000,
+            "input": {
+              "sha256": "a251e44ee07748f65a0bbe99549985a14f942a786ff4e6ebbb57a182b002b207",
+              "size": 41
+            }
+          },
+          "bodySha256": "f64842de82c75fa44cde8f87428f9a94bff7a927010b74113576856986f57a4b",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "459319d6d8b49c8ff3ab9dbe158b5f8a40adc04c20b437f9a4babd97bbb5df0e",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 9
+      },
+      "nowUs": 1767225600041233,
+      "notes": "Only c-2 has completed: all() still waits for c-1, so the completion has no command.",
+      "replayedChainHex": "459319d6d8b49c8ff3ab9dbe158b5f8a40adc04c20b437f9a4babd97bbb5df0e",
+      "appliedThroughSeq": 9,
+      "commands": [],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 11,
+      "chainAfterHex": "459319d6d8b49c8ff3ab9dbe158b5f8a40adc04c20b437f9a4babd97bbb5df0e",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 9,
+        "throughSeq": 12
+      },
+      "nowUs": 1767225600044644,
+      "replayedChainHex": "459319d6d8b49c8ff3ab9dbe158b5f8a40adc04c20b437f9a4babd97bbb5df0e",
+      "appliedThroughSeq": 12,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "timer_start",
+          "target": "c-3",
+          "node": "c-3",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 60000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 60000
+          },
+          "bodySha256": "d49a9a95c8b0ba1965521e0bdba36fdfbb17bf6a7d5e01391014c0f6a238ebd7",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 13,
+      "chainAfterHex": "e31c1391b315f3a08a0804c43557ffd6cbd3f3c37f88664123d1d4d9464be3d8",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 4,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 12,
+        "throughSeq": 16
+      },
+      "nowUs": 1767225660045192,
+      "replayedChainHex": "e31c1391b315f3a08a0804c43557ffd6cbd3f3c37f88664123d1d4d9464be3d8",
+      "appliedThroughSeq": 16,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "orderId": "ord-1001",
+              "reservationId": "res-31",
+              "authorizationId": "auth-77"
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "5f598a901476ead89b32d02f58e7b7f0771286d253c7df15f56f2665c2584cf6",
+              "size": 75
+            }
+          },
+          "bodySha256": "04b305c3e2d4b781e1c239009eeb98c00ca5488d70ad1d20f0d9e0685ce42f16",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 17,
+      "chainAfterHex": "c42b472a92aa7c4dd079915681a5ae7cc7fda082d2aa9c8d3c4e04999848d717",
+      "commandCountAfter": 4
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 6,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 7,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    },
+    {
+      "seq": 19,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "inventory.reserve",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 10
+    },
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "payments.authorize",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 8
+    },
+    {
+      "node": "c-3",
+      "kind": "timer_start",
+      "target": "c-3",
+      "commandNumber": 3,
+      "issuedSeq": 12,
+      "outcomeSeq": 15
+    }
+  ]
+}

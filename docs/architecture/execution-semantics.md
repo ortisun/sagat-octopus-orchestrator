@@ -182,11 +182,14 @@ The domain decides what the function sees and what makes a workflow task due, fr
 - **Waking:** decided by the event and its origin. An event a completion writes (origin `completion`) as the record or
   the immediate bookkeeping of its own commands, and a workflow-task event, never wakes; a visible event of any other
   origin (`engine`, such as `run.started`, or `external`, such as a signal) wakes, and so does a command's immediate
-  effect (a wait satisfied at once by its look-back, the cancellation of a step that was still `READY`), which the
+  effect (a wait satisfied at once by its look-back, the cancellation of a step that no worker held: `READY`, or waiting
+  on an event or an approval), which the
   completion appends with the origin `effect`. A waking event makes the next workflow task due.
 
 The history a worker receives is typed `HistoryEvent` messages. A command record carries its number, kind and target,
-never its body, and no event carries an actor subject.
+and for an activity or script scheduled in a saga scope that scope, never its body, and no event carries an actor
+subject (Decision 044-244). A step the function cancelled (an activity, a script, a wait, an approval) reaches it as a
+step outcome `CANCELLED`, a child as its `child.finished`, a timer as the record of its cancel (Decision 044-245).
 
 ### The pending rule
 

@@ -1,0 +1,299 @@
+{
+  "scenario": "code-signals",
+  "run": "main",
+  "runId": "9fbfd3f4-3ad6-491b-b168-71edd78f09f1",
+  "workflowType": "cart",
+  "seedHex": "94ac4c7e1738fdf767b8b982699f6fd0adf1cbaa8baed14d8ab79eac2624fb00",
+  "input": {
+    "cartId": "cart-9"
+  },
+  "codeVersions": {
+    "v1": "sha256:c747787813b4aab2ad8a3482dc7b5e43ad461fc261d77fbd198f8b84c7897637"
+  },
+  "declarations": {
+    "signals": {
+      "item.added": {
+        "maxBytes": 65536
+      },
+      "checkout": {
+        "maxBytes": 65536
+      }
+    }
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 3
+      },
+      "nowUs": 1767225600000411,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 3,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "cart.open",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "cart.open"
+          },
+          "value": {
+            "cartId": "cart-9"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "cart.open",
+            "input": {
+              "sha256": "dd6fbaca183cc21d27994762e0718f4cd02f7fbdc5765ef38a1a8c884e31bb16",
+              "size": 19
+            }
+          },
+          "bodySha256": "4155dfb9280e82e563a99b39791f6e6b0bd3334e9ba7d33aab711c226d77a3a8",
+          "journalKind": "step.released"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "item.added",
+                  "seqs": [
+                    "2"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "item.added",
+                "seqs": [
+                  2
+                ]
+              }
+            ]
+          },
+          "bodySha256": "3fb2cca71ac7c6f7d53c57124b36976186efc2fcef90f3cb75b3c4d31b679ab4",
+          "journalKind": "signal.consumed"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 4,
+      "chainAfterHex": "ca002230b3c71e08b7260de8565a4d084993224829a11c1df02ee67c83a4cd53",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 3,
+        "throughSeq": 10
+      },
+      "nowUs": 1767225600001370,
+      "replayedChainHex": "ca002230b3c71e08b7260de8565a4d084993224829a11c1df02ee67c83a4cd53",
+      "appliedThroughSeq": 10,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "item.added",
+                  "seqs": [
+                    "9"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "item.added",
+                "seqs": [
+                  9
+                ]
+              }
+            ]
+          },
+          "bodySha256": "afbfb652346a276049618fc4bc92f554571e42b2c3501ab7f8fb87165d1bf9a3",
+          "journalKind": "signal.consumed"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 11,
+      "chainAfterHex": "dd146fc45352c199876e9e886352ff8c4429e1d8377cf73cacecf4d34c854c81",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 10,
+        "throughSeq": 15
+      },
+      "nowUs": 1767225600002055,
+      "replayedChainHex": "dd146fc45352c199876e9e886352ff8c4429e1d8377cf73cacecf4d34c854c81",
+      "appliedThroughSeq": 15,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "consume_signals",
+          "target": "",
+          "typed": {
+            "consumeSignals": {
+              "signals": [
+                {
+                  "signalName": "checkout",
+                  "seqs": [
+                    "14"
+                  ]
+                },
+                {
+                  "signalName": "item.added",
+                  "seqs": [
+                    "13"
+                  ]
+                }
+              ]
+            }
+          },
+          "body": {
+            "signals": [
+              {
+                "name": "checkout",
+                "seqs": [
+                  14
+                ]
+              },
+              {
+                "name": "item.added",
+                "seqs": [
+                  13
+                ]
+              }
+            ]
+          },
+          "bodySha256": "039842538956f107c02c003c91eba3085a6a403be78c27f5328290bd413da401",
+          "journalKind": "signal.consumed"
+        },
+        {
+          "commandNumber": 5,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "cartId": "cart-9",
+              "items": [
+                "SKU-1",
+                "SKU-2",
+                "SKU-3"
+              ],
+              "checkout": {
+                "paymentMethod": "card"
+              }
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "9fbb70ef4931967226d15ff68c44ddef55ebd67332802ad930290908b548d6d1",
+              "size": 89
+            }
+          },
+          "bodySha256": "79dded0d4f872ffdb13d025529422eb496367c20bf1761c4ffaa6a329915b069",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 16,
+      "chainAfterHex": "c1886e9e233596e20ff524b83394203da44a9bd88b4f45b6cf8296b7b4139c2b",
+      "commandCountAfter": 5
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 7,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 19,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "cart.open",
+      "commandNumber": 1,
+      "issuedSeq": 3,
+      "outcomeSeq": 8
+    }
+  ],
+  "requests": [
+    {
+      "request": "POST /runs/{runId}/signals/item.added",
+      "idempotencyKey": "sig-1",
+      "payload": {
+        "sku": "SKU-1"
+      },
+      "answer": "202",
+      "journaledSeq": 2,
+      "note": "sent before the function waits (before the first workflow task): buffered in the inbox"
+    },
+    {
+      "request": "POST /runs/{runId}/signals/item.added",
+      "idempotencyKey": "sig-2",
+      "payload": {
+        "sku": "SKU-2"
+      },
+      "answer": "202",
+      "journaledSeq": 9
+    },
+    {
+      "request": "POST /runs/{runId}/signals/item.added",
+      "idempotencyKey": "sig-2",
+      "payload": {
+        "sku": "SKU-2"
+      },
+      "answer": "202 with the receipt of the first request with this key",
+      "journaledSeq": null,
+      "note": "a repeated key: journaled once, nothing new in the history"
+    },
+    {
+      "request": "POST /runs/{runId}/signals/coupon.applied",
+      "idempotencyKey": "sig-3",
+      "payload": {
+        "code": "WELCOME"
+      },
+      "answer": "409 CONFLICT, details.reason SIGNAL_NOT_DECLARED",
+      "journaledSeq": null,
+      "note": "an undeclared name is refused (Requirement 044-014)"
+    },
+    {
+      "request": "POST /runs/{runId}/signals/item.added",
+      "idempotencyKey": "sig-4",
+      "answer": "202",
+      "journaledSeq": 13
+    },
+    {
+      "request": "POST /runs/{runId}/signals/checkout",
+      "idempotencyKey": "sig-5",
+      "answer": "202",
+      "journaledSeq": 14
+    }
+  ]
+}

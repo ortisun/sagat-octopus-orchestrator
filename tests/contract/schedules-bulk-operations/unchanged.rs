@@ -179,9 +179,14 @@ fn worker_proto() -> FileDescriptorSet {
 fn the_workflow_schema_holds_one_name_of_this_feature_the_optional_field_of_an_update() {
     let schema = read_json("workflow.schema.json");
 
+    // Design 044 (Task 044-2, Decision 044-233) names this feature's business identifier on purpose: a child started
+    // from code may carry one (Technical Plan 5.1, the code profile of a child).
     assert_eq!(
         schema_names(&schema),
-        vec!["/$defs/update/properties/reapplyOnReset".to_owned()],
+        vec![
+            "/$defs/codeProfileChild/properties/businessId".to_owned(),
+            "/$defs/update/properties/reapplyOnReset".to_owned(),
+        ],
         "the workflow IR gains only `reapplyOnReset` from this feature (FR-018-046, T018-078)"
     );
 
@@ -205,9 +210,14 @@ fn the_worker_protocol_and_its_baseline_hold_no_name_of_this_feature() {
         Vec::<String>::new(),
         "worker.baseline.json is the worker protocol that was published: this feature adds nothing to it (FR-018-046)"
     );
+    // Design 044 (Task 044-2, Decision 044-233) names an obligation on purpose: the deferral cause of a terminal
+    // command while an activity, child or approval is open (Technical Plan 4.4); it is not this feature's.
     assert_eq!(
         proto_names(&worker_proto()),
-        Vec::<String>::new(),
+        vec![
+            "enum value sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause.CAUSE_OUTSTANDING_OBLIGATIONS"
+                .to_owned()
+        ],
         "worker.proto: this feature adds nothing to the worker protocol (FR-018-046)"
     );
 }
@@ -222,6 +232,7 @@ fn the_checks_find_a_name_of_the_feature_planted_in_a_copy_of_each_document() {
     assert_eq!(
         schema_names(&schema),
         vec![
+            "/$defs/codeProfileChild/properties/businessId".to_owned(),
             "/$defs/nominalTime".to_owned(),
             "/$defs/update/properties/reapplyOnReset".to_owned(),
             "/$defs/update/properties/scheduleId".to_owned(),
@@ -275,6 +286,8 @@ fn the_checks_find_a_name_of_the_feature_planted_in_a_copy_of_each_document() {
     assert_eq!(
         proto_names(&set),
         vec![
+            "enum value sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause.CAUSE_OUTSTANDING_OBLIGATIONS"
+                .to_owned(),
             "field sagat_octopus_orchestrator.v1.HeartbeatRequest.business_id".to_owned(),
             "message sagat_octopus_orchestrator.v1.HeartbeatRequest.ResetPoint".to_owned(),
             "method WorkerService/RunSchedule".to_owned(),

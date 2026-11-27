@@ -1,0 +1,11 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJiYXNrZXRJZCI6ImItMTIifQ=="}}}
+{"seq":"2","kind":"HISTORY_UPDATE_ADMITTED","origin":"HISTORY_ORIGIN_EXTERNAL","atUs":"1767225600000274","updateAdmitted":{"updateName":"addItem","args":{"json":"eyJza3UiOiJTS1UtMSJ9"}}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000411","workflowTaskStarted":{}}
+{"seq":"4","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000548","workflowTaskCompleted":{}}
+{"seq":"5","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000685","commandRecord":{"kind":"COMMAND_TIMER_START","target":"c-1","node":"c-1"}}
+{"seq":"6","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"2","atUs":"1767225600000822","commandRecord":{"kind":"COMMAND_UPDATE_ACCEPT","target":"2"}}
+{"seq":"7","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"3","atUs":"1767225600000959","commandRecord":{"kind":"COMMAND_UPDATE_COMPLETE","target":"2"}}
+{"seq":"8","kind":"HISTORY_TIMER_FIRED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767226200001096","timerFired":{"node":"c-1"}}
+{"seq":"9","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767226200001233","workflowTaskStarted":{}}
+{"seq":"10","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767226200001370","workflowTaskCompleted":{}}
+{"seq":"11","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"4","atUs":"1767226200001507","commandRecord":{"kind":"COMMAND_COMPLETE"}}

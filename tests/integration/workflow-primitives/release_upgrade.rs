@@ -100,6 +100,8 @@ async fn complete_old_ready_activity(api: &TestApi, run: RunId) {
                     pools: Vec::new(),
                     max_inflight: 8,
                     protocol_version: "1.5".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))
@@ -141,6 +143,7 @@ async fn complete_old_ready_activity(api: &TestApi, run: RunId) {
                 output_sha256: String::new(),
                 traceparent: String::new(),
                 instance: task.instance.clone(),
+                accept_workflow_task: false,
             },
         ))
         .await

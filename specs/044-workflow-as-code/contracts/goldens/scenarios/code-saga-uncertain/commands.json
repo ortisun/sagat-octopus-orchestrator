@@ -1,0 +1,199 @@
+{
+  "scenario": "code-saga-uncertain",
+  "run": "main",
+  "runId": "2098757d-b2f4-408f-af73-1ae4304bfd18",
+  "workflowType": "settlement",
+  "seedHex": "fe388280d642dd512c8a906caa3805eb1e090abc601061c635c516d5d25f7bbc",
+  "input": {
+    "invoiceId": "inv-8",
+    "amountCents": 5000
+  },
+  "codeVersions": {
+    "v1": "sha256:8d32dae6f776a87a6640b90803ba408be82ea018f0a0eba6425bcb773bc953bb"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "journalKind": "saga.entered"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "payments.charge",
+          "node": "c-2",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "invoiceId": "inv-8",
+            "amountCents": 5000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "bb9a4c93995eb408de13c79b4b15c04d72700184fc44c10a5bd2040c2a46966d",
+              "size": 40
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "4625886449400f5ef0b3ebcd4877446588c4a7fc99f6dbe463609d923b3a9c7e",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "788d1eec9163069cabc4d80636c3342e723e5be11d4324003309c63d826de71a",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 11
+      },
+      "nowUs": 1767225600001507,
+      "notes": "c-2 is completed with the output of its lookup; the function sees only that outcome.",
+      "replayedChainHex": "788d1eec9163069cabc4d80636c3342e723e5be11d4324003309c63d826de71a",
+      "appliedThroughSeq": 11,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "activity",
+          "target": "ledger.post",
+          "node": "c-3",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "ledger.post"
+          },
+          "value": {
+            "invoiceId": "inv-8",
+            "chargeId": "ch-77"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "ledger.post",
+            "input": {
+              "sha256": "52bb08cc1a4e826a98738fa3e79c2c43eeb5c7f44109865c5dd0a03ce36f8e97",
+              "size": 40
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "2cdbbb028340d5418d425c82de1a232f7cfd80758f674da8b3c1893579d623af",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 12,
+      "chainAfterHex": "93f9bbc6934b4cd83012f3e4d52de80e2145dfeb64c77850968f054240ce14ea",
+      "commandCountAfter": 3
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 6,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    },
+    {
+      "seq": 7,
+      "journalKind": "step.outcome_unknown",
+      "node": "c-2",
+      "note": "the worker reported OUTCOME_UNKNOWN (feature 037)"
+    },
+    {
+      "seq": 8,
+      "journalKind": "step.leased",
+      "node": "c-2~r",
+      "activity": "payments.lookup"
+    },
+    {
+      "seq": 9,
+      "journalKind": "step.completed",
+      "node": "c-2~r",
+      "verdict": "applied"
+    },
+    {
+      "seq": 14,
+      "journalKind": "step.leased",
+      "node": "c-3"
+    },
+    {
+      "seq": 15,
+      "journalKind": "step.outcome_unknown",
+      "node": "c-3"
+    },
+    {
+      "seq": 16,
+      "journalKind": "step.leased",
+      "node": "c-3~r",
+      "activity": "ledger.lookup"
+    },
+    {
+      "seq": 17,
+      "journalKind": "step.completed",
+      "node": "c-3~r",
+      "verdict": "not_found"
+    },
+    {
+      "seq": 18,
+      "journalKind": "step.needs_review",
+      "node": "c-3",
+      "code": "OUTCOME_UNKNOWN"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "payments.charge",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 10
+    },
+    {
+      "node": "c-3",
+      "kind": "activity",
+      "target": "ledger.post",
+      "commandNumber": 3,
+      "issuedSeq": 11
+    }
+  ],
+  "expectations": {
+    "c-2": "unknown outcome reconciled applied: completed with the lookup output",
+    "c-3": "unknown outcome left for an authorized review: no visible event; the function keeps waiting",
+    "workflowTaskStep": "WAITING with kind DECIDER; a terminal command would be deferred while c-3 is under review"
+  }
+}

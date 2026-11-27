@@ -3335,6 +3335,46 @@ a replaying worker derives from `ReadHistory`.
   `integration_workflow_as_code::signals::a_signal_past_2_mib_of_pending_bytes_is_refused_pending_bytes_full`.
   Refs: Requirement 044-014, Requirement 044-027
   Owner-gate: OD-2026-11-26-565
+- [ ] T044-42 Apply to the Technical Plan the contract decisions taken after approval, which the register of
+  `specs/044-workflow-as-code/research.md` holds and the contracts of Task 044-2 already carry (Decisions 044-241 to
+  044-263): a fragment repeats only the entry's publisher fields; the reported saga scope (`HistoryCommandRecord.saga_scope`
+  field 5, `FailWorkflowTaskRequest.actual_saga_scope` field 14, dropped outside `^s-[1-9][0-9]{0,9}$` or on a kind other
+  than an activity or a script); one cancelled outcome per cancellable step and `requestCancellation`; `run.started`
+  first; a script's `timeoutMs` and a required `timeoutMs` on a wait; the closed list of update rejection reasons with
+  `HANDLER_NOT_REGISTERED`; worker-protocol minor 1.10 with `CompleteStepRequest` field 14 beside design 041's 13;
+  `state.maxBytes` (1 to 128 KiB, 64 KiB by default, 0 without state, the initial state bounded in the run creation
+  every start shares); `sideEffect`'s `id`, a code constant; a re-emitted `complete` naming its held output by its
+  descriptor alone, the held output charged to the content quota once, one held blob per run (a partial unique index on
+  `blobs (run_id) WHERE held_by_seq IS NOT NULL` in Task 044-6's migration), resolved through the deferral record, and a
+  continue-as-new re-emitted inline. The design text of sections 1.12, 3.1, 4.1, 4.2, 5.1, 5.2, 6.1, 6.2, 8.2, 8.4 and 13.1
+  is amended through a review of its own, as Tasks 044-34 and 044-39 say for theirs; until then the register and the
+  contracts are what the tasks build.
+  Red tests (each in the suite of the task that builds its path): Task 044-5's
+  `a_script_fragment_takes_timeout_ms_as_a_graph_script_node`, `a_saga_scope_on_a_command_other_than_an_activity_or_a_script_is_refused`;
+  Task 044-6's `integration_workflow_as_code::storage::a_run_holds_at_most_one_blob`; Task 044-8's
+  `integration_workflow_as_code::history::a_record_carries_the_scope_its_activity_was_scheduled_in` (the overlay's
+  `scope`, never its `root_scope`), `...::a_reported_saga_scope_outside_its_pattern_is_dropped`; Task 044-9's
+  `integration_workflow_as_code::completion::a_re_emitted_complete_names_an_output_held_inline_by_its_descriptor_alone`,
+  `...::a_re_emitted_complete_that_carries_its_output_again_commits_the_held_blob_only`,
+  `...::a_re_emitted_continue_as_new_with_a_descriptor_alone_is_invalid`,
+  `...::a_deferred_inline_output_is_charged_to_the_content_quota_once`, `...::a_deferral_over_the_content_quota_is_counted_with_backoff`,
+  `...::a_complete_deferred_twice_with_its_output_inline_holds_one_blob`, `...::a_cancelled_run_releases_its_held_output_and_its_charge`,
+  `...::a_deferred_complete_whose_output_has_a_secret_field_completes_and_stays_redacted`,
+  `...::a_carrier_whose_descriptor_disagrees_with_its_bytes_is_invalid`,
+  `...::cancelling_a_waiting_wait_or_approval_journals_its_cancelled_outcome_and_withdraws_the_approval`,
+  `...::cancelling_an_activity_of_unknown_outcome_keeps_its_review`, `...::cancelling_a_child_before_its_run_starts_finishes_it_cancelled`,
+  `...::a_cancel_racing_a_claim_takes_one_side` and `...::a_cancel_racing_a_child_start_takes_one_side` (each with the claim
+  or the children pass held at a barrier, in both orders); Task 044-12's `...::a_set_state_over_the_versions_max_bytes_is_refused`,
+  `...::a_set_state_in_a_version_without_state_is_refused`; Task 044-14's
+  `...::eager::a_step_cancelled_in_its_own_completion_gets_no_eager_lease`; Task 044-21's
+  `integration_workflow_as_code::updates::update_with_start_journals_run_started_first`,
+  `...::signal_with_start_journals_run_started_first`, `...::a_start_whose_initial_state_is_over_max_bytes_is_refused`,
+  `...::a_child_start_whose_initial_state_is_over_max_bytes_is_refused`,
+  `...::a_successor_whose_initial_state_is_over_max_bytes_is_refused`,
+  `...::a_schedule_fire_whose_initial_state_is_over_max_bytes_is_refused`, with the catalog entry of
+  `HANDLER_NOT_REGISTERED` in `sdks/error-catalog.json` and its six copies.
+  Refs: Requirement 044-006, Requirement 044-012, Requirement 044-016, Requirement 044-019, Requirement 044-022, Non-functional requirement 044-006, Non-functional requirement 044-007
+  Owner-gate: OD-2026-11-24-4
 
 ### Verification Plan
 

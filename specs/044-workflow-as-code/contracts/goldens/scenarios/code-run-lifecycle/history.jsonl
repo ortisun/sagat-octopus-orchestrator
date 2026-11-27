@@ -1,0 +1,16 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJhbW91bnRDZW50cyI6NDU5MCwib3JkZXJJZCI6Im9yZC0xMDAxIiwicXVhbnRpdHkiOjIsInNrdSI6IlNLVS03In0="}}}
+{"seq":"2","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000274","workflowTaskStarted":{}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000411","workflowTaskCompleted":{}}
+{"seq":"4","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000548","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"inventory.reserve","node":"c-1"}}
+{"seq":"5","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"2","atUs":"1767225600000685","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"payments.authorize","node":"c-2"}}
+{"seq":"8","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600041096","stepOutcome":{"node":"c-2","outcome":"STEP_OUTCOME_COMPLETED","output":{"json":"eyJhdXRob3JpemF0aW9uSWQiOiJhdXRoLTc3In0="}}}
+{"seq":"9","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600041233","workflowTaskStarted":{}}
+{"seq":"10","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600044370","stepOutcome":{"node":"c-1","outcome":"STEP_OUTCOME_COMPLETED","output":{"json":"eyJyZXNlcnZhdGlvbklkIjoicmVzLTMxIn0="}}}
+{"seq":"11","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600044507","workflowTaskCompleted":{}}
+{"seq":"12","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600044644","workflowTaskStarted":{}}
+{"seq":"13","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600044781","workflowTaskCompleted":{}}
+{"seq":"14","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"3","atUs":"1767225600044918","commandRecord":{"kind":"COMMAND_TIMER_START","target":"c-3","node":"c-3"}}
+{"seq":"15","kind":"HISTORY_TIMER_FIRED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225660045055","timerFired":{"node":"c-3"}}
+{"seq":"16","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225660045192","workflowTaskStarted":{}}
+{"seq":"17","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225660045329","workflowTaskCompleted":{}}
+{"seq":"18","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"4","atUs":"1767225660045466","commandRecord":{"kind":"COMMAND_COMPLETE"}}

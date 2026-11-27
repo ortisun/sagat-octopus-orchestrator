@@ -1,0 +1,93 @@
+{
+  "scenario": "code-continue-as-new",
+  "run": "successor",
+  "runId": "9d60c9cc-ad4b-4454-a2ac-6e32aecd3b75",
+  "workflowType": "subscription",
+  "seedHex": "c80d5df19dc5ec23fe61eb4d79537de8d8c699bc043c6a3e1a129b4ef09de848",
+  "input": {
+    "cycle": 2,
+    "amountCents": 990
+  },
+  "carriedState": {
+    "charged": [
+      990
+    ]
+  },
+  "predecessorRunId": "5db8af0f-a73b-43d2-8870-8d7c03c8a7a4",
+  "codeVersions": {
+    "v2": "sha256:dbf99d7ec25a22576ef71a4aa1db17b0b782ebf910926317815e62b5e3b4bc52"
+  },
+  "lease": {
+    "stateMaxBytes": 65536
+  },
+  "declarations": {
+    "state": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "charged": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "initial": "{}"
+    }
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "cycles": 2,
+              "charged": [
+                990
+              ]
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "5211a668118a5e74975a85123888e556572793e3720d71fc2dba9adaf3d4154f",
+              "size": 28
+            }
+          },
+          "bodySha256": "1316739b562a01d47471835e13200ff29a8561b345aafe188cdce89512aa853d",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "6f93568e49ae8636e8a8a117be79c923b633c02ee8f409003bbe9a25d5ac580b",
+      "commandCountAfter": 1
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [],
+  "expectations": {
+    "pinnedVersion": 2,
+    "why": "version \"active\" resolved to the active code version 2"
+  }
+}

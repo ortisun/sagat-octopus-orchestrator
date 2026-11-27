@@ -594,6 +594,16 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         "listRunLogStreams",
         "streamRunLogs",
         "deleteRunLogs",
+        // Design 044 merged its contract before its routes (`x-planned: '044'`, Task 044-2); each leaves this list in the
+        // task that serves it.
+        "moveRunCodeVersion",
+        "exportRunHistory",
+        "getRunUpdateReceipt",
+        "getExecutionChainUpdateReceipt",
+        "queryRunWorker",
+        "pauseCodeWorkflows",
+        "resumeCodeWorkflows",
+        "listCodeVersions",
     ]
     .into_iter()
     .collect();

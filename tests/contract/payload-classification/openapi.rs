@@ -359,6 +359,10 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
                 // Feature 041 merges its contract before its routes, and switches each to implemented as it lands.
                 || operation["x-planned"] == "041"
                 || operation["x-implemented"] == "041"
+                // Design 044 merges its contract before its routes (Task 044-2), and switches each to implemented as
+                // it lands.
+                || operation["x-planned"] == "044"
+                || operation["x-implemented"] == "044"
             {
                 continue;
             }
@@ -387,8 +391,12 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // Owner decision OD-2026-11-15-3 (design 043, G043-045) adds to the text of six existing operations, startRun,
     // signalWithStart, updateWithStart, operateRun, resetRun and startDatabaseExecution, the paragraph on their 422
     // RUN_INPUT_INVALID; nothing else of them changed. The digest was recomputed from those reviewed text diffs, this once.
+    // Design 044 (Task 044-2, owner decision OD-2026-11-24-3) adds to four existing operations, updateRunState
+    // (waitMs, acceptPending and the 202 of a code run's update), operateRun (graceMs of CANCEL), signalRun (the
+    // reasons of a code run's signal) and bindWorker (workflowTypes), additive fields and the text that says so. The
+    // digest was recomputed from those reviewed diffs.
     assert_eq!(
-        digest, "6416c84cc04b82f82103e450ad0bb6837fe6de1d840c843ea2c1a94cf366cffa",
+        digest, "8df650a30a9725257556025fc7a0216b1d2aa3c69b5e676f16ebc1b32cf608e4",
         "an existing operation outside feature 016 changed"
     );
 }

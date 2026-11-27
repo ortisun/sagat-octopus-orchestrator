@@ -1016,7 +1016,8 @@
             "LEASE_NOT_REAPED",
             "OUTBOX_STUCK",
             "REVIEW_PENDING",
-            "STEP_UNCLAIMED"
+            "STEP_UNCLAIMED",
+            "WORKFLOW_TASK_UNSERVED"
           ],
           "type": [
             "string"
@@ -1601,6 +1602,60 @@
     "payload": {
       "properties": {},
       "required": []
+    }
+  },
+  "WorkflowTaskReady": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "activity": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "node": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "activity",
+        "namespaceId",
+        "node",
+        "runId",
+        "tenantId"
+      ]
     }
   }
 }

@@ -1,0 +1,215 @@
+{
+  "$comment": "Design 044, Technical Plan 7.4 and Requirement 044-025: the history export format, version 1. GET /runs/{runId}/history answers application/x-ndjson: a first line, the header, then one HistoryEvent per line in the proto3 JSON mapping of worker.proto (field names in lowerCamelCase, enumerations by name, 64-bit integers as strings, bytes in base64). Every payload is classified and redacted by feature 016's rules; a blob is a reference with its size only and the placeholder EXTERNAL_CONTENT_NOT_INSPECTED; a secret field is never exported. The seed is exported here only. A replayer refuses an unknown exportFormat. contract_workflow_as_code::the_history_export_format_matches_its_baseline recomputes the messages and enumerations from worker.proto; a change is a new format version or an additive change reviewed under AGENTS.md rule 18. A version grows additively: a replayer ignores the fields of a line it does not know (sdks/SPEC.md 12.9); HistoryCommandRecord.sagaScope was added before any export of version 1 existed (Decision 044-244).",
+  "exportFormat": 1,
+  "contentType": "application/x-ndjson",
+  "header": {
+    "fields": [
+      "exportFormat",
+      "runId",
+      "workflowType",
+      "language",
+      "codeDigest",
+      "startVersion",
+      "currentVersion",
+      "seed",
+      "gatedEntries",
+      "stateMaxBytes",
+      "visibleCount",
+      "fromSeq",
+      "lastPage"
+    ],
+    "seed": "64 lowercase hexadecimal characters (the run's 32-byte seed)",
+    "codeDigest": "sha256: and 64 lowercase hexadecimal characters, the run's current code version's digest"
+  },
+  "line": "sagat_octopus_orchestrator.v1.HistoryEvent",
+  "messages": {
+    "HistoryApprovalDecided": [
+      "decision",
+      "node"
+    ],
+    "HistoryBlobRef": [
+      "blobId",
+      "contentType",
+      "sha256",
+      "size"
+    ],
+    "HistoryCancellationRequested": [
+      "cancelOrigin",
+      "graceMs"
+    ],
+    "HistoryChildFinished": [
+      "childRunId",
+      "errorCode",
+      "node",
+      "output",
+      "status"
+    ],
+    "HistoryCommandRecord": [
+      "kind",
+      "node",
+      "noop",
+      "sagaScope",
+      "target"
+    ],
+    "HistoryEvent": [
+      "approvalDecided",
+      "atUs",
+      "cancellationRequested",
+      "childFinished",
+      "commandNumber",
+      "commandRecord",
+      "kind",
+      "markerRecorded",
+      "origin",
+      "runStarted",
+      "sagaOutcome",
+      "seq",
+      "signalBuffered",
+      "stepOutcome",
+      "timerFired",
+      "updateAdmitted",
+      "waitOutcome",
+      "workflowTaskCompleted",
+      "workflowTaskStarted"
+    ],
+    "HistoryMarkerRecorded": [
+      "markerId",
+      "sideEffect",
+      "value"
+    ],
+    "HistoryPayload": [
+      "blob",
+      "json",
+      "placeholder"
+    ],
+    "HistoryRunStarted": [
+      "carriedState",
+      "input",
+      "predecessorRunId"
+    ],
+    "HistorySagaOutcome": [
+      "outcome",
+      "scope"
+    ],
+    "HistorySignalBuffered": [
+      "payload",
+      "signalName"
+    ],
+    "HistoryStepOutcome": [
+      "errorCode",
+      "node",
+      "outcome",
+      "output",
+      "retryable"
+    ],
+    "HistoryTimerFired": [
+      "node"
+    ],
+    "HistoryUpdateAdmitted": [
+      "args",
+      "updateName"
+    ],
+    "HistoryWaitOutcome": [
+      "node",
+      "payload",
+      "timedOut"
+    ],
+    "HistoryWorkflowTaskCompleted": [
+      "deferralCause",
+      "deferred",
+      "deferredKind",
+      "deferredTarget"
+    ],
+    "HistoryWorkflowTaskStarted": [
+      "continueAsNewSuggested",
+      "historyLimitReached"
+    ]
+  },
+  "enums": {
+    "CancelOrigin": [
+      "CANCEL_ORIGIN_UNSPECIFIED",
+      "CANCEL_ORIGIN_REQUEST",
+      "CANCEL_ORIGIN_WITHOUT_GRACE",
+      "CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED",
+      "CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST",
+      "CANCEL_ORIGIN_LATCHED_HANDOFF"
+    ],
+    "CommandKind": [
+      "COMMAND_KIND_UNSPECIFIED",
+      "COMMAND_ACTIVITY",
+      "COMMAND_SCRIPT",
+      "COMMAND_TIMER_START",
+      "COMMAND_TIMER_CANCEL",
+      "COMMAND_WAIT_EVENT",
+      "COMMAND_CHILD",
+      "COMMAND_APPROVAL",
+      "COMMAND_STEP_CANCEL",
+      "COMMAND_SAGA_OPEN",
+      "COMMAND_SAGA_CLOSE",
+      "COMMAND_SAGA_ABORT",
+      "COMMAND_MARKER_PATCH",
+      "COMMAND_MARKER_SIDE_EFFECT",
+      "COMMAND_SET_STATE",
+      "COMMAND_UPDATE_ACCEPT",
+      "COMMAND_UPDATE_REJECT",
+      "COMMAND_UPDATE_COMPLETE",
+      "COMMAND_CONSUME_SIGNALS",
+      "COMMAND_COMPLETE",
+      "COMMAND_FAIL",
+      "COMMAND_CONTINUE_AS_NEW",
+      "COMMAND_ACKNOWLEDGE_CANCELLATION"
+    ],
+    "HistoryEventKind": [
+      "HISTORY_EVENT_KIND_UNSPECIFIED",
+      "HISTORY_RUN_STARTED",
+      "HISTORY_WORKFLOW_TASK_STARTED",
+      "HISTORY_WORKFLOW_TASK_COMPLETED",
+      "HISTORY_COMMAND_RECORDED",
+      "HISTORY_STEP_OUTCOME",
+      "HISTORY_TIMER_FIRED",
+      "HISTORY_WAIT_OUTCOME",
+      "HISTORY_CHILD_FINISHED",
+      "HISTORY_APPROVAL_DECIDED",
+      "HISTORY_SAGA_OUTCOME",
+      "HISTORY_SIGNAL_BUFFERED",
+      "HISTORY_UPDATE_ADMITTED",
+      "HISTORY_CANCELLATION_REQUESTED",
+      "HISTORY_MARKER_RECORDED"
+    ],
+    "HistoryEventOrigin": [
+      "HISTORY_EVENT_ORIGIN_UNSPECIFIED",
+      "HISTORY_ORIGIN_COMPLETION",
+      "HISTORY_ORIGIN_EFFECT",
+      "HISTORY_ORIGIN_ENGINE",
+      "HISTORY_ORIGIN_EXTERNAL"
+    ],
+    "StepOutcome": [
+      "STEP_OUTCOME_UNSPECIFIED",
+      "STEP_OUTCOME_COMPLETED",
+      "STEP_OUTCOME_FAILED",
+      "STEP_OUTCOME_TIMED_OUT",
+      "STEP_OUTCOME_CANCELLED"
+    ],
+    "WorkflowTaskFailureCause": [
+      "WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED",
+      "CAUSE_NONDETERMINISM",
+      "CAUSE_CHAIN_MISMATCH",
+      "CAUSE_NONDETERMINISM_RISK",
+      "CAUSE_COMMAND_OUTSIDE_ENVELOPE",
+      "CAUSE_COMMAND_INVALID",
+      "CAUSE_VALIDATOR_COMMAND",
+      "CAUSE_WORKFLOW_TASK_FAILED",
+      "CAUSE_ACTIVATION_DEADLINE",
+      "CAUSE_WORKFLOW_TASK_TIMED_OUT",
+      "CAUSE_COMMAND_VALUE_RELEASED",
+      "CAUSE_COMMAND_VALUE_LIMIT",
+      "CAUSE_COMMAND_LIMIT",
+      "CAUSE_OUTSTANDING_OBLIGATIONS",
+      "CAUSE_UNHANDLED_EVENTS",
+      "CAUSE_CLOSING_WINDOW_COMMAND",
+      "CAUSE_HISTORY_LIMIT",
+      "CAUSE_RETAINED_BYTES_LIMIT",
+      "CAUSE_STORAGE_QUOTA_EXCEEDED"
+    ]
+  }
+}

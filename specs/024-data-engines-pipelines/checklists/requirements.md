@@ -117,7 +117,7 @@ implementation. On 2026-11-26 every item that was unticked was disposed under th
   slice takes the migration versions after the latest of `develop` when it writes them (Task
   024-010); field numbers are rechecked against the canonical file at merge. *(2026-11-27)* The
   2026-11-26 recheck was wrong (`CompleteStepRequest` field 13 is feature 041's), so `data_result`
-  takes 14 and Task 024-008 adds a contract test that fails on a taken number instead of a manual
+  takes 14 (15 since design 044 took 14 on 2026-11-27, Decision 044-256) and Task 024-008 adds a contract test that fails on a taken number instead of a manual
   recheck.
 
 ## Notes

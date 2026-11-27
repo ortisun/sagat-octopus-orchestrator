@@ -236,7 +236,7 @@ transaction; credentials are resolved after the claim commit and dropped when th
 | Time classes (028, C13) | detached-lease expiry and token validity `infrastructure`; maximum detached deadline `workflow_due` ([data model](data-model.md#time-classes-028)) | T019-068 |
 | Batch actions (018, C14) | `REPIN` uses this feature's single-run repin; `Action::Repin` exists in `crates/domain/src/batch.rs` with only `run:operate`, and this feature adds `deployment:manage` and types its `repin` parameter (D019-014) | T019-025 |
 | Instance registry (ADR-0082) | requirements `worker-deployments-v1`, `dispatch-priority-v1`, `heartbeat-checkpoints-v1`, `async-completion-v1`, `push-dispatch-v1`, `warm-scripts-v1` (D019-001) | T019-069 |
-| Worker-protocol minors (`sdks/SPEC.md` §9, OD-2026-11-15-8) | the next three free minors (1.10 to 1.12 at the time of writing) | T019-003 |
+| Worker-protocol minors (`sdks/SPEC.md` §9, OD-2026-11-15-8) | the next three free minors (1.11 to 1.13 at the time of writing; design 044 took 1.10, Decision 044-255) | T019-003 |
 | OCSF mapping (design 040, FR-040-001) | every new audit action | T019-009 |
 | Script host calls (023, C17) | reserved `checkpoint` call | T019-032 |
 | Permit order (022, C19) | 022 grants by this priority (1 first), then enqueue time | T019-042 |

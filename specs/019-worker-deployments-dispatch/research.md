@@ -218,7 +218,9 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
   declares the path (the `protocol_ceiling` pattern). A single minor would either wait for every slice or change
   meaning between releases, which ADR-0015 rejected. Numbers are assigned at integration (G1048). *Corrected
   2026-11-24 (D019-002):* the coordinator assigned the next free minors when the contract merges, 1.10, 1.11 and 1.12
-  at the time of writing (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045).
+  at the time of writing (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045). *Corrected 2026-11-27
+  (Decision 044-255 of `specs/044-workflow-as-code/research.md`):* design 044's contract took 1.10, so 019's three minors
+  are 1.11, 1.12 and 1.13 at the time of writing.
 - **D1070 — Four new permissions:** `deployment:manage` (admin, operator), `task:complete` (admin, worker),
   `push:manage` (admin), `script:warm:manage` (admin). The catalog grows from 48 to 52; feature 029's custom roles
   consume them. *Corrected 2026-11-24:* the catalog has 53 permissions today (`Permission::ALL` in
@@ -280,8 +282,8 @@ These sources informed vocabulary and edge cases; no external behaviour is assum
   025 and 026 in this worktree also propose "1.7" for their own additions (as 014 and 017 collided, ADR-0036). The
   coordinator must allocate one ordered sequence; this feature's text uses `1.N`–`1.N+2` for that reason. *Closed
   2026-11-24 (D019-002):* the register of `sdks/SPEC.md` §9 decides; 019 takes the next free minors when its contract
-  merges (1.10 to 1.12 at the time of writing). The text keeps `1.N` to `1.N+2` so that it stays true if another feature
-  merges a minor first.
+  merges (1.10 to 1.12 at the time of writing; 1.11 to 1.13 since design 044 took 1.10 on 2026-11-27, Decision
+  044-255). The text keeps `1.N` to `1.N+2` so that it stays true if another feature merges a minor first.
 - **G1049 — Fairness keys may still contain personal data** a start-option caller or a literal author chose (they
   are classified `internal`, not inspected); raw keys are shown only to `payload:read-internal` holders.
 - **G1050 — Insights lag by up to one monitor round;** exact counts exist only at retirement.
@@ -418,11 +420,14 @@ OD-2026-11-24-4 and OD-2026-11-20-6.
   forbids; a per-process flag cannot prevent that (ADR-0051 decision 8; precedents ADR-0089 decision 6 and ADR-0110
   decision 8).
 - **D019-002 — Minors and field numbers.** The three minors are the next free ones when the contract merges (1.10, 1.11,
-  1.12 at the time of writing). Minors are cumulative: a host of any of them carries the host procedures of 1.8 (it
+  1.12 at the time of writing; 1.11, 1.12 and 1.13 since design 044 took 1.10, corrected 2026-11-27 by Decision 044-255). Minors are cumulative: a host of any of them carries the host procedures of 1.8 (it
   acknowledges a flagged lease before it runs it) and 1.9 (the handler heartbeat of design 045), so in each SDK the work
   of 1.8 and 1.9 comes first. Field numbers stay as drafted (`TaskLease` 19 to 22, `WorkerCapabilities` 6,
   `HeartbeatRequest` 9 and 10, `HeartbeatResponse` 3, `FailStepRequest` 13, the `DetachStep` rpc) except
-  `RegisterWorkerResponse.deployment_version_state`, which moves from 4 (design 041's `step_logs`) to 5.
+  `RegisterWorkerResponse.deployment_version_state`, which moves from 4 (design 041's `step_logs`) to 5. *Corrected
+  2026-11-27 (Decision 044-256 of `specs/044-workflow-as-code/research.md`):* `FailStepRequest.details_json` moves from 13
+  to 15, because 13 is design 041's `step_logs` on `develop` (protocol 1.7, on `FailStepRequest` as on
+  `CompleteStepRequest`) and 14 is design 045's `next_retry_delay_ms`.
 - **D019-003 — Provisional leases of protocol 1.8.** `DetachStep` takes a lease token and is not one of `Heartbeat`,
   `CompleteStep`, `FailStep` and `AcknowledgeTasks`, so it is a capability call (ADR-0099 decision 8): on a provisional
   lease it is refused `FAILED_PRECONDITION` with `TASK_NOT_ACKNOWLEDGED` and changes nothing; on any other lease the

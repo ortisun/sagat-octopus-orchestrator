@@ -318,6 +318,8 @@ async fn drain_quota_effects(
                     pools: Vec::new(),
                     max_inflight: 2,
                     protocol_version: "1.5".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))

@@ -132,7 +132,10 @@ mod step_log_debug_tests {
         };
         for text in [format!("{complete:?}"), format!("{fail:#?}")] {
             assert!(!text.contains("canary"), "{text}");
-            assert!(text.contains("records: 1") && text.contains("highest_sequence: 5"), "{text}");
+            assert!(
+                text.contains("records: 1") && text.contains("highest_sequence: 5"),
+                "{text}"
+            );
         }
     }
 }

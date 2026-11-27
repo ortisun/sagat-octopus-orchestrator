@@ -333,8 +333,9 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    // 53 before feature 041, which adds run:logs:read and run:logs:delete.
-    assert_eq!(Permission::ALL.len(), 55);
+    // 53 before feature 041, which adds run:logs:read and run:logs:delete; design 044 adds
+    // history:export.
+    assert_eq!(Permission::ALL.len(), 56);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"
@@ -395,7 +396,7 @@ fn database_browse_is_held_by_developers_and_admins_only() {
 
 /// The permissions only the admin role holds, decided one by one (the admin list is "everything but the PII reveal", so
 /// it would call any new permission decided).
-const ADMIN_ONLY: [Permission; 14] = [
+const ADMIN_ONLY: [Permission; 15] = [
     Permission::WorkspaceCreate,
     Permission::NamespaceCreate,
     Permission::MembershipManage,
@@ -411,6 +412,8 @@ const ADMIN_ONLY: [Permission; 14] = [
     Permission::DatabaseResultRead,
     // Feature 041: deleting a run's step logs is an incident act (FR-041-023).
     Permission::RunLogsDelete,
+    // Design 044: an exported history leaves the platform for developers' machines (Owner question 044-015).
+    Permission::HistoryExport,
 ];
 
 /// The permissions a built-in role grants to nobody on purpose.

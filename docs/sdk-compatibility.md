@@ -79,8 +79,8 @@ their baselines:
 | Java | artifact `sagat-workflows`, built for Java 21 | Java 21, default time zone UTC and default locale `Locale.ROOT` | the core SDK stays on Java release 17 | Task 044-18 |
 | Rust | the SDK crate's feature `workflows` | Rust 1.98 (the SDK's baseline) | the crate without the feature | Task 044-19 |
 
-Workflow tasks travel on the workflow-as-code minor of the worker protocol (the next free minor of the register in
-`sdks/SPEC.md` section 9 when the contract of Task 044-2 merges), which includes the host procedures of 1.7, 1.8 and 1.9.
+Workflow tasks travel on the workflow-as-code minor of the worker protocol (1.10 in the register of
+`sdks/SPEC.md` section 9, taken by the contract of Task 044-2), which includes the host procedures of 1.7, 1.8 and 1.9.
 An SDK offers that minor only when the application registers a workflow type: an activity-only worker keeps the minor
 it offers today, and it still leases the activities of a code run. A session below the minor is never offered a
 workflow, query or replay-check task.

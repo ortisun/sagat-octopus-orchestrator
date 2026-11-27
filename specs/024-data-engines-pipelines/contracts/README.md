@@ -3,7 +3,8 @@
 Draft fragments for review. None is canonical; T024-008 merges each into its canonical file in
 `specs/001-platform-foundation/contracts/` and regenerates the compatibility baselines only after
 reading their diffs. Every change is additive within its current version. Revised 2026-11-27 after
-the correctness review (Decision 024-016: `CompleteStepRequest.data_result` is field 14, the event
+the correctness review (Decision 024-016: `CompleteStepRequest.data_result` is field 14, field 15 since
+design 044 took 14 on 2026-11-27 (its Decision 044-256), the event
 payload is closed, the encoding table, the `TOMBSTONE` publication origin). Revised 2026-11-26 against
 `develop` at `e5bda041`: the canonical files already carry feature 035's connection union, lake
 drivers, egress ceiling and `ResolvedDatabase` fields 13 to 15, and these fragments extend them.

@@ -543,6 +543,9 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
             pools: core.options.pools.clone(),
             max_inflight: core.options.max_inflight as i32,
             protocol_version: core.options.protocol_version.clone(),
+            // Protocol 1.10 (design 044): this SDK offers no workflow as code.
+            workflow_types: Vec::new(),
+            offers_workflow_as_code: false,
         }),
     };
     let mut refreshed = false;
@@ -1251,6 +1254,8 @@ async fn report(
                     // The step-log carry of protocol 1.7 (design 041 section 2a): this SDK captures no step log
                     // until its own task builds the capture, so it carries none, as a worker below 1.7.
                     step_logs: None,
+                    // Protocol 1.10 (design 044): no eager workflow task; this SDK offers none.
+                    accept_workflow_task: false,
                 }),
                 None,
             )

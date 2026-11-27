@@ -829,9 +829,10 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
-  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` and `heartbeat_from_handler`, `FailStepRequest.next_retry_delay_ms`) | design 045 (named; taken when its contract merges) |
-  | 1.10 to 1.12 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges) |
-  | next | Design 044's workflow tasks (Architecture decision 0109), draft 031's codec minor (`TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7) and drafts 020, 021, 023, 024, 025, 026, 032 and 035 each name a minor; each takes the next free one when its contract merges, and a host of a later minor carries 1.7, the 1.8 host procedure and 1.9 | |
+  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` field 26 and `heartbeat_from_handler` field 27, `FailStepRequest.next_retry_delay_ms` field 14) | design 045 (named on its branch, pull request #279; taken when its contract merges) |
+  | 1.10 | Workflow as code: the task kinds `WORKFLOW`, `QUERY` and `REPLAY_CHECK` (`TaskLease` fields 28 to 30, a `oneof`), `WorkerCapabilities.workflow_types` field 11 and `offers_workflow_as_code` field 12, `CompleteStepRequest.accept_workflow_task` field 14, `StepCommandResponse.workflow_task` field 5, `ReadBlobRequest.read_token` field 9, the RPCs `CompleteWorkflowTask`, `FailWorkflowTask`, `ReadHistory`, `RespondWorkerQuery`, `RespondReplayCheck` and `ReleaseSticky` and their messages; a session on 1.10 carries the host procedures of 1.7, 1.8 and 1.9 | design 044, Architecture decision 0109, Decision 044-233; taken by the contract of Task 044-2, which is being built while draft 019 is not, so 044 keeps 1.10 and draft 019's named minors move to 1.11 to 1.13 (Decision 044-255, delegate (OD-2026-11-24-4)); served from Tasks 044-8 (lease, history), 044-9 (completion), 044-13 (replay checks), 044-14 (sticky, eager) and 044-29 (worker queries) |
+  | 1.11 to 1.13 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges; moved from 1.10 to 1.12 by Decision 044-255) |
+  | next | Draft 031's codec minor (`TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7) and drafts 020, 021, 023, 024, 025, 026, 032 and 035 each name a minor; each takes the next free one (1.14 or later) when its contract merges, and a host of a later minor carries 1.7, the 1.8 host procedure and 1.9 | |
 
 ## 10. Observability and safety
 
@@ -909,8 +910,10 @@ take the same options.
 activity<T>(name: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number;
   concurrencyKey?: string; rateLimitKey?: string }): Promise<T>          // fragment: activity profile
 script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number }): Promise<T>
+  // timeoutMs as for a graph script node; the artifact's policy (`wall`) bounds the attempt as well (Decision 044-247)
 sleep(durationMs: number): Promise<void>                                  // timer
-waitForEvent<T>(eventType: string, correlationKey: string, options?: { timeoutMs?: number; lookbackMs?: number }): Promise<T | undefined>
+waitForEvent<T>(eventType: string, correlationKey: string, options: { timeoutMs: number; lookbackMs?: number }): Promise<T | undefined>
+  // timeoutMs is required (1 ms to 366 days), as for a graph waitEvent node (Decision 044-247)
 child<T>(workflowId: string, input: unknown, options?: { cancelPolicy?: 'propagate' | 'request_cancel' | 'detach'; businessId?: string }): Promise<T>
 approval(policyName: string, subject: unknown): Promise<'approved' | 'rejected' | 'expired'>
 saga<T>(options: { onCompensationFailure?: 'manual_review' | 'fail'; cancelPolicy?: 'compensate_completed'
@@ -921,9 +924,15 @@ signal<T>(name: string): Promise<T>
 onUpdate(name: string, validator: (args: unknown) => void, handler: (args: unknown) => Promise<unknown>): void
 setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
-sideEffect<T>(compute: () => T): T                                        // a recorded marker, at most 64 KiB
+sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
+  // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258).
+  // A code constant, never data: it is recorded unclassified in the history, the chain and reports
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
+requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
+  // a cancelled activity, script, wait or approval rejects with CommandCancelled, a sleep with TimerCancelled,
+  // a child with ChildWorkflowError (status 'cancelled')
 cancellation: { requested: boolean; promise: Promise<void> }; acknowledgeCancellation(): never
 class WorkflowFailure extends Error { constructor(code: string, safeMessage: string) }
 continueAsNewSuggested(): boolean; historyLimitReached(): boolean
@@ -946,11 +955,11 @@ The client gains `definitions.publishCode(manifest, envelope, declarations?)` (�
 | Language | Package | Workflow API | Client additions |
 |---|---|---|---|
 | TypeScript | entry point `@sagat-octopus-orchestrator/sdk/workflows` (`./workflows` in the package's `exports`), which checks at load that Node is 22.8 or later; the bundler `@sagat-octopus-orchestrator/workflows-bundler` (`sdks/typescript-workflows-bundler/`, command `sagat-workflows`) | §12.1 | §12.1 |
-| Python | `sagat_octopus_orchestrator.workflows`, which refuses to import below Python 3.11 | The same names in snake case: `activity`, `script`, `sleep`, `wait_for_event`, `child`, `approval`, `saga`, `on_signal`, `signal`, `on_update`, `set_state`, `patched`, `deprecate_patch`, `side_effect`, `now`, `random`, `random_int`, `uuid`, `continue_as_new`, `cancellation`, `acknowledge_cancellation`, `WorkflowFailure`, `continue_as_new_suggested`, `history_limit_reached`; the waiting calls are awaitables of the SDK's deterministic event loop, under which `asyncio.sleep`, `asyncio.gather`, `asyncio.wait_for` and `asyncio.timeout` also work durably | `definitions.publish_code`, `runs.move_code_version`, `runs.export_history`, `runs.update(..., wait_ms=, accept_pending=)`, `runs.worker_query` |
-| Go | package `github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows` (plural, because `sdks/go/workflow` is the builder of the workflow document; Decision 044-239) and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflows.Context` first: `workflows.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflows.Go`, `workflows.Channel`, `workflows.Selector` and `workflows.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
-| C# | packages `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | The same names in Pascal case, with the `Async` suffix on every call that returns a task: `ActivityAsync`, `ScriptAsync`, `SleepAsync`, `WaitForEventAsync`, `ChildAsync`, `ApprovalAsync`, `SagaAsync`, `SignalAsync`; and `OnSignal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `Uuid`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached` | The same names with `Async` suffixes (`Definitions.PublishCodeAsync`, ...) |
+| Python | `sagat_octopus_orchestrator.workflows`, which refuses to import below Python 3.11 | The same names in snake case: `activity`, `script`, `sleep`, `wait_for_event`, `child`, `approval`, `saga`, `on_signal`, `signal`, `on_update`, `set_state`, `patched`, `deprecate_patch`, `side_effect`, `now`, `random`, `random_int`, `uuid`, `continue_as_new`, `cancellation`, `request_cancellation`, `acknowledge_cancellation`, `WorkflowFailure`, `continue_as_new_suggested`, `history_limit_reached`; the waiting calls are awaitables of the SDK's deterministic event loop, under which `asyncio.sleep`, `asyncio.gather`, `asyncio.wait_for` and `asyncio.timeout` also work durably | `definitions.publish_code`, `runs.move_code_version`, `runs.export_history`, `runs.update(..., wait_ms=, accept_pending=)`, `runs.worker_query` |
+| Go | package `github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows` (plural, because `sdks/go/workflow` is the builder of the workflow document; Decision 044-239) and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflows.Context` first: `workflows.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `RequestCancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflows.Go`, `workflows.Channel`, `workflows.Selector` and `workflows.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
+| C# | packages `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | The same names in Pascal case, with the `Async` suffix on every call that returns a task: `ActivityAsync`, `ScriptAsync`, `SleepAsync`, `WaitForEventAsync`, `ChildAsync`, `ApprovalAsync`, `SagaAsync`, `SignalAsync`; and `OnSignal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `Uuid`, `ContinueAsNew`, `Cancellation`, `RequestCancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached` | The same names with `Async` suffixes (`Definitions.PublishCodeAsync`, ...) |
 | Java | artifact `sagat-workflows` (Java release 21; the core SDK stays on release 17) | The same names as TypeScript; the SDK also provides `Async.function`, `Promise` and `WorkflowQueue` for branches and queues | The same names, in the core SDK |
-| Rust | the SDK crate's feature `workflows` | The same names in snake case, `ctx` first (methods of the workflow context: `ctx.activity`, `ctx.wait_for_event`, `ctx.set_state`, `ctx.side_effect`, `ctx.random_int`, `ctx.continue_as_new`, ...), with `ctx.spawn` for branches, which are not `Send` | The same names in snake case (`publish_code`, ...) |
+| Rust | the SDK crate's feature `workflows` | The same names in snake case, `ctx` first (methods of the workflow context: `ctx.activity`, `ctx.wait_for_event`, `ctx.set_state`, `ctx.side_effect`, `ctx.random_int`, `ctx.continue_as_new`, `ctx.request_cancellation`, ...), with `ctx.spawn` for branches, which are not `Send` | The same names in snake case (`publish_code`, ...) |
 
 A language's waiting calls return its own asynchronous shape (a promise, an awaitable, a future, a task); the shapes and
 the exact option types are fixed by that SDK's runtime task, under these names. Each SDK documents the same rules for
@@ -1011,16 +1020,24 @@ must match `^[A-Z][A-Z0-9_]{0,63}$` (another becomes `WORKFLOW_FAILED`); its mes
 (Requirement 044-009, scenario `code-failures`).
 
 **Nondeterminism.** During replay the SDK compares each command with the record at the same command number (its kind
-and target), and reports a command where the history has none, a recorded command the function no longer makes, a
+and target, and for an activity or a script the saga scope the record carries, `HistoryCommandRecord.saga_scope`,
+empty outside a scope; Decision 044-244), and reports a command where the history has none, a recorded command the function no longer makes, a
 `patched(id)` that disagrees with the markers and a deferred command not re-emitted last as a failure with cause
-`NONDETERMINISM`, the command number, the actual kind and target and the code digest, never a payload (Requirement
+`NONDETERMINISM`, the command number, the actual kind and target (and, for an activity or a script, the actual saga
+scope, `FailWorkflowTaskRequest.actual_saga_scope`, `s-<n>` or empty) and the code digest, never a payload (Requirement
 044-006, scenario `code-nondeterminism`).
+
+**Cancellation of the function's own steps.** `requestCancellation` only issues the command: the promise of an
+activity, a script, a wait, an approval or a child settles from the history's outcome, never at the call. It resolves
+if the attempt completes, and rejects with `CommandCancelled` (or `ChildWorkflowError`, status `cancelled`) only on a
+cancelled outcome, because a step whose attempt began may still have had its effect (Decision 044-245). A sleep's
+`timer_cancel` is its end, so its promise rejects with `TimerCancelled` once the command is issued.
 
 ### 12.5 Registration and the capability declaration
 
 A worker host that registers workflow types sends `WorkerCapabilities.workflow_types` (its `(workflow type, code
-digest)` pairs, at most 64) and **`offers_workflow_as_code`**, and offers the workflow-as-code minor (the next free minor
-of §9's register when the contract of Task 044-2 merges, Architecture decision 0109); a host with activities only keeps
+digest)` pairs, at most 64) and **`offers_workflow_as_code`**, and offers the workflow-as-code minor (1.10 in §9's
+register, Architecture decision 0109); a host with activities only keeps
 its minor. Minors are cumulative: a host on that minor implements the host procedures of 1.7, 1.8 and 1.9. An SDK whose
 runtime task has not landed declares `offers_workflow_as_code = false`, and the conformance suite reports it as **not
 offered**, never as passed; the release needs all six offered (Success criterion 044-001).
@@ -1036,14 +1053,21 @@ same branch both times (Requirement 044-012, Non-functional requirement 044-006)
   `CommandBatchLimitExceeded` into the function at the call that would cross its share; code can catch it, or move the
   fan-out to a graph child (scenario `code-command-batch-limit`).
 - **`InlineValuesExceeded`.** A completion fits the worker service's decode limit of 320 KiB: at most 64 KiB of command
-  metadata and at most 192 KiB of inline values. The declared state (at most the version's `state.maxBytes`, at most
-  128 KiB), a continue-as-new input and its carried state are always inline, together at most 192 KiB; a gated
+  metadata and at most 192 KiB of inline values. The declared state (at most the version's `state.maxBytes`, 1 to
+  128 KiB and 64 KiB when the version declares state without it, sent on every workflow lease as `state_max_bytes`; 0,
+  no state at all, when the version declares none; Decision 044-257), a continue-as-new input and its carried state are always inline, together at most 192 KiB; a gated
   activity's input and an approval's subject are always inline too, the SDK reserving the declared state's maximum from
   the activation's start. Every other value (a work command's input, an update result, a side-effect value, a terminal
   output) is written by the SDK as a blob, largest first, when the message would not fit, at most 16 per completion.
   The SDK throws the typed `InlineValuesExceeded` at the call that would cross one of these bounds, or after which the
   activation's values could no longer be carried, and for a terminal output over the 4 MiB validation bound.
 - A side-effect value is at most 64 KiB; `setState` at most once per completion (the last call of an activation wins).
+- **A re-emitted deferral** (`deferred_command`): a `complete` may name its output by its descriptor alone, whatever
+  carrier its deferral used, because the server holds a deferred output until it is accepted or the run ends (Decision
+  044-259); a cold worker re-emits it without uploading, and its output costs nothing of the inline values. Carrying the
+  output again (inline, or a new blob with the same descriptor) is accepted as well, and the held output is the one
+  accepted. A continue-as-new carries its input and state inline, as its first emission did (its body hashes them); a
+  `fail` carries its message again.
 
 ### 12.7 Patches
 
@@ -1102,10 +1126,12 @@ in a test of the language's own framework (Requirement 044-025):
   default), **export format version 1**: JSON lines of `HistoryEvent` under a first line `{"exportFormat": 1,
   "gatedEntries": [...], "stateMaxBytes": n, ...}`, every payload redacted by the rules of feature 016 for the reader
   and every blob a reference without its content.
-- The replayer **refuses a history of an unknown format version**.
+- The replayer **refuses a history of an unknown format version**, and ignores the fields of a line it does not know
+  (a format grows additively within its version, Decision 044-244).
 - A replay that reads a placeholder (a redacted field, a blob-carried value) stops with the verdict
   **`INCONCLUSIVE_REDACTED`** at that command, never with a false mismatch.
-- A mismatch names the command number and the expected and actual kind and target.
+- A mismatch names the command number and the expected and actual kind and target (and saga scope, for an activity or a
+  script).
 
 ### 12.10 Errors
 

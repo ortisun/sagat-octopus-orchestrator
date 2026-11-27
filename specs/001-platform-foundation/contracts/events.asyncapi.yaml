@@ -27,7 +27,7 @@ channels:
   # API (PollTasks), and a consumer must treat `run.finished` as a notification to read the run.
   taskReady:
     address: sagat.v1.task.ready.{tenant}.{activity}
-    description: A step became ready for a worker. One subject per tenant and activity name (bounded by the tenant's definitions, never by runs); the activity name may contain dots, which are further subject tokens, so a pool filters with `sagat.v1.task.ready.<tenant>.<activity>`.
+    description: A step became ready for a worker. One subject per tenant and activity name (bounded by the tenant's definitions, never by runs); the activity name may contain dots, which are further subject tokens, so a pool filters with `sagat.v1.task.ready.<tenant>.<activity>`. A due workflow task of a code run (design 044) is announced on the same subject under the reserved name of its step (`WorkflowTaskReady`).
     parameters:
       tenant:
         description: Tenant id (UUID).
@@ -36,6 +36,8 @@ channels:
     messages:
       taskReady:
         $ref: '#/components/messages/TaskReady'
+      workflowTaskReady:
+        $ref: '#/components/messages/WorkflowTaskReady'
   runFinished:
     address: sagat.v1.run.finished.{tenant}
     description: A run reached a terminal status.
@@ -405,6 +407,32 @@ components:
               properties:
                 scope: {type: string, description: 'The node id of the collection or loop that owns the scope.'}
                 index: {type: integer, minimum: 0, maximum: 9999}
+    WorkflowTaskReady:
+      name: WorkflowTaskReady
+      contentType: application/json
+      description: >-
+        Design 044 (planned, Task 044-2; written by the server lane of design 044): a workflow task of a code run is due,
+        its workflow-task step `READY`. The same outbox, dispatcher and reconciler as for a ready activity step write it,
+        on the subject of `taskReady` whose activity is the reserved name of the step: `sagat.workflow:<workflow
+        type>:<64 hexadecimal digits of the code digest>`, or `sagat.workflow-sticky:<session id>` while the step prefers
+        the session that completed the last workflow task (Task 044-14). The shape is the shape of `TaskReady`, so a
+        consumer of `TaskReady` reads it unchanged; it carries identifiers only, no payload: no input, no history, no
+        command and no seed. A worker of the run's current digest still claims the workflow task through `PollTasks` and
+        reads the history with `ReadHistory`.
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, node, activity]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          node: {type: string, const: '~workflow', description: 'The reserved node of the workflow-task step.'}
+          activity: {type: string, maxLength: 128, pattern: '^sagat\.workflow(:[A-Za-z][A-Za-z0-9_-]{0,47}:[0-9a-f]{64}|-sticky:[0-9a-f-]{36})$', description: 'The reserved name of the workflow-task step.'}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
     RunFinished:
       name: RunFinished
       contentType: application/json
@@ -845,8 +873,8 @@ components:
               tenantId: {type: string, format: uuid}
               namespaceId: {type: string, format: uuid}
               alertId: {type: string, format: uuid}
-              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS]}
-              subject: {type: string, maxLength: 120}
+              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS, WORKFLOW_TASK_UNSERVED], description: 'Grows only. WORKFLOW_TASK_UNSERVED (design 044, warning): a run of a code workflow type has waited more than 60 seconds for a workflow task that no live session of its code digest serves; its subject is the workflow type.'}
+              subject: {type: string, maxLength: 120, description: 'What the alert is about within its kind, as `Alert.subject` of the REST contract says: an activity name for STEP_UNCLAIMED, the workflow type for WORKFLOW_TASK_UNSERVED.'}
               severity: {type: string, enum: [warning, critical]}
               state: {type: string, enum: [FIRING, RESOLVED]}
               firstSeenAt: {type: string, format: date-time}

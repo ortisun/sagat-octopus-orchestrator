@@ -489,8 +489,8 @@ decision.
   values); baseline regenerated after reading the diff. Worker protocol: the next free minor of the
   register in `sdks/SPEC.md` section 9 when the contract merges (1.7 is feature 041's; Decision
   024-014), new RPC and optional fields only, `ResolvedDatabase` fields from 16 on,
-  `WriteBlobHeader.purpose = 11` and `CompleteStepRequest.data_result = 14` (13 is feature 041's
-  `step_logs`), each checked against the canonical file by a contract test (T024-008). The connection
+  `WriteBlobHeader.purpose = 11` and `CompleteStepRequest.data_result = 15` (13 is feature 041's
+  `step_logs`, 14 design 044's `accept_workflow_task`, Decision 044-256), each checked against the canonical file by a contract test (T024-008). The connection
   `config` union and `DatabaseDriverList` already exist (feature 035); they grow.
 - **Database**: additive migrations, written once in the foundation slice after the latest migration
   of `develop` (`20270210000100` on 2026-11-26); downgrade refuses while assets, snapshots or

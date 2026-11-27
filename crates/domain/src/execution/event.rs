@@ -467,6 +467,52 @@ impl WithdrawalCause {
     }
 }
 
+/// Why a run's cancellation was journaled (design 044, Technical Plan 8.4): the closed argument of the one
+/// cancellation function, carried by `run.cancel_requested` (`Request`, `WithoutGrace`) and by
+/// `run.stop_requested` with the stop reason `Cancelled` (the other three). Every arm but `Request` stops the
+/// run at once and clears its cancellation deadline. The wire form is `CancelOrigin` of `worker.proto`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CancelOrigin {
+    /// A cooperative request: the run goes on and its function is told; it ends when the function answers
+    /// or when `grace_ms` (the version's grace) has passed.
+    Request { grace_ms: u32 },
+    /// A cancellation without grace (`graceMs: 0` under `run:operate`): the run stops at once.
+    WithoutGrace,
+    /// The function acknowledged the cancellation.
+    FunctionAcknowledged,
+    /// A continue-as-new accepted after a cancellation request ends the run cancelled, with no handoff.
+    ContinuedAfterRequest,
+    /// A handoff met the chain's or the link's cancellation latch.
+    LatchedHandoff,
+}
+
+impl CancelOrigin {
+    /// The closed token the journal stores.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Request { .. } => "REQUEST",
+            Self::WithoutGrace => "WITHOUT_GRACE",
+            Self::FunctionAcknowledged => "FUNCTION_ACKNOWLEDGED",
+            Self::ContinuedAfterRequest => "CONTINUED_AFTER_REQUEST",
+            Self::LatchedHandoff => "LATCHED_HANDOFF",
+        }
+    }
+
+    /// Whether this origin stops the run at once (every arm but a cooperative request).
+    #[must_use]
+    pub const fn stops_at_once(self) -> bool {
+        !matches!(self, Self::Request { .. })
+    }
+
+    /// Whether the origin is journaled by `run.cancel_requested` (the function sees it) rather than by
+    /// `run.stop_requested`.
+    #[must_use]
+    pub const fn is_a_request(self) -> bool {
+        matches!(self, Self::Request { .. } | Self::WithoutGrace)
+    }
+}
+
 /// How an operator resolved a step that waited for a decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewOutcome {

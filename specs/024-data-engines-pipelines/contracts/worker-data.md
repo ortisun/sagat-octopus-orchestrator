@@ -14,6 +14,8 @@ found that `CompleteStepRequest` field 13 is already feature 041's `StepLogCarry
 `FailStepRequest` 1 to 13. They are confirmed again at merge by a contract test that reads the
 canonical file and fails when a number this draft names is already taken in its message (Task
 024-008); a field taken by another feature in between moves this draft's number, never the other's.
+*Corrected 2026-11-27 (Decision 044-256 of `specs/044-workflow-as-code/research.md`):* design 044's contract (protocol
+1.10) takes `CompleteStepRequest` field 14 (`accept_workflow_task`), so `data_result` is field 15.
 
 ## Remote engines on `ResolveDatabase`
 
@@ -143,8 +145,8 @@ runner and the host program enforce in software below the class budget.
 ```proto
 message CompleteStepRequest {
   // fields 1..12 unchanged; 13 is StepLogCarry step_logs (1.7, feature 041), which a data runner
-  // never sends (Requirement 041-016)
-  DataStepResult data_result = 14;      // set only for data transforms
+  // never sends (Requirement 041-016); 14 is design 044's accept_workflow_task (1.10)
+  DataStepResult data_result = 15;      // set only for data transforms
 }
 message DataStepResult {
   repeated DataOutputResult outputs = 1;

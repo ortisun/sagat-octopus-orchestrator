@@ -162,6 +162,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         )
         .to_hex(),
         traceparent: String::new(),
+        accept_workflow_task: false,
     };
     let refused = worker
         .client

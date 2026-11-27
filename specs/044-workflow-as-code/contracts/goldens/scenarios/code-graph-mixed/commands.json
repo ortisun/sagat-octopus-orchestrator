@@ -1,0 +1,145 @@
+{
+  "scenario": "code-graph-mixed",
+  "run": "main",
+  "runId": "9efc5e14-f970-4b06-9538-ef8bac2f3f30",
+  "workflowType": "shipment",
+  "seedHex": "75d239e703e5bc476aa3d44ac46cee99b515ebec9d3d60cdb1177c5f1a71cb17",
+  "input": {
+    "batchId": "batch-42"
+  },
+  "codeVersions": {
+    "v1": "sha256:c5a7ceb99fbb76af84a5e1af55c87b0cd948e415c2e203ab25c99a7825276e06"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "child",
+          "target": "bulk-labels",
+          "node": "c-1",
+          "fragment": {
+            "type": "child",
+            "workflowId": "bulk-labels",
+            "cancelPolicy": "propagate",
+            "businessId": "labels-batch-42"
+          },
+          "value": {
+            "orders": [
+              "ord-1",
+              "ord-2",
+              "ord-3"
+            ]
+          },
+          "body": {
+            "type": "child",
+            "workflowId": "bulk-labels",
+            "cancelPolicy": "propagate",
+            "businessId": "labels-batch-42",
+            "input": {
+              "sha256": "1c8275aa221eb0c857c3802c7568b76076bd575b35b564c1ecd5fed6d8028bc7",
+              "size": 36
+            }
+          },
+          "bodySha256": "ac239ce9c83aa2cfb8f21c8f9ccaeb9dd2244224b118fbb4a768e381132edc34",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "12303bf552fc35cd634c15873ad54c9b06d8ebca2fb9ddeac4f677444b80cc7d",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600500959,
+      "replayedChainHex": "12303bf552fc35cd634c15873ad54c9b06d8ebca2fb9ddeac4f677444b80cc7d",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "batchId": "batch-42",
+              "printed": 3
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "25876ee1c96b2df53594a76317f4e6255a1defb65c9f8952d593061227e08a38",
+              "size": 34
+            }
+          },
+          "bodySha256": "8929cea3a11f543a597e0815169ddbf5c5656df9d58df0efd5eeb0827d90f955",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "58a30920e44443967b87f30448b23930addf960b265e3ded270712023545edb2",
+      "commandCountAfter": 2
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "child.started",
+      "node": "c-1",
+      "childRunId": "bf85d7e7-cafc-4281-9546-5074d62ed568"
+    },
+    {
+      "seq": 10,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "child",
+      "target": "bulk-labels",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ],
+  "expectations": {
+    "graphChild": {
+      "runId": "bf85d7e7-cafc-4281-9546-5074d62ed568",
+      "workflowId": "bulk-labels",
+      "version": 3,
+      "document": {
+        "entrypoint": "each",
+        "nodes": [
+          {
+            "id": "each",
+            "type": "forEach",
+            "note": "over input.orders, body `print`"
+          },
+          {
+            "id": "print",
+            "type": "child",
+            "workflowId": "label-print",
+            "input": "{\"orderId\": item}"
+          }
+        ]
+      }
+    }
+  }
+}

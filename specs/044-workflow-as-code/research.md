@@ -775,6 +775,49 @@ finding was answered.
   classified by the union of the parent's entry and the child's current version; the verifier's session is matched by
   id, token hash and namespace; the continue-as-new suggestion fires at 2.5 MiB.
 
+### Decisions while building the server lane (2026-11-26)
+
+- **D044-232** (2026-11-26) The body each command kind contributes to the command chain is the table of
+  `specs/044-workflow-as-code/contracts/goldens/README.md`: a work command's code-profile fragment with its value field
+  (`input`, or an approval's `subject`) as the descriptor `{"sha256", "size"}`; each typed kind a small closed object, a
+  value that may travel as a blob again as its descriptor. delegate (OD-2026-11-24-4): Technical Plan 6.2 fixes the chain
+  and which values enter as descriptors but leaves the typed bodies to the corpus; six SDKs and the server must produce
+  the same bytes, so they are written once, beside the goldens that test them, rather than left to each implementation.
+- **D044-233** (2026-11-26) The worker-protocol contract of Task 044-2 takes minor 1.10, the next free one after design
+  045's 1.9 (Gap 044-013, later state). Draft 019 names 1.10 to 1.12 on the branch of PR #279 but has no contract merged,
+  so it takes the next free minors when its contract merges, as the register's rule says. Its field numbers are the next
+  ones no design has named: `WorkerCapabilities` 11 and 12 (6, 7 and 10 are drafts 019 and 031 and feature 006's),
+  `TaskLease` 28 to 30 as a `oneof` (19 to 27 are named by drafts 019 and 031, feature 006 and design 045),
+  `CompleteStepRequest` 14 (13 is design 041's), `StepCommandResponse` 5. A work command's value travels in
+  `Command.value` beside its fragment, so a blob-carried value never needs a marker inside user JSON; the workflow lease
+  carries `workflow_type` and `code_digest` beside the reserved activity name, so no SDK parses that name; one enumeration
+  `WorkflowTaskFailureCause` holds every cause of Technical Plan 6.3, and the server refuses a server-only cause in
+  `FailWorkflowTask`. delegate (OD-2026-11-24-4): taking 1.13 to keep clear of draft 019 would make a 1.13 session owe
+  019's host procedures, which minors being cumulative forbids; the other choices keep the contract smaller for six SDKs.
+- **D044-234** (2026-11-26) The REST codes of Technical Plan 13.3 that carry an HTTP status are `details.reason` values
+  of the closed `Error.code` set (`409 CONFLICT`, `422 VALIDATION_FAILED`, `429 RATE_LIMITED` and so on), as the
+  repository writes every specific REST code (`workflow_primitives_keep_the_rest_error_code_set_closed`). The error
+  catalog lists each of them, as Task 044-2 asks, with `http: []`, so the bodiless status mapping of the six SDKs does
+  not change (a bodiless `504` must not become `QUERY_TIMEOUT`). delegate (OD-2026-11-24-4): the design's table names
+  codes; the repository's contract rule decides where a code travels.
+  The catalog then holds three codes that are not failures (`MATCHED`, the reason of a dry-run match, and the deferral
+  causes `OUTSTANDING_OBLIGATIONS` and `UNHANDLED_EVENTS`, gRPC `OK`), and an SDK's closed code type accepts the reason
+  codes as envelope codes; both are kept, settled against the SDK lane's finding: the catalog is the SDKs' one
+  dictionary of codes with their remediation, which a batch item's reason and a completion's cause need as much as an
+  error does, and a new origin value would change the closed origin type of six SDKs for no behaviour.
+- **D044-235** (2026-11-26) `history:export` is a reserved entry of feature 029's draft permission catalog (not
+  assignable to a custom role in 0.3.0, Owner question 044-015), held by the admin role only, and joins the test list of
+  permissions only the admin role holds.
+- **D044-236** (2026-11-26) The reset rules of design 044 are a table of their own in feature 018's registry with a
+  column "Code run" for the rules that differ for code runs (`timer.started` and `wait.started` `REMATERIALIZE`, the
+  settled saga outcomes `COPY`), instead of a fourth column on every existing table: the existing rows keep their
+  meaning for graph runs and the code-run differences are in one place, which `every_new_event_kind_has_a_reset_rule`
+  reads.
+- **D044-237** (2026-11-26) Task 044-6 is built against Architecture decision 0112 (design 054, approved on PR #279):
+  its shared registry table replaces the shared body of `platform_requirement_hold` that Technical Plan 14 and Decision
+  044-206 give, and design 045's rollback floor. Until PR #279 merges, Task 044-6 stays closed; whether the hold of
+  Architecture decision 0112 can starve an operator's commands is settled by Task 045-21's barrier test, on which this
+  lane does not depend yet.
 ### Decisions while building the server lane: documents (2026-11-26)
 
 - **D044-238** (2026-11-26) `publishCode` takes the code document's declarations as well:
@@ -797,6 +840,273 @@ finding was answered.
   identifiers needs it. delegate (OD-2026-11-24-4): Technical Plan 13.1 gave the seed only to the workflow lease
   (architecture review of Task 044-1, finding Major 2); the holders of the seed are unchanged (workers bound to the
   type).
+
+- **D044-241** (2026-11-26) A fragment may repeat a publisher field of its covering envelope entry (`secrets`,
+  `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `requiresApproval`) only with the effective entry's
+  value (`secrets` compared as sets); a field the entry does not set is refused, so a command that adds or changes one is
+  `COMMAND_OUTSIDE_ENVELOPE`. Task 044-5 holds it with `a_fragment_that_adds_a_secret_is_outside_the_envelope`.
+  Raised by the security review of Task 044-2 (finding Minor 5), fixed in the schema's description of the profile.
+- **D044-242** (2026-11-26) The security review of the contract of Task 044-2 (commit 6e641a94; no Blocker, two Major,
+  eleven Minor) is answered by fixes in the contract, none settled otherwise: `ReadBlobRequest.read_token` (field 9)
+  and the narrowed `ReadBlob` and `WriteBlob` rules with the order NOT_FOUND before PERMISSION_DENIED (Major 1); the
+  `secret` fields of an inline value replaced by the typed placeholder for workflow leases and read tokens (Major 2);
+  a withheld blob carrying its size only; code-profile durations, event types and child workflow identifiers under the
+  graph's bounds and patterns; Decision 044-241; an error block on each new RPC; the lifetime and re-checks of read
+  tokens; the outer fields of `TaskLease` per task kind; the bounds of answers, consumption lists, failure messages,
+  markers, workflow types, digests and query failure codes; the export paged at 1,024 events or 3 MiB; the conditions of
+  the eager workflow task; replay-check ranges bound to their lease. Its finding Minor 13 (the seed now reaches query and
+  replay-check workers, Decision 044-240): Technical Plan 4.5, 13.1 and 14 read with Decision 044-240, and the
+  source-text test of Task 044-24 on `server_detail` allows the seed on the claim paths of the three task kinds.
+
+- **D044-243** (2026-11-26) On the wire a terminal or continue-as-new command travels the first time last in
+  `commands`, numbered as the next command (the SDK cannot know it will be deferred); a deferred one takes no number,
+  and the next accepted command takes that number; each re-emission after a deferral travels in `deferred_command` with
+  number 0, and is numbered when accepted. delegate (OD-2026-11-24-4): Technical Plan 4.4 and 13.1 named the re-emission
+  only; found while building the fake server of Task 044-30, whose tests hold it.
+
+### Decisions on the TypeScript lane's relay (2026-11-27)
+
+- **D044-244** (2026-11-27) An activity's or a script's saga scope is compared at every level that compares commands.
+  It already enters the hashed body (`"scope": "s-<n>"`, the body table of the corpus README, Decision 044-232), so the
+  server's chain answers `CHAIN_MISMATCH` when a changed function schedules the same activity in another scope or
+  outside any; in addition `HistoryCommandRecord` gains `saga_scope` (field 5: `s-<n>` for an activity or script
+  scheduled in a scope, empty otherwise), so that the SDK compares kind, target and scope at replay (Technical Plan 6.1)
+  and reports `NONDETERMINISM` at the command that moved, and a replay of an exported history (Technical Plan 7.4),
+  which has no chain to compare, catches it as well. delegate (OD-2026-11-24-4): the scope decides which compensations
+  the engine plans (Technical Plan 10.1), so a replay that moves a member between scopes is another saga; left to the
+  chain alone it would be found only by the server and a dry-run move, under the less precise cause, and never by the
+  replayer in continuous integration. The scope is a structural identifier of the run, as `node` is, not a body, an
+  actor or risk metadata, so the rule that a record never carries a body holds. A report of a mismatch names the scope
+  the function used (`FailWorkflowTaskRequest.actual_saga_scope`, field 14), so a change of scope alone is reported
+  with what differs; `Command.saga_scope` on any kind but an activity or a script is `COMMAND_INVALID`. An export of
+  format 1 gains the field additively: a replayer ignores the fields of a line it does not know (`sdks/SPEC.md` 12.9),
+  and no export of format 1 exists yet (Task 044-24 builds it), so no reader meets a format 1 line without the scope
+  of a scoped activity. Answers the TypeScript lane's Gap 044-303.
+- **D044-245** (2026-11-27) A cancelled step that the function can cancel with `step_cancel` (an activity, a script, a
+  wait for an event, an approval command's step, or an activity held for its entry's approval) reaches the function as
+  `HISTORY_STEP_OUTCOME` with `STEP_OUTCOME_CANCELLED` and the error code `CANCELLED`, the history form of the journal's
+  `step.cancelled` for that step. The origin is `effect` when the completion's own `step_cancel` cancelled a step whose
+  current attempt has not begun (`READY`, including a step waiting for its retry after earlier attempts that each
+  ended in a known failure, or `WAITING` on an event, an approval, or a gate of feature 022; an open approval request
+  is withdrawn in that transaction), checked by a compare-and-swap on the step's row under the run lock (Technical
+  Plan 5.2, step 6). A step whose attempt began (leased, or awaiting its reconciliation or a
+  review after an unknown outcome, feature 037) is never cancelled by the command: `step_cancel` journals
+  `step.cancel_requested`, the review or reconciliation stays in place, and the step's outcome is whatever its
+  attempt, its reconciliation or its review settles, with the origin `engine` (`CANCELLED` only when the worker or the
+  review establishes it), because stopping is not evidence that an effect never happened. The origin is `engine` too
+  when the engine cancels a step: a saga abort's `cancelPolicy` on a member still in flight, and after the run closed
+  the stop drain and continue-as-new's handoff (a timer or a wait included, which the function never sees). A child
+  whose run has not started yet (its `child_run_id` reserved, the children pass not run) ends with
+  `HISTORY_CHILD_FINISHED`, status `CANCELLED`, an empty `child_run_id` and the origin `effect`, and the children pass
+  skips it. `HistoryWaitOutcome` (satisfied or timed out) and `HistoryApprovalDecided` (approved,
+  rejected or expired) keep their outcomes; a child's cancellation is its `HISTORY_CHILD_FINISHED` with the status
+  `CANCELLED` once the child run ends; a timer the function cancels ends with the record of its `timer_cancel`, which is
+  that `step.cancelled`. delegate (OD-2026-11-24-4): one outcome for every cancellable step, the one the journal
+  already writes, instead of a cancelled variant in each of two messages; the TypeScript runtime already takes it. The
+  corpus gains the run `code-cancellation/own-steps`.
+- **D044-246** (2026-11-27) In every transaction that creates a run (a start, Signal-with-Start, Update-with-Start, a
+  schedule's or trigger's start, a child's start, a successor's handoff), `run.started` is the run's first journal row,
+  at sequence 1; the signal a Signal-with-Start buffers and the update an Update-with-Start admits are appended after it
+  (and after the `run.start_delayed` that feature 018 journals right after `run.started` for a delayed start) in the same
+  transaction, so activation 1 applies `run.started`, where the function begins and registers its handlers,
+  before the `signal.buffered` or the `update.admitted`. A reset's new run begins with the prefix it copies, whose first
+  row is the source's `run.started`. delegate (OD-2026-11-24-4): an SDK starts the function on `run.started`, and the
+  TypeScript runtime rejects an update applied before any handler exists (`HANDLER_NOT_REGISTERED`); the corpus
+  (`code-update-with-start`, sequences 1 and 2) and `the_goldens_parse_and_their_chains_recompute` ("run.started
+  first") hold it for the goldens, and Task 044-21 holds it on the server with
+  `update_with_start_journals_run_started_first` and `signal_with_start_journals_run_started_first`.
+- **D044-247** (2026-11-27) The code profile follows the graph's nodes for both: a script command takes `timeoutMs`, as
+  a graph script node does (the base node's `timeoutMs`, which `crates/infra-ir/src/convert.rs` reads for every node),
+  so Technical Plan 1.12's `script(..., {retry, timeoutMs})` stands and `codeProfileScript` gains the field; the
+  attempt is bounded by it and by its artifact's policy (`wall`, 1 s to 15 min), whichever ends first; and a wait for
+  an event requires `timeoutMs`, as the graph node does, so Technical Plan 1.12's signature becomes
+  `waitForEvent<T>(eventType, correlationKey, options: { timeoutMs: number; lookbackMs?: number })`, and `sdks/SPEC.md`
+  with it. Both durations are the code profile's (1 ms to 366 days), stricter than the graph's bare minimum on purpose
+  (Decision 044-242). delegate (OD-2026-11-24-4): a wait without a bound would hold its subscription for the run's
+  lifetime, which the graph refuses for the same reason; a function that waits longer loops over bounded waits, each
+  with a `lookbackMs` that covers the gap between one wait's timeout and the next wait's start (at most 7 days), or an
+  event that arrives in the gap is not seen. Task 044-5 holds the script's field with
+  `a_script_fragment_takes_timeout_ms_as_a_graph_script_node`.
+- **D044-248** (2026-11-27) Technical Plan 1.12 names the cancellation of a function's own steps and what it raises:
+  `requestCancellation(command)` on the promise of an activity, a script, a wait, an approval, a child or a sleep makes
+  `step_cancel` (`timer_cancel` for a sleep); the promise of a cancelled activity, script, wait or approval rejects with
+  `CommandCancelled`, a cancelled sleep with `TimerCancelled`, a cancelled child with `ChildWorkflowError` of status
+  `cancelled`. The promise settles from the history's outcome, never at the call: it resolves if the attempt completes,
+  and rejects only on a cancelled outcome (a sleep, whose `timer_cancel` is its end, rejects once the command is
+  issued). delegate (OD-2026-11-24-4): the names the TypeScript lane built (its Decision 044-311), so six SDKs make
+  the same commands and raise the same three errors for one golden.
+- **D044-249** (2026-11-27) The independent correctness review of the relay changes (commits 9808a47e and b1f03c8b; no
+  Blocker, six Major, five Minor, two Nit) is answered by fixes, none contested: the reported scope
+  (`actual_saga_scope`, Major 1); Decision 044-247 restated on the graph's real rules (Major 2: a graph script node does
+  take `timeoutMs`); the cancellation of a step whose attempt began, and of a child not started (Majors 3 and 4,
+  Decision 044-245); the cancel call and its errors (Major 5, Decision 044-248); the named server tests (Major 6, in
+  Tasks 044-5, 044-8, 044-9 and 044-21); the corpus checks of one end per step and of the origins (Minor 7); the
+  additive export (Minor 8, Decision 044-244); the other cancellation sources (Minor 9) and the scope on another kind
+  (Minor 10), Decision 044-245 and 044-244; the gap between bounded waits (Minor 11, Decision 044-247); the Nits in
+  Technical Plan 4.2 and Decision 044-246.
+- **D044-250** (2026-11-27) The independent security review of the relay changes (commits up to 3c40a11b; no Blocker,
+  one Major, three Minor, one Nit group and one suspicion) is answered by fixes, none settled otherwise (a security
+  finding is always fixed): `actual_saga_scope` is checked against `^s-[1-9][0-9]{0,9}$` and dropped otherwise, the
+  expected scope comes from the server's record, and it joins Non-functional requirement 044-007's list of identifiers
+  checked before they appear (Major 1; `a_reported_saga_scope_outside_its_pattern_is_dropped`, Task 044-8); the
+  effect rule counts a step waiting for its retry after known failures, and Technical Plan 10.2 states that a script's
+  timeout is a known failure as for a graph script, Gap 044-032 (Minor 2); the cancellation is a compare-and-swap on
+  the step's row under the run lock, with two barrier tests in Task 044-9 (Minor 3); no eager lease for a step its own
+  completion cancels, Task 044-14 (Minor 4); `actual_saga_scope` in Technical Plan 13.1 and `sdks/SPEC.md`, a script's
+  `timeoutMs` in Technical Plan 5.1, the description of Decision 044-241 on `codeProfileScript`, and the main
+  cancellation golden's wording (Nit 5); and the promise of a cancelled step settles only from the history's outcome
+  (the suspicion, Decision 044-248 and `sdks/SPEC.md`).
+- **D044-251** (2026-11-27) The closed list of update rejection reasons is `VALIDATION_FAILED` (the function's
+  validator refused the update), `HANDLER_NOT_REGISTERED` (the function had registered no handler for the update's name
+  when its `update.admitted` was applied) and the engine's `RUN_ENDED` and `RUN_CONTINUED`; a completion that rejects
+  with any other reason is `COMMAND_INVALID`. The catalog entry of `HANDLER_NOT_REGISTERED` and its six SDK copies land
+  with the update transitions of Task 044-21. delegate (OD-2026-11-24-4): the TypeScript lane's Decision 044-309 asked
+  for `HANDLER_NOT_REGISTERED` and `VALIDATION_REJECTED`; the first names a case the list lacked (a code defect that
+  the caller and the operator must tell apart from a refused argument, as Temporal's unknown-update rejection does),
+  while the second would be a second name for `VALIDATION_FAILED`, which the corpus and the catalog already use.
+- **D044-254** (2026-11-27) Two alignments the security review of pull request 296 asked of the contract (its Nits 2
+  and 3; the domain's answers are Decision 044-253 on that branch): `codeActivityPattern` admits an exact name of 128
+  characters, as `codeActivityName` and the domain do, and a prefix of 128 with its `.*`; and Technical Plan 5.1 says
+  that a fragment may repeat only the publisher's fields (`secrets`, `irreversible`, `highRisk`, `compensateWith`,
+  `reconcileWith`, `requiresApproval`), while `outputSchema`, `concurrency` and `rateLimit` come from the entry and are
+  refused in a fragment, as the code profiles already refuse them: a repeated `outputSchema` could drop a `secret`
+  classification. delegate (OD-2026-11-24-4).
+
+### Decisions on the merge of develop into the contracts (2026-11-27)
+
+- **D044-255** (2026-11-27) Design 044 keeps worker-protocol minor **1.10**, and draft 019's three named minors move to
+  **1.11, 1.12 and 1.13**. `develop` (pull request #279) had written into the register of `sdks/SPEC.md` section 9 that
+  draft 019 names 1.10 to 1.12, while this contract took 1.10 on its branch (Decision 044-233). The register's rule is
+  that a minor is taken when its contract merges; design 044 is being built and its contract merges first, while draft
+  019 is approved but unbuilt and its own text keeps `1.N` to `1.N+2` for exactly this case (its Decision D019-002 and
+  Gap G1048). The register now has a row for 1.10 (design 044), a row for 1.11 to 1.13 (draft 019) and the next free
+  minor for every other draft is 1.14 or later; draft 019's research, plan, tasks and the notes of drafts 024 and 025
+  that named 019's minors are corrected with a pointer here. delegate (OD-2026-11-24-4), the coordinator's decision.
+- **D044-256** (2026-11-27) Field numbers after the merge of design 041's step logs into `develop`: design 044 keeps
+  `CompleteStepRequest.accept_workflow_task` at **14** (field 13 is design 041's `StepLogCarry step_logs`, protocol 1.7,
+  on `CompleteStepRequest` and `FailStepRequest` alike; the contract never used 13). The register of field numbers across
+  `sdks/SPEC.md` section 9 and the drafts was read again for every message this contract extends: `TaskLease` 28 to 30,
+  `WorkerCapabilities` 11 and 12, `CompleteStepRequest` 14, `StepCommandResponse` 5, `ReadBlobRequest` 9 and
+  `FailWorkflowTaskRequest` and the other new messages (design 044's own). Two drafts had named a number now taken: draft
+  024 named `CompleteStepRequest.data_result = 14` on 2026-11-27, after this contract had taken it on its branch, so
+  `data_result` moves to **15** (draft 024's own rule: "a field taken by another feature in between moves this draft's
+  number, never the other's"); draft 019 named `FailStepRequest.details_json = 13`, already design 041's, so it moves
+  to **15** (14 is design 045's `next_retry_delay_ms`). Both drafts' contract fragments, plans and tasks are corrected.
+  The generated code of the six SDKs (Go `internal/workerpb` with `sdks/go/scripts/generate.sh`, Python `_proto` with
+  `sdks/python/scripts/sync_shared.py`, both at the pinned generator versions) and `worker.baseline.json` were
+  regenerated after the merge, and their diffs read: compared field by field, the merged `worker.baseline.json` keeps
+  every entry of `develop`'s and every entry of this contract's, except `AppendStepLogsRequest` fields 11 and 12, which
+  design 041 removed on `develop` before its minor was served; the generated code differs from this contract's only by
+  design 041's field 13 and comments. delegate (OD-2026-11-24-4).
+- **D044-257** (2026-11-27) The IR's `state` gains **`maxBytes`** in a code version: an integer from 1 to 131,072
+  (128 KiB, the ceiling of Requirement 044-016), **65,536 when absent**, the bound the version's workflow leases carry
+  as `state_max_bytes` (and query and replay-check tasks, and the export header's `stateMaxBytes`). A code version that
+  declares no `state` has a bound of 0: it sets no state (`set_state` is `COMMAND_INVALID`) and carries none (a
+  continue-as-new's state must be absent). A graph version refuses the field in the schema, because no graph rule reads
+  it. The evaluated `state.initial` is bounded by it as well: a start whose initial state is over it is refused `422
+  VALIDATION_FAILED`, as an input outside the input schema is (the follow-up Task 044-42 names
+  `a_start_whose_initial_state_is_over_max_bytes_is_refused` and its siblings for a child, a successor and a schedule fire). The corpus declares it where state exists
+  (`code-declared-state` 4,096, `code-gated-activity` 131,072, `code-continue-as-new` the default on its three runs,
+  and `code-updates` and `code-update-with-start`, whose updates are `state.updates` in the IR's form), and
+  `generate.mjs` derives each lease's `stateMaxBytes` from the declarations, never by hand, and refuses a set-state or
+  a carried state over it; `contract_workflow_as_code::goldens` checks the same on every run, independently. delegate (OD-2026-11-24-4): the design named
+  `state.maxBytes` (Non-functional requirement 044-006, Technical Plan 7.3, Requirement 044-016's 128 KiB) but the IR
+  schema had no such field, so every lease of a scenario with state sent 0 and the TypeScript runtime refused the
+  scenario's own set-state (relayed by the TypeScript lane). Changing the corpus instead (no state in those scenarios)
+  would have left the design's reserve without a source. The default is the signals' 64 KiB, not the 128 KiB ceiling,
+  because the SDK reserves the bound from every activation's start (Decision 044-308): a version that never needed 128
+  KiB of state would otherwise leave a gated input only 64 KiB. Held by
+  `contract_workflow_as_code::schema::a_code_version_bounds_its_declared_state_and_a_graph_version_cannot`; the server's
+  tests are named in the follow-up Task 044-42 (`a_set_state_over_the_versions_max_bytes_is_refused`,
+  `a_set_state_in_a_version_without_state_is_refused`).
+- **D044-258** (2026-11-27) `sideEffect(compute, options?: { id?: string })`: the side-effect marker's identifier is
+  the option `id` (the pattern of a patch identifier, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`), `side-effect` when absent;
+  each language takes it as its own optional argument named `id`. The corpus keeps its named side effects (`fx-rate`,
+  `exchange-rate`), and `sdks/SPEC.md` 12.1 names the option (the design's Technical Plan 1.12 through the follow-up Task
+  044-42). delegate (OD-2026-11-24-4): the
+  TypeScript lane's Decision 044-322, taken rather than renaming the corpus's markers, because `MarkerCommand.marker_id`
+  already carries any identifier, the option is additive (a call without it is unchanged), and a target that names the
+  side effect lets the replay report a reordered pair at the first one that moved instead of returning the other's
+  recorded value.
+- **D044-259** (2026-11-27) A re-emitted **`complete`** may name its output by its descriptor alone, whatever carrier
+  its deferral used. A deferred `complete` holds its output until the command is accepted or the run ends: an output
+  that travelled as a blob is held as before (`blobs.held_by_seq`), and an output that travelled inline is written by
+  the server, in the deferral's transaction, as a `COMMAND_VALUE` blob of the run's `~workflow` step, held the same way,
+  charged to the retained bytes once and released at the run's end like any held blob; a deferral that is deferred
+  again moves the hold to the newer record. The body of a `complete` holds the output's descriptor (`{"output":
+  D(output)}`), so the server compares the re-emission's kind, target and body digest with the deferral record first (a
+  difference is `CHAIN_MISMATCH`) and then resolves the descriptor to the held blob, which is the output accepted. A
+  re-emission that carries the output again (inline, or a new blob with the same descriptor) is accepted as well; the
+  held blob is still the one committed, and the re-sent blob is never committed and is released by the blob pass as an
+  unused upload. A **continue-as-new** hashes its input and state themselves (`{"input": input, "state": state,
+  "version": ...}`), so its re-emission carries them inline, as its first emission did (they are always inline); a
+  descriptor alone there is `COMMAND_INVALID`. A `fail` carries its message again (`FailCommand.safe_message` is not a
+  value), and an acknowledgement carries nothing. delegate (OD-2026-11-24-4): relayed by the TypeScript lane, whose SDK
+  re-emits with the first carrier; a cold worker cannot know that carrier (the history records the deferral's kind and
+  target only), so a rule that depended on it would make the SDK guess, while the kind alone now decides. Holding an
+  inline output costs at most one output per run (the latest deferral), and keeps one resolution path, the held blob.
+  A descriptor reaches only the run's own latest deferral, after the body digest matched. First written for every
+  value of every kind and narrowed the same day after the independent correctness review of the relay (its Majors 1
+  and 2: a continue-as-new's body cannot be digested from descriptors, and two passages disagreed on which blob a
+  re-emission commits). Written in `worker.proto` (`CommandValue`), `sdks/SPEC.md` 12.6 and the corpus README, and in
+  the follow-up Task 044-42 for the design's text; the fake server holds it (`a re-emitted complete may name an output its deferral held inline by
+  its descriptor alone`, `a re-emitted continue-as-new must carry its values inline`), and the follow-up Task 044-42 names
+  `a_re_emitted_complete_names_an_output_held_inline_by_its_descriptor_alone`,
+  `a_re_emitted_complete_that_carries_its_output_again_commits_the_held_blob_only` and
+  `a_re_emitted_continue_as_new_with_a_descriptor_alone_is_invalid`.
+- **D044-260** (2026-11-27) The fake server of `sdks/typescript/test/` checks `FailWorkflowTaskRequest.actual_saga_scope`:
+  against the golden report's `actualSagaScope` (empty when the attempt has no report or its report names none),
+  against `^s-[1-9][0-9]{0,9}$`, and only on an activity or a script; the corpus gains `code-nondeterminism/scope-moved`, a pure change of scope (the same
+  activity moved into a saga, reported with `actual_saga_scope` `s-1`). delegate (OD-2026-11-24-4): relayed by the
+  TypeScript lane; a fake that ignores a field cannot hold an SDK to it.
+- **D044-261** (2026-11-27) The test-target selector (`scripts/select-test-targets.py`) treats a string literal that
+  ends in a directory beneath `specs/<feature>/contracts`, or that names such a directory beside a literal of the
+  contracts directory itself (a joined path), as a read of every file beneath it, so a change of one golden
+  selects `contract_workflow_as_code`, which walks `specs/044-workflow-as-code/contracts/goldens`; held by
+  `scripts/tests/test_select_test_targets.py`
+  (`test_a_directory_inside_a_contracts_directory_is_a_read_of_every_file_beneath_it`, and the repository-wide
+  `test_every_path_into_a_contracts_directory_is_seen_as_a_read`, which failed on pull request 291, and
+  `test_a_directory_joined_onto_a_contracts_directory_is_a_read_of_every_file_beneath_it`).
+- **D044-262** (2026-11-27) The independent correctness review of the merge and the relay (no Blocker, three Major,
+  nine Minor, four Nits) is answered by fixes, none contested: Decision 044-259 narrowed to `complete` with the held
+  output and the order of its checks (Majors 1 and 2); the updates scenarios' declarations in the IR's form and a Rust
+  check of every lease's bound (Major 3); the generator's bound on set-state (Minor 1); `scope-moved`'s first version
+  written so that every language makes the same commands (Minor 2); the fake's scope check on an attempt without a
+  report (Minor 3) and its acceptance of a re-emitted output as a new blob (Minor 4); the notes of drafts 019, 031,
+  045 and 052 that named the old minors or field 13 (Minor 5); `ReadBlobRequest.read_token` in the register and the
+  protocol test, with the other new fields (Minor 6); the side effect's `id` in `code-cache-eviction`'s function
+  (Minor 7); a joined corpus directory in the selector (Minor 8); the initial state's bound (Minor 9, Decision
+  044-257); feature 029's counts and the `fail` re-emission in `sdks/SPEC.md` (Nits). Its Nit on `"type": "integer"`
+  admitting `4096.0` is settled: the server reads `maxBytes` as an unsigned integer and refuses another number at
+  publication, as for every IR byte bound, so a fractional value never reaches a lease.
+- **D044-263** (2026-11-27) The independent security review of the same slice (no Blocker, two Major, four Minor, three
+  Nits, one suspicion) is answered by fixes (a security finding is always fixed): a held inline output is charged to
+  the tenant's content quota in the transaction of the first deferral, never to the run's retained bytes, a refusal is
+  `STORAGE_QUOTA_EXCEEDED` counted with its backoff, the charge becomes the output's at acceptance and is released with
+  the blob at the run's end (Major 1); a deferral of a deferral writes and charges nothing, so a run holds at most one
+  blob, enforced by a partial unique index in Task 044-6's migration (follow-up Task 044-42) and outside the tenant's 1,024 command-value ceiling (Major
+  2); a held output is resolved through the deferral record, not named, so the refusal of a named `secret`-carrier blob
+  is unchanged and such an output completes and stays redacted (Minor 1); a change of the golden corpus alone now runs
+  the TypeScript SDK's checks, and a change of the canonical `worker.proto` alone runs all six SDKs' (Minor 2, and the
+  suspicion, confirmed by reading the selector: `decision.sdks` was set only for paths under `sdks/<language>/`), held
+  by `test_a_contract_an_sdk_test_reads_selects_that_sdk`; the initial state's bound sits in the run creation that
+  every start path shares, with tests named for a child, a successor and a schedule fire (Minor 3); a marker
+  identifier is a code constant by contract and is never a log field or a metric label (Minor 4, `sdks/SPEC.md` 12.1
+  and the follow-up Task 044-42); `actual_saga_scope` is dropped on a kind other than an activity or a script,
+  and descriptor fields that disagree with their carrier are `COMMAND_INVALID` (Nits 1 and 2). Its third Nit is
+  settled: a carried `null` is the absence of state, which a bound of 0 admits; the successor's bound is checked by the
+  server (Task 044-36), the generator's check against the current version being the corpus's own consistency; and the
+  fake's refusal of an inline re-send of a blob-held output cannot meet the corpus, whose only blob-held output is
+  425,790 bytes, beyond the 192 KiB of inline values.
+- **D044-264** (2026-11-27) The design is approved, so its body changes only by ticks, evidence and follow-up tasks
+  (Rule 3 of `docs/designs/constitution-4.0.0-egm.md`, checked by `scripts/check-design-docs.py`). The changes the
+  contract branch had written into the body since approval (the text of Decisions 044-241 to 044-254, and of 044-257 to
+  044-263, in the Technical Plan and in the red-test lists of Tasks 044-5, 044-6, 044-8, 044-9, 044-12, 044-14 and
+  044-21) are moved into the follow-up Task 044-42, which names every red test they added and amends the Technical
+  Plan through a review of its own, as Tasks 044-34 and 044-39 already do; the body is the approved text again, and
+  the notes written into designs 045 and 052 for the register are withdrawn (the register of `sdks/SPEC.md` section 9
+  is the source). Found by running the check locally: on pull request 291 the step never ran, since the script tests
+  before it failed. delegate (OD-2026-11-24-4).
 
 ## 3. Gaps
 
@@ -906,9 +1216,31 @@ finding was answered.
   Task 044-21 waits for it.
 - **G044-020, G044-026** (2026-11-26, later state) Handed to design 045's owner by the coordinating session.
 
+- **G044-028** (2026-11-26) Draft 019's `FailStepRequest.details_json = 13` (PR #279, `specs/019-worker-deployments-dispatch/contracts/worker-protocol.md`)
+  takes the number design 041 gives to `StepLogCarry step_logs = 13`; not this design's to settle, reported to the
+  coordinating session for draft 019's owner.
+- **G044-026** (2026-11-26, later state) Design 045's text on PR #279 drops the capability list from the hold's body,
+  and design 054's Architecture decision 0112 replaces the shared hold with a registry table (Decision 044-237); the gap
+  closes when PR #279 merges.
 - **G044-029** (2026-11-26) Design 044, Technical Plan 8.2, says a chain-addressed update of a code run behaves as for
   a run, but table 13.2 does not list the chain's update route (`updateExecutionChain`), whose contract therefore has no
   `waitMs`, `acceptPending` or `202`; Task 044-21 adds them with the update transitions.
+
+- **G044-030** (2026-11-26) Feature 020's draft plan grants a permission `run:history:export` to the admin, developer and
+  operator roles for its own export route; if it lands without excluding code runs, it would bypass Owner question
+  044-015 (`history:export`, admin only). Reported to the coordinating session for feature 020's owner. Raised by the
+  security review of Task 044-2.
+- **G044-031** (2026-11-26) A code run's command records must not carry a payload digest in `run_events.payload_digest`
+  that `JournalEvent.payloadRef` would return (an input, a state or a side-effect digest would be a server-side field
+  under Technical Plan 4.5); Task 044-9 writes them and Task 044-24's `no_read_returns_a_body_digest_risk_metadata_or_the_seed`
+  checks the column. Raised by the security review of Task 044-2.
+
+- **G044-032** (2026-11-27) A script's attempt that ends by its `timeoutMs` or its artifact's `wall` fails as a known
+  failure (`SCRIPT_TIMEOUT`, retryable), for a graph script node and for a code run's script command alike, although
+  the script's egress through its supervisor may have had an effect; feature 037's unknown-outcome rule covers
+  activities only. A code run keeps the graph's rule (Technical Plan 10.2); whether a script's timeout after its
+  attempt began should be an unknown outcome is for the owners of features 005 and 037. Raised by the security review
+  of the relay changes (Decision 044-250).
 
 ## 4. Owner questions (all delegated)
 

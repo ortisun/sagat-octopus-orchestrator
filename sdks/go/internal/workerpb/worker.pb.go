@@ -459,6 +459,524 @@ func (StepLogStopReason) EnumDescriptor() ([]byte, []int) {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{7}
 }
 
+type HistoryEventKind int32
+
+const (
+	HistoryEventKind_HISTORY_EVENT_KIND_UNSPECIFIED  HistoryEventKind = 0
+	HistoryEventKind_HISTORY_RUN_STARTED             HistoryEventKind = 1 // run.started: the input and, for a successor, the carried state
+	HistoryEventKind_HISTORY_WORKFLOW_TASK_STARTED   HistoryEventKind = 2 // workflow_task.started with its time and its two flags
+	HistoryEventKind_HISTORY_WORKFLOW_TASK_COMPLETED HistoryEventKind = 3 // workflow_task.completed, with a deferral's kind and target
+	HistoryEventKind_HISTORY_COMMAND_RECORDED        HistoryEventKind = 4 // the record of an accepted command: number, kind, target and scope, never the body
+	// An activity or script step completed, failed, timed out, cancelled or resolved; and any step the function can cancel
+	// with step_cancel (a wait for an event, an approval) cancelled (Decision 044-245).
+	HistoryEventKind_HISTORY_STEP_OUTCOME           HistoryEventKind = 5
+	HistoryEventKind_HISTORY_TIMER_FIRED            HistoryEventKind = 6
+	HistoryEventKind_HISTORY_WAIT_OUTCOME           HistoryEventKind = 7 // a wait for an event satisfied or timed out
+	HistoryEventKind_HISTORY_CHILD_FINISHED         HistoryEventKind = 8
+	HistoryEventKind_HISTORY_APPROVAL_DECIDED       HistoryEventKind = 9  // the decision or expiry of an approval command
+	HistoryEventKind_HISTORY_SAGA_OUTCOME           HistoryEventKind = 10 // a saga scope compensated, partial, failed or completed
+	HistoryEventKind_HISTORY_SIGNAL_BUFFERED        HistoryEventKind = 11
+	HistoryEventKind_HISTORY_UPDATE_ADMITTED        HistoryEventKind = 12
+	HistoryEventKind_HISTORY_CANCELLATION_REQUESTED HistoryEventKind = 13 // run.cancel_requested
+	HistoryEventKind_HISTORY_MARKER_RECORDED        HistoryEventKind = 14 // a patch or side-effect marker; a side effect carries its value
+)
+
+// Enum value maps for HistoryEventKind.
+var (
+	HistoryEventKind_name = map[int32]string{
+		0:  "HISTORY_EVENT_KIND_UNSPECIFIED",
+		1:  "HISTORY_RUN_STARTED",
+		2:  "HISTORY_WORKFLOW_TASK_STARTED",
+		3:  "HISTORY_WORKFLOW_TASK_COMPLETED",
+		4:  "HISTORY_COMMAND_RECORDED",
+		5:  "HISTORY_STEP_OUTCOME",
+		6:  "HISTORY_TIMER_FIRED",
+		7:  "HISTORY_WAIT_OUTCOME",
+		8:  "HISTORY_CHILD_FINISHED",
+		9:  "HISTORY_APPROVAL_DECIDED",
+		10: "HISTORY_SAGA_OUTCOME",
+		11: "HISTORY_SIGNAL_BUFFERED",
+		12: "HISTORY_UPDATE_ADMITTED",
+		13: "HISTORY_CANCELLATION_REQUESTED",
+		14: "HISTORY_MARKER_RECORDED",
+	}
+	HistoryEventKind_value = map[string]int32{
+		"HISTORY_EVENT_KIND_UNSPECIFIED":  0,
+		"HISTORY_RUN_STARTED":             1,
+		"HISTORY_WORKFLOW_TASK_STARTED":   2,
+		"HISTORY_WORKFLOW_TASK_COMPLETED": 3,
+		"HISTORY_COMMAND_RECORDED":        4,
+		"HISTORY_STEP_OUTCOME":            5,
+		"HISTORY_TIMER_FIRED":             6,
+		"HISTORY_WAIT_OUTCOME":            7,
+		"HISTORY_CHILD_FINISHED":          8,
+		"HISTORY_APPROVAL_DECIDED":        9,
+		"HISTORY_SAGA_OUTCOME":            10,
+		"HISTORY_SIGNAL_BUFFERED":         11,
+		"HISTORY_UPDATE_ADMITTED":         12,
+		"HISTORY_CANCELLATION_REQUESTED":  13,
+		"HISTORY_MARKER_RECORDED":         14,
+	}
+)
+
+func (x HistoryEventKind) Enum() *HistoryEventKind {
+	p := new(HistoryEventKind)
+	*p = x
+	return p
+}
+
+func (x HistoryEventKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HistoryEventKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[8].Descriptor()
+}
+
+func (HistoryEventKind) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[8]
+}
+
+func (x HistoryEventKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HistoryEventKind.Descriptor instead.
+func (HistoryEventKind) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{8}
+}
+
+type HistoryEventOrigin int32
+
+const (
+	HistoryEventOrigin_HISTORY_EVENT_ORIGIN_UNSPECIFIED HistoryEventOrigin = 0
+	HistoryEventOrigin_HISTORY_ORIGIN_COMPLETION        HistoryEventOrigin = 1 // written by a completion as the record of its own commands
+	HistoryEventOrigin_HISTORY_ORIGIN_EFFECT            HistoryEventOrigin = 2 // an immediate effect of a command, appended by the completion
+	HistoryEventOrigin_HISTORY_ORIGIN_ENGINE            HistoryEventOrigin = 3
+	HistoryEventOrigin_HISTORY_ORIGIN_EXTERNAL          HistoryEventOrigin = 4
+)
+
+// Enum value maps for HistoryEventOrigin.
+var (
+	HistoryEventOrigin_name = map[int32]string{
+		0: "HISTORY_EVENT_ORIGIN_UNSPECIFIED",
+		1: "HISTORY_ORIGIN_COMPLETION",
+		2: "HISTORY_ORIGIN_EFFECT",
+		3: "HISTORY_ORIGIN_ENGINE",
+		4: "HISTORY_ORIGIN_EXTERNAL",
+	}
+	HistoryEventOrigin_value = map[string]int32{
+		"HISTORY_EVENT_ORIGIN_UNSPECIFIED": 0,
+		"HISTORY_ORIGIN_COMPLETION":        1,
+		"HISTORY_ORIGIN_EFFECT":            2,
+		"HISTORY_ORIGIN_ENGINE":            3,
+		"HISTORY_ORIGIN_EXTERNAL":          4,
+	}
+)
+
+func (x HistoryEventOrigin) Enum() *HistoryEventOrigin {
+	p := new(HistoryEventOrigin)
+	*p = x
+	return p
+}
+
+func (x HistoryEventOrigin) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HistoryEventOrigin) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[9].Descriptor()
+}
+
+func (HistoryEventOrigin) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[9]
+}
+
+func (x HistoryEventOrigin) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HistoryEventOrigin.Descriptor instead.
+func (HistoryEventOrigin) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{9}
+}
+
+type StepOutcome int32
+
+const (
+	StepOutcome_STEP_OUTCOME_UNSPECIFIED StepOutcome = 0
+	StepOutcome_STEP_OUTCOME_COMPLETED   StepOutcome = 1
+	StepOutcome_STEP_OUTCOME_FAILED      StepOutcome = 2
+	StepOutcome_STEP_OUTCOME_TIMED_OUT   StepOutcome = 3
+	StepOutcome_STEP_OUTCOME_CANCELLED   StepOutcome = 4
+)
+
+// Enum value maps for StepOutcome.
+var (
+	StepOutcome_name = map[int32]string{
+		0: "STEP_OUTCOME_UNSPECIFIED",
+		1: "STEP_OUTCOME_COMPLETED",
+		2: "STEP_OUTCOME_FAILED",
+		3: "STEP_OUTCOME_TIMED_OUT",
+		4: "STEP_OUTCOME_CANCELLED",
+	}
+	StepOutcome_value = map[string]int32{
+		"STEP_OUTCOME_UNSPECIFIED": 0,
+		"STEP_OUTCOME_COMPLETED":   1,
+		"STEP_OUTCOME_FAILED":      2,
+		"STEP_OUTCOME_TIMED_OUT":   3,
+		"STEP_OUTCOME_CANCELLED":   4,
+	}
+)
+
+func (x StepOutcome) Enum() *StepOutcome {
+	p := new(StepOutcome)
+	*p = x
+	return p
+}
+
+func (x StepOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StepOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[10].Descriptor()
+}
+
+func (StepOutcome) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[10]
+}
+
+func (x StepOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StepOutcome.Descriptor instead.
+func (StepOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{10}
+}
+
+// Why a run's cancellation was journaled (design 044, Technical Plan 8.4). `run.cancel_requested` carries
+// REQUEST or WITHOUT_GRACE; `run.stop_requested` (Cancelled) carries one of the other three, and is visible to
+// the function only as the record of its own acknowledgement (FUNCTION_ACKNOWLEDGED).
+type CancelOrigin int32
+
+const (
+	CancelOrigin_CANCEL_ORIGIN_UNSPECIFIED             CancelOrigin = 0
+	CancelOrigin_CANCEL_ORIGIN_REQUEST                 CancelOrigin = 1 // a cooperative request with the version's grace
+	CancelOrigin_CANCEL_ORIGIN_WITHOUT_GRACE           CancelOrigin = 2 // graceMs 0 under run:operate: the run stops at once
+	CancelOrigin_CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED   CancelOrigin = 3 // the function acknowledged the request
+	CancelOrigin_CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST CancelOrigin = 4 // a continue-as-new accepted after the request ends the run cancelled
+	CancelOrigin_CANCEL_ORIGIN_LATCHED_HANDOFF         CancelOrigin = 5 // a handoff met the chain's or the link's cancellation latch
+)
+
+// Enum value maps for CancelOrigin.
+var (
+	CancelOrigin_name = map[int32]string{
+		0: "CANCEL_ORIGIN_UNSPECIFIED",
+		1: "CANCEL_ORIGIN_REQUEST",
+		2: "CANCEL_ORIGIN_WITHOUT_GRACE",
+		3: "CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED",
+		4: "CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST",
+		5: "CANCEL_ORIGIN_LATCHED_HANDOFF",
+	}
+	CancelOrigin_value = map[string]int32{
+		"CANCEL_ORIGIN_UNSPECIFIED":             0,
+		"CANCEL_ORIGIN_REQUEST":                 1,
+		"CANCEL_ORIGIN_WITHOUT_GRACE":           2,
+		"CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED":   3,
+		"CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST": 4,
+		"CANCEL_ORIGIN_LATCHED_HANDOFF":         5,
+	}
+)
+
+func (x CancelOrigin) Enum() *CancelOrigin {
+	p := new(CancelOrigin)
+	*p = x
+	return p
+}
+
+func (x CancelOrigin) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CancelOrigin) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[11].Descriptor()
+}
+
+func (CancelOrigin) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[11]
+}
+
+func (x CancelOrigin) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CancelOrigin.Descriptor instead.
+func (CancelOrigin) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{11}
+}
+
+// The kinds of command. The chain's `kind` string (Technical Plan 6.2) is the value's name without the
+// prefix, in lower case: COMMAND_TIMER_START is `timer_start`.
+type CommandKind int32
+
+const (
+	CommandKind_COMMAND_KIND_UNSPECIFIED         CommandKind = 0
+	CommandKind_COMMAND_ACTIVITY                 CommandKind = 1
+	CommandKind_COMMAND_SCRIPT                   CommandKind = 2
+	CommandKind_COMMAND_TIMER_START              CommandKind = 3
+	CommandKind_COMMAND_TIMER_CANCEL             CommandKind = 4
+	CommandKind_COMMAND_WAIT_EVENT               CommandKind = 5
+	CommandKind_COMMAND_CHILD                    CommandKind = 6
+	CommandKind_COMMAND_APPROVAL                 CommandKind = 7
+	CommandKind_COMMAND_STEP_CANCEL              CommandKind = 8
+	CommandKind_COMMAND_SAGA_OPEN                CommandKind = 9
+	CommandKind_COMMAND_SAGA_CLOSE               CommandKind = 10
+	CommandKind_COMMAND_SAGA_ABORT               CommandKind = 11
+	CommandKind_COMMAND_MARKER_PATCH             CommandKind = 12
+	CommandKind_COMMAND_MARKER_SIDE_EFFECT       CommandKind = 13
+	CommandKind_COMMAND_SET_STATE                CommandKind = 14
+	CommandKind_COMMAND_UPDATE_ACCEPT            CommandKind = 15
+	CommandKind_COMMAND_UPDATE_REJECT            CommandKind = 16
+	CommandKind_COMMAND_UPDATE_COMPLETE          CommandKind = 17
+	CommandKind_COMMAND_CONSUME_SIGNALS          CommandKind = 18
+	CommandKind_COMMAND_COMPLETE                 CommandKind = 19
+	CommandKind_COMMAND_FAIL                     CommandKind = 20
+	CommandKind_COMMAND_CONTINUE_AS_NEW          CommandKind = 21
+	CommandKind_COMMAND_ACKNOWLEDGE_CANCELLATION CommandKind = 22
+)
+
+// Enum value maps for CommandKind.
+var (
+	CommandKind_name = map[int32]string{
+		0:  "COMMAND_KIND_UNSPECIFIED",
+		1:  "COMMAND_ACTIVITY",
+		2:  "COMMAND_SCRIPT",
+		3:  "COMMAND_TIMER_START",
+		4:  "COMMAND_TIMER_CANCEL",
+		5:  "COMMAND_WAIT_EVENT",
+		6:  "COMMAND_CHILD",
+		7:  "COMMAND_APPROVAL",
+		8:  "COMMAND_STEP_CANCEL",
+		9:  "COMMAND_SAGA_OPEN",
+		10: "COMMAND_SAGA_CLOSE",
+		11: "COMMAND_SAGA_ABORT",
+		12: "COMMAND_MARKER_PATCH",
+		13: "COMMAND_MARKER_SIDE_EFFECT",
+		14: "COMMAND_SET_STATE",
+		15: "COMMAND_UPDATE_ACCEPT",
+		16: "COMMAND_UPDATE_REJECT",
+		17: "COMMAND_UPDATE_COMPLETE",
+		18: "COMMAND_CONSUME_SIGNALS",
+		19: "COMMAND_COMPLETE",
+		20: "COMMAND_FAIL",
+		21: "COMMAND_CONTINUE_AS_NEW",
+		22: "COMMAND_ACKNOWLEDGE_CANCELLATION",
+	}
+	CommandKind_value = map[string]int32{
+		"COMMAND_KIND_UNSPECIFIED":         0,
+		"COMMAND_ACTIVITY":                 1,
+		"COMMAND_SCRIPT":                   2,
+		"COMMAND_TIMER_START":              3,
+		"COMMAND_TIMER_CANCEL":             4,
+		"COMMAND_WAIT_EVENT":               5,
+		"COMMAND_CHILD":                    6,
+		"COMMAND_APPROVAL":                 7,
+		"COMMAND_STEP_CANCEL":              8,
+		"COMMAND_SAGA_OPEN":                9,
+		"COMMAND_SAGA_CLOSE":               10,
+		"COMMAND_SAGA_ABORT":               11,
+		"COMMAND_MARKER_PATCH":             12,
+		"COMMAND_MARKER_SIDE_EFFECT":       13,
+		"COMMAND_SET_STATE":                14,
+		"COMMAND_UPDATE_ACCEPT":            15,
+		"COMMAND_UPDATE_REJECT":            16,
+		"COMMAND_UPDATE_COMPLETE":          17,
+		"COMMAND_CONSUME_SIGNALS":          18,
+		"COMMAND_COMPLETE":                 19,
+		"COMMAND_FAIL":                     20,
+		"COMMAND_CONTINUE_AS_NEW":          21,
+		"COMMAND_ACKNOWLEDGE_CANCELLATION": 22,
+	}
+)
+
+func (x CommandKind) Enum() *CommandKind {
+	p := new(CommandKind)
+	*p = x
+	return p
+}
+
+func (x CommandKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CommandKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[12].Descriptor()
+}
+
+func (CommandKind) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[12]
+}
+
+func (x CommandKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CommandKind.Descriptor instead.
+func (CommandKind) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{12}
+}
+
+type WorkflowTaskFailureCause int32
+
+const (
+	WorkflowTaskFailureCause_WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED WorkflowTaskFailureCause = 0
+	WorkflowTaskFailureCause_CAUSE_NONDETERMINISM                    WorkflowTaskFailureCause = 1 // SDK
+	WorkflowTaskFailureCause_CAUSE_CHAIN_MISMATCH                    WorkflowTaskFailureCause = 2
+	WorkflowTaskFailureCause_CAUSE_NONDETERMINISM_RISK               WorkflowTaskFailureCause = 3 // SDK, or the server for a completion below S(k)
+	WorkflowTaskFailureCause_CAUSE_COMMAND_OUTSIDE_ENVELOPE          WorkflowTaskFailureCause = 4
+	WorkflowTaskFailureCause_CAUSE_COMMAND_INVALID                   WorkflowTaskFailureCause = 5
+	WorkflowTaskFailureCause_CAUSE_VALIDATOR_COMMAND                 WorkflowTaskFailureCause = 6 // SDK
+	WorkflowTaskFailureCause_CAUSE_WORKFLOW_TASK_FAILED              WorkflowTaskFailureCause = 7 // SDK
+	WorkflowTaskFailureCause_CAUSE_ACTIVATION_DEADLINE               WorkflowTaskFailureCause = 8 // SDK
+	WorkflowTaskFailureCause_CAUSE_WORKFLOW_TASK_TIMED_OUT           WorkflowTaskFailureCause = 9
+	WorkflowTaskFailureCause_CAUSE_COMMAND_VALUE_RELEASED            WorkflowTaskFailureCause = 10
+	WorkflowTaskFailureCause_CAUSE_COMMAND_VALUE_LIMIT               WorkflowTaskFailureCause = 11
+	WorkflowTaskFailureCause_CAUSE_COMMAND_LIMIT                     WorkflowTaskFailureCause = 12
+	WorkflowTaskFailureCause_CAUSE_OUTSTANDING_OBLIGATIONS           WorkflowTaskFailureCause = 13 // a deferral, not a failure
+	WorkflowTaskFailureCause_CAUSE_UNHANDLED_EVENTS                  WorkflowTaskFailureCause = 14 // a deferral, not a failure
+	WorkflowTaskFailureCause_CAUSE_CLOSING_WINDOW_COMMAND            WorkflowTaskFailureCause = 15
+	WorkflowTaskFailureCause_CAUSE_HISTORY_LIMIT                     WorkflowTaskFailureCause = 16
+	WorkflowTaskFailureCause_CAUSE_RETAINED_BYTES_LIMIT              WorkflowTaskFailureCause = 17
+	WorkflowTaskFailureCause_CAUSE_STORAGE_QUOTA_EXCEEDED            WorkflowTaskFailureCause = 18
+)
+
+// Enum value maps for WorkflowTaskFailureCause.
+var (
+	WorkflowTaskFailureCause_name = map[int32]string{
+		0:  "WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED",
+		1:  "CAUSE_NONDETERMINISM",
+		2:  "CAUSE_CHAIN_MISMATCH",
+		3:  "CAUSE_NONDETERMINISM_RISK",
+		4:  "CAUSE_COMMAND_OUTSIDE_ENVELOPE",
+		5:  "CAUSE_COMMAND_INVALID",
+		6:  "CAUSE_VALIDATOR_COMMAND",
+		7:  "CAUSE_WORKFLOW_TASK_FAILED",
+		8:  "CAUSE_ACTIVATION_DEADLINE",
+		9:  "CAUSE_WORKFLOW_TASK_TIMED_OUT",
+		10: "CAUSE_COMMAND_VALUE_RELEASED",
+		11: "CAUSE_COMMAND_VALUE_LIMIT",
+		12: "CAUSE_COMMAND_LIMIT",
+		13: "CAUSE_OUTSTANDING_OBLIGATIONS",
+		14: "CAUSE_UNHANDLED_EVENTS",
+		15: "CAUSE_CLOSING_WINDOW_COMMAND",
+		16: "CAUSE_HISTORY_LIMIT",
+		17: "CAUSE_RETAINED_BYTES_LIMIT",
+		18: "CAUSE_STORAGE_QUOTA_EXCEEDED",
+	}
+	WorkflowTaskFailureCause_value = map[string]int32{
+		"WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED": 0,
+		"CAUSE_NONDETERMINISM":                    1,
+		"CAUSE_CHAIN_MISMATCH":                    2,
+		"CAUSE_NONDETERMINISM_RISK":               3,
+		"CAUSE_COMMAND_OUTSIDE_ENVELOPE":          4,
+		"CAUSE_COMMAND_INVALID":                   5,
+		"CAUSE_VALIDATOR_COMMAND":                 6,
+		"CAUSE_WORKFLOW_TASK_FAILED":              7,
+		"CAUSE_ACTIVATION_DEADLINE":               8,
+		"CAUSE_WORKFLOW_TASK_TIMED_OUT":           9,
+		"CAUSE_COMMAND_VALUE_RELEASED":            10,
+		"CAUSE_COMMAND_VALUE_LIMIT":               11,
+		"CAUSE_COMMAND_LIMIT":                     12,
+		"CAUSE_OUTSTANDING_OBLIGATIONS":           13,
+		"CAUSE_UNHANDLED_EVENTS":                  14,
+		"CAUSE_CLOSING_WINDOW_COMMAND":            15,
+		"CAUSE_HISTORY_LIMIT":                     16,
+		"CAUSE_RETAINED_BYTES_LIMIT":              17,
+		"CAUSE_STORAGE_QUOTA_EXCEEDED":            18,
+	}
+)
+
+func (x WorkflowTaskFailureCause) Enum() *WorkflowTaskFailureCause {
+	p := new(WorkflowTaskFailureCause)
+	*p = x
+	return p
+}
+
+func (x WorkflowTaskFailureCause) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorkflowTaskFailureCause) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[13].Descriptor()
+}
+
+func (WorkflowTaskFailureCause) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[13]
+}
+
+func (x WorkflowTaskFailureCause) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorkflowTaskFailureCause.Descriptor instead.
+func (WorkflowTaskFailureCause) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{13}
+}
+
+type WorkflowTaskOutcome int32
+
+const (
+	WorkflowTaskOutcome_WORKFLOW_TASK_OUTCOME_UNSPECIFIED WorkflowTaskOutcome = 0
+	WorkflowTaskOutcome_WORKFLOW_TASK_ACCEPTED            WorkflowTaskOutcome = 1
+	WorkflowTaskOutcome_WORKFLOW_TASK_ACCEPTED_DEFERRED   WorkflowTaskOutcome = 2 // with the cause OUTSTANDING_OBLIGATIONS or UNHANDLED_EVENTS
+	WorkflowTaskOutcome_WORKFLOW_TASK_REVIEW              WorkflowTaskOutcome = 3 // the run is under review with the cause
+)
+
+// Enum value maps for WorkflowTaskOutcome.
+var (
+	WorkflowTaskOutcome_name = map[int32]string{
+		0: "WORKFLOW_TASK_OUTCOME_UNSPECIFIED",
+		1: "WORKFLOW_TASK_ACCEPTED",
+		2: "WORKFLOW_TASK_ACCEPTED_DEFERRED",
+		3: "WORKFLOW_TASK_REVIEW",
+	}
+	WorkflowTaskOutcome_value = map[string]int32{
+		"WORKFLOW_TASK_OUTCOME_UNSPECIFIED": 0,
+		"WORKFLOW_TASK_ACCEPTED":            1,
+		"WORKFLOW_TASK_ACCEPTED_DEFERRED":   2,
+		"WORKFLOW_TASK_REVIEW":              3,
+	}
+)
+
+func (x WorkflowTaskOutcome) Enum() *WorkflowTaskOutcome {
+	p := new(WorkflowTaskOutcome)
+	*p = x
+	return p
+}
+
+func (x WorkflowTaskOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorkflowTaskOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[14].Descriptor()
+}
+
+func (WorkflowTaskOutcome) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[14]
+}
+
+func (x WorkflowTaskOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorkflowTaskOutcome.Descriptor instead.
+func (WorkflowTaskOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{14}
+}
+
 type WorkerCapabilities struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Languages   []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
@@ -468,8 +986,15 @@ type WorkerCapabilities struct {
 	// The newest additive minor understood by the worker. The server accepts 1.5 only when its
 	// scoped claim and report storage path is enabled; otherwise negotiation remains at 1.4.
 	ProtocolVersion string `protobuf:"bytes,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Fields 6 to 10 are named by other designs (6 draft 019, 7 draft 031, 10 feature 006).
+	// Added in 1.10 (design 044). The (workflow type, code digest) pairs this session serves, at most 64;
+	// each type must be listed by the identity's binding (`worker_binding_workflow_types`).
+	WorkflowTypes []*WorkflowTypeOffer `protobuf:"bytes,11,rep,name=workflow_types,json=workflowTypes,proto3" json:"workflow_types,omitempty"`
+	// Added in 1.10. Whether this SDK offers workflow as code at all (Requirement 044-011); an SDK that
+	// does not is reported "not offered" by the conformance suite, never as passed.
+	OffersWorkflowAsCode bool `protobuf:"varint,12,opt,name=offers_workflow_as_code,json=offersWorkflowAsCode,proto3" json:"offers_workflow_as_code,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *WorkerCapabilities) Reset() {
@@ -537,6 +1062,74 @@ func (x *WorkerCapabilities) GetProtocolVersion() string {
 	return ""
 }
 
+func (x *WorkerCapabilities) GetWorkflowTypes() []*WorkflowTypeOffer {
+	if x != nil {
+		return x.WorkflowTypes
+	}
+	return nil
+}
+
+func (x *WorkerCapabilities) GetOffersWorkflowAsCode() bool {
+	if x != nil {
+		return x.OffersWorkflowAsCode
+	}
+	return false
+}
+
+// Added in 1.10. `code_digest` is `sha256:` and 64 lowercase hexadecimal characters.
+// `workflow_type` matches ^[A-Za-z][A-Za-z0-9_-]{0,47}$.
+type WorkflowTypeOffer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowType  string                 `protobuf:"bytes,1,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
+	CodeDigest    string                 `protobuf:"bytes,2,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowTypeOffer) Reset() {
+	*x = WorkflowTypeOffer{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowTypeOffer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowTypeOffer) ProtoMessage() {}
+
+func (x *WorkflowTypeOffer) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowTypeOffer.ProtoReflect.Descriptor instead.
+func (*WorkflowTypeOffer) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WorkflowTypeOffer) GetWorkflowType() string {
+	if x != nil {
+		return x.WorkflowType
+	}
+	return ""
+}
+
+func (x *WorkflowTypeOffer) GetCodeDigest() string {
+	if x != nil {
+		return x.CodeDigest
+	}
+	return ""
+}
+
 type RegisterWorkerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkerName    string                 `protobuf:"bytes,1,opt,name=worker_name,json=workerName,proto3" json:"worker_name,omitempty"`
@@ -548,7 +1141,7 @@ type RegisterWorkerRequest struct {
 
 func (x *RegisterWorkerRequest) Reset() {
 	*x = RegisterWorkerRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[1]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -560,7 +1153,7 @@ func (x *RegisterWorkerRequest) String() string {
 func (*RegisterWorkerRequest) ProtoMessage() {}
 
 func (x *RegisterWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[1]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -573,7 +1166,7 @@ func (x *RegisterWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterWorkerRequest.ProtoReflect.Descriptor instead.
 func (*RegisterWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{1}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RegisterWorkerRequest) GetWorkerName() string {
@@ -610,7 +1203,7 @@ type RegisterWorkerResponse struct {
 
 func (x *RegisterWorkerResponse) Reset() {
 	*x = RegisterWorkerResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[2]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -622,7 +1215,7 @@ func (x *RegisterWorkerResponse) String() string {
 func (*RegisterWorkerResponse) ProtoMessage() {}
 
 func (x *RegisterWorkerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[2]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -635,7 +1228,7 @@ func (x *RegisterWorkerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterWorkerResponse.ProtoReflect.Descriptor instead.
 func (*RegisterWorkerResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{2}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RegisterWorkerResponse) GetWorkerId() string {
@@ -677,7 +1270,7 @@ type PollTasksRequest struct {
 
 func (x *PollTasksRequest) Reset() {
 	*x = PollTasksRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[3]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -689,7 +1282,7 @@ func (x *PollTasksRequest) String() string {
 func (*PollTasksRequest) ProtoMessage() {}
 
 func (x *PollTasksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[3]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -702,7 +1295,7 @@ func (x *PollTasksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollTasksRequest.ProtoReflect.Descriptor instead.
 func (*PollTasksRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{3}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PollTasksRequest) GetWorkerId() string {
@@ -738,7 +1331,7 @@ type ScopePathSegment struct {
 
 func (x *ScopePathSegment) Reset() {
 	*x = ScopePathSegment{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -750,7 +1343,7 @@ func (x *ScopePathSegment) String() string {
 func (*ScopePathSegment) ProtoMessage() {}
 
 func (x *ScopePathSegment) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -763,7 +1356,7 @@ func (x *ScopePathSegment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScopePathSegment.ProtoReflect.Descriptor instead.
 func (*ScopePathSegment) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{4}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ScopePathSegment) GetScopeNodeId() string {
@@ -793,7 +1386,7 @@ type ExecutionInstanceIdentity struct {
 
 func (x *ExecutionInstanceIdentity) Reset() {
 	*x = ExecutionInstanceIdentity{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -805,7 +1398,7 @@ func (x *ExecutionInstanceIdentity) String() string {
 func (*ExecutionInstanceIdentity) ProtoMessage() {}
 
 func (x *ExecutionInstanceIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -818,7 +1411,7 @@ func (x *ExecutionInstanceIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutionInstanceIdentity.ProtoReflect.Descriptor instead.
 func (*ExecutionInstanceIdentity) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{5}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ExecutionInstanceIdentity) GetInstancePath() []*ScopePathSegment {
@@ -868,13 +1461,27 @@ type TaskLease struct {
 	Instance *ExecutionInstanceIdentity `protobuf:"bytes,17,opt,name=instance,proto3" json:"instance,omitempty"`
 	// For compensation and reconciliation, the exact forward instance. Empty for ordinary work.
 	TargetInstance *ExecutionInstanceIdentity `protobuf:"bytes,18,opt,name=target_instance,json=targetInstance,proto3" json:"target_instance,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Fields 19 to 27 are named by other designs (19 to 22 draft 019, 23 and 24 feature 006, 25 draft 031,
+	// 26 and 27 design 045).
+	// Added in 1.10 (design 044): the task of a code workflow, selected by `task_kind` = WORKFLOW, QUERY or
+	// REPLAY_CHECK. The outer fields then set are: for WORKFLOW, task_id, run_id, step_id (`~workflow`), attempt,
+	// generation, lease_token (equal to the inner lease's), expires_at_epoch_ms and traceparent; for QUERY, task_id,
+	// run_id and lease_token (the query lease's); for REPLAY_CHECK, task_id and lease_token (the task's lease; the runs
+	// are its items). `TaskLease.lease_token` is never a read token; every other activity field is empty.
+	//
+	// Types that are valid to be assigned to WorkflowWork:
+	//
+	//	*TaskLease_WorkflowTask
+	//	*TaskLease_QueryTask
+	//	*TaskLease_ReplayCheckTask
+	WorkflowWork  isTaskLease_WorkflowWork `protobuf_oneof:"workflow_work"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TaskLease) Reset() {
 	*x = TaskLease{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +1493,7 @@ func (x *TaskLease) String() string {
 func (*TaskLease) ProtoMessage() {}
 
 func (x *TaskLease) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +1506,7 @@ func (x *TaskLease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskLease.ProtoReflect.Descriptor instead.
 func (*TaskLease) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{6}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TaskLease) GetTaskId() string {
@@ -1028,6 +1635,64 @@ func (x *TaskLease) GetTargetInstance() *ExecutionInstanceIdentity {
 	return nil
 }
 
+func (x *TaskLease) GetWorkflowWork() isTaskLease_WorkflowWork {
+	if x != nil {
+		return x.WorkflowWork
+	}
+	return nil
+}
+
+func (x *TaskLease) GetWorkflowTask() *WorkflowTaskLease {
+	if x != nil {
+		if x, ok := x.WorkflowWork.(*TaskLease_WorkflowTask); ok {
+			return x.WorkflowTask
+		}
+	}
+	return nil
+}
+
+func (x *TaskLease) GetQueryTask() *QueryTask {
+	if x != nil {
+		if x, ok := x.WorkflowWork.(*TaskLease_QueryTask); ok {
+			return x.QueryTask
+		}
+	}
+	return nil
+}
+
+func (x *TaskLease) GetReplayCheckTask() *ReplayCheckTask {
+	if x != nil {
+		if x, ok := x.WorkflowWork.(*TaskLease_ReplayCheckTask); ok {
+			return x.ReplayCheckTask
+		}
+	}
+	return nil
+}
+
+type isTaskLease_WorkflowWork interface {
+	isTaskLease_WorkflowWork()
+}
+
+type TaskLease_WorkflowTask struct {
+	WorkflowTask *WorkflowTaskLease `protobuf:"bytes,28,opt,name=workflow_task,json=workflowTask,proto3,oneof"`
+}
+
+type TaskLease_QueryTask struct {
+	QueryTask *QueryTask `protobuf:"bytes,29,opt,name=query_task,json=queryTask,proto3,oneof"`
+}
+
+type TaskLease_ReplayCheckTask struct {
+	ReplayCheckTask *ReplayCheckTask `protobuf:"bytes,30,opt,name=replay_check_task,json=replayCheckTask,proto3,oneof"`
+}
+
+func (*TaskLease_WorkflowTask) isTaskLease_WorkflowWork() {}
+
+func (*TaskLease_QueryTask) isTaskLease_WorkflowWork() {}
+
+func (*TaskLease_ReplayCheckTask) isTaskLease_WorkflowWork() {}
+
+// From 1.10 an answer carries at most 3.5 MiB in all (fewer tasks when they do not fit), below the 4 MiB that gRPC
+// clients receive by default (design 044, Non-functional requirement 044-006).
 type PollTasksResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tasks         []*TaskLease           `protobuf:"bytes,1,rep,name=tasks,proto3" json:"tasks,omitempty"`
@@ -1038,7 +1703,7 @@ type PollTasksResponse struct {
 
 func (x *PollTasksResponse) Reset() {
 	*x = PollTasksResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1050,7 +1715,7 @@ func (x *PollTasksResponse) String() string {
 func (*PollTasksResponse) ProtoMessage() {}
 
 func (x *PollTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1063,7 +1728,7 @@ func (x *PollTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollTasksResponse.ProtoReflect.Descriptor instead.
 func (*PollTasksResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{7}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PollTasksResponse) GetTasks() []*TaskLease {
@@ -1097,7 +1762,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1109,7 +1774,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1122,7 +1787,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{8}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HeartbeatRequest) GetTaskId() string {
@@ -1191,7 +1856,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1203,7 +1868,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1216,7 +1881,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{9}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *HeartbeatResponse) GetLeaseExpiresAtEpochMs() int64 {
@@ -1253,14 +1918,20 @@ type CompleteStepRequest struct {
 	// Added in 1.7 (feature 041): the attempt's last log records and its final mark. Absent when the attempt
 	// assigned no sequence, when capture is off for the session, or after STOP_ATTEMPT or STOP_CAPTURE. An API
 	// replica older than 1.7 ignores it as an unknown field.
-	StepLogs      *StepLogCarry `protobuf:"bytes,13,opt,name=step_logs,json=stepLogs,proto3" json:"step_logs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	StepLogs *StepLogCarry `protobuf:"bytes,13,opt,name=step_logs,json=stepLogs,proto3" json:"step_logs,omitempty"`
+	// Added in 1.10, served by Task 044-14 (eager workflow task): a sticky session asks for the run's next
+	// workflow task in the answer. Ignored until then. Granted only through the claim's workflow-task arm when the
+	// completion makes the run's workflow-task step READY, the session is that step's sticky session, its digest is
+	// the run's current one, its binding still lists the workflow type, the namespace is not paused and the
+	// `sagat.workflow` quota bucket has room (design 044, Technical Plan 11.2).
+	AcceptWorkflowTask bool `protobuf:"varint,14,opt,name=accept_workflow_task,json=acceptWorkflowTask,proto3" json:"accept_workflow_task,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CompleteStepRequest) Reset() {
 	*x = CompleteStepRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1272,7 +1943,7 @@ func (x *CompleteStepRequest) String() string {
 func (*CompleteStepRequest) ProtoMessage() {}
 
 func (x *CompleteStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1285,7 +1956,7 @@ func (x *CompleteStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteStepRequest.ProtoReflect.Descriptor instead.
 func (*CompleteStepRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{10}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CompleteStepRequest) GetTaskId() string {
@@ -1379,6 +2050,13 @@ func (x *CompleteStepRequest) GetStepLogs() *StepLogCarry {
 	return nil
 }
 
+func (x *CompleteStepRequest) GetAcceptWorkflowTask() bool {
+	if x != nil {
+		return x.AcceptWorkflowTask
+	}
+	return false
+}
+
 type FailStepRequest struct {
 	state          protoimpl.MessageState     `protogen:"open.v1"`
 	TaskId         string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
@@ -1401,7 +2079,7 @@ type FailStepRequest struct {
 
 func (x *FailStepRequest) Reset() {
 	*x = FailStepRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1413,7 +2091,7 @@ func (x *FailStepRequest) String() string {
 func (*FailStepRequest) ProtoMessage() {}
 
 func (x *FailStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1426,7 +2104,7 @@ func (x *FailStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FailStepRequest.ProtoReflect.Descriptor instead.
 func (*FailStepRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{11}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FailStepRequest) GetTaskId() string {
@@ -1536,7 +2214,7 @@ type ResolveSecretsRequest struct {
 
 func (x *ResolveSecretsRequest) Reset() {
 	*x = ResolveSecretsRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1548,7 +2226,7 @@ func (x *ResolveSecretsRequest) String() string {
 func (*ResolveSecretsRequest) ProtoMessage() {}
 
 func (x *ResolveSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1561,7 +2239,7 @@ func (x *ResolveSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ResolveSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{12}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ResolveSecretsRequest) GetTaskId() string {
@@ -1631,7 +2309,7 @@ type ResolvedSecret struct {
 
 func (x *ResolvedSecret) Reset() {
 	*x = ResolvedSecret{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1643,7 +2321,7 @@ func (x *ResolvedSecret) String() string {
 func (*ResolvedSecret) ProtoMessage() {}
 
 func (x *ResolvedSecret) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1656,7 +2334,7 @@ func (x *ResolvedSecret) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedSecret.ProtoReflect.Descriptor instead.
 func (*ResolvedSecret) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{13}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ResolvedSecret) GetName() string {
@@ -1689,7 +2367,7 @@ type ResolveSecretsResponse struct {
 
 func (x *ResolveSecretsResponse) Reset() {
 	*x = ResolveSecretsResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1701,7 +2379,7 @@ func (x *ResolveSecretsResponse) String() string {
 func (*ResolveSecretsResponse) ProtoMessage() {}
 
 func (x *ResolveSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1714,7 +2392,7 @@ func (x *ResolveSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ResolveSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{14}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ResolveSecretsResponse) GetSecrets() []*ResolvedSecret {
@@ -1738,7 +2416,7 @@ type WriteBlobRequest struct {
 
 func (x *WriteBlobRequest) Reset() {
 	*x = WriteBlobRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1750,7 +2428,7 @@ func (x *WriteBlobRequest) String() string {
 func (*WriteBlobRequest) ProtoMessage() {}
 
 func (x *WriteBlobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1763,7 +2441,7 @@ func (x *WriteBlobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBlobRequest.ProtoReflect.Descriptor instead.
 func (*WriteBlobRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{15}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *WriteBlobRequest) GetPart() isWriteBlobRequest_Part {
@@ -1828,7 +2506,7 @@ type WriteBlobHeader struct {
 
 func (x *WriteBlobHeader) Reset() {
 	*x = WriteBlobHeader{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1840,7 +2518,7 @@ func (x *WriteBlobHeader) String() string {
 func (*WriteBlobHeader) ProtoMessage() {}
 
 func (x *WriteBlobHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1853,7 +2531,7 @@ func (x *WriteBlobHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBlobHeader.ProtoReflect.Descriptor instead.
 func (*WriteBlobHeader) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{16}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WriteBlobHeader) GetTaskId() string {
@@ -1938,7 +2616,7 @@ type WriteBlobResponse struct {
 
 func (x *WriteBlobResponse) Reset() {
 	*x = WriteBlobResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1950,7 +2628,7 @@ func (x *WriteBlobResponse) String() string {
 func (*WriteBlobResponse) ProtoMessage() {}
 
 func (x *WriteBlobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1963,7 +2641,7 @@ func (x *WriteBlobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBlobResponse.ProtoReflect.Descriptor instead.
 func (*WriteBlobResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{17}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *WriteBlobResponse) GetBlobId() string {
@@ -1995,22 +2673,24 @@ func (x *WriteBlobResponse) GetContentType() string {
 }
 
 type ReadBlobRequest struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	TaskId        string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	RunId         string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId        string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt       int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Generation    int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
-	LeaseToken    string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	BlobId        string                     `protobuf:"bytes,7,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
-	Instance      *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
+	state      protoimpl.MessageState     `protogen:"open.v1"`
+	TaskId     string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId      string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId     string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt    int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	BlobId     string                     `protobuf:"bytes,7,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
+	Instance   *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
+	// Added in 1.10 (design 044): the read token of a query or replay-check item, instead of the lease fields.
+	ReadToken     string `protobuf:"bytes,9,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReadBlobRequest) Reset() {
 	*x = ReadBlobRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2022,7 +2702,7 @@ func (x *ReadBlobRequest) String() string {
 func (*ReadBlobRequest) ProtoMessage() {}
 
 func (x *ReadBlobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2035,7 +2715,7 @@ func (x *ReadBlobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadBlobRequest.ProtoReflect.Descriptor instead.
 func (*ReadBlobRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{18}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ReadBlobRequest) GetTaskId() string {
@@ -2094,6 +2774,13 @@ func (x *ReadBlobRequest) GetInstance() *ExecutionInstanceIdentity {
 	return nil
 }
 
+func (x *ReadBlobRequest) GetReadToken() string {
+	if x != nil {
+		return x.ReadToken
+	}
+	return ""
+}
+
 // ReadBlob: `header` first, then `chunk`s.
 type ReadBlobResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2108,7 +2795,7 @@ type ReadBlobResponse struct {
 
 func (x *ReadBlobResponse) Reset() {
 	*x = ReadBlobResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2120,7 +2807,7 @@ func (x *ReadBlobResponse) String() string {
 func (*ReadBlobResponse) ProtoMessage() {}
 
 func (x *ReadBlobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2133,7 +2820,7 @@ func (x *ReadBlobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadBlobResponse.ProtoReflect.Descriptor instead.
 func (*ReadBlobResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{19}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReadBlobResponse) GetPart() isReadBlobResponse_Part {
@@ -2189,7 +2876,7 @@ type ReadBlobHeader struct {
 
 func (x *ReadBlobHeader) Reset() {
 	*x = ReadBlobHeader{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2201,7 +2888,7 @@ func (x *ReadBlobHeader) String() string {
 func (*ReadBlobHeader) ProtoMessage() {}
 
 func (x *ReadBlobHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2214,7 +2901,7 @@ func (x *ReadBlobHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadBlobHeader.ProtoReflect.Descriptor instead.
 func (*ReadBlobHeader) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{20}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ReadBlobHeader) GetBlobId() string {
@@ -2251,13 +2938,16 @@ type StepCommandResponse struct {
 	AlreadyApplied bool                   `protobuf:"varint,2,opt,name=already_applied,json=alreadyApplied,proto3" json:"already_applied,omitempty"`
 	StepStatus     string                 `protobuf:"bytes,3,opt,name=step_status,json=stepStatus,proto3" json:"step_status,omitempty"`
 	RunStatus      string                 `protobuf:"bytes,4,opt,name=run_status,json=runStatus,proto3" json:"run_status,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Added in 1.10, served by Task 044-14: the eager workflow task asked for by `accept_workflow_task`.
+	// Never set on an idempotent replay.
+	WorkflowTask  *TaskLease `protobuf:"bytes,5,opt,name=workflow_task,json=workflowTask,proto3" json:"workflow_task,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StepCommandResponse) Reset() {
 	*x = StepCommandResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[21]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2269,7 +2959,7 @@ func (x *StepCommandResponse) String() string {
 func (*StepCommandResponse) ProtoMessage() {}
 
 func (x *StepCommandResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[21]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2282,7 +2972,7 @@ func (x *StepCommandResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepCommandResponse.ProtoReflect.Descriptor instead.
 func (*StepCommandResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{21}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *StepCommandResponse) GetCommandId() string {
@@ -2313,6 +3003,13 @@ func (x *StepCommandResponse) GetRunStatus() string {
 	return ""
 }
 
+func (x *StepCommandResponse) GetWorkflowTask() *TaskLease {
+	if x != nil {
+		return x.WorkflowTask
+	}
+	return nil
+}
+
 // Managed execution types, additive in 1.6. Integers and decimals are decimal strings, never
 // doubles. JSON contains one valid JSON value; timestamp is RFC3339 and date is YYYY-MM-DD.
 type DatabaseValue struct {
@@ -2336,7 +3033,7 @@ type DatabaseValue struct {
 
 func (x *DatabaseValue) Reset() {
 	*x = DatabaseValue{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2348,7 +3045,7 @@ func (x *DatabaseValue) String() string {
 func (*DatabaseValue) ProtoMessage() {}
 
 func (x *DatabaseValue) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2361,7 +3058,7 @@ func (x *DatabaseValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseValue.ProtoReflect.Descriptor instead.
 func (*DatabaseValue) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{22}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DatabaseValue) GetValue() isDatabaseValue_Value {
@@ -2538,7 +3235,7 @@ type PostgresConnection struct {
 
 func (x *PostgresConnection) Reset() {
 	*x = PostgresConnection{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2550,7 +3247,7 @@ func (x *PostgresConnection) String() string {
 func (*PostgresConnection) ProtoMessage() {}
 
 func (x *PostgresConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2563,7 +3260,7 @@ func (x *PostgresConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostgresConnection.ProtoReflect.Descriptor instead.
 func (*PostgresConnection) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{23}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PostgresConnection) GetHost() string {
@@ -2618,7 +3315,7 @@ type DatabaseLimits struct {
 
 func (x *DatabaseLimits) Reset() {
 	*x = DatabaseLimits{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[24]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2630,7 +3327,7 @@ func (x *DatabaseLimits) String() string {
 func (*DatabaseLimits) ProtoMessage() {}
 
 func (x *DatabaseLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[24]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2643,7 +3340,7 @@ func (x *DatabaseLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseLimits.ProtoReflect.Descriptor instead.
 func (*DatabaseLimits) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{24}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DatabaseLimits) GetMaxStatementBytes() uint32 {
@@ -2720,7 +3417,7 @@ type LakeLimits struct {
 
 func (x *LakeLimits) Reset() {
 	*x = LakeLimits{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2732,7 +3429,7 @@ func (x *LakeLimits) String() string {
 func (*LakeLimits) ProtoMessage() {}
 
 func (x *LakeLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2745,7 +3442,7 @@ func (x *LakeLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LakeLimits.ProtoReflect.Descriptor instead.
 func (*LakeLimits) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{25}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *LakeLimits) GetMaxRecordBytes() uint32 {
@@ -2787,7 +3484,7 @@ type IcebergRestCatalog struct {
 
 func (x *IcebergRestCatalog) Reset() {
 	*x = IcebergRestCatalog{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[26]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2799,7 +3496,7 @@ func (x *IcebergRestCatalog) String() string {
 func (*IcebergRestCatalog) ProtoMessage() {}
 
 func (x *IcebergRestCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[26]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2812,7 +3509,7 @@ func (x *IcebergRestCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IcebergRestCatalog.ProtoReflect.Descriptor instead.
 func (*IcebergRestCatalog) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{26}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *IcebergRestCatalog) GetUri() string {
@@ -2897,7 +3594,7 @@ type IcebergGlueCatalog struct {
 
 func (x *IcebergGlueCatalog) Reset() {
 	*x = IcebergGlueCatalog{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[27]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2909,7 +3606,7 @@ func (x *IcebergGlueCatalog) String() string {
 func (*IcebergGlueCatalog) ProtoMessage() {}
 
 func (x *IcebergGlueCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[27]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2922,7 +3619,7 @@ func (x *IcebergGlueCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IcebergGlueCatalog.ProtoReflect.Descriptor instead.
 func (*IcebergGlueCatalog) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{27}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *IcebergGlueCatalog) GetRegion() string {
@@ -2963,7 +3660,7 @@ type IcebergHiveCatalog struct {
 
 func (x *IcebergHiveCatalog) Reset() {
 	*x = IcebergHiveCatalog{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[28]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2975,7 +3672,7 @@ func (x *IcebergHiveCatalog) String() string {
 func (*IcebergHiveCatalog) ProtoMessage() {}
 
 func (x *IcebergHiveCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[28]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2988,7 +3685,7 @@ func (x *IcebergHiveCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IcebergHiveCatalog.ProtoReflect.Descriptor instead.
 func (*IcebergHiveCatalog) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{28}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *IcebergHiveCatalog) GetUris() []string {
@@ -3019,7 +3716,7 @@ type IcebergJdbcCatalog struct {
 
 func (x *IcebergJdbcCatalog) Reset() {
 	*x = IcebergJdbcCatalog{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[29]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3031,7 +3728,7 @@ func (x *IcebergJdbcCatalog) String() string {
 func (*IcebergJdbcCatalog) ProtoMessage() {}
 
 func (x *IcebergJdbcCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[29]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3044,7 +3741,7 @@ func (x *IcebergJdbcCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IcebergJdbcCatalog.ProtoReflect.Descriptor instead.
 func (*IcebergJdbcCatalog) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{29}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *IcebergJdbcCatalog) GetHost() string {
@@ -3102,7 +3799,7 @@ type LakeS3Storage struct {
 
 func (x *LakeS3Storage) Reset() {
 	*x = LakeS3Storage{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[30]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3114,7 +3811,7 @@ func (x *LakeS3Storage) String() string {
 func (*LakeS3Storage) ProtoMessage() {}
 
 func (x *LakeS3Storage) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[30]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3127,7 +3824,7 @@ func (x *LakeS3Storage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LakeS3Storage.ProtoReflect.Descriptor instead.
 func (*LakeS3Storage) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{30}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *LakeS3Storage) GetRegion() string {
@@ -3175,7 +3872,7 @@ type LakeGcsStorage struct {
 
 func (x *LakeGcsStorage) Reset() {
 	*x = LakeGcsStorage{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[31]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3187,7 +3884,7 @@ func (x *LakeGcsStorage) String() string {
 func (*LakeGcsStorage) ProtoMessage() {}
 
 func (x *LakeGcsStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[31]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3200,7 +3897,7 @@ func (x *LakeGcsStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LakeGcsStorage.ProtoReflect.Descriptor instead.
 func (*LakeGcsStorage) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{31}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *LakeGcsStorage) GetProject() string {
@@ -3227,7 +3924,7 @@ type LakeAdlsStorage struct {
 
 func (x *LakeAdlsStorage) Reset() {
 	*x = LakeAdlsStorage{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[32]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3239,7 +3936,7 @@ func (x *LakeAdlsStorage) String() string {
 func (*LakeAdlsStorage) ProtoMessage() {}
 
 func (x *LakeAdlsStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[32]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3252,7 +3949,7 @@ func (x *LakeAdlsStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LakeAdlsStorage.ProtoReflect.Descriptor instead.
 func (*LakeAdlsStorage) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{32}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *LakeAdlsStorage) GetAccount() string {
@@ -3285,7 +3982,7 @@ type LakeStorage struct {
 
 func (x *LakeStorage) Reset() {
 	*x = LakeStorage{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3297,7 +3994,7 @@ func (x *LakeStorage) String() string {
 func (*LakeStorage) ProtoMessage() {}
 
 func (x *LakeStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3310,7 +4007,7 @@ func (x *LakeStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LakeStorage.ProtoReflect.Descriptor instead.
 func (*LakeStorage) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{33}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *LakeStorage) GetKind() isLakeStorage_Kind {
@@ -3399,7 +4096,7 @@ type IcebergConnection struct {
 
 func (x *IcebergConnection) Reset() {
 	*x = IcebergConnection{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3411,7 +4108,7 @@ func (x *IcebergConnection) String() string {
 func (*IcebergConnection) ProtoMessage() {}
 
 func (x *IcebergConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3424,7 +4121,7 @@ func (x *IcebergConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IcebergConnection.ProtoReflect.Descriptor instead.
 func (*IcebergConnection) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{34}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *IcebergConnection) GetCatalog() isIcebergConnection_Catalog {
@@ -3556,7 +4253,7 @@ type ObjectStorageConnection struct {
 
 func (x *ObjectStorageConnection) Reset() {
 	*x = ObjectStorageConnection{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3568,7 +4265,7 @@ func (x *ObjectStorageConnection) String() string {
 func (*ObjectStorageConnection) ProtoMessage() {}
 
 func (x *ObjectStorageConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3581,7 +4278,7 @@ func (x *ObjectStorageConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectStorageConnection.ProtoReflect.Descriptor instead.
 func (*ObjectStorageConnection) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{35}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ObjectStorageConnection) GetStorage() *LakeStorage {
@@ -3647,7 +4344,7 @@ type ClickHouseConnection struct {
 
 func (x *ClickHouseConnection) Reset() {
 	*x = ClickHouseConnection{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[36]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3659,7 +4356,7 @@ func (x *ClickHouseConnection) String() string {
 func (*ClickHouseConnection) ProtoMessage() {}
 
 func (x *ClickHouseConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[36]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3672,7 +4369,7 @@ func (x *ClickHouseConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClickHouseConnection.ProtoReflect.Descriptor instead.
 func (*ClickHouseConnection) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{36}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ClickHouseConnection) GetUrl() string {
@@ -3743,7 +4440,7 @@ type ResolvedDatabase struct {
 
 func (x *ResolvedDatabase) Reset() {
 	*x = ResolvedDatabase{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[37]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3755,7 +4452,7 @@ func (x *ResolvedDatabase) String() string {
 func (*ResolvedDatabase) ProtoMessage() {}
 
 func (x *ResolvedDatabase) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[37]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3768,7 +4465,7 @@ func (x *ResolvedDatabase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedDatabase.ProtoReflect.Descriptor instead.
 func (*ResolvedDatabase) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{37}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ResolvedDatabase) GetConnectionId() string {
@@ -3897,7 +4594,7 @@ type AppendStepLogsRequest struct {
 
 func (x *AppendStepLogsRequest) Reset() {
 	*x = AppendStepLogsRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[38]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3909,7 +4606,7 @@ func (x *AppendStepLogsRequest) String() string {
 func (*AppendStepLogsRequest) ProtoMessage() {}
 
 func (x *AppendStepLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[38]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3922,7 +4619,7 @@ func (x *AppendStepLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendStepLogsRequest.ProtoReflect.Descriptor instead.
 func (*AppendStepLogsRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{38}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *AppendStepLogsRequest) GetWorkerId() string {
@@ -4011,7 +4708,7 @@ type StepLogCarry struct {
 
 func (x *StepLogCarry) Reset() {
 	*x = StepLogCarry{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[39]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4023,7 +4720,7 @@ func (x *StepLogCarry) String() string {
 func (*StepLogCarry) ProtoMessage() {}
 
 func (x *StepLogCarry) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[39]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4036,7 +4733,7 @@ func (x *StepLogCarry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepLogCarry.ProtoReflect.Descriptor instead.
 func (*StepLogCarry) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{39}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *StepLogCarry) GetRecords() []*StepLogRecord {
@@ -4068,7 +4765,7 @@ type StepLogRecord struct {
 
 func (x *StepLogRecord) Reset() {
 	*x = StepLogRecord{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4080,7 +4777,7 @@ func (x *StepLogRecord) String() string {
 func (*StepLogRecord) ProtoMessage() {}
 
 func (x *StepLogRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[40]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4093,7 +4790,7 @@ func (x *StepLogRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepLogRecord.ProtoReflect.Descriptor instead.
 func (*StepLogRecord) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{40}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *StepLogRecord) GetSequence() uint64 {
@@ -4161,7 +4858,7 @@ type StepLogField struct {
 
 func (x *StepLogField) Reset() {
 	*x = StepLogField{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4173,7 +4870,7 @@ func (x *StepLogField) String() string {
 func (*StepLogField) ProtoMessage() {}
 
 func (x *StepLogField) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4186,7 +4883,7 @@ func (x *StepLogField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepLogField.ProtoReflect.Descriptor instead.
 func (*StepLogField) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{41}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *StepLogField) GetKey() string {
@@ -4280,7 +4977,7 @@ type AppendStepLogsResponse struct {
 
 func (x *AppendStepLogsResponse) Reset() {
 	*x = AppendStepLogsResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4292,7 +4989,7 @@ func (x *AppendStepLogsResponse) String() string {
 func (*AppendStepLogsResponse) ProtoMessage() {}
 
 func (x *AppendStepLogsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4305,7 +5002,7 @@ func (x *AppendStepLogsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendStepLogsResponse.ProtoReflect.Descriptor instead.
 func (*AppendStepLogsResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{42}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *AppendStepLogsResponse) GetVerdict() StepLogVerdict {
@@ -4346,7 +5043,7 @@ type StepLogPolicy struct {
 
 func (x *StepLogPolicy) Reset() {
 	*x = StepLogPolicy{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[43]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4358,7 +5055,7 @@ func (x *StepLogPolicy) String() string {
 func (*StepLogPolicy) ProtoMessage() {}
 
 func (x *StepLogPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[43]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4371,7 +5068,7 @@ func (x *StepLogPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepLogPolicy.ProtoReflect.Descriptor instead.
 func (*StepLogPolicy) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{43}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *StepLogPolicy) GetEnabled() bool {
@@ -4381,11 +5078,3713 @@ func (x *StepLogPolicy) GetEnabled() bool {
 	return false
 }
 
+// The lease of one workflow task: one lease of the run's reserved `~workflow` step. It carries no secret.
+type WorkflowTaskLease struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	RunId      string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Attempt    int32                  `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation int64                  `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken string                 `protobuf:"bytes,4,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	// Counted from the delivery of the last history page read; reading history extends it, up to
+	// 120,000 ms after the claim in all. There is no heartbeat.
+	ExpiresAtEpochMs int64 `protobuf:"varint,5,opt,name=expires_at_epoch_ms,json=expiresAtEpochMs,proto3" json:"expires_at_epoch_ms,omitempty"`
+	// The run's 32-byte seed (Technical Plan 1.8). Not for secrets: every holder of the seed predicts it.
+	Seed []byte `protobuf:"bytes,6,opt,name=seed,proto3" json:"seed,omitempty"`
+	// The time, in microseconds since the epoch, of the `workflow_task.started` this lease journaled.
+	StartedAtUs int64 `protobuf:"varint,7,opt,name=started_at_us,json=startedAtUs,proto3" json:"started_at_us,omitempty"`
+	// S(k - 1): the journal sequence of the `workflow_task.started` of the last completed workflow task (0
+	// before the first). A worker whose cache holds the run at exactly this sequence applies the new window
+	// to its cached state; any other worker replays from journal sequence 1.
+	WindowStartSeq int64 `protobuf:"varint,8,opt,name=window_start_seq,json=windowStartSeq,proto3" json:"window_start_seq,omitempty"`
+	// The activity names of the run's current version whose published envelope entry carries
+	// `requiresApproval`, and nothing else (the SDK keeps their inputs inline).
+	GatedEntries []string `protobuf:"bytes,9,rep,name=gated_entries,json=gatedEntries,proto3" json:"gated_entries,omitempty"`
+	// The current version's `state.maxBytes`, which the SDK reserves from the activation's start.
+	StateMaxBytes int64 `protobuf:"varint,10,opt,name=state_max_bytes,json=stateMaxBytes,proto3" json:"state_max_bytes,omitempty"`
+	// The first page of the visible history from journal sequence 1, at most 256 KiB; read the rest with
+	// ReadHistory.
+	FirstPage []*HistoryEvent `protobuf:"bytes,11,rep,name=first_page,json=firstPage,proto3" json:"first_page,omitempty"`
+	// The run's visible count when the lease was taken.
+	VisibleCount           int64  `protobuf:"varint,12,opt,name=visible_count,json=visibleCount,proto3" json:"visible_count,omitempty"`
+	ContinueAsNewSuggested bool   `protobuf:"varint,13,opt,name=continue_as_new_suggested,json=continueAsNewSuggested,proto3" json:"continue_as_new_suggested,omitempty"`
+	HistoryLimitReached    bool   `protobuf:"varint,14,opt,name=history_limit_reached,json=historyLimitReached,proto3" json:"history_limit_reached,omitempty"`
+	Traceparent            string `protobuf:"bytes,15,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	// The workflow type and the code digest of the run's current code version (the pair the session
+	// registered), so that the SDK need not parse the reserved activity name.
+	WorkflowType  string `protobuf:"bytes,16,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
+	CodeDigest    string `protobuf:"bytes,17,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowTaskLease) Reset() {
+	*x = WorkflowTaskLease{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowTaskLease) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowTaskLease) ProtoMessage() {}
+
+func (x *WorkflowTaskLease) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowTaskLease.ProtoReflect.Descriptor instead.
+func (*WorkflowTaskLease) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *WorkflowTaskLease) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *WorkflowTaskLease) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *WorkflowTaskLease) GetExpiresAtEpochMs() int64 {
+	if x != nil {
+		return x.ExpiresAtEpochMs
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetSeed() []byte {
+	if x != nil {
+		return x.Seed
+	}
+	return nil
+}
+
+func (x *WorkflowTaskLease) GetStartedAtUs() int64 {
+	if x != nil {
+		return x.StartedAtUs
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetWindowStartSeq() int64 {
+	if x != nil {
+		return x.WindowStartSeq
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetGatedEntries() []string {
+	if x != nil {
+		return x.GatedEntries
+	}
+	return nil
+}
+
+func (x *WorkflowTaskLease) GetStateMaxBytes() int64 {
+	if x != nil {
+		return x.StateMaxBytes
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetFirstPage() []*HistoryEvent {
+	if x != nil {
+		return x.FirstPage
+	}
+	return nil
+}
+
+func (x *WorkflowTaskLease) GetVisibleCount() int64 {
+	if x != nil {
+		return x.VisibleCount
+	}
+	return 0
+}
+
+func (x *WorkflowTaskLease) GetContinueAsNewSuggested() bool {
+	if x != nil {
+		return x.ContinueAsNewSuggested
+	}
+	return false
+}
+
+func (x *WorkflowTaskLease) GetHistoryLimitReached() bool {
+	if x != nil {
+		return x.HistoryLimitReached
+	}
+	return false
+}
+
+func (x *WorkflowTaskLease) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
+	}
+	return ""
+}
+
+func (x *WorkflowTaskLease) GetWorkflowType() string {
+	if x != nil {
+		return x.WorkflowType
+	}
+	return ""
+}
+
+func (x *WorkflowTaskLease) GetCodeDigest() string {
+	if x != nil {
+		return x.CodeDigest
+	}
+	return ""
+}
+
+// A value of the history: inline JSON (at most 256 KiB) or a blob reference. For a workflow lease and for the
+// read token of a query or replay-check item, every field of an inline value that its carrier schema classifies
+// `secret` is replaced by feature 016's typed placeholder, and every other field is delivered as stored; the export
+// applies feature 016's redaction and reveal rules to every field. When `placeholder` is set the value is withheld
+// (`EXTERNAL_CONTENT_NOT_INSPECTED` for a blob whose carrier classifies a field `secret`, and every blob of an
+// export): only `blob.size` is set, and `json`, `blob_id`, `sha256` and `content_type` are empty.
+type HistoryPayload struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Value:
+	//
+	//	*HistoryPayload_Json
+	//	*HistoryPayload_Blob
+	Value         isHistoryPayload_Value `protobuf_oneof:"value"`
+	Placeholder   string                 `protobuf:"bytes,3,opt,name=placeholder,proto3" json:"placeholder,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryPayload) Reset() {
+	*x = HistoryPayload{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryPayload) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryPayload) ProtoMessage() {}
+
+func (x *HistoryPayload) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryPayload.ProtoReflect.Descriptor instead.
+func (*HistoryPayload) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *HistoryPayload) GetValue() isHistoryPayload_Value {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *HistoryPayload) GetJson() []byte {
+	if x != nil {
+		if x, ok := x.Value.(*HistoryPayload_Json); ok {
+			return x.Json
+		}
+	}
+	return nil
+}
+
+func (x *HistoryPayload) GetBlob() *HistoryBlobRef {
+	if x != nil {
+		if x, ok := x.Value.(*HistoryPayload_Blob); ok {
+			return x.Blob
+		}
+	}
+	return nil
+}
+
+func (x *HistoryPayload) GetPlaceholder() string {
+	if x != nil {
+		return x.Placeholder
+	}
+	return ""
+}
+
+type isHistoryPayload_Value interface {
+	isHistoryPayload_Value()
+}
+
+type HistoryPayload_Json struct {
+	Json []byte `protobuf:"bytes,1,opt,name=json,proto3,oneof"`
+}
+
+type HistoryPayload_Blob struct {
+	Blob *HistoryBlobRef `protobuf:"bytes,2,opt,name=blob,proto3,oneof"`
+}
+
+func (*HistoryPayload_Json) isHistoryPayload_Value() {}
+
+func (*HistoryPayload_Blob) isHistoryPayload_Value() {}
+
+type HistoryBlobRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BlobId        string                 `protobuf:"bytes,1,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
+	Size          int64                  `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	Sha256        string                 `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	ContentType   string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryBlobRef) Reset() {
+	*x = HistoryBlobRef{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryBlobRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryBlobRef) ProtoMessage() {}
+
+func (x *HistoryBlobRef) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryBlobRef.ProtoReflect.Descriptor instead.
+func (*HistoryBlobRef) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *HistoryBlobRef) GetBlobId() string {
+	if x != nil {
+		return x.BlobId
+	}
+	return ""
+}
+
+func (x *HistoryBlobRef) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *HistoryBlobRef) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *HistoryBlobRef) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
+// One visible event. Never an actor subject, a body digest, a node specification or risk metadata.
+type HistoryEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Kind          HistoryEventKind       `protobuf:"varint,2,opt,name=kind,proto3,enum=sagat_octopus_orchestrator.v1.HistoryEventKind" json:"kind,omitempty"`
+	Origin        HistoryEventOrigin     `protobuf:"varint,3,opt,name=origin,proto3,enum=sagat_octopus_orchestrator.v1.HistoryEventOrigin" json:"origin,omitempty"`
+	CommandNumber int64                  `protobuf:"varint,4,opt,name=command_number,json=commandNumber,proto3" json:"command_number,omitempty"` // for a command record and a marker; 0 otherwise
+	AtUs          int64                  `protobuf:"varint,5,opt,name=at_us,json=atUs,proto3" json:"at_us,omitempty"`                            // the event's time, microseconds since the epoch
+	// Types that are valid to be assigned to Body:
+	//
+	//	*HistoryEvent_RunStarted
+	//	*HistoryEvent_WorkflowTaskStarted
+	//	*HistoryEvent_WorkflowTaskCompleted
+	//	*HistoryEvent_CommandRecord
+	//	*HistoryEvent_StepOutcome
+	//	*HistoryEvent_TimerFired
+	//	*HistoryEvent_WaitOutcome
+	//	*HistoryEvent_ChildFinished
+	//	*HistoryEvent_ApprovalDecided
+	//	*HistoryEvent_SagaOutcome
+	//	*HistoryEvent_SignalBuffered
+	//	*HistoryEvent_UpdateAdmitted
+	//	*HistoryEvent_CancellationRequested
+	//	*HistoryEvent_MarkerRecorded
+	Body          isHistoryEvent_Body `protobuf_oneof:"body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryEvent) Reset() {
+	*x = HistoryEvent{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryEvent) ProtoMessage() {}
+
+func (x *HistoryEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryEvent.ProtoReflect.Descriptor instead.
+func (*HistoryEvent) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *HistoryEvent) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *HistoryEvent) GetKind() HistoryEventKind {
+	if x != nil {
+		return x.Kind
+	}
+	return HistoryEventKind_HISTORY_EVENT_KIND_UNSPECIFIED
+}
+
+func (x *HistoryEvent) GetOrigin() HistoryEventOrigin {
+	if x != nil {
+		return x.Origin
+	}
+	return HistoryEventOrigin_HISTORY_EVENT_ORIGIN_UNSPECIFIED
+}
+
+func (x *HistoryEvent) GetCommandNumber() int64 {
+	if x != nil {
+		return x.CommandNumber
+	}
+	return 0
+}
+
+func (x *HistoryEvent) GetAtUs() int64 {
+	if x != nil {
+		return x.AtUs
+	}
+	return 0
+}
+
+func (x *HistoryEvent) GetBody() isHistoryEvent_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetRunStarted() *HistoryRunStarted {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_RunStarted); ok {
+			return x.RunStarted
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetWorkflowTaskStarted() *HistoryWorkflowTaskStarted {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_WorkflowTaskStarted); ok {
+			return x.WorkflowTaskStarted
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetWorkflowTaskCompleted() *HistoryWorkflowTaskCompleted {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_WorkflowTaskCompleted); ok {
+			return x.WorkflowTaskCompleted
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetCommandRecord() *HistoryCommandRecord {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_CommandRecord); ok {
+			return x.CommandRecord
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetStepOutcome() *HistoryStepOutcome {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_StepOutcome); ok {
+			return x.StepOutcome
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetTimerFired() *HistoryTimerFired {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_TimerFired); ok {
+			return x.TimerFired
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetWaitOutcome() *HistoryWaitOutcome {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_WaitOutcome); ok {
+			return x.WaitOutcome
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetChildFinished() *HistoryChildFinished {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_ChildFinished); ok {
+			return x.ChildFinished
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetApprovalDecided() *HistoryApprovalDecided {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_ApprovalDecided); ok {
+			return x.ApprovalDecided
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetSagaOutcome() *HistorySagaOutcome {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_SagaOutcome); ok {
+			return x.SagaOutcome
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetSignalBuffered() *HistorySignalBuffered {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_SignalBuffered); ok {
+			return x.SignalBuffered
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetUpdateAdmitted() *HistoryUpdateAdmitted {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_UpdateAdmitted); ok {
+			return x.UpdateAdmitted
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetCancellationRequested() *HistoryCancellationRequested {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_CancellationRequested); ok {
+			return x.CancellationRequested
+		}
+	}
+	return nil
+}
+
+func (x *HistoryEvent) GetMarkerRecorded() *HistoryMarkerRecorded {
+	if x != nil {
+		if x, ok := x.Body.(*HistoryEvent_MarkerRecorded); ok {
+			return x.MarkerRecorded
+		}
+	}
+	return nil
+}
+
+type isHistoryEvent_Body interface {
+	isHistoryEvent_Body()
+}
+
+type HistoryEvent_RunStarted struct {
+	RunStarted *HistoryRunStarted `protobuf:"bytes,10,opt,name=run_started,json=runStarted,proto3,oneof"`
+}
+
+type HistoryEvent_WorkflowTaskStarted struct {
+	WorkflowTaskStarted *HistoryWorkflowTaskStarted `protobuf:"bytes,11,opt,name=workflow_task_started,json=workflowTaskStarted,proto3,oneof"`
+}
+
+type HistoryEvent_WorkflowTaskCompleted struct {
+	WorkflowTaskCompleted *HistoryWorkflowTaskCompleted `protobuf:"bytes,12,opt,name=workflow_task_completed,json=workflowTaskCompleted,proto3,oneof"`
+}
+
+type HistoryEvent_CommandRecord struct {
+	CommandRecord *HistoryCommandRecord `protobuf:"bytes,13,opt,name=command_record,json=commandRecord,proto3,oneof"`
+}
+
+type HistoryEvent_StepOutcome struct {
+	StepOutcome *HistoryStepOutcome `protobuf:"bytes,14,opt,name=step_outcome,json=stepOutcome,proto3,oneof"`
+}
+
+type HistoryEvent_TimerFired struct {
+	TimerFired *HistoryTimerFired `protobuf:"bytes,15,opt,name=timer_fired,json=timerFired,proto3,oneof"`
+}
+
+type HistoryEvent_WaitOutcome struct {
+	WaitOutcome *HistoryWaitOutcome `protobuf:"bytes,16,opt,name=wait_outcome,json=waitOutcome,proto3,oneof"`
+}
+
+type HistoryEvent_ChildFinished struct {
+	ChildFinished *HistoryChildFinished `protobuf:"bytes,17,opt,name=child_finished,json=childFinished,proto3,oneof"`
+}
+
+type HistoryEvent_ApprovalDecided struct {
+	ApprovalDecided *HistoryApprovalDecided `protobuf:"bytes,18,opt,name=approval_decided,json=approvalDecided,proto3,oneof"`
+}
+
+type HistoryEvent_SagaOutcome struct {
+	SagaOutcome *HistorySagaOutcome `protobuf:"bytes,19,opt,name=saga_outcome,json=sagaOutcome,proto3,oneof"`
+}
+
+type HistoryEvent_SignalBuffered struct {
+	SignalBuffered *HistorySignalBuffered `protobuf:"bytes,20,opt,name=signal_buffered,json=signalBuffered,proto3,oneof"`
+}
+
+type HistoryEvent_UpdateAdmitted struct {
+	UpdateAdmitted *HistoryUpdateAdmitted `protobuf:"bytes,21,opt,name=update_admitted,json=updateAdmitted,proto3,oneof"`
+}
+
+type HistoryEvent_CancellationRequested struct {
+	CancellationRequested *HistoryCancellationRequested `protobuf:"bytes,22,opt,name=cancellation_requested,json=cancellationRequested,proto3,oneof"`
+}
+
+type HistoryEvent_MarkerRecorded struct {
+	MarkerRecorded *HistoryMarkerRecorded `protobuf:"bytes,23,opt,name=marker_recorded,json=markerRecorded,proto3,oneof"`
+}
+
+func (*HistoryEvent_RunStarted) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_WorkflowTaskStarted) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_WorkflowTaskCompleted) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_CommandRecord) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_StepOutcome) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_TimerFired) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_WaitOutcome) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_ChildFinished) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_ApprovalDecided) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_SagaOutcome) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_SignalBuffered) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_UpdateAdmitted) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_CancellationRequested) isHistoryEvent_Body() {}
+
+func (*HistoryEvent_MarkerRecorded) isHistoryEvent_Body() {}
+
+type HistoryRunStarted struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Input            *HistoryPayload        `protobuf:"bytes,1,opt,name=input,proto3" json:"input,omitempty"`
+	CarriedState     *HistoryPayload        `protobuf:"bytes,2,opt,name=carried_state,json=carriedState,proto3" json:"carried_state,omitempty"`               // a successor of continue-as-new only
+	PredecessorRunId string                 `protobuf:"bytes,3,opt,name=predecessor_run_id,json=predecessorRunId,proto3" json:"predecessor_run_id,omitempty"` // a successor of continue-as-new only
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *HistoryRunStarted) Reset() {
+	*x = HistoryRunStarted{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryRunStarted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryRunStarted) ProtoMessage() {}
+
+func (x *HistoryRunStarted) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryRunStarted.ProtoReflect.Descriptor instead.
+func (*HistoryRunStarted) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *HistoryRunStarted) GetInput() *HistoryPayload {
+	if x != nil {
+		return x.Input
+	}
+	return nil
+}
+
+func (x *HistoryRunStarted) GetCarriedState() *HistoryPayload {
+	if x != nil {
+		return x.CarriedState
+	}
+	return nil
+}
+
+func (x *HistoryRunStarted) GetPredecessorRunId() string {
+	if x != nil {
+		return x.PredecessorRunId
+	}
+	return ""
+}
+
+type HistoryWorkflowTaskStarted struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	ContinueAsNewSuggested bool                   `protobuf:"varint,1,opt,name=continue_as_new_suggested,json=continueAsNewSuggested,proto3" json:"continue_as_new_suggested,omitempty"`
+	HistoryLimitReached    bool                   `protobuf:"varint,2,opt,name=history_limit_reached,json=historyLimitReached,proto3" json:"history_limit_reached,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *HistoryWorkflowTaskStarted) Reset() {
+	*x = HistoryWorkflowTaskStarted{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryWorkflowTaskStarted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryWorkflowTaskStarted) ProtoMessage() {}
+
+func (x *HistoryWorkflowTaskStarted) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryWorkflowTaskStarted.ProtoReflect.Descriptor instead.
+func (*HistoryWorkflowTaskStarted) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *HistoryWorkflowTaskStarted) GetContinueAsNewSuggested() bool {
+	if x != nil {
+		return x.ContinueAsNewSuggested
+	}
+	return false
+}
+
+func (x *HistoryWorkflowTaskStarted) GetHistoryLimitReached() bool {
+	if x != nil {
+		return x.HistoryLimitReached
+	}
+	return false
+}
+
+type HistoryWorkflowTaskCompleted struct {
+	state          protoimpl.MessageState   `protogen:"open.v1"`
+	Deferred       bool                     `protobuf:"varint,1,opt,name=deferred,proto3" json:"deferred,omitempty"` // the completion deferred a terminal or continue-as-new command
+	DeferredKind   CommandKind              `protobuf:"varint,2,opt,name=deferred_kind,json=deferredKind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"deferred_kind,omitempty"`
+	DeferredTarget string                   `protobuf:"bytes,3,opt,name=deferred_target,json=deferredTarget,proto3" json:"deferred_target,omitempty"`
+	DeferralCause  WorkflowTaskFailureCause `protobuf:"varint,4,opt,name=deferral_cause,json=deferralCause,proto3,enum=sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause" json:"deferral_cause,omitempty"` // OUTSTANDING_OBLIGATIONS or UNHANDLED_EVENTS
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *HistoryWorkflowTaskCompleted) Reset() {
+	*x = HistoryWorkflowTaskCompleted{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryWorkflowTaskCompleted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryWorkflowTaskCompleted) ProtoMessage() {}
+
+func (x *HistoryWorkflowTaskCompleted) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryWorkflowTaskCompleted.ProtoReflect.Descriptor instead.
+func (*HistoryWorkflowTaskCompleted) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *HistoryWorkflowTaskCompleted) GetDeferred() bool {
+	if x != nil {
+		return x.Deferred
+	}
+	return false
+}
+
+func (x *HistoryWorkflowTaskCompleted) GetDeferredKind() CommandKind {
+	if x != nil {
+		return x.DeferredKind
+	}
+	return CommandKind_COMMAND_KIND_UNSPECIFIED
+}
+
+func (x *HistoryWorkflowTaskCompleted) GetDeferredTarget() string {
+	if x != nil {
+		return x.DeferredTarget
+	}
+	return ""
+}
+
+func (x *HistoryWorkflowTaskCompleted) GetDeferralCause() WorkflowTaskFailureCause {
+	if x != nil {
+		return x.DeferralCause
+	}
+	return WorkflowTaskFailureCause_WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED
+}
+
+type HistoryCommandRecord struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Kind   CommandKind            `protobuf:"varint,1,opt,name=kind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"kind,omitempty"`
+	Target string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"` // the target of Technical Plan 6.2 for this kind
+	Node   string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`     // `c-<n>` of the step the command created or targeted, or `s-<n>`
+	Noop   bool                   `protobuf:"varint,4,opt,name=noop,proto3" json:"noop,omitempty"`    // a command on a step that was already terminal (`command.noop`)
+	// `s-<n>` of the saga scope an activity or script was scheduled in (Command.saga_scope), empty otherwise. The SDK
+	// compares it at replay with the kind and the target (Decision 044-244); the hashed body carries it too.
+	SagaScope     string `protobuf:"bytes,5,opt,name=saga_scope,json=sagaScope,proto3" json:"saga_scope,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryCommandRecord) Reset() {
+	*x = HistoryCommandRecord{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryCommandRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryCommandRecord) ProtoMessage() {}
+
+func (x *HistoryCommandRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryCommandRecord.ProtoReflect.Descriptor instead.
+func (*HistoryCommandRecord) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *HistoryCommandRecord) GetKind() CommandKind {
+	if x != nil {
+		return x.Kind
+	}
+	return CommandKind_COMMAND_KIND_UNSPECIFIED
+}
+
+func (x *HistoryCommandRecord) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *HistoryCommandRecord) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *HistoryCommandRecord) GetNoop() bool {
+	if x != nil {
+		return x.Noop
+	}
+	return false
+}
+
+func (x *HistoryCommandRecord) GetSagaScope() string {
+	if x != nil {
+		return x.SagaScope
+	}
+	return ""
+}
+
+// The outcome of a `c-<n>` step. A wait or an approval the function cancelled (step_cancel) ends here with CANCELLED
+// and the error code CANCELLED, origin EFFECT when no worker held it, as an activity or a script does (origin ENGINE
+// when a leased attempt ends cancelled, or when the stop drain cancels a step, a timer included); their other outcomes
+// are HistoryWaitOutcome and HistoryApprovalDecided. A child's cancellation is its HistoryChildFinished; a timer the
+// function cancels ends with the record of its timer_cancel (Decision 044-245).
+type HistoryStepOutcome struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"` // `c-<n>`
+	Outcome       StepOutcome            `protobuf:"varint,2,opt,name=outcome,proto3,enum=sagat_octopus_orchestrator.v1.StepOutcome" json:"outcome,omitempty"`
+	Output        *HistoryPayload        `protobuf:"bytes,3,opt,name=output,proto3" json:"output,omitempty"`                        // with COMPLETED
+	ErrorCode     string                 `protobuf:"bytes,4,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"` // with FAILED, TIMED_OUT or CANCELLED: a catalog or activity code, never a message
+	Retryable     bool                   `protobuf:"varint,5,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryStepOutcome) Reset() {
+	*x = HistoryStepOutcome{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryStepOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryStepOutcome) ProtoMessage() {}
+
+func (x *HistoryStepOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryStepOutcome.ProtoReflect.Descriptor instead.
+func (*HistoryStepOutcome) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *HistoryStepOutcome) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *HistoryStepOutcome) GetOutcome() StepOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return StepOutcome_STEP_OUTCOME_UNSPECIFIED
+}
+
+func (x *HistoryStepOutcome) GetOutput() *HistoryPayload {
+	if x != nil {
+		return x.Output
+	}
+	return nil
+}
+
+func (x *HistoryStepOutcome) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *HistoryStepOutcome) GetRetryable() bool {
+	if x != nil {
+		return x.Retryable
+	}
+	return false
+}
+
+type HistoryTimerFired struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryTimerFired) Reset() {
+	*x = HistoryTimerFired{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryTimerFired) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryTimerFired) ProtoMessage() {}
+
+func (x *HistoryTimerFired) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryTimerFired.ProtoReflect.Descriptor instead.
+func (*HistoryTimerFired) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *HistoryTimerFired) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+type HistoryWaitOutcome struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	TimedOut      bool                   `protobuf:"varint,2,opt,name=timed_out,json=timedOut,proto3" json:"timed_out,omitempty"`
+	Payload       *HistoryPayload        `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"` // the event's payload when satisfied
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryWaitOutcome) Reset() {
+	*x = HistoryWaitOutcome{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryWaitOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryWaitOutcome) ProtoMessage() {}
+
+func (x *HistoryWaitOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryWaitOutcome.ProtoReflect.Descriptor instead.
+func (*HistoryWaitOutcome) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *HistoryWaitOutcome) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *HistoryWaitOutcome) GetTimedOut() bool {
+	if x != nil {
+		return x.TimedOut
+	}
+	return false
+}
+
+func (x *HistoryWaitOutcome) GetPayload() *HistoryPayload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+type HistoryChildFinished struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	ChildRunId    string                 `protobuf:"bytes,2,opt,name=child_run_id,json=childRunId,proto3" json:"child_run_id,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // the child's terminal status: COMPLETED, FAILED, CANCELLED, TIMED_OUT, PARTIAL
+	Output        *HistoryPayload        `protobuf:"bytes,4,opt,name=output,proto3" json:"output,omitempty"`
+	ErrorCode     string                 `protobuf:"bytes,5,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryChildFinished) Reset() {
+	*x = HistoryChildFinished{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryChildFinished) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryChildFinished) ProtoMessage() {}
+
+func (x *HistoryChildFinished) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryChildFinished.ProtoReflect.Descriptor instead.
+func (*HistoryChildFinished) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *HistoryChildFinished) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *HistoryChildFinished) GetChildRunId() string {
+	if x != nil {
+		return x.ChildRunId
+	}
+	return ""
+}
+
+func (x *HistoryChildFinished) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *HistoryChildFinished) GetOutput() *HistoryPayload {
+	if x != nil {
+		return x.Output
+	}
+	return nil
+}
+
+func (x *HistoryChildFinished) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+type HistoryApprovalDecided struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Decision      string                 `protobuf:"bytes,2,opt,name=decision,proto3" json:"decision,omitempty"` // approved, rejected or expired
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryApprovalDecided) Reset() {
+	*x = HistoryApprovalDecided{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryApprovalDecided) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryApprovalDecided) ProtoMessage() {}
+
+func (x *HistoryApprovalDecided) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryApprovalDecided.ProtoReflect.Descriptor instead.
+func (*HistoryApprovalDecided) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *HistoryApprovalDecided) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *HistoryApprovalDecided) GetDecision() string {
+	if x != nil {
+		return x.Decision
+	}
+	return ""
+}
+
+type HistorySagaOutcome struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Scope         string                 `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`     // `s-<n>`
+	Outcome       string                 `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"` // after an abort: compensated, partial or compensation_failed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistorySagaOutcome) Reset() {
+	*x = HistorySagaOutcome{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistorySagaOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistorySagaOutcome) ProtoMessage() {}
+
+func (x *HistorySagaOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistorySagaOutcome.ProtoReflect.Descriptor instead.
+func (*HistorySagaOutcome) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *HistorySagaOutcome) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *HistorySagaOutcome) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+type HistorySignalBuffered struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SignalName    string                 `protobuf:"bytes,1,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	Payload       *HistoryPayload        `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistorySignalBuffered) Reset() {
+	*x = HistorySignalBuffered{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistorySignalBuffered) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistorySignalBuffered) ProtoMessage() {}
+
+func (x *HistorySignalBuffered) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistorySignalBuffered.ProtoReflect.Descriptor instead.
+func (*HistorySignalBuffered) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *HistorySignalBuffered) GetSignalName() string {
+	if x != nil {
+		return x.SignalName
+	}
+	return ""
+}
+
+func (x *HistorySignalBuffered) GetPayload() *HistoryPayload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+type HistoryUpdateAdmitted struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UpdateName    string                 `protobuf:"bytes,1,opt,name=update_name,json=updateName,proto3" json:"update_name,omitempty"`
+	Args          *HistoryPayload        `protobuf:"bytes,2,opt,name=args,proto3" json:"args,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryUpdateAdmitted) Reset() {
+	*x = HistoryUpdateAdmitted{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryUpdateAdmitted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryUpdateAdmitted) ProtoMessage() {}
+
+func (x *HistoryUpdateAdmitted) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryUpdateAdmitted.ProtoReflect.Descriptor instead.
+func (*HistoryUpdateAdmitted) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *HistoryUpdateAdmitted) GetUpdateName() string {
+	if x != nil {
+		return x.UpdateName
+	}
+	return ""
+}
+
+func (x *HistoryUpdateAdmitted) GetArgs() *HistoryPayload {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+type HistoryCancellationRequested struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GraceMs       int64                  `protobuf:"varint,1,opt,name=grace_ms,json=graceMs,proto3" json:"grace_ms,omitempty"` // 0 for a cancellation without grace
+	CancelOrigin  CancelOrigin           `protobuf:"varint,2,opt,name=cancel_origin,json=cancelOrigin,proto3,enum=sagat_octopus_orchestrator.v1.CancelOrigin" json:"cancel_origin,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryCancellationRequested) Reset() {
+	*x = HistoryCancellationRequested{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryCancellationRequested) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryCancellationRequested) ProtoMessage() {}
+
+func (x *HistoryCancellationRequested) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryCancellationRequested.ProtoReflect.Descriptor instead.
+func (*HistoryCancellationRequested) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *HistoryCancellationRequested) GetGraceMs() int64 {
+	if x != nil {
+		return x.GraceMs
+	}
+	return 0
+}
+
+func (x *HistoryCancellationRequested) GetCancelOrigin() CancelOrigin {
+	if x != nil {
+		return x.CancelOrigin
+	}
+	return CancelOrigin_CANCEL_ORIGIN_UNSPECIFIED
+}
+
+type HistoryMarkerRecorded struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MarkerId      string                 `protobuf:"bytes,1,opt,name=marker_id,json=markerId,proto3" json:"marker_id,omitempty"`        // ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$
+	SideEffect    bool                   `protobuf:"varint,2,opt,name=side_effect,json=sideEffect,proto3" json:"side_effect,omitempty"` // false for a patch marker
+	Value         *HistoryPayload        `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                              // the side effect's value, which replay returns to the function
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryMarkerRecorded) Reset() {
+	*x = HistoryMarkerRecorded{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryMarkerRecorded) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryMarkerRecorded) ProtoMessage() {}
+
+func (x *HistoryMarkerRecorded) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryMarkerRecorded.ProtoReflect.Descriptor instead.
+func (*HistoryMarkerRecorded) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *HistoryMarkerRecorded) GetMarkerId() string {
+	if x != nil {
+		return x.MarkerId
+	}
+	return ""
+}
+
+func (x *HistoryMarkerRecorded) GetSideEffect() bool {
+	if x != nil {
+		return x.SideEffect
+	}
+	return false
+}
+
+func (x *HistoryMarkerRecorded) GetValue() *HistoryPayload {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+// A value a command carries: inline canonical JSON (RFC 8785) or a blob written under this run's workflow
+// lease (purpose COMMAND_VALUE). Whatever the carrier, the chain hashes its descriptor
+// {"sha256", "size"} of the value's RFC 8785 bytes (Technical Plan 6.2). A re-emitted `complete` may name its
+// output by `descriptor_sha256` and `descriptor_size` alone, whether its deferral carried it inline or as a blob: a
+// deferred `complete` holds its output until it is accepted or the run ends, and the held output is the one accepted,
+// also when the re-emission carries it again (Decision 044-259). A continue-as-new's input and state are always inline,
+// re-emission included: a descriptor alone there is COMMAND_INVALID. Descriptor fields sent beside a carrier must be
+// the carrier's (D of the inline bytes, or the blob's recorded digest and size); a disagreement is COMMAND_INVALID.
+type CommandValue struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Carrier:
+	//
+	//	*CommandValue_Json
+	//	*CommandValue_BlobId
+	Carrier          isCommandValue_Carrier `protobuf_oneof:"carrier"`
+	DescriptorSha256 string                 `protobuf:"bytes,3,opt,name=descriptor_sha256,json=descriptorSha256,proto3" json:"descriptor_sha256,omitempty"`
+	DescriptorSize   int64                  `protobuf:"varint,4,opt,name=descriptor_size,json=descriptorSize,proto3" json:"descriptor_size,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *CommandValue) Reset() {
+	*x = CommandValue{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandValue) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandValue) ProtoMessage() {}
+
+func (x *CommandValue) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandValue.ProtoReflect.Descriptor instead.
+func (*CommandValue) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *CommandValue) GetCarrier() isCommandValue_Carrier {
+	if x != nil {
+		return x.Carrier
+	}
+	return nil
+}
+
+func (x *CommandValue) GetJson() []byte {
+	if x != nil {
+		if x, ok := x.Carrier.(*CommandValue_Json); ok {
+			return x.Json
+		}
+	}
+	return nil
+}
+
+func (x *CommandValue) GetBlobId() string {
+	if x != nil {
+		if x, ok := x.Carrier.(*CommandValue_BlobId); ok {
+			return x.BlobId
+		}
+	}
+	return ""
+}
+
+func (x *CommandValue) GetDescriptorSha256() string {
+	if x != nil {
+		return x.DescriptorSha256
+	}
+	return ""
+}
+
+func (x *CommandValue) GetDescriptorSize() int64 {
+	if x != nil {
+		return x.DescriptorSize
+	}
+	return 0
+}
+
+type isCommandValue_Carrier interface {
+	isCommandValue_Carrier()
+}
+
+type CommandValue_Json struct {
+	Json []byte `protobuf:"bytes,1,opt,name=json,proto3,oneof"`
+}
+
+type CommandValue_BlobId struct {
+	BlobId string `protobuf:"bytes,2,opt,name=blob_id,json=blobId,proto3,oneof"`
+}
+
+func (*CommandValue_Json) isCommandValue_Carrier() {}
+
+func (*CommandValue_BlobId) isCommandValue_Carrier() {}
+
+// One command. A work command (activity, script, timer start, wait for event, child, approval) carries its
+// fragment: the RFC 8785 JSON of an IR node of its kind in the code profile (Technical Plan 5.1), without
+// its value field, which travels in `value` (the input of an activity, a script or a child, the subject of
+// an approval); the other business literals (a correlation key, a business identifier, a literal key) stay in
+// the fragment. Every other kind carries its typed body. The hashed body of each kind is defined by the
+// corpus `specs/044-workflow-as-code/contracts/goldens/README.md`.
+type Command struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandNumber int64                  `protobuf:"varint,1,opt,name=command_number,json=commandNumber,proto3" json:"command_number,omitempty"` // 1, 2, 3... over the whole run; 0 for a deferred command
+	Kind          CommandKind            `protobuf:"varint,2,opt,name=kind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"kind,omitempty"`
+	FragmentJson  []byte                 `protobuf:"bytes,3,opt,name=fragment_json,json=fragmentJson,proto3" json:"fragment_json,omitempty"`
+	Value         *CommandValue          `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`                          // a work command's literal input or an approval's subject
+	SagaScope     string                 `protobuf:"bytes,5,opt,name=saga_scope,json=sagaScope,proto3" json:"saga_scope,omitempty"` // `s-<n>` of the scope an activity or script is scheduled in; any other kind: COMMAND_INVALID
+	// Types that are valid to be assigned to Typed:
+	//
+	//	*Command_Target
+	//	*Command_SagaOpen
+	//	*Command_SagaClose
+	//	*Command_SagaAbort
+	//	*Command_Marker
+	//	*Command_SetState
+	//	*Command_UpdateDecision
+	//	*Command_UpdateResult
+	//	*Command_ConsumeSignals
+	//	*Command_Complete
+	//	*Command_Fail
+	//	*Command_ContinueAsNew
+	//	*Command_AcknowledgeCancellation
+	Typed         isCommand_Typed `protobuf_oneof:"typed"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Command) Reset() {
+	*x = Command{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Command) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Command) ProtoMessage() {}
+
+func (x *Command) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Command.ProtoReflect.Descriptor instead.
+func (*Command) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *Command) GetCommandNumber() int64 {
+	if x != nil {
+		return x.CommandNumber
+	}
+	return 0
+}
+
+func (x *Command) GetKind() CommandKind {
+	if x != nil {
+		return x.Kind
+	}
+	return CommandKind_COMMAND_KIND_UNSPECIFIED
+}
+
+func (x *Command) GetFragmentJson() []byte {
+	if x != nil {
+		return x.FragmentJson
+	}
+	return nil
+}
+
+func (x *Command) GetValue() *CommandValue {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *Command) GetSagaScope() string {
+	if x != nil {
+		return x.SagaScope
+	}
+	return ""
+}
+
+func (x *Command) GetTyped() isCommand_Typed {
+	if x != nil {
+		return x.Typed
+	}
+	return nil
+}
+
+func (x *Command) GetTarget() *TargetCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_Target); ok {
+			return x.Target
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetSagaOpen() *SagaOpenCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_SagaOpen); ok {
+			return x.SagaOpen
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetSagaClose() *TargetCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_SagaClose); ok {
+			return x.SagaClose
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetSagaAbort() *TargetCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_SagaAbort); ok {
+			return x.SagaAbort
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetMarker() *MarkerCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_Marker); ok {
+			return x.Marker
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetSetState() *CommandValue {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_SetState); ok {
+			return x.SetState
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetUpdateDecision() *UpdateDecisionCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_UpdateDecision); ok {
+			return x.UpdateDecision
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetUpdateResult() *UpdateResultCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_UpdateResult); ok {
+			return x.UpdateResult
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetConsumeSignals() *ConsumeSignalsCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_ConsumeSignals); ok {
+			return x.ConsumeSignals
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetComplete() *CommandValue {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_Complete); ok {
+			return x.Complete
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetFail() *FailCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_Fail); ok {
+			return x.Fail
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetContinueAsNew() *ContinueAsNewCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_ContinueAsNew); ok {
+			return x.ContinueAsNew
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetAcknowledgeCancellation() *AcknowledgeCancellationCommand {
+	if x != nil {
+		if x, ok := x.Typed.(*Command_AcknowledgeCancellation); ok {
+			return x.AcknowledgeCancellation
+		}
+	}
+	return nil
+}
+
+type isCommand_Typed interface {
+	isCommand_Typed()
+}
+
+type Command_Target struct {
+	Target *TargetCommand `protobuf:"bytes,10,opt,name=target,proto3,oneof"` // timer cancel and step cancel: the step `c-<m>`
+}
+
+type Command_SagaOpen struct {
+	SagaOpen *SagaOpenCommand `protobuf:"bytes,11,opt,name=saga_open,json=sagaOpen,proto3,oneof"`
+}
+
+type Command_SagaClose struct {
+	SagaClose *TargetCommand `protobuf:"bytes,12,opt,name=saga_close,json=sagaClose,proto3,oneof"` // the scope `s-<n>`
+}
+
+type Command_SagaAbort struct {
+	SagaAbort *TargetCommand `protobuf:"bytes,13,opt,name=saga_abort,json=sagaAbort,proto3,oneof"` // the scope `s-<n>`
+}
+
+type Command_Marker struct {
+	Marker *MarkerCommand `protobuf:"bytes,14,opt,name=marker,proto3,oneof"`
+}
+
+type Command_SetState struct {
+	SetState *CommandValue `protobuf:"bytes,15,opt,name=set_state,json=setState,proto3,oneof"` // always inline, at most 128 KiB
+}
+
+type Command_UpdateDecision struct {
+	UpdateDecision *UpdateDecisionCommand `protobuf:"bytes,16,opt,name=update_decision,json=updateDecision,proto3,oneof"`
+}
+
+type Command_UpdateResult struct {
+	UpdateResult *UpdateResultCommand `protobuf:"bytes,17,opt,name=update_result,json=updateResult,proto3,oneof"`
+}
+
+type Command_ConsumeSignals struct {
+	ConsumeSignals *ConsumeSignalsCommand `protobuf:"bytes,18,opt,name=consume_signals,json=consumeSignals,proto3,oneof"`
+}
+
+type Command_Complete struct {
+	Complete *CommandValue `protobuf:"bytes,19,opt,name=complete,proto3,oneof"` // the run's output
+}
+
+type Command_Fail struct {
+	Fail *FailCommand `protobuf:"bytes,20,opt,name=fail,proto3,oneof"`
+}
+
+type Command_ContinueAsNew struct {
+	ContinueAsNew *ContinueAsNewCommand `protobuf:"bytes,21,opt,name=continue_as_new,json=continueAsNew,proto3,oneof"`
+}
+
+type Command_AcknowledgeCancellation struct {
+	AcknowledgeCancellation *AcknowledgeCancellationCommand `protobuf:"bytes,22,opt,name=acknowledge_cancellation,json=acknowledgeCancellation,proto3,oneof"`
+}
+
+func (*Command_Target) isCommand_Typed() {}
+
+func (*Command_SagaOpen) isCommand_Typed() {}
+
+func (*Command_SagaClose) isCommand_Typed() {}
+
+func (*Command_SagaAbort) isCommand_Typed() {}
+
+func (*Command_Marker) isCommand_Typed() {}
+
+func (*Command_SetState) isCommand_Typed() {}
+
+func (*Command_UpdateDecision) isCommand_Typed() {}
+
+func (*Command_UpdateResult) isCommand_Typed() {}
+
+func (*Command_ConsumeSignals) isCommand_Typed() {}
+
+func (*Command_Complete) isCommand_Typed() {}
+
+func (*Command_Fail) isCommand_Typed() {}
+
+func (*Command_ContinueAsNew) isCommand_Typed() {}
+
+func (*Command_AcknowledgeCancellation) isCommand_Typed() {}
+
+type TargetCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        string                 `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TargetCommand) Reset() {
+	*x = TargetCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TargetCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TargetCommand) ProtoMessage() {}
+
+func (x *TargetCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TargetCommand.ProtoReflect.Descriptor instead.
+func (*TargetCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *TargetCommand) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+type SagaOpenCommand struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Scope                 string                 `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`                                                                // `s-<n>`, n being this command's number
+	ParentScope           string                 `protobuf:"bytes,2,opt,name=parent_scope,json=parentScope,proto3" json:"parent_scope,omitempty"`                                 // empty at the top
+	OnCompensationFailure string                 `protobuf:"bytes,3,opt,name=on_compensation_failure,json=onCompensationFailure,proto3" json:"on_compensation_failure,omitempty"` // manual_review or fail
+	CancelPolicy          string                 `protobuf:"bytes,4,opt,name=cancel_policy,json=cancelPolicy,proto3" json:"cancel_policy,omitempty"`                              // compensate_completed, wait_in_flight_then_compensate or abort_no_compensation
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *SagaOpenCommand) Reset() {
+	*x = SagaOpenCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SagaOpenCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SagaOpenCommand) ProtoMessage() {}
+
+func (x *SagaOpenCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SagaOpenCommand.ProtoReflect.Descriptor instead.
+func (*SagaOpenCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *SagaOpenCommand) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *SagaOpenCommand) GetParentScope() string {
+	if x != nil {
+		return x.ParentScope
+	}
+	return ""
+}
+
+func (x *SagaOpenCommand) GetOnCompensationFailure() string {
+	if x != nil {
+		return x.OnCompensationFailure
+	}
+	return ""
+}
+
+func (x *SagaOpenCommand) GetCancelPolicy() string {
+	if x != nil {
+		return x.CancelPolicy
+	}
+	return ""
+}
+
+type MarkerCommand struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	MarkerId        string                 `protobuf:"bytes,1,opt,name=marker_id,json=markerId,proto3" json:"marker_id,omitempty"`                        // ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$
+	SideEffectValue *CommandValue          `protobuf:"bytes,2,opt,name=side_effect_value,json=sideEffectValue,proto3" json:"side_effect_value,omitempty"` // a side effect only, at most 64 KiB
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *MarkerCommand) Reset() {
+	*x = MarkerCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[67]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkerCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkerCommand) ProtoMessage() {}
+
+func (x *MarkerCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[67]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkerCommand.ProtoReflect.Descriptor instead.
+func (*MarkerCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{67}
+}
+
+func (x *MarkerCommand) GetMarkerId() string {
+	if x != nil {
+		return x.MarkerId
+	}
+	return ""
+}
+
+func (x *MarkerCommand) GetSideEffectValue() *CommandValue {
+	if x != nil {
+		return x.SideEffectValue
+	}
+	return nil
+}
+
+type UpdateDecisionCommand struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AdmittedSeq int64                  `protobuf:"varint,1,opt,name=admitted_seq,json=admittedSeq,proto3" json:"admitted_seq,omitempty"` // the journal sequence of the update's update.admitted
+	Accepted    bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// A code from the closed list, never free text: VALIDATION_FAILED or HANDLER_NOT_REGISTERED (Decision 044-251).
+	RejectionReason string `protobuf:"bytes,3,opt,name=rejection_reason,json=rejectionReason,proto3" json:"rejection_reason,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *UpdateDecisionCommand) Reset() {
+	*x = UpdateDecisionCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[68]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateDecisionCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateDecisionCommand) ProtoMessage() {}
+
+func (x *UpdateDecisionCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[68]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateDecisionCommand.ProtoReflect.Descriptor instead.
+func (*UpdateDecisionCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{68}
+}
+
+func (x *UpdateDecisionCommand) GetAdmittedSeq() int64 {
+	if x != nil {
+		return x.AdmittedSeq
+	}
+	return 0
+}
+
+func (x *UpdateDecisionCommand) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *UpdateDecisionCommand) GetRejectionReason() string {
+	if x != nil {
+		return x.RejectionReason
+	}
+	return ""
+}
+
+type UpdateResultCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AdmittedSeq   int64                  `protobuf:"varint,1,opt,name=admitted_seq,json=admittedSeq,proto3" json:"admitted_seq,omitempty"`
+	Result        *CommandValue          `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
+	FailureCode   string                 `protobuf:"bytes,3,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"` // ^[A-Z][A-Z0-9_]{0,63}$ when the handler failed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateResultCommand) Reset() {
+	*x = UpdateResultCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[69]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateResultCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateResultCommand) ProtoMessage() {}
+
+func (x *UpdateResultCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[69]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateResultCommand.ProtoReflect.Descriptor instead.
+func (*UpdateResultCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{69}
+}
+
+func (x *UpdateResultCommand) GetAdmittedSeq() int64 {
+	if x != nil {
+		return x.AdmittedSeq
+	}
+	return 0
+}
+
+func (x *UpdateResultCommand) GetResult() *CommandValue {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *UpdateResultCommand) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+type ConsumeSignalsCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Signals       []*ConsumedSignals     `protobuf:"bytes,1,rep,name=signals,proto3" json:"signals,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeSignalsCommand) Reset() {
+	*x = ConsumeSignalsCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeSignalsCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeSignalsCommand) ProtoMessage() {}
+
+func (x *ConsumeSignalsCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeSignalsCommand.ProtoReflect.Descriptor instead.
+func (*ConsumeSignalsCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *ConsumeSignalsCommand) GetSignals() []*ConsumedSignals {
+	if x != nil {
+		return x.Signals
+	}
+	return nil
+}
+
+type ConsumedSignals struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SignalName    string                 `protobuf:"bytes,1,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	Seqs          []int64                `protobuf:"varint,2,rep,packed,name=seqs,proto3" json:"seqs,omitempty"` // ascending journal sequences of signal.buffered; at most 1,000 in all
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumedSignals) Reset() {
+	*x = ConsumedSignals{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumedSignals) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumedSignals) ProtoMessage() {}
+
+func (x *ConsumedSignals) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumedSignals.ProtoReflect.Descriptor instead.
+func (*ConsumedSignals) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *ConsumedSignals) GetSignalName() string {
+	if x != nil {
+		return x.SignalName
+	}
+	return ""
+}
+
+func (x *ConsumedSignals) GetSeqs() []int64 {
+	if x != nil {
+		return x.Seqs
+	}
+	return nil
+}
+
+type FailCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`                                  // ^[A-Z][A-Z0-9_]{0,63}$, else WORKFLOW_FAILED
+	SafeMessage   string                 `protobuf:"bytes,2,opt,name=safe_message,json=safeMessage,proto3" json:"safe_message,omitempty"` // at most 4 KiB, counted in the 192 KiB of inline values; stored only as a `pii`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FailCommand) Reset() {
+	*x = FailCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailCommand) ProtoMessage() {}
+
+func (x *FailCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailCommand.ProtoReflect.Descriptor instead.
+func (*FailCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *FailCommand) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *FailCommand) GetSafeMessage() string {
+	if x != nil {
+		return x.SafeMessage
+	}
+	return ""
+}
+
+type ContinueAsNewCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Input         *CommandValue          `protobuf:"bytes,1,opt,name=input,proto3" json:"input,omitempty"`                                       // an inline JSON object
+	State         *CommandValue          `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`                                       // carried state, inline
+	ActiveVersion bool                   `protobuf:"varint,3,opt,name=active_version,json=activeVersion,proto3" json:"active_version,omitempty"` // false: the current code version (same); true: the workflow's active version
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContinueAsNewCommand) Reset() {
+	*x = ContinueAsNewCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[73]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContinueAsNewCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContinueAsNewCommand) ProtoMessage() {}
+
+func (x *ContinueAsNewCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[73]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContinueAsNewCommand.ProtoReflect.Descriptor instead.
+func (*ContinueAsNewCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{73}
+}
+
+func (x *ContinueAsNewCommand) GetInput() *CommandValue {
+	if x != nil {
+		return x.Input
+	}
+	return nil
+}
+
+func (x *ContinueAsNewCommand) GetState() *CommandValue {
+	if x != nil {
+		return x.State
+	}
+	return nil
+}
+
+func (x *ContinueAsNewCommand) GetActiveVersion() bool {
+	if x != nil {
+		return x.ActiveVersion
+	}
+	return false
+}
+
+type AcknowledgeCancellationCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AcknowledgeCancellationCommand) Reset() {
+	*x = AcknowledgeCancellationCommand{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[74]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcknowledgeCancellationCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcknowledgeCancellationCommand) ProtoMessage() {}
+
+func (x *AcknowledgeCancellationCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[74]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcknowledgeCancellationCommand.ProtoReflect.Descriptor instead.
+func (*AcknowledgeCancellationCommand) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{74}
+}
+
+type CompleteWorkflowTaskRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId          string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Attempt        int32                  `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation     int64                  `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken     string                 `protobuf:"bytes,5,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	IdempotencyKey string                 `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	// The journal sequence of the last event of the window the function applied; a completion below S(k)
+	// puts the run under review with NONDETERMINISM_RISK.
+	AppliedThroughSeq int64 `protobuf:"varint,7,opt,name=applied_through_seq,json=appliedThroughSeq,proto3" json:"applied_through_seq,omitempty"`
+	// The command chain the function produced up to its first new command (32 bytes).
+	ReplayedChain []byte     `protobuf:"bytes,8,opt,name=replayed_chain,json=replayedChain,proto3" json:"replayed_chain,omitempty"`
+	Commands      []*Command `protobuf:"bytes,9,rep,name=commands,proto3" json:"commands,omitempty"` // at most 403; the consumption of signals is one of them
+	// The terminal or continue-as-new command the SDK re-emits after a deferral, with command_number 0 (Decision
+	// 044-243). The first time, the SDK sends such a command last in `commands`, numbered as the next command; if the
+	// server defers it, it takes no number, and the next accepted command takes that number.
+	DeferredCommand    *Command `protobuf:"bytes,10,opt,name=deferred_command,json=deferredCommand,proto3" json:"deferred_command,omitempty"`
+	EagerActivitySlots int32    `protobuf:"varint,11,opt,name=eager_activity_slots,json=eagerActivitySlots,proto3" json:"eager_activity_slots,omitempty"` // Task 044-14; ignored until then
+	BehaviourFlags     []string `protobuf:"bytes,12,rep,name=behaviour_flags,json=behaviourFlags,proto3" json:"behaviour_flags,omitempty"`                // reserved (Gap 044-015); must be empty in this minor
+	Traceparent        string   `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *CompleteWorkflowTaskRequest) Reset() {
+	*x = CompleteWorkflowTaskRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[75]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompleteWorkflowTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompleteWorkflowTaskRequest) ProtoMessage() {}
+
+func (x *CompleteWorkflowTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[75]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompleteWorkflowTaskRequest.ProtoReflect.Descriptor instead.
+func (*CompleteWorkflowTaskRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{75}
+}
+
+func (x *CompleteWorkflowTaskRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *CompleteWorkflowTaskRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *CompleteWorkflowTaskRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *CompleteWorkflowTaskRequest) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *CompleteWorkflowTaskRequest) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *CompleteWorkflowTaskRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *CompleteWorkflowTaskRequest) GetAppliedThroughSeq() int64 {
+	if x != nil {
+		return x.AppliedThroughSeq
+	}
+	return 0
+}
+
+func (x *CompleteWorkflowTaskRequest) GetReplayedChain() []byte {
+	if x != nil {
+		return x.ReplayedChain
+	}
+	return nil
+}
+
+func (x *CompleteWorkflowTaskRequest) GetCommands() []*Command {
+	if x != nil {
+		return x.Commands
+	}
+	return nil
+}
+
+func (x *CompleteWorkflowTaskRequest) GetDeferredCommand() *Command {
+	if x != nil {
+		return x.DeferredCommand
+	}
+	return nil
+}
+
+func (x *CompleteWorkflowTaskRequest) GetEagerActivitySlots() int32 {
+	if x != nil {
+		return x.EagerActivitySlots
+	}
+	return 0
+}
+
+func (x *CompleteWorkflowTaskRequest) GetBehaviourFlags() []string {
+	if x != nil {
+		return x.BehaviourFlags
+	}
+	return nil
+}
+
+func (x *CompleteWorkflowTaskRequest) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
+	}
+	return ""
+}
+
+type CompleteWorkflowTaskResponse struct {
+	state               protoimpl.MessageState   `protogen:"open.v1"`
+	Outcome             WorkflowTaskOutcome      `protobuf:"varint,1,opt,name=outcome,proto3,enum=sagat_octopus_orchestrator.v1.WorkflowTaskOutcome" json:"outcome,omitempty"`
+	Cause               WorkflowTaskFailureCause `protobuf:"varint,2,opt,name=cause,proto3,enum=sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause" json:"cause,omitempty"`
+	AlreadyApplied      bool                     `protobuf:"varint,3,opt,name=already_applied,json=alreadyApplied,proto3" json:"already_applied,omitempty"`                 // an idempotent replay: the recorded outcome, never an eager lease
+	EagerActivityLeases []*TaskLease             `protobuf:"bytes,4,rep,name=eager_activity_leases,json=eagerActivityLeases,proto3" json:"eager_activity_leases,omitempty"` // Task 044-14: provisional leases (protocol 1.8)
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *CompleteWorkflowTaskResponse) Reset() {
+	*x = CompleteWorkflowTaskResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompleteWorkflowTaskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompleteWorkflowTaskResponse) ProtoMessage() {}
+
+func (x *CompleteWorkflowTaskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompleteWorkflowTaskResponse.ProtoReflect.Descriptor instead.
+func (*CompleteWorkflowTaskResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *CompleteWorkflowTaskResponse) GetOutcome() WorkflowTaskOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return WorkflowTaskOutcome_WORKFLOW_TASK_OUTCOME_UNSPECIFIED
+}
+
+func (x *CompleteWorkflowTaskResponse) GetCause() WorkflowTaskFailureCause {
+	if x != nil {
+		return x.Cause
+	}
+	return WorkflowTaskFailureCause_WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED
+}
+
+func (x *CompleteWorkflowTaskResponse) GetAlreadyApplied() bool {
+	if x != nil {
+		return x.AlreadyApplied
+	}
+	return false
+}
+
+func (x *CompleteWorkflowTaskResponse) GetEagerActivityLeases() []*TaskLease {
+	if x != nil {
+		return x.EagerActivityLeases
+	}
+	return nil
+}
+
+type FailWorkflowTaskRequest struct {
+	state          protoimpl.MessageState   `protogen:"open.v1"`
+	TaskId         string                   `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId          string                   `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Attempt        int32                    `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation     int64                    `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken     string                   `protobuf:"bytes,5,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	IdempotencyKey string                   `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	Cause          WorkflowTaskFailureCause `protobuf:"varint,7,opt,name=cause,proto3,enum=sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause" json:"cause,omitempty"`
+	CommandNumber  int64                    `protobuf:"varint,8,opt,name=command_number,json=commandNumber,proto3" json:"command_number,omitempty"` // NONDETERMINISM: the first command that differs
+	ActualKind     CommandKind              `protobuf:"varint,9,opt,name=actual_kind,json=actualKind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"actual_kind,omitempty"`
+	ActualTarget   string                   `protobuf:"bytes,10,opt,name=actual_target,json=actualTarget,proto3" json:"actual_target,omitempty"`    // checked against the identifier pattern of its kind
+	ExceptionType  string                   `protobuf:"bytes,11,opt,name=exception_type,json=exceptionType,proto3" json:"exception_type,omitempty"` // WORKFLOW_TASK_FAILED: kept only if it matches its pattern
+	CodeDigest     string                   `protobuf:"bytes,12,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`          // the session's digest, checked by the server
+	Traceparent    string                   `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	// NONDETERMINISM of an activity or a script: the saga scope the function scheduled it in (empty outside a scope),
+	// so a change of scope alone is reported with what differs (Decision 044-244). Checked against ^s-[1-9][0-9]{0,9}$
+	// and dropped otherwise, and dropped as well when actual_kind is neither an activity nor a script (the report keeps
+	// its cause); the expected scope is the server's own record (Decision 044-250).
+	ActualSagaScope string `protobuf:"bytes,14,opt,name=actual_saga_scope,json=actualSagaScope,proto3" json:"actual_saga_scope,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *FailWorkflowTaskRequest) Reset() {
+	*x = FailWorkflowTaskRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[77]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailWorkflowTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailWorkflowTaskRequest) ProtoMessage() {}
+
+func (x *FailWorkflowTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[77]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailWorkflowTaskRequest.ProtoReflect.Descriptor instead.
+func (*FailWorkflowTaskRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{77}
+}
+
+func (x *FailWorkflowTaskRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *FailWorkflowTaskRequest) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *FailWorkflowTaskRequest) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetCause() WorkflowTaskFailureCause {
+	if x != nil {
+		return x.Cause
+	}
+	return WorkflowTaskFailureCause_WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED
+}
+
+func (x *FailWorkflowTaskRequest) GetCommandNumber() int64 {
+	if x != nil {
+		return x.CommandNumber
+	}
+	return 0
+}
+
+func (x *FailWorkflowTaskRequest) GetActualKind() CommandKind {
+	if x != nil {
+		return x.ActualKind
+	}
+	return CommandKind_COMMAND_KIND_UNSPECIFIED
+}
+
+func (x *FailWorkflowTaskRequest) GetActualTarget() string {
+	if x != nil {
+		return x.ActualTarget
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetExceptionType() string {
+	if x != nil {
+		return x.ExceptionType
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetCodeDigest() string {
+	if x != nil {
+		return x.CodeDigest
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetActualSagaScope() string {
+	if x != nil {
+		return x.ActualSagaScope
+	}
+	return ""
+}
+
+type FailWorkflowTaskResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	AlreadyApplied bool                   `protobuf:"varint,1,opt,name=already_applied,json=alreadyApplied,proto3" json:"already_applied,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *FailWorkflowTaskResponse) Reset() {
+	*x = FailWorkflowTaskResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailWorkflowTaskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailWorkflowTaskResponse) ProtoMessage() {}
+
+func (x *FailWorkflowTaskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailWorkflowTaskResponse.ProtoReflect.Descriptor instead.
+func (*FailWorkflowTaskResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *FailWorkflowTaskResponse) GetAlreadyApplied() bool {
+	if x != nil {
+		return x.AlreadyApplied
+	}
+	return false
+}
+
+type ReadHistoryRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	TaskId string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId  string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// A workflow lease (attempt, generation, lease_token), or the read token of a query or replay-check item.
+	Attempt       int32  `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation    int64  `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken    string `protobuf:"bytes,5,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	ReadToken     string `protobuf:"bytes,6,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
+	FromSeq       int64  `protobuf:"varint,7,opt,name=from_seq,json=fromSeq,proto3" json:"from_seq,omitempty"` // the first journal sequence wanted, at least 1
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadHistoryRequest) Reset() {
+	*x = ReadHistoryRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadHistoryRequest) ProtoMessage() {}
+
+func (x *ReadHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadHistoryRequest.ProtoReflect.Descriptor instead.
+func (*ReadHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *ReadHistoryRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *ReadHistoryRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *ReadHistoryRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *ReadHistoryRequest) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *ReadHistoryRequest) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *ReadHistoryRequest) GetReadToken() string {
+	if x != nil {
+		return x.ReadToken
+	}
+	return ""
+}
+
+func (x *ReadHistoryRequest) GetFromSeq() int64 {
+	if x != nil {
+		return x.FromSeq
+	}
+	return 0
+}
+
+type ReadHistoryResponse struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Events                []*HistoryEvent        `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"` // at most 1,024 events or 3 MiB
+	LastPage              bool                   `protobuf:"varint,2,opt,name=last_page,json=lastPage,proto3" json:"last_page,omitempty"`
+	LeaseExpiresAtEpochMs int64                  `protobuf:"varint,3,opt,name=lease_expires_at_epoch_ms,json=leaseExpiresAtEpochMs,proto3" json:"lease_expires_at_epoch_ms,omitempty"` // the workflow lease's expiry after this page
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *ReadHistoryResponse) Reset() {
+	*x = ReadHistoryResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadHistoryResponse) ProtoMessage() {}
+
+func (x *ReadHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadHistoryResponse.ProtoReflect.Descriptor instead.
+func (*ReadHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *ReadHistoryResponse) GetEvents() []*HistoryEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *ReadHistoryResponse) GetLastPage() bool {
+	if x != nil {
+		return x.LastPage
+	}
+	return false
+}
+
+func (x *ReadHistoryResponse) GetLeaseExpiresAtEpochMs() int64 {
+	if x != nil {
+		return x.LeaseExpiresAtEpochMs
+	}
+	return 0
+}
+
+// Task 044-29: a worker query, answered from the function's state at its last committed completion.
+type QueryTask struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	QueryId         string                 `protobuf:"bytes,1,opt,name=query_id,json=queryId,proto3" json:"query_id,omitempty"`
+	RunId           string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	QueryName       string                 `protobuf:"bytes,3,opt,name=query_name,json=queryName,proto3" json:"query_name,omitempty"`
+	Args            []byte                 `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"` // at most 64 KiB, validated against the query's argsSchema
+	DeadlineEpochMs int64                  `protobuf:"varint,5,opt,name=deadline_epoch_ms,json=deadlineEpochMs,proto3" json:"deadline_epoch_ms,omitempty"`
+	GatedEntries    []string               `protobuf:"bytes,6,rep,name=gated_entries,json=gatedEntries,proto3" json:"gated_entries,omitempty"`
+	StateMaxBytes   int64                  `protobuf:"varint,7,opt,name=state_max_bytes,json=stateMaxBytes,proto3" json:"state_max_bytes,omitempty"`
+	// For ReadHistory and ReadBlob of this run; never WriteBlob. Bound to the claiming session, it expires with the
+	// query's lease and is invalid once the answer is recorded; binding and membership are checked at every use.
+	ReadToken    string `protobuf:"bytes,8,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
+	LeaseToken   string `protobuf:"bytes,9,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	WorkflowType string `protobuf:"bytes,10,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
+	CodeDigest   string `protobuf:"bytes,11,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`
+	// The run's 32-byte seed, so a worker without the run in its cache can replay it to answer.
+	Seed          []byte `protobuf:"bytes,12,opt,name=seed,proto3" json:"seed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryTask) Reset() {
+	*x = QueryTask{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[81]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryTask) ProtoMessage() {}
+
+func (x *QueryTask) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[81]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryTask.ProtoReflect.Descriptor instead.
+func (*QueryTask) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{81}
+}
+
+func (x *QueryTask) GetQueryId() string {
+	if x != nil {
+		return x.QueryId
+	}
+	return ""
+}
+
+func (x *QueryTask) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *QueryTask) GetQueryName() string {
+	if x != nil {
+		return x.QueryName
+	}
+	return ""
+}
+
+func (x *QueryTask) GetArgs() []byte {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *QueryTask) GetDeadlineEpochMs() int64 {
+	if x != nil {
+		return x.DeadlineEpochMs
+	}
+	return 0
+}
+
+func (x *QueryTask) GetGatedEntries() []string {
+	if x != nil {
+		return x.GatedEntries
+	}
+	return nil
+}
+
+func (x *QueryTask) GetStateMaxBytes() int64 {
+	if x != nil {
+		return x.StateMaxBytes
+	}
+	return 0
+}
+
+func (x *QueryTask) GetReadToken() string {
+	if x != nil {
+		return x.ReadToken
+	}
+	return ""
+}
+
+func (x *QueryTask) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *QueryTask) GetWorkflowType() string {
+	if x != nil {
+		return x.WorkflowType
+	}
+	return ""
+}
+
+func (x *QueryTask) GetCodeDigest() string {
+	if x != nil {
+		return x.CodeDigest
+	}
+	return ""
+}
+
+func (x *QueryTask) GetSeed() []byte {
+	if x != nil {
+		return x.Seed
+	}
+	return nil
+}
+
+type RespondWorkerQueryRequest struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	QueryId             string                 `protobuf:"bytes,1,opt,name=query_id,json=queryId,proto3" json:"query_id,omitempty"`
+	LeaseToken          string                 `protobuf:"bytes,2,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	Answer              []byte                 `protobuf:"bytes,3,opt,name=answer,proto3" json:"answer,omitempty"`                                                         // at most 256 KiB, validated against the query's resultSchema
+	CommittedThroughSeq int64                  `protobuf:"varint,4,opt,name=committed_through_seq,json=committedThroughSeq,proto3" json:"committed_through_seq,omitempty"` // the journal sequence of the completion the answer reflects
+	FailureCode         string                 `protobuf:"bytes,5,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`                            // empty, or QUERY_COMMAND when the handler issued a command; any other is refused
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *RespondWorkerQueryRequest) Reset() {
+	*x = RespondWorkerQueryRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[82]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondWorkerQueryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondWorkerQueryRequest) ProtoMessage() {}
+
+func (x *RespondWorkerQueryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[82]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondWorkerQueryRequest.ProtoReflect.Descriptor instead.
+func (*RespondWorkerQueryRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{82}
+}
+
+func (x *RespondWorkerQueryRequest) GetQueryId() string {
+	if x != nil {
+		return x.QueryId
+	}
+	return ""
+}
+
+func (x *RespondWorkerQueryRequest) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *RespondWorkerQueryRequest) GetAnswer() []byte {
+	if x != nil {
+		return x.Answer
+	}
+	return nil
+}
+
+func (x *RespondWorkerQueryRequest) GetCommittedThroughSeq() int64 {
+	if x != nil {
+		return x.CommittedThroughSeq
+	}
+	return 0
+}
+
+func (x *RespondWorkerQueryRequest) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+type RespondWorkerQueryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RespondWorkerQueryResponse) Reset() {
+	*x = RespondWorkerQueryResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[83]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondWorkerQueryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondWorkerQueryResponse) ProtoMessage() {}
+
+func (x *RespondWorkerQueryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[83]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondWorkerQueryResponse.ProtoReflect.Descriptor instead.
+func (*RespondWorkerQueryResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{83}
+}
+
+func (x *RespondWorkerQueryResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+// A move's verification: up to 16 items, each a run the session replays against the target digest.
+type ReplayCheckTask struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Items            []*ReplayCheckItem     `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	GatedEntries     []string               `protobuf:"bytes,2,rep,name=gated_entries,json=gatedEntries,proto3" json:"gated_entries,omitempty"`       // of the target version
+	StateMaxBytes    int64                  `protobuf:"varint,3,opt,name=state_max_bytes,json=stateMaxBytes,proto3" json:"state_max_bytes,omitempty"` // of the target version
+	LeaseToken       string                 `protobuf:"bytes,4,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	ExpiresAtEpochMs int64                  `protobuf:"varint,5,opt,name=expires_at_epoch_ms,json=expiresAtEpochMs,proto3" json:"expires_at_epoch_ms,omitempty"` // 300 s after the claim, extended by reading, at most 3,600 s
+	WorkflowType     string                 `protobuf:"bytes,6,opt,name=workflow_type,json=workflowType,proto3" json:"workflow_type,omitempty"`
+	CodeDigest       string                 `protobuf:"bytes,7,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"` // the target's digest
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ReplayCheckTask) Reset() {
+	*x = ReplayCheckTask{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplayCheckTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplayCheckTask) ProtoMessage() {}
+
+func (x *ReplayCheckTask) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplayCheckTask.ProtoReflect.Descriptor instead.
+func (*ReplayCheckTask) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{84}
+}
+
+func (x *ReplayCheckTask) GetItems() []*ReplayCheckItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *ReplayCheckTask) GetGatedEntries() []string {
+	if x != nil {
+		return x.GatedEntries
+	}
+	return nil
+}
+
+func (x *ReplayCheckTask) GetStateMaxBytes() int64 {
+	if x != nil {
+		return x.StateMaxBytes
+	}
+	return 0
+}
+
+func (x *ReplayCheckTask) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *ReplayCheckTask) GetExpiresAtEpochMs() int64 {
+	if x != nil {
+		return x.ExpiresAtEpochMs
+	}
+	return 0
+}
+
+func (x *ReplayCheckTask) GetWorkflowType() string {
+	if x != nil {
+		return x.WorkflowType
+	}
+	return ""
+}
+
+func (x *ReplayCheckTask) GetCodeDigest() string {
+	if x != nil {
+		return x.CodeDigest
+	}
+	return ""
+}
+
+type ReplayCheckItem struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	JobId   string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Ordinal int32                  `protobuf:"varint,2,opt,name=ordinal,proto3" json:"ordinal,omitempty"`
+	RunId   string                 `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// For ReadHistory and ReadBlob of this run only. Bound to the claiming session, it expires with the item's lease
+	// and is invalid once the item's verdict is recorded; binding and membership are checked at every use.
+	ReadToken string `protobuf:"bytes,4,opt,name=read_token,json=readToken,proto3" json:"read_token,omitempty"`
+	// The run's 32-byte seed: the history never carries it, and a replay of a run that drew random numbers or
+	// identifiers needs it to make the same commands.
+	Seed          []byte `protobuf:"bytes,5,opt,name=seed,proto3" json:"seed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplayCheckItem) Reset() {
+	*x = ReplayCheckItem{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplayCheckItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplayCheckItem) ProtoMessage() {}
+
+func (x *ReplayCheckItem) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplayCheckItem.ProtoReflect.Descriptor instead.
+func (*ReplayCheckItem) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *ReplayCheckItem) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ReplayCheckItem) GetOrdinal() int32 {
+	if x != nil {
+		return x.Ordinal
+	}
+	return 0
+}
+
+func (x *ReplayCheckItem) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *ReplayCheckItem) GetReadToken() string {
+	if x != nil {
+		return x.ReadToken
+	}
+	return ""
+}
+
+func (x *ReplayCheckItem) GetSeed() []byte {
+	if x != nil {
+		return x.Seed
+	}
+	return nil
+}
+
+type RespondReplayCheckRequest struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	LeaseToken         string                 `protobuf:"bytes,1,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	JobId              string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Ordinal            int32                  `protobuf:"varint,3,opt,name=ordinal,proto3" json:"ordinal,omitempty"`
+	FromCommand        int64                  `protobuf:"varint,4,opt,name=from_command,json=fromCommand,proto3" json:"from_command,omitempty"` // the command number of the first digest of this range
+	BodyDigests        [][]byte               `protobuf:"bytes,5,rep,name=body_digests,json=bodyDigests,proto3" json:"body_digests,omitempty"`  // at most 8,192 SHA-256 digests (32 bytes each) of the commands' canonical bodies
+	LastRange          bool                   `protobuf:"varint,6,opt,name=last_range,json=lastRange,proto3" json:"last_range,omitempty"`
+	SK                 int64                  `protobuf:"varint,7,opt,name=s_k,json=sK,proto3" json:"s_k,omitempty"`                                                  // with the last range: S(k) of the run's last completed activation
+	Chain              []byte                 `protobuf:"bytes,8,opt,name=chain,proto3" json:"chain,omitempty"`                                                       // with the last range: the chain the replay computed (32 bytes)
+	DeferredBodyDigest []byte                 `protobuf:"bytes,9,opt,name=deferred_body_digest,json=deferredBodyDigest,proto3" json:"deferred_body_digest,omitempty"` // with the last range, when the last completion recorded a deferral
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *RespondReplayCheckRequest) Reset() {
+	*x = RespondReplayCheckRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondReplayCheckRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondReplayCheckRequest) ProtoMessage() {}
+
+func (x *RespondReplayCheckRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondReplayCheckRequest.ProtoReflect.Descriptor instead.
+func (*RespondReplayCheckRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{86}
+}
+
+func (x *RespondReplayCheckRequest) GetLeaseToken() string {
+	if x != nil {
+		return x.LeaseToken
+	}
+	return ""
+}
+
+func (x *RespondReplayCheckRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *RespondReplayCheckRequest) GetOrdinal() int32 {
+	if x != nil {
+		return x.Ordinal
+	}
+	return 0
+}
+
+func (x *RespondReplayCheckRequest) GetFromCommand() int64 {
+	if x != nil {
+		return x.FromCommand
+	}
+	return 0
+}
+
+func (x *RespondReplayCheckRequest) GetBodyDigests() [][]byte {
+	if x != nil {
+		return x.BodyDigests
+	}
+	return nil
+}
+
+func (x *RespondReplayCheckRequest) GetLastRange() bool {
+	if x != nil {
+		return x.LastRange
+	}
+	return false
+}
+
+func (x *RespondReplayCheckRequest) GetSK() int64 {
+	if x != nil {
+		return x.SK
+	}
+	return 0
+}
+
+func (x *RespondReplayCheckRequest) GetChain() []byte {
+	if x != nil {
+		return x.Chain
+	}
+	return nil
+}
+
+func (x *RespondReplayCheckRequest) GetDeferredBodyDigest() []byte {
+	if x != nil {
+		return x.DeferredBodyDigest
+	}
+	return nil
+}
+
+type RespondReplayCheckResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Accepted        bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	NextFromCommand int64                  `protobuf:"varint,2,opt,name=next_from_command,json=nextFromCommand,proto3" json:"next_from_command,omitempty"` // the range the server expects next; 0 once the verdict is recorded
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RespondReplayCheckResponse) Reset() {
+	*x = RespondReplayCheckResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondReplayCheckResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondReplayCheckResponse) ProtoMessage() {}
+
+func (x *RespondReplayCheckResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondReplayCheckResponse.ProtoReflect.Descriptor instead.
+func (*RespondReplayCheckResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{87}
+}
+
+func (x *RespondReplayCheckResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *RespondReplayCheckResponse) GetNextFromCommand() int64 {
+	if x != nil {
+		return x.NextFromCommand
+	}
+	return 0
+}
+
+// Task 044-14: runs evicted from the worker's cache, at most 256.
+type ReleaseStickyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	SessionToken  string                 `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	RunIds        []string               `protobuf:"bytes,3,rep,name=run_ids,json=runIds,proto3" json:"run_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseStickyRequest) Reset() {
+	*x = ReleaseStickyRequest{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseStickyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseStickyRequest) ProtoMessage() {}
+
+func (x *ReleaseStickyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseStickyRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseStickyRequest) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *ReleaseStickyRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *ReleaseStickyRequest) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *ReleaseStickyRequest) GetRunIds() []string {
+	if x != nil {
+		return x.RunIds
+	}
+	return nil
+}
+
+type ReleaseStickyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Released      int32                  `protobuf:"varint,1,opt,name=released,proto3" json:"released,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseStickyResponse) Reset() {
+	*x = ReleaseStickyResponse{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[89]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseStickyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseStickyResponse) ProtoMessage() {}
+
+func (x *ReleaseStickyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[89]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseStickyResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseStickyResponse) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{89}
+}
+
+func (x *ReleaseStickyResponse) GetReleased() int32 {
+	if x != nil {
+		return x.Released
+	}
+	return 0
+}
+
 var File_sagat_octopus_orchestrator_v1_worker_proto protoreflect.FileDescriptor
 
 const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	"*sagat_octopus_orchestrator/v1/worker.proto\x12\x1dsagat_octopus_orchestrator.v1\"\xb6\x01\n" +
+	"*sagat_octopus_orchestrator/v1/worker.proto\x12\x1dsagat_octopus_orchestrator.v1\"\xc6\x02\n" +
 	"\x12WorkerCapabilities\x12\x1c\n" +
 	"\tlanguages\x18\x01 \x03(\tR\tlanguages\x12\x1e\n" +
 	"\n" +
@@ -4393,7 +8792,13 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"activities\x12\x14\n" +
 	"\x05pools\x18\x03 \x03(\tR\x05pools\x12!\n" +
 	"\fmax_inflight\x18\x04 \x01(\x05R\vmaxInflight\x12)\n" +
-	"\x10protocol_version\x18\x05 \x01(\tR\x0fprotocolVersion\"\xad\x01\n" +
+	"\x10protocol_version\x18\x05 \x01(\tR\x0fprotocolVersion\x12W\n" +
+	"\x0eworkflow_types\x18\v \x03(\v20.sagat_octopus_orchestrator.v1.WorkflowTypeOfferR\rworkflowTypes\x125\n" +
+	"\x17offers_workflow_as_code\x18\f \x01(\bR\x14offersWorkflowAsCode\"Y\n" +
+	"\x11WorkflowTypeOffer\x12#\n" +
+	"\rworkflow_type\x18\x01 \x01(\tR\fworkflowType\x12\x1f\n" +
+	"\vcode_digest\x18\x02 \x01(\tR\n" +
+	"codeDigest\"\xad\x01\n" +
 	"\x15RegisterWorkerRequest\x12\x1f\n" +
 	"\vworker_name\x18\x01 \x01(\tR\n" +
 	"workerName\x12\x1c\n" +
@@ -4413,7 +8818,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0fiteration_index\x18\x02 \x01(\rR\x0eiterationIndex\"\x9f\x01\n" +
 	"\x19ExecutionInstanceIdentity\x12T\n" +
 	"\rinstance_path\x18\x01 \x03(\v2/.sagat_octopus_orchestrator.v1.ScopePathSegmentR\finstancePath\x12,\n" +
-	"\x12definition_node_id\x18\x02 \x01(\tR\x10definitionNodeId\"\xe3\x05\n" +
+	"\x12definition_node_id\x18\x02 \x01(\tR\x10definitionNodeId\"\xf6\a\n" +
 	"\tTaskLease\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -4438,7 +8843,12 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"targetNode\x124\n" +
 	"\x16target_idempotency_key\x18\x10 \x01(\tR\x14targetIdempotencyKey\x12T\n" +
 	"\binstance\x18\x11 \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\x12a\n" +
-	"\x0ftarget_instance\x18\x12 \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\x0etargetInstance\"y\n" +
+	"\x0ftarget_instance\x18\x12 \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\x0etargetInstance\x12W\n" +
+	"\rworkflow_task\x18\x1c \x01(\v20.sagat_octopus_orchestrator.v1.WorkflowTaskLeaseH\x00R\fworkflowTask\x12I\n" +
+	"\n" +
+	"query_task\x18\x1d \x01(\v2(.sagat_octopus_orchestrator.v1.QueryTaskH\x00R\tqueryTask\x12\\\n" +
+	"\x11replay_check_task\x18\x1e \x01(\v2..sagat_octopus_orchestrator.v1.ReplayCheckTaskH\x00R\x0freplayCheckTaskB\x0f\n" +
+	"\rworkflow_work\"y\n" +
 	"\x11PollTasksResponse\x12>\n" +
 	"\x05tasks\x18\x01 \x03(\v2(.sagat_octopus_orchestrator.v1.TaskLeaseR\x05tasks\x12$\n" +
 	"\x0eretry_after_ms\x18\x02 \x01(\x05R\fretryAfterMs\"\xa9\x02\n" +
@@ -4456,7 +8866,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"x\n" +
 	"\x11HeartbeatResponse\x128\n" +
 	"\x19lease_expires_at_epoch_ms\x18\x01 \x01(\x03R\x15leaseExpiresAtEpochMs\x12)\n" +
-	"\x10cancel_requested\x18\x02 \x01(\bR\x0fcancelRequested\"\x92\x04\n" +
+	"\x10cancel_requested\x18\x02 \x01(\bR\x0fcancelRequested\"\xc4\x04\n" +
 	"\x13CompleteStepRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -4475,7 +8885,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	" \x01(\tR\foutputSha256\x12 \n" +
 	"\vtraceparent\x18\v \x01(\tR\vtraceparent\x12T\n" +
 	"\binstance\x18\f \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\x12H\n" +
-	"\tstep_logs\x18\r \x01(\v2+.sagat_octopus_orchestrator.v1.StepLogCarryR\bstepLogs\"\x80\x04\n" +
+	"\tstep_logs\x18\r \x01(\v2+.sagat_octopus_orchestrator.v1.StepLogCarryR\bstepLogs\x120\n" +
+	"\x14accept_workflow_task\x18\x0e \x01(\bR\x12acceptWorkflowTask\"\x80\x04\n" +
 	"\x0fFailStepRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -4536,7 +8947,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\ablob_id\x18\x01 \x01(\tR\x06blobId\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12!\n" +
-	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xa4\x02\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xc3\x02\n" +
 	"\x0fReadBlobRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -4548,7 +8959,9 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\vlease_token\x18\x06 \x01(\tR\n" +
 	"leaseToken\x12\x17\n" +
 	"\ablob_id\x18\a \x01(\tR\x06blobId\x12T\n" +
-	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"{\n" +
+	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\x12\x1d\n" +
+	"\n" +
+	"read_token\x18\t \x01(\tR\treadToken\"{\n" +
 	"\x10ReadBlobResponse\x12G\n" +
 	"\x06header\x18\x01 \x01(\v2-.sagat_octopus_orchestrator.v1.ReadBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
@@ -4557,7 +8970,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\ablob_id\x18\x01 \x01(\tR\x06blobId\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12!\n" +
-	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\x9d\x01\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xec\x01\n" +
 	"\x13StepCommandResponse\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12'\n" +
@@ -4565,7 +8978,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\vstep_status\x18\x03 \x01(\tR\n" +
 	"stepStatus\x12\x1d\n" +
 	"\n" +
-	"run_status\x18\x04 \x01(\tR\trunStatus\"\x84\x03\n" +
+	"run_status\x18\x04 \x01(\tR\trunStatus\x12M\n" +
+	"\rworkflow_task\x18\x05 \x01(\v2(.sagat_octopus_orchestrator.v1.TaskLeaseR\fworkflowTask\"\x84\x03\n" +
 	"\rDatabaseValue\x12\x1f\n" +
 	"\n" +
 	"null_value\x18\x01 \x01(\bH\x00R\tnullValue\x12%\n" +
@@ -4758,7 +9172,317 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x17stored_through_sequence\x18\x03 \x01(\x04R\x15storedThroughSequence\x12$\n" +
 	"\x0eretry_after_ms\x18\x04 \x01(\x05R\fretryAfterMs\")\n" +
 	"\rStepLogPolicy\x12\x18\n" +
-	"\aenabled\x18\x01 \x01(\bR\aenabled*e\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\"\xab\x05\n" +
+	"\x11WorkflowTaskLease\x12\x15\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x03R\n" +
+	"generation\x12\x1f\n" +
+	"\vlease_token\x18\x04 \x01(\tR\n" +
+	"leaseToken\x12-\n" +
+	"\x13expires_at_epoch_ms\x18\x05 \x01(\x03R\x10expiresAtEpochMs\x12\x12\n" +
+	"\x04seed\x18\x06 \x01(\fR\x04seed\x12\"\n" +
+	"\rstarted_at_us\x18\a \x01(\x03R\vstartedAtUs\x12(\n" +
+	"\x10window_start_seq\x18\b \x01(\x03R\x0ewindowStartSeq\x12#\n" +
+	"\rgated_entries\x18\t \x03(\tR\fgatedEntries\x12&\n" +
+	"\x0fstate_max_bytes\x18\n" +
+	" \x01(\x03R\rstateMaxBytes\x12J\n" +
+	"\n" +
+	"first_page\x18\v \x03(\v2+.sagat_octopus_orchestrator.v1.HistoryEventR\tfirstPage\x12#\n" +
+	"\rvisible_count\x18\f \x01(\x03R\fvisibleCount\x129\n" +
+	"\x19continue_as_new_suggested\x18\r \x01(\bR\x16continueAsNewSuggested\x122\n" +
+	"\x15history_limit_reached\x18\x0e \x01(\bR\x13historyLimitReached\x12 \n" +
+	"\vtraceparent\x18\x0f \x01(\tR\vtraceparent\x12#\n" +
+	"\rworkflow_type\x18\x10 \x01(\tR\fworkflowType\x12\x1f\n" +
+	"\vcode_digest\x18\x11 \x01(\tR\n" +
+	"codeDigest\"\x96\x01\n" +
+	"\x0eHistoryPayload\x12\x14\n" +
+	"\x04json\x18\x01 \x01(\fH\x00R\x04json\x12C\n" +
+	"\x04blob\x18\x02 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryBlobRefH\x00R\x04blob\x12 \n" +
+	"\vplaceholder\x18\x03 \x01(\tR\vplaceholderB\a\n" +
+	"\x05value\"x\n" +
+	"\x0eHistoryBlobRef\x12\x17\n" +
+	"\ablob_id\x18\x01 \x01(\tR\x06blobId\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
+	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12!\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xc7\f\n" +
+	"\fHistoryEvent\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12C\n" +
+	"\x04kind\x18\x02 \x01(\x0e2/.sagat_octopus_orchestrator.v1.HistoryEventKindR\x04kind\x12I\n" +
+	"\x06origin\x18\x03 \x01(\x0e21.sagat_octopus_orchestrator.v1.HistoryEventOriginR\x06origin\x12%\n" +
+	"\x0ecommand_number\x18\x04 \x01(\x03R\rcommandNumber\x12\x13\n" +
+	"\x05at_us\x18\x05 \x01(\x03R\x04atUs\x12S\n" +
+	"\vrun_started\x18\n" +
+	" \x01(\v20.sagat_octopus_orchestrator.v1.HistoryRunStartedH\x00R\n" +
+	"runStarted\x12o\n" +
+	"\x15workflow_task_started\x18\v \x01(\v29.sagat_octopus_orchestrator.v1.HistoryWorkflowTaskStartedH\x00R\x13workflowTaskStarted\x12u\n" +
+	"\x17workflow_task_completed\x18\f \x01(\v2;.sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompletedH\x00R\x15workflowTaskCompleted\x12\\\n" +
+	"\x0ecommand_record\x18\r \x01(\v23.sagat_octopus_orchestrator.v1.HistoryCommandRecordH\x00R\rcommandRecord\x12V\n" +
+	"\fstep_outcome\x18\x0e \x01(\v21.sagat_octopus_orchestrator.v1.HistoryStepOutcomeH\x00R\vstepOutcome\x12S\n" +
+	"\vtimer_fired\x18\x0f \x01(\v20.sagat_octopus_orchestrator.v1.HistoryTimerFiredH\x00R\n" +
+	"timerFired\x12V\n" +
+	"\fwait_outcome\x18\x10 \x01(\v21.sagat_octopus_orchestrator.v1.HistoryWaitOutcomeH\x00R\vwaitOutcome\x12\\\n" +
+	"\x0echild_finished\x18\x11 \x01(\v23.sagat_octopus_orchestrator.v1.HistoryChildFinishedH\x00R\rchildFinished\x12b\n" +
+	"\x10approval_decided\x18\x12 \x01(\v25.sagat_octopus_orchestrator.v1.HistoryApprovalDecidedH\x00R\x0fapprovalDecided\x12V\n" +
+	"\fsaga_outcome\x18\x13 \x01(\v21.sagat_octopus_orchestrator.v1.HistorySagaOutcomeH\x00R\vsagaOutcome\x12_\n" +
+	"\x0fsignal_buffered\x18\x14 \x01(\v24.sagat_octopus_orchestrator.v1.HistorySignalBufferedH\x00R\x0esignalBuffered\x12_\n" +
+	"\x0fupdate_admitted\x18\x15 \x01(\v24.sagat_octopus_orchestrator.v1.HistoryUpdateAdmittedH\x00R\x0eupdateAdmitted\x12t\n" +
+	"\x16cancellation_requested\x18\x16 \x01(\v2;.sagat_octopus_orchestrator.v1.HistoryCancellationRequestedH\x00R\x15cancellationRequested\x12_\n" +
+	"\x0fmarker_recorded\x18\x17 \x01(\v24.sagat_octopus_orchestrator.v1.HistoryMarkerRecordedH\x00R\x0emarkerRecordedB\x06\n" +
+	"\x04body\"\xda\x01\n" +
+	"\x11HistoryRunStarted\x12C\n" +
+	"\x05input\x18\x01 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\x05input\x12R\n" +
+	"\rcarried_state\x18\x02 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\fcarriedState\x12,\n" +
+	"\x12predecessor_run_id\x18\x03 \x01(\tR\x10predecessorRunId\"\x8b\x01\n" +
+	"\x1aHistoryWorkflowTaskStarted\x129\n" +
+	"\x19continue_as_new_suggested\x18\x01 \x01(\bR\x16continueAsNewSuggested\x122\n" +
+	"\x15history_limit_reached\x18\x02 \x01(\bR\x13historyLimitReached\"\x94\x02\n" +
+	"\x1cHistoryWorkflowTaskCompleted\x12\x1a\n" +
+	"\bdeferred\x18\x01 \x01(\bR\bdeferred\x12O\n" +
+	"\rdeferred_kind\x18\x02 \x01(\x0e2*.sagat_octopus_orchestrator.v1.CommandKindR\fdeferredKind\x12'\n" +
+	"\x0fdeferred_target\x18\x03 \x01(\tR\x0edeferredTarget\x12^\n" +
+	"\x0edeferral_cause\x18\x04 \x01(\x0e27.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCauseR\rdeferralCause\"\xb5\x01\n" +
+	"\x14HistoryCommandRecord\x12>\n" +
+	"\x04kind\x18\x01 \x01(\x0e2*.sagat_octopus_orchestrator.v1.CommandKindR\x04kind\x12\x16\n" +
+	"\x06target\x18\x02 \x01(\tR\x06target\x12\x12\n" +
+	"\x04node\x18\x03 \x01(\tR\x04node\x12\x12\n" +
+	"\x04noop\x18\x04 \x01(\bR\x04noop\x12\x1d\n" +
+	"\n" +
+	"saga_scope\x18\x05 \x01(\tR\tsagaScope\"\xf2\x01\n" +
+	"\x12HistoryStepOutcome\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12D\n" +
+	"\aoutcome\x18\x02 \x01(\x0e2*.sagat_octopus_orchestrator.v1.StepOutcomeR\aoutcome\x12E\n" +
+	"\x06output\x18\x03 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\x06output\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x04 \x01(\tR\terrorCode\x12\x1c\n" +
+	"\tretryable\x18\x05 \x01(\bR\tretryable\"'\n" +
+	"\x11HistoryTimerFired\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\"\x8e\x01\n" +
+	"\x12HistoryWaitOutcome\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x1b\n" +
+	"\ttimed_out\x18\x02 \x01(\bR\btimedOut\x12G\n" +
+	"\apayload\x18\x03 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\apayload\"\xca\x01\n" +
+	"\x14HistoryChildFinished\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12 \n" +
+	"\fchild_run_id\x18\x02 \x01(\tR\n" +
+	"childRunId\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12E\n" +
+	"\x06output\x18\x04 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\x06output\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x05 \x01(\tR\terrorCode\"H\n" +
+	"\x16HistoryApprovalDecided\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x1a\n" +
+	"\bdecision\x18\x02 \x01(\tR\bdecision\"D\n" +
+	"\x12HistorySagaOutcome\x12\x14\n" +
+	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x18\n" +
+	"\aoutcome\x18\x02 \x01(\tR\aoutcome\"\x81\x01\n" +
+	"\x15HistorySignalBuffered\x12\x1f\n" +
+	"\vsignal_name\x18\x01 \x01(\tR\n" +
+	"signalName\x12G\n" +
+	"\apayload\x18\x02 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\apayload\"{\n" +
+	"\x15HistoryUpdateAdmitted\x12\x1f\n" +
+	"\vupdate_name\x18\x01 \x01(\tR\n" +
+	"updateName\x12A\n" +
+	"\x04args\x18\x02 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\x04args\"\x8b\x01\n" +
+	"\x1cHistoryCancellationRequested\x12\x19\n" +
+	"\bgrace_ms\x18\x01 \x01(\x03R\agraceMs\x12P\n" +
+	"\rcancel_origin\x18\x02 \x01(\x0e2+.sagat_octopus_orchestrator.v1.CancelOriginR\fcancelOrigin\"\x9a\x01\n" +
+	"\x15HistoryMarkerRecorded\x12\x1b\n" +
+	"\tmarker_id\x18\x01 \x01(\tR\bmarkerId\x12\x1f\n" +
+	"\vside_effect\x18\x02 \x01(\bR\n" +
+	"sideEffect\x12C\n" +
+	"\x05value\x18\x03 \x01(\v2-.sagat_octopus_orchestrator.v1.HistoryPayloadR\x05value\"\xa0\x01\n" +
+	"\fCommandValue\x12\x14\n" +
+	"\x04json\x18\x01 \x01(\fH\x00R\x04json\x12\x19\n" +
+	"\ablob_id\x18\x02 \x01(\tH\x00R\x06blobId\x12+\n" +
+	"\x11descriptor_sha256\x18\x03 \x01(\tR\x10descriptorSha256\x12'\n" +
+	"\x0fdescriptor_size\x18\x04 \x01(\x03R\x0edescriptorSizeB\t\n" +
+	"\acarrier\"\xce\n" +
+	"\n" +
+	"\aCommand\x12%\n" +
+	"\x0ecommand_number\x18\x01 \x01(\x03R\rcommandNumber\x12>\n" +
+	"\x04kind\x18\x02 \x01(\x0e2*.sagat_octopus_orchestrator.v1.CommandKindR\x04kind\x12#\n" +
+	"\rfragment_json\x18\x03 \x01(\fR\ffragmentJson\x12A\n" +
+	"\x05value\x18\x04 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x05value\x12\x1d\n" +
+	"\n" +
+	"saga_scope\x18\x05 \x01(\tR\tsagaScope\x12F\n" +
+	"\x06target\x18\n" +
+	" \x01(\v2,.sagat_octopus_orchestrator.v1.TargetCommandH\x00R\x06target\x12M\n" +
+	"\tsaga_open\x18\v \x01(\v2..sagat_octopus_orchestrator.v1.SagaOpenCommandH\x00R\bsagaOpen\x12M\n" +
+	"\n" +
+	"saga_close\x18\f \x01(\v2,.sagat_octopus_orchestrator.v1.TargetCommandH\x00R\tsagaClose\x12M\n" +
+	"\n" +
+	"saga_abort\x18\r \x01(\v2,.sagat_octopus_orchestrator.v1.TargetCommandH\x00R\tsagaAbort\x12F\n" +
+	"\x06marker\x18\x0e \x01(\v2,.sagat_octopus_orchestrator.v1.MarkerCommandH\x00R\x06marker\x12J\n" +
+	"\tset_state\x18\x0f \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueH\x00R\bsetState\x12_\n" +
+	"\x0fupdate_decision\x18\x10 \x01(\v24.sagat_octopus_orchestrator.v1.UpdateDecisionCommandH\x00R\x0eupdateDecision\x12Y\n" +
+	"\rupdate_result\x18\x11 \x01(\v22.sagat_octopus_orchestrator.v1.UpdateResultCommandH\x00R\fupdateResult\x12_\n" +
+	"\x0fconsume_signals\x18\x12 \x01(\v24.sagat_octopus_orchestrator.v1.ConsumeSignalsCommandH\x00R\x0econsumeSignals\x12I\n" +
+	"\bcomplete\x18\x13 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueH\x00R\bcomplete\x12@\n" +
+	"\x04fail\x18\x14 \x01(\v2*.sagat_octopus_orchestrator.v1.FailCommandH\x00R\x04fail\x12]\n" +
+	"\x0fcontinue_as_new\x18\x15 \x01(\v23.sagat_octopus_orchestrator.v1.ContinueAsNewCommandH\x00R\rcontinueAsNew\x12z\n" +
+	"\x18acknowledge_cancellation\x18\x16 \x01(\v2=.sagat_octopus_orchestrator.v1.AcknowledgeCancellationCommandH\x00R\x17acknowledgeCancellationB\a\n" +
+	"\x05typed\"'\n" +
+	"\rTargetCommand\x12\x16\n" +
+	"\x06target\x18\x01 \x01(\tR\x06target\"\xa7\x01\n" +
+	"\x0fSagaOpenCommand\x12\x14\n" +
+	"\x05scope\x18\x01 \x01(\tR\x05scope\x12!\n" +
+	"\fparent_scope\x18\x02 \x01(\tR\vparentScope\x126\n" +
+	"\x17on_compensation_failure\x18\x03 \x01(\tR\x15onCompensationFailure\x12#\n" +
+	"\rcancel_policy\x18\x04 \x01(\tR\fcancelPolicy\"\x85\x01\n" +
+	"\rMarkerCommand\x12\x1b\n" +
+	"\tmarker_id\x18\x01 \x01(\tR\bmarkerId\x12W\n" +
+	"\x11side_effect_value\x18\x02 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x0fsideEffectValue\"\x81\x01\n" +
+	"\x15UpdateDecisionCommand\x12!\n" +
+	"\fadmitted_seq\x18\x01 \x01(\x03R\vadmittedSeq\x12\x1a\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\x12)\n" +
+	"\x10rejection_reason\x18\x03 \x01(\tR\x0frejectionReason\"\xa0\x01\n" +
+	"\x13UpdateResultCommand\x12!\n" +
+	"\fadmitted_seq\x18\x01 \x01(\x03R\vadmittedSeq\x12C\n" +
+	"\x06result\x18\x02 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x06result\x12!\n" +
+	"\ffailure_code\x18\x03 \x01(\tR\vfailureCode\"a\n" +
+	"\x15ConsumeSignalsCommand\x12H\n" +
+	"\asignals\x18\x01 \x03(\v2..sagat_octopus_orchestrator.v1.ConsumedSignalsR\asignals\"F\n" +
+	"\x0fConsumedSignals\x12\x1f\n" +
+	"\vsignal_name\x18\x01 \x01(\tR\n" +
+	"signalName\x12\x12\n" +
+	"\x04seqs\x18\x02 \x03(\x03R\x04seqs\"D\n" +
+	"\vFailCommand\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12!\n" +
+	"\fsafe_message\x18\x02 \x01(\tR\vsafeMessage\"\xc3\x01\n" +
+	"\x14ContinueAsNewCommand\x12A\n" +
+	"\x05input\x18\x01 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x05input\x12A\n" +
+	"\x05state\x18\x02 \x01(\v2+.sagat_octopus_orchestrator.v1.CommandValueR\x05state\x12%\n" +
+	"\x0eactive_version\x18\x03 \x01(\bR\ractiveVersion\" \n" +
+	"\x1eAcknowledgeCancellationCommand\"\xbc\x04\n" +
+	"\x1bCompleteWorkflowTaskRequest\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
+	"\aattempt\x18\x03 \x01(\x05R\aattempt\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x03R\n" +
+	"generation\x12\x1f\n" +
+	"\vlease_token\x18\x05 \x01(\tR\n" +
+	"leaseToken\x12'\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\x12.\n" +
+	"\x13applied_through_seq\x18\a \x01(\x03R\x11appliedThroughSeq\x12%\n" +
+	"\x0ereplayed_chain\x18\b \x01(\fR\rreplayedChain\x12B\n" +
+	"\bcommands\x18\t \x03(\v2&.sagat_octopus_orchestrator.v1.CommandR\bcommands\x12Q\n" +
+	"\x10deferred_command\x18\n" +
+	" \x01(\v2&.sagat_octopus_orchestrator.v1.CommandR\x0fdeferredCommand\x120\n" +
+	"\x14eager_activity_slots\x18\v \x01(\x05R\x12eagerActivitySlots\x12'\n" +
+	"\x0fbehaviour_flags\x18\f \x03(\tR\x0ebehaviourFlags\x12 \n" +
+	"\vtraceparent\x18\r \x01(\tR\vtraceparent\"\xc2\x02\n" +
+	"\x1cCompleteWorkflowTaskResponse\x12L\n" +
+	"\aoutcome\x18\x01 \x01(\x0e22.sagat_octopus_orchestrator.v1.WorkflowTaskOutcomeR\aoutcome\x12M\n" +
+	"\x05cause\x18\x02 \x01(\x0e27.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCauseR\x05cause\x12'\n" +
+	"\x0falready_applied\x18\x03 \x01(\bR\x0ealreadyApplied\x12\\\n" +
+	"\x15eager_activity_leases\x18\x04 \x03(\v2(.sagat_octopus_orchestrator.v1.TaskLeaseR\x13eagerActivityLeases\"\xcb\x04\n" +
+	"\x17FailWorkflowTaskRequest\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
+	"\aattempt\x18\x03 \x01(\x05R\aattempt\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x03R\n" +
+	"generation\x12\x1f\n" +
+	"\vlease_token\x18\x05 \x01(\tR\n" +
+	"leaseToken\x12'\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\x12M\n" +
+	"\x05cause\x18\a \x01(\x0e27.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCauseR\x05cause\x12%\n" +
+	"\x0ecommand_number\x18\b \x01(\x03R\rcommandNumber\x12K\n" +
+	"\vactual_kind\x18\t \x01(\x0e2*.sagat_octopus_orchestrator.v1.CommandKindR\n" +
+	"actualKind\x12#\n" +
+	"\ractual_target\x18\n" +
+	" \x01(\tR\factualTarget\x12%\n" +
+	"\x0eexception_type\x18\v \x01(\tR\rexceptionType\x12\x1f\n" +
+	"\vcode_digest\x18\f \x01(\tR\n" +
+	"codeDigest\x12 \n" +
+	"\vtraceparent\x18\r \x01(\tR\vtraceparent\x12*\n" +
+	"\x11actual_saga_scope\x18\x0e \x01(\tR\x0factualSagaScope\"C\n" +
+	"\x18FailWorkflowTaskResponse\x12'\n" +
+	"\x0falready_applied\x18\x01 \x01(\bR\x0ealreadyApplied\"\xd9\x01\n" +
+	"\x12ReadHistoryRequest\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
+	"\aattempt\x18\x03 \x01(\x05R\aattempt\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x03R\n" +
+	"generation\x12\x1f\n" +
+	"\vlease_token\x18\x05 \x01(\tR\n" +
+	"leaseToken\x12\x1d\n" +
+	"\n" +
+	"read_token\x18\x06 \x01(\tR\treadToken\x12\x19\n" +
+	"\bfrom_seq\x18\a \x01(\x03R\afromSeq\"\xb1\x01\n" +
+	"\x13ReadHistoryResponse\x12C\n" +
+	"\x06events\x18\x01 \x03(\v2+.sagat_octopus_orchestrator.v1.HistoryEventR\x06events\x12\x1b\n" +
+	"\tlast_page\x18\x02 \x01(\bR\blastPage\x128\n" +
+	"\x19lease_expires_at_epoch_ms\x18\x03 \x01(\x03R\x15leaseExpiresAtEpochMs\"\x83\x03\n" +
+	"\tQueryTask\x12\x19\n" +
+	"\bquery_id\x18\x01 \x01(\tR\aqueryId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"query_name\x18\x03 \x01(\tR\tqueryName\x12\x12\n" +
+	"\x04args\x18\x04 \x01(\fR\x04args\x12*\n" +
+	"\x11deadline_epoch_ms\x18\x05 \x01(\x03R\x0fdeadlineEpochMs\x12#\n" +
+	"\rgated_entries\x18\x06 \x03(\tR\fgatedEntries\x12&\n" +
+	"\x0fstate_max_bytes\x18\a \x01(\x03R\rstateMaxBytes\x12\x1d\n" +
+	"\n" +
+	"read_token\x18\b \x01(\tR\treadToken\x12\x1f\n" +
+	"\vlease_token\x18\t \x01(\tR\n" +
+	"leaseToken\x12#\n" +
+	"\rworkflow_type\x18\n" +
+	" \x01(\tR\fworkflowType\x12\x1f\n" +
+	"\vcode_digest\x18\v \x01(\tR\n" +
+	"codeDigest\x12\x12\n" +
+	"\x04seed\x18\f \x01(\fR\x04seed\"\xc6\x01\n" +
+	"\x19RespondWorkerQueryRequest\x12\x19\n" +
+	"\bquery_id\x18\x01 \x01(\tR\aqueryId\x12\x1f\n" +
+	"\vlease_token\x18\x02 \x01(\tR\n" +
+	"leaseToken\x12\x16\n" +
+	"\x06answer\x18\x03 \x01(\fR\x06answer\x122\n" +
+	"\x15committed_through_seq\x18\x04 \x01(\x03R\x13committedThroughSeq\x12!\n" +
+	"\ffailure_code\x18\x05 \x01(\tR\vfailureCode\"8\n" +
+	"\x1aRespondWorkerQueryResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xba\x02\n" +
+	"\x0fReplayCheckTask\x12D\n" +
+	"\x05items\x18\x01 \x03(\v2..sagat_octopus_orchestrator.v1.ReplayCheckItemR\x05items\x12#\n" +
+	"\rgated_entries\x18\x02 \x03(\tR\fgatedEntries\x12&\n" +
+	"\x0fstate_max_bytes\x18\x03 \x01(\x03R\rstateMaxBytes\x12\x1f\n" +
+	"\vlease_token\x18\x04 \x01(\tR\n" +
+	"leaseToken\x12-\n" +
+	"\x13expires_at_epoch_ms\x18\x05 \x01(\x03R\x10expiresAtEpochMs\x12#\n" +
+	"\rworkflow_type\x18\x06 \x01(\tR\fworkflowType\x12\x1f\n" +
+	"\vcode_digest\x18\a \x01(\tR\n" +
+	"codeDigest\"\x8c\x01\n" +
+	"\x0fReplayCheckItem\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
+	"\aordinal\x18\x02 \x01(\x05R\aordinal\x12\x15\n" +
+	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"read_token\x18\x04 \x01(\tR\treadToken\x12\x12\n" +
+	"\x04seed\x18\x05 \x01(\fR\x04seed\"\xab\x02\n" +
+	"\x19RespondReplayCheckRequest\x12\x1f\n" +
+	"\vlease_token\x18\x01 \x01(\tR\n" +
+	"leaseToken\x12\x15\n" +
+	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x18\n" +
+	"\aordinal\x18\x03 \x01(\x05R\aordinal\x12!\n" +
+	"\ffrom_command\x18\x04 \x01(\x03R\vfromCommand\x12!\n" +
+	"\fbody_digests\x18\x05 \x03(\fR\vbodyDigests\x12\x1d\n" +
+	"\n" +
+	"last_range\x18\x06 \x01(\bR\tlastRange\x12\x0f\n" +
+	"\x03s_k\x18\a \x01(\x03R\x02sK\x12\x14\n" +
+	"\x05chain\x18\b \x01(\fR\x05chain\x120\n" +
+	"\x14deferred_body_digest\x18\t \x01(\fR\x12deferredBodyDigest\"d\n" +
+	"\x1aRespondReplayCheckResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12*\n" +
+	"\x11next_from_command\x18\x02 \x01(\x03R\x0fnextFromCommand\"q\n" +
+	"\x14ReleaseStickyRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
+	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\x12\x17\n" +
+	"\arun_ids\x18\x03 \x03(\tR\x06runIds\"3\n" +
+	"\x15ReleaseStickyResponse\x12\x1a\n" +
+	"\breleased\x18\x01 \x01(\x05R\breleased*e\n" +
 	"\x15DatabaseOperationKind\x12\"\n" +
 	"\x1eDATABASE_OPERATION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDATABASE_QUERY\x10\x01\x12\x14\n" +
@@ -4802,8 +9526,94 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x1eSTEP_LOG_STOP_REASON_AUTHORITY\x10\x03\x12 \n" +
 	"\x1cSTEP_LOG_STOP_REASON_REMOVED\x10\x04\x12$\n" +
 	" STEP_LOG_STOP_REASON_CAPTURE_OFF\x10\x05\x12 \n" +
-	"\x1cSTEP_LOG_STOP_REASON_SESSION\x10\x062\xa3\n" +
-	"\n" +
+	"\x1cSTEP_LOG_STOP_REASON_SESSION\x10\x06*\xd1\x03\n" +
+	"\x10HistoryEventKind\x12\"\n" +
+	"\x1eHISTORY_EVENT_KIND_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13HISTORY_RUN_STARTED\x10\x01\x12!\n" +
+	"\x1dHISTORY_WORKFLOW_TASK_STARTED\x10\x02\x12#\n" +
+	"\x1fHISTORY_WORKFLOW_TASK_COMPLETED\x10\x03\x12\x1c\n" +
+	"\x18HISTORY_COMMAND_RECORDED\x10\x04\x12\x18\n" +
+	"\x14HISTORY_STEP_OUTCOME\x10\x05\x12\x17\n" +
+	"\x13HISTORY_TIMER_FIRED\x10\x06\x12\x18\n" +
+	"\x14HISTORY_WAIT_OUTCOME\x10\a\x12\x1a\n" +
+	"\x16HISTORY_CHILD_FINISHED\x10\b\x12\x1c\n" +
+	"\x18HISTORY_APPROVAL_DECIDED\x10\t\x12\x18\n" +
+	"\x14HISTORY_SAGA_OUTCOME\x10\n" +
+	"\x12\x1b\n" +
+	"\x17HISTORY_SIGNAL_BUFFERED\x10\v\x12\x1b\n" +
+	"\x17HISTORY_UPDATE_ADMITTED\x10\f\x12\"\n" +
+	"\x1eHISTORY_CANCELLATION_REQUESTED\x10\r\x12\x1b\n" +
+	"\x17HISTORY_MARKER_RECORDED\x10\x0e*\xac\x01\n" +
+	"\x12HistoryEventOrigin\x12$\n" +
+	" HISTORY_EVENT_ORIGIN_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19HISTORY_ORIGIN_COMPLETION\x10\x01\x12\x19\n" +
+	"\x15HISTORY_ORIGIN_EFFECT\x10\x02\x12\x19\n" +
+	"\x15HISTORY_ORIGIN_ENGINE\x10\x03\x12\x1b\n" +
+	"\x17HISTORY_ORIGIN_EXTERNAL\x10\x04*\x98\x01\n" +
+	"\vStepOutcome\x12\x1c\n" +
+	"\x18STEP_OUTCOME_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16STEP_OUTCOME_COMPLETED\x10\x01\x12\x17\n" +
+	"\x13STEP_OUTCOME_FAILED\x10\x02\x12\x1a\n" +
+	"\x16STEP_OUTCOME_TIMED_OUT\x10\x03\x12\x1a\n" +
+	"\x16STEP_OUTCOME_CANCELLED\x10\x04*\xe0\x01\n" +
+	"\fCancelOrigin\x12\x1d\n" +
+	"\x19CANCEL_ORIGIN_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15CANCEL_ORIGIN_REQUEST\x10\x01\x12\x1f\n" +
+	"\x1bCANCEL_ORIGIN_WITHOUT_GRACE\x10\x02\x12'\n" +
+	"#CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED\x10\x03\x12)\n" +
+	"%CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST\x10\x04\x12!\n" +
+	"\x1dCANCEL_ORIGIN_LATCHED_HANDOFF\x10\x05*\xd5\x04\n" +
+	"\vCommandKind\x12\x1c\n" +
+	"\x18COMMAND_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10COMMAND_ACTIVITY\x10\x01\x12\x12\n" +
+	"\x0eCOMMAND_SCRIPT\x10\x02\x12\x17\n" +
+	"\x13COMMAND_TIMER_START\x10\x03\x12\x18\n" +
+	"\x14COMMAND_TIMER_CANCEL\x10\x04\x12\x16\n" +
+	"\x12COMMAND_WAIT_EVENT\x10\x05\x12\x11\n" +
+	"\rCOMMAND_CHILD\x10\x06\x12\x14\n" +
+	"\x10COMMAND_APPROVAL\x10\a\x12\x17\n" +
+	"\x13COMMAND_STEP_CANCEL\x10\b\x12\x15\n" +
+	"\x11COMMAND_SAGA_OPEN\x10\t\x12\x16\n" +
+	"\x12COMMAND_SAGA_CLOSE\x10\n" +
+	"\x12\x16\n" +
+	"\x12COMMAND_SAGA_ABORT\x10\v\x12\x18\n" +
+	"\x14COMMAND_MARKER_PATCH\x10\f\x12\x1e\n" +
+	"\x1aCOMMAND_MARKER_SIDE_EFFECT\x10\r\x12\x15\n" +
+	"\x11COMMAND_SET_STATE\x10\x0e\x12\x19\n" +
+	"\x15COMMAND_UPDATE_ACCEPT\x10\x0f\x12\x19\n" +
+	"\x15COMMAND_UPDATE_REJECT\x10\x10\x12\x1b\n" +
+	"\x17COMMAND_UPDATE_COMPLETE\x10\x11\x12\x1b\n" +
+	"\x17COMMAND_CONSUME_SIGNALS\x10\x12\x12\x14\n" +
+	"\x10COMMAND_COMPLETE\x10\x13\x12\x10\n" +
+	"\fCOMMAND_FAIL\x10\x14\x12\x1b\n" +
+	"\x17COMMAND_CONTINUE_AS_NEW\x10\x15\x12$\n" +
+	" COMMAND_ACKNOWLEDGE_CANCELLATION\x10\x16*\xee\x04\n" +
+	"\x18WorkflowTaskFailureCause\x12+\n" +
+	"'WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14CAUSE_NONDETERMINISM\x10\x01\x12\x18\n" +
+	"\x14CAUSE_CHAIN_MISMATCH\x10\x02\x12\x1d\n" +
+	"\x19CAUSE_NONDETERMINISM_RISK\x10\x03\x12\"\n" +
+	"\x1eCAUSE_COMMAND_OUTSIDE_ENVELOPE\x10\x04\x12\x19\n" +
+	"\x15CAUSE_COMMAND_INVALID\x10\x05\x12\x1b\n" +
+	"\x17CAUSE_VALIDATOR_COMMAND\x10\x06\x12\x1e\n" +
+	"\x1aCAUSE_WORKFLOW_TASK_FAILED\x10\a\x12\x1d\n" +
+	"\x19CAUSE_ACTIVATION_DEADLINE\x10\b\x12!\n" +
+	"\x1dCAUSE_WORKFLOW_TASK_TIMED_OUT\x10\t\x12 \n" +
+	"\x1cCAUSE_COMMAND_VALUE_RELEASED\x10\n" +
+	"\x12\x1d\n" +
+	"\x19CAUSE_COMMAND_VALUE_LIMIT\x10\v\x12\x17\n" +
+	"\x13CAUSE_COMMAND_LIMIT\x10\f\x12!\n" +
+	"\x1dCAUSE_OUTSTANDING_OBLIGATIONS\x10\r\x12\x1a\n" +
+	"\x16CAUSE_UNHANDLED_EVENTS\x10\x0e\x12 \n" +
+	"\x1cCAUSE_CLOSING_WINDOW_COMMAND\x10\x0f\x12\x17\n" +
+	"\x13CAUSE_HISTORY_LIMIT\x10\x10\x12\x1e\n" +
+	"\x1aCAUSE_RETAINED_BYTES_LIMIT\x10\x11\x12 \n" +
+	"\x1cCAUSE_STORAGE_QUOTA_EXCEEDED\x10\x12*\x97\x01\n" +
+	"\x13WorkflowTaskOutcome\x12%\n" +
+	"!WORKFLOW_TASK_OUTCOME_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16WORKFLOW_TASK_ACCEPTED\x10\x01\x12#\n" +
+	"\x1fWORKFLOW_TASK_ACCEPTED_DEFERRED\x10\x02\x12\x18\n" +
+	"\x14WORKFLOW_TASK_REVIEW\x10\x032\xc7\x10\n" +
 	"\rWorkerService\x12}\n" +
 	"\x0eRegisterWorker\x124.sagat_octopus_orchestrator.v1.RegisterWorkerRequest\x1a5.sagat_octopus_orchestrator.v1.RegisterWorkerResponse\x12n\n" +
 	"\tPollTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse\x12r\n" +
@@ -4815,7 +9625,13 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0fResolveDatabase\x124.sagat_octopus_orchestrator.v1.ResolveSecretsRequest\x1a/.sagat_octopus_orchestrator.v1.ResolvedDatabase\x12p\n" +
 	"\tWriteBlob\x12/.sagat_octopus_orchestrator.v1.WriteBlobRequest\x1a0.sagat_octopus_orchestrator.v1.WriteBlobResponse(\x01\x12m\n" +
 	"\bReadBlob\x12..sagat_octopus_orchestrator.v1.ReadBlobRequest\x1a/.sagat_octopus_orchestrator.v1.ReadBlobResponse0\x01\x12}\n" +
-	"\x0eAppendStepLogs\x124.sagat_octopus_orchestrator.v1.AppendStepLogsRequest\x1a5.sagat_octopus_orchestrator.v1.AppendStepLogsResponseB\xbf\x01\n" +
+	"\x0eAppendStepLogs\x124.sagat_octopus_orchestrator.v1.AppendStepLogsRequest\x1a5.sagat_octopus_orchestrator.v1.AppendStepLogsResponse\x12\x8f\x01\n" +
+	"\x14CompleteWorkflowTask\x12:.sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest\x1a;.sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse\x12\x83\x01\n" +
+	"\x10FailWorkflowTask\x126.sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest\x1a7.sagat_octopus_orchestrator.v1.FailWorkflowTaskResponse\x12v\n" +
+	"\vReadHistory\x121.sagat_octopus_orchestrator.v1.ReadHistoryRequest\x1a2.sagat_octopus_orchestrator.v1.ReadHistoryResponse0\x01\x12\x89\x01\n" +
+	"\x12RespondWorkerQuery\x128.sagat_octopus_orchestrator.v1.RespondWorkerQueryRequest\x1a9.sagat_octopus_orchestrator.v1.RespondWorkerQueryResponse\x12\x89\x01\n" +
+	"\x12RespondReplayCheck\x128.sagat_octopus_orchestrator.v1.RespondReplayCheckRequest\x1a9.sagat_octopus_orchestrator.v1.RespondReplayCheckResponse\x12z\n" +
+	"\rReleaseSticky\x123.sagat_octopus_orchestrator.v1.ReleaseStickyRequest\x1a4.sagat_octopus_orchestrator.v1.ReleaseStickyResponseB\xbf\x01\n" +
 	"(dev.sagatoctopusorchestrator.protocol.v1Zlgithub.com/ortisun/sagat-octopus-orchestrator/proto/sagat_octopus_orchestrator/v1;sagatoctopusorchestratorv1\xaa\x02$SagatOctopusOrchestrator.Protocol.V1b\x06proto3"
 
 var (
@@ -4830,147 +9646,277 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP() []byte {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescData
 }
 
-var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
-var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 15)
+var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 93)
 var file_sagat_octopus_orchestrator_v1_worker_proto_goTypes = []any{
-	(DatabaseOperationKind)(0),        // 0: sagat_octopus_orchestrator.v1.DatabaseOperationKind
-	(DatabaseTlsMode)(0),              // 1: sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	(EgressCeiling)(0),                // 2: sagat_octopus_orchestrator.v1.EgressCeiling
-	(LakeRestAuth)(0),                 // 3: sagat_octopus_orchestrator.v1.LakeRestAuth
-	(LakeConditionalCreate)(0),        // 4: sagat_octopus_orchestrator.v1.LakeConditionalCreate
-	(StepLogLevel)(0),                 // 5: sagat_octopus_orchestrator.v1.StepLogLevel
-	(StepLogVerdict)(0),               // 6: sagat_octopus_orchestrator.v1.StepLogVerdict
-	(StepLogStopReason)(0),            // 7: sagat_octopus_orchestrator.v1.StepLogStopReason
-	(*WorkerCapabilities)(nil),        // 8: sagat_octopus_orchestrator.v1.WorkerCapabilities
-	(*RegisterWorkerRequest)(nil),     // 9: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	(*RegisterWorkerResponse)(nil),    // 10: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	(*PollTasksRequest)(nil),          // 11: sagat_octopus_orchestrator.v1.PollTasksRequest
-	(*ScopePathSegment)(nil),          // 12: sagat_octopus_orchestrator.v1.ScopePathSegment
-	(*ExecutionInstanceIdentity)(nil), // 13: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	(*TaskLease)(nil),                 // 14: sagat_octopus_orchestrator.v1.TaskLease
-	(*PollTasksResponse)(nil),         // 15: sagat_octopus_orchestrator.v1.PollTasksResponse
-	(*HeartbeatRequest)(nil),          // 16: sagat_octopus_orchestrator.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),         // 17: sagat_octopus_orchestrator.v1.HeartbeatResponse
-	(*CompleteStepRequest)(nil),       // 18: sagat_octopus_orchestrator.v1.CompleteStepRequest
-	(*FailStepRequest)(nil),           // 19: sagat_octopus_orchestrator.v1.FailStepRequest
-	(*ResolveSecretsRequest)(nil),     // 20: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	(*ResolvedSecret)(nil),            // 21: sagat_octopus_orchestrator.v1.ResolvedSecret
-	(*ResolveSecretsResponse)(nil),    // 22: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	(*WriteBlobRequest)(nil),          // 23: sagat_octopus_orchestrator.v1.WriteBlobRequest
-	(*WriteBlobHeader)(nil),           // 24: sagat_octopus_orchestrator.v1.WriteBlobHeader
-	(*WriteBlobResponse)(nil),         // 25: sagat_octopus_orchestrator.v1.WriteBlobResponse
-	(*ReadBlobRequest)(nil),           // 26: sagat_octopus_orchestrator.v1.ReadBlobRequest
-	(*ReadBlobResponse)(nil),          // 27: sagat_octopus_orchestrator.v1.ReadBlobResponse
-	(*ReadBlobHeader)(nil),            // 28: sagat_octopus_orchestrator.v1.ReadBlobHeader
-	(*StepCommandResponse)(nil),       // 29: sagat_octopus_orchestrator.v1.StepCommandResponse
-	(*DatabaseValue)(nil),             // 30: sagat_octopus_orchestrator.v1.DatabaseValue
-	(*PostgresConnection)(nil),        // 31: sagat_octopus_orchestrator.v1.PostgresConnection
-	(*DatabaseLimits)(nil),            // 32: sagat_octopus_orchestrator.v1.DatabaseLimits
-	(*LakeLimits)(nil),                // 33: sagat_octopus_orchestrator.v1.LakeLimits
-	(*IcebergRestCatalog)(nil),        // 34: sagat_octopus_orchestrator.v1.IcebergRestCatalog
-	(*IcebergGlueCatalog)(nil),        // 35: sagat_octopus_orchestrator.v1.IcebergGlueCatalog
-	(*IcebergHiveCatalog)(nil),        // 36: sagat_octopus_orchestrator.v1.IcebergHiveCatalog
-	(*IcebergJdbcCatalog)(nil),        // 37: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
-	(*LakeS3Storage)(nil),             // 38: sagat_octopus_orchestrator.v1.LakeS3Storage
-	(*LakeGcsStorage)(nil),            // 39: sagat_octopus_orchestrator.v1.LakeGcsStorage
-	(*LakeAdlsStorage)(nil),           // 40: sagat_octopus_orchestrator.v1.LakeAdlsStorage
-	(*LakeStorage)(nil),               // 41: sagat_octopus_orchestrator.v1.LakeStorage
-	(*IcebergConnection)(nil),         // 42: sagat_octopus_orchestrator.v1.IcebergConnection
-	(*ObjectStorageConnection)(nil),   // 43: sagat_octopus_orchestrator.v1.ObjectStorageConnection
-	(*ClickHouseConnection)(nil),      // 44: sagat_octopus_orchestrator.v1.ClickHouseConnection
-	(*ResolvedDatabase)(nil),          // 45: sagat_octopus_orchestrator.v1.ResolvedDatabase
-	(*AppendStepLogsRequest)(nil),     // 46: sagat_octopus_orchestrator.v1.AppendStepLogsRequest
-	(*StepLogCarry)(nil),              // 47: sagat_octopus_orchestrator.v1.StepLogCarry
-	(*StepLogRecord)(nil),             // 48: sagat_octopus_orchestrator.v1.StepLogRecord
-	(*StepLogField)(nil),              // 49: sagat_octopus_orchestrator.v1.StepLogField
-	(*AppendStepLogsResponse)(nil),    // 50: sagat_octopus_orchestrator.v1.AppendStepLogsResponse
-	(*StepLogPolicy)(nil),             // 51: sagat_octopus_orchestrator.v1.StepLogPolicy
-	nil,                               // 52: sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
-	nil,                               // 53: sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
-	nil,                               // 54: sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
+	(DatabaseOperationKind)(0),             // 0: sagat_octopus_orchestrator.v1.DatabaseOperationKind
+	(DatabaseTlsMode)(0),                   // 1: sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	(EgressCeiling)(0),                     // 2: sagat_octopus_orchestrator.v1.EgressCeiling
+	(LakeRestAuth)(0),                      // 3: sagat_octopus_orchestrator.v1.LakeRestAuth
+	(LakeConditionalCreate)(0),             // 4: sagat_octopus_orchestrator.v1.LakeConditionalCreate
+	(StepLogLevel)(0),                      // 5: sagat_octopus_orchestrator.v1.StepLogLevel
+	(StepLogVerdict)(0),                    // 6: sagat_octopus_orchestrator.v1.StepLogVerdict
+	(StepLogStopReason)(0),                 // 7: sagat_octopus_orchestrator.v1.StepLogStopReason
+	(HistoryEventKind)(0),                  // 8: sagat_octopus_orchestrator.v1.HistoryEventKind
+	(HistoryEventOrigin)(0),                // 9: sagat_octopus_orchestrator.v1.HistoryEventOrigin
+	(StepOutcome)(0),                       // 10: sagat_octopus_orchestrator.v1.StepOutcome
+	(CancelOrigin)(0),                      // 11: sagat_octopus_orchestrator.v1.CancelOrigin
+	(CommandKind)(0),                       // 12: sagat_octopus_orchestrator.v1.CommandKind
+	(WorkflowTaskFailureCause)(0),          // 13: sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause
+	(WorkflowTaskOutcome)(0),               // 14: sagat_octopus_orchestrator.v1.WorkflowTaskOutcome
+	(*WorkerCapabilities)(nil),             // 15: sagat_octopus_orchestrator.v1.WorkerCapabilities
+	(*WorkflowTypeOffer)(nil),              // 16: sagat_octopus_orchestrator.v1.WorkflowTypeOffer
+	(*RegisterWorkerRequest)(nil),          // 17: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	(*RegisterWorkerResponse)(nil),         // 18: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	(*PollTasksRequest)(nil),               // 19: sagat_octopus_orchestrator.v1.PollTasksRequest
+	(*ScopePathSegment)(nil),               // 20: sagat_octopus_orchestrator.v1.ScopePathSegment
+	(*ExecutionInstanceIdentity)(nil),      // 21: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	(*TaskLease)(nil),                      // 22: sagat_octopus_orchestrator.v1.TaskLease
+	(*PollTasksResponse)(nil),              // 23: sagat_octopus_orchestrator.v1.PollTasksResponse
+	(*HeartbeatRequest)(nil),               // 24: sagat_octopus_orchestrator.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),              // 25: sagat_octopus_orchestrator.v1.HeartbeatResponse
+	(*CompleteStepRequest)(nil),            // 26: sagat_octopus_orchestrator.v1.CompleteStepRequest
+	(*FailStepRequest)(nil),                // 27: sagat_octopus_orchestrator.v1.FailStepRequest
+	(*ResolveSecretsRequest)(nil),          // 28: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	(*ResolvedSecret)(nil),                 // 29: sagat_octopus_orchestrator.v1.ResolvedSecret
+	(*ResolveSecretsResponse)(nil),         // 30: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	(*WriteBlobRequest)(nil),               // 31: sagat_octopus_orchestrator.v1.WriteBlobRequest
+	(*WriteBlobHeader)(nil),                // 32: sagat_octopus_orchestrator.v1.WriteBlobHeader
+	(*WriteBlobResponse)(nil),              // 33: sagat_octopus_orchestrator.v1.WriteBlobResponse
+	(*ReadBlobRequest)(nil),                // 34: sagat_octopus_orchestrator.v1.ReadBlobRequest
+	(*ReadBlobResponse)(nil),               // 35: sagat_octopus_orchestrator.v1.ReadBlobResponse
+	(*ReadBlobHeader)(nil),                 // 36: sagat_octopus_orchestrator.v1.ReadBlobHeader
+	(*StepCommandResponse)(nil),            // 37: sagat_octopus_orchestrator.v1.StepCommandResponse
+	(*DatabaseValue)(nil),                  // 38: sagat_octopus_orchestrator.v1.DatabaseValue
+	(*PostgresConnection)(nil),             // 39: sagat_octopus_orchestrator.v1.PostgresConnection
+	(*DatabaseLimits)(nil),                 // 40: sagat_octopus_orchestrator.v1.DatabaseLimits
+	(*LakeLimits)(nil),                     // 41: sagat_octopus_orchestrator.v1.LakeLimits
+	(*IcebergRestCatalog)(nil),             // 42: sagat_octopus_orchestrator.v1.IcebergRestCatalog
+	(*IcebergGlueCatalog)(nil),             // 43: sagat_octopus_orchestrator.v1.IcebergGlueCatalog
+	(*IcebergHiveCatalog)(nil),             // 44: sagat_octopus_orchestrator.v1.IcebergHiveCatalog
+	(*IcebergJdbcCatalog)(nil),             // 45: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
+	(*LakeS3Storage)(nil),                  // 46: sagat_octopus_orchestrator.v1.LakeS3Storage
+	(*LakeGcsStorage)(nil),                 // 47: sagat_octopus_orchestrator.v1.LakeGcsStorage
+	(*LakeAdlsStorage)(nil),                // 48: sagat_octopus_orchestrator.v1.LakeAdlsStorage
+	(*LakeStorage)(nil),                    // 49: sagat_octopus_orchestrator.v1.LakeStorage
+	(*IcebergConnection)(nil),              // 50: sagat_octopus_orchestrator.v1.IcebergConnection
+	(*ObjectStorageConnection)(nil),        // 51: sagat_octopus_orchestrator.v1.ObjectStorageConnection
+	(*ClickHouseConnection)(nil),           // 52: sagat_octopus_orchestrator.v1.ClickHouseConnection
+	(*ResolvedDatabase)(nil),               // 53: sagat_octopus_orchestrator.v1.ResolvedDatabase
+	(*AppendStepLogsRequest)(nil),          // 54: sagat_octopus_orchestrator.v1.AppendStepLogsRequest
+	(*StepLogCarry)(nil),                   // 55: sagat_octopus_orchestrator.v1.StepLogCarry
+	(*StepLogRecord)(nil),                  // 56: sagat_octopus_orchestrator.v1.StepLogRecord
+	(*StepLogField)(nil),                   // 57: sagat_octopus_orchestrator.v1.StepLogField
+	(*AppendStepLogsResponse)(nil),         // 58: sagat_octopus_orchestrator.v1.AppendStepLogsResponse
+	(*StepLogPolicy)(nil),                  // 59: sagat_octopus_orchestrator.v1.StepLogPolicy
+	(*WorkflowTaskLease)(nil),              // 60: sagat_octopus_orchestrator.v1.WorkflowTaskLease
+	(*HistoryPayload)(nil),                 // 61: sagat_octopus_orchestrator.v1.HistoryPayload
+	(*HistoryBlobRef)(nil),                 // 62: sagat_octopus_orchestrator.v1.HistoryBlobRef
+	(*HistoryEvent)(nil),                   // 63: sagat_octopus_orchestrator.v1.HistoryEvent
+	(*HistoryRunStarted)(nil),              // 64: sagat_octopus_orchestrator.v1.HistoryRunStarted
+	(*HistoryWorkflowTaskStarted)(nil),     // 65: sagat_octopus_orchestrator.v1.HistoryWorkflowTaskStarted
+	(*HistoryWorkflowTaskCompleted)(nil),   // 66: sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompleted
+	(*HistoryCommandRecord)(nil),           // 67: sagat_octopus_orchestrator.v1.HistoryCommandRecord
+	(*HistoryStepOutcome)(nil),             // 68: sagat_octopus_orchestrator.v1.HistoryStepOutcome
+	(*HistoryTimerFired)(nil),              // 69: sagat_octopus_orchestrator.v1.HistoryTimerFired
+	(*HistoryWaitOutcome)(nil),             // 70: sagat_octopus_orchestrator.v1.HistoryWaitOutcome
+	(*HistoryChildFinished)(nil),           // 71: sagat_octopus_orchestrator.v1.HistoryChildFinished
+	(*HistoryApprovalDecided)(nil),         // 72: sagat_octopus_orchestrator.v1.HistoryApprovalDecided
+	(*HistorySagaOutcome)(nil),             // 73: sagat_octopus_orchestrator.v1.HistorySagaOutcome
+	(*HistorySignalBuffered)(nil),          // 74: sagat_octopus_orchestrator.v1.HistorySignalBuffered
+	(*HistoryUpdateAdmitted)(nil),          // 75: sagat_octopus_orchestrator.v1.HistoryUpdateAdmitted
+	(*HistoryCancellationRequested)(nil),   // 76: sagat_octopus_orchestrator.v1.HistoryCancellationRequested
+	(*HistoryMarkerRecorded)(nil),          // 77: sagat_octopus_orchestrator.v1.HistoryMarkerRecorded
+	(*CommandValue)(nil),                   // 78: sagat_octopus_orchestrator.v1.CommandValue
+	(*Command)(nil),                        // 79: sagat_octopus_orchestrator.v1.Command
+	(*TargetCommand)(nil),                  // 80: sagat_octopus_orchestrator.v1.TargetCommand
+	(*SagaOpenCommand)(nil),                // 81: sagat_octopus_orchestrator.v1.SagaOpenCommand
+	(*MarkerCommand)(nil),                  // 82: sagat_octopus_orchestrator.v1.MarkerCommand
+	(*UpdateDecisionCommand)(nil),          // 83: sagat_octopus_orchestrator.v1.UpdateDecisionCommand
+	(*UpdateResultCommand)(nil),            // 84: sagat_octopus_orchestrator.v1.UpdateResultCommand
+	(*ConsumeSignalsCommand)(nil),          // 85: sagat_octopus_orchestrator.v1.ConsumeSignalsCommand
+	(*ConsumedSignals)(nil),                // 86: sagat_octopus_orchestrator.v1.ConsumedSignals
+	(*FailCommand)(nil),                    // 87: sagat_octopus_orchestrator.v1.FailCommand
+	(*ContinueAsNewCommand)(nil),           // 88: sagat_octopus_orchestrator.v1.ContinueAsNewCommand
+	(*AcknowledgeCancellationCommand)(nil), // 89: sagat_octopus_orchestrator.v1.AcknowledgeCancellationCommand
+	(*CompleteWorkflowTaskRequest)(nil),    // 90: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest
+	(*CompleteWorkflowTaskResponse)(nil),   // 91: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse
+	(*FailWorkflowTaskRequest)(nil),        // 92: sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest
+	(*FailWorkflowTaskResponse)(nil),       // 93: sagat_octopus_orchestrator.v1.FailWorkflowTaskResponse
+	(*ReadHistoryRequest)(nil),             // 94: sagat_octopus_orchestrator.v1.ReadHistoryRequest
+	(*ReadHistoryResponse)(nil),            // 95: sagat_octopus_orchestrator.v1.ReadHistoryResponse
+	(*QueryTask)(nil),                      // 96: sagat_octopus_orchestrator.v1.QueryTask
+	(*RespondWorkerQueryRequest)(nil),      // 97: sagat_octopus_orchestrator.v1.RespondWorkerQueryRequest
+	(*RespondWorkerQueryResponse)(nil),     // 98: sagat_octopus_orchestrator.v1.RespondWorkerQueryResponse
+	(*ReplayCheckTask)(nil),                // 99: sagat_octopus_orchestrator.v1.ReplayCheckTask
+	(*ReplayCheckItem)(nil),                // 100: sagat_octopus_orchestrator.v1.ReplayCheckItem
+	(*RespondReplayCheckRequest)(nil),      // 101: sagat_octopus_orchestrator.v1.RespondReplayCheckRequest
+	(*RespondReplayCheckResponse)(nil),     // 102: sagat_octopus_orchestrator.v1.RespondReplayCheckResponse
+	(*ReleaseStickyRequest)(nil),           // 103: sagat_octopus_orchestrator.v1.ReleaseStickyRequest
+	(*ReleaseStickyResponse)(nil),          // 104: sagat_octopus_orchestrator.v1.ReleaseStickyResponse
+	nil,                                    // 105: sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
+	nil,                                    // 106: sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
+	nil,                                    // 107: sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
 }
 var file_sagat_octopus_orchestrator_v1_worker_proto_depIdxs = []int32{
-	8,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
-	51, // 1: sagat_octopus_orchestrator.v1.RegisterWorkerResponse.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogPolicy
-	12, // 2: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
-	13, // 3: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	13, // 4: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	14, // 5: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
-	13, // 6: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	13, // 7: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	47, // 8: sagat_octopus_orchestrator.v1.CompleteStepRequest.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogCarry
-	13, // 9: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	47, // 10: sagat_octopus_orchestrator.v1.FailStepRequest.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogCarry
-	13, // 11: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	21, // 12: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	24, // 13: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
-	13, // 14: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	13, // 15: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	28, // 16: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
-	1,  // 17: sagat_octopus_orchestrator.v1.PostgresConnection.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	3,  // 18: sagat_octopus_orchestrator.v1.IcebergRestCatalog.auth:type_name -> sagat_octopus_orchestrator.v1.LakeRestAuth
-	1,  // 19: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	38, // 20: sagat_octopus_orchestrator.v1.LakeStorage.s3:type_name -> sagat_octopus_orchestrator.v1.LakeS3Storage
-	39, // 21: sagat_octopus_orchestrator.v1.LakeStorage.gcs:type_name -> sagat_octopus_orchestrator.v1.LakeGcsStorage
-	40, // 22: sagat_octopus_orchestrator.v1.LakeStorage.adls:type_name -> sagat_octopus_orchestrator.v1.LakeAdlsStorage
-	34, // 23: sagat_octopus_orchestrator.v1.IcebergConnection.rest:type_name -> sagat_octopus_orchestrator.v1.IcebergRestCatalog
-	35, // 24: sagat_octopus_orchestrator.v1.IcebergConnection.glue:type_name -> sagat_octopus_orchestrator.v1.IcebergGlueCatalog
-	36, // 25: sagat_octopus_orchestrator.v1.IcebergConnection.hive:type_name -> sagat_octopus_orchestrator.v1.IcebergHiveCatalog
-	37, // 26: sagat_octopus_orchestrator.v1.IcebergConnection.jdbc:type_name -> sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
-	41, // 27: sagat_octopus_orchestrator.v1.IcebergConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
-	2,  // 28: sagat_octopus_orchestrator.v1.IcebergConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
-	33, // 29: sagat_octopus_orchestrator.v1.IcebergConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
-	52, // 30: sagat_octopus_orchestrator.v1.IcebergConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
-	41, // 31: sagat_octopus_orchestrator.v1.ObjectStorageConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
-	4,  // 32: sagat_octopus_orchestrator.v1.ObjectStorageConnection.conditional_create:type_name -> sagat_octopus_orchestrator.v1.LakeConditionalCreate
-	2,  // 33: sagat_octopus_orchestrator.v1.ObjectStorageConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
-	33, // 34: sagat_octopus_orchestrator.v1.ObjectStorageConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
-	53, // 35: sagat_octopus_orchestrator.v1.ObjectStorageConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
-	2,  // 36: sagat_octopus_orchestrator.v1.ClickHouseConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
-	33, // 37: sagat_octopus_orchestrator.v1.ClickHouseConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
-	54, // 38: sagat_octopus_orchestrator.v1.ClickHouseConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
-	31, // 39: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
-	0,  // 40: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
-	30, // 41: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
-	32, // 42: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
-	21, // 43: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	42, // 44: sagat_octopus_orchestrator.v1.ResolvedDatabase.iceberg:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection
-	43, // 45: sagat_octopus_orchestrator.v1.ResolvedDatabase.object_storage:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection
-	44, // 46: sagat_octopus_orchestrator.v1.ResolvedDatabase.clickhouse:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection
-	13, // 47: sagat_octopus_orchestrator.v1.AppendStepLogsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	48, // 48: sagat_octopus_orchestrator.v1.AppendStepLogsRequest.records:type_name -> sagat_octopus_orchestrator.v1.StepLogRecord
-	48, // 49: sagat_octopus_orchestrator.v1.StepLogCarry.records:type_name -> sagat_octopus_orchestrator.v1.StepLogRecord
-	5,  // 50: sagat_octopus_orchestrator.v1.StepLogRecord.level:type_name -> sagat_octopus_orchestrator.v1.StepLogLevel
-	49, // 51: sagat_octopus_orchestrator.v1.StepLogRecord.fields:type_name -> sagat_octopus_orchestrator.v1.StepLogField
-	6,  // 52: sagat_octopus_orchestrator.v1.AppendStepLogsResponse.verdict:type_name -> sagat_octopus_orchestrator.v1.StepLogVerdict
-	7,  // 53: sagat_octopus_orchestrator.v1.AppendStepLogsResponse.stop_reason:type_name -> sagat_octopus_orchestrator.v1.StepLogStopReason
-	9,  // 54: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	11, // 55: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	11, // 56: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	16, // 57: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
-	18, // 58: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
-	19, // 59: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
-	20, // 60: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	20, // 61: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	23, // 62: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
-	26, // 63: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
-	46, // 64: sagat_octopus_orchestrator.v1.WorkerService.AppendStepLogs:input_type -> sagat_octopus_orchestrator.v1.AppendStepLogsRequest
-	10, // 65: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	15, // 66: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	15, // 67: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	17, // 68: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
-	29, // 69: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	29, // 70: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	22, // 71: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	45, // 72: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
-	25, // 73: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
-	27, // 74: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
-	50, // 75: sagat_octopus_orchestrator.v1.WorkerService.AppendStepLogs:output_type -> sagat_octopus_orchestrator.v1.AppendStepLogsResponse
-	65, // [65:76] is the sub-list for method output_type
-	54, // [54:65] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	16,  // 0: sagat_octopus_orchestrator.v1.WorkerCapabilities.workflow_types:type_name -> sagat_octopus_orchestrator.v1.WorkflowTypeOffer
+	15,  // 1: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
+	59,  // 2: sagat_octopus_orchestrator.v1.RegisterWorkerResponse.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogPolicy
+	20,  // 3: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
+	21,  // 4: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	21,  // 5: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	60,  // 6: sagat_octopus_orchestrator.v1.TaskLease.workflow_task:type_name -> sagat_octopus_orchestrator.v1.WorkflowTaskLease
+	96,  // 7: sagat_octopus_orchestrator.v1.TaskLease.query_task:type_name -> sagat_octopus_orchestrator.v1.QueryTask
+	99,  // 8: sagat_octopus_orchestrator.v1.TaskLease.replay_check_task:type_name -> sagat_octopus_orchestrator.v1.ReplayCheckTask
+	22,  // 9: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
+	21,  // 10: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	21,  // 11: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	55,  // 12: sagat_octopus_orchestrator.v1.CompleteStepRequest.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogCarry
+	21,  // 13: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	55,  // 14: sagat_octopus_orchestrator.v1.FailStepRequest.step_logs:type_name -> sagat_octopus_orchestrator.v1.StepLogCarry
+	21,  // 15: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	29,  // 16: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	32,  // 17: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
+	21,  // 18: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	21,  // 19: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	36,  // 20: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
+	22,  // 21: sagat_octopus_orchestrator.v1.StepCommandResponse.workflow_task:type_name -> sagat_octopus_orchestrator.v1.TaskLease
+	1,   // 22: sagat_octopus_orchestrator.v1.PostgresConnection.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	3,   // 23: sagat_octopus_orchestrator.v1.IcebergRestCatalog.auth:type_name -> sagat_octopus_orchestrator.v1.LakeRestAuth
+	1,   // 24: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	46,  // 25: sagat_octopus_orchestrator.v1.LakeStorage.s3:type_name -> sagat_octopus_orchestrator.v1.LakeS3Storage
+	47,  // 26: sagat_octopus_orchestrator.v1.LakeStorage.gcs:type_name -> sagat_octopus_orchestrator.v1.LakeGcsStorage
+	48,  // 27: sagat_octopus_orchestrator.v1.LakeStorage.adls:type_name -> sagat_octopus_orchestrator.v1.LakeAdlsStorage
+	42,  // 28: sagat_octopus_orchestrator.v1.IcebergConnection.rest:type_name -> sagat_octopus_orchestrator.v1.IcebergRestCatalog
+	43,  // 29: sagat_octopus_orchestrator.v1.IcebergConnection.glue:type_name -> sagat_octopus_orchestrator.v1.IcebergGlueCatalog
+	44,  // 30: sagat_octopus_orchestrator.v1.IcebergConnection.hive:type_name -> sagat_octopus_orchestrator.v1.IcebergHiveCatalog
+	45,  // 31: sagat_octopus_orchestrator.v1.IcebergConnection.jdbc:type_name -> sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
+	49,  // 32: sagat_octopus_orchestrator.v1.IcebergConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
+	2,   // 33: sagat_octopus_orchestrator.v1.IcebergConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	41,  // 34: sagat_octopus_orchestrator.v1.IcebergConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	105, // 35: sagat_octopus_orchestrator.v1.IcebergConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
+	49,  // 36: sagat_octopus_orchestrator.v1.ObjectStorageConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
+	4,   // 37: sagat_octopus_orchestrator.v1.ObjectStorageConnection.conditional_create:type_name -> sagat_octopus_orchestrator.v1.LakeConditionalCreate
+	2,   // 38: sagat_octopus_orchestrator.v1.ObjectStorageConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	41,  // 39: sagat_octopus_orchestrator.v1.ObjectStorageConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	106, // 40: sagat_octopus_orchestrator.v1.ObjectStorageConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
+	2,   // 41: sagat_octopus_orchestrator.v1.ClickHouseConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	41,  // 42: sagat_octopus_orchestrator.v1.ClickHouseConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	107, // 43: sagat_octopus_orchestrator.v1.ClickHouseConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
+	39,  // 44: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
+	0,   // 45: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
+	38,  // 46: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
+	40,  // 47: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
+	29,  // 48: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	50,  // 49: sagat_octopus_orchestrator.v1.ResolvedDatabase.iceberg:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection
+	51,  // 50: sagat_octopus_orchestrator.v1.ResolvedDatabase.object_storage:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection
+	52,  // 51: sagat_octopus_orchestrator.v1.ResolvedDatabase.clickhouse:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection
+	21,  // 52: sagat_octopus_orchestrator.v1.AppendStepLogsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	56,  // 53: sagat_octopus_orchestrator.v1.AppendStepLogsRequest.records:type_name -> sagat_octopus_orchestrator.v1.StepLogRecord
+	56,  // 54: sagat_octopus_orchestrator.v1.StepLogCarry.records:type_name -> sagat_octopus_orchestrator.v1.StepLogRecord
+	5,   // 55: sagat_octopus_orchestrator.v1.StepLogRecord.level:type_name -> sagat_octopus_orchestrator.v1.StepLogLevel
+	57,  // 56: sagat_octopus_orchestrator.v1.StepLogRecord.fields:type_name -> sagat_octopus_orchestrator.v1.StepLogField
+	6,   // 57: sagat_octopus_orchestrator.v1.AppendStepLogsResponse.verdict:type_name -> sagat_octopus_orchestrator.v1.StepLogVerdict
+	7,   // 58: sagat_octopus_orchestrator.v1.AppendStepLogsResponse.stop_reason:type_name -> sagat_octopus_orchestrator.v1.StepLogStopReason
+	63,  // 59: sagat_octopus_orchestrator.v1.WorkflowTaskLease.first_page:type_name -> sagat_octopus_orchestrator.v1.HistoryEvent
+	62,  // 60: sagat_octopus_orchestrator.v1.HistoryPayload.blob:type_name -> sagat_octopus_orchestrator.v1.HistoryBlobRef
+	8,   // 61: sagat_octopus_orchestrator.v1.HistoryEvent.kind:type_name -> sagat_octopus_orchestrator.v1.HistoryEventKind
+	9,   // 62: sagat_octopus_orchestrator.v1.HistoryEvent.origin:type_name -> sagat_octopus_orchestrator.v1.HistoryEventOrigin
+	64,  // 63: sagat_octopus_orchestrator.v1.HistoryEvent.run_started:type_name -> sagat_octopus_orchestrator.v1.HistoryRunStarted
+	65,  // 64: sagat_octopus_orchestrator.v1.HistoryEvent.workflow_task_started:type_name -> sagat_octopus_orchestrator.v1.HistoryWorkflowTaskStarted
+	66,  // 65: sagat_octopus_orchestrator.v1.HistoryEvent.workflow_task_completed:type_name -> sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompleted
+	67,  // 66: sagat_octopus_orchestrator.v1.HistoryEvent.command_record:type_name -> sagat_octopus_orchestrator.v1.HistoryCommandRecord
+	68,  // 67: sagat_octopus_orchestrator.v1.HistoryEvent.step_outcome:type_name -> sagat_octopus_orchestrator.v1.HistoryStepOutcome
+	69,  // 68: sagat_octopus_orchestrator.v1.HistoryEvent.timer_fired:type_name -> sagat_octopus_orchestrator.v1.HistoryTimerFired
+	70,  // 69: sagat_octopus_orchestrator.v1.HistoryEvent.wait_outcome:type_name -> sagat_octopus_orchestrator.v1.HistoryWaitOutcome
+	71,  // 70: sagat_octopus_orchestrator.v1.HistoryEvent.child_finished:type_name -> sagat_octopus_orchestrator.v1.HistoryChildFinished
+	72,  // 71: sagat_octopus_orchestrator.v1.HistoryEvent.approval_decided:type_name -> sagat_octopus_orchestrator.v1.HistoryApprovalDecided
+	73,  // 72: sagat_octopus_orchestrator.v1.HistoryEvent.saga_outcome:type_name -> sagat_octopus_orchestrator.v1.HistorySagaOutcome
+	74,  // 73: sagat_octopus_orchestrator.v1.HistoryEvent.signal_buffered:type_name -> sagat_octopus_orchestrator.v1.HistorySignalBuffered
+	75,  // 74: sagat_octopus_orchestrator.v1.HistoryEvent.update_admitted:type_name -> sagat_octopus_orchestrator.v1.HistoryUpdateAdmitted
+	76,  // 75: sagat_octopus_orchestrator.v1.HistoryEvent.cancellation_requested:type_name -> sagat_octopus_orchestrator.v1.HistoryCancellationRequested
+	77,  // 76: sagat_octopus_orchestrator.v1.HistoryEvent.marker_recorded:type_name -> sagat_octopus_orchestrator.v1.HistoryMarkerRecorded
+	61,  // 77: sagat_octopus_orchestrator.v1.HistoryRunStarted.input:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	61,  // 78: sagat_octopus_orchestrator.v1.HistoryRunStarted.carried_state:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	12,  // 79: sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompleted.deferred_kind:type_name -> sagat_octopus_orchestrator.v1.CommandKind
+	13,  // 80: sagat_octopus_orchestrator.v1.HistoryWorkflowTaskCompleted.deferral_cause:type_name -> sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause
+	12,  // 81: sagat_octopus_orchestrator.v1.HistoryCommandRecord.kind:type_name -> sagat_octopus_orchestrator.v1.CommandKind
+	10,  // 82: sagat_octopus_orchestrator.v1.HistoryStepOutcome.outcome:type_name -> sagat_octopus_orchestrator.v1.StepOutcome
+	61,  // 83: sagat_octopus_orchestrator.v1.HistoryStepOutcome.output:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	61,  // 84: sagat_octopus_orchestrator.v1.HistoryWaitOutcome.payload:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	61,  // 85: sagat_octopus_orchestrator.v1.HistoryChildFinished.output:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	61,  // 86: sagat_octopus_orchestrator.v1.HistorySignalBuffered.payload:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	61,  // 87: sagat_octopus_orchestrator.v1.HistoryUpdateAdmitted.args:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	11,  // 88: sagat_octopus_orchestrator.v1.HistoryCancellationRequested.cancel_origin:type_name -> sagat_octopus_orchestrator.v1.CancelOrigin
+	61,  // 89: sagat_octopus_orchestrator.v1.HistoryMarkerRecorded.value:type_name -> sagat_octopus_orchestrator.v1.HistoryPayload
+	12,  // 90: sagat_octopus_orchestrator.v1.Command.kind:type_name -> sagat_octopus_orchestrator.v1.CommandKind
+	78,  // 91: sagat_octopus_orchestrator.v1.Command.value:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	80,  // 92: sagat_octopus_orchestrator.v1.Command.target:type_name -> sagat_octopus_orchestrator.v1.TargetCommand
+	81,  // 93: sagat_octopus_orchestrator.v1.Command.saga_open:type_name -> sagat_octopus_orchestrator.v1.SagaOpenCommand
+	80,  // 94: sagat_octopus_orchestrator.v1.Command.saga_close:type_name -> sagat_octopus_orchestrator.v1.TargetCommand
+	80,  // 95: sagat_octopus_orchestrator.v1.Command.saga_abort:type_name -> sagat_octopus_orchestrator.v1.TargetCommand
+	82,  // 96: sagat_octopus_orchestrator.v1.Command.marker:type_name -> sagat_octopus_orchestrator.v1.MarkerCommand
+	78,  // 97: sagat_octopus_orchestrator.v1.Command.set_state:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	83,  // 98: sagat_octopus_orchestrator.v1.Command.update_decision:type_name -> sagat_octopus_orchestrator.v1.UpdateDecisionCommand
+	84,  // 99: sagat_octopus_orchestrator.v1.Command.update_result:type_name -> sagat_octopus_orchestrator.v1.UpdateResultCommand
+	85,  // 100: sagat_octopus_orchestrator.v1.Command.consume_signals:type_name -> sagat_octopus_orchestrator.v1.ConsumeSignalsCommand
+	78,  // 101: sagat_octopus_orchestrator.v1.Command.complete:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	87,  // 102: sagat_octopus_orchestrator.v1.Command.fail:type_name -> sagat_octopus_orchestrator.v1.FailCommand
+	88,  // 103: sagat_octopus_orchestrator.v1.Command.continue_as_new:type_name -> sagat_octopus_orchestrator.v1.ContinueAsNewCommand
+	89,  // 104: sagat_octopus_orchestrator.v1.Command.acknowledge_cancellation:type_name -> sagat_octopus_orchestrator.v1.AcknowledgeCancellationCommand
+	78,  // 105: sagat_octopus_orchestrator.v1.MarkerCommand.side_effect_value:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	78,  // 106: sagat_octopus_orchestrator.v1.UpdateResultCommand.result:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	86,  // 107: sagat_octopus_orchestrator.v1.ConsumeSignalsCommand.signals:type_name -> sagat_octopus_orchestrator.v1.ConsumedSignals
+	78,  // 108: sagat_octopus_orchestrator.v1.ContinueAsNewCommand.input:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	78,  // 109: sagat_octopus_orchestrator.v1.ContinueAsNewCommand.state:type_name -> sagat_octopus_orchestrator.v1.CommandValue
+	79,  // 110: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest.commands:type_name -> sagat_octopus_orchestrator.v1.Command
+	79,  // 111: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest.deferred_command:type_name -> sagat_octopus_orchestrator.v1.Command
+	14,  // 112: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse.outcome:type_name -> sagat_octopus_orchestrator.v1.WorkflowTaskOutcome
+	13,  // 113: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse.cause:type_name -> sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause
+	22,  // 114: sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse.eager_activity_leases:type_name -> sagat_octopus_orchestrator.v1.TaskLease
+	13,  // 115: sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest.cause:type_name -> sagat_octopus_orchestrator.v1.WorkflowTaskFailureCause
+	12,  // 116: sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest.actual_kind:type_name -> sagat_octopus_orchestrator.v1.CommandKind
+	63,  // 117: sagat_octopus_orchestrator.v1.ReadHistoryResponse.events:type_name -> sagat_octopus_orchestrator.v1.HistoryEvent
+	100, // 118: sagat_octopus_orchestrator.v1.ReplayCheckTask.items:type_name -> sagat_octopus_orchestrator.v1.ReplayCheckItem
+	17,  // 119: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	19,  // 120: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	19,  // 121: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	24,  // 122: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
+	26,  // 123: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
+	27,  // 124: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
+	28,  // 125: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	28,  // 126: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	31,  // 127: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
+	34,  // 128: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
+	54,  // 129: sagat_octopus_orchestrator.v1.WorkerService.AppendStepLogs:input_type -> sagat_octopus_orchestrator.v1.AppendStepLogsRequest
+	90,  // 130: sagat_octopus_orchestrator.v1.WorkerService.CompleteWorkflowTask:input_type -> sagat_octopus_orchestrator.v1.CompleteWorkflowTaskRequest
+	92,  // 131: sagat_octopus_orchestrator.v1.WorkerService.FailWorkflowTask:input_type -> sagat_octopus_orchestrator.v1.FailWorkflowTaskRequest
+	94,  // 132: sagat_octopus_orchestrator.v1.WorkerService.ReadHistory:input_type -> sagat_octopus_orchestrator.v1.ReadHistoryRequest
+	97,  // 133: sagat_octopus_orchestrator.v1.WorkerService.RespondWorkerQuery:input_type -> sagat_octopus_orchestrator.v1.RespondWorkerQueryRequest
+	101, // 134: sagat_octopus_orchestrator.v1.WorkerService.RespondReplayCheck:input_type -> sagat_octopus_orchestrator.v1.RespondReplayCheckRequest
+	103, // 135: sagat_octopus_orchestrator.v1.WorkerService.ReleaseSticky:input_type -> sagat_octopus_orchestrator.v1.ReleaseStickyRequest
+	18,  // 136: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	23,  // 137: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	23,  // 138: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	25,  // 139: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
+	37,  // 140: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	37,  // 141: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	30,  // 142: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	53,  // 143: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
+	33,  // 144: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
+	35,  // 145: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
+	58,  // 146: sagat_octopus_orchestrator.v1.WorkerService.AppendStepLogs:output_type -> sagat_octopus_orchestrator.v1.AppendStepLogsResponse
+	91,  // 147: sagat_octopus_orchestrator.v1.WorkerService.CompleteWorkflowTask:output_type -> sagat_octopus_orchestrator.v1.CompleteWorkflowTaskResponse
+	93,  // 148: sagat_octopus_orchestrator.v1.WorkerService.FailWorkflowTask:output_type -> sagat_octopus_orchestrator.v1.FailWorkflowTaskResponse
+	95,  // 149: sagat_octopus_orchestrator.v1.WorkerService.ReadHistory:output_type -> sagat_octopus_orchestrator.v1.ReadHistoryResponse
+	98,  // 150: sagat_octopus_orchestrator.v1.WorkerService.RespondWorkerQuery:output_type -> sagat_octopus_orchestrator.v1.RespondWorkerQueryResponse
+	102, // 151: sagat_octopus_orchestrator.v1.WorkerService.RespondReplayCheck:output_type -> sagat_octopus_orchestrator.v1.RespondReplayCheckResponse
+	104, // 152: sagat_octopus_orchestrator.v1.WorkerService.ReleaseSticky:output_type -> sagat_octopus_orchestrator.v1.ReleaseStickyResponse
+	136, // [136:153] is the sub-list for method output_type
+	119, // [119:136] is the sub-list for method input_type
+	119, // [119:119] is the sub-list for extension type_name
+	119, // [119:119] is the sub-list for extension extendee
+	0,   // [0:119] is the sub-list for field type_name
 }
 
 func init() { file_sagat_octopus_orchestrator_v1_worker_proto_init() }
@@ -4978,15 +9924,20 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_init() {
 	if File_sagat_octopus_orchestrator_v1_worker_proto != nil {
 		return
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7].OneofWrappers = []any{
+		(*TaskLease_WorkflowTask)(nil),
+		(*TaskLease_QueryTask)(nil),
+		(*TaskLease_ReplayCheckTask)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16].OneofWrappers = []any{
 		(*WriteBlobRequest_Header)(nil),
 		(*WriteBlobRequest_Chunk)(nil),
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20].OneofWrappers = []any{
 		(*ReadBlobResponse_Header)(nil),
 		(*ReadBlobResponse_Chunk)(nil),
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23].OneofWrappers = []any{
 		(*DatabaseValue_NullValue)(nil),
 		(*DatabaseValue_BooleanValue)(nil),
 		(*DatabaseValue_IntegerValue)(nil),
@@ -4998,30 +9949,69 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_init() {
 		(*DatabaseValue_BinaryValue)(nil),
 		(*DatabaseValue_JsonValue)(nil),
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34].OneofWrappers = []any{
 		(*LakeStorage_S3)(nil),
 		(*LakeStorage_Gcs)(nil),
 		(*LakeStorage_Adls)(nil),
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35].OneofWrappers = []any{
 		(*IcebergConnection_Rest)(nil),
 		(*IcebergConnection_Glue)(nil),
 		(*IcebergConnection_Hive)(nil),
 		(*IcebergConnection_Jdbc)(nil),
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[41].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[42].OneofWrappers = []any{
 		(*StepLogField_StringValue)(nil),
 		(*StepLogField_IntValue)(nil),
 		(*StepLogField_DoubleValue)(nil),
 		(*StepLogField_BoolValue)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[46].OneofWrappers = []any{
+		(*HistoryPayload_Json)(nil),
+		(*HistoryPayload_Blob)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[48].OneofWrappers = []any{
+		(*HistoryEvent_RunStarted)(nil),
+		(*HistoryEvent_WorkflowTaskStarted)(nil),
+		(*HistoryEvent_WorkflowTaskCompleted)(nil),
+		(*HistoryEvent_CommandRecord)(nil),
+		(*HistoryEvent_StepOutcome)(nil),
+		(*HistoryEvent_TimerFired)(nil),
+		(*HistoryEvent_WaitOutcome)(nil),
+		(*HistoryEvent_ChildFinished)(nil),
+		(*HistoryEvent_ApprovalDecided)(nil),
+		(*HistoryEvent_SagaOutcome)(nil),
+		(*HistoryEvent_SignalBuffered)(nil),
+		(*HistoryEvent_UpdateAdmitted)(nil),
+		(*HistoryEvent_CancellationRequested)(nil),
+		(*HistoryEvent_MarkerRecorded)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[63].OneofWrappers = []any{
+		(*CommandValue_Json)(nil),
+		(*CommandValue_BlobId)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[64].OneofWrappers = []any{
+		(*Command_Target)(nil),
+		(*Command_SagaOpen)(nil),
+		(*Command_SagaClose)(nil),
+		(*Command_SagaAbort)(nil),
+		(*Command_Marker)(nil),
+		(*Command_SetState)(nil),
+		(*Command_UpdateDecision)(nil),
+		(*Command_UpdateResult)(nil),
+		(*Command_ConsumeSignals)(nil),
+		(*Command_Complete)(nil),
+		(*Command_Fail)(nil),
+		(*Command_ContinueAsNew)(nil),
+		(*Command_AcknowledgeCancellation)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc), len(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc)),
-			NumEnums:      8,
-			NumMessages:   47,
+			NumEnums:      15,
+			NumMessages:   93,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

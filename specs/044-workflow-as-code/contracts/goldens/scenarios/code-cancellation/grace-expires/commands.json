@@ -1,0 +1,94 @@
+{
+  "scenario": "code-cancellation",
+  "run": "grace-expires",
+  "runId": "fd1d8083-8466-482a-b65a-950dfe8f76e3",
+  "workflowType": "report-render",
+  "seedHex": "e09c25aabafd682752bcd1380233d686d946d9060f3ed0fa1adec93fb4a743d5",
+  "input": {
+    "reportId": "rep-2",
+    "idle": true
+  },
+  "codeVersions": {
+    "v1": "sha256:d8b715394011c13c956fa67470597cd76de102f961b258764d82d6ad895008c2"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "timer_start",
+          "target": "c-1",
+          "node": "c-1",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 604800000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 604800000
+          },
+          "bodySha256": "cf30a1f5fd97274684bb33c09b1f9a875fd4b4f95a7349cf80ec8a27d54fac8c",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "bfeb5d11361079341856f7710fc3e4d29dc07b22d47b57314c5d0d9396e14442",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 6
+      },
+      "nowUs": 1767225601000822,
+      "notes": "The function does not look at cancellation: an empty completion.",
+      "replayedChainHex": "bfeb5d11361079341856f7710fc3e4d29dc07b22d47b57314c5d0d9396e14442",
+      "appliedThroughSeq": 6,
+      "commands": [],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 7,
+      "chainAfterHex": "bfeb5d11361079341856f7710fc3e4d29dc07b22d47b57314c5d0d9396e14442",
+      "commandCountAfter": 1
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 8,
+      "journalKind": "run.stop_requested",
+      "stopReason": "Cancelled",
+      "by": "the cancellation deadline pass"
+    },
+    {
+      "seq": 10,
+      "journalKind": "run.finished",
+      "status": "CANCELLED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "timer_start",
+      "target": "c-1",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 9
+    }
+  ],
+  "expectations": {
+    "cancellationGraceMs": 5000,
+    "deadlineUs": 1767225606000685,
+    "end": "CANCELLED by the deadline pass through the stop drain, which cancels the timer c-1"
+  }
+}

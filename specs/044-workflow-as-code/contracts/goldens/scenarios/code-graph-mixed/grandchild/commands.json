@@ -1,0 +1,118 @@
+{
+  "scenario": "code-graph-mixed",
+  "run": "grandchild",
+  "runId": "df0fa39b-2544-45be-bfb8-4039a79bb0d9",
+  "workflowType": "label-print",
+  "seedHex": "ad4c33048bdeae1d37b3eb2e23a797ed991b0e4e6d50574bf0b91787c34ded5e",
+  "input": {
+    "orderId": "ord-1"
+  },
+  "codeVersions": {
+    "v1": "sha256:d58826db98a9b6336fdb702e2036e700a8ff7169a471909ec61680b52480d1d0"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "labels.render",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "labels.render"
+          },
+          "value": {
+            "orderId": "ord-1",
+            "format": "zpl"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "labels.render",
+            "input": {
+              "sha256": "1cd98be09c2756001f42516fa0d5688ef4abee81f82b8dc597383eb6da019f0e",
+              "size": 34
+            }
+          },
+          "bodySha256": "94527dc192d0253d956e443590b987c90a088346375ed0ae36aa608254f5f836",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "77d6c5e44dc53b696ca003a107c2940ca85df62ea449e821f0a54eac729cf615",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "replayedChainHex": "77d6c5e44dc53b696ca003a107c2940ca85df62ea449e821f0a54eac729cf615",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "orderId": "ord-1",
+              "labelId": "lbl-ord-1"
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "21e3ab14f8eb79e03329ce3b24bd22a3ea7ebeed770113a31550cb1089b3d2d4",
+              "size": 41
+            }
+          },
+          "bodySha256": "fa1809f694e1a7b17eb64265f6070c990bfd5a2a409e5df386db6656394d0f9e",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "d8ebfaa26475daf1c2c889e2ecac5599e65b9662a2044e96bd94dc159b0ff981",
+      "commandCountAfter": 2
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 10,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "labels.render",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ],
+  "expectations": {
+    "parentRunId": "bf85d7e7-cafc-4281-9546-5074d62ed568",
+    "startedBy": "the child node `print` of the graph child"
+  }
+}

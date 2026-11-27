@@ -108,6 +108,36 @@ class WorkerServiceStub:
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.FromString,
                 _registered_method=True)
+        self.CompleteWorkflowTask = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/CompleteWorkflowTask',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.CompleteWorkflowTaskRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.CompleteWorkflowTaskResponse.FromString,
+                _registered_method=True)
+        self.FailWorkflowTask = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/FailWorkflowTask',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.FailWorkflowTaskRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.FailWorkflowTaskResponse.FromString,
+                _registered_method=True)
+        self.ReadHistory = channel.unary_stream(
+                '/sagat_octopus_orchestrator.v1.WorkerService/ReadHistory',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadHistoryRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadHistoryResponse.FromString,
+                _registered_method=True)
+        self.RespondWorkerQuery = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/RespondWorkerQuery',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondWorkerQueryRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondWorkerQueryResponse.FromString,
+                _registered_method=True)
+        self.RespondReplayCheck = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/RespondReplayCheck',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondReplayCheckRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondReplayCheckResponse.FromString,
+                _registered_method=True)
+        self.ReleaseSticky = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/ReleaseSticky',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReleaseStickyRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReleaseStickyResponse.FromString,
+                _registered_method=True)
 
 
 class WorkerServiceServicer:
@@ -211,6 +241,18 @@ class WorkerServiceServicer:
         (RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
         maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
         this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+
+        Design 044 (1.10) narrows both calls for its leases (Technical Plan 4.1, "Lease kinds per RPC"):
+        ReadBlob under a workflow lease, or with the `read_token` of a query or replay-check item, reaches only a blob
+        that the run's history references, and never one whose carrier schema classifies a field `secret`. The checks
+        run in this order: a blob the run's history does not reference is NOT_FOUND, exactly as a missing one; then a
+        blob with a `secret` field is PERMISSION_DENIED (x-sagat-error EXTERNAL_CONTENT_NOT_INSPECTED). A read token is
+        sent in `read_token`, never in `lease_token`.
+        WriteBlob under a workflow lease (step_id `~workflow`) writes a blob of the purpose COMMAND_VALUE, only for a
+        value that does not fit the completion (a work command's input, an update result, a side-effect value, a
+        terminal output); at most 16 uncommitted blobs per lease (beyond them the workflow task fails, counted, with
+        COMMAND_VALUE_LIMIT) and 32 per run (UNAVAILABLE with retry-after-ms, reason `run_command_value_ceiling`).
+        WriteBlob refuses every read token.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -232,6 +274,80 @@ class WorkerServiceServicer:
         batch (no record, more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
         above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
         by admission; UNAVAILABLE the database or the serving gate.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CompleteWorkflowTask(self, request, context):
+        """Added in 1.10, the workflow-as-code minor (design 044, Architecture decision 0109). A session on 1.10
+        implements the host procedures of 1.7, 1.8 and 1.9 as well. Each call accepts only its own kind of
+        lease and refuses every other kind (design 044, Technical Plan 4.1, "Lease kinds per RPC"); every
+        activity call (Heartbeat, CompleteStep, FailStep, ResolveSecrets, ResolveDatabase, AppendStepLogs)
+        refuses a WORKFLOW, QUERY or REPLAY_CHECK lease. The binding and the tenant membership are checked
+        again on every call made with the lease, idempotent replays included.
+
+        CompleteWorkflowTask: the commands of one activation, committed in one transaction with the journal,
+        the steps, timers, waits, the node overlay and the outbox (design 044, Technical Plan 5.2). The answer
+        is ACCEPTED, ACCEPTED_DEFERRED (a terminal or continue-as-new command that must wait; the rest
+        committed) or REVIEW (the run is under review with its cause; nothing of the commands committed).
+        Errors: ABORTED (x-sagat-error STALE_ATTEMPT) the lease is not current, the session's digest is not
+        the run's current one, the run is stopping or its cancellation deadline passed; INVALID_ARGUMENT a
+        message over the bounds of Non-functional requirement 044-006; UNAVAILABLE (retry-after-ms) the
+        validation semaphore, or the run's or the tenant's command-value ceiling.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FailWorkflowTask(self, request, context):
+        """FailWorkflowTask: the activation could not answer with commands. The cause is one the SDK raises
+        (NONDETERMINISM, NONDETERMINISM_RISK, VALIDATOR_COMMAND, WORKFLOW_TASK_FAILED, ACTIVATION_DEADLINE);
+        a server-only cause is INVALID_ARGUMENT. Never a message: an exception type is kept only when it
+        matches ^[A-Za-z_][A-Za-z0-9_.$]{0,127}$.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReadHistory(self, request, context):
+        """ReadHistory: the run's visible history from `from_seq`, in pages of at most 1,024 events or 3 MiB,
+        under a workflow lease or the read token of a query or replay-check item. Each page extends a
+        workflow lease, up to 120,000 ms in all. Binding and membership are checked again for every page.
+        Errors: NOT_FOUND an unknown run, a run of another tenant or namespace, an unknown, expired or invalidated
+        lease or token, all answered alike; RESOURCE_EXHAUSTED (retry-after-ms) beyond 512 streams per process, 128
+        per tenant or 32 per subject, or a second full pass of a lease's history; INVALID_ARGUMENT a `from_seq` below 1.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RespondWorkerQuery(self, request, context):
+        """RespondWorkerQuery (Task 044-29): the answer of a worker query from the function's state at its last
+        committed completion.
+        Errors: NOT_FOUND an unknown, foreign, expired or already answered query, all alike; INVALID_ARGUMENT an
+        answer over 256 KiB or outside the query's resultSchema.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RespondReplayCheck(self, request, context):
+        """RespondReplayCheck: one range of one item of a replay-check task (a move's verification, design 044,
+        Technical Plan 7.3). The verdict is the server's own; no answer before the last range discloses a match or
+        a difference.
+        Errors: NOT_FOUND an item that does not belong to the task this lease token leases, an unknown, foreign or
+        expired lease, or an item whose verdict is recorded, all alike; INVALID_ARGUMENT a range that is not the next
+        expected one, more than 8,192 digests, or a digest or chain that is not 32 bytes.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReleaseSticky(self, request, context):
+        """ReleaseSticky (Task 044-14): the runs the worker evicted from its cache; applied only to steps whose
+        sticky session is the caller's, in the caller's tenant; another run is ignored, never reported.
+        Errors: INVALID_ARGUMENT more than 256 run identifiers.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -294,6 +410,36 @@ def add_WorkerServiceServicer_to_server(servicer, server):
                     servicer.AppendStepLogs,
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.SerializeToString,
+            ),
+            'CompleteWorkflowTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompleteWorkflowTask,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.CompleteWorkflowTaskRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.CompleteWorkflowTaskResponse.SerializeToString,
+            ),
+            'FailWorkflowTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.FailWorkflowTask,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.FailWorkflowTaskRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.FailWorkflowTaskResponse.SerializeToString,
+            ),
+            'ReadHistory': grpc.unary_stream_rpc_method_handler(
+                    servicer.ReadHistory,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadHistoryRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadHistoryResponse.SerializeToString,
+            ),
+            'RespondWorkerQuery': grpc.unary_unary_rpc_method_handler(
+                    servicer.RespondWorkerQuery,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondWorkerQueryRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondWorkerQueryResponse.SerializeToString,
+            ),
+            'RespondReplayCheck': grpc.unary_unary_rpc_method_handler(
+                    servicer.RespondReplayCheck,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondReplayCheckRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondReplayCheckResponse.SerializeToString,
+            ),
+            'ReleaseSticky': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseSticky,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReleaseStickyRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReleaseStickyResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -612,6 +758,168 @@ class WorkerService:
             '/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CompleteWorkflowTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/CompleteWorkflowTask',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.CompleteWorkflowTaskRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.CompleteWorkflowTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FailWorkflowTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/FailWorkflowTask',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.FailWorkflowTaskRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.FailWorkflowTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/ReadHistory',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadHistoryRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadHistoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RespondWorkerQuery(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/RespondWorkerQuery',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondWorkerQueryRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondWorkerQueryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RespondReplayCheck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/RespondReplayCheck',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondReplayCheckRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.RespondReplayCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseSticky(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/ReleaseSticky',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReleaseStickyRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReleaseStickyResponse.FromString,
             options,
             channel_credentials,
             insecure,

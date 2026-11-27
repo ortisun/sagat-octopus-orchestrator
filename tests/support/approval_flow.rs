@@ -205,6 +205,8 @@ impl ApprovalFlow {
                         pools: Vec::new(),
                         max_inflight: 16,
                         protocol_version: "1.5".into(),
+                        workflow_types: Vec::new(),
+                        offers_workflow_as_code: false,
                     }),
                 },
             ))
@@ -608,6 +610,7 @@ impl ApprovalFlow {
                     output_sha256: String::new(),
                     traceparent: String::new(),
                     instance: task.instance.clone(),
+                    accept_workflow_task: false,
                 },
             ))
             .await

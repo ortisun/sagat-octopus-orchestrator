@@ -23,6 +23,29 @@ const (
 	CodeQuotaExceeded    Code = "QUOTA_EXCEEDED"
 	CodeUnavailable      Code = "UNAVAILABLE"
 	CodeInternal         Code = "INTERNAL"
+	// Workflow as code (design 044): reasons of signals, updates, queries and moves of a code workflow.
+	CodeCapabilityNotActive   Code = "CAPABILITY_NOT_ACTIVE"
+	CodeSignalNotDeclared     Code = "SIGNAL_NOT_DECLARED"
+	CodeSignalInboxFull       Code = "SIGNAL_INBOX_FULL"
+	CodeHistoryHeadroom       Code = "HISTORY_HEADROOM"
+	CodeRunClosing            Code = "RUN_CLOSING"
+	CodeUpdatePending         Code = "UPDATE_PENDING"
+	CodeUpdateBacklog         Code = "UPDATE_BACKLOG"
+	CodeRunNotMutable         Code = "RUN_NOT_MUTABLE"
+	CodeQueryTimeout          Code = "QUERY_TIMEOUT"
+	CodeQueryCommand          Code = "QUERY_COMMAND"
+	CodeQueryUnavailable      Code = "QUERY_UNAVAILABLE"
+	CodeMoveTargetInvalid     Code = "MOVE_TARGET_INVALID"
+	CodeResultSchemaViolation Code = "RESULT_SCHEMA_VIOLATION"
+	CodeRunEnded              Code = "RUN_ENDED"
+	CodeRunContinued          Code = "RUN_CONTINUED"
+	CodeRunBusy               Code = "RUN_BUSY"
+	CodeNoTargetWorker        Code = "NO_TARGET_WORKER"
+	CodeReplayMismatch        Code = "REPLAY_MISMATCH"
+	CodeEnvelopeMismatch      Code = "ENVELOPE_MISMATCH"
+	CodeMatched               Code = "MATCHED"
+	CodeReplayCheckAbandoned  Code = "REPLAY_CHECK_ABANDONED"
+	CodeWorkflowFailed        Code = "WORKFLOW_FAILED"
 
 	// From the worker protocol.
 	CodeStaleAttempt         Code = "STALE_ATTEMPT"
@@ -36,6 +59,10 @@ const (
 	CodeCancelled       Code = "CANCELLED"
 	CodeProtocol        Code = "PROTOCOL"
 	CodePayloadTooLarge Code = "PAYLOAD_TOO_LARGE"
+	// Raised by the workflow runtime of the SDK (design 044).
+	CodeCommandBatchLimitExceeded Code = "COMMAND_BATCH_LIMIT_EXCEEDED"
+	CodeInlineValuesExceeded      Code = "INLINE_VALUES_EXCEEDED"
+	CodeInconclusiveRedacted      Code = "INCONCLUSIVE_REDACTED"
 
 	// Failures of the steps that write to a lake or to a destination (feature 035), reported by the database runner.
 	CodeIcebergTableNotFound                 Code = "ICEBERG_TABLE_NOT_FOUND"
@@ -63,6 +90,27 @@ const (
 	CodeLakeSandboxUnavailable               Code = "LAKE_SANDBOX_UNAVAILABLE"
 	CodeClassificationEgressRefused          Code = "CLASSIFICATION_EGRESS_REFUSED"
 	CodeOutcomeUnknown                       Code = "OUTCOME_UNKNOWN"
+
+	// Causes of a code workflow's workflow task (design 044), from the worker protocol.
+	CodeNondeterminism              Code = "NONDETERMINISM"
+	CodeChainMismatch               Code = "CHAIN_MISMATCH"
+	CodeNondeterminismRisk          Code = "NONDETERMINISM_RISK"
+	CodeCommandOutsideEnvelope      Code = "COMMAND_OUTSIDE_ENVELOPE"
+	CodeCommandInvalid              Code = "COMMAND_INVALID"
+	CodeValidatorCommand            Code = "VALIDATOR_COMMAND"
+	CodeWorkflowTaskFailed          Code = "WORKFLOW_TASK_FAILED"
+	CodeActivationDeadline          Code = "ACTIVATION_DEADLINE"
+	CodeWorkflowTaskTimedOut        Code = "WORKFLOW_TASK_TIMED_OUT"
+	CodeCommandValueReleased        Code = "COMMAND_VALUE_RELEASED"
+	CodeCommandValueLimit           Code = "COMMAND_VALUE_LIMIT"
+	CodeCommandLimit                Code = "COMMAND_LIMIT"
+	CodeOutstandingObligations      Code = "OUTSTANDING_OBLIGATIONS"
+	CodeUnhandledEvents             Code = "UNHANDLED_EVENTS"
+	CodeClosingWindowCommand        Code = "CLOSING_WINDOW_COMMAND"
+	CodeHistoryLimit                Code = "HISTORY_LIMIT"
+	CodeRetainedBytesLimit          Code = "RETAINED_BYTES_LIMIT"
+	CodeStorageQuotaExceeded        Code = "STORAGE_QUOTA_EXCEEDED"
+	CodeExternalContentNotInspected Code = "EXTERNAL_CONTENT_NOT_INSPECTED"
 )
 
 // Error is the one error the SDK returns for a failure. Use errors.As to reach it:
