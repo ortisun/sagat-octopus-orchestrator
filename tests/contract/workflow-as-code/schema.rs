@@ -279,3 +279,39 @@ fn a_script_takes_a_bounded_timeout_and_a_wait_needs_one() {
         "and no longer"
     );
 }
+
+/// The node specification of a work command (`node-spec.baseline.json`) is the code profile's fragment without its
+/// business literals, tagged with the IR's `apiVersion`, plus what the envelope gives the kind (a child's `version`, an
+/// approval's `timeoutMs`): a field the profile gains reaches the specification too (Technical Plan 4.5).
+#[test]
+fn the_node_spec_keys_are_the_code_profiles_without_their_literals() {
+    let baseline = read_json("specs/044-workflow-as-code/contracts/node-spec.baseline.json");
+    let literals = ["correlationKey", "businessId"];
+    for (kind, profile, from_envelope) in [
+        ("activity", "codeProfileActivity", &[][..]),
+        ("script", "codeProfileScript", &[][..]),
+        ("timer", "codeProfileTimer", &[][..]),
+        ("waitEvent", "codeProfileWaitEvent", &[][..]),
+        ("child", "codeProfileChild", &["version"][..]),
+        ("approval", "codeProfileApproval", &["timeoutMs"][..]),
+    ] {
+        let mut expected: Vec<String> = schema()["$defs"][profile]["properties"]
+            .as_object()
+            .expect("a profile has properties")
+            .keys()
+            .filter(|key| !literals.contains(&key.as_str()))
+            .cloned()
+            .chain(from_envelope.iter().map(|key| (*key).to_owned()))
+            .chain(std::iter::once("apiVersion".to_owned()))
+            .collect();
+        expected.sort();
+        let mut keys: Vec<String> = baseline["kinds"][kind]["keys"]
+            .as_array()
+            .expect("the kind's keys")
+            .iter()
+            .map(|key| key.as_str().expect("a key").to_owned())
+            .collect();
+        keys.sort();
+        assert_eq!(keys, expected, "the node specification of {kind}");
+    }
+}
