@@ -237,7 +237,7 @@ class Matcher {
  * 1,024 of them or 256 KiB. Module-private: never exported from the package, never printed, never handed to activity
  * code. When a value does not fit, capture stops for the process.
  */
-class SecretSet {
+export class SecretSet {
   #values: string[] = [];
   #bytes = 0;
   #full = false;
@@ -259,7 +259,8 @@ class SecretSet {
       try {
         text = decoder.decode(bytes);
       } catch {
-        continue; // a value that is not UTF-8 cannot occur in a text
+        // Not UTF-8: the text an activity can log is the one the accessor hands out (§6.7).
+        text = Buffer.from(bytes).toString('utf8');
       }
       if (this.#values.includes(text)) continue;
       if (this.#full || this.#values.length + 1 > LIMITS.secretValues || this.#bytes + bytes.length > LIMITS.secretBytes) {
@@ -312,22 +313,22 @@ class SecretSet {
   }
 }
 
-/** What the whole process shares: the secret set, the bytes every attempt holds, and the hosts that run. */
-export const processCapture = {
-  secrets: new SecretSet(),
-  heldBytes: 0,
-  runningHosts: 0,
-};
+/**
+ * What the whole process shares: the secret set, which lives for the process (§6.7, decision D041-164), and the bytes
+ * every attempt holds. Module-private: the module exports only a way to add to the set, so nothing that imports it,
+ * even by its file path, can read the set or redact with it.
+ */
+const processSecrets = new SecretSet();
+let heldBytes = 0;
 
-/** A host started; the set lives while one runs. */
-export function hostStarted(): void {
-  processCapture.runningHosts += 1;
+/** Adds the values one resolution returned; true when the set stopped capture for the process with them (once). */
+export function addProcessSecrets(values: readonly Uint8Array[]): boolean {
+  return processSecrets.add(values);
 }
 
-/** A host stopped; the set is wiped when it was the last one (§6.7). */
-export function hostStopped(): void {
-  processCapture.runningHosts = Math.max(0, processCapture.runningHosts - 1);
-  if (processCapture.runningHosts === 0) processCapture.secrets.wipe();
+/** Whether capture stopped for the process because its secret set is full. */
+export function processCaptureStopped(): boolean {
+  return processSecrets.full;
 }
 
 // ---- formatting one call -----------------------------------------------------------------------------------------
@@ -340,10 +341,37 @@ function numberText(value: number | bigint): string {
 const INT64_MIN = -(2n ** 63n);
 const INT64_MAX = 2n ** 63n - 1n;
 
-/** One field value as the wire carries it, before redaction; undefined drops it. */
-function fieldValue(value: unknown): Omit<StepLogField, 'key'> | undefined {
+/** A byte buffer, any view of bytes, as its UTF-8 text (§6.9): never as numbers or base64. */
+function bytesText(value: unknown): string | undefined {
+  if (Buffer.isBuffer(value)) return value.toString('utf8');
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('utf8');
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString('utf8');
+  return undefined;
+}
+
+/**
+ * A copy of a value whose every string and every key is redacted, so that encoding it cannot escape a secret out of
+ * redaction's sight (§6.9); a byte buffer inside it becomes its redacted text.
+ */
+function redactedCopy(value: unknown, secrets: { redact(text: string): string }, seen: Set<unknown>): unknown {
+  if (typeof value === 'string') return secrets.redact(value);
+  const bytes = bytesText(value);
+  if (bytes !== undefined) return secrets.redact(bytes);
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) throw new TypeError('circular');
+  seen.add(value);
+  const json = (value as { toJSON?: unknown }).toJSON;
+  if (typeof json === 'function') return redactedCopy(json.call(value), secrets, seen);
+  if (Array.isArray(value)) return value.map((item) => redactedCopy(item, secrets, seen));
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) out[secrets.redact(key)] = redactedCopy((value as Record<string, unknown>)[key], secrets, seen);
+  return out;
+}
+
+/** One field value as the wire carries it; a string is redacted later, any other text is redacted here. */
+function fieldValue(value: unknown, secrets: { redact(text: string): string }): Omit<StepLogField, 'key'> | undefined {
   if (value === null || value === undefined) return undefined;
-  if (typeof value === 'string') return { string_value: wellFormed(value) };
+  if (typeof value === 'string') return { string_value: value };
   if (typeof value === 'boolean') return { bool_value: value };
   if (typeof value === 'bigint') {
     return value >= INT64_MIN && value <= INT64_MAX ? { int_value: value.toString() } : { string_value: value.toString() };
@@ -355,9 +383,11 @@ function fieldValue(value: unknown): Omit<StepLogField, 'key'> | undefined {
     if (Number.isSafeInteger(value)) return { int_value: value };
     return { double_value: value };
   }
+  const bytes = bytesText(value);
+  if (bytes !== undefined) return { string_value: bytes };
   let text: string | undefined;
   try {
-    text = JSON.stringify(value);
+    text = JSON.stringify(redactedCopy(value, secrets, new Set()));
   } catch {
     text = undefined;
   }
@@ -368,7 +398,7 @@ function fieldValue(value: unknown): Omit<StepLogField, 'key'> | undefined {
       text = Object.prototype.toString.call(value);
     }
   }
-  return { string_value: wellFormed(text) };
+  return { string_value: text };
 }
 
 function jsonString(text: string): string {
@@ -402,7 +432,12 @@ export function buildFields(input: Record<string, unknown> | undefined, secrets:
   if (!input) return { fields: [], truncated: false };
   const given: Array<[string, Omit<StepLogField, 'key'>]> = [];
   for (const key of Object.keys(input)) {
-    const value = fieldValue(input[key]);
+    let value: Omit<StepLogField, 'key'> | undefined;
+    try {
+      value = fieldValue(input[key], secrets);
+    } catch {
+      value = undefined; // a getter that throws costs its field
+    }
     if (value) given.push([key, value]);
   }
   // The order sent: the original keys' UTF-8 bytes, the same in every language.
@@ -410,12 +445,13 @@ export function buildFields(input: Record<string, unknown> | undefined, secrets:
   const used = new Set<string>();
   const made: StepLogField[] = [];
   for (const [original, value] of given) {
-    const redactedKey = secrets.redact(wellFormed(original));
+    // Redacted on the text as given, then made well formed (§6.9, steps 4 and 5).
+    const redactedKey = wellFormed(secrets.redact(original));
     let key = redactedKey;
     for (let n = 2; used.has(key); n++) key = `${redactedKey}~${n}`;
     used.add(key);
     const field: StepLogField = { key, ...value };
-    if (field.string_value !== undefined) field.string_value = secrets.redact(field.string_value);
+    if (field.string_value !== undefined) field.string_value = wellFormed(secrets.redact(field.string_value));
     else if (field.int_value !== undefined || field.double_value !== undefined) {
       const text = field.int_value !== undefined ? String(field.int_value) : numberText(field.double_value!);
       if (secrets.redact(text) !== text) {
@@ -471,8 +507,8 @@ export function buildRecord(
   } catch {
     text = '';
   }
-  const [cutMessage, messageCut] = cutUtf8(secrets.redact(wellFormed(text)), LIMITS.messageBytes);
-  const [cutException, exceptionCut] = cutUtf8(secrets.redact(wellFormed(exceptionText(error))), LIMITS.messageBytes);
+  const [cutMessage, messageCut] = cutUtf8(wellFormed(secrets.redact(text)), LIMITS.messageBytes);
+  const [cutException, exceptionCut] = cutUtf8(wellFormed(secrets.redact(exceptionText(error))), LIMITS.messageBytes);
   const built = buildFields(fields, secrets);
   const record: StepLogRecord = { sequence, worker_time_epoch_ms: time, level: WIRE_LEVEL[level] };
   if (cutMessage !== '') record.message = cutMessage;
@@ -568,14 +604,14 @@ export class AttemptCapture {
       const sequence = ++this.#lastSequence;
       const time = Date.now();
       if (this.#state === 'finalOnly') return this.#count('after_ceiling');
-      if (processCapture.secrets.full) return this.#count('secret_set_full');
+      if (processSecrets.full) return this.#count('secret_set_full');
       if (this.#buffer.length >= LIMITS.attemptRecords || this.#bufferBytes >= LIMITS.attemptBytes) return this.#count('buffer_full');
-      if (processCapture.heldBytes >= LIMITS.processBytes) return this.#count('process_bound');
-      const record = buildRecord(sequence, time, level, message, fields, error, processCapture.secrets);
+      if (heldBytes >= LIMITS.processBytes) return this.#count('process_bound');
+      const record = buildRecord(sequence, time, level, message, fields, error, processSecrets);
       const size = recordSize(record);
       this.#buffer.push({ record, size });
       this.#bufferBytes += size;
-      processCapture.heldBytes += size;
+      heldBytes += size;
       if (this.#tick === undefined) {
         this.#tick = setInterval(() => this.#onTick(), LIMITS.flushMs);
         this.#tick.unref?.();
@@ -589,6 +625,7 @@ export class AttemptCapture {
   #onTick(): void {
     try {
       if (this.#closed || this.#ended || this.#inFlight || this.#buffer.length === 0 || this.#stopped()) return;
+      if (processSecrets.full) return this.#dropBuffer('secret_set_full');
       if (this.#state !== 'capturing' || this.#batchesStopped) return;
       this.#send(this.#cut(this.#buffer.length));
     } catch {
@@ -613,7 +650,7 @@ export class AttemptCapture {
   }
 
   #release(held: readonly Held[]): void {
-    for (const one of held) processCapture.heldBytes -= one.size;
+    for (const one of held) heldBytes -= one.size;
   }
 
   #send(held: Held[]): void {
@@ -623,7 +660,7 @@ export class AttemptCapture {
       this.#release(batch.held);
       if (this.#inFlight === batch) this.#inFlight = undefined;
       if (!this.#closed && !this.#ended && this.#state === 'capturing' && !this.#stopped() && !this.#batchesStopped
-        && this.#buffer.length >= LIMITS.flushRecords && !this.#inFlight) {
+        && !processSecrets.full && this.#buffer.length >= LIMITS.flushRecords && !this.#inFlight) {
         this.#send(this.#cut(this.#buffer.length));
       }
     });
@@ -778,7 +815,7 @@ export class AttemptCapture {
       this.#dropBuffer(this.#state === 'finalOnly' ? 'after_ceiling' : 'secret_set_full');
       return { records: [], highest_sequence: this.#lastSequence };
     };
-    if (this.#state === 'finalOnly' || processCapture.secrets.full) return markOnly();
+    if (this.#state === 'finalOnly' || processSecrets.full) return markOnly();
     const deadline = Date.now() + LIMITS.reportWaitMs;
     for (;;) {
       if (this.#inFlight) {
@@ -795,7 +832,7 @@ export class AttemptCapture {
         if (late) break;
         if (this.#stopped()) return undefined;
         // The answer may have changed the state while the report waited.
-        if ((this.#state as AttemptState) === 'finalOnly' || processCapture.secrets.full) return markOnly();
+        if ((this.#state as AttemptState) === 'finalOnly' || processSecrets.full) return markOnly();
         continue;
       }
       const fits = this.#carryFits();
@@ -833,6 +870,7 @@ export class AttemptCapture {
   async flushOnShutdown(deadlineMs: number): Promise<void> {
     try {
       this.end();
+      if (processSecrets.full) return this.#dropBuffer('secret_set_full');
       if (this.#stopped() || this.#state !== 'capturing' || this.#batchesStopped || this.#inFlight || this.#buffer.length === 0) return;
       const held = this.#cut(this.#buffer.length);
       const { workerId, token } = this.host.session();

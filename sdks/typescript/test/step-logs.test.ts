@@ -11,7 +11,7 @@ import protobuf from 'protobufjs';
 import { ActivityFailure, WorkerHost, type WorkerConfig, type WorkerEvent } from '../src/index.js';
 import type { TaskLease } from '../src/worker/grpc.js';
 import {
-  LIMITS, buildFields, carrySize, cutUtf8, processCapture, recordSize, requestOverhead, wellFormed,
+  LIMITS, SecretSet, buildFields, buildRecord, carrySize, cutUtf8, recordSize, requestOverhead, wellFormed,
   type StepLogRecord,
 } from '../src/worker/step-logs.js';
 
@@ -114,30 +114,76 @@ test('keys colliding after redaction take ~2 in the order of their original byte
 // ---- the process's secret set ------------------------------------------------------------------------------------
 
 test('the secret set redacts by the rule of redact: longest first, values under 6 bytes ignored, in the text left', () => {
-  processCapture.secrets.wipe();
-  processCapture.secrets.add([Buffer.from('xxxxxx'), Buffer.from('D]yyyyy'), Buffer.from('short'), Buffer.from('abcdefgh'), Buffer.from('abcdef')]);
+  const secrets = new SecretSet();
+  secrets.add([Buffer.from('xxxxxx'), Buffer.from('D]yyyyy'), Buffer.from('short'), Buffer.from('abcdefgh'), Buffer.from('abcdef')]);
   // "D]yyyyy" (7 bytes) goes before "xxxxxx" (6): the match the second replacement creates is not looked for again.
-  assert.equal(processCapture.secrets.redact('xxxxxxyyyyy'), '[REDACTED]yyyyy');
-  assert.equal(processCapture.secrets.redact('abcdefgh and abcdef and short'), '[REDACTED] and [REDACTED] and short');
-  assert.equal(processCapture.secrets.redact('nothing here'), 'nothing here');
-  assert.doesNotMatch(inspect(processCapture, { depth: 5 }), /abcdef|xxxxxx/);
-  assert.doesNotMatch(JSON.stringify(processCapture), /abcdef|xxxxxx/);
-  processCapture.secrets.wipe();
+  assert.equal(secrets.redact('xxxxxxyyyyy'), '[REDACTED]yyyyy');
+  assert.equal(secrets.redact('abcdefgh and abcdef and short'), '[REDACTED] and [REDACTED] and short');
+  assert.equal(secrets.redact('nothing here'), 'nothing here');
+  assert.doesNotMatch(inspect(secrets, { depth: 5 }), /abcdef|xxxxxx/);
+  assert.doesNotMatch(JSON.stringify(secrets), /abcdef|xxxxxx/);
+  assert.doesNotMatch(String(secrets), /abcdef|xxxxxx/);
+});
+
+test('the process secret set is reachable from the module by no reader and no redaction, only by an add', async () => {
+  const module = await import('../src/worker/step-logs.js');
+  for (const [name, value] of Object.entries(module)) {
+    assert.ok(!(value instanceof SecretSet), `${name} exports a secret set`);
+    if (value && typeof value === 'object') {
+      for (const inner of Object.values(value)) assert.ok(!(inner instanceof SecretSet), `${name} holds a secret set`);
+    }
+  }
+  assert.equal('processCapture' in module, false);
+});
+
+test('redaction runs on the text as formatted: a secret holding a NUL is found before the NUL is replaced', () => {
+  const secrets = new SecretSet();
+  secrets.add([Buffer.from('pa\u0000ssword123')]);
+  const record = buildRecord(1, 1, 'info', 'x pa\u0000ssword123 y', { 'k\u0000pa\u0000ssword123': 'pa\u0000ssword123' }, new Error('pa\u0000ssword123'), secrets);
+  assert.equal(record.message, 'x [REDACTED] y');
+  assert.deepEqual(record.fields, [{ key: 'k\ufffd[REDACTED]', string_value: '[REDACTED]' }]);
+  assert.match(record.exception!, /^Error: \[REDACTED\]/);
+});
+
+test('a secret inside an object, an array or a byte buffer is redacted, whatever the encoder escapes', () => {
+  const secret = 'line"one\\two\nthree';
+  const secrets = new SecretSet();
+  secrets.add([Buffer.from(secret), Buffer.from('bytes-secret-77')]);
+  const { fields } = buildFields({
+    nested: { inner: [secret, { [secret]: 1 }], plain: 'ok' },
+    list: ['a', secret],
+    raw: Buffer.from('bytes-secret-77'),
+    view: new Uint8Array(Buffer.from('bytes-secret-77')),
+  }, secrets);
+  const text = JSON.stringify(fields);
+  assert.doesNotMatch(text, /line|three|bytes-secret-77/, text);
+  assert.deepEqual(fields, [
+    { key: 'list', string_value: '["a","[REDACTED]"]' },
+    { key: 'nested', string_value: '{"inner":["[REDACTED]",{"[REDACTED]":1}],"plain":"ok"}' },
+    { key: 'raw', string_value: '[REDACTED]' },
+    { key: 'view', string_value: '[REDACTED]' },
+  ]);
+});
+
+test('a secret that is not valid UTF-8 joins the set as the text the accessor hands out', () => {
+  const secrets = new SecretSet();
+  const bytes = Buffer.concat([Buffer.from([0xff]), Buffer.from('s3cr3t-token-42')]);
+  secrets.add([bytes]);
+  assert.equal(secrets.redact(`logged ${bytes.toString('utf8')}`), 'logged [REDACTED]');
 });
 
 test('the secret set holds 1,024 distinct values or 256 KiB, and the one that does not fit stops capture once', () => {
-  processCapture.secrets.wipe();
+  const secrets = new SecretSet();
   const values = Array.from({ length: 1024 }, (_, n) => Buffer.from(`secret-${String(n).padStart(6, '0')}`));
-  assert.equal(processCapture.secrets.add(values), false);
-  assert.equal(processCapture.secrets.add([values[0]!]), false, 'a value already held takes no room');
-  assert.equal(processCapture.secrets.full, false);
-  assert.equal(processCapture.secrets.add([Buffer.from('one-value-too-many')]), true);
-  assert.equal(processCapture.secrets.full, true);
-  assert.equal(processCapture.secrets.add([Buffer.from('and-another-one')]), false, 'stopped once');
-  processCapture.secrets.wipe();
-  assert.equal(processCapture.secrets.add([Buffer.from('x'.repeat(LIMITS.secretBytes))]), false);
-  assert.equal(processCapture.secrets.add([Buffer.from('y'.repeat(6))]), true, 'past 256 KiB');
-  processCapture.secrets.wipe();
+  assert.equal(secrets.add(values), false);
+  assert.equal(secrets.add([values[0]!]), false, 'a value already held takes no room');
+  assert.equal(secrets.full, false);
+  assert.equal(secrets.add([Buffer.from('one-value-too-many')]), true);
+  assert.equal(secrets.full, true);
+  assert.equal(secrets.add([Buffer.from('and-another-one')]), false, 'stopped once');
+  const bytes = new SecretSet();
+  assert.equal(bytes.add([Buffer.from('x'.repeat(LIMITS.secretBytes))]), false);
+  assert.equal(bytes.add([Buffer.from('y'.repeat(6))]), true, 'past 256 KiB');
 });
 
 // ---- the host, against an in-memory worker service --------------------------------------------------------------
@@ -481,8 +527,7 @@ test('the capture level is the option, below it a call takes no sequence, and th
   assert.deepEqual(lines, ['error line'], 'the host still logs what it logged');
 });
 
-test('a line is redacted with every secret the process resolved, by any attempt', async () => {
-  processCapture.secrets.wipe();
+test('a line is redacted with every secret the process resolved, by any attempt, also after the host started again', async () => {
   fake.secrets = [{ name: 'key', value: Buffer.from('canary-value-9Kx2'), version: 1 }];
   const h = host();
   h.registerActivity('work', async (_input, context) => {
@@ -501,19 +546,28 @@ test('a line is redacted with every secret the process resolved, by any attempt'
   assert.deepEqual(plain(record.fields), [{ key: '[REDACTED]', string_value: '[REDACTED]' }]);
   assert.match(record.exception, /^Error: failure \[REDACTED\]/);
   assert.doesNotMatch(JSON.stringify(fake.of('completeStep')), /canary-value-9Kx2/);
+  // The same host, stopped and started again in the process, still redacts what an earlier attempt resolved.
+  await h.stop(1000);
+  fake.calls.length = 0;
+  await h.start();
+  fake.leases = [lease({ attempt: 2 })];
+  await until(() => fake.of('completeStep').length === 1, 'the report after the restart');
+  assert.equal(fake.of('completeStep')[0]!.request['step_logs'].records[0].message, '[REDACTED]');
 });
 
 test('a logger call never throws into the activity, whatever it is handed', async () => {
   const circular: Record<string, unknown> = {};
   circular['self'] = circular;
   const hostile = { get boom(): never { throw new Error('getter'); } };
-  const report = await runOne(0, {}, (log) => {
+  const report = await runOne(0, { logger: { debug() {}, info() {}, warn() {}, error() {} } }, (log) => {
     log.info('circular', { circular, hostile: Object.defineProperty({}, 'toJSON', { value: () => { throw new Error('x'); } }) });
     log.info({ toString() { throw new Error('message'); } } as unknown as string);
     log.info('getter', hostile as unknown as Record<string, unknown>);
     return { ok: true };
   });
   assert.equal(report['step_logs'].highest_sequence, 3);
+  assert.equal(fake.of('completeStep').length, 1, 'the activity completed: no call threw into it');
+  assert.equal(fake.of('failStep').length, 0);
 });
 
 test('a batch holds at most 500 records and 192 KiB, and the attempt buffer stops at its bound', async () => {
