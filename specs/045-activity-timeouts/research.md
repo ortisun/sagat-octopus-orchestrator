@@ -177,7 +177,10 @@ place. Every owner question below was decided under the owner's delegation (Owne
   transaction of its own before its command and clears after it, and a crash between the two leaves every publication refused until
   someone clears it. The gate is first in the registry's lock order; ADR-0112 is amended in place (its amendment of 2026-11-27, with
   the hold's new body). The repository's evidence is `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds`
-  and `...::a_removal_commits_under_a_continuous_stream_of_holds`, run first against the hold of design 054's text, without the gate.
+  and `...::a_removal_commits_under_a_continuous_stream_of_holds`, run first against the hold of design 054's text, without the gate. Seen failing on that text (CI run 45936551219 of pull request #295, commit `0a16d2fe7`, 2026-11-27): the activation's relay
+  granted 413 of 1,125 holds ahead of the waiting command and the removal's 376 of 1,113, and each command ended after 3.0 s on its
+  `statement_timeout` (`canceling statement due to statement timeout`), never on its 2,000 ms `lock_timeout`, which restarts on every
+  wait.
 - **Decision 045-030 — Task 054-18 is built here, as a pull request of its own** (2026-11-27). No design had landed the prerequisite
   of ADR-0112 (no branch of designs 044 or 054 creates `platform_requirement_hold` or `platform_requirement_floors`), and Task 045-21
   orders it before Task 045-6. Delegate (Owner decision 2026-11-24-4), under ADR-0112 decision 4 ("landed by whichever of the designs
