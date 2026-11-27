@@ -43,8 +43,9 @@ values of feature 017's `openbao` custody (design 015, The Problem).
    key's version. Feature 017's KV custody stays as it is.
 3. Rotation MUST need no restart and MUST NOT outrun the backups: new seals use the sealing version recorded in
    PostgreSQL, advanced only once a snapshot holds it; a bounded, resumable pass rewraps stored data
-   keys with `transit/rewrap` and reports every row it could not rewrap; raising `min_decryption_version` first raises a
-   sealing floor that the database enforces, then counts. A re-key command issues new data keys after
+   keys with `transit/rewrap` and reports every row it could not rewrap; raising `min_decryption_version` of any of the
+   three keys first raises that key's sealing floor, which the database enforces on every new sealed value, signature
+   or binding, then counts across every table of the re-seal inventory; trimming recounts the same way. A re-key command issues new data keys after
    a compromise of a token.
 4. Scripts MUST be signed with Transit key `sagat-scripts` over the message that binds the tenant, the digest and the
    language; runners MUST get the public keys from the control plane, never from OpenBao. Artifact bytes stay
@@ -57,7 +58,7 @@ values of feature 017's `openbao` custody (design 015, The Problem).
    live outside the platform's OpenBao.
 6. Without OpenBao nothing is sealed or opened by other means, on every read path including the scan of a step's
    output. Opening MAY use an unwrapped data key from a cache of at most 4,096 keys, 512 per tenant, each at most 300
-   seconds after its unwrap.
+   seconds after its unwrap, keyed by what a rewrap does not change (the value's row and its data key's issue time).
 7. Under `transit`, OpenBao MUST be backed up by scheduled encrypted snapshots, and a restore pairs a PostgreSQL backup
    with a later snapshot. The schedule belongs to the operator's OpenBao installation, under an operator-only policy
    that no platform role holds and that the platform's allow-list test does not read.
@@ -69,6 +70,10 @@ values of feature 017's `openbao` custody (design 015, The Problem).
 2. **All values in OpenBao KV** — every write and every restore spans two systems.
 3. **Transit `encrypt` of each value** — the value crosses the network on every read.
 4. **A key per tenant in Transit** — rotation and policies per tenant; derivation gives the same separation.
+5. **The ring delivered from OpenBao KV into files, with per-tenant keys derived in the process by HKDF** — no keys in
+   the environment and rotation without a redeploy, with no cache and no OpenBao call on a cold open; but the master
+   keys live in the memory of every control plane and engine and OpenBao audits no use of them, which is what
+   regulated work chooses `transit` for (design 015, Complexity Tracking).
 
 ## Consequences
 
