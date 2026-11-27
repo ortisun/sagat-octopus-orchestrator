@@ -172,18 +172,20 @@ pub struct StreamRow {
     pub truncated_records: i32,
 }
 
-/// The stream row of `attempt`, if one exists.
+/// The stream row of `attempt` (its attempt and generation), if one exists.
 pub async fn stream_of(w: &World, attempt: &Attempt) -> Option<StreamRow> {
     use sqlx::Row as _;
     let row = sqlx::query(
         "SELECT records, bytes, last_sequence, ceiling_sequence, ceiling_reason, dropped_by_worker, \
                 dropped_by_server, truncated_records \
-           FROM step_log_streams WHERE tenant_id = $1 AND run_id = $2 AND step_id = $3 AND attempt = $4",
+           FROM step_log_streams WHERE tenant_id = $1 AND run_id = $2 AND step_id = $3 AND attempt = $4 \
+            AND generation = $5",
     )
     .bind(attempt.session.principal.tenant_id().as_uuid())
     .bind(attempt.run.as_uuid())
     .bind(attempt.task.step_id)
     .bind(i32::try_from(attempt.task.fence.attempt).expect("an attempt"))
+    .bind(i64::try_from(attempt.task.fence.generation).expect("a generation"))
     .fetch_optional(&w.db.pool)
     .await
     .expect("the stream")?;
@@ -338,7 +340,8 @@ pub enum Hook {
     HoldAfterLease,
     /// Held after T3: the policy fences and the attempt's stream lock held (L1, L1b).
     HoldAfterPolicies,
-    /// Held after T7: the stream row held since T4 (L2).
+    /// Held after T7: the stream row held since T4 (L2). Not for a batch whose T3 or T4 fails: its authority read in a
+    /// transaction of its own calls `membership_role` again and would wait at this hook a second time.
     HoldAfterAuthority,
     /// Held after T8: the writer's own quota lease held (L3b), and the usage row too when T8 refilled (L4).
     HoldAfterInsert,

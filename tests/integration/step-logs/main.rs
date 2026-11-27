@@ -11,10 +11,14 @@ mod authority;
 mod budget;
 mod carry;
 mod counted;
+mod faults;
 mod ingest;
 mod locks;
 mod metrics;
 mod quota;
 mod retention;
 mod rpc;
+mod rpc_faults;
 mod scrubbing;
+#[path = "../../support/worker_proxy.rs"]
+mod worker_proxy;

@@ -3,6 +3,7 @@ mod ad_hoc;
 mod crash;
 mod fairness;
 mod performance;
+#[path = "../../support/worker_proxy.rs"]
 mod proxy;
 #[path = "../../support/mod.rs"]
 mod support;
