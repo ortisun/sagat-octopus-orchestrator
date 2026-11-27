@@ -16,6 +16,8 @@ use crate::workflow::ActivityName;
 pub const MAX_ACTIVITY_ENTRIES: usize = 64;
 /// The most secrets one exact entry releases (the graph activity node's bound).
 pub const MAX_ENTRY_SECRETS: usize = 16;
+/// The longest entry name, the `.*` of a prefix entry included (`codeActivityPattern` of the IR schema).
+const MAX_ENTRY_NAME_BYTES: usize = 128;
 /// The activity names a code version may not list: the platform's script and workflow-task names.
 const RESERVED_PREFIXES: [&str; 2] = ["script.", "sagat."];
 
@@ -31,6 +33,10 @@ impl EntryName {
     /// [`EnvelopeError::InvalidName`] unless the text is an activity name or `<activity name>.*`, and
     /// [`EnvelopeError::ReservedName`] for a name under `script.` or `sagat.`.
     pub fn parse(text: &str) -> Result<Self, EnvelopeError> {
+        // The schema's `codeActivityPattern`: at most 128 characters, the `.*` of a prefix included.
+        if text.len() > MAX_ENTRY_NAME_BYTES {
+            return Err(EnvelopeError::InvalidName(clip(text)));
+        }
         let name = match text.strip_suffix(".*") {
             Some(stem) => ActivityName::parse(stem)
                 .map(|_| Self::Prefix(format!("{stem}.")))
@@ -43,9 +49,9 @@ impl EntryName {
             Self::Exact(exact) => RESERVED_PREFIXES
                 .iter()
                 .any(|prefix| exact.as_str().starts_with(prefix)),
-            Self::Prefix(prefix) => RESERVED_PREFIXES.iter().any(|reserved| {
-                prefix.starts_with(reserved) || reserved.starts_with(prefix.as_str())
-            }),
+            Self::Prefix(prefix) => RESERVED_PREFIXES
+                .iter()
+                .any(|reserved| prefix.starts_with(reserved)),
         };
         if reserved {
             return Err(EnvelopeError::ReservedName(clip(text)));
@@ -622,7 +628,25 @@ mod tests {
                 "{reserved} is reserved"
             );
         }
-        for invalid in ["*", "a.*.*", "", ".*", "a b"] {
+        for accepted in [
+            "sag.*",
+            "scripts.*",
+            "sagatx.y",
+            "scripting.run",
+            "sagat-tools.*",
+        ] {
+            assert!(
+                EntryName::parse(accepted).is_ok(),
+                "{accepted} is not reserved"
+            );
+        }
+        let longest_prefix = format!("{}.*", "a".repeat(126));
+        assert!(
+            EntryName::parse(&longest_prefix).is_ok(),
+            "a 128-character prefix entry"
+        );
+        let too_long = format!("{}.*", "a".repeat(127));
+        for invalid in ["*", "a.*.*", "", ".*", "a b", too_long.as_str()] {
             assert!(
                 matches!(
                     EntryName::parse(invalid),
@@ -645,6 +669,33 @@ mod tests {
                 member: "compensateWith",
                 activity: "orders.cancel".to_owned(),
             })
+        );
+        let covered_by_a_prefix = ActivityEnvelope::new(vec![
+            entry(
+                "orders.place",
+                PublisherFields {
+                    compensate_with: Some(name("orders.cancel")),
+                    ..PublisherFields::default()
+                },
+            ),
+            entry("orders.*", PublisherFields::default()),
+        ])
+        .expect("a compensation covered by a prefix entry is an entry of the envelope (Decision 044-252)");
+        let admitted = covered_by_a_prefix
+            .admit(&name("orders.place"), &PublisherFields::default())
+            .expect("covered");
+        assert_eq!(
+            admitted
+                .compensation
+                .map(|entry| entry.name().as_text())
+                .as_deref(),
+            Some("orders.*")
+        );
+        assert!(
+            admitted
+                .compensation
+                .is_some_and(|entry| entry.secrets().is_empty()),
+            "and it runs with no secret"
         );
         let twice = ActivityEnvelope::new(vec![
             entry("orders.place", PublisherFields::default()),

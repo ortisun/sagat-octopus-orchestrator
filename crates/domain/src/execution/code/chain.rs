@@ -147,6 +147,10 @@ pub trait CommandDigester {
 }
 
 /// One command as the chain sees it: its number, its kind, its target and the SHA-256 of its canonical body.
+///
+/// The fold hashes the target it is given. The caller derives it from the command as Technical Plan 6.2's table says
+/// (a timer's own `c-<n>`, `""` for the typed commands), from the server's own numbering and records rather than a
+/// worker's claim; the completion path (Tasks 044-5 and 044-9) holds that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainedCommand<'a> {
     pub seq: u32,
@@ -164,6 +168,9 @@ pub enum ChainError {
     /// The bytes of `d(k)` do not fit their 32-bit length prefix.
     #[error("the digest input of command {seq} is longer than 2^32 - 1 bytes")]
     InputTooLong { seq: u32 },
+    /// A stored chain whose hash and count cannot belong together.
+    #[error("a stored command chain of {count} commands has an impossible hash")]
+    Inconsistent { count: u32 },
 }
 
 /// `H(k)` of a run after its `k`-th command, with `k`.
@@ -181,9 +188,15 @@ impl CommandChain {
     };
 
     /// A chain read back from storage (`runs.code_command_chain`, `runs.code_command_count`).
-    #[must_use]
-    pub const fn restore(hash: [u8; 32], count: u32) -> Self {
-        Self { hash, count }
+    ///
+    /// # Errors
+    /// [`ChainError::Inconsistent`] when the hash is `H(0)` (32 zero bytes) with a count, or another hash without one:
+    /// only the empty chain has no command.
+    pub fn restore(hash: [u8; 32], count: u32) -> Result<Self, ChainError> {
+        if (hash == [0; 32]) != (count == 0) {
+            return Err(ChainError::Inconsistent { count });
+        }
+        Ok(Self { hash, count })
     }
 
     /// The 32 bytes of `H(k)`.
@@ -389,7 +402,7 @@ mod tests {
             CommandChain::EMPTY.extend(&digester, &skipped),
             Err(ChainError::OutOfOrder { after: 0, got: 2 })
         );
-        let restored = CommandChain::restore([5; 32], 4);
+        let restored = CommandChain::restore([5; 32], 4).expect("a chain of four commands");
         let repeated = command(4, CommandKind::Complete, "", 1);
         assert_eq!(
             restored.extend(&digester, &repeated),
@@ -398,6 +411,21 @@ mod tests {
         assert!(
             digester.sha_inputs.borrow().is_empty(),
             "nothing is hashed for a refused command"
+        );
+    }
+
+    #[test]
+    fn a_stored_chain_must_be_the_empty_one_or_have_commands() {
+        assert_eq!(CommandChain::restore([0; 32], 0), Ok(CommandChain::EMPTY));
+        assert_eq!(
+            CommandChain::restore([5; 32], 0),
+            Err(ChainError::Inconsistent { count: 0 }),
+            "no command, so the hash is H(0)"
+        );
+        assert_eq!(
+            CommandChain::restore([0; 32], 4),
+            Err(ChainError::Inconsistent { count: 4 }),
+            "H(0) has no command"
         );
     }
 

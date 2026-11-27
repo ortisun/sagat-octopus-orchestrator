@@ -120,15 +120,25 @@ fn write_number(number: &serde_json::Number, out: &mut Vec<u8>) {
         .filter(|n| n.unsigned_abs() <= EXACT_INTEGERS)
     {
         out.extend_from_slice(signed.to_string().as_bytes());
-    } else if let Some(double) = number.as_f64() {
-        out.extend_from_slice(es_number(double).as_bytes());
+    } else {
+        // Without `arbitrary_precision` every number is a finite double here; with it, a number's text is parsed as
+        // ECMAScript's JSON.parse would, and a value beyond the doubles is printed as JSON.stringify prints Infinity:
+        // `null` (RFC 8785 refuses such a value; I-JSON callers refuse it before, Decision 044-252).
+        let double = number
+            .as_f64()
+            .unwrap_or_else(|| number.to_string().parse().unwrap_or(f64::INFINITY));
+        if double.is_finite() {
+            out.extend_from_slice(es_number(double).as_bytes());
+        } else {
+            out.extend_from_slice(b"null");
+        }
     }
 }
 
 /// ECMAScript's Number::toString of a finite double (ECMA-262, Number::toString with radix 10).
 fn es_number(x: f64) -> String {
-    if x == 0.0 || !x.is_finite() {
-        // -0 prints 0; JSON has no infinity or NaN, so a serde_json number is never one.
+    if x == 0.0 {
+        // -0 prints 0.
         return "0".to_owned();
     }
     let sign = if x.is_sign_negative() { "-" } else { "" };

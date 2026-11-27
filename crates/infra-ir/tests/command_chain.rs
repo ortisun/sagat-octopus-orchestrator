@@ -75,11 +75,7 @@ fn rfc8785_prints_a_tie_to_the_even_digit() {
     // Built exactly: an integer below 2^53 plus a quarter, both doubles (a literal would trip a precision lint).
     let whole = 1_424_953_923_781_206.0_f64;
     let tie = whole + 0.25;
-    assert_eq!(
-        format!("{tie}"),
-        "1424953923781206.3",
-        "the trap this test guards against"
-    );
+    // Rust's `{}` prints this tie as ...206.3, the odd digit.
     assert_eq!(rfc8785(&Value::from(tie)), b"1424953923781206.2");
     assert_eq!(
         rfc8785(&Value::from(whole + 0.75)),
@@ -93,6 +89,22 @@ fn rfc8785_prints_a_tie_to_the_even_digit() {
     );
 }
 
+/// Seventeen-digit decimals that a parser without correct rounding reads one unit in the last place off (serde_json's
+/// own `float_roundtrip` cases): their RFC 8785 text is the text they were written with, so an honest worker's
+/// canonical body prints back as it came.
+#[test]
+fn rfc8785_reprints_numbers_that_need_correct_rounding() {
+    for text in [
+        "51.248178375505404",
+        "2.0030397744267762e-253",
+        "1424953923781206.2",
+    ] {
+        let parsed: Value = serde_json::from_str(text).expect("a JSON number");
+        let expected = text.as_bytes().to_vec();
+        assert_eq!(rfc8785(&parsed), expected, "{text}");
+    }
+}
+
 /// The chain vectors and every scenario run of the corpus: each body's digest is the SHA-256 of its RFC 8785 bytes,
 /// each `d(k)` is the digester's, and the domain's fold gives each `H(k)`.
 #[test]
@@ -101,6 +113,7 @@ fn the_chain_of_the_golden_commands_is_the_golden_hash() {
     let lists = vectors["lists"].as_array().expect("lists");
     assert!(!lists.is_empty(), "the chain vectors have lists");
     let mut checked = 0_usize;
+    let mut described = 0_usize;
     for list in lists {
         let name = text(list, "name");
         let mut chain = CommandChain::EMPTY;
@@ -113,17 +126,13 @@ fn the_chain_of_the_golden_commands_is_the_golden_hash() {
                 text(command, "bodySha256"),
                 "{at}: the body's digest"
             );
-            if let (Some(value), Some(field)) = (
-                command.get("value"),
-                ["input", "subject"]
-                    .into_iter()
-                    .find(|field| command["body"].get(*field).is_some()),
-            ) {
+            if let Some((field, value)) = carried_value(command) {
                 assert_eq!(
                     command["body"][field],
                     descriptor(value),
-                    "{at}: the descriptor of the value"
+                    "{at}: the descriptor of the {field}"
                 );
+                described += 1;
             }
             let kind = CommandKind::from_chain_name(text(command, "kind"))
                 .unwrap_or_else(|| panic!("{at}: a known kind"));
@@ -181,17 +190,13 @@ fn the_chain_of_the_golden_commands_is_the_golden_hash() {
                     text(command, "bodySha256"),
                     "{at}: body of {seq}"
                 );
-                if let Some(value) = command.get("value") {
-                    let field = if text(command, "kind") == "approval" {
-                        "subject"
-                    } else {
-                        "input"
-                    };
+                if let Some((field, value)) = carried_value(command) {
                     assert_eq!(
                         command["body"][field],
                         descriptor(value),
-                        "{at}: the descriptor of command {seq}'s value"
+                        "{at}: the descriptor of command {seq}'s {field}"
                     );
+                    described += 1;
                 }
                 let kind =
                     CommandKind::from_chain_name(text(command, "kind")).expect("a known kind");
@@ -226,14 +231,70 @@ fn the_chain_of_the_golden_commands_is_the_golden_hash() {
                     after,
                     "{at}: the chain after the activation"
                 );
-                assert_eq!(chain, CommandChain::restore(unhex32(after), chain.count()));
+                let count_after = u32::try_from(
+                    activation["commandCountAfter"]
+                        .as_u64()
+                        .expect("the count after an activation"),
+                )
+                .expect("small");
+                assert_eq!(
+                    CommandChain::restore(unhex32(after), count_after),
+                    Ok(chain),
+                    "{at}: the stored chain and count after the activation"
+                );
+                let entry = golden["activations"]
+                    .as_array()
+                    .expect("chain.json activations")
+                    .iter()
+                    .find(|entry| entry["k"] == activation["k"])
+                    .unwrap_or_else(|| {
+                        panic!("{at}: chain.json has activation {}", activation["k"])
+                    });
+                assert_eq!(
+                    text(entry, "chainHex"),
+                    after,
+                    "{at}: chain.json after the activation"
+                );
+                assert_eq!(
+                    entry["commandCountAfter"].as_u64(),
+                    Some(u64::from(chain.count())),
+                    "{at}: chain.json's count after the activation"
+                );
             }
         }
     }
     assert!(
+        described >= 100,
+        "the corpus's value descriptors are checked ({described})"
+    );
+    assert!(
         checked >= 400,
         "the corpus chains its four hundred commands or more ({checked})"
     );
+}
+
+/// The value a command carries as a descriptor, with the body's field that holds it (the body table of the corpus
+/// README); none for a value carried as a blob, whose descriptor the generator states, or for a kind without one.
+fn carried_value(command: &Value) -> Option<(&'static str, &Value)> {
+    if command.get("valueBlob").is_some() {
+        return None;
+    }
+    let typed = &command["typed"];
+    match text(command, "kind") {
+        "activity" | "script" | "child" => command.get("value").map(|value| ("input", value)),
+        "approval" => command.get("value").map(|value| ("subject", value)),
+        "complete" => typed.get("complete").map(|value| ("output", value)),
+        "update_complete" => typed["updateResult"]
+            .get("result")
+            .map(|value| ("result", value)),
+        "marker_side_effect" => typed["marker"]
+            .get("sideEffectValue")
+            .map(|value| ("value", value)),
+        "fail" => typed["fail"]
+            .get("safeMessage")
+            .map(|value| ("message", value)),
+        _ => None,
+    }
 }
 
 /// `D(v)` of the corpus README: the SHA-256 and the size of the value's RFC 8785 bytes.
