@@ -30,14 +30,15 @@ guards. They are built by two lanes that touch different crates (Detailed Implem
 The decisions are [Architecture decision 0151](../adr/ADR-0151-every-signal-reaches-the-collector-and-the-platform-keeps-one-exporter-per-signal.md)
 and [Architecture decision 0152](../adr/ADR-0152-openbao-transit-holds-the-platform-keys-and-each-custody-has-its-own-mount-and-token.md),
 proposed with this design and accepted with its approval, under the owner's delegation (Owner decision 2026-11-24-4). This revision answers the first
-security review of 2026-11-26 (`docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-26/round-1/security.md`). The
-registers are in `specs/015-opentelemetry-and-openbao/research.md`.
+round of 2026-11-26 (`docs/designs/015-opentelemetry-and-openbao.reviews/2026-11-26/round-1/`: security, correctness and
+architecture). The registers are in `specs/015-opentelemetry-and-openbao/research.md`.
 
 ### Terms
 
 - **Collector.** The OpenTelemetry Collector (contrib distribution), a separate process the operator runs.
 - **Key authority.** Where the platform's three keys live and are used: `local` (the key ring and key files of today) or
-  `transit` (OpenBao Transit). Chosen per deployment by `SAGAT_KEY_AUTHORITY`; `migrating` is the passage between them.
+  `transit` (OpenBao Transit). Chosen per deployment by `SAGAT_KEY_AUTHORITY`; `migrating` is the passage from `local` to
+  `transit` and `returning` the passage back.
 - **Custody of a secret value.** Where one secret's value is kept, recorded per secret in `secrets.authority`: `local`
   (sealed in PostgreSQL under the key ring, today), `openbao` (in OpenBao's KV engine through feature 017's provider
   path, today) and, new, `transit` (sealed in PostgreSQL under a data key that Transit wraps).
@@ -100,35 +101,57 @@ it for regulated work.
   attribute. Metrics MUST NOT gain a tenant, namespace, run or sink label (Principle V).
 - **Requirement 015-006** The header that authenticates a process to the Collector MUST be readable from a file
   (`OTEL_EXPORTER_OTLP_HEADERS_FILE`, an extension of the standard variables), read again when it changes or after a
-  `401`; it MUST be sent only to an `https` endpoint or a loopback address (a process with a header and a plain `http`
-  endpoint elsewhere refuses to start), and marked sensitive in the HTTP client. With OpenBao it is written into that
-  file by the OpenBao Agent from the KV path `secret/data/sagat/telemetry/collector` (a row of the custody table,
-  Technical Plan 7).
+  `401`, and marked sensitive in the HTTP client. A header read from that file MUST be sent only to an `https` endpoint
+  or a loopback address, unless the operator sets `SAGAT_OTEL_ALLOW_PLAINTEXT_HEADERS=true` for a Collector reached
+  through a mesh that encrypts the hop; otherwise the configuration is an error and the process exports nothing while
+  it logs and counts the refusal (it does not stop serving). `OTEL_EXPORTER_OTLP_HEADERS` keeps today's behaviour, so an
+  upgrade stops no process that sends a header to an in-cluster `http` Collector today; with a non-loopback `http`
+  endpoint it logs a warning once at start. The file is written by the OpenBao Agent from the KV path
+  `secret/data/sagat/telemetry/collector` for the control plane and the execution engine, and is a Kubernetes Secret
+  mounted by the chart for the database runner and the sandbox runner, which hold no OpenBao token (Technical Plan 7).
 - **Requirement 015-007** The sensitive-name rule and the value shapes of `redact.rs` MUST cover the material this design
   adds: the names `wrapped_key`, `data_key`, `plaintext`, `ciphertext`, `hmac` and the shapes `vault:v<N>:` and OpenBao
   tokens (`hvs.`, `hvb.`, `hvr.`, `s.`).
 
 ### Functional: OpenBao
 
-- **Requirement 015-010** A deployment MUST choose its key authority, `local` or `transit`, and the passage between them,
-  `migrating`. The mode is recorded in PostgreSQL (`key_authority_state.mode`, one row), changed only by the commands of
-  Technical Plan 6. A process whose configuration disagrees with it follows ADR-0082: it stays up with its gate closed
-  and serves nothing but its liveness probe; it never exits. Both `local` and `transit` are supported in production.
-  Under `transit` no platform key exists outside OpenBao: a process with `SAGAT_SECRETS_KEYS`,
-  `SAGAT_SCRIPT_SIGNING_KEY` or `SAGAT_OPENBAO_INTENT_KEY_FILE` set, or in `migrating` or `transit` mode without its
-  Transit configuration, keeps its gate closed; the Helm chart's validation follows.
+- **Requirement 015-010** A deployment MUST choose its key authority, `local` or `transit`, and the passages between
+  them, `migrating` (from `local` to `transit`) and `returning` (back). The mode is recorded in PostgreSQL
+  (`key_authority_state.mode`, one row), changed only by the commands of Technical Plan 6 through functions of the
+  schema-owning role (Technical Plan 5). A process whose configuration disagrees with it follows ADR-0082: it stays up
+  with its gate closed and serves nothing but its liveness probe; it never exits. Both `local` and `transit` are
+  supported in production. Under `transit` no platform key exists outside OpenBao: a process with `SAGAT_SECRETS_KEYS`,
+  `SAGAT_SCRIPT_SIGNING_KEY` or `SAGAT_OPENBAO_INTENT_KEY_FILE` set keeps its gate closed; in `migrating`, `transit` or
+  `returning` a process without its Transit configuration keeps its gate closed, and in `migrating` or `returning`
+  one without the ring does too; the Helm chart's validation follows. Only the control plane and the execution engine
+  take part in this gate (the kinds of the instance registry); the secret cleanup job opens no secret, and the sandbox
+  runners are gated as Requirement 015-013 states.
 - **Requirement 015-011** Under `migrating` and `transit`, every new secret version MUST be sealed by envelope
   encryption: a fresh data key from `transit/datakey/plaintext/sagat-secrets` at the recorded sealing version
   (`key_authority_state.seal_version`) with the tenant's derivation context, AES-256-GCM over the value, the plaintext
   data key wiped after use, and the wrapped data key, its version and the time it was issued stored with the
   ciphertext. A `transit` row has no `key_id` and no provider reference, so a binary older than this design reads it as
-  corrupt and fails closed. The associated data names the custody with the literal `transit` and the version row's id
+  corrupt and fails closed. Which custody a write takes, in each mode:
+
+  | Mode | A write with `requiredProvider: openbao`, or to a secret whose custody is `openbao` | Any other write |
+  |---|---|---|
+  | `local`, feature 017's provider configured | KV, as today (`requestId` and `expectedVersion` required) | KV, as today |
+  | `local`, no provider | refused with `503`, as today | `local`, as today |
+  | `migrating`, `transit` | KV (`requestId` and `expectedVersion` required) | `transit`: `expectedVersion`, when sent, is checked in the write's transaction (`409` on a mismatch), and `requestId`, when sent, is accepted and not stored, since the write is one PostgreSQL transaction whose retry `expectedVersion` detects |
+  | `returning` | KV (`requestId` and `expectedVersion` required) | `local`, with the same field rules as `transit` |
+
+  Feature 017's database connection forms already send `requiredProvider: openbao` (the contract requires it), so
+  database credentials stay in KV; a test covers each cell. The associated data names the custody with the literal `transit` and the version row's id
   as today, never the Transit key's version, so that a rewrap leaves it valid. Opening MUST unwrap through Transit with
   the same context; a wrapped key moved to another tenant's row MUST fail to unwrap. Values of `openbao` custody (feature
   017) stay in KV, unchanged; `local` rows open with the ring until re-sealed.
 - **Requirement 015-012** Rotation MUST need no restart and MUST never outrun the backups: `control-plane secrets rotate`
-  rotates `sagat-secrets` in Transit and advances `seal_version` only after it has verified that an OpenBao snapshot (and,
-  for a cell with standby regions, the standby's OpenBao) holds the new version; there is no automatic rotation period.
+  rotates `sagat-secrets` in Transit (the new version exists but seals nothing) and records the rotation's time;
+  `control-plane secrets advance-seal-version --to N --snapshot-taken-at <time>` advances `seal_version` only when the
+  operator attests, in the audited command, an OpenBao snapshot taken after that rotation (and, for a cell with standby
+  regions, its restore at every standby, `--standby-restored-at <region>=<time>`). The platform cannot read a snapshot
+  without restoring it and its policies grant no `sys/` path, so the gate is the operator's recorded attestation; the
+  runbook's monthly restore drill checks it. There is no automatic rotation period.
   `control-plane secrets rewrap` rewraps stored wrapped keys with `transit/rewrap` (the plaintext data key never leaves
   OpenBao on that path) to a version that a snapshot holds, guarded per row by the old wrapped key, audited per batch in
   the batch's transaction, counting every row it could not rewrap and, apart, every whole-call outage. Rewrap protects
@@ -138,8 +161,15 @@ it for regulated work.
   `key_authority_state.min_seal_version` to `N` in a transaction that locks that row, which a trigger then enforces on
   every insert and every update of `wrapped_key` or `wrapped_key_version` of a `transit` row (seals, re-seals and
   re-keys alike) (a seal at an older version fails and is retried with a fresh data key), then counts
-  the rows and failed rows below `N`, and only when both are zero sets Transit's `min_decryption_version` through the
-  operator's token.
+  the rows and failed rows below `N`, and only when both are zero, and every standby PostgreSQL of the cell has replayed
+  past the primary's write-ahead log position read after that count (feature 032's standby list), sets Transit's
+  `min_decryption_version` through the operator's token. `control-plane secrets trim-key-versions --below N` counts the
+  rows below `N` again in its own transaction and refuses unless the count is zero and `N` is at most
+  `min_decryption_version`. The same commands exist for the other two keys: `scripts rotate-key`,
+  `scripts retire-key-versions --below N` (refused while an artifact is signed below `N`) and `intents rotate-key`,
+  `intents retire-key-versions --below N` (refused while a pending intent is bound below `N`); a new script-key version
+  is used for signing 5 minutes after its rotation (Requirement 015-013), and a new intent-key version at once, since
+  verification reads the stored version.
 - **Requirement 015-013** Under `transit`, scripts MUST be signed by Transit (`transit/sign/sagat-scripts`, Ed25519) over
   the message `script_signing::message(tenant, digest, language)` of today (made public to the crate), never over a bare
   digest, at a key version published at least 5 minutes earlier. Sandbox runners MUST get the public keys, the minimum
@@ -148,33 +178,56 @@ it for regulated work.
   signature names an unknown version (at most once a minute; a refusal for an unknown key is retryable, never
   `Untrusted`); record in each cached artifact the key that verified it and evict it at a refresh that no longer trusts
   that key. `control-plane scripts resign` re-signs every artifact under the newest version, guarded per artifact by the
-  old key id; retiring a script-key version and leaving `migrating` require it to report zero.
+  old key id; retiring a script-key version and leaving `migrating` require it to report zero. From `begin-migration` on
+  (in `migrating` and `transit`) a new artifact is signed only by Transit and a trigger refuses an artifact row signed by
+  the local key; in `returning` and `local` only the local key signs and the trigger refuses a Transit-signed row, so
+  the zero counts of `finish-migration` and `finish-return` cannot be outrun. A sandbox runner of 0.2.x trusts one key
+  fetched once and would refuse every Transit signature for good, so `begin-migration` requires that every runner that
+  fetched `/script-runner/signing-key` in the last 15 minutes sent the key-list form of the request (the control plane
+  records each fetch's runner identity, form and time in `script_runner_trust_fetches`, kept 24 hours), and that the
+  operator attests, in the audited command, that no runner trusts a key configured by hand (`SAGAT_RUNNER_TRUSTED_KEYS`),
+  which the platform cannot see.
 - **Requirement 015-014** Under `transit`, feature 017's provisioning intents MUST be bound by Transit HMAC
   (`transit/hmac/sagat-intent`, `algorithm=sha2-256`, so the binding stays 32 bytes) over the intent's metadata and the
   SHA-256 of the value, never the value itself, under a binding version 2 that records the key version. A replay MUST
   read the stored intent first, outside the provider lock, and verify against the stored version (the file key for
   version 1, `transit/verify` at the stored key version for version 2), never by recomputing at the newest version.
-  Version-1 bindings are verified with the file key until no pending intent of version 1 remains. The immutability
-  trigger of `secret_provider_operations` covers the two new columns.
+  Version-1 bindings are verified with the file key until no pending intent of version 1 remains. From
+  `begin-migration` on, a new intent is bound only at version 2, and a trigger refuses a new version-1 row outside
+  `local` and `returning` (in `returning`, new intents are bound at version 1 and the trigger refuses a new version-2
+  row). The immutability trigger of `secret_provider_operations` covers the two new columns.
 - **Requirement 015-015** A deployment MUST be able to move from `local` to `transit` without downtime:
   `control-plane key-authority begin-migration` sets `migrating`, after which a trigger refuses any new `local` row;
   `control-plane reseal-secrets --to transit` (the existing command, extended) re-seals `local` rows in bounded,
   resumable, audited batches; `control-plane key-authority finish-migration` sets `transit` in one transaction that
-  checks zero `local` rows, zero pending version-1 intents and zero artifacts signed by the local key.
+  checks zero `local` rows, zero pending version-1 intents and zero artifacts signed by the local key. The way back is
+  the same passage reversed and equally supported: `key-authority begin-return` sets `returning` (the processes then
+  need the ring beside their Transit configuration), `reseal-secrets --to local` re-seals `transit` rows under the ring,
+  `scripts resign` re-signs with the local key, and `key-authority finish-return` sets `local` when zero `transit` rows,
+  zero pending version-2 intents and zero Transit-signed artifacts remain. Each of these commands writes its audit
+  record in its own transaction.
 - **Requirement 015-016** Each custody MUST have its own mount or path prefix and its own policy, and each process kind
   its own token per custody it uses, delivered by one OpenBao Agent per custody in its pod. The custodies and grants are
   the table of Technical Plan 7, plus the token self-paths each needs (`auth/token/lookup-self`, `renew-self`,
   `revoke-self`) and `read` on the Transit keys the control plane uses. Raising `min_decryption_version` runs under a
-  separate operator token whose policy allows `update` on `sagat-transit/keys/sagat-secrets/config` with only the
-  parameter `min_decryption_version` (`allowed_parameters`), and nothing else. A test MUST refuse any other grant, any
-  wildcard in a mount segment, any `sys/` path and any other `auth/` path, and any other `keys/*/config`, `export/`,
-  `backup/`, `restore/` or `trim` path of Transit. The configured mount names are substituted and validated by the
-  bootstrap.
+  separate operator token whose policy allows exactly: `update` on `sagat-transit/keys/<key>/rotate` for the three
+  keys; `update` on `sagat-transit/keys/<key>/config` for the three keys with only the parameter
+  `min_decryption_version` (`allowed_parameters`); and `update` on `sagat-transit/keys/<key>/trim` for the three keys
+  with only `min_available_version`. A test MUST refuse any other grant, any wildcard in a mount segment, any `sys/`
+  path and any other `auth/` path, and any other `keys/*/config`, `keys/*/rotate`, `keys/*/trim`, `export/`, `backup/`
+  or `restore/` path of Transit. The configured mount names are substituted and validated by the bootstrap. The
+  policies of other features (design 040's operator sink, design 047's broker) are not written by this design: the
+  bootstrap installs every policy fragment of `infra/openbao/policies/<feature>/` with the allow-list file beside it,
+  and the test reads each fragment's expected grants from that file, so each feature adds its own in its own
+  delivery.
 - **Requirement 015-017** If OpenBao cannot be reached, a secret MUST NOT be sealed or opened by any other means
   (Principle V). `KeyAuthorityError` has three kinds: `Unavailable` (retryable), `Refused` (an integrity failure: a key
   that does not open, a version below the minimum, a corrupt row; not retryable, audited, alerted) and `Denied` (the
   token's policy refused). Every reader of a secret maps them, never as "skip": delivery, the output scan of a step,
-  webhook signing, the token broker's credentials and the connector supervisor's credentials (`crates/infra-connectors`).
+  webhook signing, inbound webhook verification (`crates/application/src/events.rs`: `Unavailable` answers the sender
+  `503` with `Retry-After`, never `Refusal::NoSecret`), the managed-database reader (`crates/application/src/worker/database.rs`),
+  the token broker's credentials and the connector supervisor's credentials (`crates/infra-connectors`). A check of
+  `scripts/check-architecture.py` refuses a `resolve` whose error is discarded (Technical Plan 4).
   A scan that meets `Unavailable` refuses the report as retryable; one that meets `Refused` holds it with a typed,
   non-retryable error that operators see; a step that declares secrets and reaches a replica with no reader configured
   has its report refused as retryable. Opening MAY use an unwrapped data key held in a bounded in-memory cache (Technical
@@ -182,7 +235,7 @@ it for regulated work.
 - **Requirement 015-018** Every Transit call MUST be bounded (a 2-second timeout per attempt, at most 3 attempts with
   jitter on a transport error or `5xx`, within a total budget of 5 seconds), counted by the existing family
   `secret_provider_requests_total{provider, operation, outcome}` with `provider="transit"` and one outcome set for every
-  provider (`ok`, `denied`, `conflict`, `failed`, `unavailable`, `timeout`), traced without a value, a wrapped key, a
+  provider (`ok`, `denied`, `conflict`, `refused`, `failed`, `unavailable`, `timeout`), traced without a value, a wrapped key, a
   context or a token. The client reads its token file on each call and caches the token's `lookup-self` by a digest of
   the file's content, looking up again after a `403`.
 - **Requirement 015-019** OpenBao stays the development service of `infra/docker/compose.database.yaml` (TLS, pinned by
@@ -197,7 +250,7 @@ it for regulated work.
   refuses below the oldest key version of the oldest database backup the operator declares retained. A restore that
   meets a row it cannot open reports it (`Refused`) and never half-opens silently.
 - **Requirement 015-021** Feature 031's customer keys MUST live outside the platform's OpenBao: in a separate cluster or a
-  KMS the customer administers (ADR-0066 decision 1, accepted on the branch of pull request 279). The policy test of
+  KMS the customer administers (ADR-0066 decision 1, accepted on 2026-11-24 under Owner decision 2026-11-24-4). The policy test of
   Requirement 015-016 is defense in depth, not the separation; a NetworkPolicy keeps every platform pod from reaching a
   customer key service.
 - **Requirement 015-022** A delivery and a step report MUST compare a secret's logical identity (the version row's id,
@@ -230,8 +283,8 @@ it for regulated work.
   milliseconds) with zero failed resolutions, and ends with zero rows under a local key.
 - **Success criterion 015-005** With OpenBao stopped, deliveries of secrets whose data key is still cached succeed
   (with the platform's clock driven past the 239/241 and 299/301 second boundaries); every other delivery, every seal,
-  every output scan of a Transit row, webhook signing and the broker's and connectors' credentials fail closed with
-  `Unavailable`; a corrupt row is `Refused`, never retried for ever; service returns when OpenBao does, with no manual
+  every output scan of a Transit row, webhook signing, inbound webhook verification (a retryable `503` to the sender),
+  the managed-database reader and the broker's and connectors' credentials fail closed with `Unavailable`; a corrupt row is `Refused`, never retried for ever; service returns when OpenBao does, with no manual
   step. A 0.2.x reader meeting a `transit` row reads it as corrupt and refuses, never scans past it.
 - **Success criterion 015-006** A script signed for tenant A is refused for tenant B and for another language under
   `transit`; a retired signing-key version is refused by a running sandbox runner within its refresh.
@@ -274,7 +327,8 @@ it for regulated work.
 ## Open Questions
 
 None for the owner. Technical gaps are registered in `specs/015-opentelemetry-and-openbao/research.md` (Gap 015-001 to
-Gap 015-005).
+Gap 015-006). The two security residual risks, Gaps 015-003 and 015-005, are accepted by the owner (Owner decision
+2026-11-27-1, "Aceito os dois, cache 300 s").
 
 ## Owner decisions needed
 
@@ -306,9 +360,10 @@ decisions 2026-11-26-110 to 2026-11-26-117) and an entry of the research registe
 ### CUJ 2: A key rotation on a Tuesday afternoon
 
 *   **Given**: `SAGAT_KEY_AUTHORITY=transit` and 200,000 secret versions whose data keys `sagat-secrets` version 3 wraps.
-*   **When**: the operator runs `control-plane secrets rotate` (which waits until the scheduled OpenBao snapshot holds
-    version 4), then `control-plane secrets rewrap`, then `control-plane secrets retire-key-versions --below 4`.
-*   **Then**: new versions are sealed under version 4 once the snapshot holds it; the pass rewraps the 200,000 wrapped
+*   **When**: the operator runs `control-plane secrets rotate`, waits for the scheduled OpenBao snapshot, runs
+    `control-plane secrets advance-seal-version --to 4 --snapshot-taken-at <its time>`, then `control-plane secrets
+    rewrap`, then `control-plane secrets retire-key-versions --below 4`.
+*   **Then**: new versions are sealed under version 4 once the attested snapshot holds it; the pass rewraps the 200,000 wrapped
     keys (at the target of Non-functional requirement 015-003, about 200 seconds) and reports zero rows and zero
     failures below version 4; the retire command raises the sealing floor, counts zero and raises
     `min_decryption_version` to 4; every secret still opens; no process restarted and no delivery failed.
@@ -320,7 +375,9 @@ decisions 2026-11-26-110 to 2026-11-26-117) and an entry of the research registe
 *   **Then**: the deliveries continue from the cache, whose entries the background refresh kept at most 250 seconds old
     (refreshed after 240 seconds, every 10 seconds), so each stays usable for at least 50 seconds; a new secret written in
     that window is refused with `KEY_AUTHORITY_UNAVAILABLE` (retryable) and succeeds when
-    the caller retries after OpenBao returns.
+    the caller retries after OpenBao returns. A step report whose handed-out secrets are cached is scanned and accepted;
+    one whose handed-out key is not cached is refused as retryable and accepted when the worker retries after OpenBao
+    returns.
 
 ## Technical Plan (Architecture)
 
@@ -330,11 +387,14 @@ decisions 2026-11-26-110 to 2026-11-26-117) and an entry of the research registe
 it; when an endpoint is configured the layer also submits the record (severity, target, message, fields, and the
 current span's trace id and span id) to a bounded queue (8,192 records) drained by a background task in batches of at
 most 512 records or 2 seconds, through `OtlpClient::export_log`. A full queue drops and counts
-(`telemetry_dropped_total{signal="logs"}`); a failed batch is abandoned and counted, as live spans are. `OtlpConfig`
+(`otel_logs_total{outcome="dropped"}`); a failed batch is abandoned and counted, as live spans are. `OtlpConfig`
 reads `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (and the common endpoint), `OTEL_LOGS_EXPORTER` (`otlp` or `none`), a minimum
 severity (`SAGAT_OTEL_LOGS_LEVEL`, `info` by default) and `OTEL_EXPORTER_OTLP_HEADERS_FILE`; a logs-only configuration
-(no traces endpoint) is valid, which `from_lookup` today refuses by returning nothing; it refuses a header with a plain
-`http` endpoint that is not loopback, and the client marks header values sensitive. `export_log` sends one record per
+(no traces endpoint) is valid, which `from_lookup` today refuses by returning nothing; in it no `OtlpLayer` is installed,
+so log records carry no span ids (said in the runbook). Any `OTEL_LOGS_EXPORTER` value other than `otlp` or `none` is a
+configuration error (ADR-0017 decision 4). The log targets of the exporter itself (`sagat_telemetry::otlp`) are kept out
+of the log queue, so a failing export cannot feed itself. A header from the file with a plain `http` endpoint that is
+not loopback is refused as Requirement 015-006 states, and the client marks header values sensitive. `export_log` sends one record per
 request today; a batch encoder sends up to 512 per request. The drop counter follows the spans' existing one:
 `otel_logs_total{outcome}` beside `otel_spans_total{outcome}`. The CLI keeps its direct
 export (`apps/cli/src/telemetry.rs`). The four servers (`apps/control-plane`, `apps/execution-engine`,
@@ -364,52 +424,83 @@ the process; a list generated from that file by a test, so the two cannot drift)
 commented examples (`otlphttp` to a vendor, `prometheusremotewrite`, `loki`). A test in `infra/observability/tests/`
 runs `otelcol-contrib validate` on both files.
 
-### 4. The key authority port
+### 4. The key authority ports
 
-The domain port `SecretCipher` (`crates/domain/src/secrets.rs`) is synchronous and holds its keys (`seal(value, aad)`,
-`open(sealed, aad)`). It gains two methods that take the key instead of holding it, `seal_with(value, aad, &DataKey)`
-and `open_with(sealed, aad, &DataKey)`, implemented once over AES-256-GCM in `crates/infra-secrets` (`DataKey` is a domain
-type holding 32 bytes in `Zeroizing`, which the domain may use; it has no `Debug` of its content). The keys come from a
-new asynchronous port in `crates/application`:
+The domain port `SecretCipher` (`crates/domain/src/secrets.rs`) is synchronous and holds the ring (`seal(value, aad)`,
+`open(sealed, aad)`); it stays as it is and serves `local` rows only. Envelope sealing is a second synchronous domain
+port, `EnvelopeCipher` (`seal(value, aad, &DataKey) -> EnvelopeSealed`, `open(&EnvelopeSealed, aad, &DataKey)`),
+implemented once over AES-256-GCM in `crates/infra-secrets`; it holds no key. `DataKey` is a domain type holding 32
+bytes in `Zeroizing`, with no `Debug` of its content. The keys come from three asynchronous ports in
+`crates/application`, object-safe with boxed futures as `SecretProvider` is (`secret_provider.rs`, `ProviderFuture`),
+because `SecretReader` holds its readers as `Arc<dyn …>` and the authority is chosen at run time:
 
 ```rust
-// The application's ports return `impl Future` (as `SecretStore` does), not `async_trait`.
-pub trait KeyAuthority: Send + Sync {
-    fn new_data_key(&self, tenant: TenantId, version: KeyVersion)
-        -> impl Future<Output = Result<(DataKey, WrappedKey), KeyAuthorityError>> + Send;
-    fn unwrap(&self, tenant: TenantId, wrapped: &WrappedKey)
-        -> impl Future<Output = Result<DataKey, KeyAuthorityError>> + Send;
-    fn rewrap(&self, batch: &[(TenantId, WrappedKey)], to: KeyVersion)
-        -> impl Future<Output = Result<Vec<Result<WrappedKey, KeyAuthorityError>>, KeyAuthorityError>> + Send;
-    fn sign_script(&self, tenant: TenantId, digest: &Digest, language: Language, version: KeyVersion)
-        -> impl Future<Output = Result<ScriptSignature, KeyAuthorityError>> + Send;
-    fn bind_intent(&self, metadata: &IntentMetadata, value_sha256: &[u8; 32])
-        -> impl Future<Output = Result<IntentBinding, KeyAuthorityError>> + Send;
-    fn verify_intent(&self, metadata: &IntentMetadata, value_sha256: &[u8; 32], binding: &IntentBinding)
-        -> impl Future<Output = Result<bool, KeyAuthorityError>> + Send;
-    fn public_keys(&self) -> impl Future<Output = Result<ScriptKeys, KeyAuthorityError>> + Send;
-    fn key_info(&self, key: TransitKey) -> impl Future<Output = Result<KeyInfo, KeyAuthorityError>> + Send;
+pub type KeyFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, KeyAuthorityError>> + Send + 'a>>;
+
+/// Transit only: there is no local envelope key.
+pub trait EnvelopeKeys: Send + Sync {
+    fn new_data_key<'a>(&'a self, tenant: TenantId, version: KeyVersion) -> KeyFuture<'a, (DataKey, WrappedKey)>;
+    /// `Cacheable::Current` for the version a delivery opens; `Cacheable::ScanOnly` keeps the key out of the cache.
+    fn unwrap<'a>(&'a self, tenant: TenantId, wrapped: &'a WrappedKey, cache: Cacheable) -> KeyFuture<'a, DataKey>;
+    /// One `batch_input` call; the outer error is a whole-call failure, the items are per row.
+    fn unwrap_batch<'a>(&'a self, items: &'a [(TenantId, WrappedKey)]) -> KeyFuture<'a, Vec<Result<DataKey, KeyAuthorityError>>>;
+    fn rewrap<'a>(&'a self, batch: &'a [(TenantId, WrappedKey)], to: KeyVersion) -> KeyFuture<'a, Vec<Result<WrappedKey, KeyAuthorityError>>>;
+    fn key_info<'a>(&'a self, key: TransitKey) -> KeyFuture<'a, KeyInfo>;
+}
+
+/// Two adapters: the local Ed25519 key of today, and Transit `sagat-scripts`.
+pub trait ScriptSigner: Send + Sync {
+    fn sign<'a>(&'a self, message: &'a ScriptMessage) -> KeyFuture<'a, ScriptSignature>;
+    fn public_keys<'a>(&'a self) -> KeyFuture<'a, ScriptKeys>;
+}
+
+/// Transit `sagat-intent` only (binding version 2). Version 1 stays inside `ManagedSecretService`, which HMACs
+/// the value with the file key as today and verifies version-1 rows until none is pending.
+pub trait IntentBinder: Send + Sync {
+    fn bind<'a>(&'a self, metadata: &'a IntentMetadata, value_sha256: &'a [u8; 32]) -> KeyFuture<'a, IntentBinding>;
+    fn verify<'a>(&'a self, metadata: &'a IntentMetadata, value_sha256: &'a [u8; 32], binding: &'a IntentBinding) -> KeyFuture<'a, bool>;
 }
 ```
 
-`rewrap` returns an outer error for a whole-call failure and per-item results otherwise (Transit's `batch_results` are
-parsed whatever the HTTP status). Setting `min_decryption_version` and trimming are not on this port: they are commands
-of the operator, with the operator's token. Two adapters in `crates/infra-secrets`: `LocalKeyAuthority` over today's
-ring, script key and intent key, and `TransitKeyAuthority` over OpenBao's HTTP API. The Transit client is configured per
-mount, applies the timeouts of Requirement 015-018, disables redirects and proxies, caps responses at 64 KiB, and parses
-the base64 `plaintext` of a data key into a type that wipes on drop. `StoredValue` (`crates/application/src/secrets.rs`)
-gains a third variant, `Transit`, beside `Local` and `OpenBao`; every `SecretReader::resolve` caller handles it under
-Requirement 015-017: delivery (`crates/application/src/worker/secrets.rs`), the output scan (`secret_in_output`,
-`checked_secret_report`), webhook signing and the token broker's credentials (`crates/scheduler/src/deliveries.rs`), and
-the connector supervisor (`crates/infra-connectors/src/credentials.rs`). Delivery and the report path compare a
-secret's logical identity, not its sealed bytes (Requirement 015-022).
+`ScriptMessage` is `script_signing::message(tenant, digest, language)` of today, so no signer can be handed a bare
+digest. Setting `min_decryption_version`, rotating and trimming are not on these ports: they are commands of the
+operator, with the operator's token. The adapters live in `crates/infra-secrets`: `LocalScriptSigner` over today's key,
+and `TransitEnvelopeKeys`, `TransitScriptSigner` and `TransitIntentBinder` over one Transit client per mount, which
+applies the timeouts of Requirement 015-018, disables redirects and proxies, caps responses at 64 KiB, parses the base64
+`plaintext` of a data key into a type that wipes on drop, and bounds its in-flight calls (Technical Plan 8).
+
+`StoredValue` (`crates/application/src/secrets.rs`) gains a third variant, `Transit(EnvelopeSealed)`, beside
+`Local(SealedSecret)` and `OpenBao(ProviderReference)`; `EnvelopeSealed` holds the nonce, the ciphertext, the wrapped
+key, its version and its issue time, and `SealedSecret` keeps its required `key_id`. `SecretReader` gains an optional
+`Arc<dyn EnvelopeKeys>` and `Arc<dyn EnvelopeCipher>`; with none configured a `Transit` row is `Unavailable`, never
+skipped. Every `SecretReader::resolve` caller handles it under Requirement 015-017: delivery
+(`crates/application/src/worker/secrets.rs`), the output scan (`secret_in_output`, `checked_secret_report`), webhook
+signing and the token broker's credentials (`crates/scheduler/src/deliveries.rs`), inbound webhook verification
+(`crates/application/src/events.rs`), the managed-database reader (`crates/application/src/worker/database.rs`) and the
+connector supervisor (`crates/infra-connectors/src/credentials.rs`). Five of these turn a resolve error into a skip
+today (`worker/secrets.rs`, two sites of `deliveries.rs`, `events.rs`, `credentials.rs`); Task 015-10 corrects them, and
+a rule of `scripts/check-architecture.py`, `secret-resolve-never-discards`, refuses a `.resolve(` whose result reaches
+`Err(_) => continue`, `.ok()`, `.unwrap_or` or a `map_err` that drops the error kind, unless the site is listed in its
+allow-list with a reason; negative fixtures prove it fires, and `docs/engineering/architecture-principles.md` gains its
+row and one for the `transit` representation trigger. Delivery and the report path compare a secret's logical
+identity, not its sealed bytes (Requirement 015-022).
 
 ### 5. Storage
 
-- `key_authority_state`: one row (`mode` in `local`, `migrating`, `transit`; `seal_version`, the Transit version new
-  data keys are issued at; `min_seal_version`; the time of the last rewrap). Seals and processes read it `FOR SHARE`;
-  the commands of section 6 change it `FOR UPDATE`. A trigger on `secret_versions` refuses a `local` row unless the mode
-  is `local`, and a `transit` row whose `wrapped_key_version` is below `min_seal_version`.
+- `key_authority_state`: one row (`mode` in `local`, `migrating`, `transit`, `returning`; `seal_version`, the Transit
+  version new data keys are issued at; `min_seal_version`; the time of the last rotation of each key and of the last
+  rewrap). Seals and processes read it `FOR SHARE`. The runtime role `sagat_app` has `SELECT` only: the row changes only
+  through functions owned by the schema-owning role and not executable by `sagat_app` (`key_authority_set_mode`,
+  `key_authority_advance_seal`, `key_authority_raise_floor`, `key_authority_record_rotation`), which take it
+  `FOR UPDATE` and write the command's audit record in the same transaction; a trigger `ENABLE ALWAYS` refuses any other
+  change, as ADR-0082 decision 1 does for the registry. The commands of section 6 run with the schema-owning role, as
+  `provision-tenant` does, and the privilege audit gains the rows that prove `sagat_app` cannot call these functions or
+  write the table.
+- A trigger on `secret_versions`, `BEFORE INSERT OR UPDATE OF key_id, wrapped_key, wrapped_key_version`, refuses a new or
+  re-sealed `local` row unless the mode is `local` or `returning`; a new, re-sealed, re-keyed or rewrapped `transit` row
+  unless the mode is `migrating` or `transit`; and a `transit` row whose `wrapped_key_version` is below
+  `min_seal_version`, whatever its writer. A seal or re-seal therefore cannot land under a floor raised after it fetched
+  its data key: it fails at its commit and is retried with a fresh key.
 - `secrets.authority` is widened to `('local', 'openbao', 'transit')` and means the custody of the secret's new
   versions: `put_version` sets it, and it becomes `transit` when the first `transit` version commits. Reading is routed
   by each version row's own columns.
@@ -418,8 +509,14 @@ secret's logical identity, not its sealed bytes (Requirement 015-022).
   ring key id, a nonce and a ciphertext and no wrapped key; a `transit` row has no key id, no provider reference, a
   nonce, a ciphertext, a wrapped key, its version and its issue time, and `wrapped_key_version` equals the number in
   `wrapped_key`'s prefix; an `openbao` row keeps feature 017's provider reference. An index on `wrapped_key_version`
-  and one on `data_key_issued_at` (partial, `transit` rows) serve the passes. The migration refuses to run when a ring
-  key is named `transit`, and `KeyRing::parse` refuses that id afterwards.
+  and one on `data_key_issued_at` (partial, `transit` rows) serve the passes. A migration cannot read
+  `SAGAT_SECRETS_KEYS`, so the migration refuses to run when an existing row has `key_id = 'transit'`, and
+  `KeyRing::parse` refuses that id afterwards. The `down` migration refuses while any `transit` row, any
+  `secrets.authority = 'transit'` or a mode other than `local` exists, because the old representation constraint cannot
+  hold them.
+- `script_runner_trust_fetches` (runner identity, request form, time; rows older than 24 hours deleted by the control
+  plane's upkeep) serves the runner gate of Requirement 015-013; artifact rows already record their signing key id
+  (`key_id`, migration `20261014000000_scripts`), which the signing trigger of Requirement 015-013 checks.
 - `secret_provider_operations` gains `binding_version smallint NOT NULL DEFAULT 1` and `binding_key_version integer`,
   both covered by its immutability trigger; the binding stays 32 bytes.
 - The classification registry gains `wrapped_key` as `secret` (ADR-0033).
@@ -427,34 +524,56 @@ secret's logical identity, not its sealed bytes (Requirement 015-022).
 
 ### 6. Commands
 
+Every command runs with the schema-owning role, changes `key_authority_state` only through the functions of section 5,
+and writes its audit record (action `key_authority.<command>`, the actor, the versions and counts, never a key, a
+wrapped key or a token) in the transaction that commits its change; each new action has its row in design 040's total
+mapping table (Task 015-26), whose completeness test fails otherwise.
+
 | Command | What it does | Guard |
 |---|---|---|
-| `key-authority begin-migration` | sets `migrating` | the requirement `key-authority-transit-v1` is recorded for the control plane and the execution engine (instance registry, ADR-0082) |
-| `reseal-secrets --to transit` (existing, extended) | re-seals `local` rows, one per transaction, audited, and the sealed columns of design 040's `audit_sinks` | the mode is `migrating`; without `--to` it keeps today's behaviour for `local` rows and those columns |
-| `scripts resign` | re-signs every artifact at the newest published script-key version | per artifact, `WHERE key_id = $old` |
+| `key-authority begin-migration` | sets `migrating` | the requirement `key-authority-transit-v1` is recorded for the control plane and the execution engine (instance registry, ADR-0082); every runner that fetched the signing keys in the last 15 minutes used the key-list form, and the operator attests that no runner trusts a key configured by hand (Requirement 015-013) |
+| `reseal-secrets --to transit` (existing, extended) | re-seals `local` rows, one per transaction, audited, and the entries other features add to its re-seal inventory (design 040's `audit_sinks` columns, by Task 040-26) | the mode is `migrating`; without `--to` it keeps today's behaviour for `local` rows |
+| `scripts resign` | re-signs every artifact with the signer of the mode (the newest published Transit version, or the local key in `returning`) | per artifact, `WHERE key_id = $old` |
 | `key-authority finish-migration` | sets `transit` | zero `local` rows, zero pending version-1 intents, zero artifacts signed by the local key, in one transaction |
-| `secrets rotate` | rotates `sagat-secrets` in Transit, then advances `seal_version` | an OpenBao snapshot (and a standby, for a cell with standby regions) holds the new version |
-| `secrets rewrap` | rewraps rows below the target version, batches of 250 ordered by id, each batch's updates and its audit record in one transaction | per row `WHERE id = $id AND wrapped_key = $old`; the target is a snapshotted version; a restart begins again from the start, which is idempotent |
-| `secrets rekey --issued-before T` | re-seals rows whose `data_key_issued_at` is before `T` with new data keys, one per transaction, audited, with an id cursor | `WHERE id = $id AND wrapped_key = $old AND nonce = $old_nonce` |
-| `secrets retire-key-versions --below N` | raises `min_seal_version`, counts, then sets Transit's `min_decryption_version` with the operator's token | zero rows and zero failures below `N` after the fence committed |
-| `secrets trim-key-versions --below N` | sets `min_available_version` with the operator's token | `N` is not above the oldest key version of the oldest retained backup the operator declares |
+| `key-authority begin-return` | sets `returning` | the mode is `transit`; the requirement `key-authority-return-v1` is recorded for both kinds, which a process lists only when its ring and its Transit configuration are both present |
+| `reseal-secrets --to local` | re-seals `transit` rows under the ring, one per transaction, audited | the mode is `returning` |
+| `key-authority finish-return` | sets `local` | zero `transit` rows, zero pending version-2 intents, zero Transit-signed artifacts, in one transaction |
+| `secrets rotate` | rotates `sagat-secrets` in Transit with the operator's token and records the rotation's time | the mode is `transit` or `migrating` |
+| `secrets advance-seal-version --to N` | advances `seal_version` to `N` | `N` exists in Transit (`key_info`); the operator's attested snapshot time is after `N`'s rotation, and, for a cell with standby regions, a restore at every standby after it |
+| `secrets rewrap` | rewraps rows below the target version, batches of 250 ordered by id, each batch's updates and its audit record in one transaction | per row `WHERE id = $id AND wrapped_key = $old`; the target is at most `seal_version`; a restart begins again from the start, which is idempotent |
+| `secrets rekey --issued-before T` | re-seals rows whose `data_key_issued_at` is before `T` with new data keys, one per transaction, audited, with an id cursor; reports the write-ahead log position of its last commit and waits until every standby has replayed it | `WHERE id = $id AND wrapped_key = $old AND nonce = $old_nonce` |
+| `secrets retire-key-versions --below N` | raises `min_seal_version`, counts, waits for every standby's replay past the position read after the count, then sets Transit's `min_decryption_version` with the operator's token | zero rows and zero failures below `N` after the fence committed |
+| `secrets trim-key-versions --below N` | sets `min_available_version` with the operator's token | a recount in its own transaction finds zero rows below `N`; `N` is at most `min_decryption_version` and not above the oldest key version of the oldest retained backup the operator declares |
+| `scripts rotate-key`, `scripts retire-key-versions --below N` | rotate `sagat-scripts`; raise its `min_decryption_version` | retire: zero artifacts signed below `N` |
+| `intents rotate-key`, `intents retire-key-versions --below N` | rotate `sagat-intent`; raise its `min_decryption_version` | retire: zero pending intents bound below `N` |
 
 The runbook's procedure after a token is stolen: revoke the token's accessor and every token issued to its role (rotate
-the Kubernetes service account), then rotate, rekey, rewrap and retire.
+the Kubernetes service account), then rotate, advance the sealing version, rekey (which waits for the standbys),
+rewrap and retire (which waits for the standbys too). For a cell with standby regions, feature 032's key inventory
+fingerprints the three keys as blocking checks (`specs/032-multi-region-failover/research.md`); under `transit` a key
+held in Transit has no material to fingerprint, so the inventory reads, per region, the key's name and latest version
+through `key_info` instead. That change belongs to feature 032 and is recorded as its dependency (Gap 015-006).
+
+Task 015-11 begins by proving, against the pinned OpenBao 2.7.1, that `datakey` issues at the requested `key_version`
+and that `rotate`, `config` and `trim` accept exactly the parameters above; if `datakey` ignores the version, the task
+stops and this design returns to review, with no silent fallback to the latest version.
 
 ### 7. Mounts, tokens and policies
 
 | Custody | Mount or path and grants | Control plane | Execution engine | Database runner | Token broker (047) | Operator |
 |---|---|---|---|---|---|---|
-| Platform keys | `sagat-transit`: `datakey`, `decrypt`, `rewrap` on `sagat-secrets`; `sign` on `sagat-scripts`; `hmac`, `verify` on `sagat-intent`; `read` on the three keys | all of these | `decrypt` on `sagat-secrets` | none | none | `update` on `keys/sagat-secrets/config` with `allowed_parameters` limited to `min_decryption_version`, and the same for `min_available_version` |
+| Platform keys | `sagat-transit`: `datakey`, `decrypt`, `rewrap` on `sagat-secrets`; `sign` on `sagat-scripts`; `hmac`, `verify` on `sagat-intent`; `read` on the three keys | all of these | `decrypt` on `sagat-secrets` | none | none | `rotate` on the three keys; `config` on the three keys limited to `min_decryption_version`; `trim` on the three keys limited to `min_available_version` |
 | Feature 017 values | the configured KV mount (`secret` by default), `sagat/credentials/*` | as `management.hcl` | as `runtime.hcl` | through the engine's capability | none | none |
-| Collector credential | the KV mount, path prefix `sagat/telemetry/` with a policy of its own | read | read | read | none | none |
-| Design 040's operator sink | the KV mount, path prefix `sagat/audit/` with a policy of its own | none | read | none | none | none |
-| OAuth tokens (design 047) | `SAGAT_OAUTH_OPENBAO_MOUNT` | none | none | none | as design 047 decides | none |
+| Collector credential | the KV mount, path prefix `sagat/telemetry/` with a policy of its own | read | read | none: a Kubernetes Secret mounted as its header file | none | none |
+| Other features' custodies | a policy fragment and allow-list file under `infra/openbao/policies/<feature>/`, added by that feature (design 040's `sagat/audit/` prefix, design 047's OAuth mount) | as the fragment declares | as the fragment declares | as the fragment declares | as the fragment declares | none |
 
 The secret cleanup job keeps `cleanup.hcl` (no read of a value) and gets no Transit grant: it opens no secret. The
-sandbox runner gets no OpenBao token at all; the Helm chart has no sandbox-runner template, and its configuration (the
-Collector credential included) is the operator's. Each process kind authenticates with its own Kubernetes service
+sandbox runner and the database runner get no OpenBao token at all: the database runner uses the shared service
+account and has no Agent (`infra/helm/templates/database-runner.yaml`), and giving it one would open the path to OpenBao
+that this design refuses the sandbox runner; its Collector header comes from a Kubernetes Secret the chart mounts. The
+Helm chart has no sandbox-runner template, and its configuration (the Collector credential included) is the
+operator's. The custody tables are "mount or path prefix": the KV custodies share the KV mount under prefixes, each
+with its own policy. Each process kind authenticates with its own Kubernetes service
 account; a pod that uses more than one custody runs one OpenBao Agent sidecar per custody
 (`infra/helm/templates/openbao-agent.yaml`, extended), each with its role, policy and token file; in compose the
 bootstrap writes one token file per (process kind, custody). A compromised process holds every token it uses; the
@@ -469,8 +588,20 @@ changes (they read it again), then the old token is removed.
 
 `TransitKeyAuthority` keeps an LRU of unwrapped data keys keyed by (tenant, wrapped key digest), driven by the
 platform's `Clock`: at most 4,096 entries and 512 per tenant, each dropped 300 seconds after its unwrap and wiped on
-eviction. Only keys of current versions (the version a delivery opens) enter it; the output scan's opens of older kept
-versions use a key held for that scan only. While OpenBao answers, a background task every 10 seconds unwraps again the
+eviction. Only keys of current versions (the version a delivery opens, `Cacheable::Current`) enter it; the output
+scan's opens of older versions use a key held for that scan only (`Cacheable::ScanOnly`).
+
+The output scan of a step report opens, for each declared secret, only the versions that could have been handed out to
+that attempt: the version current when the attempt's lease began and every version created since (both on the database
+clock), not every kept version; for a `local` row the scan stays as today, since it costs no network call. The keys of
+those versions that are not cached are unwrapped in one `unwrap_batch` call per report (Transit's `batch_input`), so a
+report costs at most one Transit round trip. During an outage a report whose keys are all cached is scanned; any other
+is refused as retryable (CUJ 3).
+
+Each Transit client bounds its calls: at most 64 in flight per process and 8 per tenant, a call beyond either waiting
+at most its budget of Requirement 015-018 and then failing `Unavailable`; `transit_calls_in_flight` (a gauge) and
+`transit_calls_throttled_total{scope}` (`scope` in `process`, `tenant`; no tenant label) show it, so one tenant cannot
+saturate the shared OpenBao. While OpenBao answers, a background task every 10 seconds unwraps again the
 entries older than 240 seconds that were used in the last 300 seconds; an entry still cached therefore stays usable for
 at least 50 seconds after OpenBao stops answering (300 seconds, less the 240 at which it is refreshed, less the 10 of
 the refresh period), and at most 300 seconds after a revocation of the platform's token. Nothing else is cached: a seal,
@@ -481,10 +612,12 @@ a signature and an HMAC always call Transit.
 `secret_provider_requests_total{provider, operation, outcome}` and `secret_provider_request_seconds{provider, operation}`
 (the existing family; `provider` gains `transit`; `operation` in `datakey`, `decrypt`, `rewrap`, `sign`, `hmac`,
 `verify`, `read`; `outcome` in the one set of Requirement 015-018), `key_cache_entries`, `key_cache_hits_total{outcome}`,
-`secret_versions_by_custody{custody}` (sampled by the rewrap command). An alert rule fires on `unavailable` for 2
-minutes, another on any `Refused`. Spans `openbao.<operation>` carry the key name and version, never a wrapped key, a
-context or a token. Each server process sets `PR_SET_DUMPABLE` to 0 and `RLIMIT_CORE` to 0 at start, so that no core
-dump holds key material.
+`secret_versions_by_custody{custody}` (sampled every 60 seconds by the control plane's metrics upkeep, since a one-shot
+command is never scraped), `transit_calls_in_flight` and `transit_calls_throttled_total{scope}`. An alert rule fires on
+the outcome `unavailable` for 2 minutes, another on any outcome `refused`. Spans `openbao.<operation>` carry the key name and version, never a wrapped key, a
+context or a token. Each server process sets `RLIMIT_CORE` to 0 at start and, on Linux, `PR_SET_DUMPABLE` to 0, through
+the safe wrappers of `rustix` (the workspace forbids `unsafe` code), so that no core dump holds key material; on other
+platforms (development on macOS) only `RLIMIT_CORE` is set, and the start log says so.
 
 ### 10. Rollout
 
@@ -495,8 +628,10 @@ never accept unscanned output. `begin-migration` is gated by the instance regist
 plane or execution engine lists the capability `key-authority-transit-v1` only when its Transit configuration is
 present, the operator records the requirement for both kinds, which the registry refuses while a live process lacks it,
 and a process restarted later without the configuration keeps its gate closed (ADR-0082 decisions 3 and 7). The secret
-cleanup job opens no secret and is not gated. Rolling back from `transit` to `local` is the reverse re-seal, a
-documented procedure, never automatic.
+cleanup job opens no secret and is not gated; the sandbox runners are gated by their key-list fetches and the
+operator's attestation (Requirement 015-013). Rolling back from `transit` to `local` is the `returning` passage of
+Requirement 015-015, gated the same way by `key-authority-return-v1`, guarded, audited and tested like the way in;
+never automatic.
 
 ## Risks and Mitigations
 
@@ -515,6 +650,9 @@ documented procedure, never automatic.
 | A token crosses the network in clear | A header is refused with a non-loopback `http` endpoint |
 | A platform token reaches feature 031's keys | They live outside the platform's OpenBao (Requirement 015-021) |
 | A mixed fleet cannot open Transit rows | Gated by the instance registry |
+| A 0.2.x sandbox runner refuses Transit signatures for good | `begin-migration` requires key-list fetches from every recent runner and the operator's attestation for hand-configured ones |
+| A compromised API process lowers the sealing floor or advances the sealing version | `key_authority_state` changes only through owner-role functions that `sagat_app` cannot call; the privilege audit proves it |
+| `transit` is a one-way door | The `returning` passage, gated and tested like the way in |
 
 ## Constitution Check
 
@@ -523,9 +661,9 @@ documented procedure, never automatic.
 | I. State and retry semantics are explicit and durable | Pass | Secret versions stay in PostgreSQL; rewrap, re-key and re-seal are idempotent per row, guarded by the old version or key id |
 | II. Modular domain, ports and adapters | Pass | `SecretCipher` stays in the domain; `KeyAuthority` in the application; Transit and the ring as adapters in `crates/infra-secrets`; telemetry stays in `crates/telemetry` |
 | III. External effects are at-least-once; sagas compensate | n/a | No external effect of a run; Transit calls are internal and idempotent per row |
-| IV. Compatibility is versioned and pinned | Pass with conditions | `local` stays the default; the columns are additive; `transit` gated by the instance registry. Condition: rollback from `transit` is a documented re-seal (Complexity Tracking) |
+| IV. Compatibility is versioned and pinned | Pass | `local` stays the default; the columns are additive; `transit` gated by the instance registry, the sandbox runners by their key-list fetches; the way back is the `returning` passage, gated the same way; the contract changes are additive (Task 015-26) |
 | V. Code, tenant boundary and secrets are isolated | Pass | Keys never leave OpenBao; derivation per tenant; a mount and policy per custody and a token per process kind and custody; fail closed on every read path; the signed script message keeps its tenant; no tenant label |
-| VI. Observability and audit are part of the feature | Pass | All three signals through the Collector; OpenBao calls counted and traced; rewrap, re-key and re-seal audited |
+| VI. Observability and audit are part of the feature | Pass | All three signals through the Collector; OpenBao calls counted and traced; every command of Technical Plan 6 audited in its own transaction, each action mapped in design 040's table; the state row writable only by the schema-owning role |
 | VII. Events are redeliverable; inbox and outbox are the contract | n/a | No new message path |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Outage, rotation, cross-tenant unwrap, migration under load, signature binding, paired restore and canary tests on a real OpenBao; the Collector configurations validated |
 | Delivery Constraints | Pass | PostgreSQL stays the authority of state; OpenBao is a component already deployed for feature 017, now backed up with it; targets measured on a stated environment |
@@ -540,6 +678,8 @@ documented procedure, never automatic.
 | One Agent sidecar per custody | A token per (process kind, custody), as design 047 needs for its broker | One token per process kind with several policies: no separation between code paths |
 | A Collector scrape of metrics instead of OTLP metrics | One metrics implementation | A second pipeline inside every process |
 | A migrating mode | Moving without downtime | A stop-the-world re-seal |
+| A returning mode | A customer can leave `transit` without downtime, with the same guards | Rollback unsupported: a one-way door for a security option slows its adoption |
+| Three key ports instead of one | Each has a meaning under each authority; no stub adapter | One port with a local adapter that cannot wrap a key: stubs (`AGENTS.md` rule 11) |
 
 ## Alternatives Considered
 
@@ -568,7 +708,9 @@ Two lanes that touch no crate in common and can run at the same time.
 - **Lane B, keys** (`crates/domain/src/secrets.rs`, `crates/application` secret and script-signing paths,
   `crates/infra-secrets`, `crates/infra-postgres` migrations, `apps/control-plane` commands, `apps/sandbox-runner` trust
   refresh, `infra/openbao`, the OpenBao templates of `infra/helm`): Tasks 015-10 to 015-21 and 015-23 to 015-25.
-- Order point: Task 015-2's change to `redact.rs` (lane A) merges before Task 015-20's canary test (lane B). Task 015-22
+- Order points: Task 015-2's change to `redact.rs` (lane A) merges before Task 015-20's canary test (lane B). Task 015-7
+  (lane A) needs the per-custody Agent and the `sagat/telemetry/` policy of Tasks 015-17 and 015-23 (lane B), so it
+  merges after them. Task 015-26 adds design 040's mapping rows after design 040's mapping table is built. Task 015-22
   closes both.
 
 - [ ] T015-1 Write this design, decide its questions and record the delegate rows and the two architecture decisions.
@@ -599,50 +741,70 @@ Two lanes that touch no crate in common and can run at the same time.
   Refs: Success criterion 015-001
 - [ ] T015-9 Measure Non-functional requirement 015-001 with the Collector stopped, on a stated environment.
   Refs: Non-functional requirement 015-001
-- [ ] T015-10 Add the `KeyAuthority` port, `seal_with` and `open_with`, the three error kinds, and the `LocalKeyAuthority`
-  adapter over today's keys, with every `SecretReader::resolve` caller of Technical Plan 4 mapping the kinds, `StoredValue`
-  gaining `Transit`, and delivery and the report path comparing logical identity; the existing secret suites pass
-  unchanged, and a test holds a delivery between its reads while a re-seal commits.
+- [ ] T015-10 Add the ports of Technical Plan 4 (`EnvelopeCipher` in the domain; `EnvelopeKeys`, `ScriptSigner` and
+  `IntentBinder` with boxed futures in the application), the three error kinds, `LocalScriptSigner` over today's key,
+  `StoredValue::Transit(EnvelopeSealed)`, and every `SecretReader::resolve` caller of Technical Plan 4 mapping the kinds
+  (the five sites that skip today corrected, each with a test seen failing first; inbound webhook verification answering
+  a retryable `503`); add the `secret-resolve-never-discards` rule to `scripts/check-architecture.py` with negative
+  fixtures and its row, and the `transit` trigger's row, in `docs/engineering/architecture-principles.md`; delivery and
+  the report path compare logical identity; the existing secret suites pass unchanged, and a test holds a delivery
+  between its reads while a re-seal commits.
   Refs: Requirement 015-010, Requirement 015-011, Requirement 015-017
-- [ ] T015-11 Add `TransitKeyAuthority`: data keys with the derivation context (a golden test of its encoding), unwrap,
-  per-item rewrap, script signing over the full message, intent binding over metadata and a digest; the client per
-  mount with cached lookup, per-attempt timeouts within the budget, wiping types and typed errors; unit tests against a
-  recorded fake.
+- [ ] T015-11 First prove against the pinned OpenBao 2.7.1 that `datakey` honours `key_version` and that `rotate`,
+  `config` and `trim` take exactly the parameters of Requirement 015-016 (stop and return the design to review if not).
+  Then add `TransitEnvelopeKeys`, `TransitScriptSigner` and `TransitIntentBinder`: data keys with the derivation context
+  (a golden test of its encoding), unwrap and batch unwrap, per-item rewrap, script signing over the full message,
+  intent binding over metadata and a digest; the client per mount with cached lookup, per-attempt timeouts within the
+  budget, the in-flight bounds per process and per tenant with their metrics, wiping types and typed errors; unit tests
+  against a recorded fake.
   Refs: Requirement 015-011, Requirement 015-013, Requirement 015-014, Requirement 015-018
-- [ ] T015-12 Write the migrations (`key_authority_state` and its triggers; `secrets.authority` widened;
-  `wrapped_key`, `wrapped_key_version`, `data_key_issued_at` and the representation constraint with no key id on a
-  `transit` row; the intent binding version and key version under the immutability trigger; classification as `secret`;
-  a refusal when a ring key is named `transit`) with the migration checklist; `KeyRing::parse` refuses the id
-  `transit`; a test runs the 0.2.x reader against a `transit` row and sees it refuse.
+- [ ] T015-12 Write the migrations (`key_authority_state`, its owner-role functions not executable by `sagat_app` and
+  its `ENABLE ALWAYS` trigger; the `secret_versions` trigger on insert and on update of the sealed columns;
+  `secrets.authority` widened; `wrapped_key`, `wrapped_key_version`, `data_key_issued_at` and the representation
+  constraint with no key id on a `transit` row; the intent binding version and key version under the immutability
+  trigger, and the binding-version trigger of Requirement 015-014; the signing-key trigger on script artifacts;
+  `script_runner_trust_fetches`; classification as `secret`; a refusal when a row has `key_id = 'transit'`; a `down`
+  that refuses while a `transit` row, a `transit` authority or a non-`local` mode exists) with the migration checklist
+  and the privilege audit rows; `KeyRing::parse` refuses the id `transit`; a test runs the 0.2.x reader against a
+  `transit` row and sees it refuse; a barrier test holds a re-key between its data key and its commit while the floor
+  rises and sees the commit refused.
   Refs: Requirement 015-011, Requirement 015-014
 - [ ] T015-13 Add the unwrapped-key cache (4,096 entries of current versions, 512 per tenant, 300 seconds, a refresh
   every 10 seconds of entries older than 240 seconds, wiped on eviction, driven by the platform's clock) and its metrics,
   with the boundary tests of Success criterion 015-005.
   Refs: Requirement 015-017
-- [ ] T015-14 Add the commands of Technical Plan 6 (`key-authority begin-migration` and `finish-migration`,
-  `reseal-secrets --to transit`, `secrets rotate`, `rewrap`, `rekey`, `retire-key-versions`, `trim-key-versions`) with
-  their guards, per-batch audit and the operator's token for the two Transit configuration changes.
+- [ ] T015-14 Add the commands of Technical Plan 6 (`key-authority begin-migration`, `finish-migration`,
+  `begin-return` and `finish-return`, `reseal-secrets --to transit` and `--to local`, `secrets rotate`,
+  `advance-seal-version`, `rewrap`, `rekey`, `retire-key-versions`, `trim-key-versions`, and the rotate and retire
+  commands of `sagat-scripts` and `sagat-intent`) with their guards (the snapshot attestation, the standby replay waits,
+  the recount of trim), each command's audit record in its own transaction, and the operator's token for the Transit
+  key changes; tests of every refusal and of the way back under load.
   Refs: Requirement 015-012, Requirement 015-015
 - [ ] T015-15 Sign scripts through Transit at a version published 5 minutes earlier; extend `/script-runner/signing-key`
   to list the versions at or above the minimum and the legacy local key until `scripts resign` reports zero; the sandbox
   runner refreshes every 5 minutes and on an unknown version (a retryable refusal), records the verifying key in its
-  artifact cache and evicts on refresh; add `scripts resign`; tests that a signature for another tenant or language is
-  refused and that a retired version is refused without a restart, from the cache too (Success criterion 015-006).
+  artifact cache and evicts on refresh; record each fetch in `script_runner_trust_fetches` and gate `begin-migration` on
+  it and on the operator's attestation; add `scripts resign`; tests that a signature for another tenant or language is
+  refused, that a retired version is refused without a restart, from the cache too (Success criterion 015-006), and
+  that `begin-migration` is refused after a legacy-form fetch.
   Refs: Requirement 015-013, Success criterion 015-006
 - [ ] T015-16 Bind feature 017's intents with Transit HMAC (`sha2-256`) under binding version 2; verify a replay against
   the stored version, outside the provider lock; verify version 1 with the file key until none is pending; change the
   chart's validation and environment; a test replays an intent across a rotation.
   Refs: Requirement 015-014
-- [ ] T015-17 Extend the bootstrap scripts of `infra/openbao/` with Transit, the three keys and the policies, for the
-  development OpenBao of `infra/docker/compose.database.yaml` and for Kubernetes, with the configured mount names
-  validated; the exact allow-list policy test of Requirement 015-016.
+- [ ] T015-17 Extend the bootstrap scripts of `infra/openbao/` with Transit, the three keys and this design's policies,
+  for the development OpenBao of `infra/docker/compose.database.yaml` and for Kubernetes, with the configured mount
+  names validated, and the installation of every policy fragment of `infra/openbao/policies/<feature>/`; the exact
+  allow-list policy test of Requirement 015-016, reading each fragment's allow-list file.
   Refs: Requirement 015-016, Requirement 015-019
-- [ ] T015-18 Add the capability `key-authority-transit-v1` to the instance registry for the control plane and the
-  execution engine, listed only with a Transit configuration, and the closed gate of Requirement 015-010 (ADR-0082).
+- [ ] T015-18 Add the capabilities `key-authority-transit-v1` (listed only with a Transit configuration) and
+  `key-authority-return-v1` (listed only with both the ring and Transit) to the instance registry's closed capability
+  list for the control plane and the execution engine, and the closed gate of Requirement 015-010 (ADR-0082).
   Refs: Requirement 015-010
 - [ ] T015-19 Integration tests on a real OpenBao: rotation, rewrap, recount and retire with no restart (Success
   criterion 015-002), cross-tenant unwrap refused (Success criterion 015-003), migration under load (Success criterion
-  015-004), outage with the cache and the output scan (Success criterion 015-005).
+  015-004), outage with the cache, the output scan, inbound webhook verification and the managed-database reader
+  (Success criterion 015-005).
   Refs: Success criterion 015-002, Success criterion 015-003, Success criterion 015-004, Success criterion 015-005
 - [ ] T015-20 The canary test: marked key material, tokens, contexts and wrapped keys, under ordinary and unlucky field
   names, never in a log, span, metric, audit record or error, with both authorities.
@@ -655,12 +817,24 @@ Two lanes that touch no crate in common and can run at the same time.
   variables, and update `docs/traceability.md`, the roadmap row and the release notes.
   Refs: Requirement 015-012, Requirement 015-015, Requirement 015-020
 - [ ] T015-23 The Helm chart: one OpenBao Agent per custody where a pod needs more than one, roles per (process kind,
-  custody), the Raft snapshot schedule, and the NetworkPolicy that keeps platform pods from customer key services.
+  custody), the database runner's Collector header from a Kubernetes Secret, the Raft snapshot schedule, and the NetworkPolicy that keeps platform pods from customer key services.
   Refs: Requirement 015-016, Requirement 015-020, Requirement 015-021
 - [ ] T015-24 The paired restore test (Success criterion 015-007) in `integration_key_authority`.
   Refs: Requirement 015-020, Success criterion 015-007
-- [ ] T015-25 Disable core dumps at the start of every server process, with a test that reads the process's state.
-  Refs: Requirement 015-017
+- [ ] T015-25 Disable core dumps at the start of every server process through `rustix` (`RLIMIT_CORE`, and
+  `PR_SET_DUMPABLE` on Linux), with a test that reads the process's state on Linux.
+  Refs: Non-functional requirement 015-004
+- [ ] T015-26 The contract changes: `Secret.provider` gains `transit` and `keyId` is null for `openbao` and `transit`
+  (`specs/001-platform-foundation/contracts/openapi.yaml`), with `SecretView.provider` derived from the version's
+  custody instead of its key id; `SigningKey` extended additively (`keyId` and `publicKey` stay the current key; `keys`
+  lists every trusted version with its publication time, `minimumVersion` and the legacy local key); the error codes
+  `KEY_AUTHORITY_UNAVAILABLE` (retryable, `503`) and `KEY_AUTHORITY_REFUSED` in `sdks/error-catalog.json` and its six
+  copies; the new audit actions in design 040's mapping table; contract and conformance tests, the Studio types
+  regenerated.
+  Refs: Requirement 015-011, Requirement 015-013, Requirement 015-017
+- [ ] T015-27 The custody routing of Requirement 015-011 in `put_secret` for every mode, with a test of each cell of its
+  table (the field rules included).
+  Refs: Requirement 015-011
 
 #### Follow-up tasks
 

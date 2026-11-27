@@ -3,8 +3,8 @@
 **Status:** Proposed (2026-11-26). Returned from Accepted the same day: design 015's review is not complete; it is accepted with design 015's approval
 **Decided by:** agent proposal with design 015, accepted by the agent preparing design 015 for build under the owner's
 delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-118. The owner may overrule it.
-**Refines / supersedes:** refines ADR-0008 (observability is part of the feature) and ADR-0017 (OTLP to a Collector) by
-adding logs and metrics; supersedes none.
+**Refines / supersedes:** refines ADR-0017 decisions 4 (the exporter speaks OTLP/HTTP with JSON, configured by the
+standard variables) and 5 (redaction on the way out) by adding logs and the Collector's scrape of metrics; supersedes none.
 **Enforced by:** the unit tests of `crates/telemetry` for the log queue (drop, scrub, correlation) and the configuration
 refusals (Tasks 015-2, 015-3); the resource-attribute test (Task 015-4); `otelcol-contrib validate` on both Collector
 configurations and the attribute-filter drift test (Tasks 015-5, 015-6); the measurement of Non-functional requirement

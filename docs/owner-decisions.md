@@ -4,6 +4,15 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-27 — Design 015: the two security residual risks
+
+Asked to accept or refuse the two residual risks that the security review of design 015 left (Gaps 015-003 and 015-005), the
+owner answered "Aceito os dois, cache 300 s".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-27-1 | "Aceito os dois, cache 300 s": both security residual risks of design 015 are accepted. Gap 015-003: a revoked platform token leaves cached data keys usable for at most 300 seconds, accepted with the 300-second unwrapped-key cache of OD-2026-11-26-116. Gap 015-005: a compromised process holds every token it uses, with custody separated between process kinds and code paths rather than inside one process, accepted | owner | Decided | docs/designs/015-opentelemetry-and-openbao.md, specs/015-opentelemetry-and-openbao/research.md G015-003, G015-005 |
+
 ## 2026-11-26 — Data, AI and events readiness: designs 015, 039, 040, 042 and features 024, 025
 
 Acts taken by the agent preparing these features for build, under the owner's delegation for release 0.3.0
