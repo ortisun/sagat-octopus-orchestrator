@@ -315,3 +315,20 @@ fn the_node_spec_keys_are_the_code_profiles_without_their_literals() {
         assert_eq!(keys, expected, "the node specification of {kind}");
     }
 }
+
+/// An envelope entry is an exact name of up to 128 characters or a prefix of up to 128 with its `.*` (Decision 044-254).
+#[test]
+fn an_envelope_entry_name_is_at_most_128_characters() {
+    let pattern = definition("codeActivityPattern");
+    for (name, valid) in [
+        ("a".repeat(128), true),
+        ("a".repeat(129), false),
+        (format!("{}.*", "a".repeat(126)), true),
+        (format!("{}.*", "a".repeat(127)), false),
+        ("payments.*".to_owned(), true),
+        ("sagat.*".to_owned(), false),
+        ("*".to_owned(), false),
+    ] {
+        assert_eq!(pattern.is_valid(&json!(name)), valid, "{name}");
+    }
+}

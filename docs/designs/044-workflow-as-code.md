@@ -1444,7 +1444,7 @@ of that kind, canonicalized by the SDK (RFC 8785). The code profile starts from 
 `workflow.schema.json`, refuses every expression, template, routing and publisher-only field, takes the publisher's
 fields from the envelope, and adds the literal fields a command needs (marked "addition"):
 
-| Kind | Fields the fragment sets | From the envelope (a fragment may repeat, never change) | Refused |
+| Kind | Fields the fragment sets | From the envelope (a fragment may repeat the publisher's fields, never change them; `outputSchema`, `concurrency` and `rateLimit` come from the entry only and are refused in a fragment, Decision 044-254) | Refused |
 |---|---|---|---|
 | Activity | `activity`, `retry`, `compensationRetry`, `compensationTimeoutMs`, `timeoutMs`, the literal keys of the entry's `concurrency` and `rateLimit` (feature 022), the saga scope; additions: literal `input` (validated against the entry's `inputSchema`); with design 045, `scheduleToStartMs`, `scheduleToCloseMs`, `heartbeatTimeoutMs`, `heartbeatFrom`, `retry.byErrorCode`, `nonRetryableErrorCodes` | `secrets`, `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `outputSchema`, `requiresApproval`, the `concurrency` and `rateLimit` policies | `idempotencyTemplate` (the platform's step key is stable across attempts and replays), `destinations`, `onError` |
 | Script | `artifactDigest`, `retry`, `timeoutMs` (Decision 044-247); addition: literal `input` | `language`, `secrets`, `outputSchema`, `compensateWith` from the script entry | as for an activity |

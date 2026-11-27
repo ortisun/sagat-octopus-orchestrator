@@ -964,6 +964,13 @@ finding was answered.
   for `HANDLER_NOT_REGISTERED` and `VALIDATION_REJECTED`; the first names a case the list lacked (a code defect that
   the caller and the operator must tell apart from a refused argument, as Temporal's unknown-update rejection does),
   while the second would be a second name for `VALIDATION_FAILED`, which the corpus and the catalog already use.
+- **D044-254** (2026-11-27) Two alignments the security review of pull request 296 asked of the contract (its Nits 2
+  and 3; the domain's answers are Decision 044-253 on that branch): `codeActivityPattern` admits an exact name of 128
+  characters, as `codeActivityName` and the domain do, and a prefix of 128 with its `.*`; and Technical Plan 5.1 says
+  that a fragment may repeat only the publisher's fields (`secrets`, `irreversible`, `highRisk`, `compensateWith`,
+  `reconcileWith`, `requiresApproval`), while `outputSchema`, `concurrency` and `rateLimit` come from the entry and are
+  refused in a fragment, as the code profiles already refuse them: a repeated `outputSchema` could drop a `secret`
+  classification. delegate (OD-2026-11-24-4).
 
 ## 3. Gaps
 
