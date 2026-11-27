@@ -551,8 +551,9 @@ func otherText(value any, secrets redactor) string {
 }
 
 // redactedCopy is a JSON-shaped copy of a value (maps of string keys, lists, strings, numbers, booleans, null) in
-// which every string and every key is redacted and every byte buffer is its UTF-8 text. A value with its own JSON or
-// text form, and a struct, are encoded by encoding/json, decoded and copied in turn.
+// which every string and every key is redacted and every byte buffer, at any depth, is its UTF-8 text, never base64. A
+// struct is copied field by field as encoding/json names them (structCopy); a value with its own JSON or text form is
+// encoded by encoding/json, decoded and copied in turn.
 func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any, err error) {
 	if depth > 64 {
 		return nil, errNotEncoded
@@ -569,7 +570,7 @@ func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any,
 	if canBeNil(value) && value.IsNil() {
 		return nil, nil
 	}
-	if value.Kind() == reflect.Struct || value.Type().Implements(jsonMarshaler) || value.Type().Implements(textMarshaler) {
+	if value.Type().Implements(jsonMarshaler) || value.Type().Implements(textMarshaler) {
 		decoded, err := decodedForm(value.Interface())
 		if err != nil {
 			return nil, err
@@ -577,6 +578,8 @@ func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any,
 		return redactedCopy(reflect.ValueOf(decoded), secrets, depth+1)
 	}
 	switch value.Kind() {
+	case reflect.Struct:
+		return structCopy(value, secrets, depth)
 	case reflect.Pointer, reflect.Interface:
 		return redactedCopy(value.Elem(), secrets, depth+1)
 	case reflect.String:
@@ -618,6 +621,153 @@ func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any,
 		return object, nil
 	}
 	return nil, errNotEncoded
+}
+
+// jsonField is a field of a struct as encoding/json encodes it: its name, the index path to it through embedded
+// structs, and its tag's options.
+type jsonField struct {
+	name      string
+	index     []int
+	depth     int
+	tagged    bool
+	omitEmpty bool
+	quoted    bool
+}
+
+// jsonFields lists the fields encoding/json encodes for a struct type: exported fields under their tag's name or their
+// own, "-" left out, the fields of an untagged embedded struct promoted, and of several fields of one name the
+// shallowest, or the one tagged among the shallowest, kept (none when that does not settle it), as encoding/json does.
+func jsonFields(t reflect.Type) []jsonField {
+	var all []jsonField
+	var walk func(t reflect.Type, index []int, depth int, seen map[reflect.Type]bool)
+	walk = func(t reflect.Type, index []int, depth int, seen map[reflect.Type]bool) {
+		if seen[t] {
+			return
+		}
+		seen[t] = true
+		defer delete(seen, t)
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			tag := field.Tag.Get("json")
+			if tag == "-" {
+				continue
+			}
+			name, options, _ := strings.Cut(tag, ",")
+			path := append(append([]int(nil), index...), i)
+			if field.Anonymous {
+				embedded := field.Type
+				if embedded.Kind() == reflect.Pointer {
+					embedded = embedded.Elem()
+				}
+				if !field.IsExported() && embedded.Kind() != reflect.Struct {
+					continue
+				}
+				if name == "" && embedded.Kind() == reflect.Struct {
+					walk(embedded, path, depth+1, seen)
+					continue
+				}
+			} else if !field.IsExported() {
+				continue
+			}
+			tagged := name != ""
+			if !tagged {
+				name = field.Name
+			}
+			all = append(all, jsonField{
+				name: name, index: path, depth: depth, tagged: tagged,
+				omitEmpty: strings.Contains(","+options+",", ",omitempty,"), quoted: strings.Contains(","+options+",", ",string,"),
+			})
+		}
+	}
+	walk(t, nil, 0, map[reflect.Type]bool{})
+	byName := map[string][]jsonField{}
+	var names []string
+	for _, field := range all {
+		if _, known := byName[field.name]; !known {
+			names = append(names, field.name)
+		}
+		byName[field.name] = append(byName[field.name], field)
+	}
+	kept := make([]jsonField, 0, len(names))
+	for _, name := range names {
+		candidates := byName[name]
+		shallowest := candidates[0].depth
+		for _, field := range candidates {
+			shallowest = min(shallowest, field.depth)
+		}
+		var top, tagged []jsonField
+		for _, field := range candidates {
+			if field.depth == shallowest {
+				top = append(top, field)
+				if field.tagged {
+					tagged = append(tagged, field)
+				}
+			}
+		}
+		switch {
+		case len(top) == 1:
+			kept = append(kept, top[0])
+		case len(tagged) == 1:
+			kept = append(kept, tagged[0])
+		}
+	}
+	return kept
+}
+
+// emptyJSON reports whether omitempty leaves a value out, as encoding/json decides it.
+func emptyJSON(value reflect.Value) bool {
+	switch value.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return value.Len() == 0
+	case reflect.Bool:
+		return !value.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return value.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return value.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return value.Float() == 0
+	case reflect.Interface, reflect.Pointer:
+		return value.IsNil()
+	}
+	return false
+}
+
+// structCopy is the redacted copy of a struct, built by reflection under the names encoding/json gives its fields, so
+// that a byte buffer in a field, in an embedded struct or behind a pointer is its UTF-8 text and never base64.
+func structCopy(value reflect.Value, secrets redactor, depth int) (any, error) {
+	object := map[string]any{}
+	for _, field := range jsonFields(value.Type()) {
+		member, present := value, true
+		for n, i := range field.index {
+			if n > 0 && member.Kind() == reflect.Pointer {
+				if member.IsNil() {
+					present = false
+					break
+				}
+				member = member.Elem()
+			}
+			member = member.Field(i)
+		}
+		if !present || (field.omitEmpty && emptyJSON(member)) {
+			continue
+		}
+		copied, err := redactedCopy(member, secrets, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		if field.quoted {
+			switch member.Kind() {
+			case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint,
+				reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64, reflect.String:
+				if text, ok := compactJSON(copied); ok {
+					copied = text
+				}
+			}
+		}
+		object[secrets.redact(field.name)] = copied
+	}
+	return object, nil
 }
 
 // mapKey is the text encoding/json gives a map key.

@@ -5,6 +5,7 @@ package worker
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -292,6 +295,71 @@ func TestStepLogAValueThatIsNotAScalarIsEncodedFromARedactedCopy(t *testing.T) {
 		"bytes=string:[REDACTED]", `map=string:{"[REDACTED]":1,"list":["[REDACTED]","[REDACTED]"],"token":"[REDACTED]"}`,
 		"number=string:12", `pointer=string:{"token":"x [REDACTED]"}`, `struct=string:{"token":"[REDACTED]"}`,
 	}
+	if fmt.Sprint(describe(fields)) != fmt.Sprint(want) {
+		t.Errorf("\n got %v\nwant %v", describe(fields), want)
+	}
+}
+
+// Embedded, Holder and Behind carry byte buffers in a struct field, an embedded struct and behind a pointer.
+type Embedded struct {
+	Key []byte `json:"key"`
+}
+
+type Behind struct {
+	Raw []byte `json:"raw,omitempty"`
+}
+
+type Holder struct {
+	Embedded
+	*Behind
+	Raw     []byte  `json:"raw"`
+	Skipped []byte  `json:"-"`
+	Empty   []byte  `json:"empty,omitempty"`
+	Pointer *Behind `json:"pointer"`
+	Count   int     `json:"count,string"`
+	hidden  []byte
+}
+
+func TestStepLogAByteBufferInAStructIsItsTextAndNeverBase64(t *testing.T) {
+	var set secretSet
+	secret := []byte("struct-secret-7Qp")
+	set.add([][]byte{secret})
+	holder := Holder{
+		Embedded: Embedded{Key: secret}, Behind: &Behind{Raw: []byte("promoted")}, Raw: secret, Skipped: secret,
+		Pointer: &Behind{Raw: append([]byte("x "), secret...)}, Count: 7, hidden: secret,
+	}
+	got := fieldsOf(slog.Any("value", holder), slog.Any("pointer", &holder), slog.Any("embedded", Embedded{Key: secret}))
+	fields, _ := buildFields(got.fields, &set)
+	encoded := base64.StdEncoding.EncodeToString(secret)
+	for _, field := range fields {
+		text := field.GetStringValue()
+		if strings.Contains(text, string(secret)) || strings.Contains(text, encoded) || strings.Contains(text, encoded[:12]) {
+			t.Errorf("%s holds the secret: %s", field.GetKey(), text)
+		}
+	}
+	// The names are those encoding/json gives the fields.
+	var reference map[string]any
+	plain, _ := json.Marshal(holder)
+	_ = json.Unmarshal(plain, &reference)
+	copied, err := structCopy(reflect.ValueOf(holder), identity{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names, referenceNames []string
+	for name := range copied.(map[string]any) {
+		names = append(names, name)
+	}
+	for name := range reference {
+		referenceNames = append(referenceNames, name)
+	}
+	sort.Strings(names)
+	sort.Strings(referenceNames)
+	if !slices.Equal(names, referenceNames) {
+		t.Errorf("names %v, encoding/json %v", names, referenceNames)
+	}
+	// The promoted field raw of the embedded *Behind loses to the outer raw, as encoding/json decides.
+	holderText := `{"count":"7","key":"[REDACTED]","pointer":{"raw":"x [REDACTED]"},"raw":"[REDACTED]"}`
+	want := []string{`embedded=string:{"key":"[REDACTED]"}`, "pointer=string:" + holderText, "value=string:" + holderText}
 	if fmt.Sprint(describe(fields)) != fmt.Sprint(want) {
 		t.Errorf("\n got %v\nwant %v", describe(fields), want)
 	}
