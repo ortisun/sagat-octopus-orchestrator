@@ -34,10 +34,6 @@ pub struct PgIdentityStore {
     pool: PgPool,
     denial_window: Duration,
     denial_slots: Arc<Semaphore>,
-    /// The gate of the platform's security audit, separate from the tenant's (`crate::security_audit`).
-    probe_slots: Arc<Semaphore>,
-    /// The probes this process wrote lately, so that a repeat costs nothing (`crate::security_audit`).
-    recent_probes: Arc<crate::security_audit::RecentProbes>,
 }
 
 impl PgIdentityStore {
@@ -64,12 +60,11 @@ impl PgIdentityStore {
 
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
+        crate::security_audit::register_probe_counters();
         Self {
             pool,
             denial_window: DEFAULT_DENIAL_WINDOW,
             denial_slots: Arc::new(Semaphore::new(MAX_PENDING_DENIALS)),
-            probe_slots: Arc::new(Semaphore::new(crate::security_audit::MAX_PENDING_PROBES)),
-            recent_probes: Arc::default(),
         }
     }
 
@@ -89,13 +84,7 @@ impl PgIdentityStore {
             Ok(permits) => drop(permits),
             Err(error) => tracing::error!(%error, "denial-write barrier unexpectedly closed"),
         }
-        let permits = Arc::clone(&self.probe_slots)
-            .acquire_many_owned(crate::security_audit::MAX_PENDING_PROBES as u32)
-            .await;
-        match permits {
-            Ok(permits) => drop(permits),
-            Err(error) => tracing::error!(%error, "probe-write barrier unexpectedly closed"),
-        }
+        crate::security_audit::flush().await;
     }
 
     /// Creates a tenant and its first administrator atomically.
@@ -670,13 +659,7 @@ impl BoundaryAudit for PgIdentityStore {
     async fn record_boundary_denial(&self, denial: &BoundaryDenial) -> Result<(), StoreError> {
         // The platform's probe first, so that nothing the tenant's write does can keep it from its own gate.
         if let Some(probe) = denial.probe() {
-            crate::security_audit::record_probe(
-                &self.pool,
-                &self.probe_slots,
-                &self.recent_probes,
-                probe,
-                self.denial_window,
-            );
+            crate::security_audit::record_probe(&self.pool, probe, self.denial_window);
         }
         // The caller's tenant: the same record through the same gate, whatever the check found (feature 009, D60).
         IdentityStore::record_denial(self, denial.tenant_record()).await

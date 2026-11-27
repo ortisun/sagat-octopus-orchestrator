@@ -74,12 +74,13 @@ tests:
         alertname: SagatCrossTenantProbing
         exp_alerts: []
 
-  # a replica that restarts resets its counter: the reset is not taken for probes
+  # a replica that had counted 1000 restarts and counts from zero again, one a minute: the reset inside the ten
+  # minutes is not taken for 1000 probes (a rule that subtracted the samples would see a drop of 1000)
   - interval: 1m
     input_series:
       - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="run"}'
-        values: '0+1x10 0+1x30'
+        values: '1000x10 0+1x30'
     alert_rule_test:
-      - eval_time: 30m
+      - eval_time: 15m
         alertname: SagatCrossTenantProbing
         exp_alerts: []

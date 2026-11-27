@@ -332,11 +332,6 @@ pub trait PayloadDisclosureStore: crate::tenant_boundary::BoundaryAudit + Send +
         run: RunId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    fn record_disclosure_denial(
-        &self,
-        audit: &AuditRecord,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
-
     fn disclose_and_audit(
         &self,
         prepared: &PreparedDisclosure,

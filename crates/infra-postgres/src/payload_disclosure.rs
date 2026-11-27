@@ -55,10 +55,6 @@ impl PayloadDisclosureStore for PgRunStore {
         RunStore::run_exists_outside(self, tenant, run).await
     }
 
-    async fn record_disclosure_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
-        RunStore::record_denial(self, audit).await
-    }
-
     async fn disclose_and_audit(
         &self,
         prepared: &PreparedDisclosure,

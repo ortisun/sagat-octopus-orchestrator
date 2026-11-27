@@ -645,9 +645,9 @@ async fn us04_the_audit_trail_shows_what_was_done_scrubs_what_looks_like_a_crede
     );
 }
 
-/// A denial is recorded only when the resource exists in another tenant, so a trail that listed it
-/// would answer "does this id exist elsewhere?" for anyone who could read it. The record stays for
-/// whoever runs the platform; the tenant does not get it back through the API.
+/// The tenant's trail gets the same record for an identifier of another tenant and one that exists nowhere, naming
+/// neither, and returns it; the identifier and the other tenant stay in the platform's security audit, which no API
+/// returns (feature 009, D60; gap G041-028). Records `access.denied.cross_tenant` written before stay withheld.
 #[tokio::test]
 async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probed_exists_elsewhere()
 {
@@ -693,7 +693,7 @@ async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probe
     let globex = crate::support::eventually("the caller's record", || async {
         let n: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
-             WHERE t.slug = 'globex' AND a.action = 'access.denied.not_found' AND a.resource_id = ''",
+             WHERE t.slug = 'globex' AND a.action LIKE 'access.denied.%' AND a.action <> 'access.denied.permission'",
         )
         .fetch_one(&p.api.db.pool)
         .await

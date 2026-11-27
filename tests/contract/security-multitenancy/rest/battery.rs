@@ -773,7 +773,13 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         },
     )
     .await;
+    // Every write accepted by now has landed: the sets must still be the same, so that a late stray record is seen.
+    api.store.flush_denial_writes().await;
+    api.executions.flush_denial_writes().await;
+    api.execution_store.flush_denial_writes().await;
     assert_eq!(globex_trail, initech_trail);
+    assert_eq!(boundary("globex").await, globex_trail);
+    assert_eq!(boundary("initech").await, initech_trail);
     // A record of the attacker's own trail that names an identifier of the victim's must be one that the same call with
     // an identifier that exists nowhere leaves too (the identifier is then only what the caller sent, as for
     // `database.denied`); a boundary record names none at all.

@@ -270,12 +270,13 @@ pub(crate) async fn remove_binding(p: &Platform, sub: &str) {
     .expect("remove the binding");
 }
 
-/// A transaction that holds `audit_records` in `SHARE` mode, so that every audit insert waits for it, and its backend.
+/// A transaction that holds `audit_records` and the platform's `security_audit_records` in `SHARE` mode, so that every
+/// audit insert waits for it, and its backend.
 pub(crate) async fn hold_the_audit_trail(
     p: &Platform,
 ) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
     let mut locker = p.api.db.pool.begin().await.expect("begin");
-    sqlx::query("LOCK TABLE audit_records IN SHARE MODE")
+    sqlx::query("LOCK TABLE audit_records, security_audit_records IN SHARE MODE")
         .execute(&mut *locker)
         .await
         .expect("hold the audit trail");
@@ -502,7 +503,15 @@ async fn a_batch_naming_another_tenants_run_is_answered_and_recorded_as_a_missin
     );
     // The two batches leave one record in the caller's tenant: the same record within its window adds nothing, so a
     // record that told the two apart would be a second row.
-    let trail = crate::support::trail_of(&p.api.db.pool, p.tenant, "wanda").await;
+    // The record is a write of its own, off the answer path: wait for it.
+    let trail = crate::support::eventually("the caller's record", || async {
+        let trail = crate::support::trail_of(&p.api.db.pool, p.tenant, "wanda").await;
+        trail
+            .iter()
+            .any(|row| row.0.starts_with("access.denied."))
+            .then_some(trail)
+    })
+    .await;
     let boundary: Vec<_> = trail
         .iter()
         .filter(|row| row.0.starts_with("access.denied."))

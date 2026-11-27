@@ -123,11 +123,6 @@ impl PayloadDisclosureStore for FakeStore {
         Ok(state.tenant != tenant && state.run == run)
     }
 
-    async fn record_disclosure_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
-        self.0.lock().expect("state").audits.push(audit.clone());
-        Ok(())
-    }
-
     async fn disclose_and_audit(
         &self,
         prepared: &PreparedDisclosure,
