@@ -125,7 +125,7 @@ serving process's gate.
 | `local` | today's rules: the ring for the secret routes, the script-signing key for the script routes, the intent key file with feature 017's provider | the ring, as today | Transit: it never seals, signs or binds with it (the triggers refuse) |
 | `migrating` | the ring (to open and re-seal `local` values), the script-signing key when the script routes are enabled (to publish the legacy public key until `scripts resign` reports zero), the intent key file with feature 017's provider (to verify pending intents at binding version 1), and Transit | the ring and Transit | none |
 | `transit` | Transit | Transit | any local key, during the hand-over window only: it never seals, signs or binds with it, logs `key_authority.local_key_configured` once per mode change, sets `key_authority_local_key_configured{key}` to 1, and the alert `KeyAuthorityLocalKeyConfigured` fires after 24 hours; once the registry requirement `key-authority-ring-absent-v1` is recorded, a local key closes the gate |
-| `returning` | a fresh ring (to re-seal under it; one holding a key id of `retired_ring_key_ids` closes the gate), the script-signing key (only the local key signs in this mode), the intent key file with feature 017's provider (new intents are bound at binding version 1), and Transit | the ring and Transit | none |
+| `returning` | a fresh ring (to re-seal under it; one holding a key whose check value or id was recorded at `begin-migration` closes the gate), the script-signing key (only the local key signs in this mode), the intent key file with feature 017's provider (new intents are bound at binding version 1), and Transit | the ring and Transit | none |
 
 **Capabilities and registry requirements.** Each is listed only for what the configuration has (ADR-0082 decision 7):
 
@@ -144,7 +144,7 @@ applied the drain's epoch, which its next heartbeat records (about 12 seconds).
 
 | Transition | Command | Guard, checked in the command's transaction | Registry requirements |
 |---|---|---|---|
-| `local` to `migrating` | `key-authority begin-migration` | the mode is `local`; the runner gate below; the operator's attestation for stopped runners | `key-authority-transit-v1` recorded |
+| `local` to `migrating` | `key-authority begin-migration` | the mode is `local`; the runner gate below; the operator's attestation for stopped runners; the command holds the ring, whose keys' check values and ids it records (way-back step 2) | `key-authority-transit-v1` recorded |
 | `migrating` to `transit` | `key-authority finish-migration` | under the state row's lock: zero `local` values in every entry of the re-seal inventory, zero secrets of custody `local`, zero pending intents at binding version 1, zero artifacts without a Transit signature at or above `scripts_min_version` | `key-authority-transit-v1` recorded |
 | `transit` to `returning` | `key-authority begin-return` | the mode is `transit` | `key-authority-return-v1` recorded; `key-authority-ring-absent-v1` not recorded |
 | `returning` to `local` | `key-authority finish-return` | under the state row's lock: zero `transit` values in every inventory entry, zero secrets of custody `transit`, zero pending intents at binding version 2, zero artifacts without a local signature | `key-authority-return-v1` recorded |
@@ -195,11 +195,17 @@ day-long wait.
    and intent key file; never reuse the archived ring of step 9, which also opens the pre-migration backups and may
    have been exposed. After `finish-migration` no `local` row remains, so a return re-seals under any ring. Add the ring
    to every control plane and engine, and the two other keys to every control plane, by a rolling restart, keeping
-   Transit; each lists `key-authority-return-v1` again and, under `transit`, stays open and warns. The database
-   enforces the freshness: `reseal-secrets --to transit` records, through `key_authority_record_retired_ring_ids`
-   (owner-role, in the re-seal's transaction), every ring key id it re-seals away from in
-   `key_authority_state.retired_ring_key_ids`; a control plane or engine whose ring holds one of them keeps its gate
-   closed in `returning`, and `reseal-secrets --to local` refuses it.
+   Transit; each lists `key-authority-return-v1` again and, under `transit`, stays open and warns. The freshness is
+   checked against what the database recorded of the old ring, by key material as well as by id, since an id is only
+   a label the operator chooses (`KeyRing::parse` reads `id:base64`) and archived material could come back under a new
+   one. A key's check value is the first 16 bytes of HMAC-SHA-256 under that key over the fixed label
+   `sagat/ring-check/v1`; it reveals nothing of the key. `key-authority begin-migration` records, through the
+   owner-role `key_authority_record_retired_ring`, the check value and the id of every key of the ring the command
+   holds, whether or not it sealed a row, in `key_authority_state.retired_ring_check_values` and
+   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id it re-seals away from. In `migrating`, a
+   control plane or engine whose ring holds a key whose check value is not recorded keeps its gate closed, so the
+   record covers every key a serving process holds. In `returning`, a control plane or engine whose ring holds a key
+   whose check value or id is recorded keeps its gate closed, and `reseal-secrets --to local` refuses such a ring.
 3. Record the registry requirement `key-authority-return-v1` for both kinds.
 4. `key-authority begin-return`. Every process sees `returning` within a heartbeat and has what the table asks.
 5. `reseal-secrets --to local`, `scripts resign`, and wait until no intent at binding version 2 is pending.
@@ -211,7 +217,8 @@ Task 015-18 runs both orders under load (a secret resolved every 10 milliseconds
 configuration step, and checks that no gate closes and no resolution fails; that after step 8 of the way in a process
 started with the ring is refused; that `begin-return` is refused before step 1 of the way back; and that in `returning`
 a control plane without the script-signing key or the intent key file keeps its gate closed, as does a process in
-`returning` whose ring reuses a key id of `retired_ring_key_ids`.
+`returning` whose ring reuses a recorded key id, or the material of an old key under a new id, and a process in
+`migrating` whose ring holds a key whose check value was not recorded.
 
 ## The Problem
 
@@ -429,7 +436,11 @@ it for regulated work.
   prefixes it owns, each ending with `/`; the test MUST compare paths by whole segments, never as text, and MUST refuse
   any grant not contained in them (but the token self-paths), any grant whose glob could match a path under another
   owner's prefix, and any two prefixes that overlap, between features or with the platform's own (the Transit mount
-  and the KV prefix `sagat/credentials/`), so that no fragment can grant another custody's paths (Technical Plan 7). The snapshot policy of Requirement 015-020
+  and the KV prefix `sagat/credentials/`), so that no fragment can grant another custody's paths (Technical Plan 7).
+  Key/value custody MUST be declared relative to the mount and expanded to all six path types of key/value version 2
+  (`data`, `metadata`, `delete`, `undelete`, `destroy`, `subkeys`) for every owner before those checks, and a
+  key/value path whose second segment is none of the six MUST be refused, so that no owner can claim the `destroy`,
+  `delete`, `undelete` or `subkeys` paths of another's secrets. The snapshot policy of Requirement 015-020
   belongs to the operator's OpenBao installation, not to the platform, and lives outside that directory, named as such.
 - **Requirement 015-017** If OpenBao cannot be reached, a secret MUST NOT be sealed or opened by any other means
   (Principle V). `KeyAuthorityError` has three kinds: `Unavailable` (retryable), `Refused` (an integrity failure: a key
@@ -828,11 +839,12 @@ representation trigger. Delivery and the report path compare a secret's logical 
 - `key_authority_state`: one row (`mode` in `local`, `migrating`, `transit`, `returning`; `seal_version`, the key
   version of `sagat-secrets` new data keys are issued at; the three sealing floors, `min_seal_version` for
   `sagat-secrets`, `scripts_min_version` for `sagat-scripts` and `intent_min_version` for `sagat-intent`, each 1 at
-  first; the time of the last rotation of each key and of the last rewrap; `retired_ring_key_ids text[]`, the ring key
-  ids the way in re-sealed away from, which a return may not reuse). The runtime role `sagat_app` has `SELECT`
+  first; the time of the last rotation of each key and of the last rewrap; `retired_ring_check_values bytea[]` and
+  `retired_ring_key_ids text[]`, the check values and ids of the old ring's keys, which a return may not reuse, as
+  way-back step 2 says). The runtime role `sagat_app` has `SELECT`
   only: the row changes only through functions owned by the schema-owning role and not executable by `sagat_app`
   (`key_authority_set_mode`, `key_authority_advance_seal`, `key_authority_raise_floor(key, n)` for any of the three
-  keys, `key_authority_record_rotation`, `key_authority_record_retired_ring_ids`), which take it `FOR UPDATE` and write the command's audit record in the same
+  keys, `key_authority_record_rotation`, `key_authority_record_retired_ring`), which take it `FOR UPDATE` and write the command's audit record in the same
   transaction; a trigger `ENABLE ALWAYS` refuses any other change, as ADR-0082 decision 1 does for the registry.
   `key_authority_raise_floor` refuses a floor that would go down, and for `sagat-secrets` one above `seal_version`. The
   commands of section 6 run with the schema-owning role, as `provision-tenant` does. A process reads the mode with a
@@ -952,8 +964,10 @@ representation trigger. Delivery and the report path compare a secret's logical 
   `secret_versions_wrapped_key`", as `key_id` and `nonce` are today; `script_artifact_signatures.signer`, `key_id` and
   `signature` are `protected_system` with their CHECKs as evidence, and `digest` as for `script_artifacts`;
   `script_runner_trust_sightings.subject` is `protected_system` (an identity subject bounded to 255 characters) and
-  `form` `protected_system` (a closed set); `key_authority_state.mode` and `key_authority_reseal_inventory.name` are
-  `protected_system`. The registry's exhaustiveness test fails when one is missing.
+  `form` `protected_system` (a closed set); `key_authority_state.mode`, `retired_ring_check_values` (16-byte check
+  values, one per key of the old ring), `retired_ring_key_ids` (ring key ids) and
+  `key_authority_reseal_inventory.name` are `protected_system`. The registry's exhaustiveness test fails when one is
+  missing.
 - A `transit` → `openbao` move (feature 017's `migrate`) is offered: the predicate of
   `crates/infra-postgres/src/managed_secrets.rs` that selects a migration source (`s.authority='local'`) accepts
   `'transit'` too, and `ManagedSecretService` opens the source through the full `SecretReader` (ring and Transit)
@@ -1065,34 +1079,49 @@ library only, run by the continuous integration workflow beside the other checke
 `.hcl` file of `infra/openbao/policies/` and of its subdirectories, accepts only the policy subset `path "<path>" {
 capabilities = [...] allowed_parameters = { "<name>" = [] } }` (a file it cannot read in that subset is refused, not
 skipped), and compares the grants with the allow-list file beside each, `<policy>.allow.json`, of the form
-`{"policy": "<name>", "custody": ["<prefix>", ...], "grants": [{"path": "...", "capabilities": [...],
+`{"policy": "<name>", "custody": ["<prefix>", ...], "kv_custody": ["<prefix relative to the key/value mount>", ...],
+"grants": [{"path": "...", "capabilities": [...],
 "allowed_parameters": {"<name>": []}}]}`, exactly: a grant missing from either side fails. Mount names in paths and
 prefixes are written as `{transit_mount}` and `{kv_mount}` and substituted with the configured names before any
 comparison. It also applies the refusals of Requirement 015-016 to every file whatever its allow-list says, and
 checks custody, which no allow-list can certify for itself:
 
-- The policies at the top of `infra/openbao/policies/` are the platform's and declare its custody: `{transit_mount}/`,
-  `{kv_mount}/data/sagat/credentials/` and `{kv_mount}/metadata/sagat/credentials/`. Each subdirectory is one
-  feature, and its policies share the prefixes its allow-lists declare.
+- Custody in the key/value mount is declared relative to the mount, in its own field (`"kv_custody":
+  ["sagat/credentials/"]`), because key/value version 2 exposes one secret under six path types: `data`, `metadata`,
+  `delete`, `undelete`, `destroy` and `subkeys`. Before the overlap and glob checks the checker expands every
+  `kv_custody` prefix, the platform's and each feature's alike, into the six prefixes `{kv_mount}/<type>/<prefix>`; a
+  `custody` entry that names `{kv_mount}` directly is refused. Any `{kv_mount}` path, in a prefix or a grant, whose
+  second segment is not one of the six is refused, so no owner reaches `config`, the mount's root or a path type added
+  later without this check changing.
+- The policies at the top of `infra/openbao/policies/` are the platform's and declare its custody: `{transit_mount}/`
+  in `custody`, and `sagat/credentials/` in `kv_custody`, which expands to the six key/value path types. Each
+  subdirectory is one feature, and its policies share the prefixes its allow-lists declare.
 - Every path is compared as a list of segments split on `/`, after substitution, never as text. Every declared
   prefix must end with `/` and contain no wildcard; one that does not is refused.
 - A grant is contained in a declared prefix only when the prefix's segments are a leading run of the grant's
-  segments, each compared whole (`cred` never contains `credentials`). Every grant must be contained in one of its own
+  segments, each compared whole (`cred` never contains `credentials`); a wildcard segment of a grant (`cred*`, `+`)
+  never equals a literal segment of a prefix, so containment never treats a glob as matching. Every grant must be contained in one of its own
   policy's declared prefixes; the only paths allowed outside them are the three token self-paths of Requirement
   015-016.
 - Two declared prefixes of different owners (two features, or a feature and the platform) overlap when the segments
   of one are a leading run of the other's; any overlap fails, whatever the capabilities.
 - Every grant's path is also read as an OpenBao glob (`*` within or at the end of a segment, `+` for one whole
-  segment) and refused when it could match any path under another owner's declared prefix, so a grant on
-  `{kv_mount}/data/sagat/cred*` or `{kv_mount}/data/+/credentials/` is refused even though its literal segments sit
-  under its own prefix.
-- Negative fixtures prove each refusal, among them a feature fragment granting `update` on
+  segment) and refused when it could match any path under another owner's declared prefix (after the key/value
+  expansion). This is a second barrier, independent of containment: a grant on `{kv_mount}/data/sagat/cred*` or
+  `{kv_mount}/data/+/credentials/` is already refused as not contained, and the glob rule refuses it again on its own
+  terms. Since a fixture refused by containment cannot prove the glob rule, the matcher is unit-tested by itself:
+  `cred*` matches the segment `credentials`, `+` matches exactly one segment and never zero or two, `*` at the end of a
+  path matches any deeper path, and a literal segment matches only itself.
+- Negative fixtures prove each refusal, among them a feature declaring `{kv_mount}/destroy/sagat/credentials/` (refused
+  as a `custody` entry naming the key/value mount) and the same feature declaring `kv_custody`
+  `["sagat/credentials/"]` and granting `update` on `{kv_mount}/destroy/sagat/credentials/*` (refused as overlapping
+  the platform's expanded `destroy` prefix), a feature fragment granting `update` on
   `{transit_mount}/decrypt/sagat-secrets` with that grant listed in its own allow-list (refused as outside its prefixes,
   and, if it declares `{transit_mount}/`, as overlapping the platform's), one granting `read` on
-  `{kv_mount}/data/sagat/credentials/*`, one declaring the prefix `{kv_mount}/data/sagat/cred` (refused for not ending
-  with `/`) and, with that prefix written `{kv_mount}/data/sagat/cred/`, granting `{kv_mount}/data/sagat/credentials/*`
-  (refused as not contained) and `{kv_mount}/data/sagat/cred*` (refused as a glob that matches the platform's
-  prefix), and two features declaring `{kv_mount}/data/sagat/audit/` and `{kv_mount}/data/sagat/`.
+  `{kv_mount}/data/sagat/credentials/*`, one declaring the `kv_custody` prefix `sagat/cred` (refused for not ending
+  with `/`) and, with that prefix written `sagat/cred/`, granting `{kv_mount}/data/sagat/credentials/*` (refused as not
+  contained), one granting `{kv_mount}/config` (refused for its second segment), and two features declaring the
+  `kv_custody` prefixes `sagat/audit/` and `sagat/`.
 
 The snapshot schedule of Requirement 015-020 belongs to the operator's OpenBao installation, which the platform's chart
 does not deploy (`infra/helm/values.yaml`). Its policy, `infra/openbao/operator-only/snapshot.hcl`, grants `read` on
@@ -1263,7 +1292,7 @@ the platform's key service, and the audit record, the error log and the alert st
 | An inbound webhook sender learns about the key service | `Refused` and `Denied` answer today's plain `401`, with no code or body |
 | A fragment of another feature grants a platform custody | Each allow-list declares its custody prefixes; the checker refuses a grant outside them and overlapping prefixes, the platform's included |
 | A key version no snapshot holds seals a value | The trigger refuses a wrapped key version above `seal_version` |
-| The ring and a pre-migration backup read current secrets | Step 9 of the way in: the ring held offline under a custody separate from those backups, destroyed with the last of them, never reused on the way back (fresh key ids, enforced by `retired_ring_key_ids`); values whose ring was exposed rotated at their source |
+| The ring and a pre-migration backup read current secrets | Step 9 of the way in: the ring held offline under a custody separate from those backups, destroyed with the last of them, never reused on the way back (fresh keys, checked against the check values and ids recorded at `begin-migration`); values whose ring was exposed rotated at their source |
 | A platform token reaches feature 031's keys | They live outside the platform's OpenBao (Requirement 015-021) |
 | A mixed fleet cannot open Transit rows | Gated by the instance registry |
 | A 0.2.x sandbox runner refuses Transit signatures for good | Every runner request carries `Sagat-Runner-Trust`; `begin-migration` is refused while an identity's newest old-form sighting is younger than 3 minutes or newer than its newest key-list sighting, and the operator attests for stopped runners; a late one fails closed and is alerted |
@@ -1430,7 +1459,9 @@ Two lanes that can run at the same time; where they touch the same file the orde
   and `SECURITY DEFINER` trigger functions that call it, every one with `search_path = pg_catalog, pg_temp` and
   schema-qualified objects, and the generic privilege-audit row over every `SECURITY DEFINER` function of the
   platform's schemas and every `regprocedure` of `key_authority_reseal_inventory`, with a fixture entry whose count
-  function lacks the pinned path and fails the row; `retired_ring_key_ids` and its function; the `secret_versions` trigger on insert
+  function lacks the pinned path and fails the row; `retired_ring_check_values`, `retired_ring_key_ids` and their
+  function, with tests that a return ring holding archived material under a new id, or an old key that sealed no row,
+  keeps the gate closed and is refused by `reseal-secrets --to local`; the `secret_versions` trigger on insert
   and on update of the sealed columns, with the floor and the ceiling; `secrets.authority` widened; `wrapped_key`, `wrapped_key_version`, `data_key_issued_at` and the
   representation constraint with no key id on a `transit` row; the intent binding version and key version under the
   immutability trigger, and the binding-version trigger of Requirement 015-014; `script_artifact_signatures` with its
@@ -1500,8 +1531,11 @@ Two lanes that can run at the same time; where they touch the same file the orde
   beside its policy with its declared custody prefixes, each ending with `/`, comparing paths by whole segments,
   refusing a grant not contained in them, a grant whose glob could match another owner's prefix, and overlapping
   prefixes between owners, the platform's included, with negative fixtures for each refusal, among them a fragment
-  that grants `{transit_mount}/decrypt/sagat-secrets` and lists it in its own allow-list, and one declaring
-  `{kv_mount}/data/sagat/cred` that grants `{kv_mount}/data/sagat/credentials/*`) and run it in the continuous integration workflow and in
+  that grants `{transit_mount}/decrypt/sagat-secrets` and lists it in its own allow-list, one declaring the
+  `kv_custody` prefix `sagat/cred` that grants `{kv_mount}/data/sagat/credentials/*`, and one declaring
+  `{kv_mount}/destroy/sagat/credentials/` and granting `update` under it; the expansion of every `kv_custody` prefix to
+  the six key/value path types and the refusal of any other second segment; and unit tests of the glob matcher on its
+  own) and run it in the continuous integration workflow and in
   `/verify`; add the operator-only snapshot policy and job under `infra/openbao/operator-only/`, referenced from
   `infra/openbao/production-values.yaml`, which the checker verifies separately (exactly one `sys/` grant, bound by no
   platform role).
