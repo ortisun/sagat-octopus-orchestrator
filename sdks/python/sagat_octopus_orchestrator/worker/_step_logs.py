@@ -882,13 +882,14 @@ class AttemptCapture:
         retries = 0
         session_resent = False
         while True:
+            # Not sent again once it was given up, its attempt or its session stopped, or the process's capture did.
             if batch.abandoned:
-                return
-            if process_capture_stopped():
-                self._failed(batch, "secret_set_full")
                 return
             if self._stopped():
                 self._failed(batch)
+                return
+            if process_capture_stopped():
+                self._failed(batch, "secret_set_full")
                 return
             left = BATCH_AGE_SECONDS - (time.monotonic() - batch.first_sent)
             if left <= 0:
@@ -1115,17 +1116,20 @@ class AttemptCapture:
             if self._state == _FINAL_ONLY or process_capture_stopped():
                 return self._mark_only()
             self._keep_one_carry()
-            return pb.StepLogCarry(records=[record for record, _ in self._buffer], highest_sequence=self._last)
+            # The carried records leave the buffer: the report holds them now.
+            carried, self._buffer = self._buffer, []
+            _HELD.add(-self._buffer_bytes)
+            self._buffer_bytes = 0
+            return pb.StepLogCarry(records=[record for record, _ in carried], highest_sequence=self._last)
 
-    def _close(self, reported: bool = True) -> None:
-        """The attempt is over: nothing more is sent, its records are let go, and its drops are counted once. Without a
-        report, what it still holds (its batch in flight included) is counted as not sent."""
+    def _close(self) -> None:
+        """The attempt is over: nothing more is sent, what it still holds (its batch in flight included) is let go and
+        counted as not sent (it ends without a report that carries it), and its drops are handed over once."""
         with self._lock:
             if self._closed:
                 return
-            if not reported:
-                self._abandon("send_failed")
-                self._count("send_failed", len(self._buffer))
+            self._abandon("send_failed")
+            self._count("send_failed", len(self._buffer))
             self._closed = True
             self._ended = True
             _HELD.add(-self._buffer_bytes)
@@ -1141,7 +1145,7 @@ class AttemptCapture:
     def discard(self) -> None:
         """The attempt makes no report (its lease was lost, or the host stopped): nothing more is sent."""
         self.end()
-        self._close(reported=False)
+        self._close()
 
     def shutdown_batch(self) -> _Batch | None:
         """The host stops after its grace with this attempt's handler still running: its oldest buffered records become

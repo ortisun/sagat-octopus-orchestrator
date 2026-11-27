@@ -245,6 +245,41 @@ async def test_a_real_cancelled_status_is_retried_as_any_status_not_listed(
     assert drops_of(events) == []
 
 
+async def test_a_batch_in_its_back_off_is_not_sent_again_once_the_session_stopped_capture(
+    capturing: FakeWorkerService, make_host: MakeHost
+) -> None:
+    # Attempt 1 is in its 1-second back-off after two UNAVAILABLE when attempt 2's batch is answered STOP_CAPTURE.
+    capturing.append_script = [
+        Scripted(grpc.StatusCode.UNAVAILABLE),
+        Scripted(grpc.StatusCode.UNAVAILABLE),
+        verdict("STEP_LOG_VERDICT_STOP_CAPTURE", "STEP_LOG_STOP_REASON_CAPTURE_OFF"),
+    ]
+    events: list[WorkerEvent] = []
+    host = make_host(transport="poll", max_inflight=2, on_event=events.append)
+    second_may_log = asyncio.Event()
+
+    async def work(_input: Any, ctx: ActivityContext) -> Any:
+        if ctx.attempt == 2:
+            await second_may_log.wait()
+        for n in range(1, 257):
+            ctx.log.info(f"line {n}")
+        if ctx.attempt == 1:
+            await until(lambda: len(capturing.of("AppendStepLogs")) == 2, "the first retry")
+            second_may_log.set()
+            await until(lambda: len(capturing.append_answered) == 3, "the stopping answer")
+        return {"ok": True}
+
+    host.register_activity("work", work)
+    await host.start()
+    capturing.leases = [one_lease(), one_lease(attempt=2)]
+    await until(lambda: len(capturing.of("CompleteStep")) == 2, "both reports")
+    assert len(capturing.of("AppendStepLogs")) == 3, "no second retry after the session stopped"
+    for call in capturing.of("CompleteStep"):
+        assert not call.request.HasField("step_logs")
+    # The batch given up is counted once; the one answered STOP_CAPTURE was answered, not dropped by the SDK.
+    assert drops_of(events) == [("send_failed", 256)]
+
+
 async def test_a_batch_holds_at_most_500_records(capturing: FakeWorkerService, make_host: MakeHost) -> None:
     held = Held()
     capturing.append_script = [held]
