@@ -57,3 +57,14 @@ enters release 0.3.0 (Owner decision 2026-11-24-1) under this refinement.
 
 Design 042, sections 4, 6 and 10, third revision (`docs/designs/042-stream-operators.md`); research Decisions 042-161
 to 042-166.
+
+## Revision of 2026-11-27 (design 042, architecture review of the third revision)
+
+Recorded without changing the decisions above, under Owner decision 2026-11-24-4. Decision 1: the admission statement
+orders its two reads with `MATERIALIZED` common table expressions in sequence, the transaction id first, since a plain
+common table expression does not fix the order of evaluation; transaction ids are cluster-wide, which only makes the
+horizon more conservative. Decision 4: a process lists a capability only where its configuration runs it (ADR-0082),
+the requirement is also checked when `switch` activates a chained version, and the registry's removal `verify` refuses
+to remove a requirement while a chain, a window that is not final or a chained version exists. A binary from before the
+instance registry does not register, so the registry cannot refuse it; for such binaries the upgrade rule of
+`docs/runbooks/scaling.md` is the only guard (design 042, Gap 042-006).

@@ -3,7 +3,7 @@
 **Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo"); revised the same day after review, before any code (see Revision); decision 4's admission grace and the fleet rule refined by [ADR-0153](ADR-0153-a-window-is-sealed-only-past-the-transaction-horizon-of-its-deadline.md) (2026-11-26)
 **Decided by:** owner, on the agent's proposal (OD-2026-11-13-17, accepting the text of commit df83eed9); the revision of 2026-11-13 is the agent's, answering the architecture, security and correctness reviews, and is put to the owner with the design (T042-44 before S2)
 **Refines / supersedes:** refines ADR-0012 (events pass through a durable inbox and a durable delivery table), ADR-0020 (sharded, fenced scheduler) and ADR-0032 (additive IR v1, one capability at a time); composes with ADR-0056 and ADR-0088 (one admission port; rate limits). Supersedes none.
-**Enforced by:** proposed checks of design 042, slices S2 to S4: the fault, race, restart and capacity tests T042-27 to T042-32, the zero-cost budget test T042-19, the HMAC test T042-53 and the composition test with feature 022, T042-3. None exists yet, and none is in release 0.3.0; until they exist, this rule is review only.
+**Enforced by:** proposed checks of design 042, slices S2 to S4: the fault, race, restart and capacity tests T042-27 to T042-32, the zero-cost budget test T042-19, the HMAC test T042-53 and the composition test with feature 022, T042-3. None exists yet; slices 2 to 5 are in release 0.3.0 since Owner decision 2026-11-24-1; until they exist, this rule is review only.
 
 ## Context
 
@@ -43,7 +43,7 @@ Unknown: the rate one hot key sustains and the cost of the backlog check per tic
    row, then the key row when the chain has a keyed or windowed stage (a chain of only stateless stages takes none),
    applies the stages, and inserts the `event_deliveries` row with its final outcome; a conflict on that insert rolls
    the transaction back. A delivery row is never updated and is deleted with its inbox row.
-4. **Arrival time on the database clock, with a grace and a cap.** An element's time is its `received_at`; `occurred_at`
+4. **Arrival time on the database clock, with a grace and a cap.** *(The grace of this decision is withdrawn and replaced by the transaction horizon of ADR-0153 decisions 1 and 3; the cap, `maxHoldMs`, and the backlog rule stay.)* An element's time is its `received_at`; `occurred_at`
    MUST NOT drive a timer. A key MAY have several open windows; an element joins the one covering its `received_at`, and
    an elapsed deadline is never extended. A window with deadline `D` MUST NOT be sealed before `D + admissionGraceMs`
    (at least the admission statement timeout), nor, until `D + maxHoldMs`, while the tenant and namespace hold a
@@ -112,3 +112,13 @@ None yet. Design: `docs/designs/042-stream-operators.md` (FR-042-013 to FR-042-0
 SC-042-002, SC-042-006, SC-042-007, Technical Plan sections 4 to 8); registers: `specs/042-stream-operators/research.md`
 (D042-003 to D042-009, D042-011, D042-014, D042-029 to D042-037; G042-002, G042-005 to G042-007, G042-011). Feature
 022: `specs/022-flow-control-step-policies/spec.md` (US07, FR-022-041, FR-022-042), its D022-018, and ADR-0088.
+
+## Revision of 2026-11-27 (design 042, architecture review of the third revision)
+
+Recorded without changing the decisions above, under Owner decision 2026-11-24-4: every emission of a chain with a
+keyed stage, a window, `debounce` or `flatMap` is an `operator_windows` row (a chain without a window emits a window
+sealed at once with its one member), so the apply never creates a run and only the window start does; a chain of only
+`filter` and `map` keeps today's start. The start writes its `SEALED` window in the run's open transaction, after the
+run, as an ADR-0050 decision 7 slot 8a row, and takes no chain or key row; the apply's and the seal's operator rows are
+slot 3. The HMAC key is used only through one `SECURITY DEFINER` function, `operator_key_hmac`, over `pgcrypto`. Design
+042, Functional requirements 042-014 and 042-019, Technical Plan 4 to 6.

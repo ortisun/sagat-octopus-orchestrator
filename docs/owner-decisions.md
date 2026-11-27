@@ -13,6 +13,20 @@ owner answered "Aceito os dois, cache 300 s".
 |---|---|---|---|---|
 | OD-2026-11-27-1 | "Aceito os dois, cache 300 s": both security residual risks of design 015 are accepted. Gap 015-003: a revoked platform token leaves cached data keys usable for at most 300 seconds, accepted with the 300-second unwrapped-key cache of OD-2026-11-26-116. Gap 015-005: a compromised process holds every token it uses, with custody separated between process kinds and code paths rather than inside one process, accepted | owner | Decided | docs/designs/015-opentelemetry-and-openbao.md, specs/015-opentelemetry-and-openbao/research.md G015-003, G015-005 |
 
+## 2026-11-27 — Data, AI and events readiness: delegated decisions of designs 015, 039 and 042
+
+Acts taken by the agent finishing these designs on pull request 288, under the owner's delegation for release 0.3.0
+(OD-2026-11-24-4) and the approval rule OD-2026-11-25-2. Each row gives the act and its reason; the owner may overrule
+any of them. Ids from OD-2026-11-27-150 are design 015's, from OD-2026-11-27-390 design 039's, from OD-2026-11-27-420
+design 042's, from OD-2026-11-27-240 features 024 and 025.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-27-420 | Design 042's window start (Tasks 042-3 and 042-22) depends on feature 022's one admission port (FR-022-018, FR-022-041) as merged from `feature/022-throughput-control`; design 042 edits no register of feature 022 and asks 022's owner session to align D022-018's wording. Why: one run creator keeps 022's limits on every run; editing another feature's register from this branch would bypass its owner | delegate (OD-2026-11-24-4) | Decided | docs/designs/042-stream-operators.md T042-3, T042-22, section 8 |
+| OD-2026-11-27-421 | Design 042: every emission of a chain with a keyed stage, a window, `debounce` or `flatMap` is an `operator_windows` row, a window sealed at once when the chain has none; the start writes its window after the run in the run's transaction (ADR-0050 slot 8a). Why: the apply's delivery row and today's start no longer write the same row, and no change to 022's port is needed; weighed against applying the stages inside the run's admission transaction, which would hold key locks across run creation | delegate (OD-2026-11-24-4) | Decided | docs/designs/042-stream-operators.md FR-042-014, FR-042-019, sections 5 and 6 |
+| OD-2026-11-27-422 | Design 042: the per-tenant HMAC key is used only through one `SECURITY DEFINER` function, `operator_key_hmac`, over the trusted `pgcrypto` extension, an exception to NFR-042-002 with the instance registry's migration as precedent. Why: the key must stay in the database (OD-2026-11-26-117) and unreadable by the runtime role, which no plain grant can give | delegate (OD-2026-11-24-4) | Decided | docs/designs/042-stream-operators.md section 4, NFR-042-002, T042-53 |
+| OD-2026-11-27-423 | Design 042, Gap 042-006 reopened: a binary from before the instance registry does not register, so in a fleet that breaks the upgrade rule an older dispatcher could start one run per event; accepted as a residual risk of breaking a documented rule. Why: no mechanism inside 0.3.0 can refuse a process that does not register; the runbook rule and the old-reader test stand | delegate (OD-2026-11-24-4) | Decided | specs/042-stream-operators/research.md G042-006 |
+
 ## 2026-11-26 — Data, AI and events readiness: designs 015, 039, 040, 042 and features 024, 025
 
 Acts taken by the agent preparing these features for build, under the owner's delegation for release 0.3.0

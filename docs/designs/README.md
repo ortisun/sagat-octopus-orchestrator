@@ -14,7 +14,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 17 |
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Approved | 0 of 30 |
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
-| 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 55 |
+| 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 56 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
 | 044 | [Workflow as code](044-workflow-as-code.md) | Approved | 0 of 37 |
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Approved | 0 of 20 |
