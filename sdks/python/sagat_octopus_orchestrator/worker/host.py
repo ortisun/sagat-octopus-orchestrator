@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
 
 import grpc.aio
 
@@ -189,7 +189,13 @@ def _minor_of(version: str) -> int:
     return int(match[1] or 0) if match else 0
 
 
-def _scoped_instance(lease: pb.TaskLease, minor: int) -> dict[str, pb.ExecutionInstanceIdentity]:
+class _ScopedInstance(TypedDict, total=False):
+    """The keyword a request of protocol 1.5 or later carries: typed by name, so that it binds only to ``instance``."""
+
+    instance: pb.ExecutionInstanceIdentity
+
+
+def _scoped_instance(lease: pb.TaskLease, minor: int) -> _ScopedInstance:
     if minor >= 5 and lease.HasField("instance"):
         return {"instance": lease.instance}
     return {}
