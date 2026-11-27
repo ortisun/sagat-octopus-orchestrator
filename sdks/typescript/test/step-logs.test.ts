@@ -387,13 +387,70 @@ test('a long step sends the batch its 256th call cut, waits for its answer, and 
 
 test('an answer held past 2 seconds is given up: the report goes with the newest records that fit', async () => {
   let release: () => void = () => undefined;
+  const drops: Array<[string, number]> = [];
   fake.appendAnswers = [{ hold: new Promise<void>((resolve) => { release = resolve; }) }];
-  const started = performance.now();
-  const report = await runOne(260);
-  const waited = performance.now() - started;
+  let ended = 0;
+  const report = await runOne(260, { onEvent: (e) => { if (e.type === 'steplogs.dropped') drops.push([e.reason, e.records]); } }, () => {
+    ended = performance.now();
+    return { ok: true };
+  });
+  // The wait is the SDK's own: from the handler's end, not from anything before it.
+  const waited = fake.of('completeStep')[0]!.at - ended;
   release();
-  assert.ok(waited >= LIMITS.reportWaitMs, `reported after ${waited} ms`);
+  assert.ok(waited >= LIMITS.reportWaitMs - 1, `reported ${waited} ms after the handler ended`);
   assert.deepEqual(sequences(report['step_logs'].records), range(257, 260));
+  assert.deepEqual(drops, [['report_deadline', 256]], 'the abandoned batch is counted');
+});
+
+test('stopping the host leaves an attempt in its report wait to its report, and flushes one still running as its batch in flight', async () => {
+  let release: () => void = () => undefined;
+  fake.appendAnswers = [{ hold: new Promise<void>((resolve) => { release = resolve; }) }];
+  const h = host({ maxInflight: 2 });
+  let handlerEnded = false;
+  let running: () => void = () => undefined;
+  const stillRunning = new Promise<void>((resolve) => { running = resolve; });
+  h.registerActivity('work', async (_input, context) => {
+    if (context.attempt === 1) {
+      for (let n = 1; n <= 260; n++) context.log.info(`waiting ${n}`);
+      handlerEnded = true;
+      return { ok: true };
+    }
+    for (let n = 1; n <= 10; n++) context.log.info(`running ${n}`);
+    running();
+    await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve()));
+    return { stopped: true };
+  });
+  await h.start();
+  fake.leases = [lease(), lease({ attempt: 2 })];
+  await until(() => handlerEnded && fake.of('appendStepLogs').length === 1, 'the held batch of the attempt in its report wait');
+  await stillRunning;
+  const stopping = h.stop(200);
+  await until(() => fake.of('appendStepLogs').length === 2, 'the shutdown flush of the running attempt');
+  release();
+  await stopping;
+  const flushed = fake.of('appendStepLogs')[1]!.request['records'];
+  assert.deepEqual(messages(flushed), range(1, 10).map((n) => `running ${n}`));
+  const waiting = fake.of('completeStep').find((c) => c.request['attempt'] === 1);
+  assert.ok(waiting, 'the attempt in its report wait still reported');
+  assert.deepEqual(sequences(waiting.request['step_logs'].records), range(257, 260));
+});
+
+test('a batch holds at most 500 records when more are buffered as its turn comes', async () => {
+  let release: () => void = () => undefined;
+  fake.appendAnswers = [{ hold: new Promise<void>((resolve) => { release = resolve; }) }];
+  const h = host();
+  h.registerActivity('work', async (_input, context) => {
+    for (let n = 1; n <= 256; n++) context.log.info(`a ${n}`);
+    for (let n = 257; n <= 956; n++) context.log.info(`b ${n}`);
+    release();
+    await until(() => fake.of('appendStepLogs').length >= 2, 'the second batch');
+    return { ok: true };
+  });
+  await h.start();
+  fake.leases = [lease()];
+  await until(() => fake.of('completeStep').length === 1, 'the report');
+  const appends = fake.of('appendStepLogs');
+  assert.deepEqual(sequences(appends[1]!.request['records']), range(257, 756));
 });
 
 test('FINAL_ONLY drops what is buffered and later calls, and the report carries the final mark with no record', async () => {
@@ -404,7 +461,7 @@ test('FINAL_ONLY drops what is buffered and later calls, and the report carries 
   assert.equal(report['step_logs'].highest_sequence, 300);
 });
 
-test('STOP_ATTEMPT sends no carry, and STOP_CAPTURE stops the session until it registers again', async () => {
+test('STOP_ATTEMPT sends no carry, and STOP_CAPTURE stops the next attempt of the session', async () => {
   fake.appendAnswers = [{ verdict: 'STEP_LOG_VERDICT_STOP_ATTEMPT', stop_reason: 'STEP_LOG_STOP_REASON_LEASE' }];
   assert.equal((await runOne(300))['step_logs'], null);
   while (hosts.length) await hosts.pop()?.stop(1000);
@@ -496,21 +553,56 @@ test('UNIMPLEMENTED stops the batches of the attempt, and the report carries the
   assert.deepEqual(drops.sort(), [['report_deadline', 80], ['send_failed', 256]]);
 });
 
-test('after UNIMPLEMENTED no call cuts another batch, however many records it buffers', async () => {
+test('after UNIMPLEMENTED the attempt keeps the newest records that fit one carry, whatever it logs after', async () => {
   fake.appendAnswers = [{ code: grpc.status.UNIMPLEMENTED }];
-  const h = host();
+  const drops: Array<[string, number]> = [];
+  const h = host({ onEvent: (e) => { if (e.type === 'steplogs.dropped') drops.push([e.reason, e.records]); } });
   h.registerActivity('work', async (_input, context) => {
     for (let n = 1; n <= 256; n++) context.log.info(`line ${n}`);
     await until(() => fake.of('appendStepLogs').length === 1, 'the refused batch');
     await new Promise((resolve) => setImmediate(resolve));
-    for (let n = 257; n <= 800; n++) context.log.info(`line ${n}`);
+    for (let n = 257; n <= 2256; n++) context.log.info(`line ${n}`);
     return { ok: true };
   });
   await h.start();
   fake.leases = [lease()];
   await until(() => fake.of('completeStep').length === 1, 'the report');
   assert.equal(fake.of('appendStepLogs').length, 1);
-  assert.equal(fake.of('completeStep')[0]!.request['step_logs'].highest_sequence, 800);
+  const carry = fake.of('completeStep')[0]!.request['step_logs'];
+  assert.equal(carry.highest_sequence, 2256);
+  assert.deepEqual(sequences(carry.records), range(2193, 2256));
+  assert.deepEqual(drops.sort(), [['report_deadline', 2000 - 64], ['send_failed', 256]]);
+});
+
+test('a batch in its back-off is not sent again once the session stopped capture, nor a real CANCELLED dropped at once', async () => {
+  // Attempt 1 is in its 1-second back-off after two UNAVAILABLE when attempt 2's batch is answered STOP_CAPTURE.
+  fake.appendAnswers = [
+    { code: grpc.status.UNAVAILABLE }, { code: grpc.status.UNAVAILABLE },
+    { verdict: 'STEP_LOG_VERDICT_STOP_CAPTURE', stop_reason: 'STEP_LOG_STOP_REASON_CAPTURE_OFF' },
+  ];
+  const h = host({ maxInflight: 2 });
+  let second: () => void = () => undefined;
+  const secondMayLog = new Promise<void>((resolve) => { second = resolve; });
+  h.registerActivity('work', async (_input, context) => {
+    if (context.attempt === 2) await secondMayLog;
+    for (let n = 1; n <= 256; n++) context.log.info(`line ${n}`);
+    if (context.attempt === 1) {
+      await until(() => fake.of('appendStepLogs').length === 2, 'the first retry');
+      second();
+      await until(() => fake.of('appendStepLogs').length === 3, 'the stopping answer');
+    }
+    return { ok: true };
+  });
+  await h.start();
+  fake.leases = [lease(), lease({ attempt: 2 })];
+  await until(() => fake.of('completeStep').length === 2, 'both reports');
+  assert.equal(fake.of('appendStepLogs').length, 3, 'no second retry after the session stopped');
+  while (hosts.length) await hosts.pop()?.stop(1000);
+  fake.reset();
+  fake.appendAnswers = [{ code: grpc.status.CANCELLED }];
+  const report = await runOne(260);
+  assert.equal(fake.of('appendStepLogs').length, 2, 'a CANCELLED status is retried');
+  assert.deepEqual(sequences(report['step_logs'].records), range(257, 260));
 });
 
 test('a lost answer to a carrying report sends the same carry again, and a failure carries too', async () => {
