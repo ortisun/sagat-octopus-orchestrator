@@ -818,6 +818,32 @@ finding was answered.
   044-206 give, and design 045's rollback floor. Until PR #279 merges, Task 044-6 stays closed; whether the hold of
   Architecture decision 0112 can starve an operator's commands is settled by Task 045-21's barrier test, on which this
   lane does not depend yet.
+### Decisions while building the server lane: the domain of slice 3 (2026-11-27)
+
+These are recorded here, before the documents block, so that the domain branch and the contracts branch do not edit
+the same lines of this register while both are open.
+
+- **D044-252** (2026-11-27) The first part of slice 3 (pull request 296: the chain fold behind `CommandDigester`, the
+  public `canonical::rfc8785`, `Sha256CommandDigester` and the activity envelope) settles, delegate (OD-2026-11-24-4),
+  what its correctness review found the documents leave open (no Blocker or Major; seven Minor and five Nit, each
+  fixed):
+  - RFC 8785 numbers: the serializer takes Rust's shortest digit count, then the closest decimal of that length (Rust's
+    exact fixed-precision formatting, ties to even), and keeps it only when it round-trips, else the shortest form,
+    which is then the only one of its length; the reviewer checked it exact for every finite double. `infra-ir`
+    declares `serde_json`'s `float_roundtrip` itself, because the bytes of a parsed value depend on correctly rounded
+    parsing; a number beyond the doubles (reachable only with `arbitrary_precision`) prints `null`, as
+    `JSON.stringify` prints Infinity, and the I-JSON check of a command refuses it before (corpus README).
+  - `CommandChain::restore` refuses a stored chain whose hash is `H(0)` with a count, or another hash without one.
+  - A `compensateWith` or `reconcileWith` is an entry of the envelope when an entry covers it, a prefix entry
+    included: Technical Plan 3.1's "must also be entries" means covered, and such a derived step resolves no secret,
+    since only an exact entry releases one.
+  - The chain hashes the target it is given; the completion path derives it from the server's own numbering and
+    records (Technical Plan 6.2's table), never from a worker's claim (Tasks 044-5 and 044-9).
+  - An entry name is at most 128 characters, the `.*` of a prefix included (`codeActivityPattern`), and the reserved
+    prefixes are `script.` and `sagat.` exactly (`sag.*`, `scripts.*` and `sagatx.y` are ordinary names).
+  - Decision 044-241's test `a_fragment_that_adds_a_secret_is_outside_the_envelope` is the fragment parse's (Task
+    044-5); the domain's rule is held by `an_activity_command_cannot_carry_a_secret_of_another_activity_entry`.
+
 ### Decisions while building the server lane: documents (2026-11-26)
 
 - **D044-238** (2026-11-26) `publishCode` takes the code document's declarations as well:
