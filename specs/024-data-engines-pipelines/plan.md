@@ -197,12 +197,15 @@ specs/024-data-engines-pipelines/
    comparison catches a data-runner fault that staged other bytes, not a lying audit container, whose
    outcomes rest on the sandbox (Gap 1249; Decision 024-016). A memory kill of the transform reported
    by `DELETE` (`memory_killed`) is `DATA_RESOURCE_EXHAUSTED`; a refusal or an unavailable sandbox is
-   `DATA_RUNTIME_UNAVAILABLE` (retryable, not counted against `maxAttempts` when no container of the
-   attempt started, at most 10 such attempts per step); any failure of the audit attempt itself
+   `DATA_RUNTIME_UNAVAILABLE` (retryable; when no container of the attempt started the engine ends it
+   with the domain command `ReturnDataAttempt`, which records `step.attempt_returned`, gives the
+   attempt number back and advances the generation, so it is not counted against `maxAttempts`; at
+   most 10 such attempts per step, counted from those journal events, reset rule `Copy`); any failure of the audit attempt itself
    (refusal, unavailable, memory kill, timeout, crash, `ERROR` of a platform-generated check) is
    `DATA_RUNTIME_UNAVAILABLE` with no snapshot committed, never a quarantine. On start-up the data
-   runner ends, through `DELETE`, every attempt whose directory it finds in its work volume before it
-   offers the activities, so an attempt orphaned by its crash does not hold a slot until its label
+   runner ends, through `DELETE`, every attempt whose directory it finds in its own subdirectory of
+   the work volume (named by its instance id, so two instances sharing a volume never end each
+   other's attempts) before it offers the activities, so an attempt orphaned by its crash does not hold a slot until its label
    deadline. Step sources (D1274) are staged the same way: a committed Parquet step-output blob
    as one part, an inline or blob 017 database result as a typed JSON table. See
    [data runtime](contracts/data-runtime.md).
@@ -304,10 +307,11 @@ BEGIN;
   update step, journal, next tasks/timers, outbox, completion receipt; the step's output document
      is a protected_system record (listed in data_protected_outputs, measured as zero);
 COMMIT;
--- A refused completion (DATA_CONTRACT_VIOLATION, STORAGE_QUOTA_EXCEEDED, an audit-attempt failure),
--- FailStep, a lease expiry that grants a new generation and a cancellation each also claim the
--- attempt's UPLOADED DATA_SNAPSHOT_PART blobs of that fence for deletion (UPLOADED -> DELETING, retry
--- due now), after the run lock, in the same transaction (Decision 024-016).
+-- Every transaction that ends a data fence (any end_attempt: a refused completion such as
+-- DATA_CONTRACT_VIOLATION, STORAGE_QUOTA_EXCEEDED or an audit-attempt failure, FailStep, a lease
+-- expiry with or without attempts left, AttemptTimeout; a cancellation; a run stop) also claims
+-- every UPLOADING or UPLOADED DATA_SNAPSHOT_PART blob of that fence for deletion (-> DELETING,
+-- retry due now), after the run lock, in the same transaction (Decisions 024-016 and 024-018).
 
 -- API publish / rollback
 BEGIN;
@@ -387,6 +391,8 @@ lower if a measured run does not support it.
 | Container memory (includes the `/out` and `/spill` tmpfs) / CPUs | 3 GiB / 1 (class `small`) | 16 GiB / 4 (class `large`) | the data mode's class budgets (Architecture decision 0079 rule 5), memory cgroup |
 | `/spill` tmpfs | 1 GiB | 4 GiB | `size=`, DuckDB `max_temp_directory_size` |
 | `dataQuery` result (inline output) / rows / wall time | 256 KiB / 1,000 / 2 min | 256 KiB / 10,000 / 10 min | engine, container |
+| Staging allowance inside a data step's timeout | 3 min | 3 min | fixed; publication refuses a timeout leaving less than 1 min of wall time |
+| `dataQuery` step timeout (`timeoutMs`: staging and query) | 5 min | 13 min | lease deadline |
 | Data step timeout (`timeoutMs`: staging, transform, upload, read-back, audit, report) | 15 min | 60 min | lease deadline |
 | Transform wall time / audit wall time | 10 min / 2 min | the step timeout minus the audit time and the staging allowance / 10 min | container deadlines inside the lease |
 | Transform attempts | 2 | 5 | retry policy |
@@ -420,7 +426,7 @@ retained snapshots; it refuses new growth.
 | API publication races a run publication | Asset row lock serializes | CAS loser `DATA_PUBLISH_STALE` / `CONFLICT` (race test) |
 | Pointer moves after a step pinned its input | Step reads its pinned snapshot | Retention keeps it (integration) |
 | Retention races a new pin | Pin takes asset head `FOR SHARE`; retention `FOR NO KEY UPDATE` and recheck | Pinned snapshot never deleted (race test) |
-| Retention races an 018 reset that references the snapshot | Reset takes asset heads `FOR SHARE` in slot 4b and reads the snapshot state under that lock; retention `FOR NO KEY UPDATE` and rechecks `run_data_snapshot_refs` | Reset refused `SNAPSHOT_RETIRED`, or the snapshot kept (barrier race test, Task 024-068) |
+| Retention races an 018 reset that references the snapshot | Reset takes asset heads `FOR SHARE` in slot 4b and reads the snapshot state under that lock; retention `FOR NO KEY UPDATE` and rechecks `run_data_snapshot_refs` | Reset refused `SNAPSHOT_RETIRED` (or `SNAPSHOT_NOT_RESTORABLE` for an abandoned one), or the snapshot kept (barrier race test, Task 024-068) |
 | Approval longer than `retainUnpublishedDays` before `dataPublish`; a rollback during the approval | The run's staged snapshot stays `AUDITED` (live-run pin) | `dataPublish` publishes, or is stale and follows `onStale` after the rollback (race tests, Task 024-049) |
 | Object store unavailable during staging | Attempt fails retryably | Nothing published (fault) |
 | Object store unavailable while the engine reads footers | No state change | `CompleteStep` answers `UNAVAILABLE`; the same completion is sent again with the same key; never `DATA_CONTRACT_VIOLATION` (fault) |

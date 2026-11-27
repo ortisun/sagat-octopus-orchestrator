@@ -341,8 +341,8 @@
         "timeoutMs": {
           "type": "integer",
           "minimum": 1000,
-          "maximum": 600000,
-          "default": 120000
+          "maximum": 780000,
+          "default": 300000
         },
         "next": {
           "type": "string"

@@ -134,9 +134,10 @@ runner and the host program enforce in software below the class budget.
 - `WriteBlobHeader` gains `BlobPurpose purpose = 11` (`BLOB_PURPOSE_UNSPECIFIED` keeps today's
   step-output meaning) with `BLOB_PURPOSE_DATA_SNAPSHOT_PART`; content type
   `application/vnd.apache.parquet`; the reservation records the exact fence and counts against the
-  data pending-upload ceiling and `tenant_data_bytes`. The finalization of such an upload rechecks
-  that its fence is still the step's live lease; when the attempt has ended it claims the blob for
-  deletion in the same transaction.
+  data pending-upload ceiling and `tenant_data_bytes`. The reservation `INSERT` requires the step to be
+  `LEASED` to that fence, so an ended fence accepts no reservation. The finalization of such an
+  upload rechecks that its fence is still the step's live lease; a row the ending transaction
+  already claimed (`UPLOADING → DELETING`) is recorded as a measured `DELETING` row due at once.
 
 ## Completion
 
@@ -180,6 +181,8 @@ runner never sends a step-log carry (Requirement 041-016; the ingest refuses its
 Unchanged. The data runner heartbeats from claim until report; cancellation or lease loss ends the
 attempt through the attempt API (`DELETE /v1/attempts/{id}`), after the attempt socket has stopped;
 a report after cancellation follows the 017 cancellation-acknowledgement rule and never commits
-parts. The cancellation, a `FailStep`, a refused completion and a lease expiry that grants a new
-generation each claim the attempt's uncommitted `DATA_SNAPSHOT_PART` uploads for deletion in their
-own transaction; a `WriteBlob` of that fence that finishes afterwards is claimed when it finishes.
+parts. Every transaction that ends a data fence (any `end_attempt`: a `FailStep`, a refused completion, a
+lease expiry with or without attempts left, `AttemptTimeout`; a cancellation; a run stop) claims
+every `UPLOADING` or `UPLOADED` `DATA_SNAPSHOT_PART` row of that fence for deletion in its own
+transaction; a `WriteBlob` of that fence that finishes afterwards finds its row `DELETING` and is
+recorded as measured and due at once.

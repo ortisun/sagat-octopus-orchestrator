@@ -70,8 +70,10 @@ The data mode's state lives in engine labels (attempt, slot, class, absolute dea
 it sweeps at start-up and every 30 s, drains on shutdown without killing running containers, and
 answers every rejection with a closed body (Architecture decision 0079 rules 4 and 6 to 13).
 
-When the data runner starts, before it offers any activity, it reads the attempt ids of the attempt
-directories it finds in its work volume and ends each through `DELETE …`, then removes the directory
+Each data runner instance keeps its attempt directories under a subdirectory of its own in the
+work volume, named by its instance id. When the data runner starts, before it offers any activity,
+it reads the attempt ids of the attempt directories it finds in its own subdirectory only and ends
+each through `DELETE …`, then removes the directory
 once the container is gone; an attempt its previous process left running therefore frees its slot
 at the restart instead of at its label deadline.
 
@@ -234,7 +236,7 @@ row against the pinned DuckDB image and the Polars starter lock.
 | `boolean` | `BOOLEAN` | none |
 | `int32` | `INT32` | none, or `INTEGER(32, signed)` |
 | `int64` | `INT64` | none, or `INTEGER(64, signed)` |
-| `decimal(p,s)` | `INT32` (p ≤ 9), `INT64` (p ≤ 18), `FIXED_LEN_BYTE_ARRAY` of the minimal length for p, or `BYTE_ARRAY` | `DECIMAL(p,s)` with exactly the contract's p and s |
+| `decimal(p,s)` | `INT32` (p ≤ 9), `INT64` (p ≤ 18), `FIXED_LEN_BYTE_ARRAY` of any length from the minimal one for p up to 16 bytes (DuckDB writes 16 for p > 18), or `BYTE_ARRAY` | `DECIMAL(p,s)` with exactly the contract's p and s |
 | `float64` | `DOUBLE` | none |
 | `string` | `BYTE_ARRAY` | `STRING` (converted `UTF8`) |
 | `binary` | `BYTE_ARRAY` | none |
@@ -288,12 +290,12 @@ DuckDB types map to cells as follows:
 
 | Condition | Code | Retryable |
 |---|---|---|
-| Image or runtime unavailable, probe failed; the data mode refused the attempt (`ceiling`, `slot`, `class`, `deadline`, `directory`) or was `unavailable` | `DATA_RUNTIME_UNAVAILABLE` | yes; when no container of the attempt started it does not count against `maxAttempts`, at most 10 such attempts per step |
+| Image or runtime unavailable, probe failed; the data mode refused the attempt (`ceiling`, `slot`, `class`, `deadline`, `directory`) or was `unavailable` | `DATA_RUNTIME_UNAVAILABLE` | yes; when no container of the attempt started it is ended by `ReturnDataAttempt` (journal `step.attempt_returned`, the attempt number given back, the generation advanced) and does not count against `maxAttempts`, at most 10 such attempts per step, counted from those events |
 | The audit attempt itself failed (refused, unavailable, killed for memory, timed out, crashed, a malformed result, `ERROR` of a platform-generated check) | `DATA_RUNTIME_UNAVAILABLE`, no snapshot committed | yes (counts against `maxAttempts`) |
 | Input part missing, digest mismatch, object store error while staging | `DATA_INPUT_UNAVAILABLE` | yes |
 | Object store error while the engine reads a footer at completion | none: transient gRPC `UNAVAILABLE`, no state change, the same completion is sent again | — |
 | A `from` input resolved to a quarantined snapshot | `DATA_INPUT_QUARANTINED` | no |
-| A `from` input resolved to an `ABANDONED` or `RETIRED` snapshot (unreachable while the run's pin holds) | `DATA_CONFIGURATION_INVALID` | no |
+| A `from` input resolved to an `ABANDONED` or `RETIRED` snapshot (kept from a live run by its pin, and refused at an 018 reset with `SNAPSHOT_NOT_RESTORABLE`) | `DATA_CONFIGURATION_INVALID` | no |
 | Statement not a single query / script refused / a Polars package blocked at lease (`PACKAGE_BLOCKED`) | `DATA_STATEMENT_DENIED` | no |
 | Tenant SQL or script error | `DATA_TRANSFORM_FAILED` | no |
 | A `dataQuery` result column of an unsupported type | `DATA_TYPE_UNSUPPORTED` | no |

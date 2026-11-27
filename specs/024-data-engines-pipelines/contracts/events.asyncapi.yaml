@@ -20,8 +20,9 @@ channels:
       subject = asset name, event id = <asset id>:<pointer version>) that event triggers match; the
       inbox key deduplicates redelivery of one publication, and a rollback is a new event. The
       document is closed and at most 1 KiB, stored as an ADR-0027 protected_system record: it is not
-      charged to content quota and does not spend events_per_second, so a full quota never rolls
-      back the publication that wrote it.
+      charged to content quota and does not spend events_per_second, so its own bytes never make a full
+      quota refuse a run publication; an API publication's charged justification obeys the content
+      quota (FR-024-026).
     messages:
       DataAssetPublished:
         $ref: '#/components/messages/DataAssetPublished'

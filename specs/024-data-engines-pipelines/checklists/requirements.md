@@ -153,8 +153,12 @@ implementation. On 2026-11-26 every item that was unticked was disposed under th
   are disposed (Owner decision 2026-11-26-165). The research register records the new entries as
   Decisions 024-001 to 024-015 and Gaps 024-001 to 024-005.
 - Round 4 (2026-11-27): an independent correctness review (`reviews/2026-11-27-correctness.md`,
-  1 Blocker, 12 Majors, 12 Nits). Every claim about code was checked against the code it cites; all
+  1 Blocker, 12 Majors, 10 Nits; its header said 12). Every claim about code was checked against the code it cites; all
   were confirmed and every finding was fixed in the set and in ADR-0058 decisions 4, 9 and 10
   (research Decision 024-016; new Tasks 024-077 and 024-078). Task 024-077 needs an owner row
   (OD-2026-11-27-240, requested) because it waits for feature 020's run purge. Not re-reviewed after
   these edits.
+- Readiness (2026-11-27): the short re-read of the fixes of round 4 was run
+  (`reviews/2026-11-27-correctness-reread.md`: 5 Majors, 6 Nits) and every finding was fixed, none accepted (research
+  Decision 024-018). Feature 024's readiness for the build is complete under Owner decision
+  2026-11-25-2.

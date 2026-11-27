@@ -500,8 +500,10 @@ The per-driver details these requirements refer to are normative in
   source run's committed step output, which the lease admits through the run's reset link and the
   pinned blob id and digest, never a caller-chosen blob. A `from` input MUST resolve only an
   `AUDITED` or `PUBLISHED` snapshot; a quarantined one fails `DATA_INPUT_QUARANTINED`, so an
-  `onError` route cannot launder it; an `ABANDONED` or `RETIRED` one, which the live-run pin of
-  FR-024-034 makes unreachable, fails `DATA_CONFIGURATION_INVALID`. A reader MUST never observe a
+  `onError` route cannot launder it; an `ABANDONED` or `RETIRED` one fails `DATA_CONFIGURATION_INVALID`; outside a reset the
+  live-run pin of FR-024-034 keeps a run's own snapshots from being abandoned, and an 018 reset whose
+  restored prefix names a snapshot that is no longer `AUDITED` or `PUBLISHED` is refused at the reset
+  (`CONFLICT`, reason `SNAPSHOT_NOT_RESTORABLE`), as a retired one is (`SNAPSHOT_RETIRED`). A reader MUST never observe a
   partially written or unaudited snapshot.
 
 ### Functional Requirements — transforms and write-audit-publish
@@ -512,10 +514,15 @@ The per-driver details these requirements refer to are normative in
   a bounded retry policy. The timeout (`timeoutMs`, default 15 minutes) bounds the whole attempt:
   staging, the transform, the upload, the read-back, the audit and the report; the transform's wall
   time (default 10 minutes) is bounded by what is left after the audit time
-  (`limits.auditTimeoutMs`, default 2 minutes) and a fixed staging allowance, and publication
-  refuses a timeout that leaves the transform less than one minute. An attempt that ends `DATA_RUNTIME_UNAVAILABLE` before any container of it started does
-  not count against `maxAttempts`; such attempts are bounded separately (10 per step), after which
-  they count. Like 017 database nodes (ADR-0036 decision 3), data nodes MUST be accepted
+  (`limits.auditTimeoutMs`, default 2 minutes) and a fixed staging allowance of 3 minutes, and publication
+  refuses a timeout that leaves the transform less than one minute; a `dataQuery`'s timeout
+  (`timeoutMs`, default 5 minutes) covers the same staging allowance plus its wall time (default 2
+  minutes), and publication refuses one that leaves the query less than one minute. An attempt that ends `DATA_RUNTIME_UNAVAILABLE` before any container of it started does
+  not count against `maxAttempts`: it is ended by the domain command `ReturnDataAttempt` (allowed
+  after the heartbeat, only with that cause), which records `step.attempt_returned`, gives the
+  attempt number back and advances the generation; the count of such attempts is derived from those
+  journal events (at most 10 per step, after which the ending is an ordinary failed attempt), and
+  the event's reset rule is `Copy` (Decision 024-018). Like 017 database nodes (ADR-0036 decision 3), data nodes MUST be accepted
   only in the root graph of a definition without collection, loop or continuation nodes until scoped
   pins are proven; the same holds for `dataQuery` and `dataPublish`. Data nodes exist only in
   graph-model versions (Decision 024-010) and declare no `destinations`. Publication and admission
@@ -594,7 +601,8 @@ The per-driver details these requirements refer to are normative in
   requires of free text: at a full content quota an API publication or rollback is refused
   `QUOTA_EXCEEDED` with nothing written, like any synchronous API mutation. Replay MUST recheck current authorization. Rollback creates a new
   publication record; it deletes nothing.
-- **FR-024-027 — Publication event and triggers:** Every publication MUST write, in its transaction,
+- **FR-024-027 — Publication event and triggers:** Every pointer move to a snapshot (every
+  publication except a `TOMBSTONE` record) MUST write, in its transaction,
   a payload-free inbox event (source `sagat.data`, type `data.asset.published`, subject the asset
   name, event id `<asset id>:<pointer version>`, so a rollback or republication of an earlier
   snapshot is a new event) and the outbound delivery rows for webhook subscriptions that ask for
@@ -603,8 +611,10 @@ The per-driver details these requirements refer to are normative in
   `events_per_second` bucket. The other records these transactions write are protected too: the
   output document of a `dataTransform` step and of a `dataPublish` node is a closed record of asset
   names, snapshot ids, states, pointer versions and counts, at most 4 KiB, that the content
-  accounting measures as zero (data model). A run publication carries no free text, so a full content
-  quota can never roll back an auto-publishing completion or a `dataPublish`. An API publication
+  accounting measures as zero (data model). A run publication carries no free text, so the records the data completion or the
+  `dataPublish` writes itself are never refused by a full content quota; a completion that also
+  creates charged rows for the next node (a child workflow's input, for example) obeys ADR-0027 for
+  those rows and is rolled back with them, publication included, into a failed-run stop. An API publication
   carries the charged justification of FR-024-026 and obeys the content quota: it is refused
   `QUOTA_EXCEEDED` before any write when the quota is full. A `dataQuery` output carries values and stays charged: at full content quota it fails
   `STORAGE_QUOTA_EXCEEDED` (ADR-0027), which publishes nothing. Existing 004 event triggers MUST be able to start runs from it (their run admission keeps its own
@@ -695,10 +705,12 @@ The per-driver details these requirements refer to are normative in
   ceiling (plan table); the effective value is the minimum of request, namespace and deployment;
   zero refuses new admission and never means unlimited; admission fails before work. Snapshot bytes
   MUST count against a new tenant aggregate `tenant_data_bytes`, separate from
-  `tenant_content_bytes`. The transaction that fails a data attempt, retries it under a new
-  generation after its lease lapsed, cancels it or refuses its completion MUST claim that attempt's
-  uncommitted `DATA_SNAPSHOT_PART` uploads for deletion (ADR-0023 tombstone with an immediate retry
-  time), and an upload of that fence that finishes later is claimed when it finishes; the bytes and
+  `tenant_content_bytes`. Every transaction that ends a data fence (any `end_attempt`: `FailStep`, a refused completion,
+  a lease expiry with or without attempts left, `AttemptTimeout`; a cancellation; a run stop by its
+  deadline or a failed-run stop) MUST claim every `DATA_SNAPSHOT_PART` row of that fence that is not
+  committed (`UPLOADING` or `UPLOADED`) for deletion (ADR-0023 tombstone with an immediate retry
+  time); an upload claimed while `UPLOADING` is recorded as a measured `DELETING` row when it
+  finishes, and a part reservation is accepted only while the step is `LEASED` to that fence; the bytes and
   the pending-upload slot are released after confirmed deletion (ADR-0027), not after the 24-hour
   upload time to live, which stays only as a backstop.
 - **FR-024-036 — Observability and audit:** The feature MUST emit OTel spans and metrics with closed
@@ -880,7 +892,7 @@ question is kept, with its answer first.
   not reached; until the owner decides, retention marks snapshots `RETIRED` and keeps their bytes.
   (This is a fourth owner question; the coordinator asked for it explicitly.)
 
-See [research](research.md) for decisions D1240–D1279 and D024-001–D024-016 and gaps G1240–G1256
+See [research](research.md) for decisions D1240–D1279 and D024-001–D024-018 and gaps G1240–G1256
 and G024-001–G024-005, the
 [plan](plan.md), the [data model](data-model.md), the [contracts](contracts/README.md), the
 [quickstart](quickstart.md), the [tasks](tasks.md) and the [requirements checklist](checklists/requirements.md).

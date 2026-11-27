@@ -22,7 +22,7 @@ has claimed; names below are provisional.
 | `step_lease_blobs` (feature 035) | Unchanged in shape: the lease transaction of a data attempt writes one row per pinned part (Decision 024-007); its release with the run's retention (a day after the run ended) is what retention waits for before deleting a part | — |
 | Instance registry | `serving_instances_capabilities_closed`, `platform_requirements_capability_valid` and `platform_requirement_history_capability_valid` gain `database-engines-v1`, `database-warehouses-v1`, `data-pipelines-v1` (Decision 024-003); `Capability::ALL` follows | Additive; nothing is recorded by the migration |
 | `run_database_connections` | Unchanged | — |
-| `blobs.purpose` | Gains `DATA_SNAPSHOT_PART`, which requires the same exact fence columns as `STEP_OUTPUT` (run, step, attempt, generation). A guarded trigger allows `COMMITTED → DELETING` **only** for this purpose and only from the retention mark (ADR-0058, superseding ADR-0023 in part; enabled, Owner decision 2026-11-26-163). Run purge (020, ADR-0054) excludes this purpose even though the parts carry the producer run's fence. An `UPLOADED` part whose attempt ends without committing it (failure, lease expiry with a new generation, cancellation, refused completion) is claimed for deletion (`UPLOADED → DELETING`, retry due at once) in the transaction that ends the attempt, and an upload of that fence that finishes later is claimed when it finishes (FR-024-035) | Other purposes keep forward-only states and their 020-owned retention |
+| `blobs.purpose` | Gains `DATA_SNAPSHOT_PART`, which requires the same exact fence columns as `STEP_OUTPUT` (run, step, attempt, generation). A guarded trigger allows `COMMITTED → DELETING` **only** for this purpose and only from the retention mark (ADR-0058, superseding ADR-0023 in part; enabled, Owner decision 2026-11-26-163). Run purge (020, ADR-0054) excludes this purpose even though the parts carry the producer run's fence. Every part of a fence that is not committed (`UPLOADING` or `UPLOADED`) is claimed for deletion (`→ DELETING`, retry due at once) in every transaction that ends a data fence (any `end_attempt`: `FailStep`, a refused completion, a lease expiry with or without attempts left, `AttemptTimeout`; a cancellation; a run stop by its deadline or a failed-run stop); an `UPLOADING` row so claimed is recorded by its upload's finalization (`mark_uploaded`) as a measured `DELETING` row due at once, and the reservation `INSERT` requires the step to be `LEASED` to that fence (status `LEASED`, same attempt and generation), so an ended fence accepts no new reservation (FR-024-035, Decision 024-018) | Other purposes keep forward-only states and their 020-owned retention |
 | `payloads` content accounting (ADR-0027) | The content-delta trigger measures zero for a row whose digest `data_protected_outputs` lists and whose content is at most 4 KiB: the output document of a `dataTransform` step or a `dataPublish` node (FR-024-027) | Every other payload is measured as before; a listed digest is never refunded if an ordinary row with the same bytes was charged first |
 | `inbox_events` | Rows with `source = 'sagat.data'` carry the closed publication document; a CHECK bounds their `payload` to 1 KiB and the content-delta trigger skips them (ADR-0027 `protected_system` by a bounded closed schema, D1267); manifest entry updated | Other sources unchanged |
 | Quota resources | Seven new resource names: `database_analytic_timeout_ms`, `database_bytes_billed`, `data_assets`, `data_snapshot_bytes`, `data_concurrency`, `tenant_data_concurrency`, `tenant_data_bytes` | Additive enum; no existing limit changes |
@@ -104,7 +104,9 @@ trigger). Quota: `data_assets` counts `ACTIVE` and `PAUSED` rows per namespace.
 canonical JSON, class `content`); `status`; `actor` (1–255, no control characters); `request_id`
 uuid with UNIQUE `(tenant_id, namespace_id, actor, request_id)`; `created_at`. Updates refused by an
 `ALWAYS` trigger. At most 1,000 revisions per asset (a final tombstone revision is allowed at the
-ceiling, as in 017). The declaration holds: contract (columns, key, compatibility), audits,
+ceiling, as in 017). The tombstone revision stores no declaration (`declaration` null for status
+`DELETED`, measured zero), so a tombstone commits at a full content quota (ADR-0027; Decision
+024-018). The declaration holds: contract (columns, key, compatibility), audits,
 freshness, retention and producer `{workflow, node}` (managed), or connection, locator and
 producer (external).
 
@@ -212,9 +214,17 @@ prefix. Immutable; FK to `runs` `ON DELETE CASCADE` and to `data_snapshots`.
 
 PK `(tenant_id, digest)`; `node_kind` `DATA_TRANSFORM|DATA_PUBLISH`; `created_at`. Written in the
 data completion and the `dataPublish` transaction before the step's output payload, for the closed
-output document (asset names, snapshot ids, states, pointer versions and counts; at most 4 KiB). The
-`payloads` content-delta trigger measures zero for a listed digest whose content is at most 4 KiB.
-Immutable; class `protected_system`.
+output document (asset names, snapshot ids, states, pointer versions and counts; at most 4 KiB),
+only through the owner-owned `SECURITY DEFINER` function `data_protect_output(tenant, node_kind,
+document bytea)` (`search_path` pinned to `pg_catalog, pg_temp`, every relation schema-qualified,
+revoked from `PUBLIC`, executable by `sagat_app`): it parses the document, checks it against the
+closed schema of the output document and its size, computes the digest itself and inserts the row;
+a document that does not validate raises and lists nothing. `sagat_app` has `SELECT` only on the
+table, never `INSERT`, so no runtime path can exempt an arbitrary payload from accounting
+(ADR-0027). The `payloads` content-delta trigger measures zero for a listed digest whose content is
+at most 4 KiB. A row charged before its digest is listed stays charged, and the recomputation check
+of the usage counter counts it as charged (it reads the same rule). Immutable; class
+`protected_system` (Decision 024-018).
 
 Freshness has no table: for a managed asset it is computed from the `created_at` of the snapshot
 the pointer names (its producer's completion), never from `last_published_at`, so a rollback or a
@@ -261,12 +271,12 @@ API publications and rollbacks are not run events; they are audited and recorded
 | Later lease (retry) | lease, `step_lease_blobs` rows of the same pinned parts for the new attempt and generation, outbox | run → existing claim guards; no asset lock (the pins are fixed) |
 | `ResolveData` (every attempt) | audit `data.snapshot_read` (identical resolutions of one attempt/generation collapse, as 017 `secret.resolved`) | run → current runner/session/binding guards; no asset lock |
 | Data completion | snapshot(s), parts (blobs `UPLOADED → COMMITTED`, no second quota charge, D1278), provenance, audits, step, `data_protected_outputs` row and the step's output, journal, next tasks, outbox; with `publish: auto` also pointer CAS, publication record, abandonment of passed-over `AUDITED` snapshots that no live run pins, inbox event, webhook delivery rows, audit | run → existing managed completion guards (binding, session, membership) → asset heads ascending (`FOR NO KEY UPDATE` if publishing, else `FOR SHARE`), taken before any row that references them, with status and producer rechecked |
-| Attempt end without a commit (`FailStep`, a refused completion, lease expiry that grants a new generation, cancellation) | the existing step transition, journal and outbox; the attempt's `UPLOADED` `DATA_SNAPSHOT_PART` blobs of that fence `→ DELETING` with an immediate retry time | run → existing guards → the blob rows of that fence; no asset lock |
+| Data fence end without a commit (any `end_attempt`: `FailStep`, a refused completion, a lease expiry with or without attempts left, `AttemptTimeout`; a cancellation; a run stop by its deadline or a failed-run stop) | the existing step transition, journal and outbox; every `UPLOADING` or `UPLOADED` `DATA_SNAPSHOT_PART` blob of that fence `→ DELETING` with an immediate retry time | run → existing guards → the blob rows of that fence; no asset lock |
 | `dataPublish` node | pointer CAS, publication record, `data_protected_outputs` row and the node's output, inbox event, delivery rows, journal, next tasks, outbox, audit | run → asset head `FOR NO KEY UPDATE` |
 | API publish / rollback | pointer CAS, publication record (justification charged to content quota; a full quota refuses the whole transaction with `QUOTA_EXCEEDED`), receipt, inbox event, delivery rows, audit | current membership guard → asset head `FOR NO KEY UPDATE`; no run lock |
 | Asset tombstone | revision, status `DELETED`, pointer cleared with a `TOMBSTONE` publication record, audit, receipt | namespace data-catalog fence (slot 4a) → membership → asset head `FOR NO KEY UPDATE` |
 | Declared external write completion (database or `icebergWrite` step with `assets.writes`) | the existing completion writes, plus `data_asset_observations`, `data_assets.last_observed_at` and the journal event `data.observation_recorded`, or, when the recheck fails, an audited refusal and no observation | run → existing managed completion guards → external asset heads `FOR NO KEY UPDATE` ascending, with `ACTIVE` and the producer of the current revision rechecked under that lock |
-| 018 reset (the data part of the reset transaction) | `step_data_inputs`, `step_data_output_bases` and `run_data_snapshot_refs` of the new run, from the restored `data.*` events | 018's order for a run-creating transaction: asset heads of every referenced snapshot `FOR SHARE` ascending in slot 4b, then each snapshot's state read under that lock (`SNAPSHOT_RETIRED` refusal), then the rows above, before the new run's rows |
+| 018 reset (the data part of the reset transaction) | `step_data_inputs`, `step_data_output_bases` and `run_data_snapshot_refs` of the new run, from the restored `data.*` events | 018's order for a run-creating transaction: asset heads of every referenced snapshot `FOR SHARE` ascending in slot 4b, then each snapshot's state read under that lock (`SNAPSHOT_RETIRED` for a retired one, `SNAPSHOT_NOT_RESTORABLE` for any other state than `AUDITED` or `PUBLISHED`), then the rows above, before the new run's rows |
 | Retention mark | snapshot `RETIRED`, parts `DELETING` with attempt/retry fields, data bytes still charged, audit | asset head `FOR NO KEY UPDATE` → pin recheck with plain reads, including `run_data_snapshot_refs`, the pointer, and that no `step_lease_blobs` row names a part |
 | Retention confirm | blob tombstone confirmation, bytes released | blob row; no asset or run lock |
 
@@ -275,8 +285,8 @@ run or authority lock after an asset head lock (D1273).
 
 ## Grants for `sagat_app`
 
-SELECT and INSERT on every new table (including `data_protected_outputs`, which is never updated or
-deleted); UPDATE on `data_assets` and `data_snapshots` only (guarded by
+SELECT and INSERT on every new table except `data_protected_outputs`, which `sagat_app` may only
+read and fills only through `data_protect_output`; UPDATE on `data_assets` and `data_snapshots` only (guarded by
 the triggers above); DELETE only on `data_publication_receipts` and on observations beyond the
 kept window. Snapshot metadata is never deleted in this delivery, by run purge or otherwise (G1254). No
 TRUNCATE, no trigger disable. Retention and the monitor use the same runtime role; the
@@ -292,7 +302,7 @@ TRUNCATE, no trigger disable. Retention and the monitor use the same runtime rol
 | `AUDITED` unpublished | `retainUnpublishedDays` (default 7, hard 30) from `created_at` | `ABANDONED`, and `RETIRED` in the same pass |
 | `QUARANTINED`, `ABANDONED` | `retainUnpublishedDays` from `created_at` (not from the time it became abandoned) | `RETIRED` |
 | `RETIRED` metadata (rows, provenance, audits, publications) | always in this delivery; never removed by run purge | pruning of unreferenced `RETIRED` metadata by this feature's retention is G1254 |
-| Uncommitted part uploads | until the transaction that ends their attempt (failure, refused completion, lease expiry with a new generation, cancellation) | claimed for deletion there; the ADR-0023 upload time to live (24 h) remains a backstop only |
+| Uncommitted part uploads (`UPLOADING` or `UPLOADED`) | until the transaction that ends their fence (any `end_attempt`, a cancellation, a run stop) | claimed for deletion there; the ADR-0023 upload time to live (24 h) remains a backstop only |
 
 Retention deletes the bytes of `RETIRED` snapshots under the retention the asset manager declared,
 audited, and releases their charge only after confirmed deletion (Owner decision 2026-11-26-163;

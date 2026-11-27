@@ -165,7 +165,8 @@ write transaction so readers keep the previous version). The forces:
     `protected_system` record: it is not charged to content quota and does not spend
     `events_per_second`. It carries no column value. The output document of a `dataTransform` step
     and of a `dataPublish` node (closed metadata, at most 4 KiB) is a `protected_system` record too,
-    so a full content quota never rolls back an auto-publishing completion or a `dataPublish`. The
+    so a full content quota never refuses the records an auto-publishing completion or a `dataPublish`
+    writes itself; charged rows of the next node (a child workflow's input) still obey ADR-0027. The
     API publication's justification (at most 1,024 bytes) is tenant-authored text and stays in the
     charged `content` class, as ADR-0027 requires: an API publication obeys the content quota and is
     refused `QUOTA_EXCEEDED` at a full quota, with nothing written. The
@@ -278,7 +279,7 @@ required: the tests named in **Enforced by**, the sandbox canaries of Success cr
 the concurrency rounds of Success criterion 024-005, recorded in `specs/024-data-engines-pipelines/`.
 Design: [spec](../../specs/024-data-engines-pipelines/spec.md),
 [research](../../specs/024-data-engines-pipelines/research.md) (Decisions 1242, 1243, 1254–1262, 1265,
-1267, 1269, 1279 and 024-001 to 024-015),
+1267, 1269, 1279 and 024-001 to 024-018),
 [data runtime contract](../../specs/024-data-engines-pipelines/contracts/data-runtime.md).
 External sources: <https://duckdb.org/docs/2.0/operations_manual/securing_duckdb/overview.html>,
 <https://www.windmill.dev/docs/core_concepts/pipelines>.

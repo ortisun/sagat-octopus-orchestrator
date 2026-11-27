@@ -46,6 +46,7 @@ in `crates/api-http/src/error.rs` and named in the OpenAPI:
 | `CONFLICT` | `SNAPSHOT_QUARANTINED` | Publication of a quarantined snapshot |
 | `CONFLICT` | `SNAPSHOT_NOT_PUBLISHABLE` | The snapshot is abandoned or retired (a rollback to a snapshot retention retired included: its metadata survives, so it is never `NOT_FOUND`), or a rollback target was never published |
 | `CONFLICT` | `SNAPSHOT_RETIRED` | An 018 reset point would rematerialize a pin or reference to a retired snapshot |
+| `CONFLICT` | `SNAPSHOT_NOT_RESTORABLE` | An 018 reset point would restore a `data.snapshot_committed` whose snapshot is no longer `AUDITED` or `PUBLISHED` (for example abandoned after another run's publication passed it over) |
 | `QUOTA_EXCEEDED` | existing `limit` names plus the seven new resources | A ceiling refuses admission |
 
 Foreign or missing assets, snapshots and connections are `NOT_FOUND` without a reason that could
