@@ -330,6 +330,47 @@ impl pb::worker_service_server::WorkerService for Service {
         }
         Ok(Response::new(Box::pin(futures_util::stream::iter(frames))))
     }
+    // Protocol 1.10 (design 044, workflow as code): this host offers no workflow as code, so the fake
+    // serves none of the workflow procedures.
+    async fn complete_workflow_task(
+        &self,
+        _: Request<pb::CompleteWorkflowTaskRequest>,
+    ) -> Result<Response<pb::CompleteWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("CompleteWorkflowTask"))
+    }
+    async fn fail_workflow_task(
+        &self,
+        _: Request<pb::FailWorkflowTaskRequest>,
+    ) -> Result<Response<pb::FailWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("FailWorkflowTask"))
+    }
+    type ReadHistoryStream = std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<pb::ReadHistoryResponse, Status>> + Send>,
+    >;
+    async fn read_history(
+        &self,
+        _: Request<pb::ReadHistoryRequest>,
+    ) -> Result<Response<Self::ReadHistoryStream>, Status> {
+        Err(Status::unimplemented("ReadHistory"))
+    }
+    async fn respond_worker_query(
+        &self,
+        _: Request<pb::RespondWorkerQueryRequest>,
+    ) -> Result<Response<pb::RespondWorkerQueryResponse>, Status> {
+        Err(Status::unimplemented("RespondWorkerQuery"))
+    }
+    async fn respond_replay_check(
+        &self,
+        _: Request<pb::RespondReplayCheckRequest>,
+    ) -> Result<Response<pb::RespondReplayCheckResponse>, Status> {
+        Err(Status::unimplemented("RespondReplayCheck"))
+    }
+    async fn release_sticky(
+        &self,
+        _: Request<pb::ReleaseStickyRequest>,
+    ) -> Result<Response<pb::ReleaseStickyResponse>, Status> {
+        Err(Status::unimplemented("ReleaseSticky"))
+    }
 }
 #[tokio::test]
 async fn a_native_worker_registers_runs_and_reports_the_exact_scoped_lease() {

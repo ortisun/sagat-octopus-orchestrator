@@ -324,6 +324,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/workflows/{workflowId}/code-versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The code versions of a workflow with their open runs and the sessions that serve them
+         * @description Design 044 (Requirement 044-028, Technical Plan 7.1). Needs `definition:read` in the namespace. One entry per
+         *     published code version of the workflow, newest first: its version number, its workflow type, its code digest,
+         *     how many of its runs are open (a run counts under its current code version, which a verified move changes), how
+         *     many live worker sessions serve its digest, and the age of its oldest open run. A code version whose open runs no
+         *     session serves waits; the alert `WORKFLOW_TASK_UNSERVED` fires when such a run has waited more than 60 seconds.
+         *     Graph versions are not listed. Another tenant's namespace or workflow and a missing one are `404`.
+         */
+        get: operations["listCodeVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/run-input-blobs": {
         parameters: {
             query?: never;
@@ -520,8 +545,88 @@ export interface paths {
          *     and expected-revision failures commit stable REJECTED receipts without changing state. An
          *     exact replay returns the durable receipt only after current authorization; changing any
          *     request content under the same `updateKey` returns `409 IDEMPOTENCY_KEY_REUSED`.
+         *
+         *     Design 044 (workflow as code; Requirement 044-015, Technical Plan 8.2). This paragraph applies to a code run only;
+         *     a graph run's update keeps the synchronous expression form above, ignores `waitMs` and `acceptPending`, and never
+         *     answers `202`. Needs `run:update`, as above. The update is admitted durably (its `ADMITTED` transition and
+         *     `update.admitted` commit in one transaction), then the function's validator accepts or rejects it and its handler
+         *     completes it. The call waits up to `waitMs` (0 to 60,000 milliseconds, 60,000 when absent) by reading the update
+         *     again outside any transaction, and answers `200` with the update (`CodeUpdate`: `COMPLETED` with the declared
+         *     result, or `REJECTED` or `FAILED` with its reason); with `acceptPending: true` an update that has not completed
+         *     in time is answered `202` with its status, `ADMITTED` or `ACCEPTED`; without it, `409` with `details.reason`
+         *     `UPDATE_PENDING` after 60,000 milliseconds (read it later with `getRunUpdateReceipt`). Every answer is
+         *     `Cache-Control: no-store`. The `updateKey` is scoped by the run and the admitting principal: the same key from the
+         *     same principal with the same arguments answers the same update, after authorization is checked again; with
+         *     other arguments it is `409` `IDEMPOTENCY_KEY_REUSED`; another principal's identical key is another update. The
+         *     refusals of a code run keep the closed `Error.code` set and name the cause in `details.reason`: `409 CONFLICT`
+         *     with `UPDATE_PENDING`, `IDEMPOTENCY_KEY_REUSED`, `HISTORY_HEADROOM` (the run holds 50,176 visible events or more,
+         *     3 MiB of retained bytes or more, or its closing window is open), `RUN_CLOSING` (three deferrals for unseen events
+         *     since the last completion that committed without one) or `RUN_NOT_MUTABLE` (the run is stopping or has ended,
+         *     as for a graph run); `429 RATE_LIMITED` with `UPDATE_BACKLOG` (64 updates of the run admitted or accepted and
+         *     not completed, or a quarter of them from one principal), with `Retry-After`.
          */
         post: operations["updateRunState"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/update-receipts/{updateKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an update of a code run by its update key
+         * @description Design 044 (Requirement 044-015, Technical Plan 8.2). Needs `run:update` in the run's namespace, checked again on
+         *     every read. Reads the update the caller admitted to this code run under `updateKey` (the key is scoped by the run
+         *     and the admitting principal): its status (`ADMITTED`, `ACCEPTED`, `REJECTED`, `COMPLETED` or `FAILED`), the
+         *     declared result once it has completed, and the reason of a rejection or a failure. A caller who also holds
+         *     `run:operate` reads every principal's update under that key, each with its admitting principal. An unknown key,
+         *     another principal's key (for a caller without `run:operate`), a run of another tenant and a missing run all
+         *     answer the same `404`. This route reads the updates of code runs; a graph run's update is answered and replayed
+         *     by `updateRunState` itself, and its key reads as unknown here. Never cached.
+         */
+        get: operations["getRunUpdateReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/worker-queries/{queryName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask a worker of a code run a declared worker query
+         * @description Design 044 (Requirement 044-017, Technical Plan 8.3, Task 044-29). Needs `run:read` and `run:query` in the run's
+         *     namespace. The query must be declared under `workerQueries` by the run's current code version. The arguments (at
+         *     most 64 KiB) are checked against the query's `argsSchema`, kept inline in a durable request row (not journaled,
+         *     charged to the tenant's content quota while it lives) and answered by a worker of the run's current code digest
+         *     from the function's state at its last committed completion, within `timeoutMs` (1 to 30,000 milliseconds). The
+         *     answer (at most 256 KiB) is checked against the query's `resultSchema` before it is returned, with
+         *     `committedThroughSeq`, the journal sequence of the completion it was computed from. Nothing is journaled and the
+         *     run does not change. Audited with the caller and the outcome, never the arguments or the answer. The refusals
+         *     keep the closed `Error.code` set and name the cause in `details.reason`: `504 UNAVAILABLE` with `QUERY_TIMEOUT`
+         *     (no answer within `timeoutMs`); `422 VALIDATION_FAILED` with `QUERY_COMMAND` (the handler issued a command, which
+         *     fails the query, not the run), or for arguments outside `argsSchema`; `409 CONFLICT` with `QUERY_UNAVAILABLE`
+         *     (the namespace's code workflows are paused, the run is under review, or its workflow-task step is closed:
+         *     declared queries, `queryRun`, still answer an ended run); `429 RATE_LIMITED` beyond 64 worker queries in flight
+         *     in the namespace, 4 per run or a quarter of the namespace bound for one principal, with `Retry-After`. A graph
+         *     run, an undeclared query, another tenant's run and a missing run are `404`.
+         */
+        post: operations["queryRunWorker"];
         delete?: never;
         options?: never;
         head?: never;
@@ -620,6 +725,41 @@ export interface paths {
         };
         /** List run journal events in sequence order */
         get: operations["listRunJournalEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export the visible history of a code run for a replayer
+         * @description Design 044 (Requirement 044-025, Technical Plan 7.4). Needs `run:read` and `history:export` (held by the admin role
+         *     only by default) in the run's namespace. `application/x-ndjson`, export format version 1: the first line is a
+         *     `HistoryExportHeader`, `{"exportFormat": 1, "gatedEntries": [...], "stateMaxBytes": n, ...}` (the values every
+         *     replay of an activation that caught an inline throw needs, with the run's seed); every other line is one visible
+         *     `HistoryEvent` of the run in journal order, in the proto3 JSON mapping of the `HistoryEvent` message of
+         *     `worker.proto`. The exact members of both are held by `specs/044-workflow-as-code/contracts/history-export.baseline.json`
+         *     and its compatibility test; a replayer refuses an unknown `exportFormat`. The export holds the payloads of the
+         *     run's commands (their inputs and literals, never their digests), each through the read path of feature 016: a
+         *     classified field is replaced by a typed placeholder unless the caller may see it (`payload:read-internal` for an
+         *     internal field, `payload:reveal-pii` and a reveal grant for a personal one), a field classified `secret` is never
+         *     exported, a value without a schema is classified `pii` as a whole, and every blob is a reference marked
+         *     `EXTERNAL_CONTENT_NOT_INSPECTED` with its size only. Paged by `fromSeq`: the answer holds the visible events from
+         *     `fromSeq` (the start of the history when absent) to the end of the history committed when the export began, and
+         *     a download that broke resumes with `fromSeq` one past the last sequence it received; every answer begins with
+         *     the header line. Every export is audited. A graph run, another tenant's run and a missing run are `404`.
+         *     Never cached.
+         */
+        get: operations["exportRunHistory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -847,6 +987,17 @@ export interface paths {
          *     `RUN_INPUT_SCHEMA_UNUSABLE` (the version's schema is outside the supported subset). No value of the input is ever
          *     echoed; nothing is created and the key is not consumed (a run already created under it is replayed).
          *     A run started again from another (`RERUN_AS_NEW`, a reset) says `details.field` `/` and `details.rule` `other`.
+         *
+         *     Design 044 (Requirement 044-022, Technical Plan 8.4): CANCEL takes an optional `graceMs`, which must be 0 (needs
+         *     `run:operate`; any other value is `422 VALIDATION_FAILED`). Without it, a cancellation of a code run is cooperative:
+         *     it journals `run.cancel_requested` (once per run; a later request journals nothing and leaves the deadline) and
+         *     sets the run's cancellation deadline to now plus the grace of its code version (60 seconds by default), and the
+         *     function answers it in its next activation; a run that has not answered by the deadline is stopped `CANCELLED`
+         *     by the engine, and a run whose workflow task is under review is stopped at once. With `graceMs: 0` the code run
+         *     is stopped at once, whatever was requested before, journaled and audited. `graceMs` is part of the idempotency
+         *     fingerprint: the same `Idempotency-Key` with another `graceMs` is `409` `IDEMPOTENCY_KEY_REUSED`. For a graph
+         *     run `graceMs: 0` is the cancellation above, unchanged. A request to a run that already has a stop reason
+         *     journals nothing.
          */
         post: operations["operateRun"];
         delete?: never;
@@ -947,6 +1098,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/code-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask for a verified move of an open code run to another code version
+         * @description Design 044 (Requirements 044-023 and 044-026, Technical Plan 7.3). Needs `run:operate` and `version:activate` in
+         *     the run's namespace. A move is always a person's explicit request; no policy moves runs. The request creates a
+         *     batch job of feature 018 with the action `MOVE_CODE_VERSION`, one item (this run), the reason of the request
+         *     (8 to 2,000 characters of plain text, kept with the job and audited) and the batch default rate, and answers
+         *     `202` with that job; follow it with `getBatchOperation` and `listBatchItems`. `toVersion` is a version number of
+         *     the run's own workflow that is a published code version of the same workflow type, approved for activation where
+         *     the namespace requires approval. A worker of the target's code digest replays the run's history up to its last
+         *     completed activation; the server compares the command chain and the command bodies itself and re-pins the run only
+         *     on a match, when the run has no stop reason, its workflow-task step is neither closed nor leased, and every step
+         *     that can still act fits the target's capability envelope; otherwise the run stays as it was and the item records
+         *     why (see `BatchItem`). With `dryRun: true` the job records each verdict and moves nothing (a match ends the item
+         *     `SUCCEEDED` with the reason `MATCHED`). The creator's permissions, and that the target is still published and
+         *     approved, are checked again when the item applies. A move that applies is journaled (`run.code_version_moved`) and
+         *     audited. The refusals keep the closed `Error.code` set and name the cause in `details.reason`: `409 CONFLICT` with
+         *     `MOVE_TARGET_INVALID` for a `toVersion` that is missing, unpublished, a graph version or a version of another
+         *     workflow type (all answer alike); `422 VALIDATION_FAILED` with `BATCH_REASON_INVALID` for a reason outside 8 to
+         *     2,000 characters. A graph run, another tenant's run and a missing run are `404`. The same `Idempotency-Key` with
+         *     the same body answers the first job.
+         */
+        post: operations["moveRunCodeVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/signals/{signalName}": {
         parameters: {
             query?: never;
@@ -959,6 +1147,17 @@ export interface paths {
         /**
          * Send a signal to the waiting steps of a run that expect it
          * @description The payload becomes the output of each woken waitEvent step. A signal that no step is waiting for is refused with 409, never buffered or dropped silently. A signal that would take the run over what a run may retain (4 MiB of step outputs and signal payloads) is refused with 429 and code `QUOTA_EXCEEDED`; retrying it will not help.
+         *
+         *     Design 044 (Requirement 044-014, Technical Plan 8.1). This paragraph applies to a code run only; a graph run keeps
+         *     the rules above. Needs `run:signal`, with the same idempotency key and 256 KiB limit. A signal of a name the run's
+         *     code version declares is buffered in the run's signal inbox whether or not the function waits, journaled once
+         *     (`signal.buffered`), charged to the run's 4 MiB of retained bytes and delivered in the function's next activation;
+         *     it never satisfies a wait-for-event step. After authentication, authorization and tenant resolution the
+         *     idempotency key is answered before any bound. The refusals keep the closed `Error.code` set and name the cause in
+         *     `details.reason`, all `409 CONFLICT`: `SIGNAL_NOT_DECLARED` (the code version declares no signal of that name),
+         *     `SIGNAL_INBOX_FULL` (the inbox bound of the signal is reached), `HISTORY_HEADROOM` (the run holds 50,176 visible
+         *     events or more, 3 MiB of retained bytes or more, or its closing window is open) and `RUN_CLOSING` (three deferrals
+         *     for unseen events since the last completion that committed without one).
          */
         post: operations["signalRun"];
         delete?: never;
@@ -1056,6 +1255,32 @@ export interface paths {
          *     cached and contain only the declared bounded business result.
          */
         post: operations["updateExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/update-receipts/{updateKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an update of a chain of code runs by its update key
+         * @description Design 044 (Requirement 044-015, Technical Plan 8.2). Needs `run:update` in the chain's namespace, checked again on
+         *     every read. Reads the update the caller admitted under `updateKey` through the chain's address: the key keeps the
+         *     chain's scope, so it is found across the chain's segments and a retry after a continue-as-new answers it. A
+         *     caller who also holds `run:operate` reads every principal's update under that key, each with its admitting
+         *     principal. The lookup filters by the tenant and the namespace: an unknown key, an unknown chain, a chain of
+         *     another namespace or tenant, and another principal's key (for a caller without `run:operate`) all answer the same
+         *     `404`. Never cached.
+         */
+        get: operations["getExecutionChainUpdateReceipt"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1351,6 +1576,16 @@ export interface paths {
         /**
          * Bind a worker identity to activities of a namespace
          * @description Replaces what the identity was bound to in this namespace. `pools` (optional) replaces the worker pools the identity is granted: absent leaves them as they are, an empty list takes them away, and removing the binding removes them. A pool is what a secret lists to say which workers may receive it (see `setSecretPools`); repeats are dropped. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
+         *
+         *     Design 044 (Requirement 044-002, Technical Plan 4.1): `workflowTypes` (optional, at most 64 workflow types, each
+         *     matching `^[A-Za-z][A-Za-z0-9_-]{0,47}$`) lists the code workflow types whose workflow tasks the identity may
+         *     serve; an activity entry, `*` and a prefix included, never covers a workflow type. A binding that lists a workflow
+         *     type grants authorship of every run of the type and an unredacted read of its history, so setting `workflowTypes`
+         *     needs `definition:publish` as well as `worker:bind`, and the binding records who set it. `activities` may be empty
+         *     when `workflowTypes` is not. Only an ordinary binding of an identity with the `worker` role may list workflow
+         *     types, never a runner's or a managed profile's. An activity entry that starts with `sagat.workflow` is refused.
+         *     A type outside the pattern, or more than 64, is `422 VALIDATION_FAILED`. Sessions whose workflow types the new
+         *     binding no longer lists are closed.
          */
         put: operations["bindWorker"];
         post?: never;
@@ -1790,6 +2025,39 @@ export interface paths {
          */
         post: operations["undrainWorker"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/code-workflows/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Pause the workflow tasks of every code run of a namespace
+         * @description Design 044 (Requirement 044-033). Needs `run:operate` and `worker:manage` in the namespace. From the commit on, no
+         *     workflow task and no worker query task of a code run of the namespace is leased or completed, sessions registered
+         *     before the pause included; the runs keep their state, and their activities, timers, run deadlines and
+         *     cancellation grace keep running. Replay checks and moves go on, so a busy run can be quiesced and moved. A
+         *     completion the pause refuses ends its lease at once with a `workflow_task.failed` that records it was not
+         *     counted, and a timeout during the pause records the same: neither counts as a failure. A worker query to a run of
+         *     a paused namespace fails at once (`409` `QUERY_UNAVAILABLE`). Pausing a paused namespace changes nothing.
+         *     Audited. Another tenant's namespace and a missing one are `404`.
+         */
+        put: operations["pauseCodeWorkflows"];
+        post?: never;
+        /**
+         * Resume the workflow tasks of the code runs of a namespace
+         * @description Design 044 (Requirement 044-033). Needs `run:operate` and `worker:manage` in the namespace. Ends the pause of
+         *     `pauseCodeWorkflows`: the workflow tasks that are due are offered again. Resuming a namespace that is not paused
+         *     changes nothing. Audited. Another tenant's namespace and a missing one are `404`.
+         */
+        delete: operations["resumeCodeWorkflows"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3210,6 +3478,13 @@ export interface paths {
         /**
          * Create a durable, rate-limited batch job
          * @description Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned, nor is their digest. The keys that start with `batch:` or `schedule:` are the platform's own and are refused as an `Idempotency-Key`. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
+         *
+         *     Design 044 (Requirement 044-023, Technical Plan 7.3): the action `MOVE_CODE_VERSION` moves each selected open code
+         *     run to another code version of its workflow after a verified replay, as `moveRunCodeVersion` does for one run. It
+         *     needs `run:batch`, `run:operate` and `version:activate`, and takes its parameters in `moveCodeVersion`
+         *     (`toVersion`, `dryRun`). The selection is frozen when the job is created, each item is a request of the creator,
+         *     and the creator's permissions and the target are checked again when each item applies. A `toVersion` that is not a
+         *     published code version of the workflow is `409 CONFLICT` with `details.reason` `MOVE_TARGET_INVALID`.
          */
         post: operations["createBatchOperation"];
         delete?: never;
@@ -3519,7 +3794,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_RULE_MISSING`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_REAPPLY_TOO_MANY` and `RESET_CANCEL_SOURCE_NOT_AVAILABLE`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_GONE`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT` and `PENDING_RESET_LIMIT`, and `UNAVAILABLE` with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with `Retry-After`; another replica serves the call); run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and `NOMINAL_TIME_FIELD_INVALID`; Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`, `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64 comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection URI that carries user information or query credentials); collection operators (design 042) refine `VALIDATION_FAILED` with `COLLECTION_OPERATORS_DISABLED` (the deployment's collection-operators switch is off; `node`) and `INVALID_OPERATOR` (a stage of a `forEach` chain is refused; `node`, `stage`, `operator` and `refusal`, one of `UNKNOWN`, `SURFACE`, `RANGE`, `EXPRESSION` and `VARIABLE`); they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_RULE_MISSING`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_REAPPLY_TOO_MANY` and `RESET_CANCEL_SOURCE_NOT_AVAILABLE`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_GONE`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT` and `PENDING_RESET_LIMIT`, and `UNAVAILABLE` with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with `Retry-After`; another replica serves the call); run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and `NOMINAL_TIME_FIELD_INVALID`; Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`, `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64 comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection URI that carries user information or query credentials); collection operators (design 042) refine `VALIDATION_FAILED` with `COLLECTION_OPERATORS_DISABLED` (the deployment's collection-operators switch is off; `node`) and `INVALID_OPERATOR` (a stage of a `forEach` chain is refused; `node`, `stage`, `operator` and `refusal`, one of `UNKNOWN`, `SURFACE`, `RANGE`, `EXPRESSION` and `VARIABLE`); workflow as code (design 044, Technical Plan 13.3) refines `CONFLICT` with `SIGNAL_NOT_DECLARED`, `SIGNAL_INBOX_FULL`, `HISTORY_HEADROOM`, `RUN_CLOSING`, `UPDATE_PENDING`, `RUN_NOT_MUTABLE`, `IDEMPOTENCY_KEY_REUSED`, `QUERY_UNAVAILABLE` and `MOVE_TARGET_INVALID`, `VALIDATION_FAILED` with `QUERY_COMMAND` and `CAPABILITY_NOT_ACTIVE` (a code version published before an operator recorded the instance requirements it needs), `RATE_LIMITED` with `UPDATE_BACKLOG`, and `UNAVAILABLE` (status 504) with `QUERY_TIMEOUT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 /**
                  * @description With `reason` `RUN_INPUT_INVALID` or `SCHEDULE_INPUT_INVALID` (design 043): the keyword of the input schema that failed, from a closed set; `workLimit` is the validation's work budget and `maxDepth` the input's nesting limit, both final. Never a value of the input.
@@ -3724,7 +3999,10 @@ export interface components {
         ResetPoint: {
             /** @description The sequence of the last event of the run that a reset to this point keeps. */
             sequence: number;
-            /** @enum {string} */
+            /**
+             * @description Design 044: a reset point of a code run is `STEP_COMPLETED` with the node `~workflow` (the end of a workflow task), so this set gains no value for code runs.
+             * @enum {string}
+             */
             kind: "RUN_STARTED" | "STEP_COMPLETED" | "CHILD_FINISHED" | "COLLECTION_FINISHED" | "LOOP_FINISHED";
             /** @description The node whose completion this is; null for the start of the run. */
             node?: string | null;
@@ -4009,7 +4287,20 @@ export interface components {
             };
             /** @description Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value. */
             failureCode?: string;
+            /** @description Design 044: present only for a run of a code version; absent for a graph run. The state of the run's workflow-task step, which drives the function. That step is not a node of the runtime graph (`RuntimeNode`), so `waitingOn` gains no value, and the run's `status` keeps its set. */
+            codeWorkflow?: {
+                state: components["schemas"]["CodeWorkflowTaskState"];
+                /** @description With `UNDER_REVIEW`: the review cause (a code of Technical Plan 6.3 of design 044, such as `NONDETERMINISM`, `CHAIN_MISMATCH` or `HISTORY_LIMIT`); null otherwise. Open: a client shows a cause it does not know as a cause. */
+                cause: string | null;
+                /** @description The number of the code version the run executes now: its start version until a verified move changes it. */
+                currentVersion: number;
+            };
         };
+        /**
+         * @description Design 044, the workflow-task step of a code run: `READY` (a workflow task is due), `LEASED` (a worker holds it), `WAITING` (the function is blocked and nothing is pending), `CLOSED` (a terminal or continue-as-new command was accepted) or `UNDER_REVIEW` (a person must act; see `cause`).
+         * @enum {string}
+         */
+        CodeWorkflowTaskState: "READY" | "LEASED" | "WAITING" | "CLOSED" | "UNDER_REVIEW";
         RunPage: {
             items: components["schemas"]["Run"][];
             nextCursor?: string | null;
@@ -4250,7 +4541,7 @@ export interface components {
             /** Format: date-time */
             dueAt?: string | null;
             /**
-             * @description `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.
+             * @description `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open. Design 044: the workflow-task step of a code run is not a node of the runtime graph, so this set gains no value; its state is `Run.codeWorkflow`.
              * @enum {string|null}
              */
             waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | "loop" | "approval" | "collection" | null;
@@ -4368,6 +4659,120 @@ export interface components {
             args: unknown;
             /** Format: int64 */
             expectedStateRevision?: number;
+            /** @description Design 044, a code run only (a graph run ignores it): how long the call waits for the update to complete, in milliseconds; 60,000 when absent. */
+            waitMs?: number;
+            /**
+             * @description Design 044, a code run only (a graph run ignores it): answer `202` with the update's status (`ADMITTED` or `ACCEPTED`) when it has not completed within `waitMs`, instead of `409` `UPDATE_PENDING`.
+             * @default false
+             */
+            acceptPending: boolean;
+        };
+        /**
+         * @description Design 044, the lifecycle of an update of a code run: `ADMITTED`, then `ACCEPTED` or `REJECTED` (by the function's validator, or by the engine when the run ended or continued first), then, once accepted, `COMPLETED` or `FAILED`.
+         * @enum {string}
+         */
+        CodeUpdateStatus: "ADMITTED" | "ACCEPTED" | "REJECTED" | "COMPLETED" | "FAILED";
+        /** @description Design 044: an update of a code run that has not completed yet (`202` of `updateRunState` with `acceptPending: true`). */
+        CodeUpdateAdmission: {
+            /** Format: uuid */
+            runId: string;
+            operation: string;
+            updateKey: string;
+            /** @enum {string} */
+            status: "ADMITTED" | "ACCEPTED";
+        };
+        /** @description Design 044: an update of a code run and what became of it. Read through `updateRunState`, `getRunUpdateReceipt` and `getExecutionChainUpdateReceipt`; never cached. */
+        CodeUpdate: {
+            /**
+             * Format: uuid
+             * @description The run that admitted it (for a chain-addressed key, the segment that did).
+             */
+            runId: string;
+            operation: string;
+            updateKey: string;
+            status: components["schemas"]["CodeUpdateStatus"];
+            /** @description The principal that admitted the update (the `sub` of its token). */
+            admittedBy: string;
+            /** Format: date-time */
+            admittedAt: string;
+            /** @description With `COMPLETED`: only the declared disclosed result, checked against the update's `resultSchema`. Absent otherwise. */
+            result?: unknown;
+            /** @description With `REJECTED` or `FAILED`: a closed code, such as the validator's reason, `RESULT_SCHEMA_VIOLATION` (a result outside the declared schema), `RUN_ENDED` or `RUN_CONTINUED` (finished by the engine when the run ended or continued as new) or `RETAINED_BYTES_LIMIT`; null otherwise. Never a payload. */
+            reason?: string | null;
+            /**
+             * Format: date-time
+             * @description When the update reached its current status.
+             */
+            updatedAt?: string;
+        };
+        /** @description Design 044: the updates under one update key. For a caller without `run:operate`, exactly the caller's own update; for a holder of `run:operate`, every principal's update under the key, each with its admitting principal. */
+        CodeUpdateReceipts: {
+            items: components["schemas"]["CodeUpdate"][];
+        };
+        /** @description Design 044 (Task 044-29): the arguments of a worker query and how long to wait for its answer. */
+        WorkerQueryRequest: {
+            /** @description JSON value checked against the query's `argsSchema`; at most 64 KiB. */
+            args: unknown;
+            /** @description How long the call waits for a worker's answer, in milliseconds. */
+            timeoutMs: number;
+        };
+        /** @description Design 044 (Task 044-29): a worker's answer to a worker query. */
+        WorkerQueryResponse: {
+            /** @description The answer, at most 256 KiB, checked against the query's `resultSchema` by the server before it is returned. */
+            answer: unknown;
+            /**
+             * Format: int64
+             * @description The journal sequence of the committed completion whose function state the answer was computed from.
+             */
+            committedThroughSeq: number;
+        };
+        /** @description Design 044: a verified move of one open code run (`moveRunCodeVersion`). */
+        MoveCodeVersionRequest: {
+            /** @description A version number of the run's own workflow: a published code version of the same workflow type. */
+            toVersion: number;
+            /**
+             * @description Record the verdict of the replay and move nothing.
+             * @default false
+             */
+            dryRun: boolean;
+            /** @description Plain text, trimmed: no control character, a new line included. Kept with the move job and in the audit record. */
+            reason: string;
+        };
+        /** @description Design 044: one code version of a workflow, as `listCodeVersions` reports it. */
+        CodeVersionSummary: {
+            versionNumber: number;
+            workflowType: string;
+            codeDigest: string;
+            /**
+             * Format: int64
+             * @description The open runs whose current code version this is.
+             */
+            openRuns: number;
+            /** @description The live worker sessions that registered this workflow type with this digest. */
+            servingSessions: number;
+            /** @description The age of the oldest of those open runs; null when there is none. */
+            oldestOpenRunAgeSeconds: number | null;
+        };
+        CodeVersionPage: {
+            items: components["schemas"]["CodeVersionSummary"][];
+            nextCursor?: string | null;
+        };
+        /** @description Design 044: the first line of a history export (`exportRunHistory`). The members beyond these three, and their exact shape, are held by `specs/044-workflow-as-code/contracts/history-export.baseline.json`. */
+        HistoryExportHeader: {
+            /**
+             * @description The export format version; a replayer refuses one it does not know.
+             * @constant
+             */
+            exportFormat: 1;
+            /** @description The activity names of the run's current code version whose envelope entry requires an approval. */
+            gatedEntries: string[];
+            /**
+             * Format: int64
+             * @description The `state.maxBytes` of the run's current code version.
+             */
+            stateMaxBytes: number;
+        } & {
+            [key: string]: unknown;
         };
         ChainDeclaredUpdateRequest: {
             /** @description Caller-chosen idempotency key retained across the entire chain. Retries keep this exact key. */
@@ -4488,6 +4893,8 @@ export interface components {
             reason: string;
             /** @description Optimistic concurrency: refused with 409 if the run moved on. */
             expectedRunVersion?: number;
+            /** @description Design 044, CANCEL only: 0 stops a code run at once instead of asking its function to stop within its grace (needs `run:operate`). Any other value is refused with 422. Part of the idempotency fingerprint. For a graph run, 0 is the ordinary cancellation. */
+            graceMs?: number;
             /**
              * @description RERUN_AS_NEW only (refused with 422 for the others); KEEP when absent. KEEP binds the business identifier of the run to the new run unless another open execution holds it, then the rerun is refused with 409 BUSINESS_ID_IN_USE; DROP starts the new run without one. Changing it under the same idempotency key is another request (409 IDEMPOTENCY_KEY_REUSED).
              * @enum {string}
@@ -4551,13 +4958,18 @@ export interface components {
             profile: "database" | "lake";
             /** @description The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them. */
             pools?: string[];
+            /** @description Design 044: the code workflow types whose workflow tasks the identity may serve, which grants authorship of every run of those types and an unredacted read of their histories. Absent or empty for a binding without one. */
+            workflowTypes?: string[];
             revoked?: components["schemas"]["RevokedWorkers"];
         };
         WorkerBindingList: {
             items: components["schemas"]["WorkerBinding"][];
         };
         SetWorkerBindingRequest: {
+            /** @description At least one entry, unless `workflowTypes` has one (design 044): a binding names at least one activity entry or one workflow type. */
             activities: string[];
+            /** @description Design 044: replaces the code workflow types the identity may serve. Setting it needs `definition:publish` as well as `worker:bind`. Absent leaves them as they are; an empty list takes them away. Only for an ordinary binding of an identity with the `worker` role. A type outside the pattern, or more than 64, is 422. */
+            workflowTypes?: string[];
             /** @description Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too. */
             pools?: string[];
             /**
@@ -5671,9 +6083,12 @@ export interface components {
             id: string;
             /** Format: uuid */
             namespaceId: string;
-            /** @enum {string} */
-            kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS";
-            /** @description What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS; empty for the others. */
+            /**
+             * @description Grows only; a client shows a kind it does not know as an alert. Design 044 adds WORKFLOW_TASK_UNSERVED (severity warning): a run of a code workflow type has waited more than 60 seconds for a workflow task that no live worker session of its code digest serves (runbook anchor `#workflow-task-unserved` in `docs/runbooks/alerts.md`). STEP_UNCLAIMED leaves out the reserved `sagat.workflow` names.
+             * @enum {string}
+             */
+            kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS" | "WORKFLOW_TASK_UNSERVED";
+            /** @description What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS, the workflow type for WORKFLOW_TASK_UNSERVED; empty for the others. */
             subject: string;
             /** @enum {string} */
             state: "FIRING" | "RESOLVED";
@@ -6624,10 +7039,10 @@ export interface components {
             query: string;
         };
         /**
-         * @description Grows only. UPDATE and REPIN are refused with 422 BATCH_ACTION_UNAVAILABLE in this build: a declared update has no single-run use case a batch can call yet, and REPIN exists only when feature 019 is enabled.
+         * @description Grows only. UPDATE and REPIN are refused with 422 BATCH_ACTION_UNAVAILABLE in this build: a declared update has no single-run use case a batch can call yet, and REPIN exists only when feature 019 is enabled. REPIN is refused for code runs. MOVE_CODE_VERSION (design 044) is a verified move of open code runs to another code version of their workflow; it needs `run:batch`, `run:operate` and `version:activate` and takes `moveCodeVersion`.
          * @enum {string}
          */
-        BatchAction: "CANCEL" | "SIGNAL" | "UPDATE" | "RERUN" | "RETRY_STEP" | "PAUSE" | "RESUME" | "MARK_MANUAL_REVIEW" | "REPIN";
+        BatchAction: "CANCEL" | "SIGNAL" | "UPDATE" | "RERUN" | "RETRY_STEP" | "PAUSE" | "RESUME" | "MARK_MANUAL_REVIEW" | "REPIN" | "MOVE_CODE_VERSION";
         BatchCreateRequest: {
             selector: components["schemas"]["BatchSelector"];
             action: components["schemas"]["BatchAction"];
@@ -6651,6 +7066,16 @@ export interface components {
             businessId: "KEEP" | "DROP";
             /** @description REPIN only (feature 019); the action is unavailable while that feature is off. */
             repin?: Record<string, never>;
+            /** @description MOVE_CODE_VERSION only (design 044), and required for it: the parameters of the move, kept with the job (at most 1 KiB). */
+            moveCodeVersion?: {
+                /** @description A version number of each run's own workflow: a published code version of the same workflow type. A missing or unpublished one is 409 MOVE_TARGET_INVALID. */
+                toVersion: number;
+                /**
+                 * @description Record the verdict of each replay and move nothing.
+                 * @default false
+                 */
+                dryRun: boolean;
+            };
             /** @description Plain text, trimmed: no control character, a new line included. It is kept with the job. */
             reason: string;
             /** @default 10000 */
@@ -6706,10 +7131,15 @@ export interface components {
             /** Format: uuid */
             runId: string;
             state: components["schemas"]["BatchItemState"];
-            /** @description Closed code, e.g. ALREADY_TERMINAL, NOT_APPLICABLE, NOT_WAITING, RUN_CONTINUED, HIDDEN_FROM_CREATOR; for a deferred item the cause (QUOTA_EXCEEDED, RATE_LIMITED, CONCURRENCY_QUEUE_FULL, LOCK_WAIT). */
+            /** @description Closed code, e.g. ALREADY_TERMINAL, NOT_APPLICABLE, NOT_WAITING, RUN_CONTINUED, HIDDEN_FROM_CREATOR; for a deferred item the cause (QUOTA_EXCEEDED, RATE_LIMITED, CONCURRENCY_QUEUE_FULL, LOCK_WAIT). Design 044 adds, for MOVE_CODE_VERSION items, the skip reasons REPLAY_MISMATCH (the target's replay made another command chain or another command body), ENVELOPE_MISMATCH (a step that can still act, or a declaration, does not fit the target) and RUN_NOT_MUTABLE (the run is stopping, or under a HISTORY_LIMIT review); the success reason MATCHED (a dry run whose replay matched); and the defer causes REPLAY_PENDING (the replay check is outstanding: not a refusal, so it moves neither attempts nor the first refusal's time) and RUN_BUSY (the workflow task is leased or a new completion moved the replayed point; checked again, at most three times). The set grows only: a client shows a code it does not know as a reason. */
             reason?: string | null;
-            /** @description Canonical Error.code of a FAILED item. */
+            /** @description Canonical Error.code of a FAILED item. Design 044, for a MOVE_CODE_VERSION item: RUN_BUSY (still busy after the third check), NO_TARGET_WORKER (no session of the target digest claimed the replay check within 3,600 seconds), FORBIDDEN (the creator's permissions or the target's publication or approval no longer hold when the item applies) or REPLAY_CHECK_ABANDONED (the replay check's lease expired three times). These are batch item codes, not values of Error.code, whose set stays closed. */
             errorCode?: string | null;
+            /**
+             * Format: int64
+             * @description Design 044, MOVE_CODE_VERSION items only: the command number of the first command whose replay differed (with REPLAY_MISMATCH); null or absent otherwise.
+             */
+            firstDifference?: number | null;
             attempts?: number;
             /** Format: uuid */
             newRunId?: string | null;
@@ -6948,6 +7378,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description The server waited for an answer it did not get in time (504). The code is `UNAVAILABLE`, `retryable: true`, and `details.reason` names what was waited for (`QUERY_TIMEOUT` for a worker query, design 044); the closed `Error.code` set gains nothing. */
+        GatewayTimeout: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Any other failure: 500 for an unexpected error, 408 when the request timed out. Same envelope. */
         InternalError: {
             headers: {
@@ -6970,6 +7409,8 @@ export interface components {
         Limit: number;
         ScheduleId: string;
         BatchId: string;
+        /** @description The caller-chosen update key, percent-encoded (1 to 128 visible ASCII characters). */
+        UpdateKey: string;
         /** @description The identity (the `sub` of its token), URL-encoded. */
         WorkerSubject: string;
         /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
@@ -7667,6 +8108,43 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    listCodeVersions: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                workflowId: components["parameters"]["WorkflowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of code versions */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeVersionPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     uploadRunInput: {
         parameters: {
             query?: never;
@@ -8013,7 +8491,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The applied durable receipt and declared result, including exact replay */
+            /** @description The applied durable receipt and declared result, including exact replay; for a code run (design 044), the update that has completed, been rejected or failed */
             200: {
                 headers: {
                     "Cache-Control"?: "no-store";
@@ -8022,7 +8500,19 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeclaredUpdateResponse"];
+                    "application/json": components["schemas"]["DeclaredUpdateResponse"] | components["schemas"]["CodeUpdate"];
+                };
+            };
+            /** @description Design 044, a code run only, with `acceptPending: true`: the update is admitted or accepted and has not completed within `waitMs` */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeUpdateAdmission"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -8034,6 +8524,81 @@ export interface operations {
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getRunUpdateReceipt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                /** @description The caller-chosen update key, percent-encoded (1 to 128 visible ASCII characters). */
+                updateKey: components["parameters"]["UpdateKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's update under the key, or every principal's for a holder of `run:operate` */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeUpdateReceipts"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    queryRunWorker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                queryName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description The answer, checked against the query's result schema, and the journal sequence it was computed from */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerQueryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            504: components["responses"]["GatewayTimeout"];
             default: components["responses"]["InternalError"];
         };
     };
@@ -8174,6 +8739,41 @@ export interface operations {
                     "application/json": components["schemas"]["JournalPage"];
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    exportRunHistory: {
+        parameters: {
+            query?: {
+                /** @description The journal sequence to start from; the start of the history when absent. */
+                fromSeq?: number;
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The header line, then one visible history event per line */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -8720,6 +9320,45 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    moveRunCodeVersion: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveCodeVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description The move job, accepted */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     signalRun: {
         parameters: {
             query?: never;
@@ -8908,6 +9547,41 @@ export interface operations {
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getExecutionChainUpdateReceipt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                /** @description The caller-chosen update key, percent-encoded (1 to 128 visible ASCII characters). */
+                updateKey: components["parameters"]["UpdateKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's update under the key, or every principal's for a holder of `run:operate` */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeUpdateReceipts"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -10482,6 +11156,64 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    pauseCodeWorkflows: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The code workflows of the namespace are paused */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    resumeCodeWorkflows: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The code workflows of the namespace are no longer paused */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

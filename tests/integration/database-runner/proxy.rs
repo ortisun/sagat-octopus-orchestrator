@@ -142,6 +142,43 @@ impl WorkerService for Proxy {
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    type ReadHistoryStream = tokio_stream::Empty<Result<pb::ReadHistoryResponse, Status>>;
+    async fn complete_workflow_task(
+        &self,
+        _: Request<pb::CompleteWorkflowTaskRequest>,
+    ) -> Result<Response<pb::CompleteWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("CompleteWorkflowTask"))
+    }
+    async fn fail_workflow_task(
+        &self,
+        _: Request<pb::FailWorkflowTaskRequest>,
+    ) -> Result<Response<pb::FailWorkflowTaskResponse>, Status> {
+        Err(Status::unimplemented("FailWorkflowTask"))
+    }
+    async fn read_history(
+        &self,
+        _: Request<pb::ReadHistoryRequest>,
+    ) -> Result<Response<Self::ReadHistoryStream>, Status> {
+        Err(Status::unimplemented("ReadHistory"))
+    }
+    async fn respond_worker_query(
+        &self,
+        _: Request<pb::RespondWorkerQueryRequest>,
+    ) -> Result<Response<pb::RespondWorkerQueryResponse>, Status> {
+        Err(Status::unimplemented("RespondWorkerQuery"))
+    }
+    async fn respond_replay_check(
+        &self,
+        _: Request<pb::RespondReplayCheckRequest>,
+    ) -> Result<Response<pb::RespondReplayCheckResponse>, Status> {
+        Err(Status::unimplemented("RespondReplayCheck"))
+    }
+    async fn release_sticky(
+        &self,
+        _: Request<pb::ReleaseStickyRequest>,
+    ) -> Result<Response<pb::ReleaseStickyResponse>, Status> {
+        Err(Status::unimplemented("ReleaseSticky"))
+    }
     async fn resolve_database(
         &self,
         r: Request<pb::ResolveSecretsRequest>,

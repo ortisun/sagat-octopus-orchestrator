@@ -1,0 +1,408 @@
+{
+  "scenario": "code-updates",
+  "run": "main",
+  "runId": "82551db0-21c0-41d3-84bf-a9c067b2666f",
+  "workflowType": "credit-line",
+  "seedHex": "07ed4ff4f9eb710676213c5c13b63640173f34700038be624864f63dec888deb",
+  "input": {
+    "accountId": "acc-3",
+    "limit": 100
+  },
+  "codeVersions": {
+    "v1": "sha256:7587465769ad8ec840ed111ff60a4164c8308e91897ba68c536bf20e86bc162c"
+  },
+  "declarations": {
+    "updates": {
+      "raiseLimit": {
+        "argsSchema": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "amount"
+          ]
+        },
+        "disclosure": "declared-business-result-v1",
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "limit"
+          ]
+        }
+      }
+    }
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "timer_start",
+          "target": "c-1",
+          "node": "c-1",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 3600000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 3600000
+          },
+          "bodySha256": "83089d743a825651c1b9fb638055fffd3349a6046adcfd6641492df55238668f",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "97c93b3ce7e4b58c560db2991f84c628a01bcdc886cac98aabbbeff97b256ed6",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "replayedChainHex": "97c93b3ce7e4b58c560db2991f84c628a01bcdc886cac98aabbbeff97b256ed6",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "update_accept",
+          "target": "5",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "5",
+              "accepted": true
+            }
+          },
+          "body": {
+            "admittedSeq": 5,
+            "accepted": true
+          },
+          "bodySha256": "2fef5f9b783c57cf53e394246f5ae5d7da351cc03dc96b8cdac906a4cd0e6726",
+          "journalKind": "update.accepted"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "activity",
+          "target": "limits.apply",
+          "node": "c-3",
+          "fragment": {
+            "type": "activity",
+            "activity": "limits.apply"
+          },
+          "value": {
+            "accountId": "acc-3",
+            "amount": 50
+          },
+          "body": {
+            "type": "activity",
+            "activity": "limits.apply",
+            "input": {
+              "sha256": "279729ce2610658abbc9c22d267f65ba47972ff0188989b9eba0142bbb3f1cae",
+              "size": 33
+            }
+          },
+          "bodySha256": "3819ad14444dec9c5b160eb11aacca2f3faff960bf39ac2875e5352cee633440",
+          "journalKind": "step.released"
+        },
+        {
+          "commandNumber": 4,
+          "kind": "update_reject",
+          "target": "6",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "6",
+              "rejectionReason": "VALIDATION_FAILED"
+            }
+          },
+          "body": {
+            "admittedSeq": 6,
+            "accepted": false,
+            "reason": "VALIDATION_FAILED"
+          },
+          "bodySha256": "1e76d7285a1dfe651fa1a31b66499d74e2c586a39d0dc8e4e905730d81629d6d",
+          "journalKind": "update.rejected"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "330f64887a3673e26900555ebf057be0981ee0aebc82ba92914297cd9713a5cb",
+      "commandCountAfter": 4
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": 14
+      },
+      "nowUs": 1767225600001918,
+      "replayedChainHex": "330f64887a3673e26900555ebf057be0981ee0aebc82ba92914297cd9713a5cb",
+      "appliedThroughSeq": 14,
+      "commands": [
+        {
+          "commandNumber": 5,
+          "kind": "update_accept",
+          "target": "13",
+          "typed": {
+            "updateDecision": {
+              "admittedSeq": "13",
+              "accepted": true
+            }
+          },
+          "body": {
+            "admittedSeq": 13,
+            "accepted": true
+          },
+          "bodySha256": "e0dfb598937e7c0ab9b306cacce509ee662d376a333e7da03fefe7f40900aeb5",
+          "journalKind": "update.accepted"
+        },
+        {
+          "commandNumber": 6,
+          "kind": "activity",
+          "target": "limits.apply",
+          "node": "c-6",
+          "fragment": {
+            "type": "activity",
+            "activity": "limits.apply"
+          },
+          "value": {
+            "accountId": "acc-3",
+            "amount": 25
+          },
+          "body": {
+            "type": "activity",
+            "activity": "limits.apply",
+            "input": {
+              "sha256": "0183722f45d5b89ee0a0f2b6eccf8787a60ceb7e575db9506ab756c7d72eb2db",
+              "size": 33
+            }
+          },
+          "bodySha256": "41192d95cf837fd09392bce72632a6e859820aec42e6fe1839cf05fb9f4bc5c9",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 15,
+      "chainAfterHex": "57afe78f72e0814ad7ef303cec930b34597560232887acf89f7b4ad4024561ad",
+      "commandCountAfter": 6
+    },
+    {
+      "k": 4,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 14,
+        "throughSeq": 19
+      },
+      "nowUs": 1767225600002603,
+      "replayedChainHex": "57afe78f72e0814ad7ef303cec930b34597560232887acf89f7b4ad4024561ad",
+      "appliedThroughSeq": 19,
+      "commands": [
+        {
+          "commandNumber": 7,
+          "kind": "update_complete",
+          "target": "5",
+          "typed": {
+            "updateResult": {
+              "admittedSeq": "5",
+              "result": {
+                "limit": 150
+              }
+            }
+          },
+          "body": {
+            "admittedSeq": 5,
+            "result": {
+              "sha256": "37f3df8e2e6a2eee38e91e63b70b388555ae47281ccfa695a857e5b2e5336d47",
+              "size": 13
+            }
+          },
+          "bodySha256": "4cf05e598d20ada082b0172fc6ad80bc0bddf32d2155391b202437167c335dce",
+          "journalKind": "update.completed"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 20,
+      "chainAfterHex": "3344feb6ac351b8c700286c73308861b310cc44cfcfc0cca6c3785e334946640",
+      "commandCountAfter": 7
+    },
+    {
+      "k": 5,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 19,
+        "throughSeq": 24
+      },
+      "nowUs": 1767225600003288,
+      "replayedChainHex": "3344feb6ac351b8c700286c73308861b310cc44cfcfc0cca6c3785e334946640",
+      "appliedThroughSeq": 24,
+      "commands": [
+        {
+          "commandNumber": 8,
+          "kind": "update_complete",
+          "target": "13",
+          "typed": {
+            "updateResult": {
+              "admittedSeq": "13",
+              "result": {
+                "limit": 175
+              }
+            }
+          },
+          "body": {
+            "admittedSeq": 13,
+            "result": {
+              "sha256": "c2a55c6eb589fd006f7048843cbad6a8f613d904d8b57664ff8bf0e95be8601e",
+              "size": 13
+            }
+          },
+          "bodySha256": "ee183c74cfb5e85da94055b303c7803fd68ab03479bc7ad2eb05bb207ce3a9d9",
+          "journalKind": "update.completed"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 25,
+      "chainAfterHex": "2d7967e78ec11b152a80945d6f2953dce539f775d8b79af05d51d1ab0144015b",
+      "commandCountAfter": 8
+    },
+    {
+      "k": 6,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 24,
+        "throughSeq": 28
+      },
+      "nowUs": 1767229200003836,
+      "replayedChainHex": "2d7967e78ec11b152a80945d6f2953dce539f775d8b79af05d51d1ab0144015b",
+      "appliedThroughSeq": 28,
+      "commands": [
+        {
+          "commandNumber": 9,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "accountId": "acc-3",
+              "limit": 175
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "ef445638fd1037e12d0f87031c030d1780866c84672e6487c8d5605d128ce06d",
+              "size": 33
+            }
+          },
+          "bodySha256": "43bceda6052b8116c18fd73017392a367c44009de416aea3f72323460f2d98f7",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 29,
+      "chainAfterHex": "b77e2ef1b896cfaf50496b51d97618fc67eb0151d40c8c1509247331355355b4",
+      "commandCountAfter": 9
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 12,
+      "journalKind": "step.leased",
+      "node": "c-3"
+    },
+    {
+      "seq": 22,
+      "journalKind": "step.leased",
+      "node": "c-6"
+    },
+    {
+      "seq": 31,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "timer_start",
+      "target": "c-1",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 27
+    },
+    {
+      "node": "c-3",
+      "kind": "activity",
+      "target": "limits.apply",
+      "commandNumber": 3,
+      "issuedSeq": 7,
+      "outcomeSeq": 18
+    },
+    {
+      "node": "c-6",
+      "kind": "activity",
+      "target": "limits.apply",
+      "commandNumber": 6,
+      "issuedSeq": 14,
+      "outcomeSeq": 23
+    }
+  ],
+  "requests": [
+    {
+      "request": "POST /runs/{runId}/updates/raiseLimit",
+      "body": {
+        "updateKey": "u-1",
+        "args": {
+          "amount": 50
+        },
+        "waitMs": 30000
+      },
+      "admittedSeq": 5,
+      "answer": "200 with the result {\"limit\": 150}"
+    },
+    {
+      "request": "POST /runs/{runId}/updates/raiseLimit",
+      "body": {
+        "updateKey": "u-2",
+        "args": {
+          "amount": -5
+        },
+        "waitMs": 30000
+      },
+      "admittedSeq": 6,
+      "answer": "REJECTED with the reason VALIDATION_FAILED"
+    },
+    {
+      "request": "POST /runs/{runId}/updates/raiseLimit",
+      "body": {
+        "updateKey": "u-3",
+        "args": {
+          "amount": 25
+        },
+        "waitMs": 100,
+        "acceptPending": true
+      },
+      "admittedSeq": 13,
+      "answer": "202 with the status ACCEPTED (its handler waits for c-6 past waitMs); later 200 {\"limit\": 175}"
+    }
+  ]
+}

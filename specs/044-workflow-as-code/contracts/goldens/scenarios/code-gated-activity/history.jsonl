@@ -1,0 +1,14 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJiYXRjaElkIjoicGF5LTMifQ=="}}}
+{"seq":"2","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000274","workflowTaskStarted":{}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000411","workflowTaskCompleted":{}}
+{"seq":"4","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000548","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"payouts.send","node":"c-1"}}
+{"seq":"5","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"2","atUs":"1767225600000685","commandRecord":{"kind":"COMMAND_ACTIVITY","target":"payouts.send","node":"c-2"}}
+{"seq":"10","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001370","stepOutcome":{"node":"c-1","outcome":"STEP_OUTCOME_COMPLETED","output":{"json":"eyJ0cmFuc2ZlcklkIjoidC0xIn0="}}}
+{"seq":"12","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001644","stepOutcome":{"node":"c-2","outcome":"STEP_OUTCOME_FAILED","errorCode":"APPROVAL_REJECTED"}}
+{"seq":"13","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600001781","workflowTaskStarted":{}}
+{"seq":"14","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600001918","workflowTaskCompleted":{}}
+{"seq":"15","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"3","atUs":"1767225600002055","commandRecord":{"kind":"COMMAND_APPROVAL","target":"refund-review","node":"c-3"}}
+{"seq":"16","kind":"HISTORY_APPROVAL_DECIDED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600002192","approvalDecided":{"node":"c-3","decision":"approved"}}
+{"seq":"17","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600002329","workflowTaskStarted":{}}
+{"seq":"18","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600002466","workflowTaskCompleted":{}}
+{"seq":"19","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"4","atUs":"1767225600002603","commandRecord":{"kind":"COMMAND_COMPLETE"}}

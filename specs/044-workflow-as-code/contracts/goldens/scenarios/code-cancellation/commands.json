@@ -1,0 +1,175 @@
+{
+  "scenario": "code-cancellation",
+  "run": "main",
+  "runId": "3f934e6b-f5bd-4cab-8139-3328c02408a1",
+  "workflowType": "report-render",
+  "seedHex": "307106815a58f50159dc7b235a208dd850e125d11aab08df3e0da3cf77be5570",
+  "input": {
+    "reportId": "rep-1"
+  },
+  "codeVersions": {
+    "v1": "sha256:d8b715394011c13c956fa67470597cd76de102f961b258764d82d6ad895008c2"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "report.render",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "report.render"
+          },
+          "value": {
+            "reportId": "rep-1"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "report.render",
+            "input": {
+              "sha256": "b698aa4cbaee03e865f6e7ed7919d0047b053393d8d47767546606b05e90e189",
+              "size": 20
+            }
+          },
+          "bodySha256": "5870c693cabc2b6fd9cb8bd27911a1e6f5f8d590ebcfe3f75195d23be3500257",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "68c5c8396b2f5f6c7631012f9f0071c1b1e308a4369dd88ada78fa09e6b91c87",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225601000959,
+      "notes": "cancellation.requested is true: the function cancels its activity and runs a cleanup.",
+      "replayedChainHex": "68c5c8396b2f5f6c7631012f9f0071c1b1e308a4369dd88ada78fa09e6b91c87",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "step_cancel",
+          "target": "c-1",
+          "node": "c-1",
+          "typed": {
+            "target": {
+              "target": "c-1"
+            }
+          },
+          "body": {
+            "target": "c-1"
+          },
+          "bodySha256": "2f524b3b4c4098535e2532a99d405a266dce7b76b650e850e104fb021ac96330",
+          "journalKind": "step.cancel_requested"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "activity",
+          "target": "report.cleanup",
+          "node": "c-3",
+          "fragment": {
+            "type": "activity",
+            "activity": "report.cleanup"
+          },
+          "value": {
+            "reportId": "rep-1"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "report.cleanup",
+            "input": {
+              "sha256": "b698aa4cbaee03e865f6e7ed7919d0047b053393d8d47767546606b05e90e189",
+              "size": 20
+            }
+          },
+          "bodySha256": "2a36b1d4b804b8736ee51b9bf67e765c8e9d9e5086eaedc44546cab227a6b5f0",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "b4c1bdb2aea244b4a29c3ce13b05aaf93f9c8ef47ff85618511030e21e1e6ea0",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 7,
+        "throughSeq": 14
+      },
+      "nowUs": 1767225601001918,
+      "replayedChainHex": "b4c1bdb2aea244b4a29c3ce13b05aaf93f9c8ef47ff85618511030e21e1e6ea0",
+      "appliedThroughSeq": 14,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "acknowledge_cancellation",
+          "target": "",
+          "typed": {
+            "acknowledgeCancellation": {}
+          },
+          "body": {},
+          "bodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 15,
+      "chainAfterHex": "d6a970194f6e6032e4a2fe6fcf19e1dd29fddf953552a5491dd667dc00cbb9a7",
+      "commandCountAfter": 4
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 12,
+      "journalKind": "step.leased",
+      "node": "c-3"
+    },
+    {
+      "seq": 17,
+      "journalKind": "run.finished",
+      "status": "CANCELLED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "report.render",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 11
+    },
+    {
+      "node": "c-3",
+      "kind": "activity",
+      "target": "report.cleanup",
+      "commandNumber": 3,
+      "issuedSeq": 7,
+      "outcomeSeq": 13
+    }
+  ]
+}

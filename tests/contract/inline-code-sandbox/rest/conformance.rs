@@ -837,6 +837,8 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
                     pools: vec![],
                     max_inflight: 1,
                     protocol_version: "1.3".into(),
+                    workflow_types: Vec::new(),
+                    offers_workflow_as_code: false,
                 }),
             },
         ))

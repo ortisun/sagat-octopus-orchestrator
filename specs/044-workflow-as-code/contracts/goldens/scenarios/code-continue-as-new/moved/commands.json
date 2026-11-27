@@ -1,0 +1,118 @@
+{
+  "scenario": "code-continue-as-new",
+  "run": "moved",
+  "runId": "047d7ff7-02ac-41e0-a783-e095b66619a8",
+  "workflowType": "subscription",
+  "seedHex": "2323f3cba1235cca330e88109568bcc61c3d0443b98db9a3fa310b6e53c84581",
+  "input": {
+    "cycle": 1,
+    "amountCents": 990,
+    "wait": true
+  },
+  "codeVersions": {
+    "v1": "sha256:1759b40e043f434492fca819cfc3dab2a09dd1f84407c566b5b227dfb6358fbd",
+    "v2": "sha256:dbf99d7ec25a22576ef71a4aa1db17b0b782ebf910926317815e62b5e3b4bc52"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "timer_start",
+          "target": "c-1",
+          "node": "c-1",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 1000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 1000
+          },
+          "bodySha256": "856a0d507af711ebe58c4db990fe5ae518a350bbe7fc14b764d249e4e393c04b",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "513620857d8a169128175ebb615b15e8b3144b1bbb0cbcb46d1aa006035c343c",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 2,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225601000959,
+      "replayedChainHex": "513620857d8a169128175ebb615b15e8b3144b1bbb0cbcb46d1aa006035c343c",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "continue_as_new",
+          "target": "",
+          "typed": {
+            "continueAsNew": {
+              "input": {
+                "cycle": 2,
+                "amountCents": 990
+              }
+            }
+          },
+          "body": {
+            "input": {
+              "cycle": 2,
+              "amountCents": 990
+            },
+            "state": null,
+            "version": "same"
+          },
+          "bodySha256": "011db0d776dc35dabee9dc5fd926b8762e853c3e2c31ae34d8250c6676b27c86",
+          "journalKind": "run.continue_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "64bcc220cdd877ca1630d2f8857ddcd7e5f29e923d55beeb07ee3148a50cf56e",
+      "commandCountAfter": 2
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "run.code_version_moved",
+      "from": 1,
+      "to": 2,
+      "note": "a verified move (Technical Plan 7.3), not visible"
+    },
+    {
+      "seq": 10,
+      "journalKind": "run.continued"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "timer_start",
+      "target": "c-1",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ],
+  "expectations": {
+    "successorPinnedVersion": 2,
+    "why": "version \"same\" pins the run's current code version, the moved-to version 2, not its start version 1"
+  }
+}

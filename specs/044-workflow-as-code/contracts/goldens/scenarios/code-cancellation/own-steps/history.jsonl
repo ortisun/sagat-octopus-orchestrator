@@ -1,0 +1,15 @@
+{"seq":"1","kind":"HISTORY_RUN_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000137","runStarted":{"input":{"json":"eyJyZWZ1bmRJZCI6InItMzEifQ=="}}}
+{"seq":"2","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225600000274","workflowTaskStarted":{}}
+{"seq":"3","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225600000411","workflowTaskCompleted":{}}
+{"seq":"4","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"1","atUs":"1767225600000548","commandRecord":{"kind":"COMMAND_WAIT_EVENT","target":"refund.confirmed","node":"c-1"}}
+{"seq":"5","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"2","atUs":"1767225600000685","commandRecord":{"kind":"COMMAND_APPROVAL","target":"refund-review","node":"c-2"}}
+{"seq":"6","kind":"HISTORY_CANCELLATION_REQUESTED","origin":"HISTORY_ORIGIN_EXTERNAL","atUs":"1767225601000822","cancellationRequested":{"graceMs":"60000","cancelOrigin":"CANCEL_ORIGIN_REQUEST"}}
+{"seq":"7","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225601000959","workflowTaskStarted":{}}
+{"seq":"8","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225601001096","workflowTaskCompleted":{}}
+{"seq":"9","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"3","atUs":"1767225601001233","commandRecord":{"kind":"COMMAND_STEP_CANCEL","target":"c-1","node":"c-1"}}
+{"seq":"10","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_EFFECT","atUs":"1767225601001370","stepOutcome":{"node":"c-1","outcome":"STEP_OUTCOME_CANCELLED","errorCode":"CANCELLED"}}
+{"seq":"11","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"4","atUs":"1767225601001507","commandRecord":{"kind":"COMMAND_STEP_CANCEL","target":"c-2","node":"c-2"}}
+{"seq":"12","kind":"HISTORY_STEP_OUTCOME","origin":"HISTORY_ORIGIN_EFFECT","atUs":"1767225601001644","stepOutcome":{"node":"c-2","outcome":"STEP_OUTCOME_CANCELLED","errorCode":"CANCELLED"}}
+{"seq":"13","kind":"HISTORY_WORKFLOW_TASK_STARTED","origin":"HISTORY_ORIGIN_ENGINE","atUs":"1767225601001781","workflowTaskStarted":{}}
+{"seq":"14","kind":"HISTORY_WORKFLOW_TASK_COMPLETED","origin":"HISTORY_ORIGIN_COMPLETION","atUs":"1767225601001918","workflowTaskCompleted":{}}
+{"seq":"15","kind":"HISTORY_COMMAND_RECORDED","origin":"HISTORY_ORIGIN_COMPLETION","commandNumber":"5","atUs":"1767225601002055","commandRecord":{"kind":"COMMAND_ACKNOWLEDGE_CANCELLATION"}}

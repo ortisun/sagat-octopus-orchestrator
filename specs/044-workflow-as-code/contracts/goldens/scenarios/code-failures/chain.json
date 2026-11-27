@@ -1,0 +1,25 @@
+{
+  "runId": "fe9700f7-0786-4ff4-9d39-e33d479f25ac",
+  "activations": [
+    {
+      "k": 1,
+      "commandCountAfter": 1,
+      "chainHex": "f504cb511bf1ea045f02abe266b2e83afe5221d24c1806a71c0f5c0924234292"
+    },
+    {
+      "k": 2,
+      "commandCountAfter": 2,
+      "chainHex": "e3f5c95c34754ae2a289cb5746415f454ce0f3da82877d6e274ebe7009ff8ab8"
+    }
+  ],
+  "commands": [
+    {
+      "commandNumber": 1,
+      "chainHex": "f504cb511bf1ea045f02abe266b2e83afe5221d24c1806a71c0f5c0924234292"
+    },
+    {
+      "commandNumber": 2,
+      "chainHex": "e3f5c95c34754ae2a289cb5746415f454ce0f3da82877d6e274ebe7009ff8ab8"
+    }
+  ]
+}

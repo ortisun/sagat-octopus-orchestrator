@@ -120,6 +120,7 @@ fn generated_messages_preserve_scoped_paths_and_legacy_absence() {
             ],
             definition_node_id: "charge".into(),
         }),
+        accept_workflow_task: false,
     };
     let decoded = pb::CompleteStepRequest::decode(scoped.encode_to_vec().as_slice())
         .expect("generated message round trips");

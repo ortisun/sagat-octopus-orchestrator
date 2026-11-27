@@ -1,0 +1,117 @@
+{
+  "scenario": "code-failures",
+  "run": "main",
+  "runId": "fe9700f7-0786-4ff4-9d39-e33d479f25ac",
+  "workflowType": "checkout",
+  "seedHex": "6e8056893818b5a693783ea06b957e76d9c3a0cf701e0881663522799ca7eabe",
+  "input": {
+    "orderId": "ord-5",
+    "amountCents": 2000
+  },
+  "codeVersions": {
+    "v1": "sha256:09e5dfe87df7f86f84f568ca366a6554433e44aef6004e9d32f308385ae6bdd9"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "payments.charge",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "payments.charge"
+          },
+          "value": {
+            "orderId": "ord-5",
+            "amountCents": 2000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payments.charge",
+            "input": {
+              "sha256": "b1f4f4eae6a819bf9fa87f879da33adcabfb8dd4304e2dc846a5cbec25f67347",
+              "size": 38
+            }
+          },
+          "bodySha256": "7e64b348bbf83182bceed3dd40064d2ee095a17b8654b499564cc435747f7ace",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "f504cb511bf1ea045f02abe266b2e83afe5221d24c1806a71c0f5c0924234292",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 7
+      },
+      "nowUs": 1767225600000959,
+      "replayedChainHex": "f504cb511bf1ea045f02abe266b2e83afe5221d24c1806a71c0f5c0924234292",
+      "appliedThroughSeq": 7,
+      "commands": [
+        {
+          "commandNumber": 2,
+          "kind": "fail",
+          "target": "",
+          "typed": {
+            "fail": {
+              "code": "PAYMENT_DECLINED",
+              "safeMessage": "The card was declined"
+            }
+          },
+          "body": {
+            "code": "PAYMENT_DECLINED",
+            "message": {
+              "sha256": "b1dad3315f52702998cb811fccf9e258b0bd823c7e84349bf9cb34b58a07f850",
+              "size": 23
+            }
+          },
+          "bodySha256": "8c6661e88cbc1008545d87f17d1f36f5abb5feba4e5eb398d2567f42d510607b",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 8,
+      "chainAfterHex": "e3f5c95c34754ae2a289cb5746415f454ce0f3da82877d6e274ebe7009ff8ab8",
+      "commandCountAfter": 2
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 10,
+      "journalKind": "run.finished",
+      "status": "FAILED",
+      "code": "PAYMENT_DECLINED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "payments.charge",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ]
+}

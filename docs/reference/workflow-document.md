@@ -11,7 +11,8 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `apiVersion` | `"sagat-octopus-orchestrator.io/v1"` | yes |  |
 | `bodies` | object |  |  |
 | `chainPolicy` | [`chainPolicy`](#chainPolicy) |  |  |
-| `entrypoint` | string (min length 1) | yes |  |
+| `code` | [`code`](#code) |  |  |
+| `entrypoint` | string (min length 1) |  |  |
 | `inputSchema` | object |  | The schema every run input of this version is checked against before the run is created (design 043, ADR-0090). It must stay within the supported subset of JSON Schema, with one meaning under $schema absent, draft-07 and 2020-12: type, properties, required, items (one schema), additionalProperties, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum (numbers), multipleOf (a positive integer), minLength, maxLength, minItems, maxItems, minProperties, maxProperties, pattern (an allowlisted syntax: no \d, \w, \s, \b, Unicode or POSIX classes, flags or named groups), allOf, anyOf, oneOf, a local $ref (no cycle, no sibling keyword but annotations), $defs, definitions, the annotations title, description, default, examples, $comment and format (never asserted), $schema and $id at the root only, and x-sagat-classification. Any other keyword makes the schema unusable: from 0.3.0 publication refuses it in enforce mode and every start of a stored version with it is refused RUN_INPUT_SCHEMA_UNUSABLE. The keyword list is specs/043-run-input-validation/contracts/errors.md and Technical Plan 4 of docs/designs/043-run-input-validation.md. |
 | `kind` | `"Workflow"` | yes |  |
 | `limits` | [`limits`](#limits) |  |  |
@@ -19,7 +20,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `metadata.description` | string |  |  |
 | `metadata.labels` | object |  |  |
 | `metadata.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
-| `nodes` | array of `node` (min items 1, max items 10000) | yes |  |
+| `nodes` | array of `node` (min items 1, max items 10000) |  |  |
 | `outputSchema` | object |  |  |
 | `state` | [`state`](#state) |  |  |
 | `triggers` | array of object |  |  |
@@ -441,6 +442,160 @@ any
 |---|---|---|---|
 | `maxSegments` | integer (min 1, max 10000) | yes |  |
 | `timeoutMs` | [`duration`](#duration) | yes |  |
+
+### code
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cancellationGraceMs` | integer (min 1000, max 3600000) |  |  |
+| `digest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes | The code digest: the SHA-256 of the RFC 8785 JSON of language, runtime, SDK name and version, workflow type and content (Technical Plan 3.2). |
+| `envelope` | [`codeEnvelope`](#codeEnvelope) | yes |  |
+| `language` | one of `"typescript"`, `"python"`, `"go"`, `"csharp"`, `"java"`, `"rust"` | yes |  |
+| `workerQueries` | object |  | Queries answered by a worker of the run's current digest from the function's state (Task 044-29). |
+| `workflowTaskTimeoutMs` | integer (min 1000, max 60000) |  |  |
+| `workflowType` | string (pattern `^[A-Za-z][A-Za-z0-9_-]{0,47}$`) | yes | Unique in its namespace; every code version of a workflow keeps the type of its first code version. |
+
+### codeActivityEntry
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `compensateWith` | [`codeActivityName`](#codeActivityName) |  |  |
+| `highRisk` | boolean |  |  |
+| `inputSchema` | object |  |  |
+| `irreversible` | boolean |  |  |
+| `name` | [`codeActivityPattern`](#codeActivityPattern) | yes |  |
+| `outputSchema` | object |  |  |
+| `reconcileWith` | [`codeActivityName`](#codeActivityName) |  |  |
+| `requiresApproval` | [`name`](#name) |  | A name of approvalPolicies: the engine holds the step until a person approves it. |
+| `secrets` | array of [`name`](#name) (max items 16) |  |  |
+
+### codeActivityName
+
+any
+
+### codeActivityPattern
+
+string
+
+### codeApprovalPolicyEntry
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `policy` | [`approvalPolicy`](#approvalPolicy) | yes |  |
+| `timeoutMs` | [`duration`](#duration) |  |  |
+
+### codeChildEntry
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `outputSchema` | object |  |  |
+| `version` | any | yes |  |
+| `workflowId` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
+
+### codeEnvelope
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `activities` | array of [`codeActivityEntry`](#codeActivityEntry) (max items 64) | yes |  |
+| `approvalPolicies` | object |  |  |
+| `children` | array of [`codeChildEntry`](#codeChildEntry) (max items 64) |  |  |
+| `events` | array of [`codeEventEntry`](#codeEventEntry) (max items 64) |  |  |
+| `scripts` | array of [`codeScriptEntry`](#codeScriptEntry) (max items 64) |  |  |
+| `timeoutLevel` | one of `"none"` |  | The level of design 045's timeout and retry fields the commands may use; only none until design 045 lands (Gap 044-020). |
+
+### codeEventEntry
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `eventType` | [`name`](#name) | yes |  |
+| `maxLookbackMs` | integer (min 0, max 604800000) |  |  |
+| `schema` | object |  |  |
+
+### codeProfileActivity
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `activity` | [`codeActivityName`](#codeActivityName) | yes |  |
+| `compensateWith` | [`codeActivityName`](#codeActivityName) |  |  |
+| `compensationRetry` | [`retry`](#retry) |  |  |
+| `compensationTimeoutMs` | [`duration`](#duration) |  |  |
+| `highRisk` | boolean |  |  |
+| `irreversible` | boolean |  |  |
+| `reconcileWith` | [`codeActivityName`](#codeActivityName) |  |  |
+| `requiresApproval` | [`name`](#name) |  |  |
+| `retry` | [`retry`](#retry) |  |  |
+| `secrets` | array of [`name`](#name) (max items 16) |  |  |
+| `timeoutMs` | [`duration`](#duration) |  |  |
+| `type` | `"activity"` | yes |  |
+
+### codeProfileApproval
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `policyName` | [`name`](#name) | yes |  |
+| `type` | `"approval"` | yes |  |
+
+### codeProfileChild
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `businessId` | string (min length 1, max length 256) |  |  |
+| `cancelPolicy` | one of `"propagate"`, `"detach"`, `"request_cancel"` |  |  |
+| `type` | `"child"` | yes |  |
+| `workflowId` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
+
+### codeProfileScript
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `artifactDigest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes |  |
+| `compensateWith` | [`codeActivityName`](#codeActivityName) |  |  |
+| `retry` | [`retry`](#retry) |  |  |
+| `secrets` | array of [`name`](#name) (max items 16) |  |  |
+| `type` | `"script"` | yes |  |
+
+### codeProfileTimer
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `durationMs` | [`duration`](#duration) | yes |  |
+| `type` | `"timer"` | yes |  |
+
+### codeProfileWaitEvent
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `correlationKey` | string (min length 1, max length 1024) | yes | A literal business value (stored as a classified payload), never an expression. |
+| `eventType` | [`name`](#name) | yes |  |
+| `lookbackMs` | integer (min 0, max 604800000) |  |  |
+| `timeoutMs` | [`duration`](#duration) | yes |  |
+| `type` | `"waitEvent"` | yes |  |
+
+### codeScriptEntry
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `compensateWith` | [`codeActivityName`](#codeActivityName) |  |  |
+| `digest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes |  |
+| `inputSchema` | object |  |  |
+| `outputSchema` | object |  |  |
+| `secrets` | array of [`name`](#name) (max items 16) |  |  |
+
+### codeUpdate
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `argsSchema` | [`resultSchema`](#resultSchema) | yes |  |
+| `disclosure` | `"declared-business-result-v1"` | yes |  |
+| `resultSchema` | [`resultSchema`](#resultSchema) | yes |  |
+
+### codeWorkerQuery
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `argsSchema` | [`resultSchema`](#resultSchema) | yes |  |
+| `disclosure` | `"declared-business-result-v1"` | yes |  |
+| `resultSchema` | [`resultSchema`](#resultSchema) | yes |  |
 
 ### collectionOperatorStage
 

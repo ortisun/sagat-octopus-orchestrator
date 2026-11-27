@@ -177,6 +177,46 @@ on purpose by the owner.
 
 `control-plane schedule-trigger-handover` requires `schedules-v1` of every live execution engine and, in the same transaction, hands the cron triggers over from the legacy cron pass to the schedule pass. It takes `--operator`, `--expect-live N` and `--dry-run`, runs with the owner role, and is idempotent; the procedure, its refusals and the rollback hazard are in [`schedules.md`](schedules.md) section 6.
 
+### Recording `code-workflows-v1` (workflow as code, design 044)
+
+Being built: Task 044-6 of [design 044](../designs/044-workflow-as-code.md) adds the capability to the closed list
+(`Capability`, `crates/application/src/instances.rs`, and the registry's three checks) with the trigger that refuses its
+removal, and Task 044-3 the publication's hold and the scan below. Until those tasks land there is nothing to record.
+
+**What it gates.** `code-workflows-v1` is required of **both kinds**, `CONTROL_PLANE` and `EXECUTION_ENGINE`. Until it is
+recorded, publishing a code version is refused with `422 CAPABILITY_NOT_ACTIVE`, so no code run can exist. Once it is
+recorded, a process of either kind that does not list it, including one that registers later, closes its gate
+(section 2), so an instance of 0.2.x, whose reader refuses a code document, never opens a code run (Requirement 044-030).
+A publication holds the requirement for the rest of its transaction, so a removal cannot commit beside it.
+
+**Before recording.**
+
+1. Upgrade every control plane and every engine to a build that lists `code-workflows-v1`, and check with the query of
+   section 5 that every live process of both kinds lists it: a live process without it makes the recording refuse and
+   names it.
+2. Check that no published graph version names an activity whose name starts with `sagat.workflow`: that prefix is the
+   reserved name of workflow tasks. A scan in the recording transaction refuses the recording while such a version
+   exists, and names it. Graph publication refuses activity names that start with `sagat.` from Task 044-3 on, so only
+   a version published before it can trip the scan; the design gives no automatic remedy, so decide with the owner of
+   that workflow what becomes of it before you record.
+
+**Recording.** With the owner role, never from a tenant's transaction or the API, through the registry's operator path
+of section 5: one transaction that locks the epoch, verifies the live processes of both kinds, runs the scan, records the
+requirement, moves the epoch and writes the history. Design 044 does not name the command; Task 044-6 ships it (the
+generic `control-plane capability-activate` with the scan as this capability's own step, or a command of its own) and
+writes its exact line here.
+
+**Signals.** A code version that declares signals also needs `signal-inbox-v1`, the buffered-signal inbox of
+Architecture decision 0111 (design 045 and the buffered-signals design 054), recorded before the first such version is
+published; until it is, that publication is refused with `422 CAPABILITY_NOT_ACTIVE`. A code version without signals
+needs only `code-workflows-v1`.
+
+**Removing it.** Removing `code-workflows-v1` is refused while any code version exists (a trigger that holds even for the
+owner), and the migration's down refuses while any code run or code version exists, or while the requirement is
+recorded or has history. To stop code runs from making progress while a problem is found without removing anything, use
+the namespace pause of workflow tasks (`PUT /namespaces/{namespaceId}/code-workflows/pause`, `run:operate` and
+`worker:manage`): it stops workflow and worker-query tasks, and replay checks and moves go on.
+
 ## 6. What the registry does not protect against
 
 The registry protects a fleet from **mistakes**: an old build, a flag left off, a restart loop, a process that cannot be reached.

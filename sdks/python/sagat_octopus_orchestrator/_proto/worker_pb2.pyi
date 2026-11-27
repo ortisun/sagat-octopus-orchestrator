@@ -66,6 +66,104 @@ class StepLogStopReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     STEP_LOG_STOP_REASON_REMOVED: _ClassVar[StepLogStopReason]
     STEP_LOG_STOP_REASON_CAPTURE_OFF: _ClassVar[StepLogStopReason]
     STEP_LOG_STOP_REASON_SESSION: _ClassVar[StepLogStopReason]
+
+class HistoryEventKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    HISTORY_EVENT_KIND_UNSPECIFIED: _ClassVar[HistoryEventKind]
+    HISTORY_RUN_STARTED: _ClassVar[HistoryEventKind]
+    HISTORY_WORKFLOW_TASK_STARTED: _ClassVar[HistoryEventKind]
+    HISTORY_WORKFLOW_TASK_COMPLETED: _ClassVar[HistoryEventKind]
+    HISTORY_COMMAND_RECORDED: _ClassVar[HistoryEventKind]
+    HISTORY_STEP_OUTCOME: _ClassVar[HistoryEventKind]
+    HISTORY_TIMER_FIRED: _ClassVar[HistoryEventKind]
+    HISTORY_WAIT_OUTCOME: _ClassVar[HistoryEventKind]
+    HISTORY_CHILD_FINISHED: _ClassVar[HistoryEventKind]
+    HISTORY_APPROVAL_DECIDED: _ClassVar[HistoryEventKind]
+    HISTORY_SAGA_OUTCOME: _ClassVar[HistoryEventKind]
+    HISTORY_SIGNAL_BUFFERED: _ClassVar[HistoryEventKind]
+    HISTORY_UPDATE_ADMITTED: _ClassVar[HistoryEventKind]
+    HISTORY_CANCELLATION_REQUESTED: _ClassVar[HistoryEventKind]
+    HISTORY_MARKER_RECORDED: _ClassVar[HistoryEventKind]
+
+class HistoryEventOrigin(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    HISTORY_EVENT_ORIGIN_UNSPECIFIED: _ClassVar[HistoryEventOrigin]
+    HISTORY_ORIGIN_COMPLETION: _ClassVar[HistoryEventOrigin]
+    HISTORY_ORIGIN_EFFECT: _ClassVar[HistoryEventOrigin]
+    HISTORY_ORIGIN_ENGINE: _ClassVar[HistoryEventOrigin]
+    HISTORY_ORIGIN_EXTERNAL: _ClassVar[HistoryEventOrigin]
+
+class StepOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    STEP_OUTCOME_UNSPECIFIED: _ClassVar[StepOutcome]
+    STEP_OUTCOME_COMPLETED: _ClassVar[StepOutcome]
+    STEP_OUTCOME_FAILED: _ClassVar[StepOutcome]
+    STEP_OUTCOME_TIMED_OUT: _ClassVar[StepOutcome]
+    STEP_OUTCOME_CANCELLED: _ClassVar[StepOutcome]
+
+class CancelOrigin(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    CANCEL_ORIGIN_UNSPECIFIED: _ClassVar[CancelOrigin]
+    CANCEL_ORIGIN_REQUEST: _ClassVar[CancelOrigin]
+    CANCEL_ORIGIN_WITHOUT_GRACE: _ClassVar[CancelOrigin]
+    CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED: _ClassVar[CancelOrigin]
+    CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST: _ClassVar[CancelOrigin]
+    CANCEL_ORIGIN_LATCHED_HANDOFF: _ClassVar[CancelOrigin]
+
+class CommandKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    COMMAND_KIND_UNSPECIFIED: _ClassVar[CommandKind]
+    COMMAND_ACTIVITY: _ClassVar[CommandKind]
+    COMMAND_SCRIPT: _ClassVar[CommandKind]
+    COMMAND_TIMER_START: _ClassVar[CommandKind]
+    COMMAND_TIMER_CANCEL: _ClassVar[CommandKind]
+    COMMAND_WAIT_EVENT: _ClassVar[CommandKind]
+    COMMAND_CHILD: _ClassVar[CommandKind]
+    COMMAND_APPROVAL: _ClassVar[CommandKind]
+    COMMAND_STEP_CANCEL: _ClassVar[CommandKind]
+    COMMAND_SAGA_OPEN: _ClassVar[CommandKind]
+    COMMAND_SAGA_CLOSE: _ClassVar[CommandKind]
+    COMMAND_SAGA_ABORT: _ClassVar[CommandKind]
+    COMMAND_MARKER_PATCH: _ClassVar[CommandKind]
+    COMMAND_MARKER_SIDE_EFFECT: _ClassVar[CommandKind]
+    COMMAND_SET_STATE: _ClassVar[CommandKind]
+    COMMAND_UPDATE_ACCEPT: _ClassVar[CommandKind]
+    COMMAND_UPDATE_REJECT: _ClassVar[CommandKind]
+    COMMAND_UPDATE_COMPLETE: _ClassVar[CommandKind]
+    COMMAND_CONSUME_SIGNALS: _ClassVar[CommandKind]
+    COMMAND_COMPLETE: _ClassVar[CommandKind]
+    COMMAND_FAIL: _ClassVar[CommandKind]
+    COMMAND_CONTINUE_AS_NEW: _ClassVar[CommandKind]
+    COMMAND_ACKNOWLEDGE_CANCELLATION: _ClassVar[CommandKind]
+
+class WorkflowTaskFailureCause(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_NONDETERMINISM: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_CHAIN_MISMATCH: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_NONDETERMINISM_RISK: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_COMMAND_OUTSIDE_ENVELOPE: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_COMMAND_INVALID: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_VALIDATOR_COMMAND: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_WORKFLOW_TASK_FAILED: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_ACTIVATION_DEADLINE: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_WORKFLOW_TASK_TIMED_OUT: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_COMMAND_VALUE_RELEASED: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_COMMAND_VALUE_LIMIT: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_COMMAND_LIMIT: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_OUTSTANDING_OBLIGATIONS: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_UNHANDLED_EVENTS: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_CLOSING_WINDOW_COMMAND: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_HISTORY_LIMIT: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_RETAINED_BYTES_LIMIT: _ClassVar[WorkflowTaskFailureCause]
+    CAUSE_STORAGE_QUOTA_EXCEEDED: _ClassVar[WorkflowTaskFailureCause]
+
+class WorkflowTaskOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    WORKFLOW_TASK_OUTCOME_UNSPECIFIED: _ClassVar[WorkflowTaskOutcome]
+    WORKFLOW_TASK_ACCEPTED: _ClassVar[WorkflowTaskOutcome]
+    WORKFLOW_TASK_ACCEPTED_DEFERRED: _ClassVar[WorkflowTaskOutcome]
+    WORKFLOW_TASK_REVIEW: _ClassVar[WorkflowTaskOutcome]
 DATABASE_OPERATION_UNSPECIFIED: DatabaseOperationKind
 DATABASE_QUERY: DatabaseOperationKind
 DATABASE_EXECUTE: DatabaseOperationKind
@@ -102,20 +200,109 @@ STEP_LOG_STOP_REASON_AUTHORITY: StepLogStopReason
 STEP_LOG_STOP_REASON_REMOVED: StepLogStopReason
 STEP_LOG_STOP_REASON_CAPTURE_OFF: StepLogStopReason
 STEP_LOG_STOP_REASON_SESSION: StepLogStopReason
+HISTORY_EVENT_KIND_UNSPECIFIED: HistoryEventKind
+HISTORY_RUN_STARTED: HistoryEventKind
+HISTORY_WORKFLOW_TASK_STARTED: HistoryEventKind
+HISTORY_WORKFLOW_TASK_COMPLETED: HistoryEventKind
+HISTORY_COMMAND_RECORDED: HistoryEventKind
+HISTORY_STEP_OUTCOME: HistoryEventKind
+HISTORY_TIMER_FIRED: HistoryEventKind
+HISTORY_WAIT_OUTCOME: HistoryEventKind
+HISTORY_CHILD_FINISHED: HistoryEventKind
+HISTORY_APPROVAL_DECIDED: HistoryEventKind
+HISTORY_SAGA_OUTCOME: HistoryEventKind
+HISTORY_SIGNAL_BUFFERED: HistoryEventKind
+HISTORY_UPDATE_ADMITTED: HistoryEventKind
+HISTORY_CANCELLATION_REQUESTED: HistoryEventKind
+HISTORY_MARKER_RECORDED: HistoryEventKind
+HISTORY_EVENT_ORIGIN_UNSPECIFIED: HistoryEventOrigin
+HISTORY_ORIGIN_COMPLETION: HistoryEventOrigin
+HISTORY_ORIGIN_EFFECT: HistoryEventOrigin
+HISTORY_ORIGIN_ENGINE: HistoryEventOrigin
+HISTORY_ORIGIN_EXTERNAL: HistoryEventOrigin
+STEP_OUTCOME_UNSPECIFIED: StepOutcome
+STEP_OUTCOME_COMPLETED: StepOutcome
+STEP_OUTCOME_FAILED: StepOutcome
+STEP_OUTCOME_TIMED_OUT: StepOutcome
+STEP_OUTCOME_CANCELLED: StepOutcome
+CANCEL_ORIGIN_UNSPECIFIED: CancelOrigin
+CANCEL_ORIGIN_REQUEST: CancelOrigin
+CANCEL_ORIGIN_WITHOUT_GRACE: CancelOrigin
+CANCEL_ORIGIN_FUNCTION_ACKNOWLEDGED: CancelOrigin
+CANCEL_ORIGIN_CONTINUED_AFTER_REQUEST: CancelOrigin
+CANCEL_ORIGIN_LATCHED_HANDOFF: CancelOrigin
+COMMAND_KIND_UNSPECIFIED: CommandKind
+COMMAND_ACTIVITY: CommandKind
+COMMAND_SCRIPT: CommandKind
+COMMAND_TIMER_START: CommandKind
+COMMAND_TIMER_CANCEL: CommandKind
+COMMAND_WAIT_EVENT: CommandKind
+COMMAND_CHILD: CommandKind
+COMMAND_APPROVAL: CommandKind
+COMMAND_STEP_CANCEL: CommandKind
+COMMAND_SAGA_OPEN: CommandKind
+COMMAND_SAGA_CLOSE: CommandKind
+COMMAND_SAGA_ABORT: CommandKind
+COMMAND_MARKER_PATCH: CommandKind
+COMMAND_MARKER_SIDE_EFFECT: CommandKind
+COMMAND_SET_STATE: CommandKind
+COMMAND_UPDATE_ACCEPT: CommandKind
+COMMAND_UPDATE_REJECT: CommandKind
+COMMAND_UPDATE_COMPLETE: CommandKind
+COMMAND_CONSUME_SIGNALS: CommandKind
+COMMAND_COMPLETE: CommandKind
+COMMAND_FAIL: CommandKind
+COMMAND_CONTINUE_AS_NEW: CommandKind
+COMMAND_ACKNOWLEDGE_CANCELLATION: CommandKind
+WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED: WorkflowTaskFailureCause
+CAUSE_NONDETERMINISM: WorkflowTaskFailureCause
+CAUSE_CHAIN_MISMATCH: WorkflowTaskFailureCause
+CAUSE_NONDETERMINISM_RISK: WorkflowTaskFailureCause
+CAUSE_COMMAND_OUTSIDE_ENVELOPE: WorkflowTaskFailureCause
+CAUSE_COMMAND_INVALID: WorkflowTaskFailureCause
+CAUSE_VALIDATOR_COMMAND: WorkflowTaskFailureCause
+CAUSE_WORKFLOW_TASK_FAILED: WorkflowTaskFailureCause
+CAUSE_ACTIVATION_DEADLINE: WorkflowTaskFailureCause
+CAUSE_WORKFLOW_TASK_TIMED_OUT: WorkflowTaskFailureCause
+CAUSE_COMMAND_VALUE_RELEASED: WorkflowTaskFailureCause
+CAUSE_COMMAND_VALUE_LIMIT: WorkflowTaskFailureCause
+CAUSE_COMMAND_LIMIT: WorkflowTaskFailureCause
+CAUSE_OUTSTANDING_OBLIGATIONS: WorkflowTaskFailureCause
+CAUSE_UNHANDLED_EVENTS: WorkflowTaskFailureCause
+CAUSE_CLOSING_WINDOW_COMMAND: WorkflowTaskFailureCause
+CAUSE_HISTORY_LIMIT: WorkflowTaskFailureCause
+CAUSE_RETAINED_BYTES_LIMIT: WorkflowTaskFailureCause
+CAUSE_STORAGE_QUOTA_EXCEEDED: WorkflowTaskFailureCause
+WORKFLOW_TASK_OUTCOME_UNSPECIFIED: WorkflowTaskOutcome
+WORKFLOW_TASK_ACCEPTED: WorkflowTaskOutcome
+WORKFLOW_TASK_ACCEPTED_DEFERRED: WorkflowTaskOutcome
+WORKFLOW_TASK_REVIEW: WorkflowTaskOutcome
 
 class WorkerCapabilities(_message.Message):
-    __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version")
+    __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version", "workflow_types", "offers_workflow_as_code")
     LANGUAGES_FIELD_NUMBER: _ClassVar[int]
     ACTIVITIES_FIELD_NUMBER: _ClassVar[int]
     POOLS_FIELD_NUMBER: _ClassVar[int]
     MAX_INFLIGHT_FIELD_NUMBER: _ClassVar[int]
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TYPES_FIELD_NUMBER: _ClassVar[int]
+    OFFERS_WORKFLOW_AS_CODE_FIELD_NUMBER: _ClassVar[int]
     languages: _containers.RepeatedScalarFieldContainer[str]
     activities: _containers.RepeatedScalarFieldContainer[str]
     pools: _containers.RepeatedScalarFieldContainer[str]
     max_inflight: int
     protocol_version: str
-    def __init__(self, languages: _Optional[_Iterable[str]] = ..., activities: _Optional[_Iterable[str]] = ..., pools: _Optional[_Iterable[str]] = ..., max_inflight: _Optional[int] = ..., protocol_version: _Optional[str] = ...) -> None: ...
+    workflow_types: _containers.RepeatedCompositeFieldContainer[WorkflowTypeOffer]
+    offers_workflow_as_code: bool
+    def __init__(self, languages: _Optional[_Iterable[str]] = ..., activities: _Optional[_Iterable[str]] = ..., pools: _Optional[_Iterable[str]] = ..., max_inflight: _Optional[int] = ..., protocol_version: _Optional[str] = ..., workflow_types: _Optional[_Iterable[_Union[WorkflowTypeOffer, _Mapping]]] = ..., offers_workflow_as_code: _Optional[bool] = ...) -> None: ...
+
+class WorkflowTypeOffer(_message.Message):
+    __slots__ = ("workflow_type", "code_digest")
+    WORKFLOW_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CODE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    workflow_type: str
+    code_digest: str
+    def __init__(self, workflow_type: _Optional[str] = ..., code_digest: _Optional[str] = ...) -> None: ...
 
 class RegisterWorkerRequest(_message.Message):
     __slots__ = ("worker_name", "namespace", "capabilities")
@@ -166,7 +353,7 @@ class ExecutionInstanceIdentity(_message.Message):
     def __init__(self, instance_path: _Optional[_Iterable[_Union[ScopePathSegment, _Mapping]]] = ..., definition_node_id: _Optional[str] = ...) -> None: ...
 
 class TaskLease(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "activity_name", "input_json", "input_blob_ref", "traceparent", "tenant_alias", "idempotency_key", "task_kind", "target_node", "target_idempotency_key", "instance", "target_instance")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "activity_name", "input_json", "input_blob_ref", "traceparent", "tenant_alias", "idempotency_key", "task_kind", "target_node", "target_idempotency_key", "instance", "target_instance", "workflow_task", "query_task", "replay_check_task")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -185,6 +372,9 @@ class TaskLease(_message.Message):
     TARGET_IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
     TARGET_INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TASK_FIELD_NUMBER: _ClassVar[int]
+    QUERY_TASK_FIELD_NUMBER: _ClassVar[int]
+    REPLAY_CHECK_TASK_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -203,7 +393,10 @@ class TaskLease(_message.Message):
     target_idempotency_key: str
     instance: ExecutionInstanceIdentity
     target_instance: ExecutionInstanceIdentity
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., activity_name: _Optional[str] = ..., input_json: _Optional[str] = ..., input_blob_ref: _Optional[str] = ..., traceparent: _Optional[str] = ..., tenant_alias: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., task_kind: _Optional[str] = ..., target_node: _Optional[str] = ..., target_idempotency_key: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., target_instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+    workflow_task: WorkflowTaskLease
+    query_task: QueryTask
+    replay_check_task: ReplayCheckTask
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., activity_name: _Optional[str] = ..., input_json: _Optional[str] = ..., input_blob_ref: _Optional[str] = ..., traceparent: _Optional[str] = ..., tenant_alias: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., task_kind: _Optional[str] = ..., target_node: _Optional[str] = ..., target_idempotency_key: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., target_instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., workflow_task: _Optional[_Union[WorkflowTaskLease, _Mapping]] = ..., query_task: _Optional[_Union[QueryTask, _Mapping]] = ..., replay_check_task: _Optional[_Union[ReplayCheckTask, _Mapping]] = ...) -> None: ...
 
 class PollTasksResponse(_message.Message):
     __slots__ = ("tasks", "retry_after_ms")
@@ -242,7 +435,7 @@ class HeartbeatResponse(_message.Message):
     def __init__(self, lease_expires_at_epoch_ms: _Optional[int] = ..., cancel_requested: _Optional[bool] = ...) -> None: ...
 
 class CompleteStepRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "output_json", "output_blob_ref", "output_sha256", "traceparent", "instance")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "output_json", "output_blob_ref", "output_sha256", "traceparent", "instance", "accept_workflow_task")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -255,6 +448,7 @@ class CompleteStepRequest(_message.Message):
     OUTPUT_SHA256_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    ACCEPT_WORKFLOW_TASK_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -267,7 +461,8 @@ class CompleteStepRequest(_message.Message):
     output_sha256: str
     traceparent: str
     instance: ExecutionInstanceIdentity
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., output_json: _Optional[str] = ..., output_blob_ref: _Optional[str] = ..., output_sha256: _Optional[str] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+    accept_workflow_task: bool
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., output_json: _Optional[str] = ..., output_blob_ref: _Optional[str] = ..., output_sha256: _Optional[str] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., accept_workflow_task: _Optional[bool] = ...) -> None: ...
 
 class FailStepRequest(_message.Message):
     __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "error_code", "safe_message", "retryable", "traceparent", "instance")
@@ -378,7 +573,7 @@ class WriteBlobResponse(_message.Message):
     def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
 
 class ReadBlobRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id", "instance")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id", "instance", "read_token")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -387,6 +582,7 @@ class ReadBlobRequest(_message.Message):
     LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     BLOB_ID_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    READ_TOKEN_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -395,7 +591,8 @@ class ReadBlobRequest(_message.Message):
     lease_token: str
     blob_id: str
     instance: ExecutionInstanceIdentity
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+    read_token: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., read_token: _Optional[str] = ...) -> None: ...
 
 class ReadBlobResponse(_message.Message):
     __slots__ = ("header", "chunk")
@@ -418,16 +615,18 @@ class ReadBlobHeader(_message.Message):
     def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
 
 class StepCommandResponse(_message.Message):
-    __slots__ = ("command_id", "already_applied", "step_status", "run_status")
+    __slots__ = ("command_id", "already_applied", "step_status", "run_status", "workflow_task")
     COMMAND_ID_FIELD_NUMBER: _ClassVar[int]
     ALREADY_APPLIED_FIELD_NUMBER: _ClassVar[int]
     STEP_STATUS_FIELD_NUMBER: _ClassVar[int]
     RUN_STATUS_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TASK_FIELD_NUMBER: _ClassVar[int]
     command_id: str
     already_applied: bool
     step_status: str
     run_status: str
-    def __init__(self, command_id: _Optional[str] = ..., already_applied: _Optional[bool] = ..., step_status: _Optional[str] = ..., run_status: _Optional[str] = ...) -> None: ...
+    workflow_task: TaskLease
+    def __init__(self, command_id: _Optional[str] = ..., already_applied: _Optional[bool] = ..., step_status: _Optional[str] = ..., run_status: _Optional[str] = ..., workflow_task: _Optional[_Union[TaskLease, _Mapping]] = ...) -> None: ...
 
 class DatabaseValue(_message.Message):
     __slots__ = ("null_value", "boolean_value", "integer_value", "decimal_value", "float_value", "text_value", "timestamp_value", "date_value", "binary_value", "json_value")
@@ -791,3 +990,611 @@ class StepLogPolicy(_message.Message):
     ENABLED_FIELD_NUMBER: _ClassVar[int]
     enabled: bool
     def __init__(self, enabled: _Optional[bool] = ...) -> None: ...
+
+class WorkflowTaskLease(_message.Message):
+    __slots__ = ("run_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "seed", "started_at_us", "window_start_seq", "gated_entries", "state_max_bytes", "first_page", "visible_count", "continue_as_new_suggested", "history_limit_reached", "traceparent", "workflow_type", "code_digest")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AT_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
+    SEED_FIELD_NUMBER: _ClassVar[int]
+    STARTED_AT_US_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_START_SEQ_FIELD_NUMBER: _ClassVar[int]
+    GATED_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    STATE_MAX_BYTES_FIELD_NUMBER: _ClassVar[int]
+    FIRST_PAGE_FIELD_NUMBER: _ClassVar[int]
+    VISIBLE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CONTINUE_AS_NEW_SUGGESTED_FIELD_NUMBER: _ClassVar[int]
+    HISTORY_LIMIT_REACHED_FIELD_NUMBER: _ClassVar[int]
+    TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CODE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    expires_at_epoch_ms: int
+    seed: bytes
+    started_at_us: int
+    window_start_seq: int
+    gated_entries: _containers.RepeatedScalarFieldContainer[str]
+    state_max_bytes: int
+    first_page: _containers.RepeatedCompositeFieldContainer[HistoryEvent]
+    visible_count: int
+    continue_as_new_suggested: bool
+    history_limit_reached: bool
+    traceparent: str
+    workflow_type: str
+    code_digest: str
+    def __init__(self, run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., seed: _Optional[bytes] = ..., started_at_us: _Optional[int] = ..., window_start_seq: _Optional[int] = ..., gated_entries: _Optional[_Iterable[str]] = ..., state_max_bytes: _Optional[int] = ..., first_page: _Optional[_Iterable[_Union[HistoryEvent, _Mapping]]] = ..., visible_count: _Optional[int] = ..., continue_as_new_suggested: _Optional[bool] = ..., history_limit_reached: _Optional[bool] = ..., traceparent: _Optional[str] = ..., workflow_type: _Optional[str] = ..., code_digest: _Optional[str] = ...) -> None: ...
+
+class HistoryPayload(_message.Message):
+    __slots__ = ("json", "blob", "placeholder")
+    JSON_FIELD_NUMBER: _ClassVar[int]
+    BLOB_FIELD_NUMBER: _ClassVar[int]
+    PLACEHOLDER_FIELD_NUMBER: _ClassVar[int]
+    json: bytes
+    blob: HistoryBlobRef
+    placeholder: str
+    def __init__(self, json: _Optional[bytes] = ..., blob: _Optional[_Union[HistoryBlobRef, _Mapping]] = ..., placeholder: _Optional[str] = ...) -> None: ...
+
+class HistoryBlobRef(_message.Message):
+    __slots__ = ("blob_id", "size", "sha256", "content_type")
+    BLOB_ID_FIELD_NUMBER: _ClassVar[int]
+    SIZE_FIELD_NUMBER: _ClassVar[int]
+    SHA256_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_TYPE_FIELD_NUMBER: _ClassVar[int]
+    blob_id: str
+    size: int
+    sha256: str
+    content_type: str
+    def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
+
+class HistoryEvent(_message.Message):
+    __slots__ = ("seq", "kind", "origin", "command_number", "at_us", "run_started", "workflow_task_started", "workflow_task_completed", "command_record", "step_outcome", "timer_fired", "wait_outcome", "child_finished", "approval_decided", "saga_outcome", "signal_buffered", "update_admitted", "cancellation_requested", "marker_recorded")
+    SEQ_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    AT_US_FIELD_NUMBER: _ClassVar[int]
+    RUN_STARTED_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TASK_STARTED_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TASK_COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_RECORD_FIELD_NUMBER: _ClassVar[int]
+    STEP_OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    TIMER_FIRED_FIELD_NUMBER: _ClassVar[int]
+    WAIT_OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    CHILD_FINISHED_FIELD_NUMBER: _ClassVar[int]
+    APPROVAL_DECIDED_FIELD_NUMBER: _ClassVar[int]
+    SAGA_OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    SIGNAL_BUFFERED_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_ADMITTED_FIELD_NUMBER: _ClassVar[int]
+    CANCELLATION_REQUESTED_FIELD_NUMBER: _ClassVar[int]
+    MARKER_RECORDED_FIELD_NUMBER: _ClassVar[int]
+    seq: int
+    kind: HistoryEventKind
+    origin: HistoryEventOrigin
+    command_number: int
+    at_us: int
+    run_started: HistoryRunStarted
+    workflow_task_started: HistoryWorkflowTaskStarted
+    workflow_task_completed: HistoryWorkflowTaskCompleted
+    command_record: HistoryCommandRecord
+    step_outcome: HistoryStepOutcome
+    timer_fired: HistoryTimerFired
+    wait_outcome: HistoryWaitOutcome
+    child_finished: HistoryChildFinished
+    approval_decided: HistoryApprovalDecided
+    saga_outcome: HistorySagaOutcome
+    signal_buffered: HistorySignalBuffered
+    update_admitted: HistoryUpdateAdmitted
+    cancellation_requested: HistoryCancellationRequested
+    marker_recorded: HistoryMarkerRecorded
+    def __init__(self, seq: _Optional[int] = ..., kind: _Optional[_Union[HistoryEventKind, str]] = ..., origin: _Optional[_Union[HistoryEventOrigin, str]] = ..., command_number: _Optional[int] = ..., at_us: _Optional[int] = ..., run_started: _Optional[_Union[HistoryRunStarted, _Mapping]] = ..., workflow_task_started: _Optional[_Union[HistoryWorkflowTaskStarted, _Mapping]] = ..., workflow_task_completed: _Optional[_Union[HistoryWorkflowTaskCompleted, _Mapping]] = ..., command_record: _Optional[_Union[HistoryCommandRecord, _Mapping]] = ..., step_outcome: _Optional[_Union[HistoryStepOutcome, _Mapping]] = ..., timer_fired: _Optional[_Union[HistoryTimerFired, _Mapping]] = ..., wait_outcome: _Optional[_Union[HistoryWaitOutcome, _Mapping]] = ..., child_finished: _Optional[_Union[HistoryChildFinished, _Mapping]] = ..., approval_decided: _Optional[_Union[HistoryApprovalDecided, _Mapping]] = ..., saga_outcome: _Optional[_Union[HistorySagaOutcome, _Mapping]] = ..., signal_buffered: _Optional[_Union[HistorySignalBuffered, _Mapping]] = ..., update_admitted: _Optional[_Union[HistoryUpdateAdmitted, _Mapping]] = ..., cancellation_requested: _Optional[_Union[HistoryCancellationRequested, _Mapping]] = ..., marker_recorded: _Optional[_Union[HistoryMarkerRecorded, _Mapping]] = ...) -> None: ...
+
+class HistoryRunStarted(_message.Message):
+    __slots__ = ("input", "carried_state", "predecessor_run_id")
+    INPUT_FIELD_NUMBER: _ClassVar[int]
+    CARRIED_STATE_FIELD_NUMBER: _ClassVar[int]
+    PREDECESSOR_RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    input: HistoryPayload
+    carried_state: HistoryPayload
+    predecessor_run_id: str
+    def __init__(self, input: _Optional[_Union[HistoryPayload, _Mapping]] = ..., carried_state: _Optional[_Union[HistoryPayload, _Mapping]] = ..., predecessor_run_id: _Optional[str] = ...) -> None: ...
+
+class HistoryWorkflowTaskStarted(_message.Message):
+    __slots__ = ("continue_as_new_suggested", "history_limit_reached")
+    CONTINUE_AS_NEW_SUGGESTED_FIELD_NUMBER: _ClassVar[int]
+    HISTORY_LIMIT_REACHED_FIELD_NUMBER: _ClassVar[int]
+    continue_as_new_suggested: bool
+    history_limit_reached: bool
+    def __init__(self, continue_as_new_suggested: _Optional[bool] = ..., history_limit_reached: _Optional[bool] = ...) -> None: ...
+
+class HistoryWorkflowTaskCompleted(_message.Message):
+    __slots__ = ("deferred", "deferred_kind", "deferred_target", "deferral_cause")
+    DEFERRED_FIELD_NUMBER: _ClassVar[int]
+    DEFERRED_KIND_FIELD_NUMBER: _ClassVar[int]
+    DEFERRED_TARGET_FIELD_NUMBER: _ClassVar[int]
+    DEFERRAL_CAUSE_FIELD_NUMBER: _ClassVar[int]
+    deferred: bool
+    deferred_kind: CommandKind
+    deferred_target: str
+    deferral_cause: WorkflowTaskFailureCause
+    def __init__(self, deferred: _Optional[bool] = ..., deferred_kind: _Optional[_Union[CommandKind, str]] = ..., deferred_target: _Optional[str] = ..., deferral_cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ...) -> None: ...
+
+class HistoryCommandRecord(_message.Message):
+    __slots__ = ("kind", "target", "node", "noop", "saga_scope")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_NUMBER: _ClassVar[int]
+    NODE_FIELD_NUMBER: _ClassVar[int]
+    NOOP_FIELD_NUMBER: _ClassVar[int]
+    SAGA_SCOPE_FIELD_NUMBER: _ClassVar[int]
+    kind: CommandKind
+    target: str
+    node: str
+    noop: bool
+    saga_scope: str
+    def __init__(self, kind: _Optional[_Union[CommandKind, str]] = ..., target: _Optional[str] = ..., node: _Optional[str] = ..., noop: _Optional[bool] = ..., saga_scope: _Optional[str] = ...) -> None: ...
+
+class HistoryStepOutcome(_message.Message):
+    __slots__ = ("node", "outcome", "output", "error_code", "retryable")
+    NODE_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    RETRYABLE_FIELD_NUMBER: _ClassVar[int]
+    node: str
+    outcome: StepOutcome
+    output: HistoryPayload
+    error_code: str
+    retryable: bool
+    def __init__(self, node: _Optional[str] = ..., outcome: _Optional[_Union[StepOutcome, str]] = ..., output: _Optional[_Union[HistoryPayload, _Mapping]] = ..., error_code: _Optional[str] = ..., retryable: _Optional[bool] = ...) -> None: ...
+
+class HistoryTimerFired(_message.Message):
+    __slots__ = ("node",)
+    NODE_FIELD_NUMBER: _ClassVar[int]
+    node: str
+    def __init__(self, node: _Optional[str] = ...) -> None: ...
+
+class HistoryWaitOutcome(_message.Message):
+    __slots__ = ("node", "timed_out", "payload")
+    NODE_FIELD_NUMBER: _ClassVar[int]
+    TIMED_OUT_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_FIELD_NUMBER: _ClassVar[int]
+    node: str
+    timed_out: bool
+    payload: HistoryPayload
+    def __init__(self, node: _Optional[str] = ..., timed_out: _Optional[bool] = ..., payload: _Optional[_Union[HistoryPayload, _Mapping]] = ...) -> None: ...
+
+class HistoryChildFinished(_message.Message):
+    __slots__ = ("node", "child_run_id", "status", "output", "error_code")
+    NODE_FIELD_NUMBER: _ClassVar[int]
+    CHILD_RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    node: str
+    child_run_id: str
+    status: str
+    output: HistoryPayload
+    error_code: str
+    def __init__(self, node: _Optional[str] = ..., child_run_id: _Optional[str] = ..., status: _Optional[str] = ..., output: _Optional[_Union[HistoryPayload, _Mapping]] = ..., error_code: _Optional[str] = ...) -> None: ...
+
+class HistoryApprovalDecided(_message.Message):
+    __slots__ = ("node", "decision")
+    NODE_FIELD_NUMBER: _ClassVar[int]
+    DECISION_FIELD_NUMBER: _ClassVar[int]
+    node: str
+    decision: str
+    def __init__(self, node: _Optional[str] = ..., decision: _Optional[str] = ...) -> None: ...
+
+class HistorySagaOutcome(_message.Message):
+    __slots__ = ("scope", "outcome")
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    scope: str
+    outcome: str
+    def __init__(self, scope: _Optional[str] = ..., outcome: _Optional[str] = ...) -> None: ...
+
+class HistorySignalBuffered(_message.Message):
+    __slots__ = ("signal_name", "payload")
+    SIGNAL_NAME_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_FIELD_NUMBER: _ClassVar[int]
+    signal_name: str
+    payload: HistoryPayload
+    def __init__(self, signal_name: _Optional[str] = ..., payload: _Optional[_Union[HistoryPayload, _Mapping]] = ...) -> None: ...
+
+class HistoryUpdateAdmitted(_message.Message):
+    __slots__ = ("update_name", "args")
+    UPDATE_NAME_FIELD_NUMBER: _ClassVar[int]
+    ARGS_FIELD_NUMBER: _ClassVar[int]
+    update_name: str
+    args: HistoryPayload
+    def __init__(self, update_name: _Optional[str] = ..., args: _Optional[_Union[HistoryPayload, _Mapping]] = ...) -> None: ...
+
+class HistoryCancellationRequested(_message.Message):
+    __slots__ = ("grace_ms", "cancel_origin")
+    GRACE_MS_FIELD_NUMBER: _ClassVar[int]
+    CANCEL_ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    grace_ms: int
+    cancel_origin: CancelOrigin
+    def __init__(self, grace_ms: _Optional[int] = ..., cancel_origin: _Optional[_Union[CancelOrigin, str]] = ...) -> None: ...
+
+class HistoryMarkerRecorded(_message.Message):
+    __slots__ = ("marker_id", "side_effect", "value")
+    MARKER_ID_FIELD_NUMBER: _ClassVar[int]
+    SIDE_EFFECT_FIELD_NUMBER: _ClassVar[int]
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    marker_id: str
+    side_effect: bool
+    value: HistoryPayload
+    def __init__(self, marker_id: _Optional[str] = ..., side_effect: _Optional[bool] = ..., value: _Optional[_Union[HistoryPayload, _Mapping]] = ...) -> None: ...
+
+class CommandValue(_message.Message):
+    __slots__ = ("json", "blob_id", "descriptor_sha256", "descriptor_size")
+    JSON_FIELD_NUMBER: _ClassVar[int]
+    BLOB_ID_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTOR_SHA256_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTOR_SIZE_FIELD_NUMBER: _ClassVar[int]
+    json: bytes
+    blob_id: str
+    descriptor_sha256: str
+    descriptor_size: int
+    def __init__(self, json: _Optional[bytes] = ..., blob_id: _Optional[str] = ..., descriptor_sha256: _Optional[str] = ..., descriptor_size: _Optional[int] = ...) -> None: ...
+
+class Command(_message.Message):
+    __slots__ = ("command_number", "kind", "fragment_json", "value", "saga_scope", "target", "saga_open", "saga_close", "saga_abort", "marker", "set_state", "update_decision", "update_result", "consume_signals", "complete", "fail", "continue_as_new", "acknowledge_cancellation")
+    COMMAND_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    FRAGMENT_JSON_FIELD_NUMBER: _ClassVar[int]
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    SAGA_SCOPE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_NUMBER: _ClassVar[int]
+    SAGA_OPEN_FIELD_NUMBER: _ClassVar[int]
+    SAGA_CLOSE_FIELD_NUMBER: _ClassVar[int]
+    SAGA_ABORT_FIELD_NUMBER: _ClassVar[int]
+    MARKER_FIELD_NUMBER: _ClassVar[int]
+    SET_STATE_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_DECISION_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_RESULT_FIELD_NUMBER: _ClassVar[int]
+    CONSUME_SIGNALS_FIELD_NUMBER: _ClassVar[int]
+    COMPLETE_FIELD_NUMBER: _ClassVar[int]
+    FAIL_FIELD_NUMBER: _ClassVar[int]
+    CONTINUE_AS_NEW_FIELD_NUMBER: _ClassVar[int]
+    ACKNOWLEDGE_CANCELLATION_FIELD_NUMBER: _ClassVar[int]
+    command_number: int
+    kind: CommandKind
+    fragment_json: bytes
+    value: CommandValue
+    saga_scope: str
+    target: TargetCommand
+    saga_open: SagaOpenCommand
+    saga_close: TargetCommand
+    saga_abort: TargetCommand
+    marker: MarkerCommand
+    set_state: CommandValue
+    update_decision: UpdateDecisionCommand
+    update_result: UpdateResultCommand
+    consume_signals: ConsumeSignalsCommand
+    complete: CommandValue
+    fail: FailCommand
+    continue_as_new: ContinueAsNewCommand
+    acknowledge_cancellation: AcknowledgeCancellationCommand
+    def __init__(self, command_number: _Optional[int] = ..., kind: _Optional[_Union[CommandKind, str]] = ..., fragment_json: _Optional[bytes] = ..., value: _Optional[_Union[CommandValue, _Mapping]] = ..., saga_scope: _Optional[str] = ..., target: _Optional[_Union[TargetCommand, _Mapping]] = ..., saga_open: _Optional[_Union[SagaOpenCommand, _Mapping]] = ..., saga_close: _Optional[_Union[TargetCommand, _Mapping]] = ..., saga_abort: _Optional[_Union[TargetCommand, _Mapping]] = ..., marker: _Optional[_Union[MarkerCommand, _Mapping]] = ..., set_state: _Optional[_Union[CommandValue, _Mapping]] = ..., update_decision: _Optional[_Union[UpdateDecisionCommand, _Mapping]] = ..., update_result: _Optional[_Union[UpdateResultCommand, _Mapping]] = ..., consume_signals: _Optional[_Union[ConsumeSignalsCommand, _Mapping]] = ..., complete: _Optional[_Union[CommandValue, _Mapping]] = ..., fail: _Optional[_Union[FailCommand, _Mapping]] = ..., continue_as_new: _Optional[_Union[ContinueAsNewCommand, _Mapping]] = ..., acknowledge_cancellation: _Optional[_Union[AcknowledgeCancellationCommand, _Mapping]] = ...) -> None: ...
+
+class TargetCommand(_message.Message):
+    __slots__ = ("target",)
+    TARGET_FIELD_NUMBER: _ClassVar[int]
+    target: str
+    def __init__(self, target: _Optional[str] = ...) -> None: ...
+
+class SagaOpenCommand(_message.Message):
+    __slots__ = ("scope", "parent_scope", "on_compensation_failure", "cancel_policy")
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    PARENT_SCOPE_FIELD_NUMBER: _ClassVar[int]
+    ON_COMPENSATION_FAILURE_FIELD_NUMBER: _ClassVar[int]
+    CANCEL_POLICY_FIELD_NUMBER: _ClassVar[int]
+    scope: str
+    parent_scope: str
+    on_compensation_failure: str
+    cancel_policy: str
+    def __init__(self, scope: _Optional[str] = ..., parent_scope: _Optional[str] = ..., on_compensation_failure: _Optional[str] = ..., cancel_policy: _Optional[str] = ...) -> None: ...
+
+class MarkerCommand(_message.Message):
+    __slots__ = ("marker_id", "side_effect_value")
+    MARKER_ID_FIELD_NUMBER: _ClassVar[int]
+    SIDE_EFFECT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    marker_id: str
+    side_effect_value: CommandValue
+    def __init__(self, marker_id: _Optional[str] = ..., side_effect_value: _Optional[_Union[CommandValue, _Mapping]] = ...) -> None: ...
+
+class UpdateDecisionCommand(_message.Message):
+    __slots__ = ("admitted_seq", "accepted", "rejection_reason")
+    ADMITTED_SEQ_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    REJECTION_REASON_FIELD_NUMBER: _ClassVar[int]
+    admitted_seq: int
+    accepted: bool
+    rejection_reason: str
+    def __init__(self, admitted_seq: _Optional[int] = ..., accepted: _Optional[bool] = ..., rejection_reason: _Optional[str] = ...) -> None: ...
+
+class UpdateResultCommand(_message.Message):
+    __slots__ = ("admitted_seq", "result", "failure_code")
+    ADMITTED_SEQ_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_CODE_FIELD_NUMBER: _ClassVar[int]
+    admitted_seq: int
+    result: CommandValue
+    failure_code: str
+    def __init__(self, admitted_seq: _Optional[int] = ..., result: _Optional[_Union[CommandValue, _Mapping]] = ..., failure_code: _Optional[str] = ...) -> None: ...
+
+class ConsumeSignalsCommand(_message.Message):
+    __slots__ = ("signals",)
+    SIGNALS_FIELD_NUMBER: _ClassVar[int]
+    signals: _containers.RepeatedCompositeFieldContainer[ConsumedSignals]
+    def __init__(self, signals: _Optional[_Iterable[_Union[ConsumedSignals, _Mapping]]] = ...) -> None: ...
+
+class ConsumedSignals(_message.Message):
+    __slots__ = ("signal_name", "seqs")
+    SIGNAL_NAME_FIELD_NUMBER: _ClassVar[int]
+    SEQS_FIELD_NUMBER: _ClassVar[int]
+    signal_name: str
+    seqs: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, signal_name: _Optional[str] = ..., seqs: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class FailCommand(_message.Message):
+    __slots__ = ("code", "safe_message")
+    CODE_FIELD_NUMBER: _ClassVar[int]
+    SAFE_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    code: str
+    safe_message: str
+    def __init__(self, code: _Optional[str] = ..., safe_message: _Optional[str] = ...) -> None: ...
+
+class ContinueAsNewCommand(_message.Message):
+    __slots__ = ("input", "state", "active_version")
+    INPUT_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_VERSION_FIELD_NUMBER: _ClassVar[int]
+    input: CommandValue
+    state: CommandValue
+    active_version: bool
+    def __init__(self, input: _Optional[_Union[CommandValue, _Mapping]] = ..., state: _Optional[_Union[CommandValue, _Mapping]] = ..., active_version: _Optional[bool] = ...) -> None: ...
+
+class AcknowledgeCancellationCommand(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CompleteWorkflowTaskRequest(_message.Message):
+    __slots__ = ("task_id", "run_id", "attempt", "generation", "lease_token", "idempotency_key", "applied_through_seq", "replayed_chain", "commands", "deferred_command", "eager_activity_slots", "behaviour_flags", "traceparent")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
+    APPLIED_THROUGH_SEQ_FIELD_NUMBER: _ClassVar[int]
+    REPLAYED_CHAIN_FIELD_NUMBER: _ClassVar[int]
+    COMMANDS_FIELD_NUMBER: _ClassVar[int]
+    DEFERRED_COMMAND_FIELD_NUMBER: _ClassVar[int]
+    EAGER_ACTIVITY_SLOTS_FIELD_NUMBER: _ClassVar[int]
+    BEHAVIOUR_FLAGS_FIELD_NUMBER: _ClassVar[int]
+    TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    run_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    idempotency_key: str
+    applied_through_seq: int
+    replayed_chain: bytes
+    commands: _containers.RepeatedCompositeFieldContainer[Command]
+    deferred_command: Command
+    eager_activity_slots: int
+    behaviour_flags: _containers.RepeatedScalarFieldContainer[str]
+    traceparent: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., applied_through_seq: _Optional[int] = ..., replayed_chain: _Optional[bytes] = ..., commands: _Optional[_Iterable[_Union[Command, _Mapping]]] = ..., deferred_command: _Optional[_Union[Command, _Mapping]] = ..., eager_activity_slots: _Optional[int] = ..., behaviour_flags: _Optional[_Iterable[str]] = ..., traceparent: _Optional[str] = ...) -> None: ...
+
+class CompleteWorkflowTaskResponse(_message.Message):
+    __slots__ = ("outcome", "cause", "already_applied", "eager_activity_leases")
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    CAUSE_FIELD_NUMBER: _ClassVar[int]
+    ALREADY_APPLIED_FIELD_NUMBER: _ClassVar[int]
+    EAGER_ACTIVITY_LEASES_FIELD_NUMBER: _ClassVar[int]
+    outcome: WorkflowTaskOutcome
+    cause: WorkflowTaskFailureCause
+    already_applied: bool
+    eager_activity_leases: _containers.RepeatedCompositeFieldContainer[TaskLease]
+    def __init__(self, outcome: _Optional[_Union[WorkflowTaskOutcome, str]] = ..., cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ..., already_applied: _Optional[bool] = ..., eager_activity_leases: _Optional[_Iterable[_Union[TaskLease, _Mapping]]] = ...) -> None: ...
+
+class FailWorkflowTaskRequest(_message.Message):
+    __slots__ = ("task_id", "run_id", "attempt", "generation", "lease_token", "idempotency_key", "cause", "command_number", "actual_kind", "actual_target", "exception_type", "code_digest", "traceparent", "actual_saga_scope")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
+    CAUSE_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    ACTUAL_KIND_FIELD_NUMBER: _ClassVar[int]
+    ACTUAL_TARGET_FIELD_NUMBER: _ClassVar[int]
+    EXCEPTION_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CODE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    ACTUAL_SAGA_SCOPE_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    run_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    idempotency_key: str
+    cause: WorkflowTaskFailureCause
+    command_number: int
+    actual_kind: CommandKind
+    actual_target: str
+    exception_type: str
+    code_digest: str
+    traceparent: str
+    actual_saga_scope: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ..., command_number: _Optional[int] = ..., actual_kind: _Optional[_Union[CommandKind, str]] = ..., actual_target: _Optional[str] = ..., exception_type: _Optional[str] = ..., code_digest: _Optional[str] = ..., traceparent: _Optional[str] = ..., actual_saga_scope: _Optional[str] = ...) -> None: ...
+
+class FailWorkflowTaskResponse(_message.Message):
+    __slots__ = ("already_applied",)
+    ALREADY_APPLIED_FIELD_NUMBER: _ClassVar[int]
+    already_applied: bool
+    def __init__(self, already_applied: _Optional[bool] = ...) -> None: ...
+
+class ReadHistoryRequest(_message.Message):
+    __slots__ = ("task_id", "run_id", "attempt", "generation", "lease_token", "read_token", "from_seq")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    READ_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    FROM_SEQ_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    run_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    read_token: str
+    from_seq: int
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., read_token: _Optional[str] = ..., from_seq: _Optional[int] = ...) -> None: ...
+
+class ReadHistoryResponse(_message.Message):
+    __slots__ = ("events", "last_page", "lease_expires_at_epoch_ms")
+    EVENTS_FIELD_NUMBER: _ClassVar[int]
+    LAST_PAGE_FIELD_NUMBER: _ClassVar[int]
+    LEASE_EXPIRES_AT_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
+    events: _containers.RepeatedCompositeFieldContainer[HistoryEvent]
+    last_page: bool
+    lease_expires_at_epoch_ms: int
+    def __init__(self, events: _Optional[_Iterable[_Union[HistoryEvent, _Mapping]]] = ..., last_page: _Optional[bool] = ..., lease_expires_at_epoch_ms: _Optional[int] = ...) -> None: ...
+
+class QueryTask(_message.Message):
+    __slots__ = ("query_id", "run_id", "query_name", "args", "deadline_epoch_ms", "gated_entries", "state_max_bytes", "read_token", "lease_token", "workflow_type", "code_digest", "seed")
+    QUERY_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    QUERY_NAME_FIELD_NUMBER: _ClassVar[int]
+    ARGS_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
+    GATED_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    STATE_MAX_BYTES_FIELD_NUMBER: _ClassVar[int]
+    READ_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CODE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    SEED_FIELD_NUMBER: _ClassVar[int]
+    query_id: str
+    run_id: str
+    query_name: str
+    args: bytes
+    deadline_epoch_ms: int
+    gated_entries: _containers.RepeatedScalarFieldContainer[str]
+    state_max_bytes: int
+    read_token: str
+    lease_token: str
+    workflow_type: str
+    code_digest: str
+    seed: bytes
+    def __init__(self, query_id: _Optional[str] = ..., run_id: _Optional[str] = ..., query_name: _Optional[str] = ..., args: _Optional[bytes] = ..., deadline_epoch_ms: _Optional[int] = ..., gated_entries: _Optional[_Iterable[str]] = ..., state_max_bytes: _Optional[int] = ..., read_token: _Optional[str] = ..., lease_token: _Optional[str] = ..., workflow_type: _Optional[str] = ..., code_digest: _Optional[str] = ..., seed: _Optional[bytes] = ...) -> None: ...
+
+class RespondWorkerQueryRequest(_message.Message):
+    __slots__ = ("query_id", "lease_token", "answer", "committed_through_seq", "failure_code")
+    QUERY_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    ANSWER_FIELD_NUMBER: _ClassVar[int]
+    COMMITTED_THROUGH_SEQ_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_CODE_FIELD_NUMBER: _ClassVar[int]
+    query_id: str
+    lease_token: str
+    answer: bytes
+    committed_through_seq: int
+    failure_code: str
+    def __init__(self, query_id: _Optional[str] = ..., lease_token: _Optional[str] = ..., answer: _Optional[bytes] = ..., committed_through_seq: _Optional[int] = ..., failure_code: _Optional[str] = ...) -> None: ...
+
+class RespondWorkerQueryResponse(_message.Message):
+    __slots__ = ("accepted",)
+    ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    accepted: bool
+    def __init__(self, accepted: _Optional[bool] = ...) -> None: ...
+
+class ReplayCheckTask(_message.Message):
+    __slots__ = ("items", "gated_entries", "state_max_bytes", "lease_token", "expires_at_epoch_ms", "workflow_type", "code_digest")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    GATED_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    STATE_MAX_BYTES_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AT_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CODE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[ReplayCheckItem]
+    gated_entries: _containers.RepeatedScalarFieldContainer[str]
+    state_max_bytes: int
+    lease_token: str
+    expires_at_epoch_ms: int
+    workflow_type: str
+    code_digest: str
+    def __init__(self, items: _Optional[_Iterable[_Union[ReplayCheckItem, _Mapping]]] = ..., gated_entries: _Optional[_Iterable[str]] = ..., state_max_bytes: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., workflow_type: _Optional[str] = ..., code_digest: _Optional[str] = ...) -> None: ...
+
+class ReplayCheckItem(_message.Message):
+    __slots__ = ("job_id", "ordinal", "run_id", "read_token", "seed")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    ORDINAL_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    READ_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    SEED_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    ordinal: int
+    run_id: str
+    read_token: str
+    seed: bytes
+    def __init__(self, job_id: _Optional[str] = ..., ordinal: _Optional[int] = ..., run_id: _Optional[str] = ..., read_token: _Optional[str] = ..., seed: _Optional[bytes] = ...) -> None: ...
+
+class RespondReplayCheckRequest(_message.Message):
+    __slots__ = ("lease_token", "job_id", "ordinal", "from_command", "body_digests", "last_range", "s_k", "chain", "deferred_body_digest")
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    ORDINAL_FIELD_NUMBER: _ClassVar[int]
+    FROM_COMMAND_FIELD_NUMBER: _ClassVar[int]
+    BODY_DIGESTS_FIELD_NUMBER: _ClassVar[int]
+    LAST_RANGE_FIELD_NUMBER: _ClassVar[int]
+    S_K_FIELD_NUMBER: _ClassVar[int]
+    CHAIN_FIELD_NUMBER: _ClassVar[int]
+    DEFERRED_BODY_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    lease_token: str
+    job_id: str
+    ordinal: int
+    from_command: int
+    body_digests: _containers.RepeatedScalarFieldContainer[bytes]
+    last_range: bool
+    s_k: int
+    chain: bytes
+    deferred_body_digest: bytes
+    def __init__(self, lease_token: _Optional[str] = ..., job_id: _Optional[str] = ..., ordinal: _Optional[int] = ..., from_command: _Optional[int] = ..., body_digests: _Optional[_Iterable[bytes]] = ..., last_range: _Optional[bool] = ..., s_k: _Optional[int] = ..., chain: _Optional[bytes] = ..., deferred_body_digest: _Optional[bytes] = ...) -> None: ...
+
+class RespondReplayCheckResponse(_message.Message):
+    __slots__ = ("accepted", "next_from_command")
+    ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    NEXT_FROM_COMMAND_FIELD_NUMBER: _ClassVar[int]
+    accepted: bool
+    next_from_command: int
+    def __init__(self, accepted: _Optional[bool] = ..., next_from_command: _Optional[int] = ...) -> None: ...
+
+class ReleaseStickyRequest(_message.Message):
+    __slots__ = ("worker_id", "session_token", "run_ids")
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    RUN_IDS_FIELD_NUMBER: _ClassVar[int]
+    worker_id: str
+    session_token: str
+    run_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., run_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class ReleaseStickyResponse(_message.Message):
+    __slots__ = ("released",)
+    RELEASED_FIELD_NUMBER: _ClassVar[int]
+    released: int
+    def __init__(self, released: _Optional[int] = ...) -> None: ...

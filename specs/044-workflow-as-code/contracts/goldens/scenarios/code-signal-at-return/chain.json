@@ -1,0 +1,39 @@
+{
+  "runId": "99f6f63c-a320-4aeb-b371-9fea49faf36f",
+  "activations": [
+    {
+      "k": 1,
+      "commandCountAfter": 1,
+      "chainHex": "3ec97ee5ffdb13468bd5956e73b78bd47eeda9b14e8cdb997c4bfd003e766333"
+    },
+    {
+      "k": 2,
+      "commandCountAfter": 2,
+      "chainHex": "80365c8ac5c4bd665fa996df63bb8857ae462de2ee998c9ac9d57eddda01c1d7",
+      "deferredBodySha256": "af753c8691a58f04d409c5fe4e703f68cb79e1c152a39208353e5bd6b2aa22c8"
+    },
+    {
+      "k": 3,
+      "commandCountAfter": 4,
+      "chainHex": "a49f4ff3ba7fb8a4b3b13e0d8df9fa30db8238bde3de59a87698b112096c513b"
+    }
+  ],
+  "commands": [
+    {
+      "commandNumber": 1,
+      "chainHex": "3ec97ee5ffdb13468bd5956e73b78bd47eeda9b14e8cdb997c4bfd003e766333"
+    },
+    {
+      "commandNumber": 2,
+      "chainHex": "80365c8ac5c4bd665fa996df63bb8857ae462de2ee998c9ac9d57eddda01c1d7"
+    },
+    {
+      "commandNumber": 3,
+      "chainHex": "8b1e4650a9cbf59c982dcb5dfa842661670ba2efcd6f8949d38e80215b2884ce"
+    },
+    {
+      "commandNumber": 4,
+      "chainHex": "a49f4ff3ba7fb8a4b3b13e0d8df9fa30db8238bde3de59a87698b112096c513b"
+    }
+  ]
+}

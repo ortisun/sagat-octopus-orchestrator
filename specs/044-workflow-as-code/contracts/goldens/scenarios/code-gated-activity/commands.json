@@ -1,0 +1,231 @@
+{
+  "scenario": "code-gated-activity",
+  "run": "main",
+  "runId": "142583f5-05c5-452f-b357-ad269d5e7b2a",
+  "workflowType": "payouts",
+  "seedHex": "ef4cdd5ac5f66210022eae3f7f9578249246fbceb5c22711a3bb233f9f9f3001",
+  "input": {
+    "batchId": "pay-3"
+  },
+  "codeVersions": {
+    "v1": "sha256:d8e1c02725553228ddeb4b783bc05652f685e8ae096c15c4f5463fa75f4a8996"
+  },
+  "lease": {
+    "gatedEntries": [
+      "payouts.send"
+    ],
+    "stateMaxBytes": 131072
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "payouts.send",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "payouts.send"
+          },
+          "value": {
+            "payoutId": "p-1",
+            "amountCents": 250000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payouts.send",
+            "input": {
+              "sha256": "6a2f324b29651136e4360831bee5e5c19b9c517a72b729ece0f7e464e2920721",
+              "size": 39
+            }
+          },
+          "bodySha256": "09da99245925a2ccd40537487804f93e87fd8d8074971a8cb70c5129d697a994",
+          "journalKind": "step.released"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "payouts.send",
+          "node": "c-2",
+          "fragment": {
+            "type": "activity",
+            "activity": "payouts.send"
+          },
+          "value": {
+            "payoutId": "p-2",
+            "amountCents": 990000
+          },
+          "body": {
+            "type": "activity",
+            "activity": "payouts.send",
+            "input": {
+              "sha256": "47a55a5586e207b514e340d9d65b50351f9099ea6ed7e711d258aa7ec4c7239b",
+              "size": 39
+            }
+          },
+          "bodySha256": "2b5f6db3fed65ca001a72f282635c0c738fbcc6b766a97b65abb2e17faa1a010",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "f74266d90045a9651db8577a89de9d23916c66a39b9e52b5db82a0d63c364d0d",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 13
+      },
+      "nowUs": 1767225600001781,
+      "replayedChainHex": "f74266d90045a9651db8577a89de9d23916c66a39b9e52b5db82a0d63c364d0d",
+      "appliedThroughSeq": 13,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "approval",
+          "target": "refund-review",
+          "node": "c-3",
+          "fragment": {
+            "type": "approval",
+            "policyName": "refund-review"
+          },
+          "value": {
+            "refundId": "r-9",
+            "amountCents": 1200
+          },
+          "body": {
+            "type": "approval",
+            "policyName": "refund-review",
+            "subject": {
+              "sha256": "cd448716bfdf742b1790f2e81dea714e8dd56a8bfca542ffe1efda4c2ff31236",
+              "size": 37
+            }
+          },
+          "bodySha256": "31c6d8434841bfaf08f0f36a51885cf0e90c94e72cbc1066e7f3b7eb1428d8d3",
+          "journalKind": "approval.opened"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 14,
+      "chainAfterHex": "b851116ec228764d295741b1aa3b2b34ee882d69ced42bd54d4e3513b0a9f0ba",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 13,
+        "throughSeq": 17
+      },
+      "nowUs": 1767225600002329,
+      "replayedChainHex": "b851116ec228764d295741b1aa3b2b34ee882d69ced42bd54d4e3513b0a9f0ba",
+      "appliedThroughSeq": 17,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "complete",
+          "target": "",
+          "typed": {
+            "complete": {
+              "batchId": "pay-3",
+              "sent": [
+                "p-1"
+              ],
+              "rejected": [
+                "p-2"
+              ],
+              "refund": "approved"
+            }
+          },
+          "body": {
+            "output": {
+              "sha256": "900ea44926fc2ee76a14fd08a548462f2c0bfba0ee98b99b4da136b042870ae4",
+              "size": 73
+            }
+          },
+          "bodySha256": "abb3f3b4a5297c72a04e70f91163c9e0572cd19c1aef25f5a852a92dc9b20563",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 18,
+      "chainAfterHex": "658a780346869f073933edc0858688a6346f865205b63ad2c163f7c8fe971dcd",
+      "commandCountAfter": 4
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 6,
+      "journalKind": "approval.opened",
+      "node": "c-1",
+      "policy": "large-payouts"
+    },
+    {
+      "seq": 7,
+      "journalKind": "approval.opened",
+      "node": "c-2",
+      "policy": "large-payouts"
+    },
+    {
+      "seq": 8,
+      "journalKind": "approval.decided",
+      "node": "c-1",
+      "decision": "approved"
+    },
+    {
+      "seq": 9,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 11,
+      "journalKind": "approval.decided",
+      "node": "c-2",
+      "decision": "rejected"
+    },
+    {
+      "seq": 20,
+      "journalKind": "run.finished",
+      "status": "COMPLETED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "payouts.send",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 10
+    },
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "payouts.send",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 12
+    },
+    {
+      "node": "c-3",
+      "kind": "approval",
+      "target": "refund-review",
+      "commandNumber": 3,
+      "issuedSeq": 13,
+      "outcomeSeq": 16
+    }
+  ]
+}

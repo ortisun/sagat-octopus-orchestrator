@@ -1,0 +1,149 @@
+{
+  "scenario": "code-activation-deadline",
+  "run": "main",
+  "runId": "110be8dc-3941-4c4a-9ce7-353a9989d7f0",
+  "workflowType": "feed",
+  "seedHex": "1932801dad333dd4b36bfed26acfe0b73d8969a62adeda8f5b116b8ae1156100",
+  "input": {
+    "feedId": "feed-2"
+  },
+  "codeVersions": {
+    "v1": "sha256:a1169903fda9d8aea122c9e84271809975d2aa6d52eade72acc404c3ce003d2a"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "activity",
+          "target": "feed.poll",
+          "node": "c-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "feed.poll"
+          },
+          "value": {
+            "feedId": "feed-2"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "feed.poll",
+            "input": {
+              "sha256": "07e3d14b63f4c16ef348f578709506238e5707393ae419bd75bbd4f30f8018ac",
+              "size": 19
+            }
+          },
+          "bodySha256": "f7056e2f815d71d0e45d5b7ecb2c2c3bbdccf57ba41ddebf4138c2e46a3dcb26",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "5572f2c74bf2c019563b77abef99a42add3c92736592881e42d9b1752961ecd7",
+      "commandCountAfter": 1
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": null
+      },
+      "failedAttempts": [
+        {
+          "startedSeq": 7,
+          "nowUs": 1767225600000959,
+          "cause": "CAUSE_ACTIVATION_DEADLINE",
+          "stoppedAfterMs": 2000,
+          "consecutiveFailures": 1
+        },
+        {
+          "startedSeq": 9,
+          "nowUs": 1767225603001233,
+          "cause": "CAUSE_ACTIVATION_DEADLINE",
+          "stoppedAfterMs": 2000,
+          "consecutiveFailures": 2
+        },
+        {
+          "startedSeq": 11,
+          "nowUs": 1767225607001507,
+          "cause": "CAUSE_ACTIVATION_DEADLINE",
+          "stoppedAfterMs": 2000,
+          "consecutiveFailures": 3
+        },
+        {
+          "startedSeq": 13,
+          "nowUs": 1767225613001781,
+          "cause": "CAUSE_ACTIVATION_DEADLINE",
+          "stoppedAfterMs": 2000,
+          "consecutiveFailures": 4
+        },
+        {
+          "startedSeq": 15,
+          "nowUs": 1767225623002055,
+          "cause": "CAUSE_ACTIVATION_DEADLINE",
+          "stoppedAfterMs": 2000,
+          "consecutiveFailures": 5
+        }
+      ],
+      "review": "WORKFLOW_TASK_FAILED"
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 5,
+      "journalKind": "step.leased",
+      "node": "c-1"
+    },
+    {
+      "seq": 8,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_ACTIVATION_DEADLINE"
+    },
+    {
+      "seq": 10,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_ACTIVATION_DEADLINE"
+    },
+    {
+      "seq": 12,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_ACTIVATION_DEADLINE"
+    },
+    {
+      "seq": 14,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_ACTIVATION_DEADLINE"
+    },
+    {
+      "seq": 16,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_ACTIVATION_DEADLINE"
+    },
+    {
+      "seq": 17,
+      "journalKind": "step.needs_review",
+      "node": "~workflow",
+      "code": "WORKFLOW_TASK_FAILED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-1",
+      "kind": "activity",
+      "target": "feed.poll",
+      "commandNumber": 1,
+      "issuedSeq": 2,
+      "outcomeSeq": 6
+    }
+  ]
+}

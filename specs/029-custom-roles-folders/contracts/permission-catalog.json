@@ -2,8 +2,8 @@
   "$comment": "Draft, feature 029. Classification of every catalog permission (FR-029-002). The canonical table is a match in crates/domain/src/access.rs whose explicit arms classify each known permission and whose compile-time default arm yields reserved-unclassified, so a permission added by another feature compiles and is reserved until it is classified here; a contract test lists the unclassified ones. Counts are derived, never written by hand. adminEquivalent: granting it needs an explicit confirmation in the API and Studio. seesPastRestriction: its holder sees hidden items through that surface.",
   "version": 1,
   "derivedCounts": {
-    "permissions": 53,
-    "reserved": 10,
+    "permissions": 54,
+    "reserved": 11,
     "assignable": 43,
     "levelItem": 13,
     "sensitiveItem": 11
@@ -215,7 +215,8 @@
     "028",
     "030",
     "031",
-    "032"
+    "032",
+    "044"
   ],
   "permissions": [
     {
@@ -750,6 +751,14 @@
         "namespace"
       ],
       "new": true
+    },
+    {
+      "permission": "history:export",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ],
+      "note": "Design 044 (Requirement 044-025): exporting a code run's history for a replayer; held by the admin role only and not assignable to a custom role in 0.3.0 (Owner question 044-015)."
     }
   ]
 }

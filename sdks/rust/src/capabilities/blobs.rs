@@ -301,6 +301,7 @@ impl Capabilities {
             lease_token: scope.lease_token.clone(),
             blob_id: descriptor.id.to_string(),
             instance: scope.instance.clone(),
+            read_token: String::new(),
         };
         let (metadata, extensions, ()) = envelope.into_parts();
         let request = tonic::Request::from_parts(metadata, extensions, message);

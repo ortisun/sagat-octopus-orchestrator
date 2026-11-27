@@ -1,0 +1,235 @@
+{
+  "scenario": "code-cancellation",
+  "run": "acknowledge-in-saga",
+  "runId": "7c7665db-fd7b-4941-859b-258f672ca3ee",
+  "workflowType": "trip",
+  "seedHex": "0c6c1a2830f13365b5d33f8dbc0ba107da1ccc1fa2f94eadcbbfab5622344b60",
+  "input": {
+    "tripId": "trip-8"
+  },
+  "codeVersions": {
+    "v1": "sha256:ea7cbf768b0df8fd11df10793ad14a89c3d97cdb8d36377d24f68363d81b1ffe"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "journalKind": "saga.entered"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "trip.hold",
+          "node": "c-2",
+          "sagaScope": "s-1",
+          "fragment": {
+            "type": "activity",
+            "activity": "trip.hold"
+          },
+          "value": {
+            "tripId": "trip-8"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "trip.hold",
+            "input": {
+              "sha256": "4257acde2c769f2663cbb8000fff609e7bbf281d59aecc3bce4767c541174d69",
+              "size": 19
+            },
+            "scope": "s-1"
+          },
+          "bodySha256": "6589c71b51fca4e8182639e59fdc3038df1387c3d32def116069a6f685409611",
+          "journalKind": "step.released"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "2908369a6e2046f7ae79a60e9174730bec1041e61093fb1286e56baed1d3f8f8",
+      "commandCountAfter": 2
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": 8
+      },
+      "nowUs": 1767225600001096,
+      "replayedChainHex": "2908369a6e2046f7ae79a60e9174730bec1041e61093fb1286e56baed1d3f8f8",
+      "appliedThroughSeq": 8,
+      "commands": [
+        {
+          "commandNumber": 3,
+          "kind": "timer_start",
+          "target": "c-3",
+          "node": "c-3",
+          "fragment": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "body": {
+            "type": "timer",
+            "durationMs": 86400000
+          },
+          "bodySha256": "d4f8b5b95e1e9b12ccd48ce671ecd96b1d3318f2b5c8346b7c9ae39172fde458",
+          "journalKind": "timer.started"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 9,
+      "chainAfterHex": "5a4ccc90eaf15bdcdb4d5813c590e19dea0db8a01c8a39b672fc8b2cc9c34b2e",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 3,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 8,
+        "throughSeq": 12
+      },
+      "nowUs": 1767225601001644,
+      "notes": "acknowledgeCancellation() inside the open scope: the SDK aborts s-1 and sends the acknowledgement, which the server defers while the scope aborts.",
+      "replayedChainHex": "5a4ccc90eaf15bdcdb4d5813c590e19dea0db8a01c8a39b672fc8b2cc9c34b2e",
+      "appliedThroughSeq": 12,
+      "commands": [
+        {
+          "commandNumber": 4,
+          "kind": "saga_abort",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaAbort": {
+              "target": "s-1"
+            }
+          },
+          "body": {
+            "scope": "s-1"
+          },
+          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
+          "journalKind": "saga.aborting"
+        }
+      ],
+      "deferred": {
+        "kind": "acknowledge_cancellation",
+        "target": "",
+        "typed": {
+          "acknowledgeCancellation": {}
+        },
+        "body": {},
+        "bodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "journalKind": "run.stop_requested",
+        "cause": "CAUSE_OUTSTANDING_OBLIGATIONS"
+      },
+      "outcome": "WORKFLOW_TASK_ACCEPTED_DEFERRED",
+      "cause": "CAUSE_OUTSTANDING_OBLIGATIONS",
+      "completedSeq": 13,
+      "chainAfterHex": "43d95a4613974ee1d7f35d9b05386e74c01c8d2fc42c665d8181817b923bf2dc",
+      "commandCountAfter": 4
+    },
+    {
+      "k": 4,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 12,
+        "throughSeq": 19
+      },
+      "nowUs": 1767225601002603,
+      "replayedChainHex": "43d95a4613974ee1d7f35d9b05386e74c01c8d2fc42c665d8181817b923bf2dc",
+      "appliedThroughSeq": 19,
+      "commands": [
+        {
+          "commandNumber": 5,
+          "kind": "acknowledge_cancellation",
+          "target": "",
+          "typed": {
+            "acknowledgeCancellation": {}
+          },
+          "reEmitted": true,
+          "body": {},
+          "bodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "journalKind": "run.stop_requested"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 20,
+      "chainAfterHex": "22285090b78775c365863520ffdc43c4501a4ab900adf6eaf0b54b5ed5d5f4e0",
+      "commandCountAfter": 5
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 6,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    },
+    {
+      "seq": 15,
+      "journalKind": "compensation.planned",
+      "scope": "s-1",
+      "entries": [
+        "c-2"
+      ]
+    },
+    {
+      "seq": 16,
+      "journalKind": "step.leased",
+      "node": "c-2~c",
+      "activity": "trip.release"
+    },
+    {
+      "seq": 17,
+      "journalKind": "step.completed",
+      "node": "c-2~c"
+    },
+    {
+      "seq": 23,
+      "journalKind": "run.finished",
+      "status": "CANCELLED"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "trip.hold",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 7
+    },
+    {
+      "node": "c-3",
+      "kind": "timer_start",
+      "target": "c-3",
+      "commandNumber": 3,
+      "issuedSeq": 8,
+      "outcomeSeq": 22
+    }
+  ]
+}
