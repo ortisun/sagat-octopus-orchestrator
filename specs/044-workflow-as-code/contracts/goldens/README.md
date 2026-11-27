@@ -89,8 +89,9 @@ among them) can differ on a tie and must not be used.
   `signal.buffered` and an Update-with-Start's `update.admitted` follow it (Decision 044-246).
 - Closing a saga scope writes only its command record; a saga outcome event (`compensated`, `partial`,
   `compensation_failed`) exists only after an abort.
-- The closed list of update rejection reasons: `VALIDATION_FAILED` (the function's validator refused it) and the
-  engine's `RUN_ENDED` and `RUN_CONTINUED`.
+- The closed list of update rejection reasons: `VALIDATION_FAILED` (the function's validator refused it),
+  `HANDLER_NOT_REGISTERED` (the function had registered no handler for the update's name when its `update.admitted`
+  was applied), and the engine's `RUN_ENDED` and `RUN_CONTINUED` (Decision 044-251).
 
 A deferred command is chained when it is accepted, with the number it takes then; until then its deferral record holds
 `hex(SHA(C(B)))`.

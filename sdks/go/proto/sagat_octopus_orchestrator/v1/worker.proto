@@ -798,7 +798,8 @@ message MarkerCommand {
 message UpdateDecisionCommand {
   int64 admitted_seq = 1;                // the journal sequence of the update's update.admitted
   bool accepted = 2;
-  string rejection_reason = 3;           // a code from the closed list, never free text
+  // A code from the closed list, never free text: VALIDATION_FAILED or HANDLER_NOT_REGISTERED (Decision 044-251).
+  string rejection_reason = 3;
 }
 message UpdateResultCommand {
   int64 admitted_seq = 1;

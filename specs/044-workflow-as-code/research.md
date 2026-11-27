@@ -956,6 +956,14 @@ finding was answered.
   `timeoutMs` in Technical Plan 5.1, the description of Decision 044-241 on `codeProfileScript`, and the main
   cancellation golden's wording (Nit 5); and the promise of a cancelled step settles only from the history's outcome
   (the suspicion, Decision 044-248 and `sdks/SPEC.md`).
+- **D044-251** (2026-11-27) The closed list of update rejection reasons is `VALIDATION_FAILED` (the function's
+  validator refused the update), `HANDLER_NOT_REGISTERED` (the function had registered no handler for the update's name
+  when its `update.admitted` was applied) and the engine's `RUN_ENDED` and `RUN_CONTINUED`; a completion that rejects
+  with any other reason is `COMMAND_INVALID`. The catalog entry of `HANDLER_NOT_REGISTERED` and its six SDK copies land
+  with the update transitions of Task 044-21. delegate (OD-2026-11-24-4): the TypeScript lane's Decision 044-309 asked
+  for `HANDLER_NOT_REGISTERED` and `VALIDATION_REJECTED`; the first names a case the list lacked (a code defect that
+  the caller and the operator must tell apart from a refused argument, as Temporal's unknown-update rejection does),
+  while the second would be a second name for `VALIDATION_FAILED`, which the corpus and the catalog already use.
 
 ## 3. Gaps
 

@@ -1235,7 +1235,7 @@ workflow creditLine(input):
     ],
     assumptions: [
       'A validator\'s rejection uses VALIDATION_FAILED, of the closed list of rejection reasons (VALIDATION_FAILED,',
-      '  and the engine\'s RUN_ENDED and RUN_CONTINUED).',
+      '  HANDLER_NOT_REGISTERED, and the engine\'s RUN_ENDED and RUN_CONTINUED).',
       'The REST answer of a rejected update (status and body) belongs to the REST contract; `requests` states only the',
       '  outcome.',
     ],

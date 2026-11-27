@@ -7092,10 +7092,11 @@ func (x *MarkerCommand) GetSideEffectValue() *CommandValue {
 }
 
 type UpdateDecisionCommand struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	AdmittedSeq     int64                  `protobuf:"varint,1,opt,name=admitted_seq,json=admittedSeq,proto3" json:"admitted_seq,omitempty"` // the journal sequence of the update's update.admitted
-	Accepted        bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
-	RejectionReason string                 `protobuf:"bytes,3,opt,name=rejection_reason,json=rejectionReason,proto3" json:"rejection_reason,omitempty"` // a code from the closed list, never free text
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AdmittedSeq int64                  `protobuf:"varint,1,opt,name=admitted_seq,json=admittedSeq,proto3" json:"admitted_seq,omitempty"` // the journal sequence of the update's update.admitted
+	Accepted    bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// A code from the closed list, never free text: VALIDATION_FAILED or HANDLER_NOT_REGISTERED (Decision 044-251).
+	RejectionReason string `protobuf:"bytes,3,opt,name=rejection_reason,json=rejectionReason,proto3" json:"rejection_reason,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }

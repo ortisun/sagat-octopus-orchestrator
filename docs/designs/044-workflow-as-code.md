@@ -3057,7 +3057,9 @@ a replaying worker derives from `ReadHistory`.
 - [ ] T044-21 Signals, updates and declared queries for code runs on the server, after the buffered-signals design 054
   (which takes Architecture decision 0111's inbox and its refinement for code versions, Gap 044-017) is approved and
   its inbox task built: signals through the inbox and their consumption, the hold of `signal-inbox-v1` at publication
-  in place of Task 044-3's refusal, the with-start calls, the update transitions, the engine's finishing of open updates
+  in place of Task 044-3's refusal, the with-start calls, the update transitions (with the catalog entry of the
+  rejection reason `HANDLER_NOT_REGISTERED` in `sdks/error-catalog.json` and its six copies, Decision 044-251), the
+  engine's finishing of open updates
   in the stop drain and the handoff, the wait and the read rule, argument and result validation, the declared state
   command.
   Red tests: `integration_workflow_as_code::signals::a_signal_before_the_function_waits_is_delivered_at_the_next_activation`,
