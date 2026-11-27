@@ -829,6 +829,11 @@
         "name": "noop",
         "repeated": false,
         "type": "Bool"
+      },
+      "5": {
+        "name": "saga_scope",
+        "repeated": false,
+        "type": "String"
       }
     },
     "sagat_octopus_orchestrator.v1.HistoryEvent": {

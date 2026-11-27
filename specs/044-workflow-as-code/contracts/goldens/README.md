@@ -73,6 +73,16 @@ among them) can differ on a tie and must not be used.
   (`step.released`, `timer.started`, `step.cancelled` of a timer cancel, `saga.entered`, `saga.completed` of a close,
   `run.stop_requested` of a terminal command or an acknowledgement, and so on). Its outcomes (a timer that fired, a
   step that ended) are other events.
+- The record of an activity or a script scheduled in a saga scope carries that scope (`HistoryCommandRecord.saga_scope`,
+  `sagaScope` in the JSON mapping), the same `s-<n>` its body hashes; a replaying SDK compares it with the kind and the
+  target (Decision 044-244).
+- A step ends with one visible event: an activity or a script with `HISTORY_STEP_OUTCOME`; a wait with
+  `HISTORY_WAIT_OUTCOME`, an approval with `HISTORY_APPROVAL_DECIDED`, and either of them, when cancelled, with
+  `HISTORY_STEP_OUTCOME` `STEP_OUTCOME_CANCELLED` (error code `CANCELLED`, origin `EFFECT` when the completion's own
+  `step_cancel` cancelled it); a timer with `HISTORY_TIMER_FIRED`, the record of the function's `timer_cancel`, or a
+  cancelled step outcome from the stop drain; a child with `HISTORY_CHILD_FINISHED` (Decision 044-245).
+- A transaction that creates a run journals `run.started` first, at sequence 1; a Signal-with-Start's
+  `signal.buffered` and an Update-with-Start's `update.admitted` follow it (Decision 044-246).
 - Closing a saga scope writes only its command record; a saga outcome event (`compensated`, `partial`,
   `compensation_failed`) exists only after an abort.
 - The closed list of update rejection reasons: `VALIDATION_FAILED` (the function's validator refused it) and the

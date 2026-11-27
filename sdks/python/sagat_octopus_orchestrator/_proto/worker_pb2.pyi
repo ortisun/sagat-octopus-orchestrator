@@ -1124,16 +1124,18 @@ class HistoryWorkflowTaskCompleted(_message.Message):
     def __init__(self, deferred: _Optional[bool] = ..., deferred_kind: _Optional[_Union[CommandKind, str]] = ..., deferred_target: _Optional[str] = ..., deferral_cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ...) -> None: ...
 
 class HistoryCommandRecord(_message.Message):
-    __slots__ = ("kind", "target", "node", "noop")
+    __slots__ = ("kind", "target", "node", "noop", "saga_scope")
     KIND_FIELD_NUMBER: _ClassVar[int]
     TARGET_FIELD_NUMBER: _ClassVar[int]
     NODE_FIELD_NUMBER: _ClassVar[int]
     NOOP_FIELD_NUMBER: _ClassVar[int]
+    SAGA_SCOPE_FIELD_NUMBER: _ClassVar[int]
     kind: CommandKind
     target: str
     node: str
     noop: bool
-    def __init__(self, kind: _Optional[_Union[CommandKind, str]] = ..., target: _Optional[str] = ..., node: _Optional[str] = ..., noop: _Optional[bool] = ...) -> None: ...
+    saga_scope: str
+    def __init__(self, kind: _Optional[_Union[CommandKind, str]] = ..., target: _Optional[str] = ..., node: _Optional[str] = ..., noop: _Optional[bool] = ..., saga_scope: _Optional[str] = ...) -> None: ...
 
 class HistoryStepOutcome(_message.Message):
     __slots__ = ("node", "outcome", "output", "error_code", "retryable")

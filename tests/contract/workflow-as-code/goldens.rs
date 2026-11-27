@@ -86,6 +86,8 @@ fn the_goldens_parse_and_their_chains_recompute() {
     let profiles = profiles();
     chain_vectors(&root, &profiles);
     let enums = proto_enums();
+    // The command kinds whose steps the corpus shows cancelled through a step outcome (Decision 044-245).
+    let mut cancelled: BTreeSet<String> = BTreeSet::new();
 
     let mut found: Vec<PathBuf> = std::fs::read_dir(root.join("scenarios"))
         .expect("the scenarios directory")
@@ -123,11 +125,18 @@ fn the_goldens_parse_and_their_chains_recompute() {
         subdirs.sort();
         runs.extend(subdirs);
         for run in &runs {
-            check_run(run, &enums, &profiles);
+            check_run(run, &enums, &profiles, &mut cancelled);
         }
         if file_name(dir) == "code-deterministic-primitives" {
             the_primitives_scenario_draws_the_vector_stream(dir, &primitives);
         }
+    }
+
+    for kind in ["activity", "wait_event", "approval"] {
+        assert!(
+            cancelled.contains(kind),
+            "the corpus shows a cancelled {kind} as a STEP_OUTCOME_CANCELLED (Decision 044-245)"
+        );
     }
 
     the_generator_reproduces_the_corpus();
@@ -998,8 +1007,9 @@ fn check_event(event: &Value, enums: &Enums, at: &str) -> u64 {
     int64(&event["seq"], at)
 }
 
-/// The kind and target a history record states for a command number.
-fn recorded(event: &Value) -> (String, String) {
+/// The kind, the target and the saga scope a history record states for a command number (the scope is empty outside
+/// a scope and for every kind but an activity or a script, Decision 044-244).
+fn recorded(event: &Value) -> (String, String, String) {
     if text(event, "kind") == "HISTORY_MARKER_RECORDED" {
         let marker = &event["markerRecorded"];
         let kind = if marker.get("sideEffect") == Some(&Value::Bool(true)) {
@@ -1007,18 +1017,29 @@ fn recorded(event: &Value) -> (String, String) {
         } else {
             "COMMAND_MARKER_PATCH"
         };
-        return (kind.to_owned(), text(marker, "markerId").to_owned());
+        return (
+            kind.to_owned(),
+            text(marker, "markerId").to_owned(),
+            String::new(),
+        );
     }
     let record = &event["commandRecord"];
-    let target = record
-        .get("target")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    (text(record, "kind").to_owned(), target.to_owned())
+    let optional = |key: &str| {
+        record
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    (
+        text(record, "kind").to_owned(),
+        optional("target"),
+        optional("sagaScope"),
+    )
 }
 
 /// One run of a scenario: its history, its activations and windows, and its chain recomputed from its commands.
-fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles) {
+fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles, cancelled: &mut BTreeSet<String>) {
     let at = dir.display().to_string();
     let commands = read(&dir.join("commands.json"));
     i_json_integers(&commands, &at);
@@ -1063,7 +1084,7 @@ fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles) {
         "{at}: run.started carries the input"
     );
 
-    let mut records: BTreeMap<u64, (String, String)> = BTreeMap::new();
+    let mut records: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
     let mut started: BTreeMap<u64, u64> = BTreeMap::new();
     for event in &events {
         let seq = int64(&event["seq"], &at);
@@ -1156,9 +1177,18 @@ fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles) {
                 "{at}: chain.json is in command order"
             );
             assert_eq!(text(entry, "chainHex"), hex(&chain), "{at}: H({count})");
+            let scope = command
+                .get("sagaScope")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                scope.is_empty() || matches!(kind, "activity" | "script"),
+                "{at}: only an activity or a script is scheduled in a scope"
+            );
             let expected = (
                 format!("COMMAND_{}", kind.to_uppercase()),
                 target.to_owned(),
+                scope.to_owned(),
             );
             assert_eq!(
                 records.get(&count),
@@ -1207,6 +1237,45 @@ fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles) {
         count,
         "{at}: every recorded command is a command of an activation"
     );
+
+    // A step outcome ends an activity or a script, a cancelled wait or approval, and a timer that the engine cancelled
+    // (the stop drain); a child ends with its child.finished, a timer the function cancelled with the record of its
+    // timer_cancel (Decision 044-245).
+    let kind_of_node: BTreeMap<&str, &str> = activations
+        .iter()
+        .flat_map(|activation| activation.get("commands").map(array).unwrap_or_default())
+        .filter(|command| {
+            matches!(
+                text(command, "kind"),
+                "activity" | "script" | "timer_start" | "wait_event" | "child" | "approval"
+            )
+        })
+        .filter_map(|command| Some((command.get("node")?.as_str()?, text(command, "kind"))))
+        .collect();
+    for event in &events {
+        if text(event, "kind") != "HISTORY_STEP_OUTCOME" {
+            continue;
+        }
+        let outcome = &event["stepOutcome"];
+        let node = text(outcome, "node");
+        let kind = kind_of_node.get(node).unwrap_or_else(|| {
+            panic!("{at}: the step outcome of {node} names a step a command created")
+        });
+        let cancelled_step = text(outcome, "outcome") == "STEP_OUTCOME_CANCELLED";
+        assert!(
+            matches!(*kind, "activity" | "script")
+                || (cancelled_step && matches!(*kind, "wait_event" | "approval" | "timer_start")),
+            "{at}: a {kind} step ends with its own event, not this step outcome"
+        );
+        if cancelled_step {
+            assert_eq!(
+                outcome.get("errorCode").and_then(Value::as_str),
+                Some("CANCELLED"),
+                "{at}: a cancelled step carries the error code CANCELLED"
+            );
+            cancelled.insert((*kind).to_owned());
+        }
+    }
     assert_eq!(
         u64::try_from(chain_commands.len()).expect("small"),
         count,

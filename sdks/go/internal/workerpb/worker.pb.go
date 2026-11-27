@@ -464,17 +464,19 @@ const (
 	HistoryEventKind_HISTORY_RUN_STARTED             HistoryEventKind = 1 // run.started: the input and, for a successor, the carried state
 	HistoryEventKind_HISTORY_WORKFLOW_TASK_STARTED   HistoryEventKind = 2 // workflow_task.started with its time and its two flags
 	HistoryEventKind_HISTORY_WORKFLOW_TASK_COMPLETED HistoryEventKind = 3 // workflow_task.completed, with a deferral's kind and target
-	HistoryEventKind_HISTORY_COMMAND_RECORDED        HistoryEventKind = 4 // the record of an accepted command: number, kind and target, never the body
-	HistoryEventKind_HISTORY_STEP_OUTCOME            HistoryEventKind = 5 // an activity or script step completed, failed, timed out, cancelled or resolved
-	HistoryEventKind_HISTORY_TIMER_FIRED             HistoryEventKind = 6
-	HistoryEventKind_HISTORY_WAIT_OUTCOME            HistoryEventKind = 7 // a wait for an event satisfied or timed out
-	HistoryEventKind_HISTORY_CHILD_FINISHED          HistoryEventKind = 8
-	HistoryEventKind_HISTORY_APPROVAL_DECIDED        HistoryEventKind = 9  // the decision or expiry of an approval command
-	HistoryEventKind_HISTORY_SAGA_OUTCOME            HistoryEventKind = 10 // a saga scope compensated, partial, failed or completed
-	HistoryEventKind_HISTORY_SIGNAL_BUFFERED         HistoryEventKind = 11
-	HistoryEventKind_HISTORY_UPDATE_ADMITTED         HistoryEventKind = 12
-	HistoryEventKind_HISTORY_CANCELLATION_REQUESTED  HistoryEventKind = 13 // run.cancel_requested
-	HistoryEventKind_HISTORY_MARKER_RECORDED         HistoryEventKind = 14 // a patch or side-effect marker; a side effect carries its value
+	HistoryEventKind_HISTORY_COMMAND_RECORDED        HistoryEventKind = 4 // the record of an accepted command: number, kind, target and scope, never the body
+	// An activity or script step completed, failed, timed out, cancelled or resolved; and any step the function can cancel
+	// with step_cancel (a wait for an event, an approval) cancelled (Decision 044-245).
+	HistoryEventKind_HISTORY_STEP_OUTCOME           HistoryEventKind = 5
+	HistoryEventKind_HISTORY_TIMER_FIRED            HistoryEventKind = 6
+	HistoryEventKind_HISTORY_WAIT_OUTCOME           HistoryEventKind = 7 // a wait for an event satisfied or timed out
+	HistoryEventKind_HISTORY_CHILD_FINISHED         HistoryEventKind = 8
+	HistoryEventKind_HISTORY_APPROVAL_DECIDED       HistoryEventKind = 9  // the decision or expiry of an approval command
+	HistoryEventKind_HISTORY_SAGA_OUTCOME           HistoryEventKind = 10 // a saga scope compensated, partial, failed or completed
+	HistoryEventKind_HISTORY_SIGNAL_BUFFERED        HistoryEventKind = 11
+	HistoryEventKind_HISTORY_UPDATE_ADMITTED        HistoryEventKind = 12
+	HistoryEventKind_HISTORY_CANCELLATION_REQUESTED HistoryEventKind = 13 // run.cancel_requested
+	HistoryEventKind_HISTORY_MARKER_RECORDED        HistoryEventKind = 14 // a patch or side-effect marker; a side effect carries its value
 )
 
 // Enum value maps for HistoryEventKind.
@@ -5861,11 +5863,14 @@ func (x *HistoryWorkflowTaskCompleted) GetDeferralCause() WorkflowTaskFailureCau
 }
 
 type HistoryCommandRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          CommandKind            `protobuf:"varint,1,opt,name=kind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"kind,omitempty"`
-	Target        string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"` // the target of Technical Plan 6.2 for this kind
-	Node          string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`     // `c-<n>` of the step the command created or targeted, or `s-<n>`
-	Noop          bool                   `protobuf:"varint,4,opt,name=noop,proto3" json:"noop,omitempty"`    // a command on a step that was already terminal (`command.noop`)
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Kind   CommandKind            `protobuf:"varint,1,opt,name=kind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"kind,omitempty"`
+	Target string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"` // the target of Technical Plan 6.2 for this kind
+	Node   string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`     // `c-<n>` of the step the command created or targeted, or `s-<n>`
+	Noop   bool                   `protobuf:"varint,4,opt,name=noop,proto3" json:"noop,omitempty"`    // a command on a step that was already terminal (`command.noop`)
+	// `s-<n>` of the saga scope an activity or script was scheduled in (Command.saga_scope), empty otherwise. The SDK
+	// compares it at replay with the kind and the target (Decision 044-244); the hashed body carries it too.
+	SagaScope     string `protobuf:"bytes,5,opt,name=saga_scope,json=sagaScope,proto3" json:"saga_scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5928,6 +5933,18 @@ func (x *HistoryCommandRecord) GetNoop() bool {
 	return false
 }
 
+func (x *HistoryCommandRecord) GetSagaScope() string {
+	if x != nil {
+		return x.SagaScope
+	}
+	return ""
+}
+
+// The outcome of a `c-<n>` step. A wait or an approval the function cancelled (step_cancel) ends here with CANCELLED
+// and the error code CANCELLED, origin EFFECT when no worker held it, as an activity or a script does (origin ENGINE
+// when a leased attempt ends cancelled, or when the stop drain cancels a step, a timer included); their other outcomes
+// are HistoryWaitOutcome and HistoryApprovalDecided. A child's cancellation is its HistoryChildFinished; a timer the
+// function cancels ends with the record of its timer_cancel (Decision 044-245).
 type HistoryStepOutcome struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"` // `c-<n>`
@@ -9143,12 +9160,14 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\bdeferred\x18\x01 \x01(\bR\bdeferred\x12O\n" +
 	"\rdeferred_kind\x18\x02 \x01(\x0e2*.sagat_octopus_orchestrator.v1.CommandKindR\fdeferredKind\x12'\n" +
 	"\x0fdeferred_target\x18\x03 \x01(\tR\x0edeferredTarget\x12^\n" +
-	"\x0edeferral_cause\x18\x04 \x01(\x0e27.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCauseR\rdeferralCause\"\x96\x01\n" +
+	"\x0edeferral_cause\x18\x04 \x01(\x0e27.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCauseR\rdeferralCause\"\xb5\x01\n" +
 	"\x14HistoryCommandRecord\x12>\n" +
 	"\x04kind\x18\x01 \x01(\x0e2*.sagat_octopus_orchestrator.v1.CommandKindR\x04kind\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x12\n" +
 	"\x04node\x18\x03 \x01(\tR\x04node\x12\x12\n" +
-	"\x04noop\x18\x04 \x01(\bR\x04noop\"\xf2\x01\n" +
+	"\x04noop\x18\x04 \x01(\bR\x04noop\x12\x1d\n" +
+	"\n" +
+	"saga_scope\x18\x05 \x01(\tR\tsagaScope\"\xf2\x01\n" +
 	"\x12HistoryStepOutcome\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12D\n" +
 	"\aoutcome\x18\x02 \x01(\x0e2*.sagat_octopus_orchestrator.v1.StepOutcomeR\aoutcome\x12E\n" +

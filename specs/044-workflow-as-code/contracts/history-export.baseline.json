@@ -48,6 +48,7 @@
       "kind",
       "node",
       "noop",
+      "sagaScope",
       "target"
     ],
     "HistoryEvent": [

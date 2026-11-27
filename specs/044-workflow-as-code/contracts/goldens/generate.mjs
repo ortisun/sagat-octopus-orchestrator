@@ -40,7 +40,9 @@
 //   other kind, a terminal command included; the stop events that follow a terminal command are not visible.
 // - Origins: run.started, workflow_task.started, step, timer, child, approval and saga outcomes are ENGINE; a signal, an
 //   update's admission, a cancellation request and the event that satisfies a wait are EXTERNAL; a completion's
-//   workflow_task.completed and records are COMPLETION; a cancellation of a step that was still READY is EFFECT.
+//   workflow_task.completed and records are COMPLETION; a cancellation of a step that no worker held (READY, or waiting
+//   on an event or an approval) is EFFECT, a STEP_OUTCOME_CANCELLED whatever the step's kind (Decision 044-245).
+// - Creating transactions journal run.started first: a with-start signal or update follows it (Decision 044-246).
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -707,6 +709,9 @@ class Run {
       if (command.target) record.target = command.target;
       if (command.node) record.node = command.node;
       if (command.noop) record.noop = true;
+      // The scope of an activity or script, which the SDK compares at replay with the kind and the target (Decision
+      // 044-244).
+      if (command.sagaScope) record.sagaScope = command.sagaScope;
       this.visible('COMMAND_RECORDED', 'COMPLETION', 'commandRecord', record, number);
     }
     if (command.effect === 'cancelled') {
@@ -1776,9 +1781,27 @@ scenario('code-cancellation', (name) => {
   saga.finish();
   saga.cancelled('c-3');
   saga.hide('run.finished', { status: 'CANCELLED' });
+
+  const own = new Run(name, 'own-steps', { workflowType: 'refund-review', input: { refundId: 'r-31' } });
+  own.begin();
+  own.cmd(waitForEvent('refund.confirmed', 'r-31', 86400000));
+  own.cmd(approval('refund-review', { refundId: 'r-31', amountCents: 4200 }));
+  own.finish();
+  own.advanceMs(1000);
+  own.cancelRequested(60000);
+  own.begin({ notes: 'The function cancels its own wait and approval; neither is held by a worker.' });
+  own.cmd({ ...stepCancel('c-1'), effect: 'cancelled' });
+  own.cmd({ ...stepCancel('c-2'), effect: 'cancelled' });
+  own.finish();
+  own.begin({ notes: 'Both commands reject with CommandCancelled; the function acknowledges.' });
+  own.cmd(acknowledgeCancellation());
+  own.finish();
+  own.hide('run.finished', { status: 'CANCELLED' });
   const doc = functionDoc({
     title: 'code-cancellation',
-    proves: 'cooperative cancellation, the grace that ends the run, and an acknowledgement while a saga scope is open.',
+    proves:
+      'cooperative cancellation, the grace that ends the run, an acknowledgement while a saga scope is open, and the' +
+      ' cancellation of the function\'s own wait and approval.',
     code: `
 workflow reportRender(input):
   if input.idle: await sleep(604800000); return {}            // run "grace-expires": never looks at cancellation
@@ -1793,11 +1816,21 @@ workflow trip(input):                                         // run "acknowledg
   await saga({onCompensationFailure: "manual_review", cancelPolicy: "compensate_completed"}, async (s) =>
       await s.activity("trip.hold", {tripId: input.tripId})   // envelope: compensateWith trip.release
       await race(sleep(86400000), cancellation.promise)
-      if cancellation.requested: acknowledgeCancellation())`,
+      if cancellation.requested: acknowledgeCancellation())
+
+workflow refundReview(input):                                 // run "own-steps"
+  confirmed = waitForEvent("refund.confirmed", input.refundId, {timeoutMs: 86400000})
+  review = approval("refund-review", {refundId: input.refundId, amountCents: 4200})
+  await race(confirmed, review, cancellation.promise)
+  if cancellation.requested:
+    cancel(confirmed); cancel(review)
+    await allSettled(confirmed, review)                       // each rejects with CommandCancelled
+    acknowledgeCancellation()`,
     runs: [
       ['main', 'a cooperative cancellation: the step cancel, a cleanup activity, then the acknowledgement.'],
       ['grace-expires', 'the function ignores the request; the deadline (grace 5,000 ms) ends the run CANCELLED.'],
       ['acknowledge-in-saga', 'the acknowledgement while a scope is open: abort, deferral, compensation, acceptance.'],
+      ['own-steps', 'the function cancels its own wait and approval, then acknowledges.'],
     ],
     shows: [
       'run.cancel_requested is visible and waking (EXTERNAL) with its grace and the origin REQUEST.',
@@ -1806,14 +1839,22 @@ workflow trip(input):                                         // run "acknowledg
       '  journaled after the stop began, and no workflow task follows.',
       'acknowledge-in-saga: `saga_abort` then `acknowledge_cancellation`, deferred with OUTSTANDING_OBLIGATIONS while',
       '  the scope aborts; once it is compensated the acknowledgement is re-emitted and accepted (number 5).',
+      'acknowledge-in-saga: the record of the scope\'s activity carries its scope (`sagaScope` s-1, Decision 044-244).',
+      'own-steps: a cancelled wait and a cancelled approval are each a HISTORY_STEP_OUTCOME with STEP_OUTCOME_CANCELLED',
+      '  and the origin EFFECT, appended by the completion that cancelled them (Decision 044-245), which also withdraws',
+      '  the open approval request. The effects wake the next workflow task.',
     ],
     assumptions: [
       'The acknowledgement\'s record is visible (HISTORY_COMMAND_RECORDED) although its journal event is',
       '  run.stop_requested, which worker.proto calls not visible for that origin (see the report on the corpus).',
-      '`cancel(handle)` stands for the SDK\'s cancellation of its own step (Technical Plan 1.12 names no such call).',
+      '`cancel(handle)` stands for the SDK\'s cancellation of its own step (`requestCancellation` in the TypeScript',
+      '  runtime).',
     ],
   });
-  return { doc, runs: [['', r], ['grace-expires', grace], ['acknowledge-in-saga', saga]] };
+  return {
+    doc,
+    runs: [['', r], ['grace-expires', grace], ['acknowledge-in-saga', saga], ['own-steps', own]],
+  };
 });
 
 scenario('code-failures', (name) => {

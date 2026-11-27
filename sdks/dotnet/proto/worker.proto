@@ -560,8 +560,10 @@ enum HistoryEventKind {
   HISTORY_RUN_STARTED = 1;               // run.started: the input and, for a successor, the carried state
   HISTORY_WORKFLOW_TASK_STARTED = 2;     // workflow_task.started with its time and its two flags
   HISTORY_WORKFLOW_TASK_COMPLETED = 3;   // workflow_task.completed, with a deferral's kind and target
-  HISTORY_COMMAND_RECORDED = 4;          // the record of an accepted command: number, kind and target, never the body
-  HISTORY_STEP_OUTCOME = 5;              // an activity or script step completed, failed, timed out, cancelled or resolved
+  HISTORY_COMMAND_RECORDED = 4;          // the record of an accepted command: number, kind, target and scope, never the body
+  // An activity or script step completed, failed, timed out, cancelled or resolved; and any step the function can cancel
+  // with step_cancel (a wait for an event, an approval) cancelled (Decision 044-245).
+  HISTORY_STEP_OUTCOME = 5;
   HISTORY_TIMER_FIRED = 6;
   HISTORY_WAIT_OUTCOME = 7;              // a wait for an event satisfied or timed out
   HISTORY_CHILD_FINISHED = 8;
@@ -640,6 +642,9 @@ message HistoryCommandRecord {
   string target = 2;                     // the target of Technical Plan 6.2 for this kind
   string node = 3;                       // `c-<n>` of the step the command created or targeted, or `s-<n>`
   bool noop = 4;                         // a command on a step that was already terminal (`command.noop`)
+  // `s-<n>` of the saga scope an activity or script was scheduled in (Command.saga_scope), empty otherwise. The SDK
+  // compares it at replay with the kind and the target (Decision 044-244); the hashed body carries it too.
+  string saga_scope = 5;
 }
 enum StepOutcome {
   STEP_OUTCOME_UNSPECIFIED = 0;
@@ -648,6 +653,11 @@ enum StepOutcome {
   STEP_OUTCOME_TIMED_OUT = 3;
   STEP_OUTCOME_CANCELLED = 4;
 }
+// The outcome of a `c-<n>` step. A wait or an approval the function cancelled (step_cancel) ends here with CANCELLED
+// and the error code CANCELLED, origin EFFECT when no worker held it, as an activity or a script does (origin ENGINE
+// when a leased attempt ends cancelled, or when the stop drain cancels a step, a timer included); their other outcomes
+// are HistoryWaitOutcome and HistoryApprovalDecided. A child's cancellation is its HistoryChildFinished; a timer the
+// function cancels ends with the record of its timer_cancel (Decision 044-245).
 message HistoryStepOutcome {
   string node = 1;                       // `c-<n>`
   StepOutcome outcome = 2;
