@@ -246,3 +246,7 @@ gate of ADR-0075. Accepting this ADR does not close any of them.
 The author re-read in the code: the tree-admission lock after the chain lock in `chain_progress.rs`; the
 refusal of the transfer-receipt down migration once a receipt exists; the absence of an index on
 `possession='HELD'`. Owner answers: O705 and O706 in [owner decisions](../owner-decisions.md).
+
+## Revision of 2026-11-27 (design 039)
+
+Section 3 is amended by [ADR-0156](ADR-0156-a-loop-owns-one-capacity-group-every-member-child-has-a-chain-and-the-yield-is-a-row-of-its-own.md) decision 4: the `Finish` or `FinishPath` that retires a group that owns its tenant unit also decrements `tenant_iteration_usage`, taken `FOR UPDATE` after the group. The text above is kept as decided.

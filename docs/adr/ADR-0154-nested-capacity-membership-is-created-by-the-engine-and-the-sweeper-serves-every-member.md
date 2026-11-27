@@ -74,3 +74,7 @@ the history.
 
 Design 039 (`docs/designs/039-nested-collections.md`), ADR-0075 and ADR-0078, feature 014's
 `specs/014-workflow-primitives/capacity-*.md` and research Decisions 701 to 715.
+
+## Revision of 2026-11-27 (design 039, security and correctness reviews)
+
+Decisions 1, 2, 3, 4a, 5 and 7 are amended by [ADR-0156](ADR-0156-a-loop-owns-one-capacity-group-every-member-child-has-a-chain-and-the-yield-is-a-row-of-its-own.md): a loop owns one group, every member child has a chain, the yield is a row of its own, the unit has one owner, a fan-out bound, the fence of design 053 with a two-phase removal, and receipts kept 15 minutes. The text above is kept as decided.
