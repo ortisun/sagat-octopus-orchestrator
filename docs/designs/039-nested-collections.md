@@ -241,14 +241,22 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   (`workflow_versions.fan_out_bound bigint`, nullable; a version that calls nothing and has no collection records 1;
   the computation saturates at 4,097, one more than the policy's maximum, so it never overflows). A version stored
   before the migration has a null bound, computed from its parsed document when it is read (no backfill). The share
-  left to a child is the effective policy value divided (rounding down) by the product of `maxConcurrency` on the path
-  from the root iteration to the child call, the parallel branches of that path counted by their number; it is stored on
-  the child run (`runs.fan_out_share integer NULL`, null on a run that is no member), and a grandchild's admission is
+  left to a child is the group's `reserved_bound` (below), which is fixed when the group is inserted and never changes,
+  divided (rounding down) by the product of `maxConcurrency` on the path from the root iteration to the child call, the
+  parallel branches of that path counted by their number; it is never computed from the policy in force when the child
+  is admitted, so a policy lowered before a group is created and raised afterwards changes no share of that group. A
+  run's place in a group is a column of its own, `runs.capacity_role text NULL` (`ROOT` for a root run of a nesting
+  version, `MEMBER_CHILD` for a member child, pinned or active-version; null for every other run), bound at the run's
+  `INSERT` by the store's run creation and never changed afterwards: a trigger refuses any update of it, except the
+  null-to-value copy that the `chain_segments` trigger of Requirement 039-015 makes onto a successor
+  (`pg_trigger_depth() > 0`). Every member child, pinned or active-version, receives its share at its insert
+  (`runs.fan_out_share integer NULL`, null on a run that is not a member child), and a grandchild's admission is
   checked against its parent run's share divided the same way, so the check crosses every run boundary; an
-  active-version child whose current version's bound passes its share is refused with the same code, and so is an
-  active-version child whose parent run is flagged while its `fan_out_share` is null (fail closed). `fan_out_share` is
-  written once: a trigger lets it go from null to a value (at the child run's insert or by the segment copy of
-  Requirement 039-015) and refuses any other change, although `sagat_app` holds `UPDATE` on `runs`. The policy is a
+  active-version child whose current version's bound passes its share is refused with the same code, and so is any
+  child whose parent run's `capacity_role` is `MEMBER_CHILD` while its `fan_out_share` is null (fail closed; a child of
+  a `ROOT` parent takes its share from the group). `fan_out_share` is written once: a trigger lets it be set at the
+  run's insert, or go from null to a value only through the segment copy (`pg_trigger_depth() > 0`), and refuses any
+  other write, although `sagat_app` holds `UPDATE` on `runs`. The policy is a
   tenant setting only (a namespace value is refused): a column of `tenant_collection_policies`, `nested_group_fan_out
   integer NULL` (null and a missing row both mean 256), written through a new `QuotaResource::NestedGroupFanOut` on the
   audited `put_setting` path (`crates/infra-postgres/src/quotas.rs`), whose default limit and default ceiling are 256
@@ -278,9 +286,21 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   that becomes a successor of a chain takes its predecessor's flag through an `AFTER INSERT` trigger on `chain_segments`
   (a segment row names its `predecessor_run_id` and is inserted after its run row, in the same transaction and under
   the chain lock the successor path already takes; `runs` has no chain column, so a trigger on the run insert could
-  not know the chain), which sets the new run's flag when its predecessor's is set and also copies `fan_out_share`; a
-  member insert is refused unless its run, or its chain's head, is flagged; the flag is never cleared (a trigger
-  refuses the update).
+  not know the chain), which sets the new run's flag when its predecessor's is set and also copies `fan_out_share` and
+  `capacity_role`; a member insert is refused unless its run, or its chain's head, is flagged; the flag is never cleared
+  (a trigger refuses the update). **A run of a group keeps its version in release 0.3.0.** A run whose
+  `capacity_member` flag is set MUST NOT change the version it runs, since its bound was checked against that version
+  only: a move of design 044 (Requirement 044-023, whose only writer of the current version is `sagat_move_code_run`
+  on `code_run_pins.code_version_id`) of such a run is refused by a `BEFORE UPDATE` trigger on `code_run_pins` that
+  raises `nested_member_version_fence` when `code_version_id` changes for a flagged run, and the move item records the
+  reason `NESTED_RUN_NOT_MOVABLE`; a continue-as-new to another version (design 044's `version: active`, Requirement
+  044-019) of a flagged run is refused at the command's completion with `COMMAND_INVALID` and the reason
+  `NESTED_RUN_NOT_MOVABLE`, and, as the database's backstop, the `chain_segments` copy trigger raises
+  `nested_member_version_fence` for a successor of a flagged predecessor whose `workflow_version_id` differs from its
+  predecessor's. `runs.workflow_version_id` itself never changes (design 044 calls it the run's identity origin), and a
+  graph continue-as-new keeps its version (`crates/infra-postgres/src/chain_progress.rs`), so these two paths are the
+  only ways a member run could reach another version. Letting a member run move, checked against its share, is Gap
+  039-010.
 - **Requirement 039-016** The tenant unit MUST be released exactly once. A group created by a root admission records
   `owns_unit = true`; for a grouped iteration or loop none of today's decrement sites decrements (the collection
   checkpoint, the collection drain, the loop checkpoint at the loop's end or at a delay, the loop drain), and a grouped
@@ -291,7 +311,7 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   slot_held` (today both force `slot_held` for every admitted iteration), and the creator marks a descendant so; a
   `BEFORE INSERT OR UPDATE` trigger on both tables refuses a row `ADMITTED AND NOT slot_held` unless its run's
   `capacity_member` flag is set and either the scope's owner path is not the root (an inner collection or loop) or the
-  run is a member child (`fan_out_share IS NOT NULL`), so the database still refuses an uncharged root iteration of
+  run is a member child (`capacity_role = 'MEMBER_CHILD'`), so the database still refuses an uncharged root iteration of
   every run, a flagged root run included. The
   invariant MUST hold after every checkpoint, drain and cancellation, written as this check per tenant:
   `tenant_iteration_usage.active_iterations = (count of collection_iterations and loop_iterations with slot_held, whose
@@ -470,8 +490,8 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
 - **Only versions published with nesting.** `workflow_versions.nesting` is derived from the parsed document by one
   function (`nesting_of(&Definition)`) that every path inserting a version calls, the publication path and the ad hoc
   path of `crates/infra-postgres/src/execution/ad_hoc.rs` alike; `scripts/check-architecture.py` refuses an
-  `INSERT INTO workflow_versions` that does not bind it. The same insert binds `fan_out_bound`, computed by
-  `fan_out_of(&Definition)` (Requirement 039-014). A root admission creates a group only for a nesting version; a version
+  `INSERT INTO workflow_versions` that does not bind it, `fan_out_bound` and `fan_out_open`. The same insert binds
+  `fan_out_bound` and `fan_out_open`, computed by `fan_out_of(&Definition)` (Requirement 039-014). A root admission creates a group only for a nesting version; a version
   published without nesting, or a top-level child workflow outside every member, creates no group and charges what it
   charges today. Inside a member, admissions are descendants whatever their version (Requirement 039-002).
 - **The fence.** The insert triggers of `capacity_groups` and `capacity_group_members` call
@@ -587,10 +607,13 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   would go below 0. A cancelled or failed root iteration whose ChildRoot members still compensate keeps its
   unit until they are final.
 - **Flags.** `runs.capacity_member` is `NOT NULL DEFAULT false`, set by the creator for every member run and copied to
-  a chain successor, with `fan_out_share`, by an `AFTER INSERT` trigger on `chain_segments` from the run its
+  a chain successor, with `fan_out_share` and `capacity_role`, by an `AFTER INSERT` trigger on `chain_segments` from the run its
   `predecessor_run_id` names (the segment row is inserted after the successor's run row, under the chain lock that path
-  already takes, `crates/infra-postgres/src/chain_progress.rs`); a
-  member insert is refused unless its run or its chain head is flagged; an update that clears the flag is refused. A
+  already takes, `crates/infra-postgres/src/chain_progress.rs`), which also refuses a successor whose version differs
+  from a flagged predecessor's (Requirement 039-015); a
+  member insert is refused unless its run or its chain head is flagged; an update that clears the flag is refused.
+  `runs.capacity_role` (`ROOT` or `MEMBER_CHILD`) is bound at the run's insert by the store's run creation (`ROOT` for
+  a root run of a nesting version, `MEMBER_CHILD` for a member child) and never changed (Requirement 039-014). A
   child member's run is flagged at its own `INSERT` (above); the root run of a scoped-path member is flagged by an
   `UPDATE` in the transaction that creates its first group (it already holds the run row there), so every later lease of
   that run, its top-level steps included, goes through the guard's transaction setting (Technical Plan 9), and a
@@ -603,8 +626,8 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   `owns_unit boolean NOT NULL DEFAULT false`, `transfer_count bigint NOT NULL DEFAULT 0`, `reserved_bound bigint NOT
   NULL` (no default: the insert trigger sets it from the version and raises when the version's bound is null), `root_owner_node text NOT NULL`, `iteration_index
   integer NOT NULL` (both set at insert, never updated). On `capacity_group_members`: `acquired_at timestamptz NULL`, `last_leased_at timestamptz NULL`,
-  `last_vacated_unleased_at timestamptz NULL`. On `runs`: `capacity_member boolean NOT NULL DEFAULT false` and
-  `fan_out_share integer NULL`. On `tenant_iteration_usage`: `nested_reserved bigint NOT NULL DEFAULT 0`. On
+  `last_vacated_unleased_at timestamptz NULL`. On `runs`: `capacity_member boolean NOT NULL DEFAULT false`,
+  `fan_out_share integer NULL` and `capacity_role text NULL CHECK (capacity_role IN ('ROOT', 'MEMBER_CHILD'))`. On `tenant_iteration_usage`: `nested_reserved bigint NOT NULL DEFAULT 0`. On
   `workflow_versions`: `nesting boolean NOT NULL DEFAULT false`, `fan_out_bound bigint NULL` and `fan_out_open boolean
   NOT NULL DEFAULT false` (Requirement 039-014),
   so today's two version inserts keep working until Task 039-21 binds both. Every one is additive (design 053's expand
@@ -626,7 +649,10 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
     (the columns its `ON CONFLICT ... DO UPDATE` assigns), `DELETE` on both;
   - `capacity_path_transfer_receipts`: `SELECT`, `INSERT`; the receipt tables: `DELETE` (the retention trigger decides,
     Technical Plan 7);
-  - `runs`: `UPDATE (capacity_member, fan_out_share)`, and `fan_out_share` bound at a member child run's `INSERT`;
+  - `runs`: `UPDATE (capacity_member, fan_out_share, capacity_role)` (the last two written after insert only by the
+    segment-copy trigger, which runs with the writer's privileges; their triggers refuse every other update), and
+    `fan_out_share` and `capacity_role` bound at the run's `INSERT`; `code_run_pins`: no new grant (its
+    `BEFORE UPDATE` trigger of Requirement 039-015 refuses the move of a flagged run);
     `workflow_versions`: the `INSERT` it has, which now binds `nesting`, `fan_out_bound` and `fan_out_open`;
     `tenant_iteration_usage`: no new grant, since `sagat_app` already holds `UPDATE` on the whole table
     (`20261029000000_collection_progress`), which covers `nested_reserved` (the group's insert trigger, which runs with the writer's privileges, and the retiring `Finish` write it on the row
@@ -856,6 +882,7 @@ runtime refusal is a closed `FailureCode` of the step (`crates/domain/src/execut
 | `NESTED_FAN_OUT_LIMIT` | an active-version child's admission | the parent's child step fails with `FailureCode` `NESTED_FAN_OUT_LIMIT`, permanent (no retry, the parent's `onError` applies) | no | the child version's bound passes what is left to it |
 | `NESTED_COLLECTIONS_INACTIVE` | the creator and a join (scheduler) | never returned: the insert trigger raises `nested_collections_fence`, the admission rolls back and is retried by the next tick, counted `inactive` | (internal) | the fence's `continue` answers no; after phase 2 a run cannot be admitted, so this only follows an operator's removal error |
 | `NESTED_COLLECTIONS_INACTIVE` | the creation of a new run of an active nesting version that is neither a member child nor a chain successor (API start, schedule action, batch start, a top-level child start, a reset, a rerun), checked once by the store's run creation after authorization and tenant and namespace resolution, while the requirement is `draining` or absent | the API answers `409 CONFLICT` with `details.reason`; a schedule action and a batch item record it as their failure reason; a top-level child start fails the parent's child step with the permanent `FailureCode` `NESTED_COLLECTIONS_INACTIVE` | no | the fence's `new_use` answers no |
+| `NESTED_RUN_NOT_MOVABLE` | a move of a code run (design 044) and the completion of a code continue-as-new to another version, for a run whose `capacity_member` flag is set | the move item is skipped with the reason; the completion is refused `COMMAND_INVALID` with the reason; the database's triggers raise `nested_member_version_fence` as the backstop | no | a member run keeps its version in release 0.3.0 (Requirement 039-015, Gap 039-010) |
 
 A publication made while the requirement is `draining` therefore gets `NESTED_COLLECTIONS_DISABLED`; there is no
 separate code for `draining`.
@@ -1019,8 +1046,8 @@ See Requirements, Non-functional (Non-functional requirements 039-001 to 039-003
 ## Detailed Implementation Plan
 
 Four slices in order; slices 2 and 3 can run in parallel in two lanes. Every file has one owner, with one listed
-exception: the rule of `scripts/check-architecture.py` that refuses an `INSERT INTO workflow_versions` without `nesting`
-and `fan_out_bound` is added by lane A in Task 039-21, in the change that makes the inserts pass it.
+exception: the rule of `scripts/check-architecture.py` that refuses an `INSERT INTO workflow_versions` without `nesting`,
+`fan_out_bound` and `fan_out_open` is added by lane A in Task 039-21, in the change that makes the inserts pass it.
 
 | Lane | Owns |
 |---|---|
@@ -1196,11 +1223,18 @@ run-start refusal `NESTED_COLLECTIONS_INACTIVE` on each surface of Technical Pla
   Refs: Requirement 039-011, Requirement 039-003
   Owner-gate: OD-2026-11-27-442, OD-2026-11-27-449, OD-2026-11-27-462
 - [ ] T039-19 The `capacity_member` triggers of Requirement 039-015: the `AFTER INSERT` trigger on `chain_segments`
-  that copies the predecessor run's flag and `fan_out_share` onto the successor run, the member-insert refusal and the
-  never-cleared rule; tests: a continue-as-new successor of a member child, flagged by the segment trigger, refused a
-  lease while not the holder; a member insert refused for an unflagged run; the trigger on `collection_iterations` and
+  that copies the predecessor run's flag, `fan_out_share` and `capacity_role` onto the successor run and refuses a
+  successor whose `workflow_version_id` differs from a flagged predecessor's, the member-insert refusal and the
+  never-cleared rule; `runs.capacity_role` bound at insert and its never-changed trigger (the segment copy excepted);
+  the `BEFORE UPDATE` trigger on `code_run_pins` that refuses a change of `code_version_id` for a flagged run, and the
+  completion of a code continue-as-new to another version of a flagged run refused `COMMAND_INVALID` with
+  `NESTED_RUN_NOT_MOVABLE`; tests: a continue-as-new successor of a member child, flagged by the segment trigger,
+  refused a lease while not the holder; a member insert refused for an unflagged run; a move of a flagged code run
+  skipped `NESTED_RUN_NOT_MOVABLE` with its pin unchanged; a code continue-as-new of a flagged run asking
+  `version: active` for another version refused at its completion, and the segment trigger refusing the same successor
+  when the completion check is bypassed; an update of `capacity_role` refused; the trigger on `collection_iterations` and
   `loop_iterations` that allows `ADMITTED AND NOT slot_held` only for a flagged run whose scope's owner path is not the
-  root or which is a member child (`fan_out_share IS NOT NULL`), with tests that a root iteration of an unflagged run,
+  root or whose `capacity_role` is `MEMBER_CHILD`, with tests that a root iteration of an unflagged run,
   and a root iteration of a flagged root run, admitted without its charge are refused.
   Refs: Requirement 039-015
   Owner-gate: OD-2026-11-27-446, OD-2026-11-27-462
@@ -1214,19 +1248,19 @@ run-start refusal `NESTED_COLLECTIONS_INACTIVE` on each surface of Technical Pla
   Owner-gate: OD-2026-11-27-444
 - [ ] T039-21 (lane A, after Task 039-10) `nesting_of` and `fan_out_of` bound by every version-insert path
   (`crates/infra-postgres/src/definitions.rs` and `crates/infra-postgres/src/execution/ad_hoc.rs`) and the rule of
-  `scripts/check-architecture.py` that refuses an `INSERT INTO workflow_versions` that does not bind both, with a
-  negative fixture.
+  `scripts/check-architecture.py` that refuses an `INSERT INTO workflow_versions` that does not bind `nesting`,
+  `fan_out_bound` and `fan_out_open`, with a negative fixture for each of the three.
   Refs: Requirement 039-002
   Owner-gate: OD-2026-11-27-446
 - [ ] T039-22 The fan-out bound at an active-version child's admission, refused with `NESTED_FAN_OUT_LIMIT`, and the
   wrapped-collection test (a one-item outer `forEach` around a `forEach` of concurrency above the policy value refused
-  at publication; one within it runs at most the bound at once); the bound left to an active-version child as the
-  policy divided by the product down to the child call; a version with a null bound counted as its computed product;
+  at publication; one within it runs at most the bound at once); the share left to a child as the group's
+  `reserved_bound` divided by the product down to the child call, never the current policy; a version with a null bound counted as its computed product;
   `QuotaResource::NestedGroupFanOut` on the audited `put_setting` path with its API and contract entries (tenant scope
   only, a namespace value refused; default limit and default ceiling 256, maximum 4,096), the `None` branch of each
   resource resetting only its own column, 256 when no row; `QuotaResource::NestedLiveIterations` as an operator ceiling
-  only (16,000 by default, at most 20,000); `runs.fan_out_share` bound at a member child's insert and the grandchild
-  check against it; `fan_out_of` recursive over pinned children and summing `parallel` branches, and `fan_out_open`;
+  only (16,000 by default, at most 20,000); `runs.fan_out_share` bound at every member child's insert, pinned or
+  active-version, and the grandchild check against it; `fan_out_of` recursive over pinned children and summing `parallel` branches, and `fan_out_open`;
   `reserved_bound` and `nested_reserved` written by the group's insert trigger and the retiring `Finish`; tests that a
   write is audited, that clearing one setting keeps the other, that a lowered value refuses the next root admission of
   an existing version, that a pinned grandchild's bound counts through a pinned child without collections, that a
@@ -1235,8 +1269,11 @@ run-start refusal `NESTED_COLLECTIONS_INACTIVE` on each surface of Technical Pla
   the permanent step failure `NESTED_FAN_OUT_LIMIT`; a code version (design 044) whose envelope lists children refused
   as a pinned child at publication and as an active-version child at admission, and one whose envelope lists none
   admitted with a bound of 1; the group insert trigger raising when the version's bound is null; `resolve`'s default-limit
-  case extended to `NestedGroupFanOut` and the SQL rule tested against `resolve`; an active-version child of a flagged
-  parent with a null `fan_out_share` refused; `fan_out_share` write-once (a second write refused).
+  case extended to `NestedGroupFanOut` and the SQL rule tested against `resolve`; a child of a `MEMBER_CHILD` parent
+  with a null `fan_out_share` refused, and an active-version child of a `ROOT` parent admitted with its share taken
+  from the group; `fan_out_share` write-once (a second write refused, and a null-to-value update outside the segment
+  copy refused); a test that lowers the policy, admits a root iteration of an open version, raises the policy, then
+  admits a child of that group and sees its share bounded by the group's `reserved_bound`.
   Refs: Requirement 039-014
   Owner-gate: OD-2026-11-27-437, OD-2026-11-27-454, OD-2026-11-27-459
 - [ ] T039-23 The lease fence: the trigger `BEFORE INSERT OR UPDATE OF status, lease_token_hash ON steps` that refuses
@@ -1330,3 +1367,9 @@ by a named test.
   fan-out policy, a null share refused and the share written once; the relaxed slot check narrowed to inner scopes and
   member children; `new_use` once in the store's run creation, after authorization, covering reset and rerun
   (Decision 039-032).
+- **2026-11-27, third security re-read** (`docs/designs/039-nested-collections.reviews/2026-11-27/reread-3/security.md`):
+  a member run keeps its version in release 0.3.0 (a move of a flagged code run and a code continue-as-new to another
+  version refused, with database backstops on `code_run_pins` and `chain_segments`); a child's share taken from the
+  group's fixed `reserved_bound`, never from the current policy; the run's place in a group as `capacity_role`, bound at
+  insert and never changed, with every member child given a share; the architecture rule requiring `fan_out_open`
+  (Decision 039-033, Gap 039-010).

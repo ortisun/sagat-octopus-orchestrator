@@ -168,3 +168,13 @@ Recorded under Owner decision 2026-11-24-4 after `docs/designs/039-nested-collec
 root owner node and iteration index, set at insert and never changed, and one group at most owns the unit of one slot
 (a partial unique index over the groups not retired that own a unit). A code version (design 044) whose envelope lists
 children is refused as a member child, because its fan-out is not declared. The decisions above are otherwise unchanged.
+
+## Revision of 2026-11-27 (third security re-read)
+
+Recorded under Owner decision 2026-11-24-4 after `docs/designs/039-nested-collections.reviews/2026-11-27/reread-3/security.md`
+(design 039, Decision 039-033). A run of a capacity group keeps its version in release 0.3.0: a move of a code run and
+a continue-as-new to another version are refused for a flagged run, with triggers on `code_run_pins` and
+`chain_segments` as the database's backstop (Gap 039-010 for a later, bounded move). A child's share is taken from its
+group's fixed `reserved_bound`, never from the policy at the child's admission. A run's place in a group is
+`runs.capacity_role` (`ROOT` or `MEMBER_CHILD`), bound at insert and never changed. The decisions above are otherwise
+unchanged.
