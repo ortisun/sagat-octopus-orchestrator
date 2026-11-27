@@ -11,6 +11,17 @@
   "codeVersions": {
     "v1": "sha256:1759b40e043f434492fca819cfc3dab2a09dd1f84407c566b5b227dfb6358fbd"
   },
+  "lease": {
+    "stateMaxBytes": 65536
+  },
+  "declarations": {
+    "state": {
+      "schema": {
+        "type": "object"
+      },
+      "initial": "{}"
+    }
+  },
   "activations": [
     {
       "k": 1,

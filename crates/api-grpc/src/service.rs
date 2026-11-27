@@ -165,6 +165,40 @@ impl<St, S, C, E, R> AdmissionProvider for WorkerGrpc<St, S, C, E, R> {
 
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
 
+/// A stream of a capability call that asks the gate again before each item it hands out (feature 006, decisions D006-098
+/// and D006-100): before the first, so a call admitted at the edge of the capability window hands nothing out after it, and
+/// before every later one (a cheap read of the gate), so a long download stops when the window lapses.
+struct CheckedFirst<S> {
+    inner: S,
+    admission: Admission,
+    method: &'static str,
+    refused: bool,
+}
+
+impl<S, T> Stream for CheckedFirst<S>
+where
+    S: Stream<Item = Result<T, Status>> + Unpin,
+{
+    type Item = Result<T, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.refused {
+            return Poll::Ready(None);
+        }
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(item))) => {
+                if let Some(refused) = self.admission.capability_refusal(self.method) {
+                    // the item is dropped: nothing of it leaves
+                    self.refused = true;
+                    return Poll::Ready(Some(Err(refused)));
+                }
+                Poll::Ready(Some(Ok(item)))
+            }
+            other => other,
+        }
+    }
+}
+
 /// How long before the hard end of a receive window the producer stops claiming and queues its terminal hint. It is
 /// 5% of the window: measured under CPU load the hint took up to 15 ms to reach a reader that was keeping up, and the
 /// 10 ms this was before was lost twice in 34 runs of the contract test under load.
@@ -983,6 +1017,10 @@ where
     ) -> Result<Response<pb::ResolveSecretsResponse>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ResolveSecrets", trace, async {
+            // a silent registry serves no capability call (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("ResolveSecrets") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let mut attempt = Attempt::parse(
@@ -1007,6 +1045,10 @@ where
                 )
                 .await
                 .map_err(app)?;
+            // asked again before the first byte of the values (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("ResolveSecrets") {
+                return Err(refused);
+            }
             Ok(pb::ResolveSecretsResponse {
                 secrets: resolved
                     .iter()
@@ -1074,6 +1116,9 @@ where
     ) -> Result<Response<pb::ResolvedDatabase>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ResolveDatabase", trace, async {
+            if let Some(refused) = self.admission.capability_refusal("ResolveDatabase") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let m = request.get_ref();
             let mut attempt = Attempt::parse(
@@ -1098,6 +1143,9 @@ where
                 )
                 .await
                 .map_err(app)?;
+            if let Some(refused) = self.admission.capability_refusal("ResolveDatabase") {
+                return Err(refused);
+            }
             crate::database::response(resolved).map_err(app)
         })
         .await
@@ -1255,6 +1303,9 @@ where
         let trace = trace_of(&request);
         observe(&self.core, "WriteBlob", trace, async {
             let started = Instant::now();
+            if let Some(refused) = self.admission.capability_refusal("WriteBlob") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let _place = blobs.permit()?;
@@ -1349,6 +1400,10 @@ where
             } else {
                 scope.ok_or_else(|| app(AppError::Internal))?
             };
+            // asked again before the store's write starts (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("WriteBlob") {
+                return Err(refused);
+            }
             let storing = blobs
                 .service
                 .write(scope, principal.subject().as_str(), write, body);
@@ -1392,6 +1447,9 @@ where
     ) -> Result<Response<Self::ReadBlobStream>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ReadBlob", trace, async {
+            if let Some(refused) = self.admission.capability_refusal("ReadBlob") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
@@ -1446,8 +1504,13 @@ where
                 sha256: descriptor.digest().to_hex(),
                 content_type: descriptor.content_type().as_str().to_owned(),
             };
-            let stream: Self::ReadBlobStream =
-                Box::pin(Download::new(header, body, place, auth, blobs.timeout));
+            // the gate is asked again before each item of the download (decisions D006-098 and D006-100)
+            let stream: Self::ReadBlobStream = Box::pin(CheckedFirst {
+                inner: Download::new(header, body, place, auth, blobs.timeout),
+                admission: self.admission.clone(),
+                method: "ReadBlob",
+                refused: false,
+            });
             Ok(stream)
         })
         .await
@@ -2203,5 +2266,56 @@ impl sagat_application::worker::ClaimWatch for ConsumerWatch {
             Some(probe) => probe(Abandonment(self.gone.clone())),
             None => Box::pin(std::future::ready(())),
         }
+    }
+}
+
+/// The review of 2026-11-25 (decision D006-100): a capability stream asks the gate before every item, not only at its first
+/// poll; once the window lapses the item is dropped, the refusal is the stream's last item, and nothing follows.
+#[cfg(test)]
+mod checked_items {
+    use super::*;
+    use sagat_application::instances::ServingGate;
+    use tokio_stream::StreamExt as _;
+
+    #[tokio::test]
+    async fn a_capability_stream_stops_at_the_first_item_after_the_window_lapses() {
+        let gate = Arc::new(ServingGate::closed());
+        gate.decided_by_the_registry();
+        gate.open(1);
+        gate.decided_at(std::time::Instant::now());
+        let admission = Admission::new(8, Duration::from_secs(30));
+        admission.set_serving_gate(Arc::clone(&gate));
+        let (sender, receiver) = mpsc::channel::<Result<u32, Status>>(4);
+        let mut stream = CheckedFirst {
+            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
+            admission,
+            method: "ReadBlob",
+            refused: false,
+        };
+        sender.send(Ok(1)).await.expect("queued");
+        assert_eq!(stream.next().await.map(|item| item.ok()), Some(Some(1)));
+        // the window lapses during the download: the next item never leaves
+        let lapsed = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(26))
+            .expect("an instant 26 s ago");
+        // a decision never moves back: forget it, then decide it 26 s ago
+        gate.decided_by_the_registry();
+        gate.decided_at(lapsed);
+        sender.send(Ok(2)).await.expect("queued");
+        sender.send(Ok(3)).await.expect("queued");
+        let refused = stream
+            .next()
+            .await
+            .expect("an item")
+            .expect_err("the refusal, not the item");
+        assert_eq!(refused.code(), Code::Unavailable);
+        assert_eq!(
+            refused
+                .metadata()
+                .get(crate::status::ERROR_METADATA)
+                .and_then(|value| value.to_str().ok()),
+            Some("REGISTRY_SILENT")
+        );
+        assert!(stream.next().await.is_none(), "nothing follows the refusal");
     }
 }

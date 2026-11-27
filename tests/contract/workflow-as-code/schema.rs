@@ -315,3 +315,58 @@ fn the_node_spec_keys_are_the_code_profiles_without_their_literals() {
         assert_eq!(keys, expected, "the node specification of {kind}");
     }
 }
+
+/// An envelope entry is an exact name of up to 128 characters or a prefix of up to 128 with its `.*` (Decision 044-254).
+#[test]
+fn an_envelope_entry_name_is_at_most_128_characters() {
+    let pattern = definition("codeActivityPattern");
+    for (name, valid) in [
+        ("a".repeat(128), true),
+        ("a".repeat(129), false),
+        (format!("{}.*", "a".repeat(126)), true),
+        (format!("{}.*", "a".repeat(127)), false),
+        ("payments.*".to_owned(), true),
+        ("sagat.*".to_owned(), false),
+        ("*".to_owned(), false),
+    ] {
+        assert_eq!(pattern.is_valid(&json!(name)), valid, "{name}");
+    }
+}
+
+/// Decision 044-257: a code version's declared state takes `state.maxBytes` (1 to 128 KiB, 64 KiB when absent), the
+/// bound its workflow leases carry as `state_max_bytes`; a graph version has no such field, because nothing bounds it.
+#[test]
+fn a_code_version_bounds_its_declared_state_and_a_graph_version_cannot() {
+    for (bytes, valid) in [
+        (json!(1), true),
+        (json!(65_536), true),
+        (json!(131_072), true),
+        (json!(131_073), false),
+        (json!(0), false),
+        (json!(-1), false),
+        (json!(1.5), false),
+        (json!("4096"), false),
+    ] {
+        let code = with(code_document(), "/state/maxBytes", bytes.clone());
+        assert_eq!(
+            document().is_valid(&code),
+            valid,
+            "a code version with state.maxBytes {bytes}"
+        );
+    }
+    let graph = with(
+        graph_document(),
+        "/state",
+        json!({"schema": {"type": "object"}, "initial": "{}", "maxBytes": 4096}),
+    );
+    assert!(
+        !document().is_valid(&graph),
+        "a graph version refuses state.maxBytes"
+    );
+    let graph = with(
+        graph_document(),
+        "/state",
+        json!({"schema": {"type": "object"}, "initial": "{}"}),
+    );
+    assert!(document().is_valid(&graph), "a graph version keeps its state");
+}

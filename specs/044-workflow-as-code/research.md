@@ -931,8 +931,10 @@ the same lines of this register while both are open.
   wait for an event, an approval command's step, or an activity held for its entry's approval) reaches the function as
   `HISTORY_STEP_OUTCOME` with `STEP_OUTCOME_CANCELLED` and the error code `CANCELLED`, the history form of the journal's
   `step.cancelled` for that step. The origin is `effect` when the completion's own `step_cancel` cancelled a step whose
-  attempt has not begun (`READY`, or `WAITING` on an event, an approval, or a gate of feature 022; an open approval
-  request is withdrawn in that transaction). A step whose attempt began (leased, or awaiting its reconciliation or a
+  current attempt has not begun (`READY`, including a step waiting for its retry after earlier attempts that each
+  ended in a known failure, or `WAITING` on an event, an approval, or a gate of feature 022; an open approval request
+  is withdrawn in that transaction), checked by a compare-and-swap on the step's row under the run lock (Technical
+  Plan 5.2, step 6). A step whose attempt began (leased, or awaiting its reconciliation or a
   review after an unknown outcome, feature 037) is never cancelled by the command: `step_cancel` journals
   `step.cancel_requested`, the review or reconciliation stays in place, and the step's outcome is whatever its
   attempt, its reconciliation or its review settles, with the origin `engine` (`CANCELLED` only when the worker or the
@@ -974,7 +976,9 @@ the same lines of this register while both are open.
   `requestCancellation(command)` on the promise of an activity, a script, a wait, an approval, a child or a sleep makes
   `step_cancel` (`timer_cancel` for a sleep); the promise of a cancelled activity, script, wait or approval rejects with
   `CommandCancelled`, a cancelled sleep with `TimerCancelled`, a cancelled child with `ChildWorkflowError` of status
-  `cancelled`. delegate (OD-2026-11-24-4): the names the TypeScript lane built (its Decision 044-311), so six SDKs make
+  `cancelled`. The promise settles from the history's outcome, never at the call: it resolves if the attempt completes,
+  and rejects only on a cancelled outcome (a sleep, whose `timer_cancel` is its end, rejects once the command is
+  issued). delegate (OD-2026-11-24-4): the names the TypeScript lane built (its Decision 044-311), so six SDKs make
   the same commands and raise the same three errors for one golden.
 - **D044-249** (2026-11-27) The independent correctness review of the relay changes (commits 9808a47e and b1f03c8b; no
   Blocker, six Major, five Minor, two Nit) is answered by fixes, none contested: the reported scope
@@ -985,6 +989,110 @@ the same lines of this register while both are open.
   additive export (Minor 8, Decision 044-244); the other cancellation sources (Minor 9) and the scope on another kind
   (Minor 10), Decision 044-245 and 044-244; the gap between bounded waits (Minor 11, Decision 044-247); the Nits in
   Technical Plan 4.2 and Decision 044-246.
+- **D044-250** (2026-11-27) The independent security review of the relay changes (commits up to 3c40a11b; no Blocker,
+  one Major, three Minor, one Nit group and one suspicion) is answered by fixes, none settled otherwise (a security
+  finding is always fixed): `actual_saga_scope` is checked against `^s-[1-9][0-9]{0,9}$` and dropped otherwise, the
+  expected scope comes from the server's record, and it joins Non-functional requirement 044-007's list of identifiers
+  checked before they appear (Major 1; `a_reported_saga_scope_outside_its_pattern_is_dropped`, Task 044-8); the
+  effect rule counts a step waiting for its retry after known failures, and Technical Plan 10.2 states that a script's
+  timeout is a known failure as for a graph script, Gap 044-032 (Minor 2); the cancellation is a compare-and-swap on
+  the step's row under the run lock, with two barrier tests in Task 044-9 (Minor 3); no eager lease for a step its own
+  completion cancels, Task 044-14 (Minor 4); `actual_saga_scope` in Technical Plan 13.1 and `sdks/SPEC.md`, a script's
+  `timeoutMs` in Technical Plan 5.1, the description of Decision 044-241 on `codeProfileScript`, and the main
+  cancellation golden's wording (Nit 5); and the promise of a cancelled step settles only from the history's outcome
+  (the suspicion, Decision 044-248 and `sdks/SPEC.md`).
+- **D044-251** (2026-11-27) The closed list of update rejection reasons is `VALIDATION_FAILED` (the function's
+  validator refused the update), `HANDLER_NOT_REGISTERED` (the function had registered no handler for the update's name
+  when its `update.admitted` was applied) and the engine's `RUN_ENDED` and `RUN_CONTINUED`; a completion that rejects
+  with any other reason is `COMMAND_INVALID`. The catalog entry of `HANDLER_NOT_REGISTERED` and its six SDK copies land
+  with the update transitions of Task 044-21. delegate (OD-2026-11-24-4): the TypeScript lane's Decision 044-309 asked
+  for `HANDLER_NOT_REGISTERED` and `VALIDATION_REJECTED`; the first names a case the list lacked (a code defect that
+  the caller and the operator must tell apart from a refused argument, as Temporal's unknown-update rejection does),
+  while the second would be a second name for `VALIDATION_FAILED`, which the corpus and the catalog already use.
+- **D044-254** (2026-11-27) Two alignments the security review of pull request 296 asked of the contract (its Nits 2
+  and 3; the domain's answers are Decision 044-253 on that branch): `codeActivityPattern` admits an exact name of 128
+  characters, as `codeActivityName` and the domain do, and a prefix of 128 with its `.*`; and Technical Plan 5.1 says
+  that a fragment may repeat only the publisher's fields (`secrets`, `irreversible`, `highRisk`, `compensateWith`,
+  `reconcileWith`, `requiresApproval`), while `outputSchema`, `concurrency` and `rateLimit` come from the entry and are
+  refused in a fragment, as the code profiles already refuse them: a repeated `outputSchema` could drop a `secret`
+  classification. delegate (OD-2026-11-24-4).
+
+### Decisions on the merge of develop into the contracts (2026-11-27)
+
+- **D044-255** (2026-11-27) Design 044 keeps worker-protocol minor **1.10**, and draft 019's three named minors move to
+  **1.11, 1.12 and 1.13**. `develop` (pull request #279) had written into the register of `sdks/SPEC.md` section 9 that
+  draft 019 names 1.10 to 1.12, while this contract took 1.10 on its branch (Decision 044-233). The register's rule is
+  that a minor is taken when its contract merges; design 044 is being built and its contract merges first, while draft
+  019 is approved but unbuilt and its own text keeps `1.N` to `1.N+2` for exactly this case (its Decision D019-002 and
+  Gap G1048). The register now has a row for 1.10 (design 044), a row for 1.11 to 1.13 (draft 019) and the next free
+  minor for every other draft is 1.14 or later; draft 019's research, plan, tasks and the notes of drafts 024 and 025
+  that named 019's minors are corrected with a pointer here. delegate (OD-2026-11-24-4), the coordinator's decision.
+- **D044-256** (2026-11-27) Field numbers after the merge of design 041's step logs into `develop`: design 044 keeps
+  `CompleteStepRequest.accept_workflow_task` at **14** (field 13 is design 041's `StepLogCarry step_logs`, protocol 1.7,
+  on `CompleteStepRequest` and `FailStepRequest` alike; the contract never used 13). The register of field numbers across
+  `sdks/SPEC.md` section 9 and the drafts was read again for every message this contract extends: `TaskLease` 28 to 30,
+  `WorkerCapabilities` 11 and 12, `CompleteStepRequest` 14, `StepCommandResponse` 5, `ReadBlobRequest` 9 and
+  `FailWorkflowTaskRequest` and the other new messages (design 044's own). Two drafts had named a number now taken: draft
+  024 named `CompleteStepRequest.data_result = 14` on 2026-11-27, after this contract had taken it on its branch, so
+  `data_result` moves to **15** (draft 024's own rule: "a field taken by another feature in between moves this draft's
+  number, never the other's"); draft 019 named `FailStepRequest.details_json = 13`, already design 041's, so it moves
+  to **15** (14 is design 045's `next_retry_delay_ms`). Both drafts' contract fragments, plans and tasks are corrected.
+  The generated code of the six SDKs (Go `internal/workerpb` with `sdks/go/scripts/generate.sh`, Python `_proto` with
+  `sdks/python/scripts/sync_shared.py`, both at the pinned generator versions) and `worker.baseline.json` were
+  regenerated after the merge, and their diffs read: compared field by field, the merged `worker.baseline.json` keeps
+  every entry of `develop`'s and every entry of this contract's, except `AppendStepLogsRequest` fields 11 and 12, which
+  design 041 removed on `develop` before its minor was served; the generated code differs from this contract's only by
+  design 041's field 13 and comments. delegate (OD-2026-11-24-4).
+- **D044-257** (2026-11-27) The IR's `state` gains **`maxBytes`** in a code version: an integer from 1 to 131,072
+  (128 KiB, the ceiling of Requirement 044-016), **65,536 when absent**, the bound the version's workflow leases carry
+  as `state_max_bytes` (and query and replay-check tasks, and the export header's `stateMaxBytes`). A code version that
+  declares no `state` has a bound of 0: it sets no state (`set_state` is `COMMAND_INVALID`) and carries none (a
+  continue-as-new's state must be absent). A graph version refuses the field in the schema, because no graph rule reads
+  it. The corpus declares it where state exists (`code-declared-state` 4,096, `code-gated-activity` 131,072,
+  `code-continue-as-new` the default on its three runs), and `generate.mjs` derives each lease's `stateMaxBytes` from
+  the declarations, never by hand, and refuses a carried state over it. delegate (OD-2026-11-24-4): the design named
+  `state.maxBytes` (Non-functional requirement 044-006, Technical Plan 7.3, Requirement 044-016's 128 KiB) but the IR
+  schema had no such field, so every lease of a scenario with state sent 0 and the TypeScript runtime refused the
+  scenario's own set-state (relayed by the TypeScript lane). Changing the corpus instead (no state in those scenarios)
+  would have left the design's reserve without a source. The default is the signals' 64 KiB, not the 128 KiB ceiling,
+  because the SDK reserves the bound from every activation's start (Decision 044-308): a version that never needed 128
+  KiB of state would otherwise leave a gated input only 64 KiB. Held by
+  `contract_workflow_as_code::schema::a_code_version_bounds_its_declared_state_and_a_graph_version_cannot`; the server's
+  tests are named in Task 044-12's list (`a_set_state_over_the_versions_max_bytes_is_refused`,
+  `a_set_state_in_a_version_without_state_is_refused`).
+- **D044-258** (2026-11-27) `sideEffect(compute, options?: { id?: string })`: the side-effect marker's identifier is
+  the option `id` (the pattern of a patch identifier, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`), `side-effect` when absent;
+  each language takes it as its own optional argument named `id`. The corpus keeps its named side effects (`fx-rate`,
+  `exchange-rate`), and `sdks/SPEC.md` 12.1 and Technical Plan 1.12 name the option. delegate (OD-2026-11-24-4): the
+  TypeScript lane's Decision 044-322, taken rather than renaming the corpus's markers, because `MarkerCommand.marker_id`
+  already carries any identifier, the option is additive (a call without it is unchanged), and a target that names the
+  side effect lets the replay report a reordered pair at the first one that moved instead of returning the other's
+  recorded value.
+- **D044-259** (2026-11-27) A re-emitted deferral may name **each** of its values by its descriptor alone, whatever
+  carrier the deferral used, inline included. The deferral record holds every value of the deferred command (an
+  inline value as well as a blob) until the command is accepted or the run ends; the server first compares the
+  re-emission's kind, target and body digest with the deferral record (a difference is `CHAIN_MISMATCH`, as before),
+  then resolves each descriptor to the value it holds, and uses the held value, never a re-sent one, so the accepted
+  command is the deferral's. A re-emission that carries a value again (inline, or another blob with the same
+  descriptor) is accepted as well. delegate (OD-2026-11-24-4): a cold worker cannot know which carrier the first
+  emission used (the history records the deferral's kind and target only), so a rule that depended on the carrier
+  would make the SDK guess; resolving every descriptor makes a re-emission cost nothing of the 192 KiB of inline values
+  and uploads nothing, for every kind that can be deferred. A descriptor can only name a value of the run's own latest
+  deferral, after the body digest matched, so it reaches nothing another run holds. Written in `worker.proto`
+  (`CommandValue`), Technical Plan 4.2 and 6.2, `sdks/SPEC.md` 12.6 and the corpus README; the fake server accepts it
+  (`a re-emitted deferral may name a value its deferral held inline by its descriptor alone`), and Task 044-9 names
+  `a_re_emission_names_an_inline_held_value_by_its_descriptor_alone`.
+- **D044-260** (2026-11-27) The fake server of `sdks/typescript/test/` checks `FailWorkflowTaskRequest.actual_saga_scope`:
+  against the golden report's `actualSagaScope` (empty when the report names none), against `^s-[1-9][0-9]{0,9}$`, and
+  only on an activity or a script; the corpus gains `code-nondeterminism/scope-moved`, a pure change of scope (the same
+  activity moved into a saga, reported with `actual_saga_scope` `s-1`). delegate (OD-2026-11-24-4): relayed by the
+  TypeScript lane; a fake that ignores a field cannot hold an SDK to it.
+- **D044-261** (2026-11-27) The test-target selector (`scripts/select-test-targets.py`) treats a string literal that
+  ends in a directory beneath `specs/<feature>/contracts` as a read of every file beneath it, so a change of one golden
+  selects `contract_workflow_as_code`, which walks `specs/044-workflow-as-code/contracts/goldens`; held by
+  `scripts/tests/test_select_test_targets.py`
+  (`test_a_directory_inside_a_contracts_directory_is_a_read_of_every_file_beneath_it`, and the repository-wide
+  `test_every_path_into_a_contracts_directory_is_seen_as_a_read`, which failed on pull request 291).
 
 ## 3. Gaps
 
@@ -1112,6 +1220,13 @@ the same lines of this register while both are open.
   that `JournalEvent.payloadRef` would return (an input, a state or a side-effect digest would be a server-side field
   under Technical Plan 4.5); Task 044-9 writes them and Task 044-24's `no_read_returns_a_body_digest_risk_metadata_or_the_seed`
   checks the column. Raised by the security review of Task 044-2.
+
+- **G044-032** (2026-11-27) A script's attempt that ends by its `timeoutMs` or its artifact's `wall` fails as a known
+  failure (`SCRIPT_TIMEOUT`, retryable), for a graph script node and for a code run's script command alike, although
+  the script's egress through its supervisor may have had an effect; feature 037's unknown-outcome rule covers
+  activities only. A code run keeps the graph's rule (Technical Plan 10.2); whether a script's timeout after its
+  attempt began should be an unknown outcome is for the owners of features 005 and 037. Raised by the security review
+  of the relay changes (Decision 044-250).
 
 ## 4. Owner questions (all delegated)
 

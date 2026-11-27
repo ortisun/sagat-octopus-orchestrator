@@ -435,7 +435,7 @@ class HeartbeatResponse(_message.Message):
     def __init__(self, lease_expires_at_epoch_ms: _Optional[int] = ..., cancel_requested: _Optional[bool] = ...) -> None: ...
 
 class CompleteStepRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "output_json", "output_blob_ref", "output_sha256", "traceparent", "instance", "accept_workflow_task")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "output_json", "output_blob_ref", "output_sha256", "traceparent", "instance", "step_logs", "accept_workflow_task")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -448,6 +448,7 @@ class CompleteStepRequest(_message.Message):
     OUTPUT_SHA256_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    STEP_LOGS_FIELD_NUMBER: _ClassVar[int]
     ACCEPT_WORKFLOW_TASK_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
@@ -461,11 +462,12 @@ class CompleteStepRequest(_message.Message):
     output_sha256: str
     traceparent: str
     instance: ExecutionInstanceIdentity
+    step_logs: StepLogCarry
     accept_workflow_task: bool
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., output_json: _Optional[str] = ..., output_blob_ref: _Optional[str] = ..., output_sha256: _Optional[str] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., accept_workflow_task: _Optional[bool] = ...) -> None: ...
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., output_json: _Optional[str] = ..., output_blob_ref: _Optional[str] = ..., output_sha256: _Optional[str] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., step_logs: _Optional[_Union[StepLogCarry, _Mapping]] = ..., accept_workflow_task: _Optional[bool] = ...) -> None: ...
 
 class FailStepRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "error_code", "safe_message", "retryable", "traceparent", "instance")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "error_code", "safe_message", "retryable", "traceparent", "instance", "step_logs")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -478,6 +480,7 @@ class FailStepRequest(_message.Message):
     RETRYABLE_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    STEP_LOGS_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -490,7 +493,8 @@ class FailStepRequest(_message.Message):
     retryable: bool
     traceparent: str
     instance: ExecutionInstanceIdentity
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., error_code: _Optional[str] = ..., safe_message: _Optional[str] = ..., retryable: _Optional[bool] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+    step_logs: StepLogCarry
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., error_code: _Optional[str] = ..., safe_message: _Optional[str] = ..., retryable: _Optional[bool] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., step_logs: _Optional[_Union[StepLogCarry, _Mapping]] = ...) -> None: ...
 
 class ResolveSecretsRequest(_message.Message):
     __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "traceparent", "instance")
@@ -914,7 +918,7 @@ class ResolvedDatabase(_message.Message):
     def __init__(self, connection_id: _Optional[str] = ..., connection_revision: _Optional[int] = ..., postgres: _Optional[_Union[PostgresConnection, _Mapping]] = ..., operation: _Optional[_Union[DatabaseOperationKind, str]] = ..., statement: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[DatabaseValue, _Mapping]]] = ..., limits: _Optional[_Union[DatabaseLimits, _Mapping]] = ..., credential: _Optional[_Union[ResolvedSecret, _Mapping]] = ..., lease_expires_at_epoch_ms: _Optional[int] = ..., namespace_id: _Optional[str] = ..., connection_name: _Optional[str] = ..., tenant_id: _Optional[str] = ..., iceberg: _Optional[_Union[IcebergConnection, _Mapping]] = ..., object_storage: _Optional[_Union[ObjectStorageConnection, _Mapping]] = ..., clickhouse: _Optional[_Union[ClickHouseConnection, _Mapping]] = ...) -> None: ...
 
 class AppendStepLogsRequest(_message.Message):
-    __slots__ = ("worker_id", "session_token", "task_id", "generation", "lease_token", "run_id", "step_id", "attempt", "instance", "records", "final_batch", "highest_sequence")
+    __slots__ = ("worker_id", "session_token", "task_id", "generation", "lease_token", "run_id", "step_id", "attempt", "instance", "records")
     WORKER_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_TOKEN_FIELD_NUMBER: _ClassVar[int]
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
@@ -925,8 +929,6 @@ class AppendStepLogsRequest(_message.Message):
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
     RECORDS_FIELD_NUMBER: _ClassVar[int]
-    FINAL_BATCH_FIELD_NUMBER: _ClassVar[int]
-    HIGHEST_SEQUENCE_FIELD_NUMBER: _ClassVar[int]
     worker_id: str
     session_token: str
     task_id: str
@@ -937,9 +939,15 @@ class AppendStepLogsRequest(_message.Message):
     attempt: int
     instance: ExecutionInstanceIdentity
     records: _containers.RepeatedCompositeFieldContainer[StepLogRecord]
-    final_batch: bool
+    def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., task_id: _Optional[str] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., records: _Optional[_Iterable[_Union[StepLogRecord, _Mapping]]] = ...) -> None: ...
+
+class StepLogCarry(_message.Message):
+    __slots__ = ("records", "highest_sequence")
+    RECORDS_FIELD_NUMBER: _ClassVar[int]
+    HIGHEST_SEQUENCE_FIELD_NUMBER: _ClassVar[int]
+    records: _containers.RepeatedCompositeFieldContainer[StepLogRecord]
     highest_sequence: int
-    def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., task_id: _Optional[str] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., records: _Optional[_Iterable[_Union[StepLogRecord, _Mapping]]] = ..., final_batch: _Optional[bool] = ..., highest_sequence: _Optional[int] = ...) -> None: ...
+    def __init__(self, records: _Optional[_Iterable[_Union[StepLogRecord, _Mapping]]] = ..., highest_sequence: _Optional[int] = ...) -> None: ...
 
 class StepLogRecord(_message.Message):
     __slots__ = ("sequence", "worker_time_epoch_ms", "level", "message", "fields", "exception", "truncated")

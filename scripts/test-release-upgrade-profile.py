@@ -19,11 +19,14 @@ from urllib.parse import unquote, urlparse
 RELEASE = 'bfda342073db71e84f30bdc79ccf3fbc97a7153c'
 OVERLAYS = ('tests/fixtures/release-upgrade/phase.rs', 'tests/fixtures/release-upgrade/wait-state.sql',
             'tests/fixtures/release-upgrade/inflight.rs', 'tests/fixtures/release-upgrade/control.rs',
-            'tests/fixtures/release-upgrade/cutover.rs', 'tests/fixtures/release-upgrade/callback_cutover.rs')
+            'tests/fixtures/release-upgrade/cutover.rs', 'tests/fixtures/release-upgrade/callback_cutover.rs',
+            'tests/fixtures/release-upgrade/cron_trigger.rs')
 MAIN = 'tests/integration/workflow-primitives/main.rs'
 SUFFIX = b'\n#[path = "../../fixtures/release-upgrade/phase.rs"]\nmod release_upgrade_phase;\n'
 TARGET = 'integration_workflow_primitives'
 SCENARIOS = {
+    'cron-trigger-upgrade': ('release_upgrade_cron_trigger::a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed_fleet_and_the_handover',
+                             'tests/integration/workflow-primitives/release_upgrade_cron_trigger.rs', 'cron-trigger-upgrade.txt'),
     'redis-callback-cutover': ('release_upgrade_callback_cutover::released_callback_writer_is_fenced_before_redis_activation',
                               'tests/integration/workflow-primitives/release_upgrade_callback_cutover.rs', 'redis-callback-cutover.txt'),
     'applied-output-quota': ('release_upgrade_inflight::a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota',

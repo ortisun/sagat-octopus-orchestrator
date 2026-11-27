@@ -16,6 +16,15 @@
     ],
     "stateMaxBytes": 131072
   },
+  "declarations": {
+    "state": {
+      "schema": {
+        "type": "object"
+      },
+      "initial": "{}",
+      "maxBytes": 131072
+    }
+  },
   "activations": [
     {
       "k": 1,

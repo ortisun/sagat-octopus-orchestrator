@@ -14,7 +14,9 @@ it as `SagatError.reason`; the catalog's remediation for the code applies, refin
 | `FORBIDDEN` | `VERSION_RETIRED`, `BINDING_DOES_NOT_COVER_DEPLOYMENT` (gRPC `PERMISSION_DENIED`) | registration of a retired build; version creation by an identity whose binding does not cover every pattern |
 | `CONFLICT` | `ROUTING_REVISION_CONFLICT`, `VERSION_NOT_DRAINED`, `VERSION_IS_ROUTED`, `DEPLOYMENT_IN_USE` | routing, retirement, delete |
 | `CONFLICT` | `STALE_ATTEMPT` | task heartbeat/completion whose token secret matched an **ended** attempt of the step (REST) |
-| gRPC `ABORTED` | `STALE_ATTEMPT` with `x-sagat-error` detail `DETACHED` or `PUSH_HELD` | any lease-token worker call (`Heartbeat`, `CompleteStep`, `FailStep`, `ResolveSecrets`, `ResolveDatabase`, `ReadBlob`, `WriteBlob`, `DetachStep`) on a lease whose holder is `detached` or `push` |
+| gRPC `ABORTED` | `STALE_ATTEMPT` with `x-sagat-error` detail `DETACHED` or `PUSH_HELD` | any lease-token worker call (`Heartbeat`, `CompleteStep`, `FailStep`, `ResolveSecrets`, `ResolveDatabase`, `ReadBlob`, `WriteBlob`, `AppendStepLogs` of 1.7, `DetachStep`) on a lease whose holder is `detached` or `push`; `AcknowledgeTasks` of 1.8 answers the verdict `NOT_HELD` for such a lease instead |
+| gRPC `FAILED_PRECONDITION` | `TASK_NOT_ACKNOWLEDGED` (delivery acknowledgement's reason, ADR-0099 decision 8) | `DetachStep` on a provisional lease of 1.8; nothing changes (added 2026-11-24, D019-003) |
+| `VALIDATION_FAILED` | `DISPATCH_ACTIVATION_PENDING` (+ `details.requirement`) | any surface of a capability whose fleet requirement is not recorded: deployment create or routing change to a version other than `UNVERSIONED`, start options or IR `dispatch`, `asyncCompletion` or `heartbeatSchema` at publication, push endpoint save, warm policy save (added 2026-11-24, D019-001) |
 | `CONFLICT` | `IDEMPOTENCY_KEY_REUSED`, `RUN_NOT_MUTABLE` | task completion; repin of a terminal run |
 | `CONFLICT` | `NOT_DETACHED` | token secret matched the **current** lease, but a worker session holds it, or the push invoker holds it for an attempt not allowed to complete asynchronously |
 | `NOT_FOUND` | (none) | any token whose secret matches neither the current lease nor a retained ended lease of that step (forged, malformed, foreign, unknown); foreign deployment, endpoint, policy |
@@ -26,6 +28,7 @@ it as `SagatError.reason`; the catalog's remediation for the code applies, refin
 | heartbeat `details_status` / REST `detailsStatus` | 031's `ENCODING_REQUIRED` | checkpoint of an attempt with a non-empty payload plan and no encoded `heartbeatSchema` of `activity`; the lease renewal still commits |
 | `VALIDATION_FAILED` | `WARM_RESIDUE_NOT_ACKNOWLEDGED` | warm policy |
 | `VALIDATION_FAILED` | `SECRET_IN_OUTPUT` | external completion output containing a handed secret value |
+| `VALIDATION_FAILED` | `RESERVED_FAILURE_CODE` | external failure with a code only the platform decides (see below; added 2026-11-24) |
 | `QUOTA_EXCEEDED` | resource name (`worker_deployments` (per namespace; also the 100 non-retired / 1,000 total versions per deployment), `push_endpoints`, `push_concurrency`, `tenant_push_concurrency`, `task_tokens`, `script_warm_containers`, `tenant_script_warm_containers`) | admission |
 
 `STALE_ATTEMPT` and `NOT_DETACHED` over REST return `409` only after the token's secret matched a lease of that step
@@ -35,11 +38,17 @@ by tenant, principal, task and key, and are read only after that check.
 
 ## Durable step failure codes (journal `failure_code`)
 
-`DETACHED_TIMEOUT` (retryable per policy), `PUSH_UNAVAILABLE` (retryable), `PUSH_FUNCTION_ERROR` (retryable),
+`DETACHED_TIMEOUT` (an outcome-unknown code: it joins `FailureCode::outcome_unknown_codes()` and its parity test, and
+the step goes to reconciliation or review, never to a blind retry; corrected 2026-11-24, D019-004, the draft said
+"retryable per policy"), `PUSH_UNAVAILABLE` (retryable; a connection that failed before the request was written is
+withdrawn instead while lease withdrawal is recorded and under its cap, D019-008), `PUSH_FUNCTION_ERROR` (retryable),
 `PUSH_CREDENTIAL_UNAVAILABLE` (retryable: the revision's secret binding no longer resolves for its `boundBy`),
 `PUSH_REJECTED`, `PUSH_ASYNC_NOT_ALLOWED`, `PUSH_RESPONSE_INVALID`, `PUSH_DESTINATION_DENIED` (non-retryable).
-`OUTCOME_UNKNOWN` keeps its reserved meaning (feature 003). A code a function or external caller sends that is not
-a code is recorded as `WORKER_ERROR`, as today.
+`OUTCOME_UNKNOWN` keeps its reserved meaning (feature 003), and a lapsed push lease is `LEASE_EXPIRED` like any lease. A
+code a function or external caller sends that is not a code is recorded as `WORKER_ERROR`, as today. The external
+failure API (`completeTask` with `outcome: fail`) refuses a code that only the platform decides (`DETACHED_TIMEOUT`,
+`LEASE_EXPIRED`, `ATTEMPT_TIMEOUT`, `TASK_NOT_STARTED`) with `VALIDATION_FAILED`, reason `RESERVED_FAILURE_CODE`;
+`OUTCOME_UNKNOWN` stays allowed, as for a worker (added 2026-11-24).
 
 ## Journal events (additive)
 

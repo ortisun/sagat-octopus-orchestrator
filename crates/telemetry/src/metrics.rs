@@ -254,6 +254,89 @@ impl WorkflowPrimitiveMetric {
     }
 }
 
+/// The `outcome` of `step_log_batches_total` (design 041, data-model.md §7): what the ingest answered a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepLogBatchOutcome {
+    /// `CONTINUE`, and at least one line was stored.
+    Stored,
+    /// `CONTINUE`, and every record was already stored (a resend).
+    Duplicate,
+    FinalOnly,
+    StopAttempt,
+    StopCapture,
+    RetryLater,
+    /// Refused `INVALID_ARGUMENT` by the batch's bounds.
+    Invalid,
+}
+
+impl StepLogBatchOutcome {
+    pub const ALL: [Self; 7] = [
+        Self::Stored,
+        Self::Duplicate,
+        Self::FinalOnly,
+        Self::StopAttempt,
+        Self::StopCapture,
+        Self::RetryLater,
+        Self::Invalid,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stored => "stored",
+            Self::Duplicate => "duplicate",
+            Self::FinalOnly => "final_only",
+            Self::StopAttempt => "stop_attempt",
+            Self::StopCapture => "stop_capture",
+            Self::RetryLater => "retry_later",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+/// The `rule` of `step_log_redactions_total`: a credential shape scrubbed from a part of a line, or a field value
+/// hidden because its key is a sensitive name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepLogRedactionRule {
+    Shape,
+    FieldName,
+}
+
+impl StepLogRedactionRule {
+    pub const ALL: [Self; 2] = [Self::Shape, Self::FieldName];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shape => "shape",
+            Self::FieldName => "field_name",
+        }
+    }
+}
+
+/// The `cause` of `step_log_quota_refusals_total`: a step-log quota charge refused at the tenant's limit, refused
+/// because the room left is held by open transactions' quota leases, or not checked within its budget (a carry's
+/// fallback refill, task T041-36).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepLogQuotaRefusalCause {
+    Limit,
+    Held,
+    Busy,
+}
+
+impl StepLogQuotaRefusalCause {
+    pub const ALL: [Self; 3] = [Self::Limit, Self::Held, Self::Busy];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Limit => "limit",
+            Self::Held => "held",
+            Self::Busy => "busy",
+        }
+    }
+}
+
 /// Bucket boundaries (seconds) for every `*_seconds` histogram: a request, an attempt, a lag. From a
 /// millisecond to an hour, because the same rule serves the time a request takes and the time a
 /// delivery has waited. A histogram with no rule is rendered as a summary, whose quantiles cannot

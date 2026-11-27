@@ -13,6 +13,17 @@
     "v1": "sha256:1759b40e043f434492fca819cfc3dab2a09dd1f84407c566b5b227dfb6358fbd",
     "v2": "sha256:dbf99d7ec25a22576ef71a4aa1db17b0b782ebf910926317815e62b5e3b4bc52"
   },
+  "lease": {
+    "stateMaxBytes": 65536
+  },
+  "declarations": {
+    "state": {
+      "schema": {
+        "type": "object"
+      },
+      "initial": "{}"
+    }
+  },
   "activations": [
     {
       "k": 1,

@@ -1,10 +1,17 @@
 # Worker protocol excerpt (draft)
 
 Additive to `specs/001-platform-foundation/contracts/worker.proto` (ADR-0015). No new RPC. The minor that carries these
-fields is "the codec minor": the next additive minor at merge time (1.7 at the base commit `70f09435`, where 1.6 is
-current), coordinated with features 019 and 026, which also propose additive fields and RPCs in 1.7. Field numbers below
-are the next free ones at the base commit and are re-checked at merge (T031-007); `worker.baseline.json` is regenerated
-deliberately.
+fields is "the codec minor": the next free minor of the register in `sdks/SPEC.md` section 9 when this contract merges.
+Corrected 2026-11-24 (Decision D031-002): that is 1.10 or later, because 1.7 is feature 041 (step logs), 1.8 is
+delivery acknowledgement (ADR-0099) and 1.9 is design 045 (activity timeouts), and draft 019 names three minors of its
+own. The field numbers follow the coordinator's register of fields across drafts: `TaskLease.payload_plan` is 25 and
+`WorkerCapabilities.payload_codec` is 7 (019 keeps `TaskLease` 19 to 22 and `WorkerCapabilities` 6; 1.8 has `TaskLease`
+23 and 24 and `WorkerCapabilities` 10; 045 has `TaskLease` 26 and 27 and `FailStepRequest` 14; 019 has
+`FailStepRequest` 13). They are re-checked at merge (T031-007); `worker.baseline.json` is regenerated deliberately.
+
+Minors are cumulative: a host that negotiates the codec minor speaks every lower one. So a codec host also carries the
+step-log logger of 1.7, the 1.8 host procedure (a flagged lease is acknowledged before it runs, and a lease no handler
+started can be handed back with `TASK_NOT_STARTED`) and the 1.9 timeouts.
 
 ```proto
 // Added in the codec minor. Advertised at RegisterWorker by a host whose data converter has an encoder and a decoder.
@@ -14,8 +21,8 @@ message PayloadCodecCapability {
 }
 
 message WorkerCapabilities {
-  // ... fields 1-5 unchanged ...
-  PayloadCodecCapability payload_codec = 6;  // absent: the session is never leased a task with a payload plan
+  // ... fields 1-5 unchanged; 6 is draft 019's, 10 is delivery acknowledgement's ...
+  PayloadCodecCapability payload_codec = 7;  // absent: the session is never leased a task with a payload plan
 }
 
 // One encoded location, relative to the document it applies to.
@@ -38,10 +45,21 @@ message PayloadPlan {
 message StreamPlan { repeated EncodedPointer locations = 1; }
 
 message TaskLease {
-  // ... fields 1-18 unchanged ...
-  PayloadPlan payload_plan = 19;  // absent when the run's version has encodingRules 0 or the node needs no codec
+  // ... fields 1-18 unchanged; 19-22 are draft 019's, 23-24 delivery acknowledgement's, 26-27 design 045's ...
+  PayloadPlan payload_plan = 25;  // absent when the run's version has encodingRules 0 or the node needs no codec
 }
 ```
+
+## What is never encoded on this protocol (Decision D031-003)
+
+Only the planned locations of payload content are encoded. These stay as they are today and are never envelopes:
+`FailStepRequest.error_code` (a machine code `[A-Z0-9_]{1,64}`, which design 045's retry policy matches),
+`FailStepRequest.safe_message` (built by the SDK's error rule, `sdks/SPEC.md` section 2, and redacted of decoded values
+by FR-031-038), design 045's `FailStepRequest.next_retry_delay_ms` (field 14) and `TaskLease` fields 26 and 27, the 1.8
+fields (`TaskLease` 23 and 24, `WorkerCapabilities` 10), every identifier, idempotency key, lease token and trace
+context. Draft 019's `FailStepRequest.details_json` (field 13) is checkpoint content: it is encoded under the lease's
+`checkpoint` plan and decoded under `/checkpoint/...` by the next lease. A step-log line (1.7) is free text, never an
+envelope; the host redacts decoded values from it (FR-031-038).
 
 ## Server rules
 
@@ -51,6 +69,9 @@ message TaskLease {
   the codec minor and a `payload_codec` capability (with `aes-256-gcm` when any of its locations is `encrypted`). The
   bounded candidate query filters before its cap and the locked-run transaction repeats the check; an ineligible task
   stays `READY` and consumes no attempt (the 1.3 blob-gating pattern, `docs/architecture/worker-runtime-protocol.md`).
+  The recheck reads the node's codec need from the pinned definition already loaded, beside
+  `required_worker_protocol_minor`; the candidate queries add their filter only for a session that lacks the codec and
+  only once `payload-encoding-v1` is recorded (D031-010).
   Because the run input is part of every step document, an encoded input gates every task of the run. Compensation and
   reconciliation tasks use the plan of their forward node. A worker without a codec therefore never receives an envelope.
 - 019 push invocation: the push envelope carries the same `payload_plan`; a push target is eligible only when its
@@ -75,3 +96,9 @@ message TaskLease {
 - Encode the output once per attempt and resend the same bytes on every retry of the report (`done-<task_id>`).
 - While its key provider reports unhealthy, a host stops claiming tasks that carry a payload plan (they stay `READY`
   for other hosts or for later) and keeps heartbeating the tasks it holds.
+- Decode a lease's planned locations before calling `ResolveSecrets` and before the handler starts. At 1.8 or later, if
+  decoding fails because the key provider is unavailable, hand the lease back with `FailStep` and `TASK_NOT_STARTED`
+  (ADR-0099 decision 5: the attempt is not consumed, once per attempt); a second such failure of the same attempt is
+  `PAYLOAD_CODEC_UNAVAILABLE` (D031-004). Any other decode failure is its own non-retryable code.
+- Redact, by value, the decoded values of every attempt in flight from step-log lines and from `safe_message`
+  (FR-031-038).

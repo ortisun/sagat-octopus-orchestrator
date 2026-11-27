@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use sagat_application::entropy::{Entropy, SystemEntropy};
 use sagat_application::error::StoreError;
 use sagat_application::instances::{
-    Capability, Counting, InstanceKind, InstanceStore, LIVENESS, Member, RegistrySettings,
+    CAPABILITY_WINDOW, Capability, Counting, InstanceKind, InstanceStore, LIVENESS, Member,
+    REGISTRY_STATEMENT_TIMEOUT, RegistrySettings,
 };
 use sagat_infra_postgres::{PgInstanceStore, PgPool, PoolConfig, PoolName};
 use tokio::sync::watch;
@@ -30,7 +31,8 @@ pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What this control plane process will honour: the code of the binary narrowed by its configuration, read once, so the
 /// list is true for the life of the process. Design 043: `run-input-validation-v1` only in `enforce` mode
 /// (`SAGAT_RUN_INPUT_VALIDATION`, FR-043-013), so that a replica in `report` is refused once the operator requires it.
-/// Feature 006: `lease-withdrawal-v1` always, since every configuration of this build replays `step.lease_withdrawn`.
+/// Feature 006: `lease-withdrawal-v1` always, since every configuration of this build replays `step.lease_withdrawn`, and
+/// `lease-withdrawal-v2` always, since it replays every cause of it and its membership applies the silent-registry rule.
 #[must_use]
 pub fn capabilities(
     run_input_validation: sagat_application::run_input::InputValidationMode,
@@ -41,6 +43,8 @@ pub fn capabilities(
     }
     // feature 006 (decision D006-004): every control plane of this build replays `step.lease_withdrawn`
     listed.push(Capability::LeaseWithdrawalV1);
+    // the follow-up of pull request #260 (decisions D006-096 and D006-098)
+    listed.push(Capability::LeaseWithdrawalV2);
     listed
 }
 
@@ -50,14 +54,20 @@ pub fn new_instance_id() -> Uuid {
     Uuid::new_v4()
 }
 
-/// The pool of the registry: one connection, of its own, with the statement timeout of the process. It costs the database
-/// one connection per process and spares the heartbeat the contention of the pool that serves requests. It serves the
-/// same instance as the process's pool, so it takes the same name (design 041, task T041-5).
+/// The pool of the registry: one connection, of its own, with the statement timeout of the process, at most
+/// [`REGISTRY_STATEMENT_TIMEOUT`] (5 s: a slow beat cannot use up the window of capability calls, decision D006-098). It
+/// costs the database one connection per process and spares the heartbeat the contention of the pool that serves requests.
+/// It serves the same instance as the process's pool, so it takes the same name (design 041, task T041-5).
 #[must_use]
 pub fn registry_pool_config(db: &DatabaseConfig, instance: Uuid) -> PoolConfig {
     let mut config = PoolConfig::new(db.url.clone()).named(PoolName::Instance(instance));
     config.max_connections = 1;
-    config.statement_timeout = db.statement_timeout;
+    // 0 is "no timeout" to PostgreSQL: the registry's connection never runs unbounded (decision D006-100)
+    config.statement_timeout = if db.statement_timeout.is_zero() {
+        REGISTRY_STATEMENT_TIMEOUT
+    } else {
+        db.statement_timeout.min(REGISTRY_STATEMENT_TIMEOUT)
+    };
     config
 }
 
@@ -196,6 +206,32 @@ async fn beat_once<S: InstanceStore>(
 /// that was not run yet, a requirement that was removed) should end it soon. One statement a second per such process.
 pub const RETRY_WHILE_CLOSED: Duration = Duration::from_secs(1);
 
+/// The longest a beat may take and still renew the capability decision in time, besides the statement timeout: the time to
+/// get the connection and to decide (decision D006-100).
+pub const RENEWAL_MARGIN: Duration = Duration::from_secs(1);
+
+/// How long to pause before the next beat (decision D006-100): `pause`, but never past the moment by which a beat must start
+/// to renew the capability decision made at `decided` before its window lapses (the window less the registry's statement
+/// timeout and [`RENEWAL_MARGIN`]); once that moment has passed, at most [`RETRY_WHILE_CLOSED`]. A gate whose decision is not
+/// measured (none yet, or no registry) keeps `pause`.
+#[must_use]
+pub fn pause_before_the_next_beat(
+    pause: Duration,
+    decided: Option<Instant>,
+    now: Instant,
+) -> Duration {
+    let Some(decided) = decided else {
+        return pause;
+    };
+    let latest = decided + CAPABILITY_WINDOW - REGISTRY_STATEMENT_TIMEOUT - RENEWAL_MARGIN;
+    let left = latest.saturating_duration_since(now);
+    if left.is_zero() {
+        pause.min(RETRY_WHILE_CLOSED)
+    } else {
+        pause.min(left)
+    }
+}
+
 /// How long before the next try: the heartbeat's pace while the process serves, and never longer than
 /// [`RETRY_WHILE_CLOSED`] while it does not.
 #[must_use]
@@ -257,9 +293,19 @@ pub async fn run_heartbeat<S: InstanceStore>(
 ) {
     let mut silence = Silence::since(Instant::now());
     while !*stop.borrow() {
-        let pause = jittered(
-            pace(member.gate().is_open(), settings.heartbeat),
-            &SystemEntropy,
+        // while capability calls are refused for a silent registry, ask again at the pace of a closed gate (decision D006-098),
+        // and never pause past the last moment a beat can still renew the capability decision (decision D006-100)
+        let (now, wall) = member.now();
+        let pause = pause_before_the_next_beat(
+            jittered(
+                pace(
+                    member.gate().serves_capability_calls_at(now, wall),
+                    settings.heartbeat,
+                ),
+                &SystemEntropy,
+            ),
+            member.gate().capability_decided_at(),
+            now,
         );
         tokio::select! {
             () = tokio::time::sleep(pause) => {}
@@ -418,12 +464,13 @@ mod tests {
             capabilities(InputValidationMode::Enforce),
             vec![
                 Capability::RunInputValidationV1,
-                Capability::LeaseWithdrawalV1
+                Capability::LeaseWithdrawalV1,
+                Capability::LeaseWithdrawalV2
             ]
         );
         assert_eq!(
             capabilities(InputValidationMode::Report),
-            vec![Capability::LeaseWithdrawalV1]
+            vec![Capability::LeaseWithdrawalV1, Capability::LeaseWithdrawalV2]
         );
     }
 
@@ -445,8 +492,153 @@ mod tests {
             format!("sagat-octopus-orchestrator/{instance}"),
             "named for the instance it serves, as the process's pool is"
         );
-        assert_eq!(config.statement_timeout, Duration::from_secs(7));
+        assert_eq!(
+            config.statement_timeout,
+            Duration::from_secs(5),
+            "lowered to at most 5 s, never refused (decision D006-098)"
+        );
         assert_eq!(config.url, db.url);
+        let shorter = registry_pool_config(
+            &DatabaseConfig {
+                statement_timeout: Duration::from_secs(2),
+                ..db
+            },
+            instance,
+        );
+        assert_eq!(shorter.statement_timeout, Duration::from_secs(2));
+        let unbounded = registry_pool_config(
+            &DatabaseConfig {
+                url: "postgres://u:p@127.0.0.1:1/x".to_owned(),
+                max_connections: 40,
+                statement_timeout: Duration::ZERO,
+            },
+            instance,
+        );
+        assert_eq!(
+            unbounded.statement_timeout,
+            Duration::from_secs(5),
+            "0, which PostgreSQL reads as no timeout, is the registry's 5 s"
+        );
+    }
+
+    /// Decision D006-100 at its edges: the pause never runs past the last start that still renews the decision (the window
+    /// less 5 s and the margin, 19 s after it), and once that has passed it is at most a second.
+    #[test]
+    fn the_pause_never_runs_past_the_last_beat_that_renews_the_decision() {
+        let decided = Instant::now();
+        let at = |secs| decided + Duration::from_secs(secs);
+        let beat = Duration::from_secs(12);
+        assert_eq!(pause_before_the_next_beat(beat, None, at(0)), beat);
+        assert_eq!(pause_before_the_next_beat(beat, Some(decided), at(0)), beat);
+        assert_eq!(
+            pause_before_the_next_beat(beat, Some(decided), at(12)),
+            Duration::from_secs(7),
+            "a beat that failed at 12 s: the next starts at 19 s"
+        );
+        assert_eq!(
+            pause_before_the_next_beat(beat, Some(decided), at(19)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            pause_before_the_next_beat(beat, Some(decided), at(30)),
+            Duration::from_secs(1)
+        );
+    }
+
+    /// A registry whose beats fail when asked, and that records the time of each beat on the runtime's clock.
+    #[derive(Clone)]
+    struct Timed(Arc<std::sync::Mutex<(Vec<tokio::time::Instant>, usize)>>);
+
+    impl InstanceStore for Timed {
+        async fn register(&self, _: &Registration<'_>) -> Result<Registered, StoreError> {
+            Ok(Registered::Serving { epoch: 0 })
+        }
+        async fn heartbeat(
+            &self,
+            _: Uuid,
+            _: &sagat_application::instances::InstanceToken,
+        ) -> Result<Heartbeat, StoreError> {
+            let mut state = self.0.lock().expect("lock");
+            state.0.push(tokio::time::Instant::now());
+            if state.0.len() <= state.1 {
+                return Err(StoreError::DatabaseUnavailable);
+            }
+            Ok(Heartbeat {
+                found: true,
+                epoch: 0,
+                live: vec![],
+                change_in_progress: false,
+            })
+        }
+        async fn deregister(
+            &self,
+            _: Uuid,
+            _: &sagat_application::instances::InstanceToken,
+        ) -> Result<bool, StoreError> {
+            Ok(true)
+        }
+        async fn epoch(&self) -> Result<i64, StoreError> {
+            Ok(0)
+        }
+        async fn requirements(&self) -> Result<Requirements, StoreError> {
+            Ok(Requirements::default())
+        }
+    }
+
+    /// Correctness review Major 1 of 2026-11-25 (decision D006-100): on the paused clock of the runtime, with a heartbeat of
+    /// 14 s (jittered 11.2 to 16.8 s), the first beat fails; the second still starts by 19 s after the registration, so a
+    /// healthy engine never refuses a capability call for a single failed beat. Without the bound it starts at 22.4 s or later.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_beat_is_tried_again_in_time_to_renew_the_capability_decision() {
+        let store = Timed(Arc::new(std::sync::Mutex::new((Vec::new(), 1))));
+        let member = Arc::new(
+            Member::new(
+                store.clone(),
+                new_instance_id(),
+                InstanceKind::ExecutionEngine,
+                BINARY_VERSION,
+                &[Capability::LeaseWithdrawalV1],
+                None,
+            )
+            .with_clock(sagat_application::instances::MemberClock {
+                instant: || tokio::time::Instant::now().into_std(),
+                wall: std::time::SystemTime::now,
+            }),
+        );
+        let start = tokio::time::Instant::now();
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let heartbeat = join(
+            &member,
+            RegistrySettings {
+                heartbeat: Duration::from_secs(14),
+            },
+            stop_rx,
+        )
+        .await;
+        let decided = member
+            .gate()
+            .capability_decided_at()
+            .expect("decided at registration");
+        let running = tokio::spawn(heartbeat);
+        while store.0.lock().expect("lock").0.len() < 2 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let _ = stop_tx.send(true);
+        running.await.expect("the heartbeat ends");
+        let beats = store.0.lock().expect("lock").0.clone();
+        let second = beats[1] - start;
+        assert!(
+            second <= CAPABILITY_WINDOW - REGISTRY_STATEMENT_TIMEOUT - RENEWAL_MARGIN,
+            "the second beat started at {second:?}"
+        );
+        let renewed = member.gate().capability_decided_at().expect("renewed");
+        assert!(renewed > decided, "the second beat renewed the decision");
+        assert!(
+            member.gate().serves_capability_calls_at(
+                renewed + CAPABILITY_WINDOW,
+                std::time::SystemTime::now()
+            )
+        );
     }
 
     /// What a registry that counts beats and fails on demand remembers.
@@ -505,6 +697,7 @@ mod tests {
                 found: true,
                 epoch: 0,
                 live: vec![],
+                change_in_progress: false,
             })
         }
         async fn deregister(

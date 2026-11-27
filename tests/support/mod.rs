@@ -34,6 +34,7 @@ pub mod schedules;
 pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
+pub mod step_logs;
 pub mod trigger_schedules;
 pub mod worker;
 
@@ -428,9 +429,34 @@ where
     }
 }
 
+/// Polls `check` until it yields a value, failing the test after `bound` (design 041: 30 s for an assertion on stored
+/// rows or on a read, where a held transaction may still be ending).
+pub async fn eventually_within<T, F, Fut>(what: &str, bound: std::time::Duration, mut check: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if let Some(value) = check().await {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out after {bound:?} waiting for: {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Password of the least-privilege runtime role in the test cluster (test-only value).
 pub const RUNTIME_ROLE: &str = "sagat_app";
 pub const RUNTIME_ROLE_PASSWORD: &str = "runtime-role-test-password";
+
+/// The role of the automatic handover in the test cluster (ADR-0091) and its test-only password, which holds the characters a URL
+/// cannot carry unescaped (D2273): the suites connect with it set apart from the URL, as the job does.
+pub const HANDOVER_ROLE: &str = "sagat_handover";
+pub const HANDOVER_ROLE_PASSWORD: &str = "handover@test/pass#word-0123";
 
 /// Whether the suites were asked to run the services under test as the runtime role
 /// (`SAGAT_TEST_AS_RUNTIME_ROLE=1`): a sweep for privilege gaps the owner-connected suites cannot
@@ -454,6 +480,17 @@ async fn ensure_runtime_role(admin_url: &str) {
     .execute(&mut conn)
     .await
     .expect("create the runtime role");
+    // The role of the automatic handover, with a login, before the migrations, as an operator who gave `migrate` the password
+    // would have it; `migrate` grants it (the narrow attributes are those `migrate` would give it).
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DO $$ BEGIN \
+         PERFORM pg_advisory_xact_lock(hashtextextended('sagat:test:handover-role',0)); \
+         CREATE ROLE {HANDOVER_ROLE} LOGIN PASSWORD '{HANDOVER_ROLE_PASSWORD}' \
+         NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    )))
+    .execute(&mut conn)
+    .await
+    .expect("create the handover role");
 }
 
 impl TestDb {
@@ -472,6 +509,26 @@ impl TestDb {
             .connect(&self.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD))
             .await
             .expect("connect as the runtime role")
+    }
+
+    /// A pool connected as the role of the automatic handover (`sagat_handover`), the password set apart from the URL.
+    pub async fn handover_pool(&self) -> PgPool {
+        use std::str::FromStr as _;
+        let options =
+            sqlx::postgres::PgConnectOptions::from_str(&self.url_without_password(HANDOVER_ROLE))
+                .expect("url")
+                .password(HANDOVER_ROLE_PASSWORD);
+        PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .expect("connect as the handover role")
+    }
+
+    /// The connection URL of this database for another user, with no password in it (the job's form, D2273).
+    pub fn url_without_password(&self, user: &str) -> String {
+        let (_, rest) = self.url.split_once('@').expect("credentials in url");
+        format!("postgres://{user}@{rest}")
     }
 
     /// The connection URL of this database for another user.

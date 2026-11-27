@@ -311,7 +311,7 @@ graph declares, and the versioning rules that keep code and history together.
   the tests of Task 044-21.
 - **Requirement 044-016** A code version MAY declare state and queries in the IR's `state` form (feature 014). The
   function MUST be able to set the declared state by a command, validated against `state.schema`, inline and at most
-  128 KiB, at most once per completion (the last set-state of an activation wins in the SDK);
+  the version's `state.maxBytes` (1 to 128 KiB, 64 KiB when absent; Decision 044-257), at most once per completion (the last set-state of an activation wins in the SDK);
   the engine MUST answer the declared queries from the committed state with no worker, also after the run ended while
   its data is retained. *Acceptance:* the conformance scenario `code-declared-state`.
 - **Requirement 044-017** A code version MAY declare worker queries, each with a closed `argsSchema`, its `disclosure`
@@ -536,8 +536,8 @@ graph declares, and the versioning rules that keep code and history together.
 - **Non-functional requirement 044-007 (security)** No workflow code runs in a platform process. A workflow task holds no
   secret. Another tenant's run, history, update, query, version or key is indistinguishable from a missing one. No
   payload, secret or worker-supplied free text appears in a review cause, a nondeterminism report, a metric or a log;
-  worker-supplied identifiers (an exception type, an actual target, a marker identifier) appear only after their pattern
-  is checked, and are stored as `pii` where a review or the Studio shows them.
+  worker-supplied identifiers (an exception type, an actual target, an actual saga scope, a marker identifier) appear
+  only after their pattern is checked, and are stored as `pii` where a review or the Studio shows them.
 
 ### Success criteria
 
@@ -925,7 +925,9 @@ signal<T>(name: string): Promise<T>
 onUpdate(name: string, validator: (args: unknown) => void, handler: (args: unknown) => Promise<unknown>): void
 setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
-sideEffect<T>(compute: () => T): T                                        // a recorded marker, at most 64 KiB
+sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
+  // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258)
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
 requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
@@ -1131,7 +1133,10 @@ A code version is a workflow document of the additive v1 schema in which the top
 - `signals` has the shape of Architecture decision 0111; every signal of a code version is `buffered`, with its
   `maxPending` (1 to 1,000; at most 1,000 per run), its `maxBytes` (default 64 KiB, at most 256 KiB) and a closed
   `schema`.
-- `state` keeps the IR's form (a closed `schema`, an `initial` expression); `state.updates` of a code version are the
+- `state` keeps the IR's form (a closed `schema`, an `initial` expression) and, in a code version only, `maxBytes`: the
+  most bytes the declared state takes as RFC 8785 JSON, 1 to 131,072 (128 KiB), 65,536 when absent; the version's
+  workflow leases carry it as `state_max_bytes`, and a version that declares no state has a bound of 0 (Decision
+  044-257). `state.updates` of a code version are the
   code variant of the IR's update: `argsSchema`, `disclosure` and `resultSchema` required; `validate`, `state` and
   `result` absent, because the function validates and handles the update (section 8.2). `state.queries` keep their
   expression form: they are the engine-answered queries.
@@ -1264,7 +1269,9 @@ version (Requirement 044-026).
      deferral record's sequence), the blob-reference check accepts a blob held by the run's latest deferral record,
      acceptance commits it, and the run's end or a re-emission naming another blob releases it. A re-emission refers to
      the held blob by its descriptor alone, which the server resolves to the blob the latest deferral holds, so a cold
-     worker uploads nothing and nothing is charged twice; a retained-bytes check of a re-emission that names a new blob
+     worker uploads nothing and nothing is charged twice; an inline value of a deferred command (a continue-as-new's
+     input and carried state, an inline output) is held by the deferral record as well, and a re-emission may name it
+     by its descriptor alone too, whatever carrier the deferral used (Decision 044-259); a retained-bytes check of a re-emission that names a new blob
      nets off the held blob it releases. A blob
      whose carrier schema classifies any field `secret` is never delivered to a workflow, query or replay-check token:
      its `HistoryEvent` payload is the placeholder `EXTERNAL_CONTENT_NOT_INSPECTED`, `ReadBlob` refuses it and no
@@ -1407,7 +1414,9 @@ replaying SDK reads the deferral from the `workflow_task.completed` of its histo
 and expects the function to make that command last in that activation; another command is a mismatch
 (`NONDETERMINISM`). A deferral is a success: `CompleteWorkflowTask` answers OK with the outcome `ACCEPTED_DEFERRED`
 and its cause, also on an idempotent replay. `FailWorkflowTask` carries a cause from the closed
-list of section 6.3 and, for a nondeterminism, the command number and the actual kind and target; for a workflow task
+list of section 6.3 and, for a nondeterminism, the command number and the actual kind and target, and for an activity
+or a script the actual saga scope, accepted only if it matches `^s-[1-9][0-9]{0,9}$` and dropped otherwise (the report
+keeps its cause; Decision 044-250); for a workflow task
 failure, the exception's type name, accepted only if it matches `^[A-Za-z_][A-Za-z0-9_.$]{0,127}$` and dropped
 otherwise; never a message. Both are idempotent by the lease's idempotency key, looked up before any fence check and
 again under the run lock; an idempotent replay of a completion answers its outcome without any eager lease, after the
@@ -1442,10 +1451,10 @@ of that kind, canonicalized by the SDK (RFC 8785). The code profile starts from 
 `workflow.schema.json`, refuses every expression, template, routing and publisher-only field, takes the publisher's
 fields from the envelope, and adds the literal fields a command needs (marked "addition"):
 
-| Kind | Fields the fragment sets | From the envelope (a fragment may repeat, never change) | Refused |
+| Kind | Fields the fragment sets | From the envelope (a fragment may repeat the publisher's fields, never change them; `outputSchema`, `concurrency` and `rateLimit` come from the entry only and are refused in a fragment, Decision 044-254) | Refused |
 |---|---|---|---|
 | Activity | `activity`, `retry`, `compensationRetry`, `compensationTimeoutMs`, `timeoutMs`, the literal keys of the entry's `concurrency` and `rateLimit` (feature 022), the saga scope; additions: literal `input` (validated against the entry's `inputSchema`); with design 045, `scheduleToStartMs`, `scheduleToCloseMs`, `heartbeatTimeoutMs`, `heartbeatFrom`, `retry.byErrorCode`, `nonRetryableErrorCodes` | `secrets`, `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `outputSchema`, `requiresApproval`, the `concurrency` and `rateLimit` policies | `idempotencyTemplate` (the platform's step key is stable across attempts and replays), `destinations`, `onError` |
-| Script | `artifactDigest`, `retry`; addition: literal `input` | `language`, `secrets`, `outputSchema`, `compensateWith` from the script entry | as for an activity |
+| Script | `artifactDigest`, `retry`, `timeoutMs` (Decision 044-247); addition: literal `input` | `language`, `secrets`, `outputSchema`, `compensateWith` from the script entry | as for an activity |
 | Timer | `durationMs` | none | none |
 | Wait for event | `eventType` (an entry of `envelope.events`), `timeoutMs`, `lookbackMs` (at most the entry's); addition: literal `correlationKey` | none | `correlationExpr`, `onTimeout` (the function handles the timeout), `outputSchema` |
 | Child | `workflowId`, `cancelPolicy`; additions: literal `input`, `businessId` | `version` from the `children` entry, `outputSchema` | expression `input`, `version` |
@@ -1547,7 +1556,12 @@ and number printing are not RFC 8785's). Then, in one transaction:
    immediate effects, one batched statement, which moves `code_last_waking_seq` for any waking event it appends.
 5. Insert the node specs into `code_step_nodes`, one batched statement.
 6. Upsert the steps the commands create or change (timers, waits, the eager activity leases as provisional `LEASED`
-   rows) and the workflow-task step itself (`CLOSED`, `READY` or `WAITING` per section 4.3), one batched statement.
+   rows) and the workflow-task step itself (`CLOSED`, `READY` or `WAITING` per section 4.3), one batched statement. A
+   `step_cancel` is a compare-and-swap under the run lock: the step is cancelled as the command's effect only where its
+   row still shows no attempt begun (`READY`, or `WAITING` on an event, an approval or a gate) and, for a child,
+   `child_started` is false; otherwise the statement journals `step.cancel_requested` and leaves the step to its
+   attempt, its reconciliation or its review (Decision 044-245). No eager lease is offered for a step the same
+   completion cancels.
 7. Insert the outbox rows for the new `READY` steps; compare-and-swap the run row (`run_version`, `code_command_chain`,
    `code_command_count`, `code_last_completed_start_seq`, `code_consecutive_failures` reset to 0); mark the consumed
    inbox signals; write the idempotency record; and, only when a command needs them, the collapsed audit of no-ops, the
@@ -1586,8 +1600,9 @@ command the function did not make by the time
 it yields with no event left to apply, a command where the history has none, and a `patched(id)` that disagrees with the
 markers are mismatches, and so is an activation whose `workflow_task.completed` records a deferral in which the
 function does not make the deferred command last (section 4.4). The report (`FailWorkflowTask`, cause `NONDETERMINISM`) names the command number, the actual kind
-and target and the code digest; the server takes the expected kind and target from its own record, never from the
-worker, and checks the actual target against the identifier pattern of its kind; a marker identifier (patch or side
+and target (and saga scope) and the code digest; the server takes the expected kind, target and scope from its own
+record, never from the worker, checks the actual target against the identifier pattern of its kind, and drops an actual
+scope outside `^s-[1-9][0-9]{0,9}$`; a marker identifier (patch or side
 effect) matches `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`.
 
 #### 6.2 On the server: the command chain
@@ -1621,8 +1636,10 @@ The bytes of `d(k)`: `seq` a number; `body` 64 lowercase hexadecimal characters;
 | `consume_signals` | `""` (one command whose body lists each signal name with its sequences; the list counts against the inline values, at most 1,000 sequences as the inbox holds) |
 | `set_state`, `complete`, `fail`, `continue_as_new`, `acknowledge_cancellation` | `""` |
 
-A command on a step that is already terminal keeps its own kind and target. A deferral record holds its blob until the command is accepted or the run ends, and a re-emission may name
-that blob or another with the same descriptor. The history never carries a command body, so a worker can produce the
+A command on a step that is already terminal keeps its own kind and target. A deferral record holds its values (a blob,
+and an inline value as well) until the command is accepted or the run ends, and a re-emission may name each value by its
+descriptor alone, whatever its first carrier, or carry it again, inline or as another blob with the same descriptor
+(Decision 044-259). The history never carries a command body, so a worker can produce the
 chain only by producing the same commands, their bodies included: a worker that skipped replay, an input or a state that changed between two runs of the same code (an
 escaped `uuid4()`, a clock read) or an SDK bug all end as `CHAIN_MISMATCH`. A worker that reuses its cached state and
 chain, whose state is corrupted but whose chain is intact, is caught when its next commands differ from what a replay
@@ -2060,7 +2077,10 @@ does.
 An activity from code that reports `OUTCOME_UNKNOWN`, times out after the attempt began or loses its lease follows
 feature 037 exactly as a graph activity: its `reconcileWith` lookup runs; `applied` completes it with the lookup's output;
 anything else waits for an authorized review. The function sees only the final outcome or keeps waiting. It cannot repeat
-an unknown effect itself, because it has no handle on the attempt; a failure it sees is a known failure.
+an unknown effect itself, because it has no handle on the attempt; a failure it sees is a known failure. A script's
+attempt that ends by its `timeoutMs` or its artifact's `wall` is a known failure (`SCRIPT_TIMEOUT`), as for a graph
+script node (feature 005), although its egress may have had an effect; that is the graph's rule and its gap, Gap
+044-032, for the owners of features 005 and 037.
 
 #### 10.3 Why no local activities
 
@@ -2159,7 +2179,7 @@ carries `requiresApproval`, and nothing else; an allowed exception of the server
 | `HistoryEvent` | `seq int64`, `kind HistoryEventKind` (an enumeration of the visible kinds), `origin HistoryEventOrigin`, `command_number int64`, `at_us int64`, `oneof body` (one typed message per kind: activity outcome, timer fired, wait outcome, child finished, approval decided, saga outcome, signal, update admitted, cancellation requested, marker, command record, run started with the input and the carried state, workflow task started with its two flags, workflow task completed with a deferral's kind and target), payloads as `bytes` (at most 256 KiB) or a blob reference |
 | `Command` | `command_number int64`, `kind CommandKind`, `fragment_json bytes` for work commands, `oneof typed` (cancel, saga open, close, abort, marker, set state, update decision, update result, consume signals, complete, fail, continue as new, acknowledge cancellation) |
 | `CompleteWorkflowTask` | request: fence fields, `idempotency_key`, `applied_through_seq`, `replayed_chain bytes`, `commands` (the consumption of signals is one of them), `deferred_command` (a `Command` without a number: the terminal or continue-as-new command the SDK re-emits), `eager_activity_slots`, reserved `behaviour_flags`; answer: outcome (`ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, `REVIEW` with its cause), eager provisional activity leases |
-| `FailWorkflowTask` | fence fields, `idempotency_key`, `cause WorkflowTaskFailureCause`, `command_number`, `actual_kind`, `actual_target`, `exception_type` |
+| `FailWorkflowTask` | fence fields, `idempotency_key`, `cause WorkflowTaskFailureCause`, `command_number`, `actual_kind`, `actual_target`, `actual_saga_scope`, `exception_type` |
 | `ReadHistory` | request: lease or read token, `from_seq`; server stream of pages of `HistoryEvent` |
 | `QueryTask`, `RespondWorkerQuery` | the query's name, its arguments inline (`args bytes`, at most 64 KiB), the deadline, `gated_entries` and `state_max_bytes` of the run's current version; the answer inline (`answer bytes`, at most 256 KiB) and `committed_through_seq` |
 | `ReplayCheckTask`, `RespondReplayCheck` | the task: up to 16 items with run and read token, and the target version's `gated_entries` and `state_max_bytes`; each answer: one item, `from_command`, at most 8,192 `body_digests`, and with the last range `s_k`, `chain` and `deferred_body_digest` (when the last completion recorded a deferral); the server compares each range as it arrives and the verdict is its own |
@@ -2794,6 +2814,7 @@ a replaying worker derives from `ReadHistory`.
   `...::the_history_is_paged_at_1024_events_or_3_mib`, `...::setting_workflow_types_needs_definition_publish`, `...::reading_history_extends_the_lease_up_to_120_seconds`,
   `...::a_revoked_binding_stops_read_history`, `...::a_completion_of_404_commands_is_refused`,
   `...::a_record_carries_the_scope_its_activity_was_scheduled_in` (the overlay's `scope`, never its `root_scope`),
+  `...::a_reported_saga_scope_outside_its_pattern_is_dropped`,
   `...::a_registration_of_65_workflow_types_is_refused`, `...::a_node_spec_over_1_kib_is_refused`,
   `...::a_registration_with_the_sagat_workflow_prefix_is_refused` (the digest and sticky forms),
   `...::read_blob_with_a_replay_check_token_reads_only_blobs_of_its_run`,
@@ -2823,6 +2844,8 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_from_a_session_of_another_digest_is_stale`, `...::a_completion_during_the_stop_drain_is_stale`,
   `...::a_completion_below_the_window_reviews_as_nondeterminism_risk`, `...::an_immediate_effect_of_a_command_makes_the_workflow_task_ready`,
   `...::a_deferred_command_re_emitted_with_another_body_is_a_chain_mismatch`,
+  `...::a_re_emission_names_an_inline_held_value_by_its_descriptor_alone` (Decision 044-259; the successor's input and
+  state are the held bytes), `...::a_re_emission_by_descriptor_after_the_run_ended_is_stale`,
   `...::a_command_naming_a_blob_of_another_run_is_refused`, `...::a_deferral_answers_ok_with_its_cause`,
   `...::the_first_workflow_task_delivers_the_input_in_run_started`,
   `...::a_look_back_wait_satisfied_in_the_same_completion_is_not_unseen`,
@@ -2858,7 +2881,8 @@ a replaying worker derives from `ReadHistory`.
   and `...::cancelling_a_timer_that_fired_is_a_no_op_that_replays` (both at a barrier, in both orders, with a cold
   replay), `...::cancelling_a_waiting_wait_or_approval_journals_its_cancelled_outcome_and_withdraws_the_approval`,
   `...::cancelling_an_activity_of_unknown_outcome_keeps_its_review`, `...::cancelling_a_child_before_its_run_starts_finishes_it_cancelled`
-  (Decision 044-245), `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (the generator, with an
+  (Decision 044-245), `...::a_cancel_racing_a_claim_takes_one_side` and `...::a_cancel_racing_a_child_start_takes_one_side`
+  (each with the claim or the children pass held at a barrier, in both orders), `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (the generator, with an
   oracle from `run_events` and the injected events: each visible event delivered exactly once, in the window holding its
   sequence),
   and `integration_claim_transition_efficiency::work_budget::a_completion_of_403_commands_of_every_kind_stays_within_63_statements`.
@@ -2965,7 +2989,9 @@ a replaying worker derives from `ReadHistory`.
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-14 (deferrable) The sticky preference and eager dispatch on the server and in the six SDKs, after feature 006's
   delivery acknowledgement.
+  No eager lease is offered for a step the same completion cancels (Technical Plan 5.2, step 6).
   Red tests: `integration_workflow_as_code::sticky::a_sticky_workflow_task_goes_to_its_session_first`,
+  `...::eager::a_step_cancelled_in_its_own_completion_gets_no_eager_lease`,
   `...::the_timer_pass_rewrites_an_expired_sticky_name_and_writes_its_hint`, `...::release_sticky_of_another_session_changes_nothing`,
   `...::a_failure_clears_the_sticky_fields`, `...::a_move_clears_the_sticky_fields`,
   `...::an_eager_lease_respects_quotas_gates_and_approvals`, `...::eager_activity_leases_are_provisional_and_granted_in_the_completion_transaction`,
@@ -3042,7 +3068,9 @@ a replaying worker derives from `ReadHistory`.
 - [ ] T044-21 Signals, updates and declared queries for code runs on the server, after the buffered-signals design 054
   (which takes Architecture decision 0111's inbox and its refinement for code versions, Gap 044-017) is approved and
   its inbox task built: signals through the inbox and their consumption, the hold of `signal-inbox-v1` at publication
-  in place of Task 044-3's refusal, the with-start calls, the update transitions, the engine's finishing of open updates
+  in place of Task 044-3's refusal, the with-start calls, the update transitions (with the catalog entry of the
+  rejection reason `HANDLER_NOT_REGISTERED` in `sdks/error-catalog.json` and its six copies, Decision 044-251), the
+  engine's finishing of open updates
   in the stop drain and the handoff, the wait and the read rule, argument and result validation, the declared state
   command.
   Red tests: `integration_workflow_as_code::signals::a_signal_before_the_function_waits_is_delivered_at_the_next_activation`,
@@ -3061,7 +3089,9 @@ a replaying worker derives from `ReadHistory`.
   `...::update_with_start_journals_run_started_first`, `...::signal_with_start_journals_run_started_first` (Decision 044-246),
   `...::an_update_beyond_the_backlog_is_refused_429`, `...::update_waits_beyond_the_process_bound_are_refused`,
   `integration_workflow_as_code::state::a_declared_query_is_answered_with_no_worker`,
-  `...::a_set_state_outside_its_schema_is_refused`, `...::a_consumed_sequence_beyond_the_window_is_refused`,
+  `...::a_set_state_outside_its_schema_is_refused`,
+  `...::a_set_state_over_the_versions_max_bytes_is_refused` and `...::a_set_state_in_a_version_without_state_is_refused`
+  (Decision 044-257), `...::a_consumed_sequence_beyond_the_window_is_refused`,
   `...::a_signal_into_a_full_inbox_is_refused_409`, `...::signals_are_refused_at_3_mib_of_retained_bytes`,
   `...::another_principals_identical_update_key_is_another_update`, `...::an_unknown_update_key_is_not_found`,
   `...::a_code_signal_never_satisfies_a_wait_for_event`, `...::an_open_update_fails_run_ended_when_the_run_ends` and
@@ -3318,6 +3348,42 @@ a replaying worker derives from `ReadHistory`.
   `...::a_fourth_dead_verifier_session_ends_verifier_session_ended`.
   Refs: Requirement 044-023
   Owner-gate: OD-2026-11-26-458
+- [ ] T044-39 Before Task 044-6, adopt Architecture decision 0112, accepted with design 054 after this design's approval (Gaps
+  054-007 and 054-012): the hold's body is design 054's Technical Plan 15 (the requirement epoch `FOR SHARE` first, in the
+  registry's lock order, then the requirement's row read without a lock), which replaces Decision 044-206 and the body in section
+  14; the refusal of removing `code-workflows-v1` while a code version exists is one row of `platform_requirement_floors` and one
+  `SECURITY DEFINER` function with a fixed search path, `EXECUTE` revoked from `PUBLIC`, instead of a trigger of this design's own on
+  `platform_requirements`; the drift guard follows Architecture decision 0112 decision 3; the refusal stays `CAPABILITY_NOT_ACTIVE`
+  with the capability named (Gap 054-010). Task 054-18 lands first, or Task 044-6 lands it if neither design 045 nor design 054 has,
+  with the held-lock tests of Task 045-21 on the operator's commands under a continuous stream of holds and any fairness gate they
+  require (Owner decision 2026-11-26-564). Section 14 is amended through a review of its own.
+  Red tests: `integration_workflow_as_code::publication::removing_code_workflows_is_refused_by_its_floor_row_while_a_code_version_exists`,
+  `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
+  `...::a_removal_commits_under_a_continuous_stream_of_holds`.
+  Refs: Requirement 044-030
+  Owner-gate: OD-2026-11-26-565
+- [ ] T044-40 Before Task 044-21, cite design 054's inbox contract (Gap 054-006): an inbox row is deleted when it is consumed, not
+  marked consumed (Technical Plan 10 of design 054), `consume_pending_signals` consumes a completion's sequences all or nothing and
+  refuses a sequence that is not a pending signal of that run (Requirement 054-017), each row's `version_id` classifies its payload,
+  and an undeclared name on a code run follows Requirement 054-003; drop from Architecture decision 0108 the statement that a code
+  version's consumer is its function, which Architecture decision 0111 decision 1 owns. The table of command records and section 4
+  are amended through a review of their own.
+  Red tests: `integration_workflow_as_code::signals::a_consumed_signal_leaves_no_inbox_row`,
+  `...::a_consumption_list_with_one_unknown_sequence_consumes_nothing`.
+  Refs: Requirement 044-014
+  Owner-gate: OD-2026-11-26-565
+- [ ] T044-41 Before Task 044-21, apply design 054's 2 MiB cap to a code version's signal declarations (Gap 054-008):
+  publication refuses a sum of `maxPending` above 1,000 (`SIGNAL_BOUNDS_OVER_RUN`) and a sum of `maxPending × maxBytes` above
+  2,097,152 bytes, half of a run's 4 MiB (`SIGNAL_BYTES_OVER_RUN`), as Requirement 054-001 does for graph documents; every code run
+  refuses a new signal `409 SIGNAL_PENDING_BYTES_FULL` while its pending bytes and the payload together would pass 2,097,152 bytes
+  (Requirement 054-007, Owner decision 2026-11-26-542). The guide states both bounds with this design's headroom: signals are
+  refused `HISTORY_HEADROOM` from 3,145,728 bytes (3 MiB) of retained bytes, pending signals included, so a code run whose step
+  outputs hold more than 3,145,728 − 2,097,152 = 1,048,576 bytes (1 MiB) can refuse a signal before its declared inbox is full,
+  while outputs keep at least 4,194,304 − 2,097,152 = 2,097,152 bytes free of signals.
+  Red tests: `integration_workflow_as_code::publication::code_signal_declarations_above_2_mib_are_refused`,
+  `integration_workflow_as_code::signals::a_signal_past_2_mib_of_pending_bytes_is_refused_pending_bytes_full`.
+  Refs: Requirement 044-014, Requirement 044-027
+  Owner-gate: OD-2026-11-26-565
 
 ### Verification Plan
 

@@ -26,7 +26,11 @@
 //   without a number"); the golden's number is the one the server gives it when it is accepted.
 // - A value the golden carries as a blob (`valueBlob`) must carry a non-empty `blob_id` (any: WriteBlob is not served)
 //   or, when the golden's carrier is "descriptor only", no carrier and the descriptor; descriptor fields, when sent,
-//   must equal the golden descriptor. An inline value's descriptor fields, when sent, must be D(value).
+//   must equal the golden descriptor. An inline value's descriptor fields, when sent, must be D(value). In a re-emitted
+//   deferral, any value may also come with no carrier and its descriptor alone (Decision 044-259).
+// - A FailWorkflowTask is compared with the golden's failed attempt, `actual_saga_scope` included (empty when the
+//   golden's report names none); a scope outside `^s-[1-9][0-9]{0,9}$`, or on a kind other than an activity or a
+//   script, is a mismatch.
 // - The lease: `task_id` `wt-<k>-<attempt>`, `attempt` counted within the activation from 1, `generation` counted over
 //   the run from 1, `gated_entries` and `state_max_bytes` from commands.json's `lease` (empty and 0 otherwise),
 //   `visible_count` the visible events at or below the lease's S, `started_at_us` and the two flags from the
@@ -58,6 +62,8 @@ const LEASE_MS = 60_000;
 const LEASE_CAP_MS = 120_000;
 const RETRY_AFTER_MS = 50;
 const ZERO_CHAIN = '0'.repeat(64);
+/** A saga scope: `s-<n>`, n the command number of its saga_open (Decision 044-250). */
+const SAGA_SCOPE = /^s-[1-9][0-9]{0,9}$/;
 
 // ---------------------------------------------------------------------------------------------------------------
 // RFC 8785 (README.md of the corpus: keys sorted by UTF-16 code units, numbers and strings as JSON.stringify prints
@@ -128,7 +134,7 @@ export interface GoldenFailedAttempt {
   worker?: string;
   cause: string;
   exceptionType?: string;
-  report?: { commandNumber?: number; actualKind?: string; actualTarget?: string; codeDigest?: string };
+  report?: { commandNumber?: number; actualKind?: string; actualTarget?: string; actualSagaScope?: string; codeDigest?: string };
   [key: string]: unknown;
 }
 export interface GoldenActivation {
@@ -574,6 +580,7 @@ export interface FailureRecord {
   commandNumber: number;
   actualKind: string;
   actualTarget: string;
+  actualSagaScope: string;
   exceptionType: string;
   codeDigest: string;
 }
@@ -1025,6 +1032,7 @@ class ServerState implements FakeWorkflowServer {
       commandNumber: Number(request['command_number'] ?? 0),
       actualKind: String(request['actual_kind'] ?? ''),
       actualTarget: String(request['actual_target'] ?? ''),
+      actualSagaScope: String(request['actual_saga_scope'] ?? ''),
       exceptionType: String(request['exception_type'] ?? ''),
       codeDigest: String(request['code_digest'] ?? ''),
     };
@@ -1044,7 +1052,19 @@ class ServerState implements FakeWorkflowServer {
       check('command_number', golden.report?.commandNumber, record.commandNumber);
       check('actual_kind', golden.report?.actualKind, record.actualKind);
       check('actual_target', golden.report?.actualTarget, record.actualTarget);
+      // The scope the function used (Decision 044-244): compared whenever the golden reports a command, empty when
+      // the golden names none; the server drops a scope outside its pattern (Decision 044-250), so a conforming SDK
+      // never sends one, and only an activity or a script has a scope.
+      if (golden.report) check('actual_saga_scope', golden.report.actualSagaScope ?? '', record.actualSagaScope);
       check('code_digest', golden.report?.codeDigest, record.codeDigest);
+    }
+    if (record.actualSagaScope !== '') {
+      if (!SAGA_SCOPE.test(record.actualSagaScope)) {
+        differ(`actual_saga_scope ${JSON.stringify(record.actualSagaScope)} is outside ${SAGA_SCOPE.source}; the server drops it`);
+      }
+      if (record.actualKind !== 'COMMAND_ACTIVITY' && record.actualKind !== 'COMMAND_SCRIPT') {
+        differ(`actual_saga_scope is set for ${record.actualKind}; only an activity or a script has a saga scope`);
+      }
     }
     const response = { already_applied: false };
     const key = String(request['idempotency_key'] ?? '');
@@ -1064,7 +1084,13 @@ function render(bytes: Uint8Array | null | undefined): string {
 
 type ExpectedValue = { json: unknown } | { blob: GoldenBlob } | undefined;
 
-function compareValue(where: string, received: Record<string, any> | null | undefined, expected: ExpectedValue, differ: (m: string) => void): void {
+function compareValue(
+  where: string,
+  received: Record<string, any> | null | undefined,
+  expected: ExpectedValue,
+  differ: (m: string) => void,
+  reEmitted = false,
+): void {
   if (!expected) {
     if (received) differ(`${where}: the golden has no value, received one (${String(received['carrier'])})`);
     return;
@@ -1075,6 +1101,14 @@ function compareValue(where: string, received: Record<string, any> | null | unde
   }
   const sha = String(received['descriptor_sha256'] ?? '');
   const size = Number(received['descriptor_size'] ?? 0);
+  // A re-emitted deferral may name any value its deferral holds by its descriptor alone, whatever the deferral's
+  // carrier (Decision 044-259): the server resolves the descriptor to the value it holds.
+  if (reEmitted && !received['carrier']) {
+    const d = 'json' in expected ? descriptorOf(expected.json) : expected.blob.descriptor;
+    if (sha !== d.sha256) differ(`${where}.descriptor_sha256: expected ${d.sha256}, received ${sha || '(empty)'}`);
+    if (size !== d.size) differ(`${where}.descriptor_size: expected ${d.size}, received ${size}`);
+    return;
+  }
   if ('json' in expected) {
     const want = canonicalJson(expected.json);
     if (received['carrier'] !== 'json') {
@@ -1107,6 +1141,7 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
   const same = (field: string, expected: unknown, actual: unknown): void => {
     if (expected !== actual) differ(`${where}: ${field}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
   };
+  const reEmitted = golden.reEmitted === true;
   same('command_number', number, received['command_number']);
   same('kind', wireKind(golden.kind), received['kind']);
   const fragment = golden.fragment ? canonicalJson(golden.fragment) : Buffer.alloc(0);
@@ -1118,6 +1153,7 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
     received['value'],
     work ? (golden.valueBlob ? { blob: golden.valueBlob } : { json: golden.value }) : undefined,
     differ,
+    reEmitted,
   );
   same('saga_scope', golden.sagaScope ?? '', received['saga_scope'] ?? '');
   const member = typedMember(golden);
@@ -1147,10 +1183,10 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
     }
     case 'marker':
       same(field('marker_id'), typed['marker'].markerId, got['marker_id']);
-      compareValue(`${where}: ${field('side_effect_value')}`, got['side_effect_value'], json(typed['marker'].sideEffectValue), differ);
+      compareValue(`${where}: ${field('side_effect_value')}`, got['side_effect_value'], json(typed['marker'].sideEffectValue), differ, reEmitted);
       break;
     case 'set_state':
-      compareValue(`${where}: set_state`, got, json(typed['setState']), differ);
+      compareValue(`${where}: set_state`, got, json(typed['setState']), differ, reEmitted);
       break;
     case 'update_decision': {
       const decision = typed['updateDecision'];
@@ -1162,7 +1198,7 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
     case 'update_result': {
       const result = typed['updateResult'];
       same(field('admitted_seq'), Number(result.admittedSeq), got['admitted_seq']);
-      compareValue(`${where}: ${field('result')}`, got['result'], 'result' in result ? { json: result.result } : undefined, differ);
+      compareValue(`${where}: ${field('result')}`, got['result'], 'result' in result ? { json: result.result } : undefined, differ, reEmitted);
       same(field('failure_code'), result.failureCode ?? '', got['failure_code']);
       break;
     }
@@ -1181,7 +1217,7 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
       break;
     }
     case 'complete':
-      compareValue(`${where}: complete`, got, golden.valueBlob ? { blob: golden.valueBlob } : json(typed['complete']), differ);
+      compareValue(`${where}: complete`, got, golden.valueBlob ? { blob: golden.valueBlob } : json(typed['complete']), differ, reEmitted);
       break;
     case 'fail':
       same(field('code'), typed['fail'].code, got['code']);
@@ -1189,8 +1225,8 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
       break;
     case 'continue_as_new': {
       const next = typed['continueAsNew'];
-      compareValue(`${where}: ${field('input')}`, got['input'], json(next.input), differ);
-      compareValue(`${where}: ${field('state')}`, got['state'], json(next.state), differ);
+      compareValue(`${where}: ${field('input')}`, got['input'], json(next.input), differ, reEmitted);
+      compareValue(`${where}: ${field('state')}`, got['state'], json(next.state), differ, reEmitted);
       same(field('active_version'), next.activeVersion === true, got['active_version']);
       break;
     }

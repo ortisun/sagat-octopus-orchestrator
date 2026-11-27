@@ -440,8 +440,9 @@ instead of a report) and leaves it to lapse, as before this rule. The reason: a 
 for good where the lapse sends it to a review (feature 037), which an operator can still retry. The minor is the one
 the registration accepted (§6.1), read per lease from the session that received it, never the newest the SDK offers. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
 of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
-code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
-(decisions D006-030 and D006-031). On a fleet that does not withdraw (the requirement not recorded, or the engine's
+code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` (whether or not its cancellation was
+requested or its run is stopping: the step is then cancelled at once, decision D006-097) and at most four withdrawals of the
+attempt (decisions D006-030 and D006-031). On a fleet that does not withdraw (the requirement not recorded, or the engine's
 switch `SAGAT_LEASE_WITHDRAWAL=off`) it records nothing and answers `STALE_ATTEMPT`, so the lease lapses as before
 (decision D006-089). At `1.8` (Architecture decision 0099 decision 9) the reservation is read from the lease, not
 from the session, and honoured only while the operator has activated `delivery-acknowledgement-v1` (and, before it,
@@ -828,9 +829,10 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
-  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` field 26 and `heartbeat_from_handler` field 27, `FailStepRequest.next_retry_delay_ms` field 14) | design 045, named on its branch (pull request #279); taken when its contract merges |
-  | 1.10 | Workflow as code: the task kinds `WORKFLOW`, `QUERY` and `REPLAY_CHECK` (`TaskLease` fields 28 to 30, a `oneof`), `WorkerCapabilities.workflow_types` field 11 and `offers_workflow_as_code` field 12, `CompleteStepRequest.accept_workflow_task` field 14, `StepCommandResponse.workflow_task` field 5, the RPCs `CompleteWorkflowTask`, `FailWorkflowTask`, `ReadHistory`, `RespondWorkerQuery`, `RespondReplayCheck` and `ReleaseSticky` and their messages; a session on 1.10 carries the host procedures of 1.7, 1.8 and 1.9 | design 044, Architecture decision 0109, Decision 044-233; taken by the contract of Task 044-2; served from Tasks 044-8 (lease, history), 044-9 (completion), 044-13 (replay checks), 044-14 (sticky, eager) and 044-29 (worker queries) |
-  | next | Drafts 019, 020, 021, 023, 024, 025, 026, 031, 032 and 035 each name a minor; each takes the next free one (1.11 or later) when its contract merges, and its SDKs carry the 1.8 host procedure first | |
+  | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` field 26 and `heartbeat_from_handler` field 27, `FailStepRequest.next_retry_delay_ms` field 14) | design 045 (named on its branch, pull request #279; taken when its contract merges) |
+  | 1.10 | Workflow as code: the task kinds `WORKFLOW`, `QUERY` and `REPLAY_CHECK` (`TaskLease` fields 28 to 30, a `oneof`), `WorkerCapabilities.workflow_types` field 11 and `offers_workflow_as_code` field 12, `CompleteStepRequest.accept_workflow_task` field 14, `StepCommandResponse.workflow_task` field 5, the RPCs `CompleteWorkflowTask`, `FailWorkflowTask`, `ReadHistory`, `RespondWorkerQuery`, `RespondReplayCheck` and `ReleaseSticky` and their messages; a session on 1.10 carries the host procedures of 1.7, 1.8 and 1.9 | design 044, Architecture decision 0109, Decision 044-233; taken by the contract of Task 044-2, which is being built while draft 019 is not, so 044 keeps 1.10 and draft 019's named minors move to 1.11 to 1.13 (Decision 044-255, delegate (OD-2026-11-24-4)); served from Tasks 044-8 (lease, history), 044-9 (completion), 044-13 (replay checks), 044-14 (sticky, eager) and 044-29 (worker queries) |
+  | 1.11 to 1.13 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges; moved from 1.10 to 1.12 by Decision 044-255) |
+  | next | Draft 031's codec minor (`TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7) and drafts 020, 021, 023, 024, 025, 026, 032 and 035 each name a minor; each takes the next free one (1.14 or later) when its contract merges, and a host of a later minor carries 1.7, the 1.8 host procedure and 1.9 | |
 
 ## 10. Observability and safety
 
@@ -922,7 +924,9 @@ signal<T>(name: string): Promise<T>
 onUpdate(name: string, validator: (args: unknown) => void, handler: (args: unknown) => Promise<unknown>): void
 setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
-sideEffect<T>(compute: () => T): T                                        // a recorded marker, at most 64 KiB
+sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
+  // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258)
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
 requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
@@ -1018,8 +1022,15 @@ must match `^[A-Z][A-Z0-9_]{0,63}$` (another becomes `WORKFLOW_FAILED`); its mes
 and target, and for an activity or a script the saga scope the record carries, `HistoryCommandRecord.saga_scope`,
 empty outside a scope; Decision 044-244), and reports a command where the history has none, a recorded command the function no longer makes, a
 `patched(id)` that disagrees with the markers and a deferred command not re-emitted last as a failure with cause
-`NONDETERMINISM`, the command number, the actual kind and target and the code digest, never a payload (Requirement
+`NONDETERMINISM`, the command number, the actual kind and target (and, for an activity or a script, the actual saga
+scope, `FailWorkflowTaskRequest.actual_saga_scope`, `s-<n>` or empty) and the code digest, never a payload (Requirement
 044-006, scenario `code-nondeterminism`).
+
+**Cancellation of the function's own steps.** `requestCancellation` only issues the command: the promise of an
+activity, a script, a wait, an approval or a child settles from the history's outcome, never at the call. It resolves
+if the attempt completes, and rejects with `CommandCancelled` (or `ChildWorkflowError`, status `cancelled`) only on a
+cancelled outcome, because a step whose attempt began may still have had its effect (Decision 044-245). A sleep's
+`timer_cancel` is its end, so its promise rejects with `TimerCancelled` once the command is issued.
 
 ### 12.5 Registration and the capability declaration
 
@@ -1041,14 +1052,20 @@ same branch both times (Requirement 044-012, Non-functional requirement 044-006)
   `CommandBatchLimitExceeded` into the function at the call that would cross its share; code can catch it, or move the
   fan-out to a graph child (scenario `code-command-batch-limit`).
 - **`InlineValuesExceeded`.** A completion fits the worker service's decode limit of 320 KiB: at most 64 KiB of command
-  metadata and at most 192 KiB of inline values. The declared state (at most the version's `state.maxBytes`, at most
-  128 KiB), a continue-as-new input and its carried state are always inline, together at most 192 KiB; a gated
+  metadata and at most 192 KiB of inline values. The declared state (at most the version's `state.maxBytes`, 1 to
+  128 KiB and 64 KiB when the version declares state without it, sent on every workflow lease as `state_max_bytes`; 0,
+  no state at all, when the version declares none; Decision 044-257), a continue-as-new input and its carried state are always inline, together at most 192 KiB; a gated
   activity's input and an approval's subject are always inline too, the SDK reserving the declared state's maximum from
   the activation's start. Every other value (a work command's input, an update result, a side-effect value, a terminal
   output) is written by the SDK as a blob, largest first, when the message would not fit, at most 16 per completion.
   The SDK throws the typed `InlineValuesExceeded` at the call that would cross one of these bounds, or after which the
   activation's values could no longer be carried, and for a terminal output over the 4 MiB validation bound.
 - A side-effect value is at most 64 KiB; `setState` at most once per completion (the last call of an activation wins).
+- **A re-emitted deferral** (`deferred_command`) may name each of its values by its descriptor alone, whatever carrier the
+  deferral used: the server holds every value of a deferred command until it is accepted or the run ends, and resolves
+  the descriptor to it once the body digest matches (Decision 044-259). A cold worker therefore re-emits without
+  uploading or re-sending anything, and the re-emission costs nothing of the inline values; carrying a value again,
+  inline or as another blob with the same descriptor, is accepted as well.
 
 ### 12.7 Patches
 

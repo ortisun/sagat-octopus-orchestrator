@@ -2,12 +2,18 @@
 
 The three wire slices take three consecutive minors (D1069): **`1.N`** deployment identity, `RegisterWorkerResponse`
 state and `DispatchFacts`; **`1.N+1`** checkpoints (`Checkpoint`, heartbeat and failure details, `DetailsStatus`);
-**`1.N+2`** `DetachStep` and `async_completion_allowed`. `1.N` is the next free minor at integration (`1.7` if no other
-feature merges one first, G1048). Each minor is a superset of the previous one and of 1.6, and the server accepts it
-only when its store declares that slice's path (the `protocol_ceiling` pattern of `crates/application/src/worker.rs`)
-and the slice's evidence has passed; otherwise negotiation stays at the highest proven minor. Every addition is a new
-field number or rpc; no existing field changes meaning. A worker at 1.0–1.6 is served exactly as today and is
-unversioned. A host uses a field only when the accepted minor includes it.
+**`1.N+2`** `DetachStep` and `async_completion_allowed`. Corrected 2026-11-24 (D019-002): `1.N` is the next free minor of
+the register of `sdks/SPEC.md` §9 when this contract merges, which is 1.10 at the time of writing (1.7 is design 041,
+1.8 delivery acknowledgement, 1.9 design 045), so the three minors are 1.10, 1.11 and 1.12. Each minor is a superset of
+every earlier minor, and the server accepts it only when its store declares that slice's path (the `protocol_ceiling`
+pattern of `crates/application/src/worker.rs`), the slice's evidence has passed and its fleet requirement is recorded
+(`worker-deployments-v1` and `dispatch-priority-v1` for `1.N`, `heartbeat-checkpoints-v1` for `1.N+1`,
+`async-completion-v1` for `1.N+2`; D019-001); otherwise negotiation stays at the highest proven minor. Every addition is a
+new field number or rpc; no existing field changes meaning. A worker below `1.N` is served exactly as today and is
+unversioned. A host uses a field only when the accepted minor includes it. Minors are cumulative: a host that offers
+`1.N` or later also carries the host procedure of 1.8 (it acknowledges a flagged lease before it runs anything for it,
+`specs/006-sdk-multilanguage/stream-completion.md`) and of 1.9 (design 045: the per-node heartbeat timeout and the
+handler heartbeat).
 
 ## Additions to `specs/001-platform-foundation/contracts/worker.proto`
 
@@ -17,9 +23,10 @@ service WorkerService {
   // Added in 1.N+2. Detaches the current attempt of a step whose node declares asyncCompletion: the lease
   // expiry becomes the declared detached heartbeat timeout, the session's in-flight slot is released and a
   // task token is returned for heartbeats and completion through REST. Repeating it under the same lease
-  // returns the same token with already_applied = true. Errors: PERMISSION_DENIED (NOT_BOUND),
-  // ABORTED (STALE_ATTEMPT), INVALID_ARGUMENT (x-sagat-error ASYNC_COMPLETION_NOT_DECLARED),
-  // RESOURCE_EXHAUSTED (QUOTA_EXCEEDED: task_tokens).
+  // returns the same token with already_applied = true. It is a capability call of 1.8 (ADR-0099 decision 8).
+  // Errors: PERMISSION_DENIED (NOT_BOUND), ABORTED (STALE_ATTEMPT), INVALID_ARGUMENT (x-sagat-error
+  // ASYNC_COMPLETION_NOT_DECLARED), FAILED_PRECONDITION (TASK_NOT_ACKNOWLEDGED: the lease is provisional),
+  // UNAVAILABLE (REGISTRY_SILENT, as for every capability call), RESOURCE_EXHAUSTED (QUOTA_EXCEEDED: task_tokens).
   rpc DetachStep(DetachStepRequest) returns (DetachStepResponse);
 }
 
@@ -30,13 +37,13 @@ message WorkerDeploymentIdentity {
 }
 
 message WorkerCapabilities {
-  // fields 1-5 unchanged
+  // fields 1-5 unchanged; 7 is draft 031's, 10 is delivery acknowledgement's declines_acknowledgement (1.8)
   WorkerDeploymentIdentity deployment = 6;   // Added in 1.N; absent = unversioned session
 }
 
 message RegisterWorkerResponse {
-  // fields 1-3 unchanged
-  string deployment_version_state = 4;       // Added in 1.N: INACTIVE, RAMPING, CURRENT, DRAINING, DRAINED
+  // fields 1-3 unchanged; field 4 is design 041's StepLogPolicy step_logs (1.7)
+  string deployment_version_state = 5;       // Added in 1.N: INACTIVE, RAMPING, CURRENT, DRAINING, DRAINED (moved from 4, 2026-11-24)
 }
 
 // Added in 1.N. How this lease was routed and ordered (informational; never authority).
@@ -53,7 +60,7 @@ message Checkpoint {
 }
 
 message TaskLease {
-  // fields 1-18 unchanged
+  // fields 1-18 unchanged; 23 and 24 are delivery acknowledgement's (1.8), 25 is draft 031's, 26 and 27 are design 045's (1.9)
   DispatchFacts dispatch = 19;               // Added in 1.N
   Checkpoint checkpoint = 20;                // Added in 1.N+1: latest checkpoint of earlier attempts, if any
   Checkpoint target_checkpoint = 21;         // Added in 1.N+1: for COMPENSATION/RECONCILIATION, the forward instance's
@@ -79,11 +86,13 @@ enum DetailsStatus {
   DETAILS_REFUSED_SIZE = 4;
   DETAILS_REFUSED_SECRET = 5;                // contains a secret value handed to this attempt
   DETAILS_ENCODING_REQUIRED = 6;             // 031 ENCODING_REQUIRED: non-empty payload plan, no encoded heartbeatSchema
+  DETAILS_NOT_ACKNOWLEDGED = 7;              // the lease is provisional (1.8) and not yet acknowledged: details not stored
 }
 
 message FailStepRequest {
-  // fields 1-12 unchanged
-  string details_json = 13;                  // Added in 1.N+1: final checkpoint, always stored when valid
+  // fields 1-12 unchanged; 13 is design 041's step_logs (1.7), 14 is design 045's next_retry_delay_ms (1.9)
+  string details_json = 15;                  // Added in 1.N+1: final checkpoint, always stored when valid; ignored on a
+                                             // hand-back (error_code TASK_NOT_STARTED) and on a provisional lease
 }
 
 message DetachStepRequest {
@@ -117,20 +126,32 @@ message DetachStepResponse {
   `INACTIVE` version receives nothing.
 - **Heartbeat details.** Sent only at `1.N+1` or later. A refusal never fails the renewal; `details_status` says what
   happened. Hosts send details with the next scheduled beat (no extra beats), and send the final details with
-  `FailStep` or `DetachStep`.
-- **Detach.** Allowed only while the lease is current and the node declares `asyncCompletion`. After it **every**
-  call presenting that lease token — `Heartbeat`, `CompleteStep`, `FailStep`, `ResolveSecrets`, `ResolveDatabase`,
-  `ReadBlob`, `WriteBlob`, `DetachStep` other than an exact replay — answers `ABORTED`/`STALE_ATTEMPT` with
-  `DETACHED` (the host stops beating), and completion goes through REST with the token. Leases held by the push
-  invoker are refused the same way (`PUSH_HELD`), so a decoded task token is useless on gRPC. A host never detaches on
-  its own: the handler asks for it.
+  `FailStep` or `DetachStep`. A host never sends details for a provisional lease (it runs nothing before the
+  acknowledgement); a server that receives them anyway stores nothing and answers `DETAILS_NOT_ACKNOWLEDGED`, so a
+  lease that is later withdrawn never owns a checkpoint. Details on a hand-back (`FailStep` with `TASK_NOT_STARTED`) are
+  ignored.
+- **Detach.** Allowed only while the lease is current, not provisional, and the node declares `asyncCompletion`. It is a
+  capability call of 1.8: on a provisional lease it answers `FAILED_PRECONDITION` with `TASK_NOT_ACKNOWLEDGED` and changes
+  nothing; otherwise the detach transaction records the capability as served (`lease_capability_generation`), so the
+  lease can never be withdrawn as not started. After it **every** call presenting that lease token — `Heartbeat`,
+  `CompleteStep`, `FailStep`, `ResolveSecrets`, `ResolveDatabase`, `ReadBlob`, `WriteBlob`, `AppendStepLogs` (1.7),
+  `DetachStep` other than an exact replay — answers `ABORTED`/`STALE_ATTEMPT` with `DETACHED` (the host stops beating),
+  `AcknowledgeTasks` (1.8) answers `NOT_HELD` for it, and completion goes through REST with the token. Leases held by the
+  push invoker are refused the same way (`PUSH_HELD`), so a decoded task token is useless on gRPC. A host never detaches
+  on its own: the handler asks for it.
+- **Detached expiry.** A detached attempt whose detached heartbeat timeout or maximum detached duration passes ends with
+  `DETACHED_TIMEOUT`, an outcome-unknown code: the step goes to its `reconcileWith` or to review (feature 037), never to
+  a new attempt by itself. The maximum detached deadline is never later than the attempt's deadline (the claim time plus
+  `timeoutMs`, and with design 045 the earlier of that and the step's schedule-to-close deadline) or the run deadline.
 - **Cancellation.** A detached attempt learns cancellation through the REST heartbeat (`cancelRequested`).
 
-## SDK host surface (all five SDKs, idiomatic names)
+## SDK host surface (all six SDKs, idiomatic names)
 
 - Worker option `deployment: {name, buildId}`; `host.deploymentVersionState` after registration.
-- Activity context: `ctx.heartbeat(details)` records details for the next beat (latest wins, bounded locally with
-  the effective limit, `PAYLOAD_TOO_LARGE` raised before sending); `ctx.checkpoint` returns the previous attempt's
+- Activity context: `ctx.heartbeat(details?)` is one call. Design 045 (1.9) defines it without details as the handler
+  heartbeat (`heartbeatFrom: "handler"`: the host renews only after the handler called it); from `1.N+1` it also takes
+  details, which it records for the next beat (latest wins, bounded locally with the effective limit,
+  `PAYLOAD_TOO_LARGE` raised before sending), so every checkpoint call is also a handler heartbeat; `ctx.checkpoint` returns the previous attempt's
   checkpoint (`{details, recordedByAttempt}`) or none; `ctx.targetCheckpoint` for compensation/reconciliation;
   `ctx.dispatch` exposes the informational `DispatchFacts`.
 - `ctx.detach()` returns the task token when `async_completion_allowed`; the handler then returns a sentinel

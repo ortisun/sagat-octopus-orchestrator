@@ -56,8 +56,12 @@ Judgement calls, recorded so a reviewer can disagree:
 
 Items for `/speckit-clarify` or `/speckit-plan` (not blockers):
 
-- Owner answers to O1700–O1705.
+- Owner answers to O1700–O1705. *Settled since:* O1703 was answered by the owner on 2026-10-28, O1705 was resolved by
+  a finding at planning, and O1700, O1701, O1702, O1704 and O1710 were decided on 2026-11-24 under the owner's
+  delegation (Owner decisions 2026-11-24-500 to 2026-11-24-504; the specification's "Owner questions"). The
+  `/speckit-*` commands named in this file no longer exist (the EGM workflow replaced Spec Kit).
 - Which official SDKs expose the management client for policies and signals (FR-036-019), and in what order.
+  *Settled since:* none in this feature (O1708, answered by the owner on 2026-10-28).
 - How the work of the event dispatcher and the delivery worker is divided (FR-036-033), decided on the
   benchmark evidence of US07/US11, as feature 010 did for the scheduler.
 - The declared rule that divides the database connection budget among roles (FR-036-039).

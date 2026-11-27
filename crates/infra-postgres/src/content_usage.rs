@@ -51,7 +51,13 @@ pub(crate) struct LogAllocation {
     pub truncated: bool,
 }
 
-fn policy_key(tenant: TenantId, namespace: Option<NamespaceId>, resource: QuotaResource) -> String {
+/// The text of a policy fence's advisory key. The one builder of the key: the change of a resource takes it
+/// exclusively ([`policy_change`]), and every admission takes it shared ([`admission_policy`], [`admission_policies`]).
+pub(crate) fn policy_key(
+    tenant: TenantId,
+    namespace: Option<NamespaceId>,
+    resource: QuotaResource,
+) -> String {
     namespace.map_or_else(
         || format!("quota-policy:{resource}:{tenant}"),
         |namespace| format!("quota-policy:{resource}:{tenant}:{namespace}"),
@@ -124,9 +130,19 @@ async fn effective_policy(
     .fetch_all(&mut *conn)
     .await
     .map_err(store_error)?;
-    let stored = |scoped: bool| {
+    Ok(resolve_policy(resource, namespace.is_some(), &rows))
+}
+
+/// The value in force of `resource` from its stored rows (namespace id or none, value, whether a ceiling): the
+/// namespace's setting, else the tenant's, else the default, bounded by the ceiling granted or the default ceiling.
+fn resolve_policy(
+    resource: QuotaResource,
+    scoped: bool,
+    rows: &[(Option<Uuid>, i64, bool)],
+) -> u64 {
+    let stored = |for_namespace: bool| {
         rows.iter()
-            .find(|(namespace, _, ceiling)| !ceiling && namespace.is_some() == scoped)
+            .find(|(namespace, _, ceiling)| !ceiling && namespace.is_some() == for_namespace)
             .and_then(|(_, value, _)| u64::try_from(*value).ok())
     };
     let granted = rows
@@ -134,13 +150,90 @@ async fn effective_policy(
         .find(|(_, _, ceiling)| *ceiling)
         .and_then(|(_, value, _)| u64::try_from(*value).ok());
     let ceiling = sagat_domain::quota::ceiling(resource, granted);
-    Ok(sagat_domain::quota::resolve(
+    sagat_domain::quota::resolve(
         resource,
-        namespace.and_then(|_| stored(true)),
+        if scoped { stored(true) } else { None },
         stored(false),
         ceiling,
     )
-    .0)
+    .0
+}
+
+/// The fences [`admission_policies`] takes shared, in its order: for each resource the tenant's and then the
+/// namespace's.
+pub(crate) fn admission_fence_keys(
+    tenant: TenantId,
+    namespace: NamespaceId,
+    resources: &[QuotaResource],
+) -> Vec<String> {
+    resources
+        .iter()
+        .flat_map(|&resource| {
+            [
+                policy_key(tenant, None, resource),
+                policy_key(tenant, Some(namespace), resource),
+            ]
+        })
+        .collect()
+}
+
+/// [`admission_policy`] for several resources of one namespace in two statements (design 041 section 2, T3): the
+/// first takes, in one select list evaluated left to right, the fences of each resource in the order given, the
+/// tenant's then the namespace's, all shared, and then `then`, a transaction-scoped advisory lock the caller orders
+/// right after them, taken exclusively and waited for under the transaction's lock timeout; the second reads every
+/// value. A change of one resource waits for the transactions that read its old value. The values come back in the
+/// order of `resources`. The error is returned as the database gave it, so that the caller maps it as its statements
+/// require.
+pub(crate) async fn admission_policies(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    resources: &[QuotaResource],
+    then: Option<&str>,
+) -> Result<Vec<u64>, sqlx::Error> {
+    let mut keys = admission_fence_keys(tenant, namespace, resources);
+    let shared = keys.len();
+    let mut calls: Vec<String> = (1..=shared)
+        .map(|n| format!("pg_advisory_xact_lock_shared(hashtextextended(${n}, 0))"))
+        .collect();
+    if let Some(key) = then {
+        keys.push(key.to_owned());
+        calls.push(format!(
+            "pg_advisory_xact_lock(hashtextextended(${}, 0))",
+            keys.len()
+        ));
+    }
+    // Only placeholders are formatted into the text; every key is bound.
+    let fences = format!("SELECT {}", calls.join(", "));
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(fences));
+    for key in &keys {
+        query = query.bind(key);
+    }
+    query.execute(&mut *conn).await?;
+    let names: Vec<&str> = resources.iter().map(|resource| resource.as_str()).collect();
+    let rows: Vec<(String, Option<Uuid>, i64, bool)> = sqlx::query_as(
+        "SELECT resource, namespace_id, max_value, false FROM quota_limits \
+         WHERE tenant_id = $1 AND resource = ANY($2) AND (namespace_id IS NULL OR namespace_id = $3) \
+         UNION ALL \
+         SELECT resource, NULL, max_value, true FROM quota_ceilings \
+         WHERE tenant_id = $1 AND resource = ANY($2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(&names)
+    .bind(namespace.as_uuid())
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(resources
+        .iter()
+        .map(|&resource| {
+            let of: Vec<(Option<Uuid>, i64, bool)> = rows
+                .iter()
+                .filter(|(name, ..)| name == resource.as_str())
+                .map(|(_, namespace, value, ceiling)| (*namespace, *value, *ceiling))
+                .collect();
+            resolve_policy(resource, true, &of)
+        })
+        .collect())
 }
 
 /// Exact usage used by quota views and reconciliation.

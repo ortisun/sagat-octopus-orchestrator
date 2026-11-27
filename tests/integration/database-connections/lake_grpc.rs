@@ -146,6 +146,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         })
     };
     let complete = |output: &Value, key: &str| pb::CompleteStepRequest {
+        step_logs: None,
         instance: lease.instance.clone(),
         task_id: lease.task_id.clone(),
         run_id: lease.run_id.clone(),

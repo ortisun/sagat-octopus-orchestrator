@@ -77,6 +77,8 @@ mod release_upgrade;
 #[cfg(unix)]
 mod release_upgrade_callback_cutover;
 #[cfg(unix)]
+mod release_upgrade_cron_trigger;
+#[cfg(unix)]
 mod release_upgrade_cutover;
 #[cfg(unix)]
 mod release_upgrade_inflight;

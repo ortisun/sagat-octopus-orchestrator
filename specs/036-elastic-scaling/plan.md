@@ -2,7 +2,76 @@
 
 **Branch:** `feature/036-elastic-scaling` | **Date:** 2026-10-28 | **Spec:** [`spec.md`](./spec.md)
 
-**Input:** the specification and its five clarifications (O1703, O1706–O1709). Decisions are `D1700…`, gaps `G1700…`, owner questions `O1710…` in [`research.md`](./research.md); the design records are ADR-0072 to ADR-0074 (proposed).
+**Input:** the specification and its five clarifications (O1703, O1706–O1709). Decisions are `D1700…`, gaps `G1700…`, owner questions `O1710…` in [`research.md`](./research.md); the design records are ADR-0072 to ADR-0074 (accepted 2026-11-24, delegate, Owner decision 2026-11-24-4).
+
+## Readiness against `develop` (2026-11-24)
+
+The plan was written on 2026-10-28 and approved for implementation on 2026-11-11 (Owner decision 2026-11-11-1); feature
+036 is in release 0.3.0 (Owner decision 2026-11-24-1). It was read again against `develop` at `546d5aa5`. Nothing of it
+is built: there is no scaling code, table, crate or setting yet; the chart's KEDA and HPA toggles are feature 010's.
+Where this section and an older line below disagree, this section is right.
+
+**Corrections.**
+
+1. **Migration numbers.** `20261226000000` is taken (`capacity_transfer_receipts`); the highest migration on `develop` is
+   `20270119000000_batch_purge`, and open branches go further (`feature/022-throughput-control` to `20270209000100`,
+   `feature/041-step-logs-server` to `20270201000100`). The three migrations of this feature take the next free
+   timestamps at build time (Task T036-001 re-checks every branch). Their names (`scaling_core`, the connector lag and
+   members, the `connector_parallelism` quota) are unchanged.
+2. **The quota restatement.** The quota CHECK has been restated since (`20261230000100_schedule_quota_resources`; on the
+   022 branch `20270130000300` and `20270206000000`). This feature's quota migration restates the full list of the
+   tree it lands on; whichever of 022, 041 and 036 merges later restates the others' names. There are 37 quota kinds on
+   `develop` (`crates/domain/src/quota.rs`, `ALL: [Self; 37]`), not 32, and 53 permissions, not 48.
+3. **The chart has no `mode` key.** It has two toggles, `engine.autoscaling.keda.enabled` and
+   `engine.autoscaling.hpa.enabled`, refused together (`infra/helm/templates/_helpers.tpl`). This feature's `platform`
+   autoscaling is a third toggle, `engine.autoscaling.platform.enabled`, refused together with either of the other two;
+   every mention of "the `lag` and `cpu` modes" and `engine.autoscaling.mode` below means these toggles.
+4. **The database budget exists.** The chart already refuses a render when (control plane replicas + the engine's
+   maximum) × `database.maxConnections` exceeds `database.serverMaxConnections`. Decision D1722's budget reuses those
+   values and adds only `reserveConnections`; it does not introduce `perReplicaConnections`.
+5. **Mixed versions use the instance registry.** Architecture decision 0082 (accepted) gives a per-process capability
+   gate and a fleet census. The keeper of balanced partitions (D1708, G1715) uses a capability
+   `connector-rank-share`: the rank share is switched on only when the census shows no process without it, which
+   removes the unbalanced rolling upgrade that Architecture decision 0073 names as a consequence. Design 053's rule for
+   rolling upgrades applies to every migration of this feature.
+6. **The operator listener needs a second audience.** Token verification holds one audience per process
+   (`crates/api-http/src/auth/verifier.rs`) and so does the development identity provider. Task T036-065 adds the
+   operator audience's configuration and a second issuer configuration of the development provider.
+7. **Process and identifiers.** Spec Kit is gone; the transitional clause of the constitution (4.7.0) lets this
+   spec, plan and tasks stand in for a design doc. References below to `/speckit-*` commands are historical. New
+   prose uses the word forms of `docs/governance/identifier-scheme.md`; the old identifiers stay where tools read them.
+   Tasks that depend on an owner decision now carry `Owner-gate:` lines.
+8. **CI gates that now apply.** Any change under `crates/infra-postgres/` selects the budget suite
+   `integration_claim_transition_efficiency`; a new integration suite needs an entry in
+   `scripts/integration-suite-durations.toml`; the OpenAPI lint runs in the `contracts` job on a release;
+   `check-plain-words.py`, `check-docs-first.py` and `check-docs-index.py` run on every pull request.
+9. **Line drift.** Evidence lines in `research.md` that moved (for example `inbox_pending_events` at
+   `crates/scheduler/src/events.rs:234`, the idle timeout at `crates/telemetry/src/metrics.rs:279`, the autoscaler
+   contract test `the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else`) are recorded in
+   `research.md`, section "Readiness, 2026-11-24"; the facts they support still hold.
+10. **Other features.** 019 is approved and not built (0 of 68); 022's throughput slice is on its branch; 010 is built
+    (gaps 239, 243, 246 and 249 still open); 038's budget suite is merged; 032 is in 0.3.0 and still out of scope here;
+    designs 048 (standby reads), 053 (rolling upgrades) and 049 (journal partitioning) are new and change nothing here except
+    item 5.
+
+**Decisions taken on 2026-11-24** (delegate, Owner decision 2026-11-20-6 and Owner decision 2026-11-24-4; the reasons
+are in the specification's "Owner questions" and in `research.md`): O1700, O1701, O1702, O1704 and O1710 as recommended
+(Owner decisions 2026-11-24-500 to 2026-11-24-504); Architecture decisions 0072, 0073 and 0074 accepted (Owner decision
+2026-11-24-505); the security checklist's items settled one by one (Owner decision 2026-11-24-506, with the per-item
+record in `checklists/security.md`).
+
+**Build slices**, each off by default and shippable, in this order:
+
+1. Foundation: T036-001 to T036-020 and T036-092 (the pure domain, the scaling tables, the fenced evaluator, the
+   exporter).
+2. Lag and drain state (User story 036-01): T036-021 to T036-033.
+3. Balanced partitions (User story 036-02): T036-034 to T036-040, with the registry capability of item 5.
+4. The closed loop (User story 036-03): T036-041 to T036-046 and T036-093.
+5. Configuration (User story 036-04): T036-047 to T036-052, in parallel with slices 2 to 4.
+6. Safety and explanation without the operator surface: T036-066 and T036-068 to T036-074.
+7. The operator surface (User story 036-05): T036-053 to T036-065, T036-094, then T036-067.
+8. Pulled sources (User story 036-13): T036-075 to T036-083.
+9. Polish: T036-084 to T036-091.
 
 ## Summary
 
@@ -23,7 +92,7 @@ Turn telemetry into capacity decisions that an operator declares by configuratio
 
 - **Language/Version:** Rust stable pinned by `rust-toolchain.toml`; Helm templates; Python only for repository checks.
 - **Primary Dependencies (existing):** Tokio, Axum, tonic, SQLx, `metrics` 0.24 with the Prometheus exporter, `reqwest` 0.13 (through `infra-egress`), `rskafka` 0.6.0 (vendored, zstd patch only), `async-nats` 0.50.0, `aws-sigv4`. **New dependencies: none in the domain** (`thiserror`, `time`, `uuid`, `zeroize` only; `proptest` is already a dev-dependency). One new adapter crate, `infra-signals`, no new third-party crate.
-- **Storage:** PostgreSQL (CI uses 16). Three additive migrations from `20261226000000` (the highest on any branch is `20261225000000`): the scaling tables, the connector lag and members, and the `connector_parallelism` quota. NATS is not involved in scaling.
+- **Storage:** PostgreSQL (CI uses 16). Three additive migrations at the next free timestamps at build time (corrected 2026-11-24: `20261226000000` is taken; see "Readiness against `develop`"): the scaling tables, the connector lag and members, and the `connector_parallelism` quota. NATS is not involved in scaling.
 - **Testing:** `cargo test` with real PostgreSQL (Testcontainers) and real brokers (`tests/support/brokers.rs`: Kafka, ElasticMQ for SQS; `nats.rs`); `proptest` for the decision function; `helm template` contract test; kind, Cilium and KEDA end-to-end by extending `tests/e2e/scalability-ha/kubernetes/run.sh` (G247).
 - **Target Platform:** Linux containers on Kubernetes; Docker Compose for development (no Kafka or SQS emulator in Compose, tests start their own).
 - **Project Type:** modular Rust monorepo, Helm chart, operator CLI.

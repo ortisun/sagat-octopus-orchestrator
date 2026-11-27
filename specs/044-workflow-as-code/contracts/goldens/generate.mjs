@@ -496,6 +496,8 @@ const acknowledgeCancellation = () => ({
 // I-JSON (RFC 7493), which RFC 8785 assumes: a command refuses an integer outside +-(2^53 - 1) anywhere (COMMAND_INVALID).
 // Every double of magnitude 2^53 or more is an integer, so no command or scenario value may reach it.
 const SAFE = 2 ** 53 - 1;
+// A code version's `state.maxBytes` when it declares state without one (Decision 044-257).
+const STATE_MAX_BYTES_DEFAULT = 65536;
 function checkIntegers(value, where) {
   if (typeof value === 'number') {
     if (Number.isInteger(value) && Math.abs(value) > SAFE) throw new Error(`${where}: ${value} is outside +-(2^53 - 1)`);
@@ -854,7 +856,18 @@ class Run {
         .sort((a, b) => a - b)
         .map((v) => [`v${v}`, this.digest(v)]),
     );
-    if (this.lease) commands.lease = this.lease;
+    // The lease's `state_max_bytes` is the version's `state.maxBytes` (Decision 044-257): 64 KiB when the version declares
+    // state without it, 0 when it declares none.
+    const declared = this.declarations?.state;
+    const stateMaxBytes = declared ? (declared.maxBytes ?? STATE_MAX_BYTES_DEFAULT) : 0;
+    if (this.lease?.stateMaxBytes !== undefined) {
+      throw new Error(`${this.scenario}/${this.label}: the lease's stateMaxBytes comes from declarations.state.maxBytes`);
+    }
+    if (this.carriedState !== undefined && C(this.carriedState).length > stateMaxBytes) {
+      throw new Error(`${this.scenario}/${this.label}: the carried state is over the version's state.maxBytes`);
+    }
+    const lease = { ...(this.lease ?? {}), ...(stateMaxBytes ? { stateMaxBytes } : {}) };
+    if (Object.keys(lease).length) commands.lease = lease;
     if (this.declarations) commands.declarations = this.declarations;
     commands.activations = this.activations;
     commands.invisibleJournal = this.hidden;
@@ -1235,7 +1248,7 @@ workflow creditLine(input):
     ],
     assumptions: [
       'A validator\'s rejection uses VALIDATION_FAILED, of the closed list of rejection reasons (VALIDATION_FAILED,',
-      '  and the engine\'s RUN_ENDED and RUN_CONTINUED).',
+      '  HANDLER_NOT_REGISTERED, and the engine\'s RUN_ENDED and RUN_CONTINUED).',
       'The REST answer of a rejected update (status and body) belongs to the REST contract; `requests` states only the',
       '  outcome.',
     ],
@@ -1297,6 +1310,8 @@ scenario('code-declared-state', (name) => {
   r.declarations = {
     state: {
       schema: { type: 'object' },
+      initial: '{}',
+      maxBytes: 4096,
       queries: {
         status: {
           argsSchema: { type: 'object' },
@@ -1463,6 +1478,8 @@ workflow labelPrint(input):                                 // code version of l
 
 scenario('code-continue-as-new', (name) => {
   const r = new Run(name, 'main', { workflowType: 'subscription', input: { cycle: 1, amountCents: 990 } });
+  const subscriptionState = { state: { schema: { type: 'object' }, initial: '{}' } };
+  r.declarations = subscriptionState;
   r.begin();
   r.cmd(activity('audit.write', { cycle: 1 }));
   r.cmd(activity('billing.charge', { cycle: 1, amountCents: 990 }));
@@ -1488,6 +1505,7 @@ scenario('code-continue-as-new', (name) => {
     carriedState: { charged: [990] },
     predecessorRunId: r.runId,
   });
+  successor.declarations = subscriptionState;
   successor.begin();
   successor.cmd(complete({ cycles: 2, charged: [990] }));
   successor.finish();
@@ -1495,6 +1513,7 @@ scenario('code-continue-as-new', (name) => {
   successor.expectations = { pinnedVersion: 2, why: 'version "active" resolved to the active code version 2' };
 
   const moved = new Run(name, 'moved', { workflowType: 'subscription', input: { cycle: 1, amountCents: 990, wait: true } });
+  moved.declarations = subscriptionState;
   moved.begin();
   moved.cmd(timer(1000));
   moved.finish();
@@ -1677,8 +1696,9 @@ scenario('code-gated-activity', (name) => {
   const r = new Run(name, 'main', {
     workflowType: 'payouts',
     input: { batchId: 'pay-3' },
-    lease: { gatedEntries: ['payouts.send'], stateMaxBytes: 131072 },
+    lease: { gatedEntries: ['payouts.send'] },
   });
+  r.declarations = { state: { schema: { type: 'object' }, initial: '{}', maxBytes: 131072 } };
   r.begin();
   r.cmd(activity('payouts.send', { payoutId: 'p-1', amountCents: 250000 }));
   r.cmd(activity('payouts.send', { payoutId: 'p-2', amountCents: 990000 }));
@@ -1835,7 +1855,8 @@ workflow refundReview(input):                                 // run "own-steps"
     ],
     shows: [
       'run.cancel_requested is visible and waking (EXTERNAL) with its grace and the origin REQUEST.',
-      'main: `step_cancel` of the leased c-1 (journal step.cancel_requested); the engine\'s CANCELLED outcome follows.',
+      'main: `step_cancel` of the leased c-1 (journal step.cancel_requested); the activity worker reports the',
+      '  cancellation and its CANCELLED outcome follows with the origin ENGINE (the command alone never cancels it).',
       'grace-expires: no answer; the deadline pass stops the run; the stop drain\'s cancellation of the timer is',
       '  journaled after the stop began, and no workflow task follows.',
       'acknowledge-in-saga: `saga_abort` then `acknowledge_cancellation`, deferred with OUTSTANDING_OBLIGATIONS while',
@@ -1934,6 +1955,30 @@ scenario('code-nondeterminism', (name) => {
     replayFromSeq: 1,
   });
   r.review('NONDETERMINISM');
+
+  // The same activity in another saga scope (Decision 044-244): the kind and the target agree, the scope does not.
+  const moved = new Run(name, 'scope-moved', { workflowType: 'book-trip', input: { tripId: 'trip-12' } });
+  const options = { onCompensationFailure: 'manual_review', cancelPolicy: 'compensate_completed' };
+  moved.begin({ worker: 'A' });
+  const scope = moved.cmd(sagaOpen(options));
+  moved.cmd(activity('hotel.book', { tripId: 'trip-12' }));
+  moved.cmd(sagaClose(scope));
+  moved.finish();
+  moved.completed('c-2', { hotelBookingId: 'h-12' });
+  moved.begin({ worker: 'B' });
+  moved.advanceMs(5);
+  moved.failAttempt('NONDETERMINISM', {
+    report: {
+      commandNumber: 2,
+      actualKind: 'COMMAND_ACTIVITY',
+      actualTarget: 'hotel.book',
+      actualSagaScope: scope,
+      codeDigest: moved.digest(1),
+    },
+    expected: { kind: 'COMMAND_ACTIVITY', target: 'hotel.book', sagaScope: '', from: 'the server\'s own record of command 2' },
+    replayFromSeq: 1,
+  });
+  moved.review('NONDETERMINISM');
   const doc = functionDoc({
     title: 'code-nondeterminism',
     proves: 'a changed function on replay: the report and the review.',
@@ -1946,19 +1991,34 @@ workflow notifyOrder(input):                                 // version 1, which
 workflow notifyOrder(input):                                 // the second version, replayed by worker B
   order = await activity("order.load", {orderId: input.orderId})
   await activity("sms.send", {orderId: input.orderId, to: order.email})
-  return {orderId: input.orderId}`,
+  return {orderId: input.orderId}
+
+workflow bookTrip(input):                                    // run "scope-moved", version 1
+  saga({}, async (s) => {})                                  // s-1, empty: it closes after the next call
+  await activity("hotel.book", {tripId: input.tripId})       // outside any scope
+
+workflow bookTrip(input):                                    // its second version, replayed by worker B
+  await saga({}, async (s) =>                                // s-1
+      await s.activity("hotel.book", {tripId: input.tripId}))           // now in s-1`,
+    runs: [
+      ['main', 'a changed target: email.send became sms.send.'],
+      ['scope-moved', 'a changed saga scope: hotel.book moved into the saga s-1, its kind and target unchanged.'],
+    ],
     shows: [
       'Worker A ran activations 1 and 2 with the first version. Worker B, cold, takes task 3, replays from journal',
       '  sequence 1 and makes sms.send where the history has the record of email.send at command 2.',
       'The report (FailWorkflowTask, cause NONDETERMINISM): command number 2, actual kind COMMAND_ACTIVITY, actual',
       '  target sms.send, the code digest; no payload. The run goes under review at once.',
+      'scope-moved: the record of command 2 has no saga_scope (HistoryCommandRecord.saga_scope empty) and worker B makes',
+      '  hotel.book in s-1. The report names command 2, kind COMMAND_ACTIVITY, target hotel.book and actual_saga_scope',
+      '  s-1 (Decision 044-244); a report whose scope is outside `^s-[1-9][0-9]{0,9}$` has it dropped by the server.',
     ],
     assumptions: [
       'The code digest names the code, so the second version is registered under the run\'s digest by the conformance',
       '  harness only: it stands for a function that is not deterministic. The report carries the run\'s digest.',
     ],
   });
-  return { doc, runs: [['', r]] };
+  return { doc, runs: [['', r], ['scope-moved', moved]] };
 });
 
 scenario('code-patch-and-move', (name) => {

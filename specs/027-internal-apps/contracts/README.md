@@ -10,5 +10,5 @@
 | [errors.md](errors.md) | `Error.details.reason` description in the OpenAPI (T027-004) | No new `Error.code` |
 
 Unchanged by this feature: `workflow.schema.json` (no IR change), `worker.proto` and its baseline (no
-protocol minor), `events.asyncapi.yaml` and `events.baseline.json` (no message), the five SDKs'
+protocol minor), `events.asyncapi.yaml` and `events.baseline.json` (no message), the six SDKs'
 public surface.

@@ -137,3 +137,38 @@ fn each_down_migration_restores_the_capability_list_before_its_up() {
         );
     }
 }
+
+/// The review of 2026-11-25 (decision D006-100): a migration that takes `ACCESS EXCLUSIVE` on a table of the registry (its
+/// `ALTER TABLE ... CHECK`) holds it to its commit, and every heartbeat and registration waits for it; so such a migration must
+/// not also read the journal (an index build over `run_events`, a scan), and a migration that reads the journal must not alter
+/// a registry table. A rollback (a down) runs on a quiesced fleet and may do both.
+#[test]
+fn no_up_migration_alters_a_registry_table_and_reads_the_journal() {
+    const REGISTRY: [&str; 3] = [
+        "ALTER TABLE serving_instances",
+        "ALTER TABLE platform_requirements",
+        "ALTER TABLE platform_requirement_history",
+    ];
+    let mut errors = Vec::new();
+    for up in migrations(".up.sql") {
+        let name = name_of(&up);
+        // the registry and the journal before the lease withdrawal never met in one migration; the rule is the follow-up's
+        if name.as_str() < "20270211000000" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&up).expect("a migration");
+        let code: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let alters = REGISTRY.iter().any(|statement| code.contains(statement));
+        if alters && code.contains("run_events") {
+            errors.push(name);
+        }
+    }
+    assert!(
+        errors.is_empty(),
+        "these migrations hold a registry table while they read the journal: {errors:?}"
+    );
+}

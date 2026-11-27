@@ -99,7 +99,8 @@ pub use scoped_timers::{
 };
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
-    LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
-    RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn,
-    derived_settles_drain, retry_wait_holds_drain, scope_final_status,
+    LoopIterationRestore, LoopPhase, LoopState, ReportFence, RunChainState, RunId, RunState,
+    RunStatus, RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus,
+    WaitingOn, derived_settles_drain, report_fence_allows, retry_wait_holds_drain,
+    scope_final_status,
 };

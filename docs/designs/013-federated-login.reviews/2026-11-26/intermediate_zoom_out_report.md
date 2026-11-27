@@ -1,0 +1,19 @@
+# egm-review, Stage 8 (Intermediate Zoom Out) of design 013 (2026-11-26)
+
+Doc: docs/designs/013-federated-login.md
+Reviewed-commit: 88b3427f
+Reviewer: egm-review (Stage 8, egm-zoom-out)
+EGM-hash: 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+Note: condensed by the author to one paragraph per finding, every severity, location and fix kept. The reviewer found the core structure sound (the broker, the session check folded into the per-request membership read, one process) and the Stage 5 cuts holding; the findings concern what later fixes added.
+Counts: Blocker 0, Major 4, Nit 6
+
+1. **Major. Requirements 013-001, 013-019; Technical Plans 3, 4 and 6; Decision 013-014.** Letting an administrator change an active connection's subject rule and tenant restriction added a whole revocation path (`identity_revision` on connections and sessions, a join predicate, an activation branch, a batch pass) for a change that is unsafe in itself: a new subject rule makes every external identity stop matching (duplicate members), and the tenant restriction defines who the provider's people are. Fix: both immutable with the issuer; activation never revokes; the path goes.
+2. **Major. Requirements 013-010, 013-019; Technical Plans 4 and 13.** Two revocation mechanisms: a disable is one row plus batched marking, a raised context revokes every non-meeting session in the administrator's transaction (unbounded). The session already records its context, so a predicate in the per-request check refuses them at once. Fix: the predicate; raising writes the connection row only.
+3. **Major. Decision 013-020, the plan, Tasks 013-9 to 013-12 and 013-16, Success criterion 013-001.** Milestones are labels on parts of tasks, so no server task can be ticked before C, which waits for feature 029; no release rule if 029 slips; A carries most review additions and its journey covers none of the CLI, the context or the member routes. Fix: tasks grouped by milestone; A, B and D are 0.3.0 and C ships with 029; the context moves to D; each journey covers its milestone.
+4. **Major. Technical Plans 3, 4 and 12; Requirement 013-025.** The sealed attempt added a symmetric-key lifecycle (a `SEALING` kind in a signing-key table, a command group, a keep-for-opening rule) where `KeyRing` of `crates/infra-secrets/src/lib.rs` already seals with AES-256-GCM, opens with any key of the ring, binds associated data and documents the rotation order. Fix: a `KeyRing` in the identity mount; remove the `SEALING` kind and the command group.
+5. **Nit. Requirement 013-018, Task 013-9.** Database-result reads are already capped at 30 seconds (`database_results.rs:46-51`); only blob uploads (600 seconds, `blobs.rs:35`, bounded at 129-132) needed the session bound. Fix: blobs only.
+6. **Nit. Requirement 013-032, Technical Plans 7 and 10, Rollout.** `identity.federation` and `identity.scim` always agree, and `config.json` is a third signal of the same fact. Fix: one name and one mapping for both.
+7. **Nit. Technical Plan 12, Rollback.** The engine reads the federation setting only to list the capability, though federation turns on nothing in it (`apps/execution-engine/src/capabilities.rs:4-8`). Fix: the engine lists it unconditionally.
+8. **Nit. Requirement 013-007, Technical Plan 9, Tasks 013-3, 013-4.** A nine-value `break` switch duplicates the per-rule unit tests. Fix: keep it for `alg`, `nonce` and `acr` only.
+9. **Nit. Requirements 013-001, 013-013.** Staging covers the provisioning policy and default role, which a test sign-in proves nothing about. Fix: stage only the sign-in path.
+10. **Nit. Technical Plan 6, Risks, Constitution Check VII, Gap 013-014.** The silence alert fires on a quiet, healthy directory, and the convergence argument assumes periodic resynchronization that Okta does not do. Fix: count consecutive SCIM errors; restate convergence at the provider's next change; fixtures confirm `If-Match`.
