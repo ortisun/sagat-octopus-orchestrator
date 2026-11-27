@@ -615,6 +615,17 @@ class Scope(unittest.TestCase):
         decision = self.decide()
         self.assertEqual((decision["frontend"], decision["scripts"]), ("true", "true"))
 
+    def test_a_contract_an_sdk_test_reads_selects_that_sdk(self):
+        # The TypeScript fake server serves the golden corpus of design 044 (Decision 044-262); every SDK compares its
+        # packaged worker.proto with the canonical one, so a contract-only change still runs those SDK tests.
+        self.write("specs/044-workflow-as-code/contracts/goldens/scenarios/s/commands.json", "{}\n")
+        self.commit()
+        self.assertEqual(self.decide()["sdks"], "typescript")
+        self.base = self.commit("nothing")
+        self.write("specs/001-platform-foundation/contracts/worker.proto", "syntax = \"proto3\"; // changed\n")
+        self.commit()
+        self.assertEqual(set(self.decide()["sdks"].split()), {"typescript", "python", "go", "dotnet", "java", "rust"})
+
     def test_a_change_elsewhere_flags_neither(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()

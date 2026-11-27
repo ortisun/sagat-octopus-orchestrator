@@ -75,6 +75,13 @@ BUDGET_SUITES = ("integration_claim_transition_efficiency",)
 LAKE_SUITES = ("integration_iceberg_writes", "fault_iceberg_writes", "e2e_iceberg_writes", "perf_iceberg_writes")
 STEP_LOG_SUITES = ("integration_step_logs",)
 STEP_LOG_SERVER_SUITES = STEP_LOG_SUITES + BUDGET_SUITES + ("contract_platform_foundation",)
+# Contracts that the tests of an SDK read, so that a change of the contract alone runs that SDK's checks: the golden
+# corpus of design 044 is served by the TypeScript fake server (Decision 044-262), and every SDK compares its packaged
+# copy of the worker protocol with the canonical one.
+CONTRACT_SDKS = (
+    (re.compile(r"specs/044-workflow-as-code/contracts/goldens/.*"), ("typescript",)),
+    (re.compile(r"specs/001-platform-foundation/contracts/worker\.proto"), SDK_LANGUAGES),
+)
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
@@ -445,6 +452,10 @@ def scope(root, base, head, targets, workspace):
                     decision.reasons.append((name, f"{rel} is a contract the package reads"))
             # A harness may also be tied to a contract (the worker protocol of design 041, task T041-32).
             harnesses(rel)
+            for pattern, languages in CONTRACT_SDKS:
+                if pattern.fullmatch(rel):
+                    decision.sdks.update(languages)
+                    decision.reasons.append(("sdks " + " ".join(languages), f"{rel} is a contract their tests read"))
             continue
         if MARKDOWN.fullmatch(rel):
             continue

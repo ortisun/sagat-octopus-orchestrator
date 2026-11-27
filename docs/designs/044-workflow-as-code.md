@@ -537,7 +537,9 @@ graph declares, and the versioning rules that keep code and history together.
   secret. Another tenant's run, history, update, query, version or key is indistinguishable from a missing one. No
   payload, secret or worker-supplied free text appears in a review cause, a nondeterminism report, a metric or a log;
   worker-supplied identifiers (an exception type, an actual target, an actual saga scope, a marker identifier) appear
-  only after their pattern is checked, and are stored as `pii` where a review or the Studio shows them.
+  only after their pattern is checked, and are stored as `pii` where a review or the Studio shows them; a marker
+  identifier, a code constant by contract that a careless function could still build from data (Decision 044-258), is
+  never a log field or a metric label.
 
 ### Success criteria
 
@@ -927,7 +929,8 @@ setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
 sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
   // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
-  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258)
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258).
+  // A code constant, never data: it is recorded unclassified in the history, the chain and reports
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
 requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
@@ -1135,8 +1138,10 @@ A code version is a workflow document of the additive v1 schema in which the top
   `schema`.
 - `state` keeps the IR's form (a closed `schema`, an `initial` expression) and, in a code version only, `maxBytes`: the
   most bytes the declared state takes as RFC 8785 JSON, 1 to 131,072 (128 KiB), 65,536 when absent; the version's
-  workflow leases carry it as `state_max_bytes`, a start whose evaluated `initial` is over it is refused `422
-  VALIDATION_FAILED`, and a version that declares no state has a bound of 0 (Decision 044-257). `state.updates` of a code version are the
+  workflow leases carry it as `state_max_bytes`, a run whose evaluated `initial` is over it is not created (the check
+  sits in the run creation that every start shares: a start, Signal-with-Start and Update-with-Start, a schedule's or
+  a trigger's start, a batch start, a child's start, a reset and a successor; a request is refused `422
+  VALIDATION_FAILED`, an engine-made start fails as it does for an input outside the input schema), and a version that declares no state has a bound of 0 (Decision 044-257). `state.updates` of a code version are the
   code variant of the IR's update: `argsSchema`, `disclosure` and `resultSchema` required; `validate`, `state` and
   `result` absent, because the function validates and handles the update (section 8.2). `state.queries` keep their
   expression form: they are the engine-answered queries.
@@ -1269,12 +1274,22 @@ version (Requirement 044-026).
      deferral record's sequence), the blob-reference check accepts a blob held by the run's latest deferral record,
      acceptance commits it, and the run's end releases it; a deferral of a deferral moves the hold to the newer record.
      A deferred `complete` holds its output whatever its carrier: an output that travelled inline is written by the
-     server, in the deferral's transaction, as a `COMMAND_VALUE` blob of the run's `~workflow` step held the same way
-     and charged to the retained bytes once (Decision 044-259). A re-emitted `complete` may name its output by its
-     descriptor alone, which the server resolves to the blob the latest deferral holds, so a cold worker uploads nothing
-     and nothing is charged twice; it may also carry the output again (inline, or a new blob with the same descriptor),
-     and the server still accepts the held blob and never commits the re-sent one, which the blob pass releases as an
-     unused upload. A continue-as-new hashes its input and state themselves, so its re-emission carries them inline, as
+     server, in the transaction of the run's first deferral of that `complete`, as a `COMMAND_VALUE` blob of the run's
+     `~workflow` step held the same way (Decision 044-259). Its bytes are charged to the tenant's content quota in that
+     transaction (a refusal is `STORAGE_QUOTA_EXCEEDED`, counted with its backoff, and the deferral is not recorded),
+     never to the run's retained bytes, which a terminal output does not meet; at acceptance the charge becomes the
+     output's, never charged again, and the run's end releases blob and charge together. A deferral of a deferral
+     writes and charges nothing: its body digest matched, so the held bytes are the re-emitted ones, and only the hold
+     moves to the newer record. A run therefore holds at most one blob, enforced by a partial unique index on
+     `blobs (run_id) WHERE held_by_seq IS NOT NULL` (Task 044-6), and held blobs are outside the tenant's 1,024
+     command-value ceiling below. A re-emitted `complete` may name its output by its descriptor alone, which the server
+     resolves through the deferral record to the blob it holds, so a cold worker uploads nothing and nothing is
+     charged twice; it may also carry the output again (inline, or a new blob with the same descriptor), and the server
+     still accepts the held blob and never commits the re-sent one, which the blob pass releases as an unused upload. A
+     carrier whose descriptor fields disagree with its bytes or its blob is `COMMAND_INVALID`. Resolving through the
+     deferral record is not naming a blob: the refusal of a named blob whose carrier schema classifies a field `secret`
+     below is unchanged, and a held output with such a field completes the run and stays redacted for every reader, as
+     any output does. A continue-as-new hashes its input and state themselves, so its re-emission carries them inline, as
      its first emission did; a descriptor alone there is `COMMAND_INVALID`. A blob
      whose carrier schema classifies any field `secret` is never delivered to a workflow, query or replay-check token:
      its `HistoryEvent` payload is the placeholder `EXTERNAL_CONTENT_NOT_INSPECTED`, `ReadBlob` refuses it and no
@@ -2708,7 +2723,8 @@ a replaying worker derives from `ReadHistory`.
   checks of `sagat_move_code_run`, the widened check of `workflow_versions.classification_rules`, the partial index of
   the waiting workflow-task steps, `steps_code_can_act_idx`, `run_initiators` and the two columns of
   `approval_requests`, `runs_stop_reason_valid` admitting `Completed`, the `profile` of
-  `worker_binding_workflow_types`.
+  `worker_binding_workflow_types`, and the partial unique index `blobs (run_id) WHERE held_by_seq IS NOT NULL` (one held
+  blob per run, Decision 044-259).
   Precondition: Gap 044-026 answered (design 045's hold function without a capability list in its body).
   Files: create `crates/infra-postgres/migrations/<timestamp>_workflow_as_code.up.sql` and its down, and
   `<timestamp + 100>_workflow_as_code_validate.up.sql` and its down; modify
@@ -2723,6 +2739,7 @@ a replaying worker derives from `ReadHistory`.
   `...::a_graph_node_named_c_1_completes_and_validation_passes` (the `steps.code_step` column),
   `...::the_alert_kind_check_admits_workflow_task_unserved`, `...::sagat_app_may_select_and_insert_code_workflow_types`,
   `...::a_command_value_blob_is_owned_by_the_lease_and_held_by_a_deferral`,
+  `...::a_run_holds_at_most_one_blob` (the partial unique index of Decision 044-259),
   `...::two_publications_of_one_type_race_and_one_is_refused` (barrier), `...::sagat_move_code_run_refuses_a_dry_run_item`,
   `...::the_down_migration_refuses_while_the_requirement_or_its_history_exists`,
   `...::the_move_function_accepts_a_move_off_a_review_and_one_not_under_review`,
@@ -2850,6 +2867,12 @@ a replaying worker derives from `ReadHistory`.
   `...::a_re_emitted_complete_names_an_output_held_inline_by_its_descriptor_alone` (Decision 044-259; the run's output is
   the held bytes), `...::a_re_emitted_complete_that_carries_its_output_again_commits_the_held_blob_only`,
   `...::a_re_emitted_continue_as_new_with_a_descriptor_alone_is_invalid`,
+  `...::a_deferred_inline_output_is_charged_to_the_content_quota_once`,
+  `...::a_deferral_over_the_content_quota_is_counted_with_backoff`,
+  `...::a_complete_deferred_twice_with_its_output_inline_holds_one_blob`,
+  `...::a_cancelled_run_releases_its_held_output_and_its_charge`,
+  `...::a_deferred_complete_whose_output_has_a_secret_field_completes_and_stays_redacted`,
+  `...::a_carrier_whose_descriptor_disagrees_with_its_bytes_is_invalid`,
   `...::a_command_naming_a_blob_of_another_run_is_refused`, `...::a_deferral_answers_ok_with_its_cause`,
   `...::the_first_workflow_task_delivers_the_input_in_run_started`,
   `...::a_look_back_wait_satisfied_in_the_same_completion_is_not_unseen`,
@@ -3091,7 +3114,10 @@ a replaying worker derives from `ReadHistory`.
   `...::an_update_receipt_of_another_principal_is_not_found`, `...::a_repeated_post_of_another_principal_reveals_nothing`,
   `...::a_lost_update_response_replays_after_authorization_is_checked_again`, `...::update_with_start_admits_in_the_creating_transaction`,
   `...::update_with_start_journals_run_started_first`, `...::signal_with_start_journals_run_started_first` (Decision 044-246),
-  `...::a_start_whose_initial_state_is_over_max_bytes_is_refused` (Decision 044-257),
+  `...::a_start_whose_initial_state_is_over_max_bytes_is_refused`, `...::a_child_start_whose_initial_state_is_over_max_bytes_is_refused`,
+  `...::a_successor_whose_initial_state_is_over_max_bytes_is_refused` and
+  `...::a_schedule_fire_whose_initial_state_is_over_max_bytes_is_refused` (Decision 044-257: the check sits in the run
+  creation every path shares),
   `...::an_update_beyond_the_backlog_is_refused_429`, `...::update_waits_beyond_the_process_bound_are_refused`,
   `integration_workflow_as_code::state::a_declared_query_is_answered_with_no_worker`,
   `...::a_set_state_outside_its_schema_is_refused`,

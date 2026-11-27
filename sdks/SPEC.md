@@ -926,7 +926,8 @@ setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
 sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
   // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
-  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258)
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258).
+  // A code constant, never data: it is recorded unclassified in the history, the chain and reports
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
 requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)

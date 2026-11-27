@@ -1078,6 +1078,25 @@ finding was answered.
   044-257); feature 029's counts and the `fail` re-emission in `sdks/SPEC.md` (Nits). Its Nit on `"type": "integer"`
   admitting `4096.0` is settled: the server reads `maxBytes` as an unsigned integer and refuses another number at
   publication, as for every IR byte bound, so a fractional value never reaches a lease.
+- **D044-263** (2026-11-27) The independent security review of the same slice (no Blocker, two Major, four Minor, three
+  Nits, one suspicion) is answered by fixes (a security finding is always fixed): a held inline output is charged to
+  the tenant's content quota in the transaction of the first deferral, never to the run's retained bytes, a refusal is
+  `STORAGE_QUOTA_EXCEEDED` counted with its backoff, the charge becomes the output's at acceptance and is released with
+  the blob at the run's end (Major 1); a deferral of a deferral writes and charges nothing, so a run holds at most one
+  blob, enforced by a partial unique index of Task 044-6 and outside the tenant's 1,024 command-value ceiling (Major
+  2); a held output is resolved through the deferral record, not named, so the refusal of a named `secret`-carrier blob
+  is unchanged and such an output completes and stays redacted (Minor 1); a change of the golden corpus alone now runs
+  the TypeScript SDK's checks, and a change of the canonical `worker.proto` alone runs all six SDKs' (Minor 2, and the
+  suspicion, confirmed by reading the selector: `decision.sdks` was set only for paths under `sdks/<language>/`), held
+  by `test_a_contract_an_sdk_test_reads_selects_that_sdk`; the initial state's bound sits in the run creation that
+  every start path shares, with tests named for a child, a successor and a schedule fire (Minor 3); a marker
+  identifier is a code constant by contract and is never a log field or a metric label (Minor 4, `sdks/SPEC.md` 12.1
+  and Non-functional requirement 044-007); `actual_saga_scope` is dropped on a kind other than an activity or a script,
+  and descriptor fields that disagree with their carrier are `COMMAND_INVALID` (Nits 1 and 2). Its third Nit is
+  settled: a carried `null` is the absence of state, which a bound of 0 admits; the successor's bound is checked by the
+  server (Task 044-36), the generator's check against the current version being the corpus's own consistency; and the
+  fake's refusal of an inline re-send of a blob-held output cannot meet the corpus, whose only blob-held output is
+  425,790 bytes, beyond the 192 KiB of inline values.
 
 ## 3. Gaps
 
