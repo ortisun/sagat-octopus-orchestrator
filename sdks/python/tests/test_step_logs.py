@@ -352,3 +352,146 @@ def test_the_prefilter_finds_every_value_wherever_it_starts() -> None:
             assert secrets.redact(text) == "-" * offset + "[REDACTED]" + "+" * (25 - offset), (value, offset)
     assert secrets.redact("QRSTU" + "V") == "[REDACTED]"
     assert secrets.redact("QRSTU") == "QRSTU"
+
+
+# ------------------------------------------------------------------------------------------------ the security review
+
+
+ESCAPED = "p@ss\\word1"  # repr doubles its backslash: only a copy redacted before it is printed hides it
+
+
+def no_trace_of_the_secret(text: str) -> bool:
+    return "p@ss" not in text and "word1" not in text
+
+
+def escaping_set() -> SecretSet:
+    secrets = SecretSet()
+    secrets.add([ESCAPED.encode()])
+    return secrets
+
+
+def test_a_secret_python_escapes_is_redacted_in_any_argument_or_field_and_what_cannot_be_copied_fails_closed() -> None:
+    import collections
+    import dataclasses
+    import types
+
+    secrets = escaping_set()
+    Pair = collections.namedtuple("Pair", "user password")
+
+    @dataclasses.dataclass
+    class Later:
+        password: str
+        later: str = dataclasses.field(init=False, repr=False)
+
+    class Slotted:
+        __slots__ = ("password",)
+
+        def __init__(self) -> None:
+            self.password = ESCAPED
+
+        def __repr__(self) -> str:
+            return f"Slotted({self.password!r})"
+
+    deep: Any = ESCAPED
+    for _ in range(80):
+        deep = [deep]
+    arguments: list[tuple[str, tuple[Any, ...]]] = [
+        ("cfg %s", (collections.OrderedDict(password=ESCAPED),)),
+        ("cfg %r", (Pair("me", ESCAPED),)),
+        ("cfg %r", (types.SimpleNamespace(password=ESCAPED),)),
+        ("cfg %r", (Later(ESCAPED),)),
+        ("cfg %r", (Slotted(),)),
+        ("cfg %r", (deep,)),
+        ("cfg %r", (ValueError("refused", ESCAPED),)),
+        ("cfg %(c)r", ({"c": types.SimpleNamespace(password=ESCAPED)},)),
+    ]
+    for msg, args in arguments:
+        message = build_record(1, 1, 20, msg, args, None, "", secrets).message
+        assert no_trace_of_the_secret(message), (msg, message)
+    assert build_record(1, 1, 20, "cfg %r", (Pair("me", ESCAPED),), None, "", secrets).message == (
+        "cfg Pair(user='me', password='[REDACTED]')"
+    )
+    assert build_record(1, 1, 20, "cfg %r", (Slotted(),), None, "", secrets).message == "cfg <Slotted>"
+    built, _ = build_fields(
+        {
+            "namespace": types.SimpleNamespace(password=ESCAPED),
+            "ordered": collections.OrderedDict(password=ESCAPED),
+            "later": Later(ESCAPED),
+            "slotted": Slotted(),
+            "deep": deep,
+            "pair": Pair("me", ESCAPED),
+        },
+        secrets,
+    )
+    for key, _member, value in fields_of(built):
+        assert no_trace_of_the_secret(str(value)), (key, value)
+    assert dict((key, value) for key, _member, value in fields_of(built))["namespace"] == (
+        "namespace(password='[REDACTED]')"
+    )
+
+
+def test_a_shared_structure_is_copied_once_not_once_per_path() -> None:
+    shared: Any = (ESCAPED,)
+    for _ in range(40):
+        shared = (shared, shared)  # 2**40 paths, 41 distinct tuples
+    built, _ = build_fields({"shared": shared}, escaping_set())
+    assert no_trace_of_the_secret(str(fields_of(built)))
+
+
+def test_the_prefilter_of_a_long_value_stays_small() -> None:
+    import os
+    import tracemalloc
+
+    value = os.urandom(32 * 1024).hex().encode()  # 64 KiB of distinct grams
+    tracemalloc.start()
+    try:
+        secrets = SecretSet()
+        secrets.add([value])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * 1024 * 1024, peak
+    text = value.decode()
+    assert secrets.redact("a " + text + " b") == "a [REDACTED] b"
+
+
+def test_a_failed_add_commits_nothing_and_a_second_add_still_redacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    secrets = SecretSet()
+    secrets.add([b"first-value-1"])
+    real = step_logs._Prefilter
+    calls = 0
+
+    def failing(values: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise MemoryError
+        return real(values)
+
+    monkeypatch.setattr(step_logs, "_Prefilter", failing)
+    with pytest.raises(MemoryError):
+        secrets.add([b"second-value-2"])
+    assert repr(secrets) == "SecretSet(1 values)", "nothing of the failed add is kept"
+    assert secrets.add([b"second-value-2"]) is False
+    assert secrets.redact("first-value-1 second-value-2") == "[REDACTED] [REDACTED]"
+
+
+def test_no_name_of_the_module_is_a_redaction_with_the_process_set() -> None:
+    assert not hasattr(step_logs, "_capture_record")
+    for name, value in vars(step_logs).items():
+        if callable(value) and getattr(value, "__module__", None) == step_logs.__name__:
+            closure = getattr(value, "__closure__", None) or ()
+            names = getattr(getattr(value, "__code__", None), "co_freevars", ())
+            assert "record" not in names or name == "new_attempt_capture", name
+            assert all(not isinstance(cell.cell_contents, SecretSet) for cell in closure) or name in (
+                "add_process_secrets",
+                "process_capture_stopped",
+                "new_attempt_capture",
+            ), name
+
+
+def test_the_text_accessor_of_a_secret_decodes_leniently_as_the_set_does() -> None:
+    from sagat_octopus_orchestrator.worker.activity import Secrets
+
+    raw = b"\xff" + b"s3cr3t-token-42"
+    assert Secrets({"k": raw}).text("k") == step_logs.lenient_text(raw) == "�s3cr3t-token-42"

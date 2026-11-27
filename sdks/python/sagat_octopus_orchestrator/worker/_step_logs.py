@@ -11,9 +11,13 @@ value may log again), and every send runs on the event loop.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import copy
-import dataclasses
+import datetime
+import decimal
+import enum
+import fractions
 import json
 import logging
 import math
@@ -23,6 +27,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from types import FrameType
@@ -178,22 +183,25 @@ class Redactor(Protocol):
 class _Prefilter:
     """Whether any value of the set occurs in a text, in one pass over a sample of the text's q-grams.
 
-    Every value is at least ``shortest`` characters long; every q-gram of every value is indexed; the text is sampled at
-    every ``stride``-th position, ``stride = shortest - q + 1``, so an occurrence of any value covers a sampled q-gram
-    whole. The sample is a necessary condition: when no sampled q-gram is indexed, no value occurs, and the text is the
-    result of the rule unchanged; when one is, the rule is applied in full. A per-character automaton written in Python
-    scans an 8 KiB text in about 0.45 ms; this sample does it in about 0.03 ms.
+    Every value is at least ``shortest`` characters long. The text is sampled at every ``step``-th position, and the
+    q-grams of every value at its offsets 0 to ``step - 1`` are indexed: an occurrence of a value at position ``p``
+    holds exactly one sampled position ``p + j`` with ``j < step``, whose q-gram is the value's q-gram at offset ``j``,
+    indexed since ``j + q <= step - 1 + q <= shortest``. So when no sampled q-gram is indexed, no value occurs and the
+    text is the result of the rule unchanged; when one is, the rule is applied in full. ``q`` and ``step`` are at most
+    16, so the index holds at most 16 grams of at most 16 characters a value, whatever its length. A per-character
+    automaton written in Python scans an 8 KiB text in about 0.45 ms; this sample does it in about 0.03 ms.
     """
 
-    __slots__ = ("grams", "ordered", "q", "shortest", "stride")
+    __slots__ = ("grams", "ordered", "q", "shortest", "step")
 
     def __init__(self, values: tuple[str, ...]) -> None:
         shortest = min(len(value) for value in values)
-        q = min(shortest, max(6, (shortest + 1) // 2))
+        q = min(shortest, max(6, min(16, (shortest + 1) // 2)))
+        step = min(16, shortest - q + 1)
         self.shortest = shortest
         self.q = q
-        self.stride = shortest - q + 1
-        self.grams = frozenset(value[i : i + q] for value in values for i in range(len(value) - q + 1))
+        self.step = step
+        self.grams = frozenset(value[i : i + q] for value in values for i in range(step))
         # The longest first by UTF-8 bytes; equal lengths keep the order they joined the set (a stable sort).
         self.ordered = tuple(sorted(values, key=lambda value: -len(value.encode("utf-8"))))
 
@@ -201,13 +209,19 @@ class _Prefilter:
         if len(text) < self.shortest:
             return False
         q = self.q
-        return not self.grams.isdisjoint([text[i : i + q] for i in range(0, len(text) - q + 1, self.stride)])
+        return not self.grams.isdisjoint([text[i : i + q] for i in range(0, len(text) - q + 1, self.step)])
+
+
+def lenient_text(value: bytes | bytearray | memoryview) -> str:
+    """Bytes as UTF-8 text, each invalid sequence replaced by U+FFFD: the text ``Secrets.text`` hands out, the text a
+    byte buffer is captured as, and the text a value joins the secret set as (section 6.7)."""
+    return bytes(value).decode("utf-8", "replace")
 
 
 class SecretSet:
     """Values ``ResolveSecrets`` returned (``sdks/SPEC.md`` section 6.7): distinct values of at least 6 UTF-8 bytes, at
-    most 1,024 of them or 256 KiB. Never printed, pickled or copied. The process's own set is not reachable from this
-    module: only ``add_process_secrets`` adds to it."""
+    most 1,024 of them or 256 KiB. Never printed, pickled or copied. The process's own set is bound to no name of this
+    module: ``add_process_secrets`` adds to it."""
 
     __slots__ = ("_bytes", "_filter", "_full", "_known", "_lock", "_values")
 
@@ -224,32 +238,36 @@ class SecretSet:
         return self._full
 
     def add(self, values: Iterable[bytes]) -> bool:
-        """Adds what one resolution returned; True when the set stopped capture with it (once)."""
+        """Adds what one resolution returned; True when the set stopped capture with it (once). All or nothing: the
+        new values and their prefilter are built aside and committed together, so a failure (a ``MemoryError``) keeps
+        no value the set would not redact."""
         stopped = False
         with self._lock:
-            changed = False
+            held = list(self._values)
+            known = set(self._known)
+            total = self._bytes
+            full = self._full
             for raw in values:
-                value = bytes(raw)
-                try:
-                    text = value.decode("utf-8")
-                except UnicodeDecodeError:
-                    # Not UTF-8: the text an activity can log is its lenient decoding (section 6.7).
-                    text = value.decode("utf-8", "replace")
+                # Not UTF-8: the text an activity can log is its lenient decoding, and it is what the bounds count.
+                text = lenient_text(raw)
                 size = len(text.encode("utf-8"))
-                if size < SECRET_MIN_BYTES or text in self._known:
+                if size < SECRET_MIN_BYTES or text in known:
                     continue
-                if self._full or len(self._values) + 1 > SECRET_VALUES or self._bytes + size > SECRET_BYTES:
-                    if not self._full:
+                if full or len(held) + 1 > SECRET_VALUES or total + size > SECRET_BYTES:
+                    if not full:
                         stopped = True
-                    self._full = True
+                    full = True
                     continue
-                self._values.append(text)
-                self._known.add(text)
-                self._bytes += size
-                changed = True
-            if changed:
-                self._filter = _Prefilter(tuple(self._values))
+                held.append(text)
+                known.add(text)
+                total += size
+            prefilter = _Prefilter(tuple(held)) if len(held) != len(self._values) else self._filter
+            self._values, self._known, self._bytes, self._filter, self._full = held, known, total, prefilter, full
         return stopped
+
+    def stop(self) -> None:
+        """Stops capture for the process: a resolution the set could not take fails closed."""
+        self._full = True
 
     def redact(self, text: str) -> str:
         """The rule of ``sagat_domain::scripts::redact`` without its shapes, equal to it on every text (section 6.9):
@@ -290,19 +308,93 @@ class _NotEncoded(Exception):
 def _bytes_text(value: object) -> str | None:
     """A byte buffer as its UTF-8 text, each invalid sequence replaced by U+FFFD: never numbers or base64."""
     if isinstance(value, (bytes, bytearray, memoryview)):
-        return bytes(value).decode("utf-8", "replace")
+        return lenient_text(value)
     return None
 
 
+def _type_name(value: object) -> str:
+    try:
+        return str(type(value).__name__)
+    except Exception:
+        return "object"
+
+
+class _Opaque:
+    """What stands for a value the copy cannot open: its type's name, never its text."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, value: object) -> None:
+        self._text = f"<{_type_name(value)}>"
+
+    def __repr__(self) -> str:
+        return self._text
+
+    __str__ = __repr__
+
+
+class _Exception:
+    """An exception as ``str`` and ``repr`` print it, from its redacted arguments."""
+
+    __slots__ = ("_repr", "_str")
+
+    def __init__(self, name: str, args: tuple[Any, ...]) -> None:
+        self._str = "" if not args else str(args[0]) if len(args) == 1 else str(args)
+        self._repr = f"{name}({repr(args[0]) if len(args) == 1 else repr(args)[1:-1]})"
+
+    def __repr__(self) -> str:
+        return self._repr
+
+    def __str__(self) -> str:
+        return self._str
+
+
+# Values whose text cannot hold a string they were handed: kept as they are.
+_PLAIN = (
+    type(None),
+    bool,
+    int,
+    float,
+    complex,
+    decimal.Decimal,
+    fractions.Fraction,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    datetime.tzinfo,
+    uuid.UUID,
+    enum.Enum,
+    range,
+    type,
+)
+
+
+def _has_slots(kind: type) -> bool:
+    for cls in kind.__mro__:
+        names = cls.__dict__.get("__slots__", ())
+        names = (names,) if isinstance(names, str) else names
+        if any(name not in ("__dict__", "__weakref__") for name in names):
+            return True
+    return False
+
+
 def _redacted_copy(value: Any, secrets: Redactor, as_json: bool, memo: dict[int, Any], depth: int) -> Any:
-    """A copy of a value in which every string is redacted, so that an encoder's or ``repr``'s escaping of ``"``, ``\\``
-    or a control character cannot hide a value from redaction (section 6.9).
+    r"""A copy of a value in which every string is redacted, so that an encoder's or ``repr``'s escaping of ``"``, ``\``
+    or a control character cannot hide a value from redaction (section 6.9). It fails closed: a value it cannot open
+    (no mapping, sequence, set, named tuple, exception or ``vars()`` to walk), a value nested deeper than 64, and a copy
+    that raises stand for ``<TypeName>``; nothing uncopied is ever printed. Each value is copied once (``memo``), so a
+    structure shared along many paths costs one walk.
 
     ``as_json`` is the copy a field value is encoded from: its keys are redacted too and a byte buffer, at any depth,
-    is its redacted text. Otherwise it is the copy of a message's arguments, which keeps every type (a byte buffer stays
-    bytes, a mapping's keys stay what ``%(name)s`` looks up)."""
-    if depth > _COPY_DEPTH:
-        raise _NotEncoded
+    is its redacted text. Otherwise it is the copy of a message's arguments, which keeps every type it can (a byte
+    buffer stays bytes, a mapping's keys stay what ``%(name)s`` looks up)."""
+    try:
+        return _copy_of(value, secrets, as_json, memo, depth)
+    except Exception:
+        return _Opaque(value)
+
+
+def _copy_of(value: Any, secrets: Redactor, as_json: bool, memo: dict[int, Any], depth: int) -> Any:
     if isinstance(value, str):
         return secrets.redact(str.__str__(value))
     text = _bytes_text(value)
@@ -311,35 +403,50 @@ def _redacted_copy(value: Any, secrets: Redactor, as_json: bool, memo: dict[int,
             return secrets.redact(text)
         redacted = secrets.redact(text)
         return value if redacted == text else redacted.encode("utf-8")
+    if isinstance(value, _PLAIN):
+        return value
+    if depth > _COPY_DEPTH:
+        return _Opaque(value)
     known = memo.get(id(value))
     if known is not None:
         return known
+
+    def inner(item: Any) -> Any:
+        return _redacted_copy(item, secrets, as_json, memo, depth + 1)
+
     kind = type(value)
-    if kind is dict or (as_json and isinstance(value, dict)):
-        out: dict[Any, Any] = {}
-        memo[id(value)] = out
+    made: Any
+    if isinstance(value, Mapping):
+        plain: dict[Any, Any] = {}
+        memo[id(value)] = plain
         for key, item in list(value.items()):
             new_key = secrets.redact(str.__str__(key)) if as_json and isinstance(key, str) else key
-            out[new_key] = _redacted_copy(item, secrets, as_json, memo, depth + 1)
-        return out
-    if kind is list or (as_json and isinstance(value, list)):
-        items: list[Any] = []
-        memo[id(value)] = items
-        items.extend(_redacted_copy(item, secrets, as_json, memo, depth + 1) for item in list(value))
-        return items
-    if kind is tuple or (as_json and isinstance(value, tuple)):
-        return tuple(_redacted_copy(item, secrets, as_json, memo, depth + 1) for item in value)
-    if kind in (set, frozenset):
-        return kind(_redacted_copy(item, secrets, as_json, memo, depth + 1) for item in value)
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        duplicate = copy.copy(value)
-        memo[id(value)] = duplicate
-        for member in dataclasses.fields(value):
-            object.__setattr__(
-                duplicate, member.name, _redacted_copy(getattr(value, member.name), secrets, as_json, memo, depth + 1)
-            )
-        return duplicate
-    return value
+            plain[new_key] = inner(item)
+        made = plain if kind is dict or (as_json and isinstance(value, dict)) else kind(plain)
+    elif isinstance(value, tuple) and hasattr(kind, "_make"):
+        items = [inner(item) for item in value]
+        made = tuple(items) if as_json else kind._make(items)
+    elif isinstance(value, list):
+        listed: list[Any] = []
+        memo[id(value)] = listed
+        listed.extend(inner(item) for item in list(value))
+        made = listed if kind is list or as_json else kind(listed)
+    elif isinstance(value, (tuple, set, frozenset, collections.deque)):
+        items = [inner(item) for item in value]
+        made = tuple(items) if as_json and isinstance(value, tuple) else kind(items)
+    elif isinstance(value, BaseException):
+        made = _Exception(_type_name(value), tuple(inner(item) for item in value.args))
+    elif hasattr(value, "__dict__") and not _has_slots(kind):
+        made = copy.copy(value)
+        if made is value or vars(made) is vars(value):
+            return _Opaque(value)
+        memo[id(value)] = made
+        for name, item in list(vars(value).items()):
+            object.__setattr__(made, name, inner(item))
+    else:
+        return _Opaque(value)
+    memo[id(value)] = made
+    return made
 
 
 _JSON_KEYS: dict[Any, str] = {True: "true", False: "false", None: "null"}
@@ -391,13 +498,42 @@ def _json_text(value: Any, out: list[str], active: set[int]) -> None:
         raise _NotEncoded
 
 
+_TEXT_NODES = 4096
+"""The values a field's text may print, counted along every path: a structure shared along many paths prints once per
+path, and its text, far past the 2,048 bytes a line's fields hold, would only be dropped."""
+
+
+def _printed_nodes(value: Any, counted: dict[int, int], limit: int) -> int:
+    """How many values the text of a copy prints, counted with every path, up to ``limit``."""
+    known = counted.get(id(value))
+    if known is not None:
+        return known
+    counted[id(value)] = limit  # a cycle prints as much as the limit allows
+    total = 1
+    if isinstance(value, dict):
+        children: Iterable[Any] = list(value.keys()) + list(value.values())
+    elif isinstance(value, (list, tuple, set, frozenset, collections.deque)):
+        children = value
+    else:
+        children = vars(value).values() if hasattr(value, "__dict__") else ()
+    for child in children:
+        total += _printed_nodes(child, counted, limit)
+        if total >= limit:
+            break
+    counted[id(value)] = min(total, limit)
+    return counted[id(value)]
+
+
 def _other_text(value: Any, secrets: Redactor) -> str:
     """A value that is not a scalar: its compact JSON text where JSON holds it, else its string form, both made from
-    the redacted copy (and redacted again with the string)."""
+    the redacted copy (and redacted again with the string); ``<TypeName>`` when neither can be made, or when the text
+    would print more than ``_TEXT_NODES`` values."""
+    duplicate = _redacted_copy(value, secrets, True, {}, 0)
     try:
-        duplicate = _redacted_copy(value, secrets, True, {}, 0)
+        if _printed_nodes(duplicate, {}, _TEXT_NODES) >= _TEXT_NODES:
+            return f"<{_type_name(value)}>"
     except Exception:
-        duplicate = value
+        return f"<{_type_name(value)}>"
     try:
         out: list[str] = []
         _json_text(duplicate, out, set())
@@ -407,7 +543,7 @@ def _other_text(value: Any, secrets: Redactor) -> str:
     try:
         return str(duplicate)
     except Exception:
-        return object.__repr__(value)
+        return f"<{_type_name(value)}>"
 
 
 def _field_value(value: Any, secrets: Redactor) -> tuple[str, Any] | None:
@@ -517,8 +653,10 @@ def format_message(msg: object, args: tuple[Any, ...], secrets: Redactor) -> str
     arguments: Any = args
     if len(args) == 1 and isinstance(args[0], Mapping) and args[0]:
         arguments = args[0]
-    with contextlib.suppress(Exception):
+    try:
         arguments = _redacted_copy(arguments, secrets, False, {}, 0)
+    except Exception:
+        return text  # never formatted from arguments that were not copied
     try:
         return str(text % arguments)
     except Exception:
@@ -581,15 +719,23 @@ def build_record(
 def _process_scope() -> tuple[
     Callable[[Iterable[bytes]], bool],
     Callable[[], bool],
-    Callable[[int, int, int, object, tuple[Any, ...], Any, str], pb.StepLogRecord],
+    Callable[[CaptureHost, CaptureSession, AttemptIdentity, int], AttemptCapture],
 ]:
-    """The process's secret set, which lives for the process (section 6.7, decision D041-164), held by these closures
-    only: the module exposes a way to add to it, whether it is full, and the capture of one record, never a reader of
-    the set or a redaction of a text with it."""
+    """The process's secret set, which lives for the process (section 6.7, decision D041-164), bound to no name of the
+    module: it is held by these closures, which add to it, say whether it is full, and make the capture of an attempt
+    that redacts with it. No module name is the set, reads it or redacts a text with it; CPython's introspection
+    (a function's ``__closure__``, a capture's attributes, ``gc``) can still reach it, which no Python code can
+    prevent."""
     secrets = SecretSet()
 
     def add(values: Iterable[bytes]) -> bool:
-        return secrets.add(values)
+        try:
+            return secrets.add(values)
+        except Exception:
+            # A value the set could not take would go unredacted: capture stops for the process instead.
+            stopped = not secrets.full
+            secrets.stop()
+            return stopped
 
     def stopped() -> bool:
         return secrets.full
@@ -600,13 +746,12 @@ def _process_scope() -> tuple[
         given = extra if isinstance(extra, Mapping) else None
         return build_record(sequence, epoch_ms, level, msg, args, given, exception, secrets)
 
-    return add, stopped, record
+    def new_capture(
+        host: CaptureHost, session: CaptureSession, identity: AttemptIdentity, level: int
+    ) -> AttemptCapture:
+        return AttemptCapture(host, session, identity, level, record)
 
-
-add_process_secrets, process_capture_stopped, _capture_record = _process_scope()
-add_process_secrets.__doc__ = """Adds the values one resolution returned to the process's secret set, before the handler
-can see them; True when the set stopped capture for the process with them (once)."""
-process_capture_stopped.__doc__ = """Whether capture stopped for the process because its secret set is full."""
+    return add, stopped, new_capture
 
 
 class _Held:
@@ -696,7 +841,16 @@ def _jittered(seconds: float) -> float:
 class AttemptCapture:
     """The capture of one attempt: its sequences, its buffer, its sender and, at its end, its carry."""
 
-    def __init__(self, host: CaptureHost, session: CaptureSession, identity: AttemptIdentity, level: int) -> None:
+    def __init__(
+        self,
+        host: CaptureHost,
+        session: CaptureSession,
+        identity: AttemptIdentity,
+        level: int,
+        record: Callable[[int, int, int, object, tuple[Any, ...], Any, str], pb.StepLogRecord],
+    ) -> None:
+        """Made by ``new_attempt_capture``, which hands it the capture of a record with the process's secret set."""
+        self._record = record
         self._host = host
         self._session = session
         self._identity = identity
@@ -745,6 +899,7 @@ class AttemptCapture:
         stack: FrameType | None,
     ) -> None:
         """A logger call (section 6.9, "A call, in order"). Never raises and never waits for the network."""
+        sequence = 0
         try:
             if self._ended or not isinstance(level, int) or wire_level(level) < self._level:
                 return
@@ -767,10 +922,15 @@ class AttemptCapture:
                     self._count("process_bound")
                     return
             # Outside the lock: formatting runs code of the activity, which may log again.
-            record = _capture_record(sequence, epoch_ms, level, msg, args, extra, exception_text(exc_info, stack))
+            record = self._record(sequence, epoch_ms, level, msg, args, extra, exception_text(exc_info, stack))
             self._buffered(record, record.ByteSize())
-        except Exception:
-            pass  # a bug of the capture path costs the record, never the activity
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException:
+            # A failure of the capture path costs the record, never the activity; the record is counted.
+            if sequence:
+                with contextlib.suppress(Exception), self._lock:
+                    self._count("send_failed")
 
     def _buffered(self, record: pb.StepLogRecord, size: int) -> None:
         """Step 7: the record joins the buffer in the order of its sequence, and the call that buffers the 256th record
@@ -1172,3 +1332,10 @@ class AttemptCapture:
     async def send_once(self, batch: _Batch, within: float) -> None:
         """Sends the shutdown batch once, with its own deadline."""
         await self._spawn(batch, once=True, within=within)
+
+
+add_process_secrets, process_capture_stopped, new_attempt_capture = _process_scope()
+add_process_secrets.__doc__ = """Adds the values one resolution returned to the process's secret set, before the handler
+can see them; True when the set stopped capture for the process with them (once)."""
+process_capture_stopped.__doc__ = """Whether capture stopped for the process because its secret set is full."""
+new_attempt_capture.__doc__ = """The capture of one attempt, redacting with the process's secret set."""

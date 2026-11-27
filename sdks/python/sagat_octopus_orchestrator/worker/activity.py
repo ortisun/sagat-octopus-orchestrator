@@ -14,7 +14,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from ..errors import SagatError
-from ._step_logs import AttemptCapture
+from ._step_logs import AttemptCapture, lenient_text
 
 TRACE = 5
 """The level below ``logging.DEBUG`` an activity logs at with ``ctx.log.trace`` (step logs, ``sdks/SPEC.md`` section
@@ -214,8 +214,9 @@ class Secrets:
         return self._get(name)
 
     def text(self, name: str) -> str:
-        """The secret as UTF-8 text."""
-        return self._get(name).decode("utf-8")
+        """The secret as UTF-8 text, each invalid sequence replaced by U+FFFD (``sdks/SPEC.md`` section 6.7): the text
+        the process's secret set redacts."""
+        return lenient_text(self._get(name))
 
     def names(self) -> list[str]:
         return list(self._values or ())
@@ -287,7 +288,9 @@ class _TaskLog(_AdapterBase):
             try:
                 stack = _caller(sys._getframe(2)) if kwargs.get("stack_info") else None
                 capture.log(level, msg, args, kwargs.get("extra"), kwargs.get("exc_info"), stack)
-            except Exception:
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException:
                 pass
         try:
             stacklevel = kwargs.get("stacklevel", 1)

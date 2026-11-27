@@ -45,6 +45,7 @@ from ._step_logs import (
     CaptureSession,
     Outcome,
     add_process_secrets,
+    new_attempt_capture,
     process_capture_stopped,
     warn_once,
 )
@@ -1055,7 +1056,7 @@ class WorkerHost:
             except Exception:
                 return Outcome(status="UNAVAILABLE")
 
-        capture = AttemptCapture(
+        capture = new_attempt_capture(
             CaptureHost(
                 session=lambda: (self._worker_id, self._session.reveal()),
                 append=append,
