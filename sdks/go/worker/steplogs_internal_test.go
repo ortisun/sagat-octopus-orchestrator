@@ -81,8 +81,9 @@ func TestStepLogMessageIsCutAtACharacterBoundaryAndMadeWellFormed(t *testing.T) 
 	if cut, wasCut := cutUTF8("short", limitMessageBytes); cut != "short" || wasCut {
 		t.Errorf("%q %v", cut, wasCut)
 	}
-	// NUL and each invalid sequence (a lone byte, a surrogate written in UTF-8) become U+FFFD; the rest is kept.
-	if got := wellFormed("a\x00b\xffc\xed\xa0\x80d😀"); got != "a�b�c�d😀" {
+	// NUL and each invalid sequence become U+FFFD, one for each byte utf8.DecodeRune refuses (as encoding/json writes
+	// them): a lone byte is one, a surrogate written in UTF-8 is three; the rest is kept.
+	if got := wellFormed("a\x00b\xffc\xed\xa0\x80d😀"); got != "a�b�c���d😀" {
 		t.Errorf("%q", got)
 	}
 }
@@ -258,7 +259,7 @@ func TestStepLogRedactionRunsOnTheTextAsFormatted(t *testing.T) {
 	set.add([][]byte{[]byte("tok\xff\xfeen-value")})
 	text := (&Secrets{values: map[string][]byte{"k": []byte("tok\xff\xfeen-value")}})
 	lenientText, _ := text.Text("k")
-	if lenientText != "tok�en-value" {
+	if lenientText != "tok��en-value" {
 		t.Fatalf("%q", lenientText)
 	}
 	for _, logged := range []string{"a " + lenientText, "a tok\xff\xfeen-value"} {
@@ -341,7 +342,7 @@ func TestStepLogAByteBufferInAStructIsItsTextAndNeverBase64(t *testing.T) {
 	var reference map[string]any
 	plain, _ := json.Marshal(holder)
 	_ = json.Unmarshal(plain, &reference)
-	copied, err := structCopy(reflect.ValueOf(holder), identity{}, 0)
+	copied, err := structCopy(reflect.ValueOf(holder), identity{}, 0, map[visit]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,6 +363,79 @@ func TestStepLogAByteBufferInAStructIsItsTextAndNeverBase64(t *testing.T) {
 	want := []string{`embedded=string:{"key":"[REDACTED]"}`, "pointer=string:" + holderText, "value=string:" + holderText}
 	if fmt.Sprint(describe(fields)) != fmt.Sprint(want) {
 		t.Errorf("\n got %v\nwant %v", describe(fields), want)
+	}
+}
+
+func TestStepLogAByteOrRuneArrayIsItsTextAndNeverNumbers(t *testing.T) {
+	var set secretSet
+	secret := "array-secret-9Zq"
+	set.add([][]byte{[]byte(secret)})
+	var key [32]byte
+	copy(key[:], secret)
+	var runes [16]rune
+	copy(runes[:], []rune(secret))
+	type sealed struct {
+		Key   [32]byte `json:"key"`
+		Runes []rune   `json:"runes"`
+	}
+	got := fieldsOf(slog.Any("key", key), slog.Any("runes", []rune(secret)), slog.Any("runeArray", runes),
+		slog.Any("struct", sealed{Key: key, Runes: []rune(secret)}), slog.Any("list", []any{key}))
+	fields, _ := buildFields(got.fields, &set)
+	if len(fields) != 5 {
+		t.Fatalf("%v", describe(fields))
+	}
+	for _, field := range fields {
+		text := field.GetStringValue()
+		if strings.Contains(text, secret) || strings.Contains(text, "97,114") || !strings.Contains(text, "[REDACTED]") {
+			t.Errorf("%s: %q", field.GetKey(), text)
+		}
+	}
+	nuls := strings.Repeat("\uFFFD", 16)
+	if text := fields[0].GetStringValue(); fields[0].GetKey() != "key" || text != "[REDACTED]"+nuls {
+		t.Errorf("%q", text)
+	}
+}
+
+func TestStepLogASecretThatIsNotUTF8IsFoundInsideANestedValue(t *testing.T) {
+	var set secretSet
+	raw := []byte("k3y\xff\xfe-abc")
+	set.add([][]byte{raw})
+	got := fieldsOf(slog.Any("c", map[string]string{"k": string(raw), string(raw): "v"}), slog.Any("s", []string{"x " + string(raw)}))
+	fields, _ := buildFields(got.fields, &set)
+	want := []string{`c=string:{"[REDACTED]":"v","k":"[REDACTED]"}`, `s=string:["x [REDACTED]"]`}
+	if fmt.Sprint(describe(fields)) != fmt.Sprint(want) {
+		t.Errorf("\n got %v\nwant %v", describe(fields), want)
+	}
+}
+
+func TestStepLogASecretHoldingANulAndAnInvalidSequenceIsFound(t *testing.T) {
+	var set secretSet
+	set.add([][]byte{[]byte("nu\x00l\xffsecret-x")})
+	for _, logged := range []string{"a nu\x00l\xffsecret-x", "a nu\x00l\uFFFDsecret-x"} {
+		if got := clean(logged, &set); got != "a [REDACTED]" {
+			t.Errorf("%q gave %q", logged, got)
+		}
+	}
+}
+
+func TestStepLogAValueHeldTwiceIsCopiedOnceThenNamedByItsType(t *testing.T) {
+	// Thirty levels that each hold the level below twice: 2^30 paths, none deeper than the copy's bound.
+	loop := map[string]any{}
+	for level := 0; level < 30; level++ {
+		loop = map[string]any{"a": loop, "b": loop}
+	}
+	done := make(chan []string, 1)
+	go func() {
+		fields, _ := buildFields(fieldsOf(slog.Any("loop", loop)).fields, identity{})
+		done <- describe(fields)
+	}()
+	select {
+	case got := <-done:
+		if len(got) != 1 || !strings.Contains(got[0], "map[string]interface {}") {
+			t.Errorf("%v", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a self-referencing map was not encoded within 10 seconds")
 	}
 }
 

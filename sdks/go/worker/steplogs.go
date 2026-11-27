@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -135,14 +136,26 @@ func carrySize(recordSizes []int, highest uint64) int {
 
 // ---- text: well formed, cut at a character boundary ----------------------------------------------------------------
 
-// lenient is the UTF-8 text of bytes as the SDK hands it out: each invalid sequence (a run of bytes that is not
-// UTF-8) replaced by one U+FFFD, as strings.ToValidUTF8 does. A Go string has no surrogates; an invalid sequence is
-// their counterpart.
+// lenient is the UTF-8 text of bytes as the SDK hands it out, everywhere (the secret set, Secrets.Text, every
+// captured string and key): each byte utf8.DecodeRune refuses replaced by one U+FFFD, as encoding/json writes it, so
+// that a secret that is not UTF-8 has one form wherever it is met. A Go string has no surrogates; an invalid sequence
+// is their counterpart.
 func lenient(text string) string {
 	if utf8.ValidString(text) {
 		return text
 	}
-	return strings.ToValidUTF8(text, "\uFFFD")
+	var out strings.Builder
+	out.Grow(len(text) + 8)
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if r == utf8.RuneError && size == 1 {
+			out.WriteString("\uFFFD")
+		} else {
+			out.WriteString(text[i : i+size])
+		}
+		i += size
+	}
+	return out.String()
 }
 
 // wellFormed is step 5 of a call (sdks/SPEC.md section 6.9): NUL and each invalid UTF-8 sequence become U+FFFD, so
@@ -155,16 +168,25 @@ func wellFormed(text string) string {
 	return strings.ReplaceAll(text, "\x00", "\uFFFD")
 }
 
-// clean is steps 4 and 5 for one text: redacted as formatted, so that a value holding a NUL or an invalid sequence is
-// still found, then made well formed; when making it well formed changed it, it is redacted again, so that a value the
-// set holds in its lenient form (a secret that is not UTF-8, logged from its raw bytes) is found in that form too.
-func clean(text string, secrets redactor) string {
+// redactLenient redacts a text as formatted, makes it lenient and, when that changed it, redacts it again, so that a
+// value the set holds in its lenient form (a secret that is not UTF-8, logged from its raw bytes) is found too.
+func redactLenient(text string, secrets redactor) string {
 	redacted := secrets.redact(text)
-	formed := wellFormed(redacted)
+	formed := lenient(redacted)
 	if formed != redacted {
 		formed = secrets.redact(formed)
 	}
 	return formed
+}
+
+// clean is steps 4 and 5 for one text: redacted as formatted, made lenient and redacted again, then NUL replaced, so
+// that a value holding a NUL, an invalid sequence or both is still found.
+func clean(text string, secrets redactor) string {
+	formed := redactLenient(text, secrets)
+	if strings.IndexByte(formed, 0) < 0 {
+		return formed
+	}
+	return strings.ReplaceAll(formed, "\x00", "\uFFFD")
 }
 
 // cutUTF8 is the longest prefix of a valid UTF-8 text of at most limit bytes that ends at a character boundary, and
@@ -328,14 +350,17 @@ func (s *secretSet) redact(text string) string {
 	if len(text) < limitSecretMinBytes {
 		return text
 	}
+	// The automaton and the ordered values are read under the lock and used after it: add replaces them, never
+	// changes them, so a long redaction does not hold back a resolution.
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.matcher == nil || !s.matcher.occursIn(text) {
+	found, ordered := s.matcher, s.ordered
+	s.mu.RUnlock()
+	if found == nil || !found.occursIn(text) {
 		return text
 	}
 	out := []byte(text)
 	placeholder := []byte(redactedText)
-	for _, value := range s.ordered {
+	for _, value := range ordered {
 		if bytes.Contains(out, value) {
 			next := bytes.ReplaceAll(out, value, placeholder)
 			clear(out)
@@ -347,13 +372,11 @@ func (s *secretSet) redact(text string) string {
 	return result
 }
 
-// wipe drops every value, its bytes cleared.
+// wipe drops every value (for the tests: the set lives for the process). The bytes are not cleared, since a redaction
+// running outside the lock may still read them.
 func (s *secretSet) wipe() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, value := range s.values {
-		clear(value)
-	}
 	s.values, s.ordered, s.matcher, s.bytes, s.warned = nil, nil, nil, 0, false
 	s.full.Store(false)
 }
@@ -506,13 +529,13 @@ func anyField(value any) (*pb.StepLogField, any) {
 		return &pb.StepLogField{Value: &pb.StepLogField_BoolValue{BoolValue: reflected.Bool()}}, nil
 	case reflect.String:
 		return stringField(reflected.String()), nil
-	case reflect.Slice:
-		if reflected.IsNil() {
+	case reflect.Slice, reflect.Array:
+		if reflected.Kind() == reflect.Slice && reflected.IsNil() {
 			return nil, nil
 		}
-		if reflected.Type().Elem().Kind() == reflect.Uint8 {
-			// A byte buffer is its UTF-8 text, never numbers or base64 (decision D041-164).
-			return stringField(lenient(string(reflected.Bytes()))), nil
+		// A byte buffer or array is its UTF-8 text, a rune slice or array its string: never numbers or base64.
+		if text, ok := textOfElements(reflected); ok {
+			return stringField(text), nil
 		}
 	case reflect.Pointer, reflect.Interface, reflect.Map:
 		if reflected.IsNil() {
@@ -537,7 +560,7 @@ var errNotEncoded = errors.New("not encoded")
 // and every key was redacted first (an encoder's escaping of a quote, a backslash or a control character would hide a
 // value from redaction; decision D041-164), else its string form. buildFields redacts the text again.
 func otherText(value any, secrets redactor) string {
-	if copied, err := redactedCopy(reflect.ValueOf(value), secrets, 0); err == nil {
+	if copied, err := redactedCopy(reflect.ValueOf(value), secrets, 0, map[visit]bool{}); err == nil {
 		if text, ok := compactJSON(copied); ok {
 			return text
 		}
@@ -551,10 +574,12 @@ func otherText(value any, secrets redactor) string {
 }
 
 // redactedCopy is a JSON-shaped copy of a value (maps of string keys, lists, strings, numbers, booleans, null) in
-// which every string and every key is redacted and every byte buffer, at any depth, is its UTF-8 text, never base64. A
-// struct is copied field by field as encoding/json names them (structCopy); a value with its own JSON or text form is
-// encoded by encoding/json, decoded and copied in turn.
-func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any, err error) {
+// which every string and every key is redacted, made lenient and redacted again, and every byte buffer or byte array,
+// at any depth, is its UTF-8 text and every rune slice or array its string, never numbers or base64. A struct is copied
+// field by field as encoding/json names them (structCopy); a value with its own JSON or text form is encoded by
+// encoding/json, decoded and copied in turn. A map, slice or pointer met a second time (a cycle, or one value held
+// twice) is its type name, so that the copy never walks a structure more than once.
+func redactedCopy(value reflect.Value, secrets redactor, depth int, seen map[visit]bool) (copied any, err error) {
 	if depth > 64 {
 		return nil, errNotEncoded
 	}
@@ -570,20 +595,29 @@ func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any,
 	if canBeNil(value) && value.IsNil() {
 		return nil, nil
 	}
+	if once, ok := visitOf(value); ok {
+		if seen[once] {
+			return value.Type().String(), nil
+		}
+		seen[once] = true
+	}
 	if value.Type().Implements(jsonMarshaler) || value.Type().Implements(textMarshaler) {
+		if !value.CanInterface() {
+			return value.Type().String(), nil
+		}
 		decoded, err := decodedForm(value.Interface())
 		if err != nil {
 			return nil, err
 		}
-		return redactedCopy(reflect.ValueOf(decoded), secrets, depth+1)
+		return redactedCopy(reflect.ValueOf(decoded), secrets, depth+1, seen)
 	}
 	switch value.Kind() {
 	case reflect.Struct:
-		return structCopy(value, secrets, depth)
+		return structCopy(value, secrets, depth, seen)
 	case reflect.Pointer, reflect.Interface:
-		return redactedCopy(value.Elem(), secrets, depth+1)
+		return redactedCopy(value.Elem(), secrets, depth+1, seen)
 	case reflect.String:
-		return secrets.redact(value.String()), nil
+		return redactLenient(value.String(), secrets), nil
 	case reflect.Bool:
 		return value.Bool(), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -596,12 +630,12 @@ func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any,
 		}
 		return nil, nil // as JSON.stringify writes a number that is not finite
 	case reflect.Slice, reflect.Array:
-		if value.Kind() == reflect.Slice && value.Type().Elem().Kind() == reflect.Uint8 {
-			return secrets.redact(lenient(string(value.Bytes()))), nil
+		if text, ok := textOfElements(value); ok {
+			return redactLenient(text, secrets), nil
 		}
 		list := make([]any, value.Len())
 		for i := range list {
-			if list[i], err = redactedCopy(value.Index(i), secrets, depth+1); err != nil {
+			if list[i], err = redactedCopy(value.Index(i), secrets, depth+1, seen); err != nil {
 				return nil, err
 			}
 		}
@@ -614,13 +648,57 @@ func redactedCopy(value reflect.Value, secrets redactor, depth int) (copied any,
 			if err != nil {
 				return nil, err
 			}
-			if object[secrets.redact(key)], err = redactedCopy(iterator.Value(), secrets, depth+1); err != nil {
+			if object[redactLenient(key, secrets)], err = redactedCopy(iterator.Value(), secrets, depth+1, seen); err != nil {
 				return nil, err
 			}
 		}
 		return object, nil
 	}
 	return nil, errNotEncoded
+}
+
+// visit names a map, a slice or a pointer by what it points at, for redactedCopy's record of what it walked.
+type visit struct {
+	at     unsafe.Pointer
+	of     reflect.Type
+	length int
+}
+
+func visitOf(value reflect.Value) (visit, bool) {
+	switch value.Kind() {
+	case reflect.Map, reflect.Pointer:
+		return visit{at: value.UnsafePointer(), of: value.Type()}, true
+	case reflect.Slice:
+		// A byte or rune slice is a text, a leaf: copying it twice walks nothing.
+		if elements := value.Type().Elem().Kind(); value.Len() == 0 || elements == reflect.Uint8 || elements == reflect.Int32 {
+			return visit{}, false
+		}
+		return visit{at: value.UnsafePointer(), of: value.Type(), length: value.Len()}, true
+	}
+	return visit{}, false
+}
+
+// textOfElements is the text of a slice or an array of bytes (its UTF-8 text, made lenient) or of runes (its string),
+// whatever its length: a buffer is text, never a list of numbers (decision D041-164 and the security review of
+// PR #303).
+func textOfElements(value reflect.Value) (string, bool) {
+	switch value.Type().Elem().Kind() {
+	case reflect.Uint8:
+		raw := make([]byte, value.Len())
+		for i := range raw {
+			raw[i] = byte(value.Index(i).Uint())
+		}
+		text := lenient(string(raw))
+		clear(raw)
+		return text, true
+	case reflect.Int32:
+		runes := make([]rune, value.Len())
+		for i := range runes {
+			runes[i] = rune(value.Index(i).Int())
+		}
+		return string(runes), true
+	}
+	return "", false
 }
 
 // jsonField is a field of a struct as encoding/json encodes it: its name, the index path to it through embedded
@@ -735,7 +813,7 @@ func emptyJSON(value reflect.Value) bool {
 
 // structCopy is the redacted copy of a struct, built by reflection under the names encoding/json gives its fields, so
 // that a byte buffer in a field, in an embedded struct or behind a pointer is its UTF-8 text and never base64.
-func structCopy(value reflect.Value, secrets redactor, depth int) (any, error) {
+func structCopy(value reflect.Value, secrets redactor, depth int, seen map[visit]bool) (any, error) {
 	object := map[string]any{}
 	for _, field := range jsonFields(value.Type()) {
 		member, present := value, true
@@ -752,7 +830,7 @@ func structCopy(value reflect.Value, secrets redactor, depth int) (any, error) {
 		if !present || (field.omitEmpty && emptyJSON(member)) {
 			continue
 		}
-		copied, err := redactedCopy(member, secrets, depth+1)
+		copied, err := redactedCopy(member, secrets, depth+1, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -775,7 +853,7 @@ func mapKey(key reflect.Value) (string, error) {
 	if key.Kind() == reflect.String {
 		return key.String(), nil
 	}
-	if key.Type().Implements(textMarshaler) {
+	if key.Type().Implements(textMarshaler) && key.CanInterface() {
 		text, err := key.Interface().(encoding.TextMarshaler).MarshalText()
 		return string(text), err
 	}
