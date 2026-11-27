@@ -118,6 +118,17 @@ pub(crate) async fn fixture_from(start: OffsetDateTime) -> Fixture {
 pub(crate) async fn fixture_with(start: OffsetDateTime, ceilings: Ceilings) -> Fixture {
     let w = world().await;
     let (workflow, _) = w.publish(chain("scheduled")).await;
+    fixture_over(w, workflow, start, ceilings)
+}
+
+/// A fixture over a world built elsewhere (feature 022: one whose store runs the flow-control gate), whose schedules
+/// start `workflow` unless they name another target.
+pub(crate) fn fixture_over(
+    w: World,
+    workflow: WorkflowId,
+    start: OffsetDateTime,
+    ceilings: Ceilings,
+) -> Fixture {
     let w = Arc::new(w);
     let clock = TestClock(Arc::new(Mutex::new(start)));
     let store = PgScheduleStore::new(w.db.pool.clone());

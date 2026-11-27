@@ -284,6 +284,13 @@ pub struct Options {
     /// A `forEach` may be published with `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off, as in
     /// production, unless a test turns it on.
     pub collection_operators: bool,
+    /// Flow control (feature 022) is on: both switches and the digest key ring `flow_control::RING` (version 1 active)
+    /// on the API's store, which therefore serves both gates (D022-057), and both capabilities activated for the fleet
+    /// (`flow_control::activate`). A real engine started
+    /// beside it gets the same with `flow_control::process_env`. Off unless a test turns it on.
+    pub flow_control: bool,
+    /// With `flow_control`: the API's digest key ring instead of `flow_control::RING` (for a rotation).
+    pub flow_control_ring: Option<&'static str>,
     /// The gate whose kept requirements decide whether undelivered leases are withdrawn (feature 006, decision D006-004).
     /// `None`, as a process with no registry: never.
     pub lease_withdrawal: Option<Arc<sagat_application::instances::ServingGate>>,
@@ -345,6 +352,8 @@ impl Default for Options {
             lake: false,
             run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
             collection_operators: false,
+            flow_control: false,
+            flow_control_ring: None,
             lease_withdrawal: None,
             delivery_probe: None,
             commit_probe: None,
@@ -429,9 +438,17 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone())
+    let mut executions = PgRunStore::new(api_pool.clone(), cache.clone())
         .with_scoped_worker_protocol()
         .with_lake_enabled(options.lake);
+    if options.flow_control {
+        // both gates: a real engine a harness starts with `flow_control::process_env` lists both (D022-057, D022-062)
+        super::flow_control::activate(&db.pool).await;
+        executions = match options.flow_control_ring {
+            Some(ring) => super::flow_control::gate_with_keys(executions, ring),
+            None => super::flow_control::gate(executions),
+        };
+    }
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
@@ -604,7 +621,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
             .with_lake_enabled(options.lake)
-            .with_collection_operators_enabled(options.collection_operators),
+            .with_collection_operators_enabled(options.collection_operators)
+            .with_flow_control(super::flow_control::switches(options.flow_control)),
         runs,
     )
     .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
@@ -617,7 +635,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             SystemClock,
             JsonIrCodec,
         )
-        .with_collection_operators_enabled(options.collection_operators),
+        .with_collection_operators_enabled(options.collection_operators)
+        .with_flow_control(super::flow_control::switches(options.flow_control)),
     )
     .with_database_results(Arc::new(
         sagat_application::database_results::DatabaseResultService::new(

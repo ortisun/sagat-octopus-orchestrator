@@ -7,6 +7,8 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 const BEFORE_LEAF: i64 = 20_261_210_000_000;
+/// The leaf storage migration itself.
+const LEAF: i64 = 20_261_211_000_000;
 const SOURCES: [&str; 8] = [
     "runs",
     "steps",
@@ -358,6 +360,12 @@ async fn seed_retained_sources(w: &World, fact: &Value) {
 #[tokio::test]
 async fn downgrade_waits_on_actual_own_run_prefix_before_retained_fact_check() {
     let (w, fact) = fixture().await;
+    // the migrations after the leaf storage are rolled back first, with no lock held: their downs take relation locks
+    // of their own (feature 022's tables reference `runs`), and the race below is the leaf down's
+    MIGRATOR
+        .undo(&w.db.pool, LEAF)
+        .await
+        .expect("the later migrations roll back with no fact of theirs");
     let mut writer = w.db.pool.begin().await.expect("uncommitted owner fixture");
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *writer)

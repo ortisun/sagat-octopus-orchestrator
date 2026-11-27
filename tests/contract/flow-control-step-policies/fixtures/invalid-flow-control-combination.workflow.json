@@ -1,0 +1,12 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "gated-continuation"},
+  "entrypoint": "work",
+  "chainPolicy": {"maxSegments": 3, "timeoutMs": 60000},
+  "concurrency": {"key": "input.accountId", "limit": 1},
+  "nodes": [
+    {"id": "work", "type": "activity", "activity": "act.work", "next": "again"},
+    {"id": "again", "type": "continueAsNew", "input": "input"}
+  ]
+}

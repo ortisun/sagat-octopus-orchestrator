@@ -666,6 +666,14 @@ async fn route_loop_successor(
     routed_sequence: u64,
     outbox_id: uuid::Uuid,
 ) -> Result<(u64, bool), LoopProgressError> {
+    // feature 022 (G1197): this path writes its activity successor READY without the readiness gate; a successor that
+    // declares a gate is refused here (fail closed) until the gate decides it
+    if definition
+        .node_for_instance(&successor.instance)
+        .is_some_and(|node| node.flow_control().is_gated())
+    {
+        return Err(LoopProgressError::RuntimeNotIntegrated);
+    }
     let (nodes, indices) = path_parts(&successor.instance);
     let step_id = instance_step_id(run.version_id, transition.run_id(), &successor.instance);
     if let Some(activity) = &successor.activity {

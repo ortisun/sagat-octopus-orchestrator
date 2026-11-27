@@ -86,6 +86,9 @@ pub enum AuditAction {
     PayloadRevealRevoked,
     /// A signal was delivered to a waiting run.
     RunSignalled,
+    /// The signal a Signal-with-Start held with its queued run was dropped: no step waited for it at the grant, or the
+    /// run ended before its start was granted (feature 022, decision D022-087). The reason says which.
+    RunSignalDropped,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
@@ -363,6 +366,7 @@ impl AuditAction {
             Self::PayloadRevealGranted => "payload.reveal_granted",
             Self::PayloadRevealRevoked => "payload.reveal_revoked",
             Self::RunSignalled => "run.signalled",
+            Self::RunSignalDropped => "run.signal_dropped",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",

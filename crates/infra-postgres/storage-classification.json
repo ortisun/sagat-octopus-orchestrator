@@ -1478,6 +1478,78 @@
       ]
     },
     {
+      "table": "flow_control_held_signals",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
+      "table": "flow_control_held_signals",
+      "column": "payload_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of the held signal's payload, kept in `payloads` (accounted there); the column never holds the content. Database CHECK `flow_control_held_signals_digest_sha256`. Writer/source: `held_signals.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
+      "table": "flow_control_held_signals",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Database CHECK `flow_control_held_signals_actor_valid`. Writer/source: `held_signals.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
+      "table": "flow_control_held_signals",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present. Database CHECK `flow_control_held_signals_trace_id_format`. Writer/source: `held_signals.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
       "table": "inbox_events",
       "column": "correlation_key",
       "sql_type": "text",
@@ -1951,7 +2023,7 @@
       "measurement": {
         "kind": "protected_bound",
         "expression": null,
-        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1, run-input-validation-v1); the primary key, so at most four rows."
+        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1, run-input-validation-v1, flow-control-concurrency-v1, flow-control-rate-v1); the primary key, so at most six rows."
       },
       "owner_paths": [
         "crates/infra-postgres/src/instances.rs"
@@ -2763,6 +2835,25 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "flow_control_gates",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Feature 022's projection of the gates of a run's start: closed phases, pool, a group of at most 130 characters and a 12-hex key label, never a key's value; CHECK `runs_flow_control_gates_bounded` (an object of at most 1,024 bytes). Writer/source: `execution/readiness_gate.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs",
+        "crates/infra-postgres/src/execution/readiness_gate.rs"
       ]
     },
     {
@@ -8850,6 +8941,25 @@
       ]
     },
     {
+      "table": "steps",
+      "column": "flow_control_gates",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Feature 022's projection of a step's gates: closed phases, attempts, pool, a group of at most 130 characters and a 12-hex key label, never a key's value; CHECK `steps_flow_control_gates_bounded` (an object of at most 1,024 bytes). Writer/source: `execution/readiness_gate.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs",
+        "crates/infra-postgres/src/execution/readiness_gate.rs"
+      ]
+    },
+    {
       "table": "tenant_collection_policies",
       "column": "updated_by",
       "sql_type": "text",
@@ -8958,6 +9068,720 @@
       "owner_paths": [
         "crates/infra-postgres/migrations/20261226000000_capacity_transfer_receipts.up.sql",
         "crates/infra-postgres/src/capacity_vacate.rs"
+      ]
+    },
+    {
+      "table": "concurrency_holders",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK bounds it to 130 characters of an explicit group (^[a-z][a-z0-9.-]{0,63}$) or a derived one (=<workflow>[/<node>]); a name, never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_holders",
+      "column": "holder_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only RUN or STEP (4 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_holders",
+      "column": "key_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The HMAC-SHA-256 keyed digest of the key value (CHECK: exactly 32 bytes, D1168); never the value itself."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_holders",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "'' for a run, else a node id (CHECK: ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, at most 64 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_holders",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ORDINARY or DRAFT_TEST (at most 10 ASCII bytes); live flow-control state, deleted when its key empties."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_semaphores",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK bounds it to 130 characters of an explicit group (^[a-z][a-z0-9.-]{0,63}$) or a derived one (=<workflow>[/<node>]); a name, never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_semaphores",
+      "column": "key_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The HMAC-SHA-256 keyed digest of the key value (CHECK: exactly 32 bytes, D1168); never the value itself."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_semaphores",
+      "column": "permit_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only RUN or STEP (4 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_semaphores",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ORDINARY or DRAFT_TEST (at most 10 ASCII bytes); live flow-control state, deleted when its key empties."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_waiters",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK bounds it to 130 characters of an explicit group (^[a-z][a-z0-9.-]{0,63}$) or a derived one (=<workflow>[/<node>]); a name, never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_waiters",
+      "column": "key_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The HMAC-SHA-256 keyed digest of the key value (CHECK: exactly 32 bytes, D1168); never the value itself."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_waiters",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "'' for a run, else a node id (CHECK: ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, at most 64 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_waiters",
+      "column": "permit_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only RUN or STEP (4 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "concurrency_waiters",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ORDINARY or DRAFT_TEST (at most 10 ASCII bytes); live flow-control state, deleted when its key empties."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_key_versions",
+      "column": "activated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject of the operator who activated the version, CHECK limits it to 255 characters; one row per key version."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_key_versions",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVE, RETIRING or RETIRED; one row per key version (a smallint), deployment-wide."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000000_flow_control_concurrency.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_key_versions",
+      "column": "activated_role",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_key_versions_role_bounded: a PostgreSQL role name (session_user) of at most 63 characters, written by flow_control_key_activate."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000500_flow_control_key_rotation.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_key_forced_retirements",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject the operator typed for a forced retirement, CHECK flow_control_key_forced_actor_bounded limits it to 255 characters; one row per forced retirement, append-only, deployment-wide."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270202000000_flow_control_key_force.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_key_forced_retirements",
+      "column": "database_user",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_key_forced_user_bounded: the PostgreSQL role (session_user) of the operator's session, at most 128 characters, written by flow_control_key_force_retire."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270202000000_flow_control_key_force.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_key_forced_retirements",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_key_forced_reason_bounded: the operator's reason for an emergency retirement, 1 to 1000 characters on one line; one row per forced retirement, append-only."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270202000000_flow_control_key_force.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_grants",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK bounds it to 130 characters of an explicit group (^[a-z][a-z0-9.-]{0,63}$) or a derived one (=<workflow>[/<node>]); a name, never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_grants",
+      "column": "key_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The HMAC-SHA-256 keyed digest of the key value (CHECK: exactly 32 bytes, D1168); never the value itself."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_grants",
+      "column": "limit_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only RUN or STEP (4 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_grants",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "'' for a run, else a node id (CHECK: ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, at most 64 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_grants",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ORDINARY or DRAFT_TEST (at most 10 ASCII bytes); live flow-control state, deleted when its key empties."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_waiters",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK bounds it to 130 characters of an explicit group (^[a-z][a-z0-9.-]{0,63}$) or a derived one (=<workflow>[/<node>]); a name, never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_waiters",
+      "column": "key_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The HMAC-SHA-256 keyed digest of the key value (CHECK: exactly 32 bytes, D1168); never the value itself."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_waiters",
+      "column": "limit_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only RUN or STEP (4 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_waiters",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "'' for a run, else a node id (CHECK: ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, at most 64 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_waiters",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ORDINARY or DRAFT_TEST (at most 10 ASCII bytes); live flow-control state, deleted when its key empties."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_windows",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK bounds it to 130 characters of an explicit group (^[a-z][a-z0-9.-]{0,63}$) or a derived one (=<workflow>[/<node>]); a name, never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_windows",
+      "column": "key_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The HMAC-SHA-256 keyed digest of the key value (CHECK: exactly 32 bytes, D1168); never the value itself."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_windows",
+      "column": "limit_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only RUN or STEP (4 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "rate_limit_windows",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ORDINARY or DRAFT_TEST (at most 10 ASCII bytes); live flow-control state, deleted when its key empties."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_group_declarations",
+      "column": "gate",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_group_declarations_gate_valid: CONCURRENCY or RATE_LIMIT."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000400_flow_control_group_declarations.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_group_declarations",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_group_declarations_node_shape: empty or a node id of at most 64 characters; a name, never a value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000400_flow_control_group_declarations.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_group_declarations",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_group_declarations_group_explicit: an explicit group name of at most 64 characters (^[a-z][a-z0-9.-]{0,63}$); never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000400_flow_control_group_declarations.up.sql"
+      ]
+    },
+    {
+      "table": "start_release_deferrals",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK: one of three closed refusal reasons (CONCURRENCY_QUEUE_FULL, RATE_LIMIT_QUEUE_FULL, FLOW_CONTROL_LIMIT), at most 22 ASCII bytes; never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270204000000_start_release_deferrals.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_grant_failures",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "'' for a run's start, else a node id (CHECK flow_control_grant_failures_node_shape: ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, at most 64 ASCII bytes)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270216000000_flow_control_grant_failures.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_grant_failures",
+      "column": "failure",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_grant_failures_failure_valid: one of four closed failure classes (UNREADABLE_DEFINITION, REFUSED, EXECUTION, INTERNAL), at most 21 ASCII bytes; never an error's text."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270216000000_flow_control_grant_failures.up.sql"
       ]
     }
   ],

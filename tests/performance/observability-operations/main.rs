@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use futures_util::stream;
-use sagat_application::operations::{AlertReader, AuditFilter, AuditStore, MonitorStore};
+use sagat_application::operations::{AuditFilter, AuditStore, MonitorStore};
 use sagat_application::telemetry::TelemetryStore;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::quota::QuotaResource;

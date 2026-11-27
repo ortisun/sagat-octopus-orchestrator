@@ -101,6 +101,11 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: INSTANCES,
+        need: "ROW LOCK flow_control_key_versions",
+        reason: "feature 022 (decision D022-149 item 1): the activation of a flow-control gate (control-plane capability-activate, schema-owning role) reads the active digest key version FOR SHARE (`ActivationPrerequisite::holds`, crates/infra-postgres/src/instances.rs), so a command that changes the version row waits for it; operator only, like the activation it is part of (see the entry for platform_requirement_activate); activation::the_runtime_role_is_told_to_use_the_owner_role proves the runtime role is refused",
+    },
+    Allowed {
+        file: INSTANCES,
         need: "EXECUTE platform_requirement_remove()",
         reason: "T018-080: removing a requirement is the activation in reverse, operator only (see the entry for platform_requirement_activate)",
     },
@@ -206,8 +211,33 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {concurrency_limit}",
+        reason: "a namespace's effective ceiling, built by quotas::effective_sql from a resource's own constants as scalar sub-selects of quota_limits and quota_ceilings, which the runtime role reads (quotas::step_gate_ceilings reads them as written); never input (batch 3 reviews, correctness Major 2)",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {key_waiters}",
+        reason: "as {concurrency_limit}: the effective flow_control_key_waiters, by quotas::effective_sql",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {queued_runs}",
+        reason: "as {concurrency_limit}: the effective queued_runs, by quotas::effective_sql",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
         need: "UNRESOLVED placeholder {groups}",
         reason: "the sub-select text comes from the AlertKind match arms right above, each a literal statement that is audited on its own; the wrapper only reads",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/operations.rs",
+        need: "UNRESOLVED placeholder {reveal_role}",
+        reason: "the reader's role as reveal_grants::reveal_role_sql writes it, over this statement's own parameters $1, $2 and $6: a scalar sub-select of memberships and payload_reveal_grants, the same reads reveal_grants.rs issues as written (usage_if_revealed_in_namespace); never input (decisions D022-135 and D022-154)",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/reveal_grants.rs",
+        need: "UNRESOLVED placeholder {usage}",
+        reason: "one of quotas.rs's three &'static str usage statements (CONCURRENCY_LIVE_KEYS_USAGE_SQL, RATE_LIMIT_LIVE_KEYS_USAGE_SQL, FLOW_CONTROL_KEY_WAITERS_USAGE_SQL), which the quota usage of the same file also runs as written, where they are audited; the wrapper only reads memberships and payload_reveal_grants (decision D022-133)",
     },
 ];
 
@@ -275,13 +305,43 @@ struct Extracted {
     statement_files: BTreeSet<String>,
 }
 
+/// The fixed SQL macros of every module of `crates/infra-postgres/src`, by the path a caller
+/// names them with (`crate::flow_control::run_permit_lateral_sql`). `execution.rs` is read first:
+/// its children's macros may call its own.
+fn store_macro_prelude(root: &Path) -> BTreeMap<String, rust_source::Expansion> {
+    let src = root.join("crates/infra-postgres/src");
+    let mut files: Vec<PathBuf> = source_files()
+        .into_iter()
+        .filter(|path| path.starts_with(&src))
+        .collect();
+    files.sort_by_key(|path| (path != &src.join("execution.rs"), path.clone()));
+    // the crate root's macros (`purgeable_grant!`, declared before its modules) are in scope by name in every module
+    let lib = std::fs::read_to_string(src.join("lib.rs")).expect("read the crate root");
+    let mut inherited = rust_source::root_macros(&lib);
+    for path in files {
+        let module = path
+            .strip_prefix(&src)
+            .expect("under the store")
+            .with_extension("")
+            .to_string_lossy()
+            .replace('/', "::");
+        let module = module.strip_suffix("::mod").unwrap_or(&module).to_owned();
+        if module == "lib" {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read source");
+        let declared = rust_source::macro_prelude_of(&source, &module, &inherited);
+        inherited.extend(declared);
+    }
+    inherited
+}
+
 fn extract_all() -> Extracted {
     let root = repository();
-    // Child modules and explicitly imported predicates share execution.rs's real fixed macros.
-    // This imports declarations only, not its statements, and never grants an unresolved need.
-    let parent = std::fs::read_to_string(root.join("crates/infra-postgres/src/execution.rs"))
-        .expect("read shared SQL predicate declarations");
-    let inherited = rust_source::macro_prelude(&parent);
+    // Every module of the store declares its fixed macros under `crate::<module>::name`; a child
+    // of execution.rs also sees execution.rs's by name, and any module sees the ones it imports.
+    // This imports declarations only, not their statements, and never grants an unresolved need.
+    let inherited = store_macro_prelude(&root);
     let mut all = Extracted::default();
     for path in source_files() {
         let source = std::fs::read_to_string(&path).expect("read source");

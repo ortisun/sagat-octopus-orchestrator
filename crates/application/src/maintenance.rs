@@ -182,6 +182,69 @@ pub struct StepLogQuotaCounters {
 /// Candidate queries and housekeeping. Implemented by `sagat-infra-postgres`; every time
 /// comparison uses the database clock, so instances with skewed clocks agree.
 pub trait MaintenanceStore: Send + Sync {
+    /// Feature 022 (T26): the step keys with waiters whose next-eligible hint has come, on the home shards of `window`,
+    /// oldest hint first. Only finds candidates; each grant is decided again under the waiter's run and the key's lock.
+    fn due_gate_keys(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<crate::flow_control::GateKey>, StoreError>> + Send;
+
+    /// The waiters of `key`, oldest first by the commit that queued them (ties by run, then node), at most `limit`.
+    fn gate_key_waiters(
+        &self,
+        key: &crate::flow_control::GateKey,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<crate::flow_control::GateWaiter>, StoreError>> + Send;
+
+    /// Records that the grant of `waiter`, a waiter of `key`, failed for a reason that does not clear on its own, of class
+    /// `failure` (its first instant kept), or, with `None`, that a later try decided it (decision D022-124). One statement,
+    /// outside every run and key lock; a waiter that left its queue meanwhile is a row that matches no waiter.
+    fn record_gate_grant_failure(
+        &self,
+        key: &crate::flow_control::GateKey,
+        waiter: &crate::flow_control::GateWaiter,
+        failure: Option<crate::flow_control::GrantFailureClass>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Clears the next-eligible hint of `key` when it is still the one the pass read and `holder` (when given) still holds
+    /// the key's home shard: a pass that could grant none of its waiters leaves the key to the next release, queue, pause
+    /// or resume, which sets the hint again (early, never late); a window rests until the first instant a grant counted
+    /// at the key's `selected_at` may stop counting for one of its waiters, computed after the window is locked
+    /// (decision D022-066 items 2 and 3).
+    fn rest_gate_key(
+        &self,
+        key: &crate::flow_control::GateKey,
+        holder: Option<(&str, crate::shards::Lease)>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Feature 022 (transaction T23, T022-074): copies the lease instant of the attempt a slot was granted for onto the granted,
+    /// unleased step grants of the run shards of `window` (at most `window.limit` a shard): the instant of that attempt's
+    /// `step.leased`, journaled after the grant (D022-029), or the grant's own instant when later. Its one statement locks
+    /// the grant rows only (no run, no window: the key's hint never waits for it, D022-021); after it commits, each
+    /// recorded window's hint is lowered to the lease plus the shortest window its waiters count over, one window a
+    /// statement, so no transaction of it holds a grant row and waits for a window (decision D022-065 item 2). Returns
+    /// how many it recorded.
+    fn record_rate_leases(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Feature 022 (transaction T25): deletes leased grants that no acquirer can count any more, those leased longer ago than their
+    /// window row's longest period plus one minute (FR-022-056): at most `keys` keys a call and `limit` grants a key
+    /// (so at most `keys × limit` rows), each key in a transaction of its own that takes its window row first and skips a
+    /// key another transaction holds. Returns how many grant rows it deleted.
+    fn purge_rate_grants(
+        &self,
+        keys: u32,
+        limit: u32,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Feature 022 (T27): queued steps whose queue deadline passed, on the run shards of `window`, earliest first.
+    fn due_gate_waits(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<crate::flow_control::GateWaiter>, StoreError>> + Send;
+
     /// Pending continuation boundaries whose run is still the current chain head.
     fn continuation_candidates(
         &self,
@@ -226,6 +289,16 @@ pub trait MaintenanceStore: Send + Sync {
         &self,
         window: &Window,
     ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
+
+    /// Holds a delayed start whose release a flow-control ceiling refused (feature 022, D022-052, D022-054) back from
+    /// [`Self::due_start_releases`] until a retry instant that backs off (5 s doubling to 5 min), in a transaction of its
+    /// own, so that refused releases neither take every pass's batch nor hide the starts behind them. `reason` is the
+    /// refusal's closed `details.reason`. Returns how many times the run has now been deferred.
+    fn defer_start_release(
+        &self,
+        run: RunRef,
+        reason: &'static str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
 
     /// Unfinished runs past their deadline.
     fn overdue_runs(

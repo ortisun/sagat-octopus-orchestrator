@@ -34,6 +34,11 @@ app.kubernetes.io/component: {{ .component }}
 {{/* Fails the render for a value the platform would refuse at start, so that it fails here instead. */}}
 {{- define "sagat.validate" -}}
 {{- include "sagat.openbao.validate" . -}}
+{{- range $switch := list "concurrencyKeys" "rateLimits" -}}
+{{- if and (index $.Values.flowControl $switch) (not $.Values.flowControl.digestKeys.existingSecret) -}}
+{{- fail (printf "flowControl.%s needs flowControl.digestKeys.existingSecret: a Secret with the key flow-control.keys (D022-057)" $switch) -}}
+{{- end -}}
+{{- end -}}
 {{- if not (has .Values.environment (list "dev" "staging" "prod")) -}}
 {{- fail "environment must be dev, staging or prod" -}}
 {{- end -}}
@@ -218,6 +223,36 @@ securityContext:
 {{- if .pool }}{{ $all = append $all (printf "pool=%q" .pool) }}{{ end -}}
 {{- if .root.Values.metrics.selector }}{{ $all = append $all .root.Values.metrics.selector }}{{ end -}}
 {{- if $all }}{{ printf "{%s}" (join "," $all) }}{{ end -}}
+{{- end -}}
+
+{{/* Flow control (feature 022, D022-057, D022-118): the two switches and the digest key file, the same for the control plane and the
+engine. The keys are a Secret mounted read-only as a file, never an environment value. */}}
+{{- define "sagat.flowControl.env" -}}
+{{- if .Values.flowControl.concurrencyKeys }}
+- {name: SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED, value: "true"}
+{{- end }}
+{{- if .Values.flowControl.rateLimits }}
+- {name: SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED, value: "true"}
+{{- end }}
+{{- if .Values.flowControl.digestKeys.existingSecret }}
+- {name: SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE, value: /etc/sagat/flow-control/flow-control.keys}
+{{- end }}
+{{- end -}}
+
+{{- define "sagat.flowControl.mounts" -}}
+{{- if .Values.flowControl.digestKeys.existingSecret }}
+- {name: flow-control-keys, mountPath: /etc/sagat/flow-control, readOnly: true}
+{{- end }}
+{{- end -}}
+
+{{- define "sagat.flowControl.volumes" -}}
+{{- if .Values.flowControl.digestKeys.existingSecret }}
+- name: flow-control-keys
+  secret:
+    secretName: {{ .Values.flowControl.digestKeys.existingSecret | quote }}
+    defaultMode: 288
+    items: [{key: flow-control.keys, path: flow-control.keys}]
+{{- end }}
 {{- end -}}
 
 {{/*

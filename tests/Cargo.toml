@@ -60,7 +60,7 @@ sagat-infra-egress.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-lake.workspace = true
 sagat-infra-nats.workspace = true
-sagat-infra-postgres.workspace = true
+sagat-infra-postgres = { workspace = true }
 sagat-infra-sandbox.workspace = true
 sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
@@ -464,3 +464,23 @@ path = "fault/step-destinations/main.rs"
 [[test]]
 name = "e2e_step_destinations"
 path = "e2e/step-destinations/main.rs"
+
+[[test]]
+name = "integration_flow_control_step_policies"
+path = "integration/flow-control-step-policies/main.rs"
+
+[[test]]
+name = "fault_flow_control_step_policies"
+path = "fault/flow-control-step-policies/main.rs"
+
+[[test]]
+name = "contract_flow_control_step_policies"
+path = "contract/flow-control-step-policies/main.rs"
+
+[[test]]
+name = "e2e_flow_control_step_policies"
+path = "e2e/flow-control-step-policies/main.rs"
+
+[[test]]
+name = "perf_flow_control_step_policies"
+path = "performance/flow-control-step-policies/main.rs"

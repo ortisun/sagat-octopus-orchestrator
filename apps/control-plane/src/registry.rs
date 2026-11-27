@@ -36,6 +36,7 @@ pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[must_use]
 pub fn capabilities(
     run_input_validation: sagat_application::run_input::InputValidationMode,
+    flow_control: &[sagat_application::flow_control::FlowControlCapability],
 ) -> Vec<Capability> {
     let mut listed = Vec::new();
     if run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
@@ -45,6 +46,9 @@ pub fn capabilities(
     listed.push(Capability::LeaseWithdrawalV1);
     // the follow-up of pull request #260 (decisions D006-096 and D006-098)
     listed.push(Capability::LeaseWithdrawalV2);
+    // feature 022: a capability whose gate this process runs, switched on and backed by the digest keys (D022-057)
+    listed.extend(flow_control.iter().map(|capability| capability.registry()));
+    listed.sort_by_key(|capability| Capability::ALL.iter().position(|c| c == capability));
     listed
 }
 
@@ -461,7 +465,7 @@ mod tests {
     fn the_control_plane_lists_run_input_validation_only_in_enforce_and_lease_withdrawal_always() {
         use sagat_application::run_input::InputValidationMode;
         assert_eq!(
-            capabilities(InputValidationMode::Enforce),
+            capabilities(InputValidationMode::Enforce, &[]),
             vec![
                 Capability::RunInputValidationV1,
                 Capability::LeaseWithdrawalV1,
@@ -469,8 +473,46 @@ mod tests {
             ]
         );
         assert_eq!(
-            capabilities(InputValidationMode::Report),
+            capabilities(InputValidationMode::Report, &[]),
             vec![Capability::LeaseWithdrawalV1, Capability::LeaseWithdrawalV2]
+        );
+    }
+
+    /// Decision D022-057, tasks T022-072 and T022-074: a gate is listed by a process whose switch for it is on and which
+    /// holds the digest keys; this build serves both gates. Feature 006's `lease-withdrawal-v1` and `-v2` are listed in every case.
+    #[test]
+    fn the_control_plane_lists_each_gate_switched_on_with_its_keys() {
+        use sagat_application::flow_control::{FlowControlSwitches, served};
+        use sagat_application::run_input::InputValidationMode;
+        let on = FlowControlSwitches {
+            concurrency_keys: true,
+            rate_limits: true,
+        };
+        assert_eq!(
+            capabilities(InputValidationMode::Enforce, &served(on, true)),
+            vec![
+                Capability::RunInputValidationV1,
+                Capability::LeaseWithdrawalV1,
+                Capability::LeaseWithdrawalV2,
+                Capability::FlowControlConcurrencyV1,
+                Capability::FlowControlRateV1
+            ]
+        );
+        assert_eq!(
+            capabilities(InputValidationMode::Report, &served(on, false)),
+            vec![Capability::LeaseWithdrawalV1, Capability::LeaseWithdrawalV2]
+        );
+        let rate_only = FlowControlSwitches {
+            concurrency_keys: false,
+            rate_limits: true,
+        };
+        assert_eq!(
+            capabilities(InputValidationMode::Report, &served(rate_only, true)),
+            vec![
+                Capability::LeaseWithdrawalV1,
+                Capability::LeaseWithdrawalV2,
+                Capability::FlowControlRateV1
+            ]
         );
     }
 

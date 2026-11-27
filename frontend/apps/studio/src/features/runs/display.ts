@@ -41,6 +41,8 @@ const WAITING: Record<string, string> = {
   loop: 'Waiting for the loop iterations',
   collection: 'Waiting for the collection items',
   approval: 'Waiting for an approval decision',
+  rate_limit: 'Waiting for a rate-limit slot',
+  concurrency: 'Waiting for a concurrency permit',
 };
 
 export function waitingWords(node: RuntimeNode): string | undefined {

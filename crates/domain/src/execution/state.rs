@@ -551,6 +551,9 @@ pub enum WaitingOn {
     Operator {
         code: FailureCode,
     },
+    /// A concurrency permit or a rate-limit slot (feature 022): the step holds no attempt and is not offered to a
+    /// worker until every gate it waits for is granted ([`StepState::gates`]).
+    Gate,
 }
 
 /// Durable lifecycle of one collection scope.
@@ -1185,6 +1188,8 @@ pub struct StepState {
     condition: Option<bool>,
     switch_selection: Option<SwitchSelection>,
     timed_out: bool,
+    /// The gates of the step's attempts (feature 022): empty for an ungated step.
+    gates: super::flow_control::Gates,
 }
 
 impl StepState {
@@ -1201,6 +1206,7 @@ impl StepState {
             condition: None,
             switch_selection: None,
             timed_out: false,
+            gates: super::flow_control::Gates::NONE,
         }
     }
 
@@ -1250,6 +1256,12 @@ impl StepState {
     #[must_use]
     pub const fn failure(&self) -> Option<&FailureCode> {
         self.failure.as_ref()
+    }
+
+    /// The flow-control gates of the step's attempts (feature 022).
+    #[must_use]
+    pub const fn gates(&self) -> &super::flow_control::Gates {
+        &self.gates
     }
 
     /// Checks deterministic scoped control state. Controls never own an attempt, wait or retry;
@@ -1453,6 +1465,8 @@ impl StepState {
             condition,
             switch_selection: None,
             timed_out,
+            // a gated step's gates are restored from their own projection ([`Self::with_restored_gates`])
+            gates: super::flow_control::Gates::NONE,
         }
     }
 
@@ -1460,6 +1474,13 @@ impl StepState {
     #[must_use]
     pub fn with_restored_switch_selection(mut self, selection: Option<SwitchSelection>) -> Self {
         self.switch_selection = selection;
+        self
+    }
+
+    /// Restores the gates of the step's attempts from their projection (feature 022).
+    #[must_use]
+    pub fn with_restored_gates(mut self, gates: super::flow_control::Gates) -> Self {
+        self.gates = gates;
         self
     }
 
@@ -1833,8 +1854,52 @@ pub struct RunState {
     /// The instant (microseconds since the epoch) until which the entry of the run is held, for a run
     /// created with a start delay (feature 018, `FR-018-023`); cleared when the entry is released.
     start_delayed_until_us: Option<i64>,
+    /// The gates of the run's start (feature 022): a run whose start waits for one holds its entry.
+    run_gates: super::flow_control::Gates,
+    /// The root nodes of the run's definition that declare a gate, and which (feature 022): a readiness event of one
+    /// leaves it `WAITING` for its gates, never `READY` (FR-022-051, D022-020). Empty for a state rebuilt from the
+    /// journal alone, which then reaches the same state through the decisions every such commit journals.
+    gated: BTreeMap<NodeId, super::flow_control::DeclaredGates>,
+    /// Feature 022: the last event applied is `run.reset`, or a decision of the start's gates that followed it: the
+    /// restored decisions of the source are history, and the reset run decides its start afresh right here, never later
+    /// (018's plan, row 17).
+    reset_admission: WithinCommit<bool>,
+    /// The gates the definition declares at the run's start, when this state knows its definition (feature 022): no step
+    /// is released until each of them holds (fail closed; reviews of 2026-11-20, architecture M1). `None` for a state
+    /// rebuilt from the journal alone, which reaches the same state through the decisions every such commit journals.
+    start_gated: FromDefinition<Option<super::flow_control::DeclaredGates>>,
     applied: u64,
 }
+
+/// A fact that only lasts within the commit that sets it (feature 022: the moment right after `run.reset`, in which the
+/// reset run decides its start). A state loaded from its projection starts a commit without it, and the reset's planner
+/// asks for the start's decision before that commit ends, so it never matters across commits: two states the same
+/// journal built are equal whatever it says (reviews of 2026-11-20, correctness m2; seen in `reset_corpus` when a reset
+/// commit ends right after `run.reset`).
+#[derive(Debug, Clone, Copy, Default)]
+struct WithinCommit<T>(T);
+
+impl<T> PartialEq for WithinCommit<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for WithinCommit<T> {}
+
+/// What a state knows from its definition rather than from its journal (feature 022): it shapes which events the state
+/// accepts, never what the journal made of it, so two states that the same journal built are equal whether or not one of
+/// them was told its definition (a replay from the journal alone is compared with a stored or folded state).
+#[derive(Debug, Clone, Copy, Default)]
+struct FromDefinition<T>(T);
+
+impl<T> PartialEq for FromDefinition<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for FromDefinition<T> {}
 
 impl RunState {
     /// An empty run: nothing has been journaled yet.
@@ -1852,14 +1917,126 @@ impl RunState {
             scope_sagas: BTreeMap::new(),
             chain: None,
             start_delayed_until_us: None,
+            run_gates: super::flow_control::Gates::NONE,
+            gated: BTreeMap::new(),
+            reset_admission: WithinCommit(false),
+            start_gated: FromDefinition(None),
             applied: 0,
         }
+    }
+
+    /// The state with the gated root nodes of `def` (feature 022), which the readiness events of those nodes obey: given
+    /// to every state a transaction folds or restores for a run of `def`, before any event is applied.
+    #[must_use]
+    pub fn with_gated_steps(mut self, def: &crate::workflow::WorkflowDefinition) -> Self {
+        self.start_gated = FromDefinition(super::flow_control::DeclaredGates::of(
+            def.run_flow_control(),
+        ));
+        self.gated = def
+            .gated_nodes()
+            .filter_map(|node| {
+                super::flow_control::DeclaredGates::of(node.flow_control())
+                    .map(|declared| (node.id().clone(), declared))
+            })
+            .collect();
+        self
+    }
+
+    /// The gates root node `node` declares, when this state knows its definition declares any.
+    #[must_use]
+    pub fn declared_gates(&self, node: &NodeId) -> Option<super::flow_control::DeclaredGates> {
+        self.gated.get(node).copied()
+    }
+
+    /// Whether root step `node` waits, with no decision of its next attempt, only because a pause made it give back
+    /// what it was granted (FR-022-046, ADR-0096): it asks again on resume, and until then the planner does not
+    /// ask it, invariant 11 accepts it and `persist` writes it waiting for its first declared gate. The one predicate
+    /// the planner, [`Self::flow_control_breach`] and the adapter share.
+    #[must_use]
+    pub fn waits_for_resume(&self, node: &NodeId) -> bool {
+        self.paused
+            && self.stop.is_none()
+            && self
+                .steps
+                .get(&ExecutionInstanceId::root(node.clone()))
+                .is_some_and(|step| {
+                    step.status == StepStatus::Waiting
+                        && step.waiting == Some(WaitingOn::Gate)
+                        && step.gates.returned_unleased(step.attempt.saturating_add(1))
+                })
+    }
+
+    /// The first breach of invariant 11 of feature 022 (`data-model.md`), if any: a step of a gated node that is `READY`
+    /// or leased without a grant of each gate it declares for its attempt, or that waits for its gates without a
+    /// decision (a grant or a wait) of each of them for the attempt it would start next.
+    #[must_use]
+    pub fn flow_control_breach(&self) -> Option<(NodeId, &'static str)> {
+        for (node, declared) in &self.gated {
+            let Some(step) = self.steps.get(&ExecutionInstanceId::root(node.clone())) else {
+                continue;
+            };
+            let next = step.attempt.saturating_add(1);
+            let breach = match step.status {
+                StepStatus::Ready if !step.gates.holds_all(*declared, next) => {
+                    Some("a gated step is READY without a grant of each gate it declares")
+                }
+                StepStatus::Leased | StepStatus::Running
+                    if !step.gates.holds_all(*declared, step.attempt) =>
+                {
+                    Some("a gated step was leased without a grant of each gate it declares")
+                }
+                // a pause gave its gates back: it asks again on resume (FR-022-046)
+                StepStatus::Waiting
+                    if step.waiting == Some(WaitingOn::Gate)
+                        && !step.gates.decided_all(*declared, next)
+                        && !self.waits_for_resume(node) =>
+                {
+                    Some("a gated step waits for its gates without a decision of each")
+                }
+                _ => None,
+            };
+            if let Some(breach) = breach {
+                return Some((node.clone(), breach));
+            }
+        }
+        None
     }
 
     /// Whether the entry of the run is held by a start delay that has not ended yet.
     #[must_use]
     pub const fn is_start_delayed(&self) -> bool {
         self.start_delayed_until_us.is_some()
+    }
+
+    /// The flow-control gates of the run's start (feature 022).
+    #[must_use]
+    pub const fn run_gates(&self) -> &super::flow_control::Gates {
+        &self.run_gates
+    }
+
+    /// Whether the run's start may be decided now and, if so, why (feature 022): a started run whose entry is still held by
+    /// nothing but its undecided gates (a released start delay), or a reset run right after `run.reset` (a reset never
+    /// queues). The caller checks that the definition gates its start and that no gate is decided yet.
+    #[must_use]
+    pub fn start_undecided(&self) -> Option<super::StartCause> {
+        if self.stop.is_some() || self.paused {
+            return None;
+        }
+        if self.reset_admission.0 {
+            return Some(super::StartCause::Reset);
+        }
+        (self.entry_held() && self.start_delayed_until_us.is_none())
+            .then_some(super::StartCause::Release)
+    }
+
+    /// A started run with one step, its entry, still `PENDING`: nothing of it has been released.
+    fn entry_held(&self) -> bool {
+        self.has_started()
+            && self.steps.len() == 1
+            && self
+                .steps
+                .values()
+                .all(|step| step.status == StepStatus::Pending)
     }
 
     /// The instant (microseconds since the epoch) the held entry is released at, if it is held.
@@ -1879,6 +2056,23 @@ impl RunState {
         let mut state = Self::new(run_id);
         for event in events {
             state.apply(event)?;
+        }
+        Ok(state)
+    }
+
+    /// Rebuilds the state of a run of `def` as its transactions fold it: knowing the gated nodes of `def` (feature
+    /// 022), so that the readiness events of those nodes are folded as they were applied.
+    ///
+    /// # Errors
+    /// The first event the reducer rejects.
+    pub fn replay_addressed_gated<'a>(
+        run_id: RunId,
+        def: &crate::workflow::WorkflowDefinition,
+        events: impl IntoIterator<Item = &'a AddressedRunEvent>,
+    ) -> Result<Self, ExecutionError> {
+        let mut state = Self::new(run_id).with_gated_steps(def);
+        for event in events {
+            state.apply_addressed(event)?;
         }
         Ok(state)
     }
@@ -1949,8 +2143,21 @@ impl RunState {
             scope_sagas: BTreeMap::new(),
             chain: None,
             start_delayed_until_us: None,
+            run_gates: super::flow_control::Gates::NONE,
+            gated: BTreeMap::new(),
+            reset_admission: WithinCommit(false),
+            start_gated: FromDefinition(None),
             applied: version,
         }
+    }
+
+    /// The gates of the run's start restored from their rows (feature 022, T022-022): a held permit or a queued wait, for
+    /// a trusted projection of a run whose definition gates its start. A run never stays live with a start gate in any
+    /// other phase: a timeout or a dequeue stops it in the same commit, and the permit is given back by its last commit.
+    #[must_use]
+    pub fn with_restored_run_gates(mut self, gates: super::flow_control::Gates) -> Self {
+        self.run_gates = gates;
+        self
     }
 
     /// The state with its entry held until `until_us` (microseconds since the epoch), for a trusted
@@ -3845,16 +4052,47 @@ impl RunState {
                 }
             }
             RunEvent::StepReleased { node } => {
-                self.step_mut(node, name, &[Pending])?.status = Ready;
+                // feature 022, fail closed: nothing of a run whose definition gates its start is released before every gate
+                // of its start holds (FR-022-018, FR-022-059; reviews of 2026-11-20, architecture M1)
+                if let Some(declared) = self.start_gated.0
+                    && !declared.kinds().all(|kind| {
+                        self.run_gates.of_kind(kind).is_some_and(|slot| {
+                            slot.phase() == super::flow_control::GatePhase::Held
+                        })
+                    })
+                {
+                    return Err(ExecutionError::Invariant(
+                        "nothing of a run is released before every gate of its start holds",
+                    ));
+                }
+                let gated = self.gated.contains_key(node);
+                let step = self.step_mut(node, name, &[Pending])?;
+                // feature 022: a gated step waits for its gates; only the grant of the last one makes it ready
+                if gated {
+                    step.status = Waiting;
+                    step.waiting = Some(WaitingOn::Gate);
+                } else {
+                    step.status = Ready;
+                }
             }
             RunEvent::StepLeased {
                 node,
                 attempt,
                 generation,
             } => {
+                let declared = self.gated.get(node).copied();
                 let step = self.step_mut(node, name, &[Ready])?;
                 if *attempt != step.attempt + 1 || *generation != step.generation + 1 {
                     return Err(ExecutionError::StaleAttempt { node: node.clone() });
+                }
+                // feature 022: an attempt is leased only on gates it holds (none given back, none given up on), and a
+                // step of a gated node only with a grant of each gate it declares
+                if !step.gates.admits_lease(*attempt)
+                    || declared.is_some_and(|declared| !step.gates.holds_all(declared, *attempt))
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a gated step is leased only with every gate of its attempt granted",
+                    ));
                 }
                 step.status = Leased;
                 step.attempt = *attempt;
@@ -3903,12 +4141,28 @@ impl RunState {
                 step.next_attempt_at = Some(*not_before);
             }
             RunEvent::StepRetryDue { node } => {
+                let gated = self.gated.contains_key(node);
                 let step = self.step_mut(node, name, &[RetryWait])?;
-                step.status = Ready;
+                if gated {
+                    step.status = Waiting;
+                    step.waiting = Some(WaitingOn::Gate);
+                } else {
+                    step.status = Ready;
+                }
                 step.next_attempt_at = None;
             }
             RunEvent::StepFailed { node, code, fence } => {
-                let step = self.step_mut(node, name, &[Leased, Running, Pending, Waiting])?;
+                // feature 022: a step whose flow-control key does not evaluate fails before any attempt, from the wait
+                // for its gates; the journal alone, which does not know the node is gated, sees that step READY
+                let allowed: &[StepStatus] = if fence.is_none()
+                    && code.is_readiness_refusal()
+                    && (self.gated.is_empty() || self.gated.contains_key(node))
+                {
+                    &[Ready, Waiting]
+                } else {
+                    &[Leased, Running, Pending, Waiting]
+                };
+                let step = self.step_mut(node, name, allowed)?;
                 match (step.status.is_leased(), fence) {
                     (true, Some(f)) if step.fenced_by(f.attempt, f.generation) => {}
                     (true, _) => return Err(ExecutionError::StaleAttempt { node: node.clone() }),
@@ -4398,6 +4652,17 @@ impl RunState {
                         "a reset follows the restored prefix of a run that has started and is open",
                     ));
                 }
+                // feature 022: the source's decisions of the start's gates, restored with the prefix, are history; the
+                // reset run decides its own right after this event (018's plan, row 17)
+                if self.run_gates.is_waiting() {
+                    return Err(ExecutionError::Invariant(
+                        "a reset never follows a start that still waits for its gates",
+                    ));
+                }
+                self.run_gates = super::flow_control::Gates::NONE;
+                for step in self.steps.values_mut() {
+                    step.gates.retire_restored();
+                }
             }
             RunEvent::RunStopRequested { reason, code } => {
                 if self.stop.is_some() {
@@ -4414,7 +4679,22 @@ impl RunState {
                     chain.completion_kind = Some(SegmentCompletionKind::Final);
                 }
             }
+            RunEvent::Gate(gate) => self.apply_gate(gate)?,
         }
+        // only the start's fresh grants may follow `run.reset` within its admission; any other event ends that moment
+        self.reset_admission.0 = match event {
+            RunEvent::RunReset { .. } => true,
+            RunEvent::Gate(gate) => {
+                self.reset_admission.0
+                    && matches!(gate.target, super::flow_control::GateTarget::Run)
+                    && matches!(
+                        gate.change,
+                        super::flow_control::GateChange::ConcurrencyAcquired
+                            | super::flow_control::GateChange::RateGranted { .. }
+                    )
+            }
+            _ => false,
+        };
         self.applied += 1;
         self.refresh_status(event);
         Ok(())
@@ -4743,10 +5023,157 @@ impl RunState {
         }
     }
 
+    /// Applies a flow-control event (feature 022). A run's gate is decided at its admission, before its entry is
+    /// released, or later by a grant while the entry is held; a run permit is given back once nothing of the run is
+    /// active. A step's gate is for one attempt (the step's attempt plus one): decided when the step becomes ready
+    /// (it is `READY` in the transition that asks), waited for in `WAITING` ([`WaitingOn::Gate`]), and given back when
+    /// the attempt ends or, unleased, when the step leaves `READY`.
+    fn apply_gate(&mut self, event: &super::flow_control::GateEvent) -> Result<(), ExecutionError> {
+        use super::flow_control::{GateChange, GateTarget};
+        let name = event.change.name();
+        match &event.target {
+            GateTarget::Run => {
+                if matches!(event.change, GateChange::RateReturned) {
+                    return Err(ExecutionError::Invariant(
+                        "a run-level slot is never returned: it stops counting by time",
+                    ));
+                }
+                // a decision is taken by the admission, while the entry is held, or by a reset right after `run.reset`,
+                // which never queues (reviews of 2026-11-20, architecture m2)
+                if self.reset_admission.0
+                    && matches!(
+                        event.change,
+                        GateChange::ConcurrencyQueued { .. } | GateChange::RateQueued { .. }
+                    )
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a reset takes a fresh permit or slot, or is refused: it never queues",
+                    ));
+                }
+                let entry_held = self.entry_held() || self.reset_admission.0;
+                let releasing = matches!(event.change, GateChange::ConcurrencyReleased);
+                if releasing && !self.steps.values().all(|step| step.status.is_terminal()) {
+                    return Err(ExecutionError::Invariant(
+                        "a run permit is given back only once nothing of the run is active",
+                    ));
+                }
+                let fresh = entry_held && self.stop.is_none();
+                self.run_gates.apply(event, 0, fresh)
+            }
+            GateTarget::Step { node, attempt } => {
+                let declared = self.gated.get(node).copied();
+                // a pause gives back what a granted, unleased step holds and makes it wait again (FR-022-046, T29)
+                let pausing = self.paused && self.stop.is_none();
+                if self
+                    .steps
+                    .contains_key(&ExecutionInstanceId::root(node.clone()))
+                    && !self.gated.is_empty()
+                    && declared.is_none()
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a flow-control event names a step whose node declares no gate",
+                    ));
+                }
+                if let Some(declared) = declared
+                    && !declared.kinds().any(|kind| kind == event.change.kind())
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a flow-control event names a gate its node does not declare",
+                    ));
+                }
+                let step = self
+                    .steps
+                    .get_mut(&ExecutionInstanceId::root(node.clone()))
+                    .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+                let deciding = matches!(
+                    event.change,
+                    GateChange::ConcurrencyQueued { .. }
+                        | GateChange::ConcurrencyAcquired
+                        | GateChange::RateQueued { .. }
+                        | GateChange::RateGranted { .. }
+                );
+                // a gate is for the attempt the step would start next
+                if deciding && *attempt != step.attempt.saturating_add(1) {
+                    return Err(ExecutionError::Invariant(
+                        "a step's gate is decided for the attempt it would start next",
+                    ));
+                }
+                let waiting_on_gate =
+                    step.status == StepStatus::Waiting && step.waiting == Some(WaitingOn::Gate);
+                if deciding && !(step.status == StepStatus::Ready || waiting_on_gate) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                // a permit is given back once its attempt no longer needs it: the attempt ended, or the step left READY
+                // without being leased; an unleased slot only in the second case (FR-022-019, FR-022-046)
+                let leased_this = step.attempt >= *attempt;
+                let left_ready_unleased =
+                    !leased_this && step.status != StepStatus::Ready && !waiting_on_gate;
+                let returned_on_pause = pausing
+                    && !leased_this
+                    && (step.status == StepStatus::Ready || waiting_on_gate);
+                let giving_back = matches!(
+                    event.change,
+                    GateChange::ConcurrencyReleased | GateChange::RateReturned
+                );
+                let giving_back_allowed = match event.change {
+                    GateChange::ConcurrencyReleased => {
+                        (leased_this && !step.status.is_leased())
+                            || left_ready_unleased
+                            || returned_on_pause
+                    }
+                    GateChange::RateReturned => left_ready_unleased || returned_on_pause,
+                    _ => true,
+                };
+                if !giving_back_allowed {
+                    return Err(ExecutionError::Invariant(
+                        "a permit or slot is given back only when its attempt no longer needs it",
+                    ));
+                }
+                let fresh = step.status == StepStatus::Ready || waiting_on_gate;
+                step.gates.apply(event, *attempt, fresh)?;
+                if giving_back && returned_on_pause {
+                    // it waits again, to ask on resume
+                    step.status = StepStatus::Waiting;
+                    step.waiting = Some(WaitingOn::Gate);
+                } else if step.gates.is_waiting() {
+                    if step.status == StepStatus::Ready {
+                        step.status = StepStatus::Waiting;
+                        step.waiting = Some(WaitingOn::Gate);
+                    }
+                } else if waiting_on_gate
+                    && matches!(
+                        event.change,
+                        GateChange::ConcurrencyAcquired | GateChange::RateGranted { .. }
+                    )
+                    && declared.is_none_or(|declared| step.gates.holds_all(declared, *attempt))
+                {
+                    // the grant that completes the last gate it waited for makes it ready (FR-022-051); a step whose
+                    // definition is known waits until it holds every gate it declares
+                    step.status = StepStatus::Ready;
+                    step.waiting = None;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn check_finish(&self, status: RunStatus) -> Result<(), ExecutionError> {
         if !self.steps.values().all(|s| s.status.is_terminal()) {
             return Err(ExecutionError::Invariant(
                 "a run cannot finish while a step is still active",
+            ));
+        }
+        // feature 022: a waiter leaves its queue, and a holder gives its permit back, before the run's last event
+        if self.run_gates.is_waiting()
+            || self.run_gates.held_permit().is_some()
+            || self.steps.values().any(|step| step.gates.is_open())
+        {
+            return Err(ExecutionError::Invariant(
+                "a run cannot finish while it waits for a gate or holds a run permit",
             ));
         }
         match &self.stop {
@@ -4787,7 +5214,10 @@ impl RunState {
             self.paused,
         );
         // A run whose entry is held waits, whatever its steps say, until it is stopped or released.
-        if self.start_delayed_until_us.is_some() && self.stop.is_none() && !self.paused {
+        if (self.start_delayed_until_us.is_some() || self.run_gates.holds_entry())
+            && self.stop.is_none()
+            && !self.paused
+        {
             self.status = RunStatus::Waiting;
         }
     }

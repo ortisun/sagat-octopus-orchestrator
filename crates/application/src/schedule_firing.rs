@@ -615,8 +615,10 @@ where
                     // another process acted first, or the lease is gone: nothing was committed
                     Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
                     // the backfill waits and tries this time again
+                    // (a full flow-control queue or ceiling is such a refusal, feature 022 FR-022-021)
                     Err(
                         AppError::QuotaExceeded(_)
+                        | AppError::FlowControl(_)
                         | AppError::Unavailable
                         | AppError::Busy { .. }
                         | AppError::NotAllowed(_),
@@ -1308,11 +1310,12 @@ where
             Err(AppError::StateConflict(reason)) if reason != NO_PUBLISHED_VERSION => {
                 Ok(Fired::Refused(reason))
             }
-            // no room, a store that is down, a workflow with no published version: the time stays
-            // owed and is tried again under the same key
+            // no room (a full flow-control queue or ceiling too, feature 022 FR-022-021), a store that is down, a workflow
+            // with no published version: the time stays owed and is tried again under the same key
             Err(
                 AppError::StateConflict(_)
                 | AppError::QuotaExceeded(_)
+                | AppError::FlowControl(_)
                 | AppError::Unavailable
                 | AppError::Busy { .. }
                 | AppError::NotAllowed(_),

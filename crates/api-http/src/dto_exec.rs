@@ -308,6 +308,8 @@ pub struct SignalWithStartResultBody {
     pub run_id: String,
     pub started: bool,
     pub delivered_to: Vec<String>,
+    /// The new run's start queued and the signal is held with it (feature 022, decision D022-087).
+    pub held: bool,
 }
 
 /// `POST /runs/update-with-start`: a start with a business identifier, and the declared Update that goes
@@ -536,6 +538,14 @@ pub struct RunBody {
     /// for its input. Absent for every other run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_code: Option<String>,
+    /// The run-level concurrency permit the run holds or waits for (feature 022, FR-022-022), its key shown as
+    /// its label only; absent for a run that neither holds nor waits, as for every run before feature 022.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<crate::dto_flow_control::RunConcurrencyBody>,
+    /// The run-level rate-limit slot the run holds while it counts or waits for (feature 022, FR-022-048), its key
+    /// shown as its label only; its position and estimate only in a single-run read; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<crate::dto_flow_control::RunRateLimitBody>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which
@@ -624,6 +634,14 @@ impl From<&RunRecord> for RunBody {
                 successor_run_id: segment.successor.map(|run| run.to_string()),
             }),
             failure_code: r.failure_code.as_ref().map(|code| code.as_str().to_owned()),
+            concurrency: r
+                .concurrency
+                .as_ref()
+                .map(crate::dto_flow_control::RunConcurrencyBody::from),
+            rate_limit: r
+                .rate_limit
+                .as_ref()
+                .map(crate::dto_flow_control::RunRateLimitBody::from),
         }
     }
 }
@@ -1270,6 +1288,8 @@ mod switch_graph_tests {
                 schedule: None,
                 reset_from: None,
                 failure_code: None,
+                concurrency: None,
+                rate_limit: None,
             },
             definition: std::sync::Arc::new(definition),
             steps: vec![
@@ -1476,6 +1496,8 @@ mod provenance_tests {
             schedule: None,
             reset_from: None,
             failure_code: None,
+            concurrency: None,
+            rate_limit: None,
         }
     }
 

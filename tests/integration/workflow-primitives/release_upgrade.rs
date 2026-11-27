@@ -53,6 +53,7 @@ async fn phase(binary: &Path, name: &str, profile: &Path, database: &str) {
         .env("SAGAT_TEST_DATABASE_URL", database)
         .env("SAGAT_V02_PROFILE", profile)
         .env("RUST_TEST_THREADS", "1");
+    label_released(&mut command);
     let status = bounded::exit_status(
         format!("released v0.2.0 {name}"),
         Duration::from_secs(120),
@@ -63,6 +64,60 @@ async fn phase(binary: &Path, name: &str, profile: &Path, database: &str) {
         status.success(),
         "released phase {name} failed with {status}"
     );
+}
+
+/// The `application_name` of every database session a released v0.2.0 process opens: its plain pools take
+/// `PGAPPNAME`, which [`label_released`] sets, and its service pools are named `sagat-octopus-orchestrator` by the
+/// release itself (the current pools are `sagat-octopus-orchestrator/<name>`, never this exact name).
+pub(super) const RELEASED_SESSIONS: [&str; 2] =
+    ["sagat-released-phase", "sagat-octopus-orchestrator"];
+
+/// Names the database sessions of a released process (see [`RELEASED_SESSIONS`]).
+pub(super) fn label_released(command: &mut tokio::process::Command) {
+    command.env("PGAPPNAME", RELEASED_SESSIONS[0]);
+}
+
+/// Retires the scheduler authority of a released process that was joined (decision D022-141). First every database
+/// session it left is terminated, and each termination waits until its backend is gone: a session that outlived its
+/// process could still hold, or take, the old owner's `FOR SHARE` fence on a shard row, which the Keeper's
+/// `FOR UPDATE SKIP LOCKED` skips. Then its member and shard leases are moved to `epoch`, the value of a shard never
+/// held, which no reading of the database clock reaches: an expiry one microsecond in the past is live again after
+/// any backward step of that clock, and the Keeper neither plans nor takes the shard. Returns the member and shard
+/// rows moved.
+pub(super) async fn retire_released_owner(pool: &sqlx::PgPool, owner: &str) -> (u64, u64) {
+    let terminated: Vec<bool> = sqlx::query_scalar(
+        "SELECT pg_terminate_backend(pid, 10000) FROM pg_stat_activity \
+         WHERE datname = current_database() AND application_name = ANY($1)",
+    )
+    .bind(&RELEASED_SESSIONS[..])
+    .fetch_all(pool)
+    .await
+    .expect("terminate the sessions the released process left");
+    assert!(
+        terminated.iter().all(|gone| *gone),
+        "a released session outlived its termination"
+    );
+    let left: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND application_name = ANY($1)",
+    )
+    .bind(&RELEASED_SESSIONS[..])
+    .fetch_one(pool)
+    .await
+    .expect("released sessions after the barrier");
+    assert_eq!(left, 0, "no session of the released process is left");
+    let members = sqlx::query("UPDATE scheduler_members SET expires_at = 'epoch' WHERE owner = $1")
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect("retire the stopped member")
+        .rows_affected();
+    let shards = sqlx::query("UPDATE scheduler_shards SET expires_at = 'epoch' WHERE owner = $1")
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect("retire the stopped shards")
+        .rows_affected();
+    (members, shards)
 }
 
 async fn drive(
@@ -203,16 +258,15 @@ async fn release_upgrade_active_rows_upgrade_progress_and_remain_readable_by_the
         assert_eq!(before,20261220000000);
         sagat_infra_postgres::migrate(&db.pool).await.expect("normal current migration of actual released data");
         let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("new schema identity");
-        assert_eq!(after,20270211000300);
+        assert_eq!(after,20270217000100);
         let wait_state:Value=sqlx::query_scalar(include_str!("../../fixtures/release-upgrade/wait-state.sql")).bind(tenant.as_uuid()).bind(wait.as_uuid()).fetch_one(&db.pool).await.expect("unchanged legacy wait metadata after migration");
         let wait_state_hash:String=Sha256::digest(serde_json::to_vec(&wait_state).expect("wait metadata")).iter().map(|byte|format!("{byte:02x}")).collect();
         assert_eq!(wait_state_hash,witness["waitStateSha256"]);
         let old_shards:Vec<(i16,i64,bool)>=sqlx::query_as("SELECT shard,generation,expires_at>clock_timestamp() FROM scheduler_shards WHERE owner=$1 ORDER BY shard").bind(witness["oldOwner"].as_str().expect("old owner")).fetch_all(&db.pool).await.expect("actual released owner leases");
         assert!(!old_shards.is_empty() && old_shards.iter().all(|(_,_,live)|*live));
-        // Explicit expiry injection after old-process exit, not a sleep or live-owner race proof.
-        let members=sqlx::query("UPDATE scheduler_members SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE owner=$1").bind(witness["oldOwner"].as_str().expect("old owner")).execute(&db.pool).await.expect("stopped member expiry").rows_affected();
+        // Explicit retirement after old-process exit, not a sleep or live-owner race proof.
+        let (members,shards)=retire_released_owner(&db.pool,witness["oldOwner"].as_str().expect("old owner")).await;
         assert_eq!(members,1);
-        let shards=sqlx::query("UPDATE scheduler_shards SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE owner=$1").bind(witness["oldOwner"].as_str().expect("old owner")).execute(&db.pool).await.expect("stopped shard expiry").rows_affected();
         assert_eq!(shards,old_shards.len() as u64);
         let api=support::api::start_on_db(db,Options {runtime_role:true,..Options::default()}).await;
         let role:String=sqlx::query_scalar("SELECT current_user").fetch_one(&api.api_pool).await.expect("current services role");assert_eq!(role,"sagat_app");

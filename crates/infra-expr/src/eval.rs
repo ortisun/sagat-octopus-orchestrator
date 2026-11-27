@@ -96,6 +96,13 @@ impl Compiled {
         out
     }
 
+    /// Every place of its variables the expression reads, each standing for everything under it (see
+    /// [`crate::Read`]): what a caller that classifies the expression's inputs must look at.
+    #[must_use]
+    pub fn reads(&self) -> Vec<crate::Read> {
+        crate::reads::reads(&self.root)
+    }
+
     /// # Errors
     /// An [`ExprError`] when evaluation fails or exceeds its budget.
     pub fn eval(&self, env: &Env) -> Result<Value, ExprError> {

@@ -1,0 +1,9 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "gated-timer"},
+  "entrypoint": "wait",
+  "nodes": [
+    {"id": "wait", "type": "timer", "durationMs": 1000, "concurrency": {"limit": 1}}
+  ]
+}

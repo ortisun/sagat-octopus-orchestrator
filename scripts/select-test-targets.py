@@ -23,8 +23,9 @@ Scoped selection:
   integration   a `sagat-tests` target runs only when it was itself changed: (a) a file of its directory, or its
                 [[test]] entry, changed; or (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
                 runners/lake/ for the lake suites); or (c) for the budget of the hot path, a file of
-                crates/infra-postgres/ or of the claim and command path of crates/application changed
-                (OD-2026-11-12-4); or (d) for a contract suite (tests/contract/), a contract file under
+                crates/infra-postgres/, of the claim and command path of crates/application, of crates/scheduler/,
+                of crates/domain/src/execution/ or of the flow-control ports of crates/application changed
+                (OD-2026-11-12-4, D022-030); or (d) for a contract suite (tests/contract/), a contract file under
                 specs/<feature>/contracts/ that the suite reads changed (constitution 4.6.0). Nothing else selects a
                 suite: not a changed package that the suite uses or that depends on it, and not a shared input
                 (tests/support, tests/fixtures, runners/ other than runners/lake/, a dependency of tests/Cargo.toml,
@@ -84,7 +85,11 @@ HARNESSES = (
     # The budget of the hot path (OD-2026-11-12-4, design 038): what a lease and a completion cost the database is a
     # property of the code that runs them, not of the suite that measures it, so the code selects the suite. Every
     # statement and trigger of the adapter can add to it, and so can the claim and the command path that drive it.
-    (re.compile(r"crates/infra-postgres/|crates/application/src/(worker|execution)(\.rs$|/)|crates/application/src/runs\.rs$"),
+    # Feature 022 (D022-030) adds the scheduler's passes, the reducer and the flow-control ports: a grant, a readiness gate or a
+    # reducer rule runs inside the transactions the budget counts.
+    (re.compile(r"crates/infra-postgres/|crates/application/src/(worker|execution)(\.rs$|/)|crates/application/src/runs\.rs$"
+                r"|crates/scheduler/|crates/domain/src/execution/|crates/domain/src/workflow(\.rs$|/)"
+                r"|crates/application/src/(concurrency|rate_limits|flow_control|keyed_digest)(\.rs$|/)"),
      BUDGET_SUITES),
     # The step logs of design 041 (constitution 4.5.0, OD-2026-11-15-10; task T041-32). The server's step-log code and
     # the files that call it select the step-log suite, the isolation and budget suite that holds the quota-lease tests,
@@ -435,6 +440,10 @@ def scope(root, base, head, targets, workspace):
                 else:
                     changed_packages.add(name)
                     decision.reasons.append((name, f"{rel} is a contract the package reads"))
+            # the Studio's API types are generated from the canonical contract (`npm run check:api`), so a change of it
+            # is a change of the Studio's inputs too (feature 022's review of 2026-11-20, architecture B3)
+            if rel == "specs/001-platform-foundation/contracts/openapi.yaml":
+                decision.frontend = True
             # A harness may also be tied to a contract (the worker protocol of design 041, task T041-32).
             harnesses(rel)
             continue

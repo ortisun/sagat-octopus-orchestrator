@@ -105,6 +105,9 @@ pub enum StoreError {
         holder: uuid::Uuid,
         reusable_after: Option<time::OffsetDateTime>,
     },
+    /// A refusal of flow control (feature 022), decided by the store in the admitting transaction.
+    #[error("{0}")]
+    FlowControl(crate::flow_control::FlowControlRefusal),
 }
 
 impl StoreError {
@@ -128,6 +131,7 @@ impl StoreError {
             Self::Internal { .. } => "internal",
             Self::UnreadableDefinition => "unreadable_definition",
             Self::BusinessIdHeld { .. } => "business_id_held",
+            Self::FlowControl(_) => "flow_control",
         }
     }
 
@@ -282,6 +286,9 @@ pub enum AppError {
     /// A limit was reached (for example the size of a child-run tree); `what` names it.
     #[error("limit reached: {0}")]
     QuotaExceeded(&'static str),
+    /// A refusal of flow control (feature 022, `contracts/errors.md`): an existing `Error.code` with its reason.
+    #[error("{0}")]
+    FlowControl(crate::flow_control::FlowControlRefusal),
     /// Publishing, approving or activating was refused because of where the platform stands.
     #[error("refused: {0:?}")]
     Versioning(Refusal),
@@ -398,6 +405,7 @@ impl From<StoreError> for AppError {
                 holder: sagat_domain::execution::RunId::new(holder),
                 reusable_after,
             },
+            StoreError::FlowControl(refusal) => Self::FlowControl(refusal),
         }
     }
 }
@@ -452,6 +460,12 @@ mod tests {
                     reusable_after: None,
                 },
                 "business_id_held",
+            ),
+            (
+                StoreError::FlowControl(crate::flow_control::FlowControlRefusal::Limit {
+                    limit: canary,
+                }),
+                "flow_control",
             ),
         ];
         let mut seen = std::collections::BTreeSet::new();

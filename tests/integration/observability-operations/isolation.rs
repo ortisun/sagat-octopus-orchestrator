@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use sagat_application::error::AppError;
 use sagat_application::operations::{
-    AlertReader, AuditFilter, AuditStore, DrainRecord, Thresholds, WorkerAdmin,
+    AuditFilter, AuditStore, DrainRecord, Thresholds, WorkerAdmin,
 };
 use sagat_application::telemetry::TelemetryStore;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};

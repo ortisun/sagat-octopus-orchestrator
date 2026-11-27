@@ -340,6 +340,13 @@ where
         self
     }
 
+    /// The deployment's flow-control switches (feature 022), for the publications this service makes.
+    #[must_use]
+    pub fn with_flow_control(mut self, switches: crate::flow_control::FlowControlSwitches) -> Self {
+        self.definitions = self.definitions.with_flow_control(switches);
+        self
+    }
+
     // ------------------------------------------------------------------ dependencies
 
     /// The script artifacts the version pins (FR-011-001): what a promotion has to find in the target

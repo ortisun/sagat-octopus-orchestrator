@@ -9,6 +9,7 @@
 //! OTLP/HTTP JSON export supports spans plus focused log and gauge records.
 
 mod capacity;
+pub mod flow_control;
 mod json_log;
 pub mod lake;
 mod leaf_certification;
@@ -22,6 +23,10 @@ mod trace;
 pub use capacity::{
     CAPACITY_ACQUIRE_SPAN, CAPACITY_FINISH_SPAN, CAPACITY_VACATE_SPAN, CapacityAcquireOutcome,
     CapacityFinishOutcome, CapacityVacateOutcome,
+};
+pub use flow_control::{
+    ConcurrencyOutcome, FlowControlMetric, FlowControlScope, FlowControlSpan, HeldSignalOutcome,
+    RateLimitOutcome,
 };
 pub use json_log::{LogLayer, Style};
 pub use lake::{

@@ -162,6 +162,12 @@ services:
       SAGAT_BATCHES_ENABLED: ${SAGAT_BATCHES_ENABLED:-false}
       SAGAT_RESET_REAPPLY_ENABLED: ${SAGAT_RESET_REAPPLY_ENABLED:-false}
       SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}
+      # Flow control (feature 022): OFF by default. With the switch on, the process needs the deployment's digest keys,
+      # a file the overlay compose.flow-control.yaml mounts (never a variable's value); the engine below is given the
+      # same two lines. docs/runbooks/flow-control.md says how to make the file and in which order to turn it on.
+      SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED: ${SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED:-false}
+      SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED: ${SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED:-false}
+      SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE: ${SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE:-}
       # The Studio, under /studio/ (its files are in the image; set this empty to not serve it).
       SAGAT_STUDIO_DIR: ${SAGAT_STUDIO_DIR-/srv/studio}
     ports:
@@ -207,6 +213,10 @@ services:
       SAGAT_SCHEDULES_ENABLED: ${SAGAT_SCHEDULES_ENABLED:-true}
       SAGAT_BATCHES_ENABLED: ${SAGAT_BATCHES_ENABLED:-false}
       SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}
+      # Flow control (feature 022), as the control plane above: the same switch and the same key file.
+      SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED: ${SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED:-false}
+      SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED: ${SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED:-false}
+      SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE: ${SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE:-}
       # Whether the job below runs: exported only, for the alert on a job that never writes (D2270).
       SAGAT_SCHEDULES_AUTO_HANDOVER: ${SAGAT_SCHEDULES_AUTO_HANDOVER:-true}
     ports:

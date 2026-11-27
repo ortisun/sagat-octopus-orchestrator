@@ -28,6 +28,7 @@ first, see the [quickstarts](../quickstarts/README.md).
 | [instance-registry.md](instance-registry.md) | The instance-capability registry (feature 018, shared with features 029 and 031) |
 | [lease-withdrawal.md](lease-withdrawal.md) | Withdrawing the leases no worker received, its activation, its switch and its counters (feature 006, ADR-0098) |
 | [run-input-validation.md](run-input-validation.md) | Checking every run input against its version's schema (design 043) |
+| [flow-control.md](flow-control.md) | Concurrency keys and rate limits of runs and steps: the digest key and what its commands lack, activation, the life of a waiter, resets, the four alerts, the key listings, the clocks, lowered and raised limits, the scheduler's actions and the production gates (feature 022) |
 
 ## Data, secrets and databases
 

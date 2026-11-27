@@ -33,12 +33,23 @@ not be weakened.
 3. A withdrawal MUST be recorded as `step.lease_withdrawn` (`node`, `attempt`, `generation`, `cause` `NOT_SENT` or
    `NOT_STARTED`), which moves `LEASED` to `READY`, clears the lease and sets the attempt back by one (the generation is kept, so
    the next lease has the next one). It MUST NOT consume an attempt or open a review.
+   *Amended 2026-11-26, delegate (OD-2026-11-20-6; feature 022 decisions D022-138 and D022-139):* nor a gate. A
+   withdrawn step of a gated node keeps the concurrency permit and the rate slot of its attempt and is leased again
+   without a new decision; the rate slot counts from the lease that reached a handler (ADR-0096, amended the same day).
+   A withdrawal whose rate slot has stopped counting is refused like one withdrawn as often as it may be (`capped`;
+   decision D022-148): the retry asks for a new slot. *Corrected the same day (decisions D022-156 to D022-158):* refused
+   only when another grant of the key used the room the slot left, decided before the command under the key's locks
+   (all the run's leases' keys in one sorted pass), and counted `slot_spent`.
 4. The event MUST be written only while the requirement `lease-withdrawal-v1` is recorded for control planes and engines.
    Every control plane and engine of the build lists the capability. The requirement is recorded by the generic operator
    command `control-plane capability-activate lease-withdrawal-v1 --operator NAME [--expect-live N] [--dry-run]` (owner
    role, one bounded transaction). The same command activates every fleet requirement that has a way to be activated
    (feature 022 adds its own entries); only the one-way handover of `schedules-v1` keeps its own command. Until the
    requirement is recorded, a lease that is not sent lapses as before and is counted.
+   *Amended 2026-11-26, delegate (OD-2026-11-24-4; feature 022 decisions D022-136 and D022-137, task T022-116):*
+   feature 022's two capabilities are entries (`flow-control-concurrency-v1`, `flow-control-rate-v1`: both kinds, not an
+   empty fleet, each kind live). An entry may name a prerequisite, a state of the platform read before the census and
+   again under the epoch lock; theirs is an active flow-control digest key version.
 5. A host whose session negotiated protocol 1.8 or later MUST hand back a lease it will not run with `FailStep` code
    `TASK_NOT_STARTED`, retryable, before any handler of it runs; below 1.8 it MUST NOT, and the lease lapses as before
    (decision D006-080: a server below 1.8 would spend the attempt). The code is the host's: an SDK MUST rewrite a `TASK_NOT_STARTED` that a handler raises into an ordinary error. The

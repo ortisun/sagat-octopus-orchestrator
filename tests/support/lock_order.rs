@@ -73,6 +73,9 @@ pub enum Slot {
     NewRuns,
     /// 022 semaphores.
     Semaphores,
+    /// 022 rate-limit windows, sorted by (pool, scope, group, key), and their grant and waiter rows (slot 8b of ADR-0050
+    /// decision 7, ADR-0088 decision 4): after a semaphore, before the quota and usage rows.
+    RateWindows,
     /// Bookkeeping rows of a transaction whose subject is one existing run (a batch job, then its
     /// item).
     Bookkeeping,

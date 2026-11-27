@@ -260,7 +260,9 @@ Rules (D1034, G1607):
    `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed unconditionally by every process of a build that replays every cause of
    `step.lease_withdrawn`, `NOT_ACKNOWLEDGED` of protocol 1.8 included, and whose engine serves no capability call while its
    registry is silent; activated only after `lease-withdrawal-v1` is recorded for both kinds, and a replay floor once a
-   journal holds a `NOT_ACKNOWLEDGED` withdrawal: D006-059 request (9), D006-096, ADR-0099).
+   journal holds a `NOT_ACKNOWLEDGED` withdrawal: D006-059 request (9), D006-096, ADR-0099), `flow-control-concurrency-v1`
+   and `flow-control-rate-v1` (022, `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed only by a build that runs the gate,
+   022 D022-037).
 
 `scheduler_members` is unchanged (shard membership and the replica count for shard shares); adding
 control-plane rows or capabilities to it would distort the shard-share computation of ADR-0020.
@@ -327,7 +329,7 @@ The function holds its own ceilings (1,000 jobs and 100,000 rows a call), and th
 
 `(tenant_id, id)` PK; `namespace_id`, `source_run_id` (FK runs), `source_sequence bigint`,
 `prefix_digest bytea(32)`, `reapply` (closed), `business_id_policy` (`KEEP`, `DROP`), `source_policy`,
-`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY` and, added by D2059 (migration `20270115000000_reset_expiry`), `SOURCE_DID_NOT_END`: the entry waited a whole window for a source that did not end), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
+`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY` and, added by D2059 (migration `20270115000000_reset_expiry`), `SOURCE_DID_NOT_END`: the entry waited a whole window for a source that did not end, and, added by feature 022's D022-069 (migration `20270209000000_reset_rate_slot`), `RATE_LIMIT_SLOT_UNAVAILABLE`: the version's start takes a slot of a rate-limit key and its window had none free), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
 `actor`, `reason text` (8..2000, content), `reapply_report jsonb` (closed list ≤ 256 of
 `{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`, D1985: a name, never a payload, an argument or a digest;
 protected), `shard` generated, `created_at`, `completed_at`.

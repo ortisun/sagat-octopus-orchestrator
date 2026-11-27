@@ -355,6 +355,69 @@ fn the_usage_lists_the_quota_ceiling_command() {
     assert!(text(&output.stdout).contains("quota-ceiling"));
 }
 
+/// Feature 022 (task T022-116, decisions D022-136 and D022-137): the two flow-control capabilities are activated by the
+/// generic `capability-activate`, named by their registry tokens, with the operator and the generic flags; the old
+/// `flow-control-activate` is an unknown command, with no alias (it was never released).
+#[test]
+fn the_flow_control_capabilities_are_activated_by_capability_activate_and_the_old_command_is_unknown()
+ {
+    use sagat_control_plane::capability_activation::ActivationArgs;
+    use sagat_control_plane::cli::{Command, parse};
+    let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    for token in ["flow-control-concurrency-v1", "flow-control-rate-v1"] {
+        assert_eq!(
+            parse(&args(&[
+                "capability-activate",
+                token,
+                "--operator",
+                "ops:alice",
+                "--expect-live",
+                "2",
+                "--dry-run"
+            ])),
+            Ok(Command::CapabilityActivate(ActivationArgs {
+                capability: token.to_owned(),
+                operator: Some("ops:alice".to_owned()),
+                expect_live: Some(2),
+                dry_run: true,
+            })),
+            "{token}"
+        );
+    }
+    // the old command's names are not tokens of the generic one
+    for name in ["concurrency-keys", "rate-limits"] {
+        assert!(
+            parse(&args(&["capability-activate", name, "--operator", "x"])).is_err(),
+            "{name}"
+        );
+    }
+    for old in [
+        &["flow-control-activate"][..],
+        &[
+            "flow-control-activate",
+            "--capability",
+            "rate-limits",
+            "--operator",
+            "ops:alice",
+        ],
+    ] {
+        assert_eq!(
+            parse(&args(old)).map_err(|error| error.0),
+            Err("unknown command 'flow-control-activate'".to_owned()),
+            "{old:?}"
+        );
+    }
+    let output = control_plane(
+        &["flow-control-activate", "--capability", "rate-limits"],
+        &[],
+    );
+    assert!(!output.status.success());
+    let usage = text(&control_plane(&["help"], &[]).stdout);
+    assert!(!usage.contains("flow-control-activate"), "{usage}");
+    assert!(usage.contains("flow-control-concurrency-v1"), "{usage}");
+    assert!(usage.contains("flow-control-rate-v1"), "{usage}");
+}
+
 /// Design 043, D043-072: `input-schema-inventory` exits 2 when the command itself fails (here, the database cannot be
 /// reached), never 1, which says that a version would be refused; and the connection URL is never printed.
 #[test]

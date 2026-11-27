@@ -89,6 +89,11 @@ const BATCH_PURGE_CALLS: u32 = 100;
 const BATCH_PURGE_TIME: Duration = Duration::from_secs(20);
 /// Batches one housekeeping call may purge (about 100 000 messages).
 const PURGE_ROUNDS: u32 = 20;
+/// The rate-limit keys one call of the grant purge visits, each in its own transaction (feature 022, transaction T25).
+const RATE_PURGE_KEYS: u32 = 64;
+/// The grants of one key one transaction of the purge deletes, so that the key's lock is held briefly (each deleted row
+/// updates the key's counters through its trigger).
+const RATE_PURGE_PER_KEY: u32 = 500;
 /// Streams marked removed, and lines deleted, per transaction of the step-log purge (design 041 section 4): 500 rows
 /// bound how long a purge transaction holds a tenant's usage row at its commit.
 const STEP_LOG_PURGE_BATCH: u32 = 500;
@@ -211,6 +216,14 @@ pub struct Report {
     pub approvals_opened: u32,
     pub approvals_expired: u32,
     pub approval_routes_released: u32,
+    /// Queued steps granted every gate they wait for (feature 022, T26).
+    pub gates_granted: u32,
+    /// Queued steps whose queue deadline passed (feature 022, T27).
+    pub gate_waits_timed_out: u32,
+    /// Waiters of a run that already ended: an invariant breach, alerted and skipped (ADR-0089 decision 5).
+    pub gate_orphans: u32,
+    /// Granted step slots whose lease instant was recorded (feature 022, transaction T23, T022-074).
+    pub rate_leases_recorded: u64,
     pub stopped_runs_settled: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
@@ -219,6 +232,9 @@ pub struct Report {
     pub deadlines_enforced: u32,
     /// Delayed starts whose entry was released (feature 018).
     pub starts_released: u32,
+    /// Delayed starts of a gated definition whose key refused them at their release (a full queue, a namespace ceiling):
+    /// nothing was written, and the next pass tries again (feature 022, D022-052). Not work.
+    pub gate_starts_deferred: u32,
     pub hints_renewed: u32,
     pub children_started: u32,
     pub children_finished: u32,
@@ -429,6 +445,8 @@ impl Report {
             + self.approvals_opened
             + self.approvals_expired
             + self.approval_routes_released
+            + self.gates_granted
+            + self.gate_waits_timed_out
             + self.stopped_runs_settled
             + self.waits_timed_out
             + self.retries_released
@@ -517,6 +535,132 @@ impl Condition<'_> {
     }
 }
 
+/// What one key's pass of the grant routine did.
+#[derive(Debug, Default)]
+struct KeyPass {
+    granted: u32,
+    orphans: u32,
+    fenced: u32,
+    failed: u32,
+    skipped: u32,
+}
+
+/// How many keys one grant pass visits for a scheduler batch of `batch`: the batch, never more than
+/// [`KEYS_PER_GRANT_PASS`](sagat_application::flow_control::KEYS_PER_GRANT_PASS) (decision D022-077 item 1).
+fn grant_pass_keys(batch: u32) -> u32 {
+    batch.min(sagat_application::flow_control::KEYS_PER_GRANT_PASS)
+}
+
+/// What the grant routine did with one waiter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Granted {
+    Yes,
+    /// A gate refuses it now, its deadline passed, or another commit reached it first.
+    Refused,
+    /// The pass's own key refuses it for lack of room: the pass grants no younger waiter of the key that this refusal
+    /// holds back (decision D022-078 item 2).
+    RefusedRoom(sagat_application::flow_control::RefusedRoom),
+    /// The counts admitted it, but an earlier refusal of the pass holds it back (a free came between the two decisions):
+    /// the key keeps its hint, so the next pass grants in admission order (decision D022-078 item 2).
+    HeldBack,
+    /// Its run is locked, paused or stopping: the key keeps its hint.
+    Busy,
+    Orphan,
+    Fenced,
+    /// Its grant failed for a reason that clears on its own (the store unavailable: a pool or statement timeout, a
+    /// serialization failure, a deadlock): like [`Self::Busy`], it ends its key's pass (decision D022-121).
+    Transient,
+    /// Its grant failed for any other reason (a version this build cannot load, an execution error, a row a constraint
+    /// refuses), of this class: it is skipped and the pass goes on, and its failure is recorded so that it is not counted
+    /// ahead of the younger waiters of its key until a try decides it (decisions D022-121 and D022-124).
+    Failed(sagat_application::flow_control::GrantFailureClass),
+    /// This process has no digest key ring (G1198): it grants nothing.
+    Unsupported,
+}
+
+impl Granted {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Yes => "done",
+            Self::Refused | Self::RefusedRoom(_) | Self::HeldBack | Self::Busy => "skipped",
+            Self::Orphan => "orphan",
+            Self::Fenced => "fenced",
+            Self::Transient | Self::Failed(_) => "failed",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    /// What a failed grant means for its key's pass (decision D022-121).
+    fn of_failure(error: &EngineError) -> Self {
+        match error {
+            EngineError::Store(StoreError::FlowControl(
+                sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            )) => Self::Unsupported,
+            EngineError::Store(
+                StoreError::Unavailable { .. } | StoreError::DatabaseUnavailable,
+            ) => Self::Transient,
+            error => Self::Failed(failure_class(error)),
+        }
+    }
+
+    /// Whether the try decided the waiter (a grant, or a refusal for what the counts or the run say), so that a failure
+    /// recorded at an earlier try no longer applies (decision D022-124).
+    const fn decides(self) -> bool {
+        matches!(
+            self,
+            Self::Yes | Self::Refused | Self::RefusedRoom(_) | Self::HeldBack | Self::Orphan
+        )
+    }
+}
+
+/// The closed class a lasting failure of a waiter's grant is recorded with (decision D022-124).
+const fn failure_class(error: &EngineError) -> sagat_application::flow_control::GrantFailureClass {
+    use sagat_application::flow_control::GrantFailureClass;
+    match error {
+        EngineError::Store(StoreError::UnreadableDefinition) => {
+            GrantFailureClass::UnreadableDefinition
+        }
+        EngineError::Store(
+            StoreError::QuotaExceeded { .. }
+            | StoreError::Conflict(_)
+            | StoreError::StateConflict(_)
+            | StoreError::MissingReference
+            | StoreError::FlowControl(_)
+            | StoreError::DatabaseLimit
+            | StoreError::IdempotencyKeyReused
+            | StoreError::RevisionConflict { .. }
+            | StoreError::BusinessIdHeld { .. }
+            | StoreError::LakeRefused { .. }
+            | StoreError::RevealGrantRequired,
+        ) => GrantFailureClass::Refused,
+        EngineError::Execution(_) => GrantFailureClass::Execution,
+        EngineError::Store(_) => GrantFailureClass::Internal,
+    }
+}
+
+/// A grant of one waiter that did not end in a decision: where it failed (decision D022-121).
+enum GrantFailure {
+    /// The delivery of the signal held with a queued start.
+    Delivery(EngineError),
+    Other(EngineError),
+}
+
+impl GrantFailure {
+    fn error(&self) -> &EngineError {
+        match self {
+            Self::Delivery(error) | Self::Other(error) => error,
+        }
+    }
+}
+
+/// What the grant of a queued start does with the signal held with it (decision D022-121).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeldSignal {
+    Deliver,
+    /// Its delivery failed in an earlier transaction: dropped, with its audit record.
+    Drop,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Outcome {
     Done,
@@ -526,6 +670,9 @@ enum Outcome {
     Fenced,
     /// The attempted transition rolled back and the same run was stopped for retained storage.
     QuotaStopped,
+    /// A flow-control ceiling refused the release of a delayed start (a full key queue, a namespace ceiling; its closed
+    /// reason): it rolled back, and the run is held back from the pass with a backoff (feature 022, D022-052, D022-054).
+    Deferred(&'static str),
     /// The run cannot keep the output this transition would give it (`RetainedFits`).
     DoesNotFit,
 }
@@ -538,9 +685,24 @@ impl Outcome {
             Self::Failed => "failed",
             Self::Fenced => "fenced",
             Self::QuotaStopped => "quota_stopped",
+            Self::Deferred(_) => "deferred",
             Self::DoesNotFit => "does_not_fit",
         }
     }
+}
+
+/// The kind of the release of a start delay in `scheduler_actions_total` (feature 018), the one action that defers.
+const START_RELEASE: &str = "start_release";
+
+/// A refusal of a flow-control ceiling, which a later pass may find lifted (feature 022): not a defect of the action.
+const fn flow_control_ceiling(
+    refusal: sagat_application::flow_control::FlowControlRefusal,
+) -> bool {
+    use sagat_application::flow_control::FlowControlRefusal as R;
+    matches!(
+        refusal,
+        R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::Limit { .. }
+    )
 }
 
 fn content_quota(error: &EngineError) -> bool {
@@ -629,6 +791,25 @@ enum Hold {
 }
 
 impl View {
+    /// What an action on a flow-control key must hold: the lease on the key's home shard (ADR-0089 decision 3).
+    fn hold_for_shard(&self, shard: Shard) -> Hold {
+        match &self.snapshot {
+            None => Hold::Nothing,
+            Some(snapshot) => snapshot
+                .lease_of(shard, Instant::now())
+                .map_or(Hold::Lost, Hold::Lease),
+        }
+    }
+
+    /// The key's fence, inside the waiter's run transaction.
+    async fn holds_key<Tx: RunTx>(&self, tx: &mut Tx, hold: &Hold) -> Result<bool, StoreError> {
+        match hold {
+            Hold::Nothing => Ok(true),
+            Hold::Lease(lease) => tx.holds_key_shard(&self.owner, *lease).await,
+            Hold::Lost => Ok(false),
+        }
+    }
+
     fn hold_for(&self, run: RunId) -> Hold {
         match &self.snapshot {
             None => Hold::Nothing,
@@ -1002,6 +1183,11 @@ where
         self.timers(&self.view(), &mut report).await;
         self.wait_deadlines(&self.view(), &mut report).await;
         self.retries(&self.view(), &mut report).await;
+        // feature 022: a waiter past its deadline times out before the grants, which skip it anyway
+        self.gate_timeouts(&self.view(), &mut report).await;
+        // a slot leased since the last tick starts its window before the grants count it (transaction T23)
+        self.rate_leases(&self.view(), &mut report).await;
+        self.gate_grants(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
         self.start_releases(&self.view(), &mut report).await;
@@ -1011,6 +1197,41 @@ where
         self.children_finish(&self.view(), &mut report).await;
         self.children_cancel(&self.view(), &mut report).await;
         metrics::histogram!("scheduler_tick_seconds").record(started.elapsed().as_secs_f64());
+        report
+    }
+
+    /// Feature 022: the grant routine alone (T26), as a tick runs it; public so that a test can hold it against the
+    /// timeout routine (T022-097, T022-098). Not an operation of its own: a tick runs it.
+    #[doc(hidden)]
+    pub async fn grant_gates(&self) -> Report {
+        let mut report = Report::default();
+        self.gate_grants(&self.view(), &mut report).await;
+        report
+    }
+
+    /// Feature 022: the lease recording alone (transaction T23), as a tick runs it (a test hook, as [`Self::grant_gates`]).
+    #[doc(hidden)]
+    pub async fn record_rate_leases(&self) -> Report {
+        let mut report = Report::default();
+        self.rate_leases(&self.view(), &mut report).await;
+        report
+    }
+
+    /// Feature 022: the timeout routine alone (T27), as a tick runs it (a test hook, as [`Self::grant_gates`]).
+    #[doc(hidden)]
+    pub async fn time_out_gates(&self) -> Report {
+        let mut report = Report::default();
+        self.gate_timeouts(&self.view(), &mut report).await;
+        report
+    }
+
+    /// Feature 018: the release of the start delays alone (`FR-018-023`), as a tick runs it (a test hook, as
+    /// [`Self::grant_gates`]): a test that records every write of the database while it runs sees the release's writes
+    /// and no other pass's (the lease recording of feature 022 writes in every tick, in a transaction of its own).
+    #[doc(hidden)]
+    pub async fn release_starts(&self) -> Report {
+        let mut report = Report::default();
+        self.start_releases(&self.view(), &mut report).await;
         report
     }
 
@@ -1912,11 +2133,14 @@ where
                             Ok(CollectionAdvance::Waiting)
                         }
                         Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-                        Outcome::Done | Outcome::Failed => Err(CollectionAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
-                                detail: "unexpected collection quota recovery outcome".to_owned(),
-                            }),
-                        )),
+                        Outcome::Done | Outcome::Failed | Outcome::Deferred(_) => {
+                            Err(CollectionAdvanceError::Engine(EngineError::Store(
+                                StoreError::Internal {
+                                    detail: "unexpected collection quota recovery outcome"
+                                        .to_owned(),
+                                },
+                            )))
+                        }
                     };
                 }
                 Err(error) => {
@@ -2568,11 +2792,11 @@ where
                     Outcome::Done => Ok(CollectionAdvance::Compensated),
                     Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
                     Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-                    Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
-                        EngineError::Store(StoreError::Internal {
+                    Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                        CollectionAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                             detail: "scope compensation could not be committed".to_owned(),
-                        }),
-                    )),
+                        })),
+                    ),
                 };
             }
         }
@@ -3157,11 +3381,11 @@ where
             Outcome::Done => Ok(CollectionAdvance::LimitStopped),
             Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
             Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
-                EngineError::Store(StoreError::Internal {
+            Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                CollectionAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                     detail: "unexpected collection limit recovery outcome".to_owned(),
-                }),
-            )),
+                })),
+            ),
         }
     }
 
@@ -3199,11 +3423,11 @@ where
             }
             Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
             Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
-                EngineError::Store(StoreError::Internal {
+            Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                CollectionAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                     detail: "unexpected collection source recovery outcome".to_owned(),
-                }),
-            )),
+                })),
+            ),
         }
     }
 
@@ -3245,7 +3469,7 @@ where
             }
             Outcome::Skipped | Outcome::DoesNotFit => CollectionAdvance::Waiting,
             Outcome::Fenced => return Err(CollectionAdvanceError::FenceUnavailable),
-            Outcome::Failed | Outcome::QuotaStopped => {
+            Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => {
                 return Err(CollectionAdvanceError::Engine(EngineError::Store(
                     StoreError::Internal {
                         detail: "unexpected collection chain recovery outcome".to_owned(),
@@ -3394,7 +3618,7 @@ where
                         Outcome::Done => Ok(LoopAdvance::ExpressionStopped),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => {
+                        Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => {
                             Err(LoopAdvanceError::Expression)
                         }
                     };
@@ -3419,11 +3643,11 @@ where
                     Outcome::Done => Ok(LoopAdvance::LimitStopped),
                     Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                     Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                    Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
-                        EngineError::Store(StoreError::Internal {
+                    Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                        LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                             detail: "unexpected loop limit recovery outcome".to_owned(),
-                        }),
-                    )),
+                        })),
+                    ),
                 };
             }
             let needs_body = kind == LoopKind::RepeatUntil || evaluated.condition == Some(true);
@@ -3460,11 +3684,11 @@ where
                         Outcome::Done => Ok(LoopAdvance::LimitStopped),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
+                        Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                            LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                                 detail: "unexpected loop limit recovery outcome".to_owned(),
-                            }),
-                        )),
+                            })),
+                        ),
                     };
                 }
                 Err(error) if loop_content_quota(&error) => {
@@ -3485,11 +3709,11 @@ where
                         Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
+                        Outcome::Done | Outcome::Failed | Outcome::Deferred(_) => Err(
+                            LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                                 detail: "unexpected loop quota recovery outcome".to_owned(),
-                            }),
-                        )),
+                            })),
+                        ),
                     };
                 }
                 Err(error) => return Err(error.into()),
@@ -3585,11 +3809,11 @@ where
                         Outcome::Done => Ok(LoopAdvance::Compensated),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
+                        Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                            LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                                 detail: "scope compensation could not be committed".to_owned(),
-                            }),
-                        )),
+                            })),
+                        ),
                     };
                 }
             }
@@ -4196,11 +4420,11 @@ where
                     Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
                     Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                     Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                    Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
-                        EngineError::Store(StoreError::Internal {
+                    Outcome::Done | Outcome::Failed | Outcome::Deferred(_) => Err(
+                        LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                             detail: "unexpected loop quota recovery outcome".to_owned(),
-                        }),
-                    )),
+                        })),
+                    ),
                 };
             }
             Err(error) => return Err(error.into()),
@@ -4223,6 +4447,34 @@ where
             Ok(n) if n > 0 => tracing::info!(removed = n, "purged expired worker sessions"),
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not purge worker sessions"),
+        }
+        // Feature 022 (transaction T25): the grants of a rate-limit key that no acquirer can count any more, a key at a time.
+        let mut grants = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self
+                .store
+                .purge_rate_grants(RATE_PURGE_KEYS, RATE_PURGE_PER_KEY)
+                .await
+            {
+                Ok(n) => {
+                    grants += n;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge aged rate-limit grants");
+                    break;
+                }
+            }
+        }
+        metrics::counter!("scheduler_actions_total", "kind" => "rate_purge", "outcome" => "done")
+            .increment(grants);
+        if grants > 0 {
+            tracing::info!(
+                removed = grants,
+                "purged rate-limit grants past every window"
+            );
         }
         // The records scripts keep for a while (executions, test runs) end with their retention.
         let mut scripts = 0u64;
@@ -4658,6 +4910,15 @@ where
                         if !matches!(error, ExecutionError::Invariant(_)) =>
                     {
                         Ok(Outcome::Skipped)
+                    }
+                    // Feature 022 (D022-052, D022-054): a key's ceiling refused the start a release decides; nothing is
+                    // written, and the pass holds the run back with a backoff. No other action defers (reviews of
+                    // 2026-11-20, security nit 8): a refusal anywhere else is a failure to look at.
+                    Err(EngineError::Store(StoreError::FlowControl(refusal)))
+                        if kind == START_RELEASE && flow_control_ceiling(refusal) =>
+                    {
+                        tracing::debug!(reason = refusal.reason(), %run, "a flow-control ceiling deferred a start's release");
+                        Ok(Outcome::Deferred(refusal.reason()))
                     }
                     Err(error) if content_quota(&error) => {
                         drop(tx);
@@ -5182,12 +5443,13 @@ where
             Outcome::Failed => report.failed += 1,
             Outcome::Fenced => report.fenced += 1,
             Outcome::QuotaStopped => report.quota_stops += 1,
+            Outcome::Deferred(_) => report.gate_starts_deferred += 1,
         }
     }
 
     /// Reads the candidates of a pass: the oldest, taken fairly between the tenants (`FR-010-002`),
-    /// from the shards this replica holds. A query that fails is logged and the pass has nothing to
-    /// do this tick.
+    /// from the shards this replica holds, at most the scheduler's batch. A query that fails is logged and the pass has
+    /// nothing to do this tick.
     async fn pick<'a, T, K, Fut>(
         &'a self,
         view: &View,
@@ -5201,7 +5463,27 @@ where
         K: Eq + Hash,
         Fut: Future<Output = Result<Vec<T>, StoreError>>,
     {
-        let (shards, limit, store) = (view.shards, self.settings.batch, &self.store);
+        self.pick_at_most(view, what, self.settings.batch, report, tenant, key, query)
+            .await
+    }
+
+    /// [`Self::pick`], at most `limit` candidates.
+    #[allow(clippy::too_many_arguments)]
+    async fn pick_at_most<'a, T, K, Fut>(
+        &'a self,
+        view: &View,
+        what: &'static str,
+        limit: u32,
+        report: &mut Report,
+        tenant: impl Fn(&T) -> TenantId,
+        key: impl Fn(&T) -> K,
+        query: impl Fn(&'a S, Window) -> Fut,
+    ) -> Vec<T>
+    where
+        K: Eq + Hash,
+        Fut: Future<Output = Result<Vec<T>, StoreError>>,
+    {
+        let (shards, store) = (view.shards, &self.store);
         if !self.settings.fair {
             let oldest = query(
                 store,
@@ -5698,6 +5980,517 @@ where
         }
     }
 
+    /// The lease recording of feature 022 (transaction T23, T022-074; D022-005, D022-029): a granted step slot counts while unleased
+    /// and for its window after its attempt's lease; this pass copies the lease instant from the journal onto the grants
+    /// of the run shards this replica holds, in one statement that locks the grant rows only. A stale replica recording
+    /// a lease writes the same instant (it is read from the journal), so no fence is needed; a late recording keeps a slot
+    /// longer, never frees one early.
+    async fn rate_leases(&self, view: &View, report: &mut Report) {
+        let window = Window {
+            shards: view.shards,
+            exclude: Vec::new(),
+            limit: self.settings.batch,
+        };
+        match self.store.record_rate_leases(&window).await {
+            Ok(recorded) => {
+                report.rate_leases_recorded += recorded;
+                metrics::counter!("scheduler_actions_total", "kind" => "rate_lease", "outcome" => "done")
+                    .increment(recorded);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the lease instants of granted slots could not be recorded");
+                metrics::counter!("scheduler_actions_total", "kind" => "rate_lease", "outcome" => "failed")
+                    .increment(1);
+                report.failed += 1;
+            }
+        }
+    }
+
+    /// The grant routine of feature 022 (T26, T022-097; ADR-0089 decisions 3 and 4, ADR-0094 pending): keys, not
+    /// waiters, are selected, those whose next-eligible hint has come on a home shard this replica holds, fairly between
+    /// tenants and bounded per pass; each key's waiters are tried oldest first, at most
+    /// [`GRANTS_PER_KEY_PER_PASS`](sagat_application::flow_control::GRANTS_PER_KEY_PER_PASS), each in its own run
+    /// transaction under the key's fence. A key none of whose waiters this pass could grant rests until a release, a return,
+    /// a new waiter or the first instant a slot may stop counting sets its hint again (D022-064).
+    async fn gate_grants(&self, view: &View, report: &mut Report) {
+        use sagat_application::flow_control::GateKey;
+        // the scheduler's batch of keys, never more than the plan's hard ceiling (decision D022-077 item 1)
+        let keys = self
+            .pick_at_most(
+                view,
+                "gate_grants",
+                grant_pass_keys(self.settings.batch),
+                report,
+                |key: &GateKey| key.tenant_id,
+                |key| {
+                    (
+                        key.kind == sagat_domain::workflow::GateKind::RateLimit,
+                        key.tenant_id,
+                        key.namespace_id,
+                        key.group.as_str().to_owned(),
+                        key.digest,
+                    )
+                },
+                |store, window| async move { store.due_gate_keys(&window).await },
+            )
+            .await;
+        let passes = self
+            .each(keys, |key| async move { self.grant_key(view, key).await })
+            .await;
+        for pass in passes {
+            report.gates_granted += pass.granted;
+            report.gate_orphans += pass.orphans;
+            report.fenced += pass.fenced;
+            report.failed += pass.failed;
+            report.skipped += pass.skipped;
+        }
+    }
+
+    async fn grant_key(
+        &self,
+        view: &View,
+        key: sagat_application::flow_control::GateKey,
+    ) -> KeyPass {
+        use sagat_application::flow_control::GRANTS_PER_KEY_PER_PASS;
+        let mut pass = KeyPass::default();
+        let hold = view.hold_for_shard(key.shard);
+        if matches!(hold, Hold::Lost) {
+            pass.fenced += 1;
+            return pass;
+        }
+        let waiters = match self
+            .store
+            .gate_key_waiters(&key, GRANTS_PER_KEY_PER_PASS)
+            .await
+        {
+            Ok(waiters) => waiters,
+            Err(error) => {
+                tracing::warn!(%error, "a flow-control key's waiters could not be read");
+                pass.failed += 1;
+                return pass;
+            }
+        };
+        // whether a waiter this pass did not decide may be grantable now: then the key keeps its hint. A full listing in
+        // which nothing was granted rests the key (security review 3, 2026-11-19): its later waiters are younger and
+        // would be refused by the same counts, so a full key costs one pass, not one every tick
+        let truncated = u32::try_from(waiters.len()).unwrap_or(u32::MAX) >= GRANTS_PER_KEY_PER_PASS;
+        let mut undecided = false;
+        // the refusals of this pass for lack of room on the key, each of which holds back its younger waiters of no looser
+        // limit and window (decision D022-078 item 2); one entry per distinct bound, so at most a few
+        let mut refused: Vec<sagat_application::flow_control::RefusedRoom> = Vec::new();
+        for waiter in waiters {
+            let order = sagat_application::flow_control::PassOrder::of(&key, &refused);
+            let outcome = self.grant_waiter(view, &hold, &waiter, order).await;
+            match outcome {
+                Granted::Yes => pass.granted += 1,
+                Granted::RefusedRoom(room) => {
+                    if !refused
+                        .iter()
+                        .any(|known| known.holds_back(room.limit, room.period_ms))
+                    {
+                        refused.push(room);
+                    }
+                }
+                Granted::HeldBack => undecided = true,
+                // a replica without the gate grants nothing of any key; it keeps the hint for one that has it
+                Granted::Unsupported => {
+                    pass.failed += 1;
+                    return pass;
+                }
+                Granted::Refused => {}
+                // a waiter whose run another transaction holds, or whose grant failed for a reason that clears on its
+                // own, is decided by a later pass, and every younger waiter of the key waits for it: granting one of
+                // them now would put it before an older waiter the window may have room for (strict admission order,
+                // decision D022-073; batch 3 work item 2; decision D022-121)
+                Granted::Busy => {
+                    pass.skipped += 1;
+                    undecided = true;
+                    break;
+                }
+                Granted::Transient => {
+                    pass.failed += 1;
+                    undecided = true;
+                    break;
+                }
+                Granted::Orphan => pass.orphans += 1,
+                Granted::Fenced => {
+                    pass.fenced += 1;
+                    return pass;
+                }
+                // any other failure would recur on every pass: the waiter is skipped, counted and logged (by
+                // `grant_waiter`), and stays queued until its deadline; its failure is recorded, so that it no longer
+                // counts ahead of the younger waiters tried next, nor holds back a new arrival; the key keeps its hint,
+                // so it is tried again (decisions D022-121 and D022-124)
+                Granted::Failed(failure) => {
+                    pass.failed += 1;
+                    undecided = true;
+                    if !waiter.grant_failing {
+                        self.record_grant_failure(&key, &waiter, Some(failure))
+                            .await;
+                    }
+                }
+            }
+            if waiter.grant_failing && outcome.decides() {
+                self.record_grant_failure(&key, &waiter, None).await;
+            }
+        }
+        undecided |= truncated && pass.granted > 0;
+        let holder = match &hold {
+            Hold::Lease(lease) => Some((view.owner.as_str(), *lease)),
+            _ => None,
+        };
+        if !undecided && let Err(error) = self.store.rest_gate_key(&key, holder).await {
+            tracing::warn!(%error, "a flow-control key's hint could not be cleared");
+        }
+        pass
+    }
+
+    /// Records a lasting failure of `waiter`'s grant, or clears it once a try decided it (decision D022-124). A failure
+    /// to record is logged: the waiter is then counted ahead until a later pass records it.
+    async fn record_grant_failure(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        failure: Option<sagat_application::flow_control::GrantFailureClass>,
+    ) {
+        if let Err(error) = self
+            .store
+            .record_gate_grant_failure(key, waiter, failure)
+            .await
+        {
+            tracing::warn!(%error, run_id = %waiter.run_id, "the failure of a flow-control grant could not be recorded");
+        }
+    }
+
+    async fn grant_waiter(
+        &self,
+        view: &View,
+        hold: &Hold,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        order: sagat_application::flow_control::PassOrder<'_>,
+    ) -> Granted {
+        let mut outcome = self
+            .try_grant_waiter(view, hold, waiter, order, HeldSignal::Deliver)
+            .await;
+        // a held signal whose delivery fails for a reason that does not clear on its own would fail the grant on every
+        // pass: the grant is tried once more, in a new transaction, without it (decision D022-121)
+        if let Err(GrantFailure::Delivery(error)) = &outcome
+            && matches!(Granted::of_failure(error), Granted::Failed(_))
+        {
+            tracing::warn!(
+                %error,
+                run_id = %waiter.run_id,
+                "the signal held with a queued start could not be delivered: it is dropped and the start granted"
+            );
+            outcome = self
+                .try_grant_waiter(view, hold, waiter, order, HeldSignal::Drop)
+                .await;
+        }
+        let outcome = outcome.unwrap_or_else(|failure| {
+            let outcome = Granted::of_failure(failure.error());
+            match outcome {
+                Granted::Unsupported => tracing::warn!(
+                    "this process has no flow-control digest key ring: it grants no queued step"
+                ),
+                // the step was read under the run's lock, so a domain refusal here is a defect, not a lost race
+                // (correctness review minor 4, 2026-11-19)
+                _ => tracing::error!(
+                    error = %failure.error(),
+                    run_id = %waiter.run_id,
+                    "a flow-control grant failed"
+                ),
+            }
+            outcome
+        });
+        metrics::counter!("scheduler_actions_total", "kind" => "gate_grant", "outcome" => outcome.label())
+            .increment(1);
+        outcome
+    }
+
+    /// One try of [`Self::grant_waiter`], in one transaction of the waiter's run: committed when it grants, and otherwise
+    /// rolled back, the rollback awaited, so that the next waiter of the same run finds the run free (decision D022-122).
+    async fn try_grant_waiter(
+        &self,
+        view: &View,
+        hold: &Hold,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        order: sagat_application::flow_control::PassOrder<'_>,
+        held: HeldSignal,
+    ) -> Result<Granted, GrantFailure> {
+        // the waiter's run first (ADR-0089 decision 3): one another transaction holds is tried by the next pass
+        let Some(mut tx) = self
+            .store
+            .begin(waiter.tenant_id, waiter.run_id, Lock::SkipLocked)
+            .await
+            .map_err(|error| GrantFailure::Other(EngineError::Store(error)))?
+        else {
+            return Ok(Granted::Busy);
+        };
+        let mut delivered = false;
+        let decided = self
+            .decide_grant(&mut tx, view, hold, waiter, order, held, &mut delivered)
+            .await;
+        if matches!(decided, Ok(Granted::Yes)) {
+            // a commit that fails after a held signal was delivered (a deferred trigger) is a failure of the delivery:
+            // the grant is tried once more without it (decision D022-125)
+            tx.commit().await.map_err(|error| {
+                let error = EngineError::Store(error);
+                if delivered {
+                    GrantFailure::Delivery(error)
+                } else {
+                    GrantFailure::Other(error)
+                }
+            })?;
+        } else if let Err(error) = tx.rollback().await {
+            // the pool closes a connection whose rollback failed, which ends the transaction and frees the run
+            tracing::warn!(%error, run_id = %waiter.run_id, "a flow-control grant could not be rolled back");
+        }
+        decided
+    }
+
+    /// The decision of one try of a grant, in `tx`, which the caller commits or rolls back; `delivered` says whether it
+    /// delivered the signal held with a queued start (decision D022-125).
+    #[allow(clippy::too_many_arguments)]
+    async fn decide_grant<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        view: &View,
+        hold: &Hold,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        order: sagat_application::flow_control::PassOrder<'_>,
+        held: HeldSignal,
+        delivered: &mut bool,
+    ) -> Result<Granted, GrantFailure> {
+        let other = |error: EngineError| GrantFailure::Other(error);
+        if !view
+            .holds_key(&mut *tx, hold)
+            .await
+            .map_err(|error| other(EngineError::Store(error)))?
+        {
+            return Ok(Granted::Fenced);
+        }
+        let attempt = {
+            let (_, state) = tx.parts();
+            if state.is_finished() {
+                tracing::error!(
+                    run_id = %waiter.run_id,
+                    "a flow-control waiter of a run that ended: an invariant breach, skipped"
+                );
+                return Ok(Granted::Orphan);
+            }
+            // a paused or stopping run's waiter is skipped, and is not counted ahead (ADR-0089 decision 4)
+            // (not listed while paused: its pause or resume makes the key due; a stop dequeues it)
+            if state.is_paused() || state.stop_reason().is_some() {
+                return Ok(Granted::Refused);
+            }
+            match &waiter.node {
+                // a run's start that still waits (T022-022)
+                None if state.run_gates().is_waiting() => 0,
+                Some(node) => match state.step(node) {
+                    Some(step)
+                        if step.status() == execution::StepStatus::Waiting
+                            && matches!(step.waiting_on(), Some(execution::WaitingOn::Gate)) =>
+                    {
+                        step.attempt().saturating_add(1)
+                    }
+                    // the candidate is stale: a grant, a timeout or a cancellation reached it first
+                    _ => return Ok(Granted::Refused),
+                },
+                None => return Ok(Granted::Refused),
+            }
+        };
+        // every decision of this pass counts the key's grants as of the pass's selection of the key (decision
+        // D022-073 item 2) and respects the pass's refusals (decision D022-078 item 2): its grants follow admission
+        // order
+        let grants = match tx
+            .grant_queued_step(waiter.node.as_ref(), attempt, order)
+            .await
+            .map_err(|error| other(EngineError::Store(error)))?
+        {
+            sagat_application::flow_control::QueueDecision::Granted(grants) => grants,
+            sagat_application::flow_control::QueueDecision::Refused {
+                held_back: true, ..
+            } => return Ok(Granted::HeldBack),
+            sagat_application::flow_control::QueueDecision::Refused {
+                room: Some(room), ..
+            } => return Ok(Granted::RefusedRoom(room)),
+            sagat_application::flow_control::QueueDecision::Refused { .. } => {
+                return Ok(Granted::Refused);
+            }
+        };
+        // the span names the group, never the key (FR-022-033); a slot's grant is a rate-limit grant
+        let rate = grants
+            .iter()
+            .find(|grant| grant.change.kind() == sagat_domain::workflow::GateKind::RateLimit);
+        let span = match rate {
+            Some(grant) => tracing::info_span!(
+                sagat_telemetry::FlowControlSpan::RateLimitGrant.as_str(),
+                "sagat.rate_limit.group" = grant.gate.group.as_str(),
+                run_id = %waiter.run_id,
+                tenant_id = %waiter.tenant_id,
+                parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
+            ),
+            None => tracing::info_span!(
+                sagat_telemetry::FlowControlSpan::ConcurrencyGrant.as_str(),
+                "sagat.concurrency.group" = grants.first().map_or("", |grant| grant.gate.group.as_str()),
+                run_id = %waiter.run_id,
+                tenant_id = %waiter.tenant_id,
+                parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
+            ),
+        };
+        let start = waiter.node.is_none();
+        self.engine
+            .run(&mut *tx, self.effects(), move |def, state, now| {
+                let progress = if start {
+                    execution::grant_run_gates(def, state, now, grants)?
+                } else {
+                    execution::grant_step_gates(def, state, now, grants)?
+                };
+                Ok(((), progress))
+            })
+            .instrument(span)
+            .await
+            .map_err(other)?;
+        // the signal a Signal-with-Start held with this queued start, delivered in the grant's transaction as
+        // `signalRun` would, or dropped with an audit record when no step waits for it (feature 022, T022-109,
+        // decision D022-087 item 3); when its delivery failed in an earlier try, dropped (decision D022-121)
+        if start {
+            match held {
+                HeldSignal::Deliver => {
+                    *delivered = matches!(
+                        self.engine
+                            .deliver_held_signal(&mut *tx)
+                            .await
+                            .map_err(GrantFailure::Delivery)?,
+                        sagat_application::execution::HeldDelivery::Delivered(_)
+                    );
+                }
+                HeldSignal::Drop => {
+                    self.engine
+                        .drop_held_signal(
+                            &mut *tx,
+                            sagat_application::execution::HeldSignalDrop::DeliveryFailed,
+                        )
+                        .await
+                        .map_err(other)?;
+                }
+            }
+        }
+        Ok(Granted::Yes)
+    }
+
+    /// The timeout routine of feature 022 (T27, T022-098; ADR-0089 decision 5, FR-022-052): a queued step whose deadline
+    /// passed, on a run shard this replica holds, under the run's fence: the gate that refuses it then journals
+    /// `wait_timed_out` (rate first when both do), the other is dequeued, and the step fails through its route. A grant
+    /// committed first wins: the step then waits for nothing and the timeout is skipped.
+    async fn gate_timeouts(&self, view: &View, report: &mut Report) {
+        use sagat_application::flow_control::GateWaiter;
+        let due = self
+            .pick(
+                view,
+                "gate_timeouts",
+                report,
+                |waiter: &GateWaiter| waiter.tenant_id,
+                |waiter| (waiter.run_id, waiter.node.clone()),
+                |store, window| async move { store.due_gate_waits(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(due, |waiter| async move {
+                self.time_out_waiter(view, waiter).await
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.gate_waits_timed_out += 1);
+        }
+    }
+
+    async fn time_out_waiter(
+        &self,
+        view: &View,
+        waiter: sagat_application::flow_control::GateWaiter,
+    ) -> Outcome {
+        let hold = view.hold_for(waiter.run_id);
+        let outcome = async {
+            if matches!(hold, Hold::Lost) {
+                return Ok(Outcome::Fenced);
+            }
+            let Some(mut tx) = self
+                .store
+                .begin(waiter.tenant_id, waiter.run_id, Lock::Wait)
+                .await
+                .map_err(EngineError::Store)?
+            else {
+                return Ok(Outcome::Skipped);
+            };
+            if !view
+                .holds(&mut tx, &hold)
+                .await
+                .map_err(EngineError::Store)?
+            {
+                return Ok(Outcome::Fenced);
+            }
+            let attempt = {
+                let (_, state) = tx.parts();
+                match &waiter.node {
+                    // a run's start that still waits (T022-022)
+                    None if state.run_gates().is_waiting() && state.stop_reason().is_none() => 0,
+                    Some(node) => match state.step(node) {
+                        Some(step)
+                            if step.status() == execution::StepStatus::Waiting
+                                && matches!(
+                                    step.waiting_on(),
+                                    Some(execution::WaitingOn::Gate)
+                                ) =>
+                        {
+                            step.attempt().saturating_add(1)
+                        }
+                        _ => return Ok(Outcome::Skipped),
+                    },
+                    None => return Ok(Outcome::Skipped),
+                }
+            };
+            let refusing = tx
+                .refusing_gate(waiter.node.as_ref(), attempt)
+                .await
+                .map_err(EngineError::Store)?;
+            let node = waiter.node.clone();
+            match self
+                .engine
+                .run(&mut tx, self.effects(), move |def, state, now| {
+                    let progress = match &node {
+                        Some(node) => {
+                            execution::time_out_step_gates(def, state, now, node, refusing)?
+                        }
+                        None => execution::time_out_run_gates(def, state, now, refusing)?,
+                    };
+                    Ok(((), progress))
+                })
+                .await
+            {
+                Ok(()) => {
+                    tx.commit().await.map_err(EngineError::Store)?;
+                    Ok(Outcome::Done)
+                }
+                // not yet due by the run's own state, or a grant or a cancellation committed first
+                Err(EngineError::Execution(error))
+                    if !matches!(error, ExecutionError::Invariant(_)) =>
+                {
+                    Ok(Outcome::Skipped)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        .await;
+        let outcome = outcome.unwrap_or_else(|error: EngineError| {
+            tracing::error!(%error, run_id = %waiter.run_id, "a flow-control timeout failed");
+            Outcome::Failed
+        });
+        metrics::counter!("scheduler_actions_total", "kind" => "gate_timeout", "outcome" => outcome.label())
+            .increment(1);
+        outcome
+    }
+
     async fn timers(&self, view: &View, report: &mut Report)
     where
         S: PathExecutionStore,
@@ -5998,15 +6791,31 @@ where
             )
             .await;
         let outcomes = self
-            .each(due, |run| {
-                self.apply_if(
-                    view,
-                    run,
-                    "start_release",
-                    Condition::StartDue,
-                    self.effects(),
-                    |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
-                )
+            .each(due, |run| async move {
+                let outcome = self
+                    .apply_if(
+                        view,
+                        run.clone(),
+                        START_RELEASE,
+                        Condition::StartDue,
+                        self.effects(),
+                        |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
+                    )
+                    .await;
+                // a release a ceiling refused is held back with a backoff, in a transaction of its own (D022-054)
+                if let Outcome::Deferred(reason) = outcome {
+                    let run_id = run.run_id;
+                    match self.store.defer_start_release(run, reason).await {
+                        // the first deferral of a run is worth a line; its retries are counted by
+                        // `scheduler_actions_total{kind="start_release",outcome="deferred"}`
+                        Ok(1) => tracing::warn!(reason, run = %run_id, "a flow-control ceiling deferred a start's release"),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, run = %run_id, "a deferred release could not be held back");
+                        }
+                    }
+                }
+                outcome
             })
             .await;
         for outcome in outcomes {
@@ -6277,37 +7086,9 @@ where
                     InputRefusal::SchemaUnusable => FailureCode::run_input_schema_unusable(),
                     _ => FailureCode::child_input_invalid(),
                 };
-                // A child that a peer, a 0.2.x engine or an engine in `report` already created is not failed: the
-                // step is failed only if, under its row lock, its child was not started (D043-038, D043-164; the
-                // lookup before the failure of D043-132 left a window, correctness review of 2026-11-16, Major 3).
-                let target = node.clone();
-                let child = pending.child;
-                let outcome = self
-                    .apply_if(
-                        view,
-                        RunRef {
-                            tenant_id: tenant,
-                            run_id: parent_id,
-                        },
-                        "child_finish",
-                        Condition::ChildNotStarted { node, child },
-                        self.effects(),
-                        move |def, state, now| {
-                            Ok((
-                                (),
-                                execution::finish_child(
-                                    def,
-                                    state,
-                                    &target,
-                                    child,
-                                    ChildOutcome::Failed(code),
-                                    now,
-                                )?,
-                            ))
-                        },
-                    )
-                    .await;
-                return Ok((outcome, outcome != Outcome::Skipped));
+                return Ok(self
+                    .fail_unstarted_child(view, tenant, parent_id, node, pending.child, code)
+                    .await);
             }
         };
         let child_id = pending.child;
@@ -6421,6 +7202,34 @@ where
                 },
                 true,
             )),
+            // This process does not serve the gate (no digest key ring): a fact of the replica, not of the child. The
+            // reservation stays for a replica that serves it, as the grant pass leaves a key it cannot grant (decision
+            // D022-080 as amended by the review of 2026-11-25).
+            Err(StoreError::FlowControl(
+                sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            )) => {
+                tracing::warn!(
+                    "this process does not serve the flow-control gate: a child start is left for one that does"
+                );
+                Err(StoreError::FlowControl(
+                    sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+                )
+                .into())
+            }
+            // The gate of the child's start refused it (a full buffer, `queued_runs`, the live-keys ceiling, a capability
+            // switched off or not activated): the parent's node fails with the refusal's reason, a typed failure its
+            // route takes, and no child run exists (FR-022-055, D022-080). Waiting instead would keep the reservation at
+            // the head of the pass and fail it every tick.
+            Err(StoreError::FlowControl(refusal)) => Ok(self
+                .fail_unstarted_child(
+                    view,
+                    tenant,
+                    parent_id,
+                    node,
+                    pending.child,
+                    refusal.child_failure(),
+                )
+                .await),
             Err(other) => Err(other.into()),
             Ok(Admitted::Created(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
@@ -6431,14 +7240,28 @@ where
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
                 let started = self
                     .engine
-                    .run(&mut tx, effects, |def: &WorkflowDefinition, state, now| {
-                        let (started, progress) = execution::start_run(def, child_id, now)?;
-                        *state = started;
-                        Ok(((), progress))
-                    })
+                    // through the child's start gates (feature 022, T022-022)
+                    .start(&mut tx, effects, child_id, None)
                     .await;
                 if let Err(error) = started {
                     drop(tx);
+                    // the child's start gates refused it in the creation transaction, rolled back with it (FR-022-055);
+                    // a replica that does not serve the gate leaves it for one that does (decision D022-080, amended)
+                    if let EngineError::Store(StoreError::FlowControl(refusal)) = &error
+                        && *refusal
+                            != sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing
+                    {
+                        return Ok(self
+                            .fail_unstarted_child(
+                                view,
+                                tenant,
+                                parent_id,
+                                node,
+                                pending.child,
+                                refusal.child_failure(),
+                            )
+                            .await);
+                    }
                     if content_quota(&error) {
                         return Ok((
                             self.finish_with(
@@ -6476,6 +7299,48 @@ where
                 Ok((Outcome::Done, false))
             }
         }
+    }
+
+    /// Fails the parent step `node` with `code` because its child could not be started, unless, under the step's row
+    /// lock, its child was started after all: a child that a peer, a 0.2.x engine or an engine in `report` already created
+    /// is not failed (D043-038, D043-164; the lookup before the failure of D043-132 left a window, correctness review of
+    /// 2026-11-16, Major 3). The flag says the parent was told.
+    async fn fail_unstarted_child(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        parent: RunId,
+        node: &sagat_domain::workflow::NodeId,
+        child: RunId,
+        code: FailureCode,
+    ) -> (Outcome, bool) {
+        let target = node.clone();
+        let outcome = self
+            .apply_if(
+                view,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: parent,
+                },
+                "child_finish",
+                Condition::ChildNotStarted { node, child },
+                self.effects(),
+                move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::finish_child(
+                            def,
+                            state,
+                            &target,
+                            child,
+                            ChildOutcome::Failed(code),
+                            now,
+                        )?,
+                    ))
+                },
+            )
+            .await;
+        (outcome, outcome != Outcome::Skipped)
     }
 
     /// Reports a child's outcome to the parent step that waits for it.
@@ -6686,7 +7551,19 @@ mod tests {
     use sagat_application::primitives::PrimitiveStoreError;
     use sagat_domain::quota::QuotaResource;
 
-    use super::{Outcome, collection_content_quota, loop_content_quota, recovery_guard};
+    use super::{
+        Outcome, collection_content_quota, grant_pass_keys, loop_content_quota, recovery_guard,
+    };
+
+    /// Decision D022-077 item 1: a grant pass visits the scheduler's batch of keys, never more than 256.
+    #[test]
+    fn a_grant_pass_visits_the_batch_of_keys_and_never_more_than_256() {
+        assert_eq!(grant_pass_keys(200), 200, "the default batch");
+        assert_eq!(grant_pass_keys(1), 1);
+        assert_eq!(grant_pass_keys(256), 256);
+        assert_eq!(grant_pass_keys(257), 256, "the hard ceiling");
+        assert_eq!(grant_pass_keys(u32::MAX), 256);
+    }
 
     #[test]
     fn quota_recovery_does_not_mutate_after_version_change_or_shard_loss() {

@@ -52,8 +52,8 @@ use crate::declared_operations::{AppliedInTx, DeclaredOperationEvaluator, Declar
 use crate::definitions::{DefinitionStore, Idempotency};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
-    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
-    RunInfo, RunRecord, RunTx,
+    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, HeldSignal,
+    MAX_PAYLOAD_BYTES, RunInfo, RunRecord, RunTx,
 };
 use crate::identity::{Page, PageRequest, RequestContext};
 use crate::operation_evaluation::DeclaredOperationArguments;
@@ -145,6 +145,8 @@ pub struct Started {
     pub existing: bool,
     /// The steps a signal delivered with the start woke (Signal-with-Start); empty otherwise.
     pub delivered_to: Vec<NodeId>,
+    /// The signal of a Signal-with-Start is held with the new run, whose start queued (feature 022, D022-087).
+    pub signal_held: bool,
     /// The declared Update applied with the start (Update-with-Start), or its stable rejection.
     pub update: Option<AppliedInTx>,
 }
@@ -162,6 +164,9 @@ pub struct SignalStarted {
     pub run: RunRecord,
     pub started: bool,
     pub delivered_to: Vec<NodeId>,
+    /// The new run's start queued and the signal is held with it, delivered by the grant of its start (feature 022,
+    /// T022-109, decision D022-087); `delivered_to` is then empty.
+    pub held: bool,
 }
 
 /// The declared Update an Update-with-Start request applies (feature 018, `FR-018-025`).
@@ -232,6 +237,16 @@ async fn commit_with_item<T: RunTx>(
         item.committed(outcome);
     }
     Ok(())
+}
+
+/// The receipt that says the signal of a Signal-with-Start was held with its queued run (feature 022, decision D022-087
+/// item 2): kept beside the signal's own receipt, so a retry answers `held` too.
+fn held_marker(signal: &Idempotency) -> Idempotency {
+    Idempotency {
+        scope: format!("{}.held", signal.scope),
+        key: signal.key.clone(),
+        fingerprint: signal.fingerprint.clone(),
+    }
 }
 
 fn served_marker(start: &Idempotency) -> Idempotency {
@@ -418,7 +433,12 @@ pub struct RunFilter {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait RunStore:
-    QuotaLookup + crate::telemetry::TelemetryStore + crate::authz::NamespaceDirectory + Send + Sync
+    QuotaLookup
+    + crate::telemetry::TelemetryStore
+    + crate::authz::NamespaceDirectory
+    + crate::flow_control_keys::FlowControlKeyReader
+    + Send
+    + Sync
 {
     type Tx: RunTx;
 
@@ -1011,8 +1031,11 @@ where
 
     /// Signal-with-Start (feature 018, `FR-018-024`): signals the open run of the business identifier,
     /// or, when there is none, creates a run and delivers the signal to it in the same transaction. If
-    /// no step of the new run waits for the signal the whole request is rolled back; a signal is never
-    /// buffered. The conflict policy of `business` is ignored: an open holder is always signalled.
+    /// no step of the new run waits for the signal the whole request is rolled back. The one buffer: a
+    /// new run whose start queues for its flow-control gates holds the signal, and the grant of its
+    /// start delivers it, or drops it with an audit record (feature 022, decision D022-087); a signal
+    /// for an open holder is never buffered. The conflict policy of `business` is ignored: an open
+    /// holder is always signalled.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `run:start` and `run:signal`; the errors of
@@ -1051,6 +1074,7 @@ where
             run: started.run,
             started: !started.existing,
             delivered_to: started.delivered_to,
+            held: started.signal_held,
         })
     }
 
@@ -1809,7 +1833,9 @@ where
                     .ok_or(AppError::Internal)
             })
             .transpose()?;
-        let created = match self.store.create(new).await {
+        // boxed, as the initial reduction below: the admission of a run is a large future that every creator would
+        // otherwise carry inline (`future_sizes` pins the bound)
+        let created = match Box::pin(self.store.create(new)).await {
             Ok(created) => created,
             Err(error) => {
                 self.audit_database_denial(principal, workflow.id(), &error, ctx)
@@ -1876,11 +1902,12 @@ where
                 match with {
                     Some((WithStart::Signal(signal), start)) => {
                         // what the first request delivered, from the receipt it left with the run
-                        let (delivered, served) = self
+                        let (delivered, served, held) = self
                             .delivered_before(principal, started.run.info.run_id, signal, start)
                             .await?;
                         started.delivered_to = delivered;
                         started.existing = served;
+                        started.signal_held = held;
                     }
                     Some((WithStart::Update(update), start)) => {
                         // the receipt the first request left answers again, whatever the run is now
@@ -1984,6 +2011,11 @@ where
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {
+                    // feature 022: a reset of a definition that gates its start takes a fresh permit and slot right after
+                    // `run.reset`, or is refused `RATE_LIMIT_SLOT_UNAVAILABLE` then `CONCURRENCY_PERMIT_UNAVAILABLE`
+                    // (rate first), never queues (plan, Run creators; D022-069): the
+                    // planner asks for it in `record_reset`'s settle, and the restored decisions are history.
+                    //
                     // A reset that would deliver again is refused here, where a run would be created, and not
                     // before the replay of the request: a retry of a request that succeeded must be answered from
                     // the register whatever the setting is now. Nothing has been written: the transaction is dropped.
@@ -2045,17 +2077,9 @@ where
                     .await
                     .map_err(|error| store_failure(pending_completion, error))?;
                 } else {
+                    // every creator passes the run's start through its gates here (feature 022, T022-022)
                     self.engine
-                        .run(&mut tx, effects, |def, state, now| {
-                            let (started, progress) = match held_until_us {
-                                Some(until_us) => {
-                                    execution::start_run_delayed(def, run_id, now, until_us)?
-                                }
-                                None => execution::start_run(def, run_id, now)?,
-                            };
-                            *state = started;
-                            Ok(((), progress))
-                        })
+                        .start(&mut tx, effects, run_id, held_until_us)
                         .await
                         .map_err(engine_error)?;
                 }
@@ -2077,9 +2101,67 @@ where
                     );
                     update_applied = Some(tx.apply_declared_update(&command, evaluator).await?);
                 }
+                let mut signal_held = false;
                 if let Some((WithStart::Signal(signal), start)) = with {
                     // the signal goes in the creation transaction, to every step that waits for it
                     // after the initial reduction; if none does, nothing is created at all
+                    let idempotency = Idempotency {
+                        scope: format!("run.signal:{run_id}"),
+                        key: start.key.clone(),
+                        fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
+                    };
+                    // a start that queued for its gates has no step yet: the signal is held with the run and the
+                    // grant of its start delivers it, when a wait of its name is on the start's entry path, which the
+                    // grant reaches, and its payload copied to each keeps the run within its output bound; otherwise
+                    // it is refused as the delivery would refuse it with room on the key, and nothing is created
+                    // (feature 022, T022-109, decisions D022-087 and D022-126)
+                    let queued = {
+                        let (def, state) = tx.parts();
+                        state
+                            .run_gates()
+                            .is_waiting()
+                            .then(|| def.entry_path().waits_for(signal.name))
+                    };
+                    if let Some(waits) = queued.filter(|waits| *waits > 0) {
+                        let retained = tx
+                            .logical_output_bytes()
+                            .await
+                            .map_err(|error| store_failure(pending_completion, error))?;
+                        let additional = u64::try_from(signal.payload.len())
+                            .unwrap_or(u64::MAX)
+                            .saturating_mul(u64::try_from(waits).unwrap_or(u64::MAX));
+                        if retained.saturating_add(additional)
+                            > crate::execution::MAX_RUN_OUTPUT_BYTES as u64
+                        {
+                            drop(tx);
+                            return Err(AppError::QuotaExceeded("output retained by one run"));
+                        }
+                    }
+                    match queued.map(|waits| waits > 0) {
+                        Some(true) => {
+                            let held = HeldSignal {
+                                name: signal.name.to_owned(),
+                                payload: signal.payload.to_vec(),
+                                actor: principal.subject().as_str().to_owned(),
+                                trace_id: ctx.trace_id.clone(),
+                            };
+                            tx.hold_start_signal(&held, &idempotency, &held_marker(&idempotency))
+                                .await
+                                .map_err(|error| store_failure(pending_completion, error))?;
+                            signal_held = true;
+                        }
+                        Some(false) => {
+                            drop(tx);
+                            return Err(AppError::SignalRefused {
+                                reason: "SIGNAL_NOT_ACCEPTED_AT_START",
+                            });
+                        }
+                        None => {}
+                    }
+                }
+                if let Some((WithStart::Signal(signal), start)) = with
+                    && !signal_held
+                {
                     let idempotency = Idempotency {
                         scope: format!("run.signal:{run_id}"),
                         key: start.key.clone(),
@@ -2132,6 +2214,7 @@ where
                     .known_start(principal, &run_id.to_string(), false)
                     .await?;
                 started.delivered_to = delivered_to;
+                started.signal_held = signal_held;
                 started.update = update_applied;
                 Ok(started)
             }
@@ -2343,6 +2426,7 @@ where
             run,
             existing,
             delivered_to: Vec::new(),
+            signal_held: false,
             update: None,
         })
     }
@@ -2358,9 +2442,172 @@ where
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunRead)?;
         match self.store.get(principal.tenant_id(), id).await? {
-            Some(run) => Ok(run),
+            Some(mut run) => {
+                self.reveal_permit_labels(principal, std::slice::from_mut(&mut run))
+                    .await?;
+                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014), to a
+                // caller who sees the key's label only: the rank counts the runs waiting on the same key ahead of it, the
+                // estimate is another run's grant instant plus the window (D022-153, D022-067 item 8), and the read of
+                // the place takes time that grows with the key's grants and waiters, so it is not even made for another
+                // caller (D022-155). The slot's limit is already bounded by the namespace's ceiling without the key.
+                if let Some(slot) = run.rate_limit.as_mut()
+                    && matches!(
+                        slot.state,
+                        crate::flow_control_keys::RunGateState::Waiting { .. }
+                    )
+                    && slot.label().is_some()
+                    && let Some(mut place) = self.rate_place(principal, id).await?
+                {
+                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014)
+                    if matches!(
+                        run.concurrency.as_ref().map(|permit| permit.state),
+                        Some(crate::flow_control_keys::RunGateState::Waiting { .. })
+                    ) {
+                        place.estimated_grant_at = None;
+                    }
+                    slot.place(place);
+                }
+                Ok(run)
+            }
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// Where a buffered run stands in its key's queue, or `None` when it no longer waits or the database could not give
+    /// its place: the place is an estimate, never a promise, so an unavailable database (its statement timeout at a busy
+    /// key included) is logged by its kind and the run is shown without it; a corrupt row stays an error (decision
+    /// D022-068 items 2 and 7).
+    async fn rate_place(
+        &self,
+        principal: &Principal,
+        id: RunId,
+    ) -> Result<Option<crate::flow_control_keys::RatePlace>, AppError> {
+        let kind = match self.store.rate_place(principal.tenant_id(), id).await {
+            Ok(reading) => {
+                return Ok(reading.map(|reading| reading.place()));
+            }
+            Err(StoreError::Unavailable { .. }) => "unavailable",
+            Err(StoreError::DatabaseUnavailable) => "database_unavailable",
+            Err(StoreError::DatabaseLimit) => "database_limit",
+            Err(other) => return Err(other.into()),
+        };
+        tracing::warn!(
+            run_id = %id,
+            kind,
+            "the rate-limit place of a buffered run could not be read; it is shown without one"
+        );
+        Ok(None)
+    }
+
+    /// Shows the key label of each run-level permit and slot to a caller who may disclose, at its level, every location the
+    /// key reads (FR-022-057, decision D022-085): a key over `public` locations to every reader, over `internal` ones to
+    /// a role that reads internal payloads, over `pii` ones to a caller who may reveal personal data in the run's
+    /// namespace (feature 009's grant, D022-060), and a `secret` one (refused at publication; a version an earlier build
+    /// published) to nobody. The level is the run's pinned version's, read by the codec from its schemas: one parse per
+    /// version (cached), one reveal check per namespace, and neither for a run without a permit or slot.
+    async fn reveal_permit_labels(
+        &self,
+        principal: &Principal,
+        runs: &mut [RunRecord],
+    ) -> Result<(), AppError> {
+        use sagat_domain::classification::Level;
+        let internal = principal.role().grants(Permission::PayloadReadInternal);
+        let mut reveals: Vec<(sagat_domain::identity::NamespaceId, bool)> = Vec::new();
+        let mut levels: Vec<(WorkflowVersionId, (Level, Level))> = Vec::new();
+        for run in runs {
+            if run.concurrency.is_none() && run.rate_limit.is_none() {
+                continue;
+            }
+            let version = run.info.version_id;
+            let (concurrency, rate) =
+                if let Some((_, of)) = levels.iter().find(|(v, _)| *v == version) {
+                    *of
+                } else {
+                    let of = self.key_levels(principal, version).await?;
+                    levels.push((version, of));
+                    of
+                };
+            let namespace = run.info.namespace_id;
+            let mut may_disclose = async |level: Level| -> Result<bool, AppError> {
+                Ok(match level {
+                    Level::Public => true,
+                    Level::Internal => internal,
+                    Level::Pii => {
+                        if let Some((_, reveal)) = reveals.iter().find(|(n, _)| *n == namespace) {
+                            *reveal
+                        } else {
+                            let reveal = self
+                                .store
+                                .reveals_personal_data(
+                                    principal.tenant_id(),
+                                    namespace,
+                                    principal.subject(),
+                                )
+                                .await?;
+                            reveals.push((namespace, reveal));
+                            reveal
+                        }
+                    }
+                    Level::Secret => false,
+                })
+            };
+            if let Some(permit) = run.concurrency.as_mut()
+                && may_disclose(concurrency).await?
+            {
+                permit.reveal_label();
+            }
+            if let Some(slot) = run.rate_limit.as_mut()
+                && may_disclose(rate).await?
+            {
+                slot.reveal_label();
+            }
+        }
+        Ok(())
+    }
+
+    /// The levels of what the run-level concurrency and rate-limit keys of `version` read (decision D022-085): `secret`
+    /// (no label for anyone) when the version cannot be read, so a failure hides a label instead of showing it.
+    async fn key_levels(
+        &self,
+        principal: &Principal,
+        version: WorkflowVersionId,
+    ) -> Result<
+        (
+            sagat_domain::classification::Level,
+            sagat_domain::classification::Level,
+        ),
+        AppError,
+    > {
+        use sagat_domain::classification::Level;
+        let definition = match self.cache.get(version) {
+            Some(definition) => Some(definition),
+            None => self
+                .store
+                .get_version_by_id(principal.tenant_id(), version)
+                .await?
+                .and_then(|stored| {
+                    self.cache
+                        .get_or_parse(version, &stored.document)
+                        .map_err(|error| {
+                            tracing::warn!(%error, %version, "a pinned version does not parse; its key labels stay hidden");
+                        })
+                        .ok()
+                }),
+        };
+        let Some(definition) = definition else {
+            return Ok((Level::Secret, Level::Secret));
+        };
+        let gates = definition.run_flow_control();
+        Ok((
+            gates.concurrency().map_or(
+                Level::Secret,
+                sagat_domain::workflow::ConcurrencyPolicy::key_level,
+            ),
+            gates.rate_limit().map_or(
+                Level::Secret,
+                sagat_domain::workflow::RateLimitPolicy::key_level,
+            ),
+        ))
     }
 
     /// # Errors
@@ -2393,6 +2640,7 @@ where
             .await?;
         let more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
+        self.reveal_permit_labels(principal, &mut rows).await?;
         let next_cursor = more
             .then(|| rows.last().map(|r| r.info.run_id.to_string()))
             .flatten();
@@ -2678,10 +2926,7 @@ where
                     RunOperation::Cancel => {
                         execution::stop_run(def, state, StopReason::Cancelled, None, now)?
                     }
-                    RunOperation::Pause => Progress {
-                        events: vec![execution::pause_run(state)?],
-                        pending: None,
-                    },
+                    RunOperation::Pause => execution::pause_run(def, state, now)?,
                     RunOperation::Resume => execution::resume_run(def, state, now)?,
                 };
                 Ok(((), progress))
@@ -3022,7 +3267,7 @@ where
         id: RunId,
         signal: SignalAtStart<'_>,
         start: &Idempotency,
-    ) -> Result<(Vec<NodeId>, bool), AppError> {
+    ) -> Result<(Vec<NodeId>, bool, bool), AppError> {
         let idempotency = Idempotency {
             scope: format!("run.signal:{id}"),
             key: start.key.clone(),
@@ -3042,6 +3287,7 @@ where
             return Err(AppError::Internal);
         };
         let served = tx.replay(&served_marker(start)).await?.is_some();
+        let held = tx.replay(&held_marker(&idempotency)).await?.is_some();
         Ok((
             delivered
                 .split(',')
@@ -3049,6 +3295,7 @@ where
                 .filter_map(|n| NodeId::parse(n).ok())
                 .collect(),
             served,
+            held,
         ))
     }
 

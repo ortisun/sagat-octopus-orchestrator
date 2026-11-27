@@ -96,6 +96,12 @@ fn alert_from_row(row: &PgRow) -> Result<AlertRecord, StoreError> {
 const ALERT_COLUMNS: &str = "id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
      last_seen_at, resolved_at, fired_count, item_count, oldest_seconds";
 
+/// Whether a change of an alert of `kind` is sent to the namespace's subscriptions: never for a flow-control kind
+/// (decision D022-152).
+fn sends_event(kind: AlertKind) -> bool {
+    !AlertKind::FLOW_CONTROL.contains(&kind)
+}
+
 /// The body subscribers are sent for a change of an alert: identifiers, the kind, counts, ages and
 /// the runbook; never data of a run.
 fn event_body(
@@ -130,6 +136,166 @@ fn event_body(
     .unwrap_or_default()
 }
 
+/// The bounds of a look over `groups` (the common table of the two statements below), applied in the statement, most
+/// severe first: at most `$2` groups of a namespace, `$3` of a tenant and `$4` in all are `SEEN`; a namespace with more
+/// is returned once as `NAMESPACE`, a tenant with more, or with groups beyond the look's bound, once as `TENANT`. A look
+/// is short for a tenant or a namespace, never for everyone: one tenant's volume never stops another's alerts from
+/// resolving (batch 3 reviews of 2026-11-25, correctness Major 2, security Major 1).
+macro_rules! ranked_groups_sql {
+    () => {
+        "ranked_ns AS ( \
+       SELECT g.*, row_number() OVER (PARTITION BY g.tenant_id, g.namespace_id \
+                                      ORDER BY g.severity DESC, g.oldest DESC, g.subject) AS nr \
+         FROM groups g), \
+     ranked_tenant AS ( \
+       SELECT n.*, row_number() OVER (PARTITION BY n.tenant_id \
+                                      ORDER BY n.severity DESC, n.oldest DESC, n.namespace_id, n.subject) AS tr \
+         FROM ranked_ns n WHERE n.nr <= $2), \
+     ranked AS ( \
+       SELECT t.*, row_number() OVER (ORDER BY t.severity DESC, t.oldest DESC, t.tenant_id, t.namespace_id, t.subject) \
+                   AS gr \
+         FROM ranked_tenant t WHERE t.tr <= $3) \
+     SELECT * FROM ( \
+       SELECT 'SEEN' AS place, tenant_id, namespace_id, subject, items, oldest, gr AS position \
+         FROM ranked WHERE gr <= $4 \
+       UNION ALL \
+       SELECT DISTINCT 'NAMESPACE', tenant_id, namespace_id, '', 0::bigint, 0::float8, 0::bigint \
+         FROM ranked_ns WHERE nr > $2 \
+       UNION ALL \
+       SELECT 'TENANT', tenant_id, min(namespace_id::text)::uuid, '', 0::bigint, 0::float8, 0::bigint \
+         FROM (SELECT tenant_id, namespace_id FROM ranked_tenant WHERE tr > $3 \
+               UNION ALL SELECT tenant_id, namespace_id FROM ranked WHERE gr > $4) beyond \
+        GROUP BY tenant_id) looked \
+     ORDER BY place DESC, position, tenant_id, namespace_id"
+    };
+}
+
+/// The keys of `CONCURRENCY_QUEUE_STUCK` (`docs/runbooks/flow-control.md` section 8) with their namespace's effective
+/// `concurrency_limit`: a key whose oldest eligible waiter (not paused, not past its deadline, of a live run) queued more
+/// than the threshold ago and more than the threshold before the key's oldest current holder took its permit, and whose
+/// holders leave no room for that waiter under the lower of its declaration and the ceiling. One row per group: its keys
+/// in the condition, the longest wait, and the severity it is ranked by (the longest wait: age first).
+const STUCK_ALERT_SQL: &str = concat!(
+    "WITH keys AS ( \
+       SELECT s.tenant_id, s.namespace_id, s.group_name, s.holders::bigint AS holders, w.lim::bigint AS lim, \
+              extract(epoch FROM clock_timestamp() - w.enqueued_at)::float8 AS waited \
+         FROM concurrency_semaphores s \
+         CROSS JOIN LATERAL ( \
+           SELECT x.enqueued_at, coalesce(x.pinned_limit, x.declared_limit) AS lim \
+             FROM concurrency_waiters x JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id \
+            WHERE x.tenant_id = s.tenant_id AND x.namespace_id = s.namespace_id AND x.pool = s.pool \
+              AND x.permit_scope = s.permit_scope AND x.group_name = s.group_name AND x.key_digest = s.key_digest \
+              AND ",
+    eligible_gate_waiter!("x", "r", "now()"),
+    " \
+            ORDER BY x.enqueued_at, x.run_id, x.node LIMIT 1) w \
+         CROSS JOIN LATERAL ( \
+           SELECT min(h.acquired_at) AS oldest FROM concurrency_holders h \
+            WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+              AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name AND h.key_digest = s.key_digest) h \
+        WHERE s.waiters > 0 AND w.enqueued_at < now() - make_interval(secs => $1) \
+          AND h.oldest > w.enqueued_at + make_interval(secs => $1)), \
+     ceilings AS ( \
+       SELECT n.tenant_id, n.namespace_id, {concurrency_limit} AS cap \
+         FROM (SELECT DISTINCT tenant_id, namespace_id FROM keys) n), \
+     groups AS ( \
+       SELECT k.tenant_id, k.namespace_id, k.group_name AS subject, count(*) AS items, max(k.waited) AS oldest, \
+              max(k.waited) AS severity \
+         FROM keys k JOIN ceilings c ON c.tenant_id = k.tenant_id AND c.namespace_id = k.namespace_id \
+        WHERE k.holders >= least(k.lim, c.cap) \
+        GROUP BY k.tenant_id, k.namespace_id, k.group_name), ",
+    ranked_groups_sql!()
+);
+
+/// The keys of `RATE_LIMIT_QUEUE_SATURATED` (`docs/runbooks/flow-control.md` section 10) with their namespace's
+/// effective `flow_control_key_waiters` (never above the namespace's `queued_runs` less one, as the admission bounds a
+/// key): a run-scope window whose waiters are above 80% of it. One row per group: its keys in the condition, the age of
+/// the oldest waiter, and the severity it is ranked by (the fullest key's share of its ceiling). The threshold is not read.
+macro_rules! saturated_groups_sql {
+    () => {
+        "keys AS ( \
+       SELECT w.tenant_id, w.namespace_id, w.group_name, w.waiters::bigint AS waiters, \
+              coalesce(extract(epoch FROM clock_timestamp() - w.oldest_wait_at), 0)::float8 AS waited \
+         FROM rate_limit_windows w \
+        WHERE w.limit_scope = 'RUN' AND w.waiters > 0 AND $1::float8 >= 0), \
+     ceilings AS ( \
+       SELECT n.tenant_id, n.namespace_id, least({key_waiters}, greatest({queued_runs} - 1, 0)) AS cap \
+         FROM (SELECT DISTINCT tenant_id, namespace_id FROM keys) n), \
+     groups AS ( \
+       SELECT k.tenant_id, k.namespace_id, k.group_name AS subject, count(*) AS items, max(k.waited) AS oldest, \
+              max(k.waiters::float8 / greatest(c.cap, 1)) AS severity \
+         FROM keys k JOIN ceilings c ON c.tenant_id = k.tenant_id AND c.namespace_id = k.namespace_id \
+        WHERE k.waiters * 5 > c.cap * 4 \
+        GROUP BY k.tenant_id, k.namespace_id, k.group_name)"
+    };
+}
+
+/// The look of `RATE_LIMIT_QUEUE_SATURATED`, as [`STUCK_ALERT_SQL`] with `{key_waiters}` and `{queued_runs}`.
+const SATURATED_ALERT_SQL: &str =
+    concat!("WITH ", saturated_groups_sql!(), ", ", ranked_groups_sql!());
+
+impl PgRunStore {
+    /// [`MonitorStore::detect`] of the flow-control kinds that compare with a namespace's ceilings (feature 022,
+    /// T022-082; decision D022-077 item 7): `CONCURRENCY_QUEUE_STUCK` (a key with no room for its oldest eligible waiter,
+    /// whose every holder took its permit more than the unclaimed threshold after that waiter queued) and
+    /// `RATE_LIMIT_QUEUE_SATURATED` (a run-scope key whose waiters are above 80% of the namespace's effective
+    /// `flow_control_key_waiters`). The condition is applied in the statement, against each namespace's effective
+    /// ceilings resolved as the gate resolves them (`quotas::effective_sql`), before any bound; the groups are then ranked
+    /// and bounded per namespace, per tenant and in all, and a look that stops short does so for a tenant or a namespace
+    /// only (batch 3 reviews of 2026-11-25, correctness Major 2 and minor 4, security Major 1).
+    async fn detect_against_ceilings(
+        &self,
+        kind: AlertKind,
+        thresholds: &Thresholds,
+        bounds: &Bounds,
+    ) -> Result<Detection, StoreError> {
+        use sagat_domain::quota::QuotaResource;
+        let effective =
+            |resource| crate::quotas::effective_sql(resource, "n.tenant_id", "n.namespace_id");
+        let statement = if kind == AlertKind::ConcurrencyQueueStuck {
+            STUCK_ALERT_SQL.replace(
+                "{concurrency_limit}",
+                &effective(QuotaResource::ConcurrencyLimit)?,
+            )
+        } else {
+            SATURATED_ALERT_SQL
+                .replace(
+                    "{key_waiters}",
+                    &effective(QuotaResource::FlowControlKeyWaiters)?,
+                )
+                .replace("{queued_runs}", &effective(QuotaResource::QueuedRuns)?)
+        };
+        let rows = sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))
+            .bind(i64::from(bounds.per_namespace))
+            .bind(i64::from(bounds.per_tenant))
+            .bind(i64::from(bounds.total))
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?;
+        let mut detection = Detection::default();
+        for row in &rows {
+            let place: String = col(row, "place")?;
+            let tenant = TenantId::new(col::<Uuid>(row, "tenant_id")?);
+            let short = match place.as_str() {
+                "SEEN" => {
+                    detection.seen.push(candidate_from_row(kind, row)?);
+                    continue;
+                }
+                "NAMESPACE" => {
+                    Short::Namespace(tenant, NamespaceId::new(col::<Uuid>(row, "namespace_id")?))
+                }
+                "TENANT" => Short::Tenant(tenant),
+                _ => return Err(corrupt("a place of an alert look")),
+            };
+            if !detection.short.contains(&short) {
+                detection.short.push(short);
+            }
+        }
+        Ok(detection)
+    }
+}
+
 impl MonitorStore for PgRunStore {
     async fn acquire_monitor(&self) -> Result<bool, StoreError> {
         self.acquire_lease(MONITOR_LEASE, Duration::from_secs(60))
@@ -142,8 +308,50 @@ impl MonitorStore for PgRunStore {
         thresholds: &Thresholds,
         bounds: &Bounds,
     ) -> Result<Detection, StoreError> {
+        // two flow-control kinds compare with a namespace's ceilings, which are resolved by the quota rules (feature 022)
+        if matches!(
+            kind,
+            AlertKind::ConcurrencyQueueStuck | AlertKind::RateLimitQueueSaturated
+        ) {
+            return self.detect_against_ceilings(kind, thresholds, bounds).await;
+        }
         // The groups of the kind: a tenant, a namespace, what it is about, how many, how old.
         let (groups, uses_threshold) = match kind {
+            AlertKind::ConcurrencyQueueStuck | AlertKind::RateLimitQueueSaturated => {
+                return Err(StoreError::Internal {
+                    detail: "a flow-control alert read without its ceilings".into(),
+                });
+            }
+            // feature 022 (T022-082; decision D022-077 item 7; `docs/runbooks/flow-control.md` section 9): a window with
+            // waiters whose next-eligible hint (early, never late) passed more than the threshold ago, and no grant of it
+            // in that time, so a busy key the pass reads in parts is not lagging. One alert per group: the keys and how
+            // long the oldest has been due.
+            AlertKind::RateLimitGrantLagging => (
+                "SELECT w.tenant_id, w.namespace_id, w.group_name AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(w.next_eligible_at))::float8 AS oldest \
+                 FROM rate_limit_windows w \
+                 WHERE w.waiters > 0 AND w.next_eligible_at < now() - make_interval(secs => $1) \
+                   AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g \
+                                    WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                      AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                      AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                                      AND g.granted_at >= now() - make_interval(secs => $1)) \
+                 GROUP BY w.tenant_id, w.namespace_id, w.group_name",
+                true,
+            ),
+            // invariant 12 (data-model): every waiter row belongs to a run that did not end; one that does is a breach,
+            // whatever its age (gap G022-005). One alert per group: the waiters and the oldest's age.
+            AlertKind::FlowControlWaiterOrphaned => (
+                "SELECT o.tenant_id, o.namespace_id, o.group_name AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(o.enqueued_at))::float8 AS oldest \
+                 FROM (SELECT x.tenant_id, x.namespace_id, x.group_name, x.enqueued_at FROM concurrency_waiters x \
+                         JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id WHERE r.finished_at IS NOT NULL \
+                       UNION ALL \
+                       SELECT x.tenant_id, x.namespace_id, x.group_name, x.enqueued_at FROM rate_limit_waiters x \
+                         JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id WHERE r.finished_at IS NOT NULL) o \
+                 GROUP BY o.tenant_id, o.namespace_id, o.group_name",
+                false,
+            ),
             AlertKind::OutboxStuck => (
                 "SELECT g.tenant_id, g.ns AS namespace_id, ''::text AS subject, g.items, g.oldest \
                  FROM (SELECT o.tenant_id, o.ns, count(*) AS items, \
@@ -396,7 +604,9 @@ impl MonitorStore for PgRunStore {
             (&out.fired, OutboundKind::AlertFired),
             (&out.resolved, OutboundKind::AlertResolved),
         ] {
-            for alert in alerts {
+            // a flow-control alert is judged per key and tells which runs share a key: a subscription's endpoint holds no
+            // reveal right, so none is sent (feature 022, decision D022-152)
+            for alert in alerts.iter().filter(|alert| sends_event(alert.kind)) {
                 let body = event_body(alert, event, runbook_base, now);
                 let event_id = format!(
                     "alert-{}-{}-{}",
@@ -511,6 +721,19 @@ impl MonitorStore for PgRunStore {
                 .map_err(store_error)?
                 .max(0.0))
         };
+        // the waiters of flow control's keys by scope, from the counters the triggers keep on the key rows, and the step
+        // grants no worker has leased (feature 022, T022-082)
+        let flow = sqlx::query(
+            "SELECT \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM concurrency_semaphores WHERE permit_scope = 'RUN') AS c_run, \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM concurrency_semaphores WHERE permit_scope = 'STEP') AS c_step, \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM rate_limit_windows WHERE limit_scope = 'RUN') AS r_run, \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM rate_limit_windows WHERE limit_scope = 'STEP') AS r_step, \
+               (SELECT count(*) FROM rate_limit_grants WHERE leased_at IS NULL) AS unleased",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)?;
         let runs = sqlx::query(
             "SELECT status, count(*) AS n FROM runs WHERE finished_at IS NULL GROUP BY status",
         )
@@ -559,6 +782,13 @@ impl MonitorStore for PgRunStore {
             },
             batch_jobs_active: to_u64(&overdue, "batch_active")?,
             resets_pending: to_u64(&overdue, "resets_pending")?,
+            flow_control: sagat_application::operations::FlowControlSample {
+                concurrency_run_waiters: to_u64(&flow, "c_run")?,
+                concurrency_step_waiters: to_u64(&flow, "c_step")?,
+                rate_run_waiters: to_u64(&flow, "r_run")?,
+                rate_step_waiters: to_u64(&flow, "r_step")?,
+                unleased_grants: to_u64(&flow, "unleased")?,
+            },
         })
     }
 
@@ -633,7 +863,59 @@ impl MonitorStore for PgRunStore {
 }
 
 impl AlertReader for PgRunStore {
-    async fn list_alerts(
+    async fn list_alerts_as(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
+        state: Option<AlertState>,
+        before: Option<Uuid>,
+        limit: u32,
+    ) -> Result<(Vec<AlertRecord>, bool), StoreError> {
+        // the alerts and the reader's reveal right in one statement, so one snapshot (decision D022-135): the role of a
+        // member that holds the namespace's reveal grant, on every row. A flow-control alert is left out here, before
+        // the limit, for a reader who may not use the grant, so that a page's size and the cursor the route derives
+        // from it are the same whether such an alert fires or not (decision D022-154); the service drops them too.
+        let reveal_role = crate::reveal_grants::reveal_role_sql("$1", "$2", "$6");
+        let flow_control: Vec<&str> = AlertKind::FLOW_CONTROL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {ALERT_COLUMNS}, {reveal_role} AS reveal_role \
+               FROM operational_alerts \
+              WHERE tenant_id = $1 AND namespace_id = $2 \
+                AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR id < $4) \
+                AND (kind <> ALL($7::text[]) OR {reveal_role} = ANY($8::text[])) \
+              ORDER BY id DESC LIMIT $5"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(state.map(AlertState::as_str))
+        .bind(before)
+        .bind(i64::from(limit))
+        .bind(subject.as_str())
+        .bind(&flow_control)
+        .bind(crate::reveal_grants::reveal_grant_roles())
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        let reveals = rows.first().is_some_and(|row| {
+            row.try_get::<Option<String>, _>("reveal_role")
+                .ok()
+                .flatten()
+                .is_some_and(|role| crate::reveal_grants::may_use_reveal_grant(&role))
+        });
+        let alerts = rows.iter().map(alert_from_row).collect::<Result<_, _>>()?;
+        Ok((alerts, reveals))
+    }
+}
+
+impl PgRunStore {
+    /// Every alert of a namespace, newest first, whoever asks: for tests and the operators' tools only. The API reads
+    /// alerts through [`AlertReader::list_alerts_as`], which knows its reader (decision D022-152).
+    #[doc(hidden)]
+    pub async fn list_alerts(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
@@ -844,5 +1126,51 @@ impl AuditStore for PgRunStore {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alert(kind: AlertKind) -> AlertRecord {
+        AlertRecord {
+            id: Uuid::nil(),
+            tenant_id: TenantId::new(Uuid::nil()),
+            namespace_id: NamespaceId::new(Uuid::nil()),
+            kind,
+            subject: "accounts".to_owned(),
+            state: AlertState::Firing,
+            severity: Severity::Warning,
+            first_seen_at: time::OffsetDateTime::UNIX_EPOCH,
+            last_seen_at: time::OffsetDateTime::UNIX_EPOCH,
+            resolved_at: None,
+            fired_count: 1,
+            items: 7,
+            oldest_seconds: 1.0,
+        }
+    }
+
+    /// Decision D022-152: a change of a flow-control alert is never sent to a subscription (its endpoint holds no reveal
+    /// right); every other kind is, with its count.
+    #[test]
+    fn a_flow_control_alert_sends_no_event() {
+        for kind in AlertKind::ALL {
+            assert_eq!(
+                sends_event(kind),
+                !AlertKind::FLOW_CONTROL.contains(&kind),
+                "{}",
+                kind.as_str()
+            );
+        }
+        let body: serde_json::Value = serde_json::from_slice(&event_body(
+            &alert(AlertKind::DeadItems),
+            OutboundKind::AlertFired,
+            "docs/runbooks/alerts.md",
+            time::OffsetDateTime::UNIX_EPOCH,
+        ))
+        .expect("a body");
+        assert_eq!(body["data"]["items"], serde_json::json!(7));
+        assert!(body["data"].get("itemsWithheld").is_none());
     }
 }

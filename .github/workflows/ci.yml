@@ -184,6 +184,8 @@ jobs:
       # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       # The automatic handover's tests send real signals to the built control plane and scrape a built engine (G2283, G2286).
+      # The restart test of feature 022 (T022-059, e2e_flow_control_step_policies) kills the shipped control plane and
+      # engine with SIGKILL and starts them again, so it needs the same two executables (decision D022-112 of its research.md).
       - name: build isolated database executor, control plane and engine for process tests
         run: |
           cargo build -p sagat-database-runner --bin database-runner --locked

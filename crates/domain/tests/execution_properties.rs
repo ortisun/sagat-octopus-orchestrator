@@ -363,6 +363,10 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
                         _ => Ok(()),
                     },
                 },
+                // the generated definitions declare no gate
+                Evaluation::Gates { .. } | Evaluation::StartGates { .. } => {
+                    unreachable!("no generated definition declares a gate")
+                }
             };
             h.resolve(resolution)
         }

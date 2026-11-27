@@ -12,7 +12,7 @@ stays a protected system record (ADR-0027).
 | --- | --- | --- | --- |
 | `run.start_delayed` | In the creation transaction of a run with `startDelayMs`, right after `run.started` | `{"until_us": integer}` | Run is `WAITING`; no step is released. |
 | `run.start_released` | Delayed-start pass, once, at or after `until_us` | `{"until_us": integer}` | Entry is released as `start_run` would have; duplicate is refused by the reducer. |
-| `run.reset` | In the reset transaction, at sequence N+1 after the re-emitted prefix `1..N` | `{"source_run_id": uuid, "source_sequence": N, "prefix_sha256": hex64, "reapply": "NONE"\|"SIGNALS"\|"UPDATES"\|"ALL"}` | Marks the restored prefix and clears any restored run-permit state (022); a fresh `concurrency.acquired` follows when the version declares top-level `concurrency`; the settle reduction then releases the successors of the reset point. |
+| `run.reset` | In the reset transaction, at sequence N+1 after the re-emitted prefix `1..N` | `{"source_run_id": uuid, "source_sequence": N, "prefix_sha256": hex64, "reapply": "NONE"\|"SIGNALS"\|"UPDATES"\|"ALL"}` | Marks the restored prefix and clears any restored run-permit state (022); a fresh `concurrency.acquired` follows when the version declares top-level `concurrency`, and a fresh `rate_limit.granted` when it declares top-level `rateLimit` (022 D022-069); the settle reduction then releases the successors of the reset point. |
 
 `run.reset` is never the first event: a reset run's sequence 1 is the re-emitted `run.started` of
 the source. `runs.reset_sequence = N` lets every reader tell restored sequences from new ones.
@@ -55,7 +55,14 @@ Feature interplay of the re-emitted prefix:
 - **022 run permits.** Restored `concurrency.acquired`/`concurrency.queued`/`concurrency.released` rows
   are history; ADR-0056's holder count considers only sequences after `runs.reset_sequence`. The reset
   transaction acquires a permit through 022's admission path after `run.reset` and cannot queue
-  (`CONCURRENCY_PERMIT_UNAVAILABLE`). Step permits are never open at an eligible point.
+  (`CONCURRENCY_PERMIT_UNAVAILABLE`). No attempt is in flight at an eligible point; a step whose completion is the point
+  may still hold the permit of the attempt that completed (it is given back by the next event), and `run.reset` retires it as
+  history (022 D022-053).
+- **022 run slots** (T022-086, D022-069). Restored `rate_limit.*` rows are history and create no grant row. The reset
+  transaction takes a fresh slot through the same admission path after `run.reset` and cannot wait
+  (`RATE_LIMIT_SLOT_UNAVAILABLE`, given before the permit's when the version declares both). A run's slot is never given
+  back: it counts for one window from its grant, so the source's own slot still counts, and cancelling a source
+  (`CANCEL_SOURCE`) frees no slot.
 - **020 search attributes.** The reset transaction inserts the reset run's `run_search_attributes` rows
   by folding the re-emitted `search_attributes.upserted` events (same sequences, so `set_seq` matches),
   keeping 020's invariant that the rows equal the fold of the run's journal.
@@ -130,6 +137,8 @@ instance) applies in addition to these rules.
 | 022 | `step.cache_hit`, `result.returned`, `concurrency.acquired`, `concurrency.released`, `run.started` provenance (`handler_for` dropped) | `REMATERIALIZE` | declared by 022 — `specs/022-flow-control-step-policies/contracts/journal-events.md` |
 | 022 | `concurrency.queued` | `REMATERIALIZE`; a point between it and its `concurrency.acquired` is refused | declared by 022 — same file |
 | 022 | `step.mocked`, `failure_handler.started`, `failure_handler.finished`, `concurrency.wait_timed_out`, `concurrency.dequeued` | `REFUSE` (until the end) | declared by 022 — same file |
+| 022 | `rate_limit.queued`, `rate_limit.granted`, `rate_limit.returned` (since T022-086, 2026-11-21, D022-069; before, `EXCLUDE` by D022-035) | `REMATERIALIZE`; a point between a run's `rate_limit.queued` and its `rate_limit.granted` is refused | declared by 022 — `specs/022-flow-control-step-policies/contracts/journal-events.md` |
+| 022 | `rate_limit.wait_timed_out`, `rate_limit.dequeued` (since T022-086) | `REFUSE` (until the end) | declared by 022 — same file |
 | 024 | `data.inputs_pinned`, `data.snapshot_committed` | `REMATERIALIZE` (re-create input pins / snapshot refs; refused `SNAPSHOT_RETIRED`) | declared by 024 — `specs/024-data-engines-pipelines/data-model.md` |
 | 024 | `data.published`, `data.publish_skipped`, `data.observation_recorded` | `COPY` (never re-published) | declared by 024 — same file |
 | 025 | `agent.started`, `agent.turn_scheduled`, `agent.turn_completed`, `agent.tool_planned`, `agent.tool_refused`, `agent.tool_completed`, `agent.repair_scheduled`, `agent.budget_exhausted` | `REFUSE` until `agent.finished` of the same step; after it `REMATERIALIZE` (agent rows copied, no call repeated, no budget charged) | declared by 025 — FR-025-046, D1635 |

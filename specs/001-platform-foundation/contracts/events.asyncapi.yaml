@@ -839,13 +839,13 @@ components:
           time: {type: string, format: date-time}
           data:
             type: object
-            description: 'Counts, ages and names; never data of a run.'
+            description: 'Counts, ages and names; never data of a run. Never sent for the four flow-control kinds (CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED): their state and counts tell which runs share a key, and a subscription endpoint holds no reveal right (feature 022, decision D022-152).'
             required: [tenantId, namespaceId, alertId, kind, subject, severity, state, firstSeenAt, items, oldestSeconds, summary, runbook]
             properties:
               tenantId: {type: string, format: uuid}
               namespaceId: {type: string, format: uuid}
               alertId: {type: string, format: uuid}
-              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS]}
+              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS, CONCURRENCY_QUEUE_STUCK, RATE_LIMIT_GRANT_LAGGING, RATE_LIMIT_QUEUE_SATURATED, FLOW_CONTROL_WAITER_ORPHANED]}
               subject: {type: string, maxLength: 120}
               severity: {type: string, enum: [warning, critical]}
               state: {type: string, enum: [FIRING, RESOLVED]}

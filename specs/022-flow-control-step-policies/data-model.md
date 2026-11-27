@@ -141,8 +141,12 @@ SELECT, INSERT, DELETE. Protected.
 ### `concurrency_waiters`
 
 PK `(tenant_id, run_id)`; `namespace_id`, `pool`, `permit_scope` (always `RUN`), `group_name`, `key_digest`,
-`declared_limit`, `enqueued_at` (database clock in the admission transaction; ties broken by `run_id`),
-`deadline_at`, `shard smallint` (= `run_shard(run_id)`, ADR-0020).
+`declared_limit`, `enqueued_at` (database clock in the admission transaction, raised to one microsecond after the
+key's youngest waiter when the clock reads earlier, so that the queue is in admission order whatever the clock does,
+decision D022-160; ties broken by `run_id`),
+`deadline_at` (the admission's clock reading plus the wait bound, and at least one microsecond after
+`enqueued_at`, the same for every gate of the target; both computed by the insert itself, which returns the
+deadline the journal announces, decision D022-163), `shard smallint` (= `run_shard(run_id)`, ADR-0020).
 Indexes: `(tenant_id, namespace_id, group_name, key_digest, enqueued_at, run_id)` for oldest-first;
 `(shard, enqueued_at)` for the grant pass. FK to `runs` and to the semaphore. Grants: SELECT, INSERT,
 DELETE. Protected.
@@ -198,6 +202,7 @@ neither place fails 020's migration test.
 | `result_available_at` | timestamptz null | |
 | `handler_for_run_id` | uuid null | FK `(tenant_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null |
 | `test_tree` | boolean | NOT NULL DEFAULT false; true for `DRAFT_TEST` and its descendants |
+| `flow_control_gates` | jsonb null | *Added 2026-11-20 (T022-022, D022-049; migrations `20270203000000`, `20270203000100`).* The gates of the run's start as the reducer left them (phase, pool, group, 12-hex key label, a wait's deadline; never a key's value), the same shape as `steps.flow_control_gates`; CHECK `runs_flow_control_gates_bounded` (an object of at most 1,024 bytes); written only by a commit with a run-scope gate event; protected |
 | `failure_handler_state` | text null | CHECK `IN ('RUNNING','SUCCEEDED','FAILED','TIMED_OUT','CANCELLED')` |
 | `pending_terminal_status` | text null | one of the five handler statuses |
 
@@ -305,8 +310,8 @@ SELECT, INSERT, UPDATE (`leased_at` only), DELETE.
 
 PK `(tenant_id, run_id, node)`; `node` is `''` for a buffered run; `attempt integer`; `namespace_id`,
 `pool`, `limit_scope`, `group_name`, `key_digest` (FK to `rate_limit_windows`); `declared_limit`,
-`period_ms`; `enqueued_at` (database clock of the buffering transaction; ties broken by `run_id`, then
-`node`); `deadline_at`; `shard smallint` (= `run_shard(run_id)`). Indexes: `(tenant_id, namespace_id,
+`period_ms`; `enqueued_at` (database clock of the buffering transaction, raised to one microsecond after the key's
+youngest waiter when the clock reads earlier, decision D022-160; ties broken by `run_id`, then `node`); `deadline_at` (at least one microsecond after `enqueued_at`, the same for every gate of the target; both computed by the insert itself, decision D022-163); `shard smallint` (= `run_shard(run_id)`). Indexes: `(tenant_id, namespace_id,
 pool, limit_scope, group_name, key_digest, enqueued_at, run_id, node)` for oldest first; `(shard,
 enqueued_at)` for the grant pass. FK `(tenant_id, run_id)` → `runs`. Grants: SELECT, INSERT, DELETE.
 
@@ -376,6 +381,45 @@ PK `(tenant_id, namespace_id, slot)`, `slot` 0..15; `queued_runs bigint`, `live_
 (a run counts once whatever its waiter rows) and on the semaphore and window rows (a key counts once per
 row); `sagat_app` has `SELECT` only, as for `run_active_counts`.
 
+*Revised 2026-11-25 (task T022-105, decision D022-084; migration `20270213000200`):* built as `flow_control_counts
+(tenant_id, namespace_id, slot 0..15, queued_runs bigint)`, CHECK `queued_runs >= 0`, foreign key `(tenant_id,
+namespace_id)` → `namespaces`; the slot is `get_byte(uuid_send(run_id), 15) & 15`, the slots of `run_active_counts`;
+`flow_control_counts_track` (`SECURITY DEFINER`, `search_path = pg_catalog, pg_temp`, every name schema-qualified, not
+executable by the runtime role) runs after each insert and delete of a waiter row of either table and counts a run-scope
+row only, a run once: it adds one only when the run has no run-scope waiter row in the other table and takes one only
+when none is left there. The column `live_keys` is not built: the live keys are counted from the semaphore and window
+rows of the digest versions in force.
+
+*Lock order, corrected 2026-11-25 (batch 3 reviews, correctness Major 1):* a slot row is locked after the run's active-run
+counter row (slot 6) and after the start's keys (slot 7), on every path that writes or deletes a run-scope waiter row.
+The grant of a queued start can end the run in its own transaction (an entry that is an `end` node), so it locks the
+run's active-run counter row before the start's keys, as an admission does: run, slot 6, keys, slot 8b
+(`concurrency_locks::the_grant_of_a_queued_start_that_ends_takes_its_counter_row_before_the_key_and_the_queued_count`).
+
+### `flow_control_held_signals`
+
+*Added 2026-11-25 (task T022-109, decision D022-087; migration `20270214000000`).* The signal of a Signal-with-Start
+whose new run queued, held until the grant of the run's start delivers it. PK `(tenant_id, run_id)` (one held signal a
+run); `namespace_id`; `name text` (CHECK 1 to 128 characters, the signal's name as the request gave it); `payload_digest
+bytea` (CHECK 32 bytes), foreign key `(tenant_id, payload_digest)` → `payloads`; `actor text` (the requesting subject,
+CHECK 1 to 255) and `trace_id text` (CHECK the W3C format when present), so the delivery is audited as the caller's;
+`held_at timestamptz`. Foreign key `(tenant_id, namespace_id, run_id)` → `runs (tenant_id, namespace_id, id)` `ON DELETE
+CASCADE`. Written by the creation transaction of the run, deleted by the grant that delivers it or by the commit that
+ends the queued run (audited `run.signal_dropped`). `sagat_app`: `SELECT`, `INSERT`, `DELETE`. Invariant: a row exists
+only for a run whose start waits for its gates.
+
+### `flow_control_grant_failures`
+
+*Added 2026-11-26 (decision D022-124; migration `20270216000000`).* A waiter whose grant failed for a reason that does
+not clear on its own, as the grant routine saw it: scheduler state, never the run's journal or projection (`verify_run`
+does not read it). PK `(tenant_id, run_id, node, attempt)` (the waiter of a run's start is node `''`, attempt 0, as in
+the waiter tables; a step waiting for both gates is one waiter); `namespace_id`; `failure text` (CHECK one of
+`UNREADABLE_DEFINITION`, `REFUSED`, `EXECUTION`, `INTERNAL`); `first_failed_at timestamptz`. Foreign key `(tenant_id,
+namespace_id, run_id)` → `runs (tenant_id, namespace_id, id)` `ON DELETE CASCADE`. Written in a statement of its own after
+a failed try's rollback, deleted by the first later try that decides the waiter and by the grant that takes it. The
+eligibility of a waiter (`eligible_gate_waiter!`) excludes a waiter with a row; the pass's listing of a key's waiters
+does not. `sagat_app`: `SELECT`, `INSERT`, `DELETE`.
+
 ### `flow_control_key_versions`
 
 PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,
@@ -400,3 +444,83 @@ rows it actually deleted.
     open grant for each declared gate.
 12. Every waiter row belongs to a run that is not terminal; a breach raises `flow_control_waiter_orphaned`.
 13. At no instant does a key have more granted, unleased steps than the smallest `limit` among them.
+
+### Revision of 2026-11-20 (keys review; D022-058, D022-059)
+
+- `concurrency_semaphores.oldest_wait_at timestamptz` null: the oldest `enqueued_at` of the key's waiters, kept by the
+  count trigger in the transaction that adds or removes a waiter (`LEAST` on an insert; on a delete the minimum of the
+  waiters that remain, read after the trigger locks the key's row `FOR UPDATE` by its own statement); CHECK
+  `concurrency_semaphores_oldest_wait_iff_waiters` `(waiters = 0) = (oldest_wait_at IS NULL)` (added `NOT VALID` by
+  `20270205000000`, validated by `20270205000100`). Holds after every row trigger of a statement that adds and removes
+  several waiters of one key.
+- Indexes in the order of the key listing: `concurrency_semaphores_listing_idx (tenant_id, namespace_id,
+  COALESCE(oldest_wait_at, 'infinity'), pool, permit_scope, group_name, key_digest)` and
+  `concurrency_semaphores_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
+  pool, permit_scope, key_digest)`; `concurrency_holders_key_age_idx` (the key's columns, then `acquired_at`) replaces
+  `concurrency_holders_key_idx`.
+- Invariant 12 is also checked over `rate_limit_waiters`; an empty key row and a key whose `oldest_wait_at` is not its
+  waiters' oldest are breaches (`support::flow_control::key_consistency`).
+
+### Revision of 2026-11-20 (rate gate served; D022-064, D022-065)
+
+- A run's grant row stores `leased_at = granted_at` whichever routine grants it (the CHECK `rate_limit_grants_shape`
+  already required it); it is never given back and stops counting by time.
+- A step's lease instant is copied by the lease pass (transaction T23) from the granted attempt's `step.leased` journaled after the
+  grant: `greatest(step.leased.occurred_at, granted_at)`. Only the grant row is locked.
+- The purge (transaction T25) deletes a leased grant when `leased_at + max_period_ms + 1 minute < now` (exactly at that instant it is
+  kept), under its window row's lock; the window row goes with its last grant and waiter.
+- `rate_limit_live_keys` counts a window while it has a waiter or a grant that is unleased or leased within its
+  `max_period_ms`; a window whose grants all aged out does not count, purged or not. *Reversed by the revision below.*
+- Quota resources added: `rate_limit_live_keys` (count), `rate_limit_per_second`, `rate_limit_per_minute`,
+  `rate_limit_per_hour` (policies; the effective limit of a declaration is the lower of it and the policy of its window).
+
+### Revision of 2026-11-20 (rate re-review; D022-066)
+
+- `rate_limit_live_keys` counts the namespace's `rate_limit_windows` rows under the digest versions in force, as
+  `concurrency_live_keys` counts `concurrency_semaphores`, without a namespace lock (OD-2026-11-20-11: decisions that
+  create keys at the same moment pass it by at most the new keys the others create). The quota usage counts the same
+  rows (every version, as the semaphores' usage).
+- A decision that lacks room first reclaims windows of its own tenant and namespace with `waiters = 0`, `live_grants`
+  between 1 and 64, under a version in force, not one of its own keys, and whose every grant is one the purge may
+  delete at that instant (`leased_at IS NOT NULL AND leased_at + max_period_ms + 1 minute < clock_timestamp()`, the
+  purge's predicate): at most as many as it lacks, `ORDER BY updated_at`, `FOR UPDATE SKIP LOCKED`; then deletes their
+  grants. `rate_limit_window_prune` deletes each window at the commit. Writers of grant rows stay the gate's files
+  (`readiness_gate.rs`) and the two maintenance statements.
+- A rest of a rate key is `SELECT … FOR UPDATE` of the window where `next_eligible_at` is the selection's hint, then
+  `UPDATE … SET next_eligible_at` computed from the grants counted at the key's `selected_at`; a grant or a recorded lease
+  sets `next_eligible_at = least(next_eligible_at, instant)`.
+
+### Revision of 2026-11-20 (rate visibility; task T022-078, decision D022-067)
+
+- `rate_limit_windows.oldest_wait_at timestamptz` null: the oldest `enqueued_at` of the window's waiters, kept by the
+  count trigger `rate_limit_window_count` in the transaction that adds or removes a waiter (`LEAST` on an insert; on a
+  delete the minimum of the waiters that remain, read after the trigger locks the window row `FOR UPDATE` by its own
+  statement; `NULL` when the counter reaches 0), as `concurrency_semaphores.oldest_wait_at`. CHECK
+  `rate_limit_windows_oldest_wait_iff_waiters` `(waiters = 0) = (oldest_wait_at IS NULL)`, added `NOT VALID` by
+  `20270207000000` and validated by `20270207000100`.
+- Indexes in the order of the rate-limit key listing: `rate_limit_windows_listing_idx (tenant_id, namespace_id,
+  COALESCE(oldest_wait_at, 'infinity'), pool, limit_scope, group_name, key_digest)` and
+  `rate_limit_windows_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
+  pool, limit_scope, key_digest)`.
+- Nothing is journaled for the visibility: `Run.rateLimit`, its position and estimate and the listing are reads.
+- *Revised 2026-11-20 (decision D022-068 item 5):* invariant 4 holds for the rate column as for the semaphores': after
+  every statement, `oldest_wait_at` is not distinct from the oldest `enqueued_at` of the window's waiters; the
+  end-of-test consistency check of feature 022 compares the two for every window of the tenant.
+
+### Revision of 2026-11-24 (re-review of the rate faults; decisions D022-076 and D022-078)
+
+- `concurrency_waiters.pinned_limit integer` null and `rate_limit_waiters.pinned_limit integer` null: the declaration
+  the run's version pins (`limit` of the policy), before any ceiling, written with every new waiter row; `NULL` in a
+  row written before `20270213000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
+  declaration clamped by the namespace's ceiling at admission, as the row's `*.queued` event records it. CHECK
+  `concurrency_waiters_pinned_limit_valid` and `rate_limit_waiters_pinned_limit_valid` `(pinned_limit IS NULL OR
+  pinned_limit BETWEEN declared_limit AND 10000)`, added `NOT VALID` by `20270213000000` and validated by `20270213000100`. The table
+  grants of `sagat_app` cover the column (`SELECT, INSERT, DELETE`); a fixed-size column has no storage class.
+- Every decision (admission, the grant routine, the place estimate, the run view) bounds a waiter by
+  `least(coalesce(pinned_limit, declared_limit), the namespace's current ceiling)` (of its window's length for a slot,
+  `concurrency_limit` for a permit): a lowered ceiling applies to queued waiters, and so does a raised one, up to the
+  declaration. The holder and grant rows still record the limit the grant was decided with.
+- The next-eligible hint (decision D022-076 items 1 and 2): a waiter queued while its gate had room sets
+  `next_eligible_at = clock_timestamp()` whatever it was; one queued at a full window sets `next_eligible_at =
+  least(next_eligible_at, the first instant a grant the window counts for the waiter's own period ages out of it)`,
+  and a hint absent becomes `clock_timestamp()`.

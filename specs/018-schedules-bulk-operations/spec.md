@@ -374,6 +374,10 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   a run is created and the signal is delivered in the same transaction to every step waiting after its
   initial reduction; if none waits (including a new run that 022 would queue) the whole request rolls
   back with 409 `SIGNAL_NOT_ACCEPTED_AT_START`. No signal is ever buffered.
+  *Amended 2026-11-25 by feature 022 (decision D022-087, task T022-109):* a new run that 022 queues is created and its
+  signal held with it, delivered by the grant of its start or dropped with an audit (`held: true` in the answer); a
+  signal no node of the definition waits for is still refused `SIGNAL_NOT_ACCEPTED_AT_START`. An open holder is still
+  signalled exactly as `signalRun`.
 - **FR-018-025 — Update-with-Start.** Takes a business id, a declared Update (`updateKey`, arguments,
   optional expected revision) and conflict `USE_EXISTING` (default) or `FAIL`; start (if any), state,
   receipt, journal, audit and outbox commit in one transaction. Pre-admission failures create nothing;

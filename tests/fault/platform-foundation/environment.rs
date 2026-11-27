@@ -35,6 +35,8 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             lake_enabled: false,
             run_input_validation: sagat_application::definitions::InputValidationMode::Enforce,
             collection_operators_enabled: false,
+            flow_control: sagat_application::flow_control::FlowControlSwitches::default(),
+            flow_control_keys: None,
             openbao: Default::default(),
             bind_addr: "127.0.0.1:0".parse().expect("addr"),
             tls: None,

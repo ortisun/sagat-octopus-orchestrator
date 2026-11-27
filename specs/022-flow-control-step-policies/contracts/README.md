@@ -32,3 +32,11 @@ and the child-node outcomes; the journal event `rate_limit.returned` and step-sc
 `attempt`; in the OpenAPI fragment, `keyLabel` may be `null` (FR-022-057), position and estimate are
 computed by the single-run read only, and the `group` filter accepts derived group names. The worker
 protocol stays unchanged: a step waiting for either gate is not `READY`.
+
+**Merge of the slice (2026-11-26, T022-060 narrowed and T022-087, decision D022-110).** The concurrency and rate-limit
+parts of `openapi-flow-control.yaml`, `workflow-ir-fragment.schema.json` and `errors.md` are in the canonical documents.
+Where the fragment and the code disagreed the fragment was corrected (the listings' `Limit` parameter and answer
+headers, a closed `ConcurrencyKeyPage`, `Run.concurrency` and `Run.rateLimit` absent rather than `null`). The test
+`contract_flow_control_step_policies::contracts` fails when the two documents' shapes part again, or when the server
+gives a code no canonical document names. The ten journal events are not AsyncAPI messages, so `events.asyncapi.yaml`
+and `events.baseline.json` do not change for the slice.

@@ -211,11 +211,29 @@ async fn a_dispatcher_quota_refusal_with_held_inbox_keeps_lookback_pending() {
     quota_refusal(true).await;
 }
 
+/// Feature 022, decision D022-102: both tests above overflowed the 2 MiB test thread of a debug build on CI (they needed
+/// 2,048 KiB, 1,920 KiB on `develop`); the scenario's future, about 80 KB, is boxed where it is created, and this test
+/// holds the future the test thread keeps below a bound, so a change that inlines it again fails here. Built, never
+/// polled.
+#[test]
+fn the_quota_refusal_future_kept_on_the_test_thread_stays_small() {
+    const BOUND: usize = 4_096;
+    let future = quota_refusal(false);
+    let size = std::mem::size_of_val(&future);
+    drop(future);
+    assert!(
+        size <= BOUND,
+        "the quota refusal future is {size} bytes, over its bound of {BOUND}: box what grew where it is created"
+    );
+}
+
 async fn quota_refusal(hold_inbox: bool) {
     crate::support::bounded::within(
         "scoped dispatcher quota rollback and cold recovery",
         crate::support::bounded::LIFECYCLE_LIMIT,
-        quota_refusal_scenario(hold_inbox),
+        // boxed where it is created: a debug build otherwise keeps copies of this large future in the test thread's
+        // frames (feature 022, decision D022-102)
+        Box::pin(quota_refusal_scenario(hold_inbox)),
     )
     .await;
 }

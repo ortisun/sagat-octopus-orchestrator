@@ -31,5 +31,13 @@ pub fn capabilities(config: &EngineConfig) -> Vec<Capability> {
     // the follow-up of pull request #260 (decisions D006-096 and D006-098): it replays every cause of the event, and serves
     // no capability call while its registry is silent
     listed.push(Capability::LeaseWithdrawalV2);
+    // feature 022: a gate this engine runs (readiness, grant and timeout passes, and the admission of the runs it creates
+    // while its switch is on), backed by the digest keys whatever its switches, so a draining engine stays in the fleet
+    // (D022-057, D022-062)
+    listed.extend(
+        sagat_application::flow_control::listed(config.flow_control_keys.is_some())
+            .into_iter()
+            .map(sagat_application::flow_control::FlowControlCapability::registry),
+    );
     listed
 }

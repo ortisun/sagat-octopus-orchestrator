@@ -5,7 +5,7 @@
 //! which is the limit of the audit: SQL assembled at run time from values it cannot see is reported
 //! as unresolved, not guessed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -20,6 +20,16 @@ pub enum Tok {
 pub struct Expansion {
     text: String,
     unresolved: Vec<String>,
+    /// A macro of literal parameters whose one rule is a `concat!` of literals and those parameters
+    /// (`($g:literal, $now:literal) => { concat!($g, ".leased_at < ", $now) }`): its parts, a parameter by its
+    /// index. Expanded only where it is called with one string literal per parameter.
+    template: Option<Vec<Part>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Part {
+    Text(Expansion),
+    Param(usize),
 }
 
 impl Expansion {
@@ -28,10 +38,35 @@ impl Expansion {
         self.unresolved.extend(other.unresolved.iter().cloned());
     }
 
+    /// The text of a template called with `args`; `None` when the call does not give one literal per parameter.
+    fn instantiate(&self, args: &[String]) -> Option<Self> {
+        let parts = self.template.as_ref()?;
+        let wanted = parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Param(index) => Some(index + 1),
+                Part::Text(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
+        if args.len() < wanted {
+            return None;
+        }
+        let mut out = Self::default();
+        for part in parts {
+            match part {
+                Part::Text(text) => out.append(text),
+                Part::Param(index) => out.text.push_str(&args[*index]),
+            }
+        }
+        Some(out)
+    }
+
     fn unknown(name: &str) -> Self {
         Self {
             text: format!("{{macro {name}!()}}"),
             unresolved: vec![name.to_owned()],
+            template: None,
         }
     }
 }
@@ -211,7 +246,7 @@ fn matching(tokens: &[Tok], open_at: usize, open: char, close: char) -> usize {
 fn take_macros(
     tokens: Vec<Tok>,
     mut macros: BTreeMap<String, Expansion>,
-    execution_module: bool,
+    module: Option<&str>,
 ) -> (BTreeMap<String, Expansion>, Vec<Tok>) {
     let mut kept = Vec::new();
     let mut i = 0;
@@ -229,8 +264,17 @@ fn take_macros(
         ) && a == "macro_rules"
         {
             let end = matching(&tokens, i + 3, '{', '}');
-            let mut prefix = Expansion::default();
             let body = &tokens[i + 3..end];
+            if let Some(template) = literal_template(body, &macros) {
+                if let Some(module) = module {
+                    macros.insert(format!("crate::{module}::{name}"), template.clone());
+                    macros.insert(format!("$crate::{module}::{name}"), template.clone());
+                }
+                macros.insert(name.clone(), template);
+                i = end + 1;
+                continue;
+            }
+            let mut prefix = Expansion::default();
             let from = body
                 .iter()
                 .position(|t| matches!(t, Tok::Ident(word, _) if word == "concat"))
@@ -254,9 +298,9 @@ fn take_macros(
                 }
                 at += 1;
             }
-            if execution_module {
-                macros.insert(format!("crate::execution::{name}"), prefix.clone());
-                macros.insert(format!("$crate::execution::{name}"), prefix.clone());
+            if let Some(module) = module {
+                macros.insert(format!("crate::{module}::{name}"), prefix.clone());
+                macros.insert(format!("$crate::{module}::{name}"), prefix.clone());
             }
             macros.insert(name.clone(), prefix);
             i = end + 1;
@@ -266,6 +310,148 @@ fn take_macros(
         }
     }
     (macros, kept)
+}
+
+/// The template of a macro body `{ ($a:literal, ...) => { concat!(...) }; }` whose `concat!` holds only literals, its
+/// parameters and fixed calls; `None` for any other shape (it is then read as a prefix, as before).
+fn literal_template(body: &[Tok], macros: &BTreeMap<String, Expansion>) -> Option<Expansion> {
+    // body[0] is `{`; the rule's matcher follows
+    if body.get(1) != Some(&Tok::Punct('(')) {
+        return None;
+    }
+    let close = matching(body, 1, '(', ')');
+    let mut params = Vec::new();
+    for item in body[2..close].split(|t| *t == Tok::Punct(',')) {
+        match item {
+            [] => {}
+            [
+                Tok::Punct('$'),
+                Tok::Ident(name, _),
+                Tok::Punct(':'),
+                Tok::Ident(kind, _),
+            ] if kind == "literal" => params.push(name.clone()),
+            _ => return None,
+        }
+    }
+    if params.is_empty() {
+        return None;
+    }
+    let concat = body[close..]
+        .iter()
+        .position(|t| matches!(t, Tok::Ident(word, _) if word == "concat"))?
+        + close;
+    if body.get(concat + 1..concat + 3) != Some(&[Tok::Punct('!'), Tok::Punct('(')]) {
+        return None;
+    }
+    let inner_close = matching(body, concat + 2, '(', ')');
+    let inner = &body[concat + 3..inner_close];
+    let mut parts = Vec::new();
+    let mut at = 0;
+    while at < inner.len() {
+        // a template called with literals and this template's parameters (`live_gate_run!($r)` inside
+        // `eligible_gate_waiter!`): its parts, each parameter of the call replaced by what the caller gave
+        if let Some((nested, next)) = nested_template(inner, at, macros, &params) {
+            parts.extend(nested);
+            at = next;
+            continue;
+        }
+        if let Some((name, next, _)) = fixed_call(inner, at) {
+            parts.push(Part::Text(
+                fixed_text(macros, &name)
+                    .cloned()
+                    .unwrap_or_else(|| Expansion::unknown(&name)),
+            ));
+            at = next;
+            continue;
+        }
+        match (&inner[at], inner.get(at + 1)) {
+            (Tok::Str(text, _), _) => parts.push(Part::Text(Expansion {
+                text: text.clone(),
+                ..Expansion::default()
+            })),
+            (Tok::Punct('$'), Some(Tok::Ident(name, _))) => {
+                parts.push(Part::Param(params.iter().position(|p| p == name)?));
+                at += 1;
+            }
+            (Tok::Punct(','), _) => {}
+            _ => return None,
+        }
+        at += 1;
+    }
+    Some(Expansion {
+        template: Some(parts),
+        ..Expansion::default()
+    })
+}
+
+/// A call at `at`, inside a template's `concat!`, of another template whose arguments are literals or parameters of the
+/// enclosing template (`params`): the called template's parts with each of its parameters replaced by its argument, and
+/// the index after the call's `)`. `None` when `at` is no such call.
+fn nested_template(
+    tokens: &[Tok],
+    at: usize,
+    macros: &BTreeMap<String, Expansion>,
+    params: &[String],
+) -> Option<(Vec<Part>, usize)> {
+    let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
+        (tokens.get(at)?, tokens.get(at + 1), tokens.get(at + 2))
+    else {
+        return None;
+    };
+    let called = macros.get(name)?.template.as_ref()?;
+    let close = matching(tokens, at + 2, '(', ')');
+    let mut args = Vec::new();
+    for item in tokens[at + 3..close].split(|t| *t == Tok::Punct(',')) {
+        match item {
+            [] => {}
+            [Tok::Str(text, _)] => args.push(Part::Text(Expansion {
+                text: text.clone(),
+                ..Expansion::default()
+            })),
+            [Tok::Punct('$'), Tok::Ident(param, _)] => {
+                args.push(Part::Param(params.iter().position(|p| p == param)?));
+            }
+            _ => return None,
+        }
+    }
+    let mut parts = Vec::with_capacity(called.len());
+    for part in called {
+        parts.push(match part {
+            Part::Text(text) => Part::Text(text.clone()),
+            Part::Param(index) => args.get(*index)?.clone(),
+        });
+    }
+    Some((parts, close + 1))
+}
+
+/// A call `name!("a", "b")` of a template at `at`: its expansion and the index after the call's `)`. A call that does
+/// not give one literal per parameter is unresolved (its text is not guessed).
+fn template_call(
+    tokens: &[Tok],
+    at: usize,
+    macros: &BTreeMap<String, Expansion>,
+) -> Option<(Expansion, usize)> {
+    let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
+        (tokens.get(at)?, tokens.get(at + 1), tokens.get(at + 2))
+    else {
+        return None;
+    };
+    let template = macros.get(name).filter(|m| m.template.is_some())?;
+    let close = matching(tokens, at + 2, '(', ')');
+    let mut args = Vec::new();
+    for item in tokens[at + 3..close].split(|t| *t == Tok::Punct(',')) {
+        match item {
+            [] => {}
+            [Tok::Str(text, _)] => args.push(text.clone()),
+            _ => return Some((Expansion::unknown(name), close + 1)),
+        }
+    }
+    Some((
+        template
+            .instantiate(&args)
+            .unwrap_or_else(|| Expansion::unknown(name)),
+        close + 1,
+    ))
 }
 
 /// Only the fixed no-argument calls this repository uses, preserving any unknown path in full.
@@ -390,6 +576,18 @@ fn expand(
             i = next;
             continue;
         }
+        if let Some((expansion, next)) = template_call(tokens, i, macros) {
+            let line = tokens[i..next]
+                .iter()
+                .find_map(|t| match t {
+                    Tok::Str(_, line) | Tok::Ident(_, line) => Some(*line),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            out.push(Tok::Expanded(expansion, line, sql_context));
+            i = next;
+            continue;
+        }
         if let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
             (&tokens[i], tokens.get(i + 1), tokens.get(i + 2))
         {
@@ -407,6 +605,11 @@ fn expand(
                 let mut line = 0;
                 let mut at = 0;
                 while at < inner.len() {
+                    if let Some((expansion, next)) = template_call(inner, at, macros) {
+                        text.append(&expansion);
+                        at = next;
+                        continue;
+                    }
                     if let Some((name, next, _)) = fixed_call(inner, at) {
                         text.append(
                             &fixed_text(macros, &name)
@@ -555,11 +758,31 @@ pub fn extract(source: &str) -> Extraction {
 
 /// Only qualified declarations escape the parent module; its SQL statements never do.
 pub fn macro_prelude(source: &str) -> BTreeMap<String, Expansion> {
-    take_macros(lex(source), BTreeMap::new(), true)
+    macro_prelude_of(source, "execution", &BTreeMap::new())
+}
+
+/// The macros a module of the store declares, under the paths other modules call them by
+/// (`crate::<module>::name`): a statement that splices a fragment of another module is audited
+/// with its text, never reported as an unresolved placeholder. `known` are the declarations read
+/// before, which a nested call may name.
+pub fn macro_prelude_of(
+    source: &str,
+    module: &str,
+    known: &BTreeMap<String, Expansion>,
+) -> BTreeMap<String, Expansion> {
+    take_macros(lex(source), known.clone(), Some(module))
         .0
         .into_iter()
-        .filter(|(name, _)| name.contains("::"))
+        .filter(|(name, _)| {
+            name.starts_with(&format!("crate::{module}::"))
+                || name.starts_with(&format!("$crate::{module}::"))
+        })
         .collect()
+}
+
+/// The macros the crate root declares, by name: textually before its modules, so every module calls them unqualified.
+pub fn root_macros(source: &str) -> BTreeMap<String, Expansion> {
+    take_macros(lex(source), BTreeMap::new(), None).0
 }
 
 fn macro_scope(
@@ -576,7 +799,25 @@ fn macro_scope(
         }
         return scope;
     }
-    let prefix = lex("use crate::execution::");
+    let modules: BTreeSet<&str> = parent
+        .keys()
+        .filter_map(|name| name.strip_prefix("crate::"))
+        .filter_map(|name| name.rsplit_once("::").map(|(module, _)| module))
+        .collect();
+    for module in modules {
+        import_from(tokens, parent, module, &mut scope);
+    }
+    scope
+}
+
+/// `use crate::<module>::{a, b as c};` brings the module's declared macros into scope by name.
+fn import_from(
+    tokens: &[Tok],
+    parent: &BTreeMap<String, Expansion>,
+    module: &str,
+    scope: &mut BTreeMap<String, Expansion>,
+) {
+    let prefix = lex(&format!("use crate::{module}::"));
     let mut depth = 0_i32;
     for at in 0..tokens.len() {
         match tokens[at] {
@@ -614,12 +855,11 @@ fn macro_scope(
                 ] if keyword == "as" => (name, alias),
                 _ => continue,
             };
-            if let Some(value) = parent.get(&format!("crate::execution::{name}")) {
+            if let Some(value) = parent.get(&format!("crate::{module}::{name}")) {
                 scope.insert(alias.clone(), value.clone());
             }
         }
     }
-    scope
 }
 
 pub fn extract_with_macros(
@@ -629,7 +869,7 @@ pub fn extract_with_macros(
 ) -> Extraction {
     let tokens = lex(source);
     let scope = macro_scope(&tokens, inherited, lexical);
-    let (macros, tokens) = take_macros(tokens, scope, false);
+    let (macros, tokens) = take_macros(tokens, scope, None);
     let consts = take_consts(&tokens);
     let tokens = expand(&tokens, &macros, &consts, false);
     let mut extraction = Extraction::default();
@@ -699,6 +939,21 @@ mod tests {
     }
 
     #[test]
+    fn a_template_calling_a_template_with_its_parameters_is_expanded() {
+        // the shape of `eligible_gate_waiter!` (crates/infra-postgres/src/lib.rs, task T022-112), which calls
+        // `live_gate_run!` with its own parameter
+        let source = "macro_rules! live { ($r:literal) => { concat!($r, \".status IN ('RUNNING') AND NOT \", $r, \".paused\") }; }\n\
+             macro_rules! eligible { ($w:literal, $r:literal, $now:literal) => { concat!($w, \".deadline_at > \", $now, \" AND \", live!($r)) }; }\n\
+             fn f() { q(concat!(\"SELECT 1 FROM waiters w JOIN runs r ON true WHERE \", eligible!(\"w\", \"r\", \"now()\"))); }";
+        let found = extract(source);
+        assert_eq!(found.statements.len(), 1, "{found:?}");
+        assert_eq!(
+            found.statements[0].text,
+            "SELECT 1 FROM waiters w JOIN runs r ON true WHERE w.deadline_at > now() AND r.status IN ('RUNNING') AND NOT r.paused"
+        );
+    }
+
+    #[test]
     fn a_macro_template_is_expanded_where_it_is_invoked() {
         let found = extract(
             "macro_rules! sel { ($tail:literal) => { concat!(\"SELECT id \", \"FROM memberships \", $tail) }; }\n\
@@ -731,6 +986,30 @@ mod tests {
             "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools) ORDER BY id LIMIT $1"
         );
         assert!(found.fragments.is_empty());
+    }
+
+    #[test]
+    fn a_macro_of_literal_parameters_is_expanded_with_its_arguments() {
+        // the form of `purgeable_grant!` (feature 022): parameters substituted, never glued into the text
+        let found = extract(
+            r#"macro_rules! aged { ($g:literal, $now:literal) => { concat!($g, ".leased_at < ", $now) }; }
+               fn f() { q(concat!("DELETE FROM grants g WHERE ", aged!("g", "clock_timestamp()"), " AND true")); }"#,
+        );
+        assert_eq!(found.statements.len(), 1, "{found:?}");
+        assert_eq!(
+            found.statements[0].text,
+            "DELETE FROM grants g WHERE g.leased_at < clock_timestamp() AND true"
+        );
+        assert!(found.unresolved.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_template_called_without_literals_is_unresolved_instead_of_guessed() {
+        let found = extract(
+            r#"macro_rules! aged { ($g:literal) => { concat!($g, ".leased_at < now()") }; }
+               fn f(alias: &str) { q(concat!("DELETE FROM grants g WHERE ", aged!(alias))); }"#,
+        );
+        assert_eq!(found.unresolved.len(), 1, "{found:?}");
     }
 
     #[test]
@@ -768,6 +1047,39 @@ mod tests {
             "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools FOR SHARE) AND true ORDER BY id"
         );
         assert!(found.fragments.is_empty() && found.unresolved.is_empty());
+    }
+
+    /// B1 of the keys review (2026-11-20): a fragment another module of the store declares is
+    /// audited where it is spliced, called by its path or imported by name.
+    #[test]
+    fn a_fragment_of_another_module_is_expanded_by_path_and_by_import() {
+        let execution = macro_prelude(r#"macro_rules! policy { () => { "AND true " }; }"#);
+        let flow_control = macro_prelude_of(
+            r#"macro_rules! lateral { () => { " LEFT JOIN LATERAL (SELECT 1 FROM concurrency_holders h) p ON true " }; }"#,
+            "flow_control",
+            &execution,
+        );
+        let mut inherited = execution;
+        inherited.extend(flow_control);
+        for source in [
+            r#"fn f() { q(concat!("SELECT id FROM runs", crate::flow_control::lateral!(), "WHERE true")); }"#,
+            r#"use crate::flow_control::lateral;
+               fn f() { q(concat!("SELECT id FROM runs", lateral!(), "WHERE true")); }"#,
+        ] {
+            let found = extract_with_macros(source, &inherited, false);
+            assert!(found.unresolved.is_empty(), "{source}");
+            assert_eq!(
+                found.statements[0].text,
+                "SELECT id FROM runs LEFT JOIN LATERAL (SELECT 1 FROM concurrency_holders h) p ON true WHERE true"
+            );
+        }
+        // a module that declares nothing by that name lends nothing
+        let found = extract_with_macros(
+            r#"fn f() { q(concat!("SELECT id FROM runs", crate::other::lateral!())); }"#,
+            &inherited,
+            false,
+        );
+        assert!(!found.unresolved.is_empty());
     }
 
     #[test]

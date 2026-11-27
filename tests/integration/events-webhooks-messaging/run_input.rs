@@ -169,20 +169,23 @@ async fn a_cron_trigger_whose_input_is_refused_starts_nothing_and_audits_the_tic
     cron["inputSchema"] = needs_order();
     w.publish(cron).await;
     w.dispatcher.tick().await; // plans the first time
-    sqlx::query(
-        "UPDATE workflow_triggers SET next_fire_at = clock_timestamp() - interval '1 second'",
+    // the tick it acts on; the next fire is compared with it, not with the clock: a `*/5` trigger due one second ago
+    // has its next fire at the first boundary after that instant, which is already past when the test runs within a
+    // second after a boundary
+    let due: time::OffsetDateTime = sqlx::query_scalar(
+        "UPDATE workflow_triggers SET next_fire_at = clock_timestamp() - interval '1 second' RETURNING next_fire_at",
     )
-    .execute(&w.db.pool)
+    .fetch_one(&w.db.pool)
     .await
     .expect("due");
     w.dispatcher.tick().await;
     assert_eq!(runs_named(&w, "row-10").await, 0);
     assert_eq!(audits(&w, "run.input_refused", "at tick").await, 1);
-    let moved: bool =
-        sqlx::query_scalar("SELECT next_fire_at > clock_timestamp() FROM workflow_triggers")
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("next");
+    let moved: bool = sqlx::query_scalar("SELECT next_fire_at > $1 FROM workflow_triggers")
+        .bind(due)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("next");
     assert!(moved, "the tick is acted on, not retried");
 }
 
@@ -198,10 +201,13 @@ async fn a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason
     cron["inputSchema"] = unusable_schema();
     publish_in(&w, InputValidationMode::Report, &cron).await;
     w.dispatcher.tick().await; // plans the first time
-    sqlx::query(
-        "UPDATE workflow_triggers SET next_fire_at = clock_timestamp() - interval '1 second'",
+    // the tick it acts on; the next fire is compared with it, not with the clock: a `*/5` trigger due one second ago
+    // has its next fire at the first boundary after that instant, which is already past when the test runs within a
+    // second after a boundary
+    let due: time::OffsetDateTime = sqlx::query_scalar(
+        "UPDATE workflow_triggers SET next_fire_at = clock_timestamp() - interval '1 second' RETURNING next_fire_at",
     )
-    .execute(&w.db.pool)
+    .fetch_one(&w.db.pool)
     .await
     .expect("due");
     w.dispatcher.tick().await;
@@ -215,11 +221,11 @@ async fn a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason
         .await,
         1
     );
-    let moved: bool =
-        sqlx::query_scalar("SELECT next_fire_at > clock_timestamp() FROM workflow_triggers")
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("next");
+    let moved: bool = sqlx::query_scalar("SELECT next_fire_at > $1 FROM workflow_triggers")
+        .bind(due)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("next");
     assert!(moved, "the tick is acted on, not retried");
 }
 

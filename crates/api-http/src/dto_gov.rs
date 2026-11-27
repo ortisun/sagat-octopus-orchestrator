@@ -18,7 +18,9 @@ pub struct QuotaBody {
     /// How much is used now; absent for a per-namespace resource in the tenant-wide view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used: Option<u64>,
-    /// Present and true only for `tenant_step_log_bytes` when `used` is withheld (decision D041-133).
+    /// Present and true when `used` is withheld: for `tenant_step_log_bytes` (decision D041-133), and for
+    /// `concurrency_live_keys`, `rate_limit_live_keys` and `flow_control_key_waiters` from a caller who may not reveal
+    /// personal data in the namespace (feature 022, decision D022-133).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_withheld: Option<bool>,
 }

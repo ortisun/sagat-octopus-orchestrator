@@ -112,11 +112,17 @@ pub async fn serve(
         tracing::info!("database role verified: it cannot rewrite the audit trail");
     }
 
+    sagat_control_plane::check_flow_control_keys(&pool, engine.flow_control_keys.as_deref())
+        .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), DEFINITION_CACHE_ENTRIES);
-    let store = PgRunStore::new(pool.clone(), cache.clone())
+    let mut store = PgRunStore::new(pool.clone(), cache.clone())
         .with_breaker(engine.breaker)
         .with_scoped_worker_protocol()
-        .with_lake_enabled(engine.lake_enabled);
+        .with_lake_enabled(engine.lake_enabled)
+        .with_flow_control(engine.flow_control);
+    if let Some(keys) = &engine.flow_control_keys {
+        store = store.with_flow_control_keys(Arc::clone(keys));
+    }
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,

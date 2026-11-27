@@ -3,6 +3,92 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Flow control: concurrency keys and rate limits (feature 022, release 0.3.0 slice)
+
+A workflow can now say how much of its work may run at once, and how often it may start, per business key, with the
+excess waiting durably in arrival order instead of failing (user stories US02 and US07 of
+[feature 022](../../specs/022-flow-control-step-policies/spec.md); ADR-0056, ADR-0088, ADR-0089, ADR-0093, ADR-0094,
+ADR-0096). Off by default; nothing changes for a definition that does not declare it.
+
+**For authors.**
+
+- `concurrency: {limit, key?, group?, queueTimeoutMs?}` at the top level of a definition (at most `limit` running runs
+  per key) or on a root `activity` or `script` node (at most `limit` attempts per key at once).
+- `rateLimit: {limit, per, key?, group?, queueTimeoutMs?}`, `per` one of `second`, `minute`, `hour`, at the same two
+  places: at most `limit` run starts, or leased attempts, per key in any interval of `per` on the database clock. There
+  is no burst: the first `limit` start at once, the next as the oldest grants age out.
+- Work beyond a gate waits `WAITING` (wait kind `CONCURRENCY` or `RATE_LIMIT`), holds no worker and spends no attempt; it
+  is granted oldest first, and fails `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` at its queue deadline (10
+  minutes by default, one day at most). A step that waits is never `READY`, so it never fills a worker's poll. A run that
+  declares both gates holds both or neither.
+- A synchronous start beyond a full per-key queue, the namespace's `queued_runs` or its live keys is refused before any
+  run exists: `429 QUOTA_EXCEEDED` with `CONCURRENCY_QUEUE_FULL`, `RATE_LIMIT_QUEUE_FULL` or `FLOW_CONTROL_LIMIT`; an event
+  or a cron start stays pending under its retry. A reset takes a fresh permit and slot or is refused
+  (`CONCURRENCY_PERMIT_UNAVAILABLE`, `RATE_LIMIT_SLOT_UNAVAILABLE`) and never waits.
+- Publication refuses an invalid policy, either field inside a body, and either field with `continueAsNew`; definitions
+  that share a group with different limits are warned (`CONCURRENCY_LIMIT_MISMATCH`, `RATE_LIMIT_MISMATCH`).
+- Not in this build: the builders of the six SDKs, the Studio's fields and views, and the shared conformance scenarios
+  (tasks T022-048 to T022-056, T022-067, T022-083 to T022-085): declare the fields in the workflow's JSON document.
+
+**For operators.** Read the [flow-control runbook](../runbooks/flow-control.md) before you turn either on.
+
+1. Give every control plane and every engine the same digest key ring, a file named by
+   `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` (`version:hex`, at most 16 KiB; Helm `flowControl.digestKeys.existingSecret`,
+   compose overlay `compose.flow-control.yaml`). A process with a switch on and no file, or with a file that lacks a
+   version the database has in force, does not start. The images' group is now gid 10001.
+2. Turn on `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED`, `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`, or both, and restart.
+   In Helm the switches are `flowControl.concurrencyKeys` and `flowControl.rateLimits`; the compose overlay
+   `compose.flow-control.yaml` turns both on (decision D022-118, runbook section 6).
+3. Activate the digest key version (`SELECT * FROM flow_control_key_activate(1::smallint, '<your name>');`), then each
+   capability for the fleet with the one operator command of every fleet requirement:
+   `control-plane capability-activate flow-control-concurrency-v1 --operator <your name> --expect-live <n>` and
+   `control-plane capability-activate flow-control-rate-v1 ...`, as the schema-owning role (`--dry-run` checks and
+   changes nothing). The command refuses while a live process does not list the capability, while a kind has no live
+   process, and while no digest key version is active (decisions D022-136 and D022-137). Until then publication and starts that use one are
+   refused `422 VALIDATION_FAILED`, `FLOW_CONTROL_ACTIVATION_PENDING`; afterwards a process without the capability
+   answers `503`, `BINARY_CAPABILITY_MISSING`. The digest-key commands are SQL functions of the schema owner only, with
+   no API, command or metric yet (gap G022-006, runbook section 1.3).
+4. To turn one off, switch it off and keep the key file mounted: a switched-off process that holds the file still lists
+   the gate and drains what was admitted (D022-062).
+5. A lease the server withdraws (feature 006) leaves its gated step with its concurrency permit and its rate slot: the
+   step is leased again without queueing and takes no second slot; the slot counts from the lease that reached a
+   worker (decisions D022-138 and D022-139, migration `20270217000000_flow_control_withdrawn_lease`). A withdrawal
+   is refused only when another grant of the key used the room its slot left (D022-157), counted `slot_spent`
+   (D022-158; the attempt is spent, gap G022-042), and the purge keeps the grant of a step still leased at it (D022-146).
+
+New reads: `Run.concurrency`, `Run.rateLimit` (with `position` and `estimatedGrantAt` on a single-run read) and a step's
+`waitingOn` for a reader of the run; `GET /namespaces/{namespaceId}/concurrency-keys` and `GET .../rate-limit-keys` with
+`ops:read`. A key is
+shown only as a label. In a run, to a caller who may disclose every field the key reads (D022-085); in the two listings,
+to a caller with the namespace's reveal grant, every other reader getting one row per group instead (`view: GROUPS`,
+D022-086). Publication refuses a key over a `secret` field (`FLOW_CONTROL_KEY_SECRET`) and warns one over a `pii` or an
+unclassified field (`FLOW_CONTROL_KEY_PII`). New series `concurrency_acquisitions_total` and
+`rate_limit_decisions_total` (by `scope` and `outcome`), `concurrency_wait_seconds` and `rate_limit_wait_seconds`,
+`concurrency_waiters` and `rate_limit_waiters`, `rate_limit_grant_lag_seconds` and `rate_limit_unleased_grants`, and the
+scheduler actions `gate_grant`, `gate_timeout`, `rate_lease` and `rate_purge`. Four new alerts of the engine's monitor,
+one per namespace and group: `CONCURRENCY_QUEUE_STUCK` and `RATE_LIMIT_QUEUE_SATURATED` (warning),
+`RATE_LIMIT_GRANT_LAGGING` and `FLOW_CONTROL_WAITER_ORPHANED` (critical); the alert kind enumeration of the OpenAPI and
+AsyncAPI contracts gains these four values, so a client that refuses an unknown kind must be updated. Each has a section
+in the runbook (task T022-082, built and not yet ticked). No alert says that the database clock went back: grants then
+pause until it catches up (runbook section 12).
+
+New namespace quota resources, each a namespace's value, else the tenant's default, else the deployment's (default /
+hard ceiling): `queued_runs` (1,000 / 10,000), `flow_control_key_waiters` (100 / 10,000, always below `queued_runs`),
+`concurrency_live_keys` and `rate_limit_live_keys` (10,000 / 100,000 each), `concurrency_limit` (10,000 at most),
+`flow_control_queue_timeout_ms` (600,000 / 86,400,000), `flow_control_node_declarations` (16 / 64 node declarations of
+one kind), `rate_limit_per_second` (20 / 20), `rate_limit_per_minute` (6,000 / 6,000), `rate_limit_per_hour`
+(10,000 / 10,000). A declared per-second limit is held to 20 until the benchmark of SC-022-029 (three engines, one key
+at 100 a second) is published; a key's canonical value is at most 256 bytes. The live-keys ceilings can be passed by the
+keys that concurrent transactions create at the same moment (accepted by the owner, OD-2026-11-20-3 and
+OD-2026-11-20-11; runbook section 4). Finish the rolling upgrade before setting any `rate_limit_*` limit; rolling back
+migrations `20270203000000` and `20270206000000` is refused while runs or limits use them (runbook sections 5 and 6).
+
+**Release gates: do not activate in production before they are closed.** Concurrency keys: T022-104 (publication's
+refusal of a key over a `secret` field, gap G022-015; built, `FLOW_CONTROL_KEY_SECRET` and `FLOW_CONTROL_KEY_PII`, awaiting
+its review) and T022-111 (the group rows of the key listings); this release does not close with them open. Rate limits: also
+T022-080 (the fault suite's review), T022-113 (the rate twins of the run creators) and gap G022-018 (the purge's order
+and backlog), as the runbook's section 6 lists them.
+
 ## Workers: leases no host received are withdrawn (feature 006, ADR-0098)
 
 - A lease the engine committed and never handed to a host goes back to `READY` with its attempt unspent, recorded as the new

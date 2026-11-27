@@ -1250,6 +1250,10 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   and by a battery of 14 mutants of the store and the service, all killed. Not done: the 022 permit and the 020 attribute
   fold (features not approved), scoped prefixes and the configurable ceiling (G1980). The `run_resets` register is
   built (D1978, below).
+  *022 permit built 2026-11-20 by feature 022 (T022-064, D022-053), the task stays open for the 020 fold and G1980:* a reset
+  of a version whose start takes a permit takes a fresh one right after `run.reset` or is refused
+  `CONCURRENCY_PERMIT_UNAVAILABLE` (never queues); the restored `concurrency.*` events are history. Evidence in
+  `specs/022-flow-control-step-policies/tasks.md` (T022-064).
 - [ ] T018-054 [US6] Reset service and routes (points, preview, reset, list/get) —
   `crates/application/src/runs/reset.rs`, `crates/api-http/src/routes/resets.rs` — contract tests —
   FR-018-035..037.

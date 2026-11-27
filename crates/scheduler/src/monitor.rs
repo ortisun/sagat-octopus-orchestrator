@@ -279,4 +279,15 @@ fn gauges(sample: &Sample) {
             .map_or(0, |(_, n)| *n);
         metrics::gauge!("runs_active", "status" => status).set(n as f64);
     }
+    // feature 022 (T022-082): the waiters of flow control's keys by scope and the step grants no worker has leased, in
+    // the closed vocabulary (no tenant, group or key)
+    use sagat_telemetry::flow_control::{
+        FlowControlScope, set_concurrency_waiters, set_rate_limit_waiters, set_unleased_grants,
+    };
+    let flow = &sample.flow_control;
+    set_concurrency_waiters(FlowControlScope::Run, flow.concurrency_run_waiters as f64);
+    set_concurrency_waiters(FlowControlScope::Step, flow.concurrency_step_waiters as f64);
+    set_rate_limit_waiters(FlowControlScope::Run, flow.rate_run_waiters as f64);
+    set_rate_limit_waiters(FlowControlScope::Step, flow.rate_step_waiters as f64);
+    set_unleased_grants(flow.unleased_grants as f64);
 }

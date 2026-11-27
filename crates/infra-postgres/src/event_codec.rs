@@ -7,13 +7,14 @@
 use sagat_domain::execution::{
     ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId, ChildOutcome,
     CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId, FailureCode,
-    Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
-    PlannedEntry, ReconcileResult, ResetReapply, ReviewOutcome, RunEvent, RunId, RunStatus,
-    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia, WithdrawalCause,
+    Fence, GateChange, GateEvent, GatePool, GateRef, GateTarget, InstancePath, JoinOutcome,
+    KeyLabel, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry,
+    ReconcileResult, ResetReapply, ReviewOutcome, RunEvent, RunId, RunStatus, ScopedPlannedEntry,
+    StopReason, SwitchSelection, WaitVia, WithdrawalCause,
 };
 use sagat_domain::identity::Subject;
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
-use sagat_domain::workflow::{ActivityName, Digest, NodeId};
+use sagat_domain::workflow::{ActivityName, Digest, NodeId, RatePeriod, ResolvedGroup};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -457,6 +458,7 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             "prefix_sha256": prefix_digest.to_hex(),
             "reapply": reapply.as_str(),
         }),
+        RunEvent::Gate(gate) => gate_detail(gate),
     };
     Encoded {
         event_type: event.name(),
@@ -829,6 +831,16 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         "run.start_delayed" => RunEvent::StartDelayed {
             until_us: d.get("until_us")?.as_i64()?,
         },
+        "concurrency.queued"
+        | "concurrency.acquired"
+        | "concurrency.released"
+        | "concurrency.wait_timed_out"
+        | "concurrency.dequeued"
+        | "rate_limit.queued"
+        | "rate_limit.granted"
+        | "rate_limit.wait_timed_out"
+        | "rate_limit.dequeued"
+        | "rate_limit.returned" => RunEvent::Gate(gate_of(event_type, node, d)?),
         "run.start_released" => RunEvent::StartReleased {
             until_us: d.get("until_us")?.as_i64()?,
         },
@@ -983,6 +995,125 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
             status: text(d, "status")?.parse::<RunStatus>().ok()?,
         },
         _ => return None,
+    })
+}
+
+/// The closed detail of a flow-control event (feature 022, `contracts/journal-events.md`): the key it is about (pool,
+/// scope, resolved group, label; never the key's value) and what the decision carries. A step-scope event names the
+/// attempt it is for; the node is the row's own column.
+fn gate_detail(gate: &GateEvent) -> Value {
+    let mut detail = Map::new();
+    detail.insert("pool".into(), json!(gate.gate.pool.as_str()));
+    detail.insert("scope".into(), json!(gate.target.scope()));
+    detail.insert("group".into(), json!(gate.gate.group.as_str()));
+    detail.insert("key_label".into(), json!(gate.gate.key_label.as_str()));
+    if let GateTarget::Step { attempt, .. } = &gate.target {
+        detail.insert("attempt".into(), json!(attempt));
+    }
+    match gate.change {
+        GateChange::ConcurrencyQueued { queue_deadline_us } => {
+            detail.insert("queue_deadline_us".into(), json!(queue_deadline_us));
+        }
+        GateChange::RateQueued {
+            limit,
+            per,
+            queue_deadline_us,
+        } => {
+            detail.insert("limit".into(), json!(limit));
+            detail.insert("period_ms".into(), json!(per.millis()));
+            detail.insert("queue_deadline_us".into(), json!(queue_deadline_us));
+        }
+        GateChange::RateGranted {
+            limit,
+            per,
+            granted_at_us,
+            from_queue,
+        } => {
+            detail.insert("limit".into(), json!(limit));
+            detail.insert("period_ms".into(), json!(per.millis()));
+            detail.insert("granted_at_us".into(), json!(granted_at_us));
+            detail.insert("from_queue".into(), json!(from_queue));
+        }
+        GateChange::ConcurrencyAcquired
+        | GateChange::ConcurrencyReleased
+        | GateChange::ConcurrencyWaitTimedOut
+        | GateChange::ConcurrencyDequeued
+        | GateChange::RateWaitTimedOut
+        | GateChange::RateDequeued
+        | GateChange::RateReturned => {}
+    }
+    Value::Object(detail)
+}
+
+/// The inverse of [`gate_detail`]. The detail is closed: a key it does not name, or a missing one, is not a
+/// flow-control event this version wrote.
+fn gate_of(event_type: &str, node: Option<&str>, d: &Map<String, Value>) -> Option<GateEvent> {
+    let target = match (text(d, "scope")?, node) {
+        ("RUN", None) => GateTarget::Run,
+        ("STEP", Some(node)) => GateTarget::Step {
+            node: NodeId::parse(node).ok()?,
+            attempt: u32::try_from(number(d, "attempt")?).ok()?,
+        },
+        _ => return None,
+    };
+    let limit = || u32::try_from(number(d, "limit")?).ok();
+    let per = || RatePeriod::from_millis(number(d, "period_ms")?);
+    let (change, keys): (GateChange, &[&str]) = match event_type {
+        "concurrency.queued" => (
+            GateChange::ConcurrencyQueued {
+                queue_deadline_us: d.get("queue_deadline_us")?.as_i64()?,
+            },
+            &["queue_deadline_us"],
+        ),
+        "concurrency.acquired" => (GateChange::ConcurrencyAcquired, &[]),
+        "concurrency.released" => (GateChange::ConcurrencyReleased, &[]),
+        "concurrency.wait_timed_out" => (GateChange::ConcurrencyWaitTimedOut, &[]),
+        "concurrency.dequeued" => (GateChange::ConcurrencyDequeued, &[]),
+        "rate_limit.queued" => (
+            GateChange::RateQueued {
+                limit: limit()?,
+                per: per()?,
+                queue_deadline_us: d.get("queue_deadline_us")?.as_i64()?,
+            },
+            &["limit", "period_ms", "queue_deadline_us"],
+        ),
+        "rate_limit.granted" => (
+            GateChange::RateGranted {
+                limit: limit()?,
+                per: per()?,
+                granted_at_us: d.get("granted_at_us")?.as_i64()?,
+                from_queue: d.get("from_queue")?.as_bool()?,
+            },
+            &["limit", "period_ms", "granted_at_us", "from_queue"],
+        ),
+        "rate_limit.wait_timed_out" => (GateChange::RateWaitTimedOut, &[]),
+        "rate_limit.dequeued" => (GateChange::RateDequeued, &[]),
+        "rate_limit.returned" => (GateChange::RateReturned, &[]),
+        _ => return None,
+    };
+    let common = if matches!(target, GateTarget::Step { .. }) {
+        5
+    } else {
+        4
+    };
+    // a reset re-emits a gate event marked `restored` (feature 018; T022-064 for the `concurrency.*` events, T022-086 for
+    // the `rate_limit.*` ones, D022-069): the one key it may add, and it says true
+    let marked = match d.get("restored") {
+        None => 0,
+        Some(Value::Bool(true)) => 1,
+        Some(_) => return None,
+    };
+    if d.len() != common + keys.len() + marked || !keys.iter().all(|key| d.contains_key(*key)) {
+        return None;
+    }
+    Some(GateEvent {
+        target,
+        gate: GateRef {
+            pool: GatePool::parse(text(d, "pool")?)?,
+            group: ResolvedGroup::parse(text(d, "group")?).ok()?,
+            key_label: KeyLabel::parse(text(d, "key_label")?).ok()?,
+        },
+        change,
     })
 }
 
@@ -1610,5 +1741,114 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// Feature 022 (T022-008, T022-068): every flow-control event of `contracts/journal-events.md`, at run and at step
+    /// scope, is written with closed snake_case detail keys that never carry a key's value, and reads back as itself.
+    #[test]
+    fn every_flow_control_event_round_trips_with_closed_snake_case_detail() {
+        use sagat_domain::execution::{
+            GateChange, GateEvent, GatePool, GateRef, GateTarget, KeyLabel,
+        };
+        use sagat_domain::workflow::{RatePeriod, ResolvedGroup};
+        let changes = [
+            GateChange::ConcurrencyQueued {
+                queue_deadline_us: 1_700_000_000_000_000,
+            },
+            GateChange::ConcurrencyAcquired,
+            GateChange::ConcurrencyReleased,
+            GateChange::ConcurrencyWaitTimedOut,
+            GateChange::ConcurrencyDequeued,
+            GateChange::RateQueued {
+                limit: 10,
+                per: RatePeriod::Minute,
+                queue_deadline_us: 1_700_000_000_000_000,
+            },
+            GateChange::RateGranted {
+                limit: 10,
+                per: RatePeriod::Second,
+                granted_at_us: 1_700_000_000_000_001,
+                from_queue: true,
+            },
+            GateChange::RateWaitTimedOut,
+            GateChange::RateDequeued,
+            GateChange::RateReturned,
+        ];
+        let targets = [
+            GateTarget::Run,
+            GateTarget::Step {
+                node: node("fetch"),
+                attempt: 2,
+            },
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for change in changes {
+            for target in &targets {
+                let event = RunEvent::Gate(GateEvent {
+                    target: target.clone(),
+                    gate: GateRef {
+                        pool: GatePool::Ordinary,
+                        group: ResolvedGroup::parse("=provider-sync/fetch").expect("group"),
+                        key_label: KeyLabel::parse("00ff00ff00ff").expect("label"),
+                    },
+                    change,
+                });
+                let encoded = encode(&event);
+                seen.insert(encoded.event_type);
+                let detail = encoded.detail.as_object().expect("an object");
+                for key in detail.keys() {
+                    assert!(
+                        !key.is_empty()
+                            && key
+                                .chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                        "{key} of {} is snake_case",
+                        encoded.event_type
+                    );
+                }
+                assert_eq!(
+                    encoded.attempt,
+                    matches!(target, GateTarget::Step { .. }).then_some(2)
+                );
+                assert_eq!(
+                    decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                    Some(event.clone()),
+                    "{}",
+                    encoded.event_type
+                );
+                let mut open = encoded.detail.clone();
+                open.as_object_mut()
+                    .expect("object")
+                    .insert("key_value".into(), json!("acct-42"));
+                assert_eq!(
+                    decode(encoded.event_type, encoded.node.as_deref(), &open),
+                    None,
+                    "the detail is closed: an extra key is not a row this version wrote"
+                );
+                // a reset re-emits it marked `restored` (feature 018; T022-064, T022-086): the marker is the only key
+                // it adds
+                let mut restored = encoded.detail.clone();
+                restored
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("restored".into(), json!(true));
+                assert_eq!(
+                    decode(encoded.event_type, encoded.node.as_deref(), &restored),
+                    Some(event.clone()),
+                    "a restored copy of a gate event reads as the event it copies: {}",
+                    encoded.event_type
+                );
+                restored
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("restored".into(), json!(false));
+                assert_eq!(
+                    decode(encoded.event_type, encoded.node.as_deref(), &restored),
+                    None,
+                    "the marker says true or is absent"
+                );
+            }
+        }
+        assert_eq!(seen.len(), 10, "the ten event types of the contract");
     }
 }

@@ -21,7 +21,13 @@
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
 
 mod collection_shape;
+pub mod flow_control;
 pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
+pub use flow_control::{
+    ConcurrencyPolicy, FlowControl, FlowControlCeilings, FlowControlLimit, FlowControlRule,
+    FlowGroup, GateKind, GateLevel, GroupDeclaration, GroupName, RateLimitPolicy, RatePeriod,
+    ResolvedGroup,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -166,6 +172,29 @@ pub enum WorkflowError {
     InvalidContinuationPolicy(&'static str),
     #[error("switch node '{node}': {reason}")]
     InvalidSwitch { node: NodeId, reason: &'static str },
+    /// A `concurrency` or `rateLimit` declaration breaks one of its rules (feature 022:
+    /// `CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`). `node` is `None` at the top level.
+    #[error("{}: {rule}", flow_control_place(*kind, node.as_deref()))]
+    InvalidFlowControl {
+        kind: GateKind,
+        node: Option<String>,
+        rule: FlowControlRule,
+    },
+    /// A flow-control declaration together with something it cannot be combined with (feature 022,
+    /// `FLOW_CONTROL_COMBINATION`): a continuation, whose successors are not admitted through the gate.
+    #[error("{} cannot be declared together with {with}", flow_control_place(*kind, node.as_deref()))]
+    FlowControlCombination {
+        kind: GateKind,
+        node: Option<String>,
+        with: &'static str,
+    },
+}
+
+fn flow_control_place(kind: GateKind, node: Option<&str>) -> String {
+    match node {
+        None => format!("top-level '{kind}'"),
+        Some(node) => format!("node '{node}', '{kind}'"),
+    }
 }
 
 /// Why an expression was rejected.
@@ -794,7 +823,13 @@ pub struct Node {
     effect: EffectPolicy,
     origin: NodeOrigin,
     managed: Option<Managed>,
+    /// The gates of the step (feature 022): only a declared root activity or script carries any. Boxed, and absent for
+    /// an ungated step (decision D022-102): a debug build copies nodes through many frames.
+    flow_control: Option<Box<FlowControl>>,
 }
+
+/// The gates of every ungated node, which [`Node::flow_control`] lends.
+static UNGATED: FlowControl = FlowControl::NONE;
 
 impl Node {
     #[must_use]
@@ -808,7 +843,43 @@ impl Node {
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
             managed: None,
+            flow_control: None,
         }
+    }
+
+    /// Declares the gates of this step (feature 022). Only a declared activity or script may: a database,
+    /// lake or derived node, and every other kind, is refused with the rule of the first gate it declares.
+    ///
+    /// # Errors
+    /// [`WorkflowError::InvalidFlowControl`] with [`FlowControlRule::NodeKind`].
+    pub fn with_flow_control(mut self, flow_control: FlowControl) -> Result<Self, WorkflowError> {
+        if !flow_control.is_gated() {
+            return Ok(self);
+        }
+        let gateable = matches!(self.kind, NodeKind::Activity { .. })
+            && self.managed.is_none()
+            && self.origin == NodeOrigin::Declared
+            && !self.id.is_derived();
+        if !gateable {
+            let kind = if flow_control.concurrency().is_some() {
+                GateKind::Concurrency
+            } else {
+                GateKind::RateLimit
+            };
+            return Err(flow_control::invalid(
+                kind,
+                Some(&self.id),
+                FlowControlRule::NodeKind,
+            ));
+        }
+        self.flow_control = Some(Box::new(flow_control));
+        Ok(self)
+    }
+
+    /// The gates of this step; [`FlowControl::NONE`] for an ungated one.
+    #[must_use]
+    pub fn flow_control(&self) -> &FlowControl {
+        self.flow_control.as_deref().unwrap_or(&UNGATED)
     }
 
     /// Managed operations always use one attempt. An ambiguous write requires manual review.
@@ -1059,6 +1130,32 @@ pub enum DefinitionWarning {
     /// The version has an `inputSchema` and a trigger other than a manual start: the schema is applied
     /// to the run input a trigger builds, the event envelope `{event, data}` (FR-043-012, G043-004).
     InputSchemaAppliesToTriggers,
+    /// A child node starts this workflow, which declares a run-level `concurrency`: the child may wait for a
+    /// permit of the same key its parent holds, and the parent for the child, until the queue timeout
+    /// (feature 022, `CONCURRENCY_SELF_CHILD`).
+    ConcurrencySelfChild { node: NodeId },
+    /// An explicit concurrency group this definition declares is declared by another published definition of the
+    /// namespace (`other`, its active version) with a different `limit`: each acquirer applies its own limit, and grants
+    /// skip ahead past a waiter its own limit refuses (feature 022, `CONCURRENCY_LIMIT_MISMATCH`, D1196). `node` is
+    /// `None` for a run-level declaration.
+    ConcurrencyLimitMismatch {
+        node: Option<NodeId>,
+        group: GroupName,
+        other: Slug,
+    },
+    /// The same for a rate-limit group with a different `limit` or `per` (`RATE_LIMIT_MISMATCH`, D022-009).
+    RateLimitMismatch {
+        node: Option<NodeId>,
+        group: GroupName,
+        other: Slug,
+    },
+    /// A concurrency or rate-limit key reads a location classified `pii` (an unannotated one included): its label is shown
+    /// only to a caller who may reveal personal data in the namespace (feature 022, `FLOW_CONTROL_KEY_PII`, FR-022-057,
+    /// decision D022-085). `node` is `None` for a run-level declaration.
+    FlowControlKeyPii {
+        node: Option<NodeId>,
+        kind: GateKind,
+    },
 }
 
 /// Why an `inputSchema` is outside the supported subset of design 043 (D043-065): the closed codes of a
@@ -1124,6 +1221,13 @@ impl InputSchemaIssue {
     }
 }
 
+fn where_declared(node: Option<&NodeId>) -> String {
+    node.map_or_else(
+        || "the workflow".to_owned(),
+        |node| format!("node '{node}'"),
+    )
+}
+
 impl fmt::Display for DefinitionWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1135,6 +1239,22 @@ impl fmt::Display for DefinitionWarning {
                 f,
                 "node '{node}': starts the workflow it belongs to; the nesting depth limit ends the recursion"
             ),
+            Self::ConcurrencySelfChild { node } => write!(
+                f,
+                "node '{node}': starts this workflow, whose run-level concurrency key the child may share with its parent; the child can then wait for a permit its parent holds until the queue timeout"
+            ),
+            Self::ConcurrencyLimitMismatch { node, group, other } => write!(
+                f,
+                "{}: concurrency group '{}' is declared by workflow '{other}' of this namespace with a different limit; each run applies its own",
+                where_declared(node.as_ref()),
+                group.as_str()
+            ),
+            Self::RateLimitMismatch { node, group, other } => write!(
+                f,
+                "{}: rate-limit group '{}' is declared by workflow '{other}' of this namespace with a different limit or window; each run applies its own",
+                where_declared(node.as_ref()),
+                group.as_str()
+            ),
             Self::InputSchemaOutsideSubset { issue, keyword, at } => write!(
                 f,
                 "{} (keyword '{}' at '{}'): published in report mode, every start of this version is refused in enforce mode",
@@ -1144,6 +1264,12 @@ impl fmt::Display for DefinitionWarning {
             ),
             Self::InputSchemaAppliesToTriggers => f.write_str(
                 "the inputSchema is applied to the run input of every trigger, the event envelope {event, data}: a schema written for a manual input refuses the triggered starts",
+            ),
+            Self::FlowControlKeyPii { node, kind } => write!(
+                f,
+                "{}: the {} key reads a location classified pii (an unannotated location is pii); its label is shown only to callers who may reveal personal data",
+                where_declared(node.as_ref()),
+                kind.field()
             ),
         }
     }
@@ -1322,8 +1448,38 @@ pub struct WorkflowDefinition {
     structured: bool,
     continuation_policy: Option<ContinuationPolicy>,
     triggers: Vec<Trigger>,
+    /// The gates of a run start (feature 022, top-level `concurrency` and `rateLimit`).
+    run_flow_control: FlowControl,
     /// The canonical bytes of the document's `inputSchema` and their digest (design 043, T043-1).
     input_schema: Option<InputSchema>,
+}
+
+/// What the settle of a run's start may reach in the transaction that releases its entry
+/// ([`WorkflowDefinition::entry_path`]; feature 022, decision D022-126).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPath<'a> {
+    /// The event type of every `waitEvent` on the path, one per node.
+    waits: Vec<&'a str>,
+    can_end: bool,
+}
+
+impl EntryPath<'_> {
+    /// How many `waitEvent` nodes of the path wait for `event_type`: the most steps a signal of that name delivered at
+    /// the release of the entry can reach.
+    #[must_use]
+    pub fn waits_for(&self, event_type: &str) -> usize {
+        self.waits
+            .iter()
+            .filter(|name| **name == event_type)
+            .count()
+    }
+
+    /// Whether the run can end in the transaction that releases its entry: the path reaches an `end` or a
+    /// `continueAsNew`, or a node whose failure there ends the run.
+    #[must_use]
+    pub const fn can_end(&self) -> bool {
+        self.can_end
+    }
 }
 
 /// The `inputSchema` of a workflow version as the run-input check reads it (design 043): the canonical
@@ -1435,6 +1591,7 @@ impl WorkflowDefinition {
             structured: false,
             continuation_policy: None,
             triggers: Vec::new(),
+            run_flow_control: FlowControl::NONE,
             input_schema: None,
         })
     }
@@ -1555,6 +1712,7 @@ impl WorkflowDefinition {
             structured: true,
             continuation_policy,
             triggers: Vec::new(),
+            run_flow_control: FlowControl::NONE,
             input_schema: None,
         };
         definition.check_aggregate_limits()?;
@@ -1648,6 +1806,173 @@ impl WorkflowDefinition {
         let secrets = self.declared_secrets().len();
         if secrets > MAX_DECLARED_SECRETS {
             return Err(WorkflowError::TooManySecrets(secrets));
+        }
+        Ok(())
+    }
+
+    /// Declares the gates of a run start (feature 022, top-level `concurrency` and `rateLimit`).
+    #[must_use]
+    pub fn with_run_flow_control(mut self, flow_control: FlowControl) -> Self {
+        self.run_flow_control = flow_control;
+        self
+    }
+
+    /// The gates of a run start; [`FlowControl::NONE`] when the definition declares none.
+    #[must_use]
+    pub const fn run_flow_control(&self) -> &FlowControl {
+        &self.run_flow_control
+    }
+
+    /// Gives every key of the run start and of the root nodes the level of what it reads, as `level` gives it for the
+    /// node (`None` for the run start), the gate's kind and the key expression (feature 022, decision D022-085). Derived
+    /// from the document's schemas by the codec, for publication and for the restore alike; never canonical.
+    #[must_use]
+    pub fn with_flow_control_key_levels(
+        mut self,
+        mut level: impl FnMut(Option<&NodeId>, GateKind, &Expression) -> crate::classification::Level,
+    ) -> Self {
+        self.run_flow_control = self
+            .run_flow_control
+            .with_key_levels(|kind, key| level(None, kind, key));
+        for (id, node) in &mut self.graph.nodes {
+            if let Some(gates) = node.flow_control.as_mut() {
+                let taken = std::mem::take(gates.as_mut());
+                **gates = taken.with_key_levels(|kind, key| level(Some(id), kind, key));
+            }
+        }
+        self
+    }
+
+    /// The root nodes that declare a gate, in id order.
+    pub fn gated_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes().filter(|node| node.flow_control().is_gated())
+    }
+
+    /// Whether a run of this definition passes any gate: at its start or at one of its steps. An admission
+    /// path that does not implement the gates must refuse such a definition (FR-022-059, fail closed).
+    #[must_use]
+    pub fn declares_gates(&self) -> bool {
+        self.run_flow_control.is_gated()
+            || self.all_nodes().any(|node| node.flow_control().is_gated())
+    }
+
+    /// The declarations of this definition that name an explicit group, run level first, then its root nodes in id
+    /// order: what another definition of the namespace can share (feature 022, `CONCURRENCY_LIMIT_MISMATCH`,
+    /// `RATE_LIMIT_MISMATCH`). A derived group belongs to this definition alone and is not listed.
+    #[must_use]
+    pub fn explicit_group_declarations(&self) -> Vec<flow_control::GroupDeclaration> {
+        let mut out = Vec::new();
+        let mut add = |node: Option<&NodeId>, flow: &FlowControl| {
+            if let Some(policy) = flow.concurrency()
+                && let FlowGroup::Explicit(group) = policy.group()
+            {
+                out.push(flow_control::GroupDeclaration {
+                    kind: GateKind::Concurrency,
+                    node: node.cloned(),
+                    group: group.clone(),
+                    limit: policy.limit(),
+                    per: None,
+                });
+            }
+            if let Some(policy) = flow.rate_limit()
+                && let FlowGroup::Explicit(group) = policy.group()
+            {
+                out.push(flow_control::GroupDeclaration {
+                    kind: GateKind::RateLimit,
+                    node: node.cloned(),
+                    group: group.clone(),
+                    limit: policy.limit(),
+                    per: Some(policy.per()),
+                });
+            }
+        };
+        add(None, &self.run_flow_control);
+        for node in self.nodes() {
+            add(Some(node.id()), node.flow_control());
+        }
+        out
+    }
+
+    /// The rules of flow control that hold across the definition, checked when it is published (feature 022):
+    /// no gate beside a continuation (`FLOW_CONTROL_COMBINATION`: a successor is not admitted through the gate,
+    /// FR-022-017, FR-022-039, G1177), no gate inside a body (the codec refuses it before with
+    /// `SCOPED_CONCURRENCY` or `SCOPED_RATE_LIMIT`; this is the domain's own floor), and at most
+    /// [`flow_control::MAX_NODE_DECLARATIONS`] node-level declarations of each kind.
+    ///
+    /// A stored definition is not held to it again: what was published is restored as it was, and the one other
+    /// writer of runs (a continuation successor) asserts the absence of a run-level gate itself (FR-022-059).
+    ///
+    /// # Errors
+    /// The first rule broken.
+    pub fn check_flow_control(&self) -> Result<(), WorkflowError> {
+        let continues = self.continuation_policy.is_some()
+            || self
+                .all_nodes()
+                .any(|node| matches!(node.kind(), NodeKind::ContinueAsNew { .. }));
+        if continues {
+            let first = |flow: &FlowControl| {
+                if flow.concurrency().is_some() {
+                    Some(GateKind::Concurrency)
+                } else if flow.rate_limit().is_some() {
+                    Some(GateKind::RateLimit)
+                } else {
+                    None
+                }
+            };
+            if let Some(kind) = first(&self.run_flow_control) {
+                return Err(WorkflowError::FlowControlCombination {
+                    kind,
+                    node: None,
+                    with: "continueAsNew",
+                });
+            }
+            if let Some((node, kind)) = self
+                .all_nodes()
+                .find_map(|node| first(node.flow_control()).map(|kind| (node, kind)))
+            {
+                return Err(WorkflowError::FlowControlCombination {
+                    kind,
+                    node: Some(clip(node.id().as_str())),
+                    with: "continueAsNew",
+                });
+            }
+        }
+        for body in self.bodies() {
+            if let Some(node) = body.all_nodes().find(|node| node.flow_control().is_gated()) {
+                let kind = if node.flow_control().concurrency().is_some() {
+                    GateKind::Concurrency
+                } else {
+                    GateKind::RateLimit
+                };
+                return Err(flow_control::invalid(
+                    kind,
+                    Some(node.id()),
+                    FlowControlRule::NodeKind,
+                ));
+            }
+        }
+        let max = flow_control::MAX_NODE_DECLARATIONS;
+        let concurrency = self
+            .nodes()
+            .filter(|node| node.flow_control().concurrency().is_some())
+            .count();
+        if concurrency > max {
+            return Err(flow_control::invalid(
+                GateKind::Concurrency,
+                None,
+                FlowControlRule::TooManyDeclarations { max },
+            ));
+        }
+        let rate = self
+            .nodes()
+            .filter(|node| node.flow_control().rate_limit().is_some())
+            .count();
+        if rate > max {
+            return Err(flow_control::invalid(
+                GateKind::RateLimit,
+                None,
+                FlowControlRule::TooManyDeclarations { max },
+            ));
         }
         Ok(())
     }
@@ -1793,6 +2118,67 @@ impl WorkflowDefinition {
             };
         }
         self
+    }
+
+    /// The entry path of a run's start (feature 022, decision D022-126): the root nodes the settle of the start passes
+    /// through in the one transaction that releases its entry (the creation of an ungated run, the grant of a queued
+    /// start), found by a walk from the entry point. The walk passes through every node that hands control on in that
+    /// transaction (every branch of a condition or a switch, a parallel's branches, a saga's begin, a collection's or a
+    /// loop's next for an empty input or a false condition) and stops at a node that waits for work, time, a person or
+    /// another run; it follows the failure route of every node that can fail in that transaction (an evaluation, a gated
+    /// step's key). It counts every branch, so it is what the start *may* reach: the branch an evaluation takes is known
+    /// only to the engine, in the transaction.
+    #[must_use]
+    pub fn entry_path(&self) -> EntryPath<'_> {
+        let mut path = EntryPath {
+            waits: Vec::new(),
+            can_end: false,
+        };
+        let mut seen: BTreeSet<&NodeId> = BTreeSet::new();
+        let mut stack = vec![&self.graph.entrypoint];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(node) = self.graph.nodes.get(id) else {
+                continue;
+            };
+            let gated = node.flow_control().concurrency().is_some()
+                || node.flow_control().rate_limit().is_some();
+            // whether the settle goes on to the node's successors in this transaction, and whether the node itself can
+            // fail here (its failure route then taken, or the run failed)
+            let (passes, fails) = match node.kind() {
+                // a worker's step, a timer: it waits; only a gated step's key is evaluated here
+                NodeKind::Activity { .. } | NodeKind::Timer { .. } => (false, gated),
+                NodeKind::WaitEvent { event_type, .. } => {
+                    path.waits.push(event_type.as_str());
+                    // its correlation is evaluated here
+                    (false, true)
+                }
+                // a person's decision, another run: they wait, after an evaluation that can fail
+                NodeKind::Approval { .. } | NodeKind::Child { .. } => (false, true),
+                NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::ForEach { .. }
+                | NodeKind::While { .. }
+                | NodeKind::RepeatUntil { .. } => (true, true),
+                NodeKind::Parallel { .. } | NodeKind::Saga { .. } => (true, false),
+                NodeKind::End { .. } | NodeKind::ContinueAsNew { .. } | NodeKind::Return { .. } => {
+                    path.can_end = true;
+                    (false, true)
+                }
+            };
+            if fails {
+                // a failure without a route fails the run in this transaction
+                path.can_end = true;
+            }
+            if passes {
+                stack.extend(node.successors());
+            } else if fails {
+                stack.extend(node.on_error());
+            }
+        }
+        path
     }
 
     /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.
@@ -1975,6 +2361,11 @@ impl WorkflowDefinition {
                     out.push(DefinitionWarning::RecursiveChild {
                         node: node.id().clone(),
                     });
+                    if self.run_flow_control.concurrency().is_some() {
+                        out.push(DefinitionWarning::ConcurrencySelfChild {
+                            node: node.id().clone(),
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -1986,6 +2377,21 @@ impl WorkflowDefinition {
                 .any(|trigger| trigger.kind() != crate::triggers::TriggerKind::Manual)
         {
             out.push(DefinitionWarning::InputSchemaAppliesToTriggers);
+        }
+        // a key over personal data: its label is the reveal right's only (FR-022-057, decision D022-085)
+        let pii = crate::classification::Level::Pii;
+        out.extend(
+            self.run_flow_control
+                .keys_at(pii)
+                .map(|kind| DefinitionWarning::FlowControlKeyPii { node: None, kind }),
+        );
+        for node in self.gated_nodes() {
+            out.extend(node.flow_control().keys_at(pii).map(|kind| {
+                DefinitionWarning::FlowControlKeyPii {
+                    node: Some(node.id().clone()),
+                    kind,
+                }
+            }));
         }
         out
     }

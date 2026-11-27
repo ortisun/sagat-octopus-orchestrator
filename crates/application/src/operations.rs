@@ -18,6 +18,9 @@ use uuid::Uuid;
 use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
+use crate::flow_control_keys::{
+    ConcurrencyKeyPage, FlowControlKeyReader, KeyListing, KeyPosition, KeyView, ListingPosition,
+};
 use crate::identity::{MAX_PAGE_SIZE, RequestContext};
 
 /// How long a condition must last before it is an alert. Each is a count of seconds the platform
@@ -56,6 +59,13 @@ impl Thresholds {
             AlertKind::StepUnclaimed => self.unclaimed,
             AlertKind::ReviewPending => self.review,
             AlertKind::DeadItems => Duration::ZERO,
+            // feature 022 reuses two of them (decision D022-077 item 7): work waits while other work is served, and the
+            // scheduler has not done what a tick does; a saturated buffer is a share of a ceiling and an orphan is any
+            AlertKind::ConcurrencyQueueStuck => self.unclaimed,
+            AlertKind::RateLimitGrantLagging => self.lease_grace,
+            AlertKind::RateLimitQueueSaturated | AlertKind::FlowControlWaiterOrphaned => {
+                Duration::ZERO
+            }
         }
     }
 }
@@ -209,6 +219,21 @@ pub struct Sample {
     pub batch_jobs_active: u64,
     /// Resets that wait for their source run to end (`CANCEL_SOURCE`, feature 018).
     pub resets_pending: u64,
+    /// The waiters of flow control's keys, deployment-wide (feature 022, T022-082): what the gauges
+    /// `concurrency_waiters` and `rate_limit_waiters` show, by scope.
+    pub flow_control: FlowControlSample,
+}
+
+/// The waiters of flow control's keys and the grants no worker has leased, deployment-wide (feature 022, T022-082; plan
+/// "Observability" and "Observability (rate limits)"): counts, never a key or a group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowControlSample {
+    pub concurrency_run_waiters: u64,
+    pub concurrency_step_waiters: u64,
+    pub rate_run_waiters: u64,
+    pub rate_step_waiters: u64,
+    /// Step grants whose lease is not recorded yet (`rate_limit_unleased_grants`).
+    pub unleased_grants: u64,
 }
 
 /// How late the scheduler is, by pass (seconds; zero when nothing is overdue).
@@ -429,15 +454,18 @@ pub trait AuditStore: Send + Sync {
 
 /// What the API reads alerts through.
 pub trait AlertReader: NamespaceDirectory {
-    /// The alerts of a namespace, newest first.
-    fn list_alerts(
+    /// The alerts of a namespace, newest first, for the reader `subject`, and whether it may reveal personal data in the
+    /// namespace (its current role may use a reveal grant and it holds one there), both read in one statement, so one
+    /// snapshot (feature 022, decisions D022-135 and D022-152). There is no read of the alerts without a reader.
+    fn list_alerts_as(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
         state: Option<AlertState>,
         before: Option<Uuid>,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<AlertRecord>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<(Vec<AlertRecord>, bool), StoreError>> + Send;
 }
 
 /// Reads alerts for the API.
@@ -640,10 +668,270 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
         // A caller that asks for one more than its page, to know whether another follows, is
         // answered with that one more.
         let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
-        Ok(self
+        let (mut alerts, reveals) = self
             .store
-            .list_alerts(principal.tenant_id(), namespace, state, before, limit)
-            .await?)
+            .list_alerts_as(
+                principal.tenant_id(),
+                namespace,
+                principal.subject(),
+                state,
+                before,
+                limit,
+            )
+            .await?;
+        // a flow-control alert is judged per key: its state, count and ages tell which runs share a key, so it is shown
+        // only to a caller who may reveal personal data in the namespace (feature 022, decision D022-152); the rows are
+        // dropped here, whatever answers the caller
+        if !reveals {
+            alerts.retain(|alert| !AlertKind::FLOW_CONTROL.contains(&alert.kind));
+        }
+        Ok(alerts)
+    }
+}
+
+impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
+    /// What a page of this namespace's key listings shows this caller: its keys by label, with whole instants, to a
+    /// caller who may reveal personal data in the namespace (FR-022-057, D022-060, decision D022-085 item 6); one row per
+    /// group to every other caller (decisions D022-061, D022-086).
+    async fn key_view(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+    ) -> Result<KeyView, AppError> {
+        Ok(
+            if self
+                .store
+                .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
+                .await?
+            {
+                KeyView::Keys
+            } else {
+                KeyView::Groups
+            },
+        )
+    }
+
+    /// The live concurrency keys of a namespace (FR-022-022, T022-026), at most `limit` (one more than the page tells
+    /// the caller another page follows), in the caller's view ([`KeyView`], decision D022-086): its keys with their
+    /// labels, or its groups. `None` when `after` is a place of the other view (the caller's view changed between two
+    /// pages: a `400`, and a fresh listing).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace not in the caller's tenant
+    /// (audited); a storage error.
+    pub async fn concurrency_keys(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        group: Option<&sagat_domain::workflow::ResolvedGroup>,
+        after: Option<&ListingPosition>,
+        limit: Option<u32>,
+        ctx: &RequestContext,
+    ) -> Result<Option<ConcurrencyKeyPage>, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        // as `alerts`: a caller that asks for one more than its page is answered with that one more
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
+        let view = self.key_view(principal, namespace).await?;
+        if after.is_some_and(|after| after.view != view) {
+            return Ok(None);
+        }
+        let after = after.map(|after| &after.position);
+        let tenant = principal.tenant_id();
+        Ok(Some(match view {
+            KeyView::Keys => {
+                let mut page = self
+                    .store
+                    .concurrency_keys(tenant, namespace, group, after, limit)
+                    .await?;
+                for key in &mut page.items {
+                    key.label = Some(sagat_domain::execution::KeyLabel::of_digest(
+                        &key.position.digest,
+                    ));
+                }
+                page
+            }
+            KeyView::Groups => {
+                // the group view knows whether another page follows by its own probe of the next group, never by a
+                // group more (decision D022-086 item 5): it shows the page without the one more
+                self.store
+                    .concurrency_key_groups(
+                        tenant,
+                        namespace,
+                        group,
+                        after,
+                        // at most five groups a page, each its own budget of key rows (decision D022-128)
+                        limit
+                            .saturating_sub(1)
+                            .clamp(1, crate::flow_control_keys::GROUP_PAGE_GROUPS),
+                    )
+                    .await?
+            }
+        }))
+    }
+
+    /// The cursor of `page`, which ends with `last`, sealed for the namespace under the version the database had active
+    /// in the page's snapshot (D022-059), of the page's own view.
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] when this process does not hold that version: it cannot hand out a cursor, and a page
+    /// cut short without one would hide keys.
+    pub fn concurrency_key_cursor(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        page: &ConcurrencyKeyPage,
+        last: &KeyPosition,
+    ) -> Result<String, AppError> {
+        self.key_cursor(
+            principal,
+            namespace,
+            KeyListing::Concurrency.of(page.view),
+            page.cursor_version,
+            last,
+        )
+    }
+
+    /// The rate-limit windows of a namespace (FR-022-048, T022-078), at most `limit` (one more than the page tells the
+    /// caller another page follows), in the caller's view as [`Self::concurrency_keys`].
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace not in the caller's tenant
+    /// (audited); a storage error.
+    pub async fn rate_limit_keys(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        group: Option<&sagat_domain::workflow::ResolvedGroup>,
+        after: Option<&ListingPosition>,
+        limit: Option<u32>,
+        ctx: &RequestContext,
+    ) -> Result<Option<crate::flow_control_keys::RateLimitKeyPage>, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
+        let view = self.key_view(principal, namespace).await?;
+        if after.is_some_and(|after| after.view != view) {
+            return Ok(None);
+        }
+        let after = after.map(|after| &after.position);
+        let tenant = principal.tenant_id();
+        Ok(Some(match view {
+            KeyView::Keys => {
+                let mut page = self
+                    .store
+                    .rate_limit_keys(tenant, namespace, group, after, limit)
+                    .await?;
+                for key in &mut page.items {
+                    key.label = Some(sagat_domain::execution::KeyLabel::of_digest(
+                        &key.position.digest,
+                    ));
+                }
+                page
+            }
+            KeyView::Groups => {
+                // the group view knows whether another page follows by its own probe of the next group, never by a
+                // group more (decision D022-086 item 5): it shows the page without the one more
+                self.store
+                    .rate_limit_key_groups(
+                        tenant,
+                        namespace,
+                        group,
+                        after,
+                        // at most five groups a page, each its own budget of key rows (decision D022-128)
+                        limit
+                            .saturating_sub(1)
+                            .clamp(1, crate::flow_control_keys::GROUP_PAGE_GROUPS),
+                    )
+                    .await?
+            }
+        }))
+    }
+
+    /// The cursor of a rate-limit page, which ends with `last`, of that listing's own kind and view (decisions D022-067
+    /// item 5, D022-086).
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] when this process does not hold the version that seals it.
+    pub fn rate_limit_key_cursor(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        page: &crate::flow_control_keys::RateLimitKeyPage,
+        last: &KeyPosition,
+    ) -> Result<String, AppError> {
+        self.key_cursor(
+            principal,
+            namespace,
+            KeyListing::RateLimit.of(page.view),
+            page.cursor_version,
+            last,
+        )
+    }
+
+    fn key_cursor(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        listing: KeyListing,
+        version: Option<u16>,
+        last: &KeyPosition,
+    ) -> Result<String, AppError> {
+        self.store
+            .flow_control_key_ring()
+            .zip(version)
+            .and_then(|(ring, version)| {
+                last.seal(
+                    listing,
+                    ring,
+                    version,
+                    principal.tenant_id(),
+                    namespace,
+                    self.clock.now(),
+                )
+            })
+            .ok_or(AppError::Unavailable)
+    }
+
+    /// The place a cursor of either view of `listing`'s gate names for this namespace, with its view; `None` for
+    /// anything else (a `400`), the other gate's cursors included. Whether its version is still in force is
+    /// [`Self::key_cursor_in_force`], asked once the caller is admitted; whether its view is the caller's, by the
+    /// listing itself.
+    #[must_use]
+    pub fn key_position(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        listing: KeyListing,
+        cursor: &str,
+    ) -> Option<ListingPosition> {
+        KeyPosition::open_either(
+            cursor,
+            listing,
+            self.store.flow_control_key_ring()?,
+            principal.tenant_id(),
+            namespace,
+        )
+    }
+
+    /// Whether a cursor's page sealed it more than [`KEY_CURSOR_LIFETIME`](crate::flow_control_keys::KEY_CURSOR_LIFETIME)
+    /// ago by this process's clock (a `400` with a message of its own, decision D022-100).
+    #[must_use]
+    pub fn key_cursor_expired(&self, position: &ListingPosition) -> bool {
+        position.expired(self.clock.now())
+    }
+
+    /// Whether the digest key version an opened cursor was sealed under is still in force (active, or retiring with
+    /// rows left): `false` (a `400`) for any other, a forced retirement of a leaked key included, whose holder could
+    /// otherwise forge positions a process still holding the version would open (D022-063).
+    ///
+    /// # Errors
+    /// A storage error while the versions in force are read.
+    pub async fn key_cursor_in_force(&self, cursor: &str) -> Result<bool, AppError> {
+        let Some(version) = crate::keyed_digest::KeyRing::sealed_version(cursor) else {
+            return Ok(false);
+        };
+        Ok(self.store.key_version_in_force(version).await?)
     }
 }
 

@@ -44,6 +44,7 @@ pub trait Governance: Core + Admission {
         + RunnerStore
         + AlertReader
         + WorkerAdmin
+        + sagat_application::flow_control_keys::FlowControlKeyReader
         + AuditStore
         + 'static;
     type Clock: Clock + 'static;
@@ -342,6 +343,7 @@ where
         + RunnerStore
         + AlertReader
         + WorkerAdmin
+        + sagat_application::flow_control_keys::FlowControlKeyReader
         + AuditStore
         + 'static,
 {

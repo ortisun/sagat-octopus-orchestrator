@@ -498,6 +498,29 @@ class Scope(unittest.TestCase):
                 self.assertEqual(self.chosen(), BUDGET)
                 self.base = git(self.root, "rev-parse", "HEAD")
 
+    def test_a_change_of_the_scheduler_the_reducer_or_the_gates_selects_the_budget_suite(self):
+        # feature 022 (D022-030, T022-092): the passes, the reducer and the flow-control ports can each move what a lease,
+        # a completion or an admission costs the database (the passes, `crates/scheduler/src/passes.rs`, also run the
+        # step-log purge of design 041, so they select the step-log suites too: the step-log test below checks them)
+        for rel in ("crates/scheduler/src/flow_control.rs", "crates/scheduler/src/lib.rs",
+                    "crates/domain/src/execution/state.rs", "crates/domain/src/execution/flow_control.rs",
+                    "crates/application/src/concurrency.rs", "crates/application/src/rate_limits.rs",
+                    "crates/application/src/flow_control.rs", "crates/application/src/flow_control/ports.rs",
+                    "crates/application/src/keyed_digest.rs", "crates/domain/src/workflow.rs",
+                    "crates/domain/src/workflow/flow_control.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), BUDGET)
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_the_rest_of_the_domain_selects_no_suite(self):
+        for rel in ("crates/domain/src/identity.rs", "crates/domain/src/execution.rs",
+                    "crates/application/src/flow_control_api.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), set())
     # -- the step logs of design 041 (constitution 4.5.0, OD-2026-11-15-10) ----------------
     def test_the_servers_step_log_code_selects_the_step_log_suites_and_the_fitness_tests(self):
         for rel in ("crates/domain/src/step_logs.rs", "crates/application/src/step_logs.rs",
@@ -586,6 +609,12 @@ class Scope(unittest.TestCase):
         self.commit()
         decision = self.decide()
         self.assertEqual((decision["frontend"], decision["scripts"]), ("true", "true"))
+
+    def test_a_change_of_the_canonical_contract_flags_the_studio(self):
+        # the Studio's API types are generated from it (`npm run check:api`)
+        self.write("specs/001-platform-foundation/contracts/openapi.yaml", "openapi: 3.1.0\n")
+        self.commit()
+        self.assertEqual(self.decide()["frontend"], "true")
 
     def test_a_change_elsewhere_flags_neither(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")

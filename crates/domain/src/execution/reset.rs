@@ -9,8 +9,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    AddressedRunEvent, CollectionPhase, ExecutionError, ExecutionInstanceId, LoopPhase, RunEvent,
-    RunId, RunState, RunStatus, StepStatus,
+    AddressedRunEvent, CollectionPhase, ExecutionError, ExecutionInstanceId, GateChange, GateEvent,
+    LoopPhase, RunEvent, RunId, RunState, RunStatus, StepStatus,
 };
 use crate::workflow::{NodeId, NodeKind, WorkflowDefinition};
 
@@ -120,6 +120,22 @@ registry! {
     RunEvent::RunReset { .. } => ("run.reset", ResetRule::Copy),
     RunEvent::RunStopRequested { .. } => ("run.stop_requested", ResetRule::Exclude),
     RunEvent::RunFinished { .. } => ("run.finished", ResetRule::Exclude),
+    // Feature 022 (`contracts/journal-events.md`, reset rules; T022-064): the permit events of the prefix are history
+    // the reset re-materializes as a fresh permit, decided right after `run.reset`; a point while a start waits is no
+    // quiet state, and every point after a wait that ended without a grant is refused.
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyQueued { .. }, .. }) => ("concurrency.queued", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyAcquired, .. }) => ("concurrency.acquired", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyReleased, .. }) => ("concurrency.released", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyWaitTimedOut, .. }) => ("concurrency.wait_timed_out", ResetRule::Refuse { until: None }),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyDequeued, .. }) => ("concurrency.dequeued", ResetRule::Refuse { until: None }),
+    // Feature 022 (T022-086, D022-069): the slot events of the prefix are history the reset re-materializes as a fresh
+    // slot, decided right after `run.reset` (a reset never waits), as the permit's; every point after a wait that ended
+    // without a grant is refused.
+    RunEvent::Gate(GateEvent { change: GateChange::RateQueued { .. }, .. }) => ("rate_limit.queued", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::RateGranted { .. }, .. }) => ("rate_limit.granted", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::RateWaitTimedOut, .. }) => ("rate_limit.wait_timed_out", ResetRule::Refuse { until: None }),
+    RunEvent::Gate(GateEvent { change: GateChange::RateDequeued, .. }) => ("rate_limit.dequeued", ResetRule::Refuse { until: None }),
+    RunEvent::Gate(GateEvent { change: GateChange::RateReturned, .. }) => ("rate_limit.returned", ResetRule::Rematerialize),
 }
 
 /// The rule of an event type by the name the journal stores, if this version knows the type. A journal row

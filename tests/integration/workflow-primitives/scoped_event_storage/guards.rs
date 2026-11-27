@@ -80,9 +80,10 @@ async fn all_readers_refuse_a_same_tenant_wrong_namespace_or_invented_step_uuid(
     );
 }
 
-/// Everything the run owns. The run row is taken without its null columns: a test that rolls back an
-/// index migration undoes every later one too, and a later migration may add a nullable column to
-/// `runs` (the schedule provenance), which is absent after the rollback and null before it. For the same reason the
+/// Everything the run owns. The run and step rows are taken without their null columns: a test that
+/// rolls back an index migration undoes every later one too, and a later migration may add a
+/// nullable column to `runs` (the schedule provenance) or to `steps` (feature 022's
+/// `flow_control_gates`), which is absent after the rollback and null before it. For the same reason the
 /// tenant's retained usage is taken without `step_log_bytes` and `step_log_leased_bytes`, the columns of feature 041's
 /// later migrations (their downs refuse while a step-log line or usage exists and fold the quota leases' room back, so
 /// a rollback here never loses a value).
@@ -90,7 +91,7 @@ pub(super) async fn snapshot(fixture: &Fixture) -> serde_json::Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object( \
           'run',jsonb_strip_nulls(to_jsonb(r)), \
-          'steps',(SELECT jsonb_agg(to_jsonb(s) ORDER BY step_id) FROM steps s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id), \
+          'steps',(SELECT jsonb_agg(jsonb_strip_nulls(to_jsonb(s)) ORDER BY step_id) FROM steps s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id), \
           'journal',(SELECT jsonb_agg(to_jsonb(e) ORDER BY seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id), \
           'scopes',(SELECT jsonb_agg(to_jsonb(s) ORDER BY scope_id) FROM iteration_scopes s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id), \
           'members',(SELECT jsonb_agg(to_jsonb(i) ORDER BY scope_id,iteration_index) FROM collection_iterations i WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id), \

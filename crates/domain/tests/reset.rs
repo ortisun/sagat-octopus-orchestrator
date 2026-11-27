@@ -61,16 +61,24 @@ fn blocked(points: &ResetPoints, sequence: u64) -> Option<&ResetBlock> {
 /// The event types the journal names, read from the source of `RunEvent::name()`: a type added there without
 /// a row in the registry fails here (D1605).
 fn names_of_the_journal() -> BTreeSet<String> {
-    let source = include_str!("../src/execution/event.rs");
-    let start = source
-        .find("pub const fn name(&self) -> &'static str")
-        .expect("the name function");
-    let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
-    body.split("=> \"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .map(str::to_owned)
-        .collect()
+    // `RunEvent::name()`, and the names of the flow-control events it delegates to (feature 022)
+    [
+        include_str!("../src/execution/event.rs"),
+        include_str!("../src/execution/flow_control.rs"),
+    ]
+    .into_iter()
+    .flat_map(|source| {
+        let start = source
+            .find("pub const fn name(&self) -> &'static str")
+            .expect("the name function");
+        let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
+        body.split("=> \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    })
+    .collect()
 }
 
 #[test]
@@ -111,11 +119,31 @@ fn the_rules_are_the_ones_of_the_contract() {
         ("reconciliation.requested", "reconciliation.concluded"),
         ("run.start_delayed", "run.start_released"),
     ];
+    // feature 022 (`specs/022-flow-control-step-policies/contracts/journal-events.md`): history the reset re-materializes
+    // (a fresh permit, T022-064, or a fresh slot, T022-086), and the end of a wait that never started work
+    let rematerialize = [
+        "concurrency.queued",
+        "concurrency.acquired",
+        "concurrency.released",
+        "rate_limit.queued",
+        "rate_limit.granted",
+        "rate_limit.returned",
+    ];
+    let refuse_to_the_end = [
+        "concurrency.wait_timed_out",
+        "concurrency.dequeued",
+        "rate_limit.wait_timed_out",
+        "rate_limit.dequeued",
+    ];
     for (name, rule) in RESET_RULES {
         let expected = if exclude.contains(name) {
             ResetRule::Exclude
         } else if let Some((_, until)) = refuse.iter().find(|(opened, _)| opened == name) {
             ResetRule::Refuse { until: Some(until) }
+        } else if rematerialize.contains(name) {
+            ResetRule::Rematerialize
+        } else if refuse_to_the_end.contains(name) {
+            ResetRule::Refuse { until: None }
         } else {
             ResetRule::Copy
         };

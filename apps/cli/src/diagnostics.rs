@@ -55,6 +55,46 @@ pub const CATALOG: &[(&str, &str)] = &[
         "This deployment has not enabled the lake, so a workflow cannot hold an Apache Iceberg write. Ask the operator to turn on SAGAT_LAKE_ENABLED, or publish the workflow to a deployment that has it.",
     ),
     (
+        "CONCURRENCY_POLICY_INVALID",
+        "A concurrency declaration breaks a rule: a limit from 1 to 10000, a group matching ^[a-z][a-z0-9.-]{0,63}$, a queue timeout from 1 ms to one day, a top-level key that reads only `input`, only on a root activity or script node, and at most 16 node-level declarations per definition unless the namespace's flow_control_node_declarations allows more (64 at most).",
+    ),
+    (
+        "RATE_LIMIT_POLICY_INVALID",
+        "A rate-limit declaration breaks a rule: `per` is second, minute or hour, the limit is at least 1 and at most 100 per second, 6000 per minute or 10000 per hour, it stands at the top level or on a root activity or script node, and a definition holds at most 16 node-level declarations unless the namespace's flow_control_node_declarations allows more (64 at most).",
+    ),
+    (
+        "FLOW_CONTROL_COMBINATION",
+        "A concurrency or rate-limit declaration cannot be combined with continueAsNew: a continuation's successor would start without passing the gate. Remove one of them.",
+    ),
+    (
+        "FLOW_CONTROL_KEY_UNBOUNDED",
+        "A concurrency or rate-limit key reads the run's identity (`run`), alone or beside other data: every run would have a key of its own, which the namespace keeps a row for. Key on what the gate protects (an account, a provider) read from `input`, or from `steps` and `state` on a step.",
+    ),
+    (
+        "FLOW_CONTROL_KEY_SECRET",
+        "A concurrency or rate-limit key reads a location classified secret (an `x-sagat-classification` of the input schema or of a step's output schema): its value would reach a key digest and a label. Key on a field that is not secret, or classify the field you key on.",
+    ),
+    (
+        "FLOW_CONTROL_KEY_PII",
+        "A concurrency or rate-limit key reads a location classified pii, or one no schema classifies (which is pii): published, and its key label is shown only to callers who may reveal personal data in the namespace. Classify the field `internal` or `public` in its schema if it is not personal data.",
+    ),
+    (
+        "CONCURRENCY_SELF_CHILD",
+        "A child node starts this workflow, whose run-level concurrency key the child may share with its parent: with a limit of 1 the child waits for the permit its parent holds until the queue timeout. Use another group, or another key, for the child.",
+    ),
+    (
+        "CONCURRENCY_LIMIT_MISMATCH",
+        "Another published workflow of this namespace declares the same explicit concurrency group with a different limit. Both are accepted and each run applies its own limit, so the group admits runs unevenly; use one limit for the group, or a group of its own.",
+    ),
+    (
+        "RATE_LIMIT_MISMATCH",
+        "Another published workflow of this namespace declares the same explicit rate-limit group with a different limit or window. Both are accepted and each run counts the grants against its own limit and window; use one declaration for the group, or a group of its own.",
+    ),
+    (
+        "FLOW_CONTROL_ACTIVATION_PENDING",
+        "The capability this workflow uses (concurrency keys or rate limits) is switched on but not activated for the fleet: the operator activates it with `control-plane capability-activate flow-control-concurrency-v1` (or `flow-control-rate-v1`) once every control plane and engine runs it.",
+    ),
+    (
         "COLLECTION_OPERATORS_DISABLED",
         "This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED once every replica runs 0.3.0, or shape the list in an activity before the collection.",
     ),

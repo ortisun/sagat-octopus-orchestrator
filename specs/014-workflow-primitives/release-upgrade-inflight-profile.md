@@ -23,8 +23,9 @@ The exact old generated client submits its in-memory request twice to the curren
 First already_applied=false, then true; command_id, step_status and run_status must match.
 The old process checks immutable completed/captured/journal prefixes and native replay before
 exit. The parent joins it, checks one durable scoped completion, the exact retained output,
-one idempotency receipt and a single logical-byte charge, then expires the stopped old
-scheduler member/shards explicitly and uses actual current Keeper takeover to finish/replay.
+one idempotency receipt and a single logical-byte charge, then retires the stopped old
+scheduler member/shards explicitly (its database sessions terminated, its leases moved to
+`epoch`, as the active-data profile says) and uses actual current Keeper takeover to finish/replay.
 This makes no exactly-once external-provider claim.
 
 The runner verifies every old source file against the immutable tag and the exact five test

@@ -5,11 +5,15 @@
 **Refines / supersedes:** refines ADR-0056 (durable permits, one admission port, grant by the waiter's
 shard owner), ADR-0050 decision 7 (merged admission lock order, slot 8b), ADR-0020 (sharded, fenced
 scheduler) and ADR-0027 (rate and usage rows come last); builds on ADR-0002 and ADR-0003. Supersedes none.
-**Enforced by:** proposed checks of feature 022's release 0.3.0 slice — the fault suite
-`tests/fault/flow-control-step-policies/rate_limits.rs` (T022-080), the journal window invariant added to
-`verify_run` (T022-079), the lock-order barriers (T022-081), the hot-path budget of design 038 extended
-with the claim of a rate-limited step (T022-076) and the run-creator test (T022-086). None exists yet;
-until they do, this rule is review only.
+**Enforced by:** the journal window invariant of `verify_run` (`crates/infra-postgres/src/execution.rs`, invariant 10,
+T022-079) and the cross-run checks of `tests/support/flow_control.rs`; the lock-order barriers
+`tests/integration/flow-control-step-policies/rate_limit_locks.rs` (T022-081); the hot-path budget of design 038
+with the claim of a rate-limited step (`tests/integration/claim-transition-efficiency/work_budget.rs`, T022-076); the
+one start point and the one admission point of `scripts/check-architecture.py` (`run_start_errors`,
+`run_insert_errors`), with the run-creator cases `tests/integration/flow-control-step-policies/rate_creators.rs`
+(T022-072) and the reset cases of `run_creators.rs` (T022-086). Pending: the fault suite
+`tests/fault/flow-control-step-policies/rate_limits.rs` (T022-080) and the rate twins of the other run creators
+(T022-113).
 
 ## Context
 
@@ -161,3 +165,9 @@ driven by key, with a reservation rule instead of strict oldest-first) in
 [ADR-0089](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
 (proposed). Decision 2's instant is read with `clock_timestamp()` after the window lock (feature 022
 NFR-022-008); this states what decision 2 already requires.
+
+Note (2026-11-19, OD-2026-11-19-2): the last sentence of decision 8 (no new digest key version while any waiter or grant
+exists under the old one) is superseded by ADR-0093: a key version is rotated per key with live rows. During an
+emergency rotation (ADR-0093 decision 5) a key may have two windows until the old one drains; each keeps decision 2's
+rule on its own, so the key admits at most what its old window still counts beyond its limit, and order holds within
+each window, not across them.

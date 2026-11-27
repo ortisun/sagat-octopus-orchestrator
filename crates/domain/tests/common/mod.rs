@@ -380,8 +380,8 @@ impl Harness {
     }
 
     pub fn pause(&mut self) -> Result<(), ExecutionError> {
-        let event = execution::pause_run(&mut self.state)?;
-        self.journal.push(event);
+        let progress = execution::pause_run(&self.def, &mut self.state, self.now)?;
+        self.absorb(progress);
         Ok(())
     }
 
@@ -518,6 +518,9 @@ impl Harness {
                 node,
                 outcome: Ok(()),
             },
+            Evaluation::Gates { .. } | Evaluation::StartGates { .. } => {
+                panic!("resolve gates with explicit decisions")
+            }
         };
         self.resolve(resolution).expect("resolution applies");
     }

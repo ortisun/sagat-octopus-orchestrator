@@ -634,6 +634,7 @@ pub async fn serve_with_admin(
         }
         tracing::info!("database role verified: it cannot rewrite the audit trail");
     }
+    check_flow_control_keys(&pool, serve.flow_control_keys.as_deref()).await?;
     let service = IdentityService::new(store, SystemClock);
     // The place of this process in the instance-capability registry (FR-018-052). Nothing is written until
     // `register`, below, once everything that can fail from configuration has been built: a closed gate refuses every
@@ -647,7 +648,10 @@ pub async fn serve_with_admin(
         &registry_pool,
         instance,
         sagat_application::instances::InstanceKind::ControlPlane,
-        &registry::capabilities(serve.run_input_validation),
+        &registry::capabilities(
+            serve.run_input_validation,
+            &sagat_application::flow_control::listed(serve.flow_control_keys.is_some()),
+        ),
         None,
     );
     // Install the metrics recorder before the first request so nothing is missed. Idle series are
@@ -663,8 +667,12 @@ pub async fn serve_with_admin(
     // Workflow documents are validated and parsed once per immutable version, then kept.
     let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
-    let executions =
-        PgRunStore::new(pool.clone(), cache.clone()).with_lake_enabled(serve.lake_enabled);
+    let mut executions = PgRunStore::new(pool.clone(), cache.clone())
+        .with_lake_enabled(serve.lake_enabled)
+        .with_flow_control(serve.flow_control);
+    if let Some(keys) = &serve.flow_control_keys {
+        executions = executions.with_flow_control_keys(Arc::clone(keys));
+    }
     let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
@@ -858,7 +866,8 @@ pub async fn serve_with_admin(
     let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec)
         .with_lake_enabled(serve.lake_enabled)
         .with_input_validation(serve.run_input_validation)
-        .with_collection_operators_enabled(serve.collection_operators_enabled);
+        .with_collection_operators_enabled(serve.collection_operators_enabled)
+        .with_flow_control(serve.flow_control);
     let mut runs = run_service(executions.clone(), cache, serve);
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
@@ -886,7 +895,8 @@ pub async fn serve_with_admin(
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
             .with_lake_enabled(serve.lake_enabled)
             .with_input_validation(serve.run_input_validation)
-            .with_collection_operators_enabled(serve.collection_operators_enabled),
+            .with_collection_operators_enabled(serve.collection_operators_enabled)
+            .with_flow_control(serve.flow_control),
         runs,
     )
     .with_database_results(Arc::new(database_results))
@@ -1098,6 +1108,36 @@ pub async fn shutdown_signal() {
         () = interrupt => {},
         () = terminate => {},
     }
+}
+
+/// Refuses to start a process that would serve a flow-control gate without a digest key version the database has in
+/// force (D022-057): every active and retiring version must be in `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` first. Nothing
+/// to check without keys. A process with every switch off that holds keys still decides and grants what was admitted
+/// before (FR-022-031), so its ring is checked too (re-review of 34b8be41, Major 2).
+///
+/// # Errors
+/// [`RunError::Refused`] naming the variable, never a key; [`RunError::Database`] when the versions cannot be read.
+pub async fn check_flow_control_keys(
+    pool: &sagat_infra_postgres::PgPool,
+    keys: Option<&sagat_application::keyed_digest::KeyRing>,
+) -> Result<(), RunError> {
+    let Some(keys) = keys else {
+        return Ok(());
+    };
+    let missing = sagat_infra_postgres::missing_key_versions(pool, keys)
+        .await
+        .map_err(|e| RunError::Database(e.to_string()))?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    tracing::error!(
+        missing = ?missing,
+        "the flow-control digest key file lacks versions the database has in force"
+    );
+    Err(RunError::Refused(
+        "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE lacks a digest key version the database has in force (active or \
+         retiring): add it to every process before starting (docs/runbooks/flow-control.md)",
+    ))
 }
 
 /// A new key for `SAGAT_SCRIPT_SIGNING_KEY`: an Ed25519 key in PKCS#8 form, base64 encoded.

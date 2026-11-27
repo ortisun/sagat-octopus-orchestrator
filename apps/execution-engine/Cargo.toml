@@ -41,5 +41,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# the flow-control digest key file of the configuration tests (D022-057)
+tempfile = "3"
 # paused time: a loop's wake-up is tested with the clock of the runtime, not with sleeps
 tokio = { workspace = true, features = ["test-util"] }

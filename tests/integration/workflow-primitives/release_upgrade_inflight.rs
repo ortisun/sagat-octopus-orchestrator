@@ -167,6 +167,7 @@ async fn run_profile(mode: control::ProfileMode) {
         command.arg(format!("release_upgrade_phase::inflight::{old_case}")).args(["--exact","--nocapture"])
             .env("SAGAT_TEST_DATABASE_URL",&owner.admin_url).env("RUST_TEST_THREADS","1")
             .stdin(Stdio::from(OwnedFd::from(old))).kill_on_drop(true);
+        super::release_upgrade::label_released(&mut command);
         let mut child=command.spawn().expect("actual released worker process");
         progress.enter("old public producer retains live scoped capability");
         let witness=bounded::within("old leased-task barrier",Duration::from_secs(60),control::receive(&mut stream)).await;
@@ -182,7 +183,7 @@ async fn run_profile(mode: control::ProfileMode) {
         progress.enter("normal migration and current runtime-role endpoint");
         sagat_infra_postgres::migrate(&db.pool).await.expect("current normal migration");
         let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current migration boundary");
-        assert_eq!(after,20270211000300);
+        assert_eq!(after,20270217000100);
         let api=support::api::start_on_db(db,Options {runtime_role:true,..Options::default()}).await;
         let role:String=sqlx::query_scalar("SELECT current_user").fetch_one(&api.api_pool).await.expect("current service role");
         assert_eq!(role,"sagat_app");
@@ -252,8 +253,7 @@ async fn run_profile(mode: control::ProfileMode) {
         progress.enter("stopped old owner expires and current scheduler finishes");
         let old_owner=witness["owner"].as_str().expect("old owner");
         let old_generation:i64=sqlx::query_scalar("SELECT generation FROM scheduler_shards WHERE shard=run_shard($1) AND owner=$2 AND expires_at>clock_timestamp()").bind(run.as_uuid()).bind(old_owner).fetch_one(&api.db.pool).await.expect("stopped old owner's still-live relevant shard");
-        let member=sqlx::query("UPDATE scheduler_members SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE owner=$1").bind(old_owner).execute(&api.db.pool).await.expect("expire stopped member").rows_affected();assert_eq!(member,1);
-        let shards=sqlx::query("UPDATE scheduler_shards SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE owner=$1").bind(old_owner).execute(&api.db.pool).await.expect("expire stopped shards").rows_affected();assert!(shards>0);
+        let (member,shards)=super::release_upgrade::retire_released_owner(&api.db.pool,old_owner).await;assert_eq!(member,1);assert!(shards>0);
         let placement=Placement::new(format!("released-inflight-current-{run}"));
         Keeper::new(api.executions.clone(),placement.clone(),KeeperSettings {ttl:Duration::from_secs(120)}).round().await.expect("current takeover");
         let takeover:(String,i64,bool)=sqlx::query_as("SELECT owner,generation,expires_at>clock_timestamp() FROM scheduler_shards WHERE shard=run_shard($1)").bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("current exact shard");
@@ -515,6 +515,7 @@ async fn released_terminal_reader(binary: &std::path::Path, server: &str, witnes
         .env("RUST_TEST_THREADS", "1")
         .stdin(Stdio::from(OwnedFd::from(old)))
         .kill_on_drop(true);
+    super::release_upgrade::label_released(&mut command);
     let mut child = command
         .spawn()
         .expect("spawn actual released terminal reader");

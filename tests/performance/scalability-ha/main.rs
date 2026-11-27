@@ -107,6 +107,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::Invalid(_) => "Invalid",
         AppError::InvalidScript(_) => "InvalidScript",
         AppError::QuotaExceeded(_) => "QuotaExceeded",
+        AppError::FlowControl(_) => "FlowControl",
         AppError::Versioning(_) => "Versioning",
         AppError::Unavailable => "Unavailable",
         AppError::RegistrySilent => "RegistrySilent",

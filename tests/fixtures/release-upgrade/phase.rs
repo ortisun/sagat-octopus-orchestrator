@@ -33,9 +33,34 @@ fn sha(value: &Value) -> String {
         .collect()
 }
 
-async fn immutable_prefix(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid, cutoff: i64) -> String {
-    let source:Value=sqlx::query_scalar("SELECT jsonb_build_object('definition',(SELECT to_jsonb(v) FROM workflow_versions v WHERE v.tenant_id=r.tenant_id AND v.id=r.workflow_version_id),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id AND e.seq<=$3),'work',(SELECT to_jsonb(s) FROM steps s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node='reserve' AND s.instance_path_nodes=ARRAY['lines']::text[] AND s.instance_path_indices=ARRAY[0]::int[]),'output',(SELECT encode(s.output_digest,'hex') FROM steps s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node='reserve' AND s.instance_path_indices=ARRAY[0]::int[]),'captured',(SELECT jsonb_agg(to_jsonb(i) ORDER BY i.scope_id,i.iteration_index) FROM collection_scope_items i WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id)) FROM runs r WHERE r.tenant_id=$1 AND r.id=$2")
-        .bind(tenant).bind(run).bind(cutoff).fetch_one(pool).await.expect("immutable old prefix metadata");
+/// The columns of the completed `reserve` row as the release wrote it, read before the upgrade and kept in the witness.
+/// A later migration may add a column to `steps` (feature 022 adds `flow_control_gates`); the row the release wrote is
+/// then compared on these columns, and every other column must still be NULL (`released_work_columns_kept`).
+async fn released_work_columns(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> Vec<String> {
+    let columns:Vec<String>=sqlx::query_scalar("SELECT coalesce(array_agg(c ORDER BY c),'{}') FROM steps s, jsonb_object_keys(to_jsonb(s)) c WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node='reserve' AND s.instance_path_nodes=ARRAY['lines']::text[] AND s.instance_path_indices=ARRAY[0]::int[]")
+        .bind(tenant).bind(run).fetch_one(pool).await.expect("released completed-prefix columns");
+    assert!(!columns.is_empty(), "the completed reserve row exists before the upgrade");
+    columns
+}
+
+fn witness_columns(witness: &Value) -> Vec<String> {
+    serde_json::from_value(witness["workColumns"].clone()).expect("released completed-prefix columns in the witness")
+}
+
+/// No column the release wrote is gone, and no column added after the release holds a value on the released row.
+async fn released_work_columns_kept(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid, columns: &[String]) {
+    let (dropped,filled):(Vec<String>,Vec<String>)=sqlx::query_as("SELECT ARRAY(SELECT c FROM unnest($3::text[]) c WHERE NOT (to_jsonb(s) ? c) ORDER BY c),ARRAY(SELECT j.key FROM jsonb_each(to_jsonb(s)) j WHERE j.key <> ALL($3::text[]) AND j.value <> 'null'::jsonb ORDER BY j.key) FROM steps s WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node='reserve' AND s.instance_path_nodes=ARRAY['lines']::text[] AND s.instance_path_indices=ARRAY[0]::int[]")
+        .bind(tenant).bind(run).bind(columns).fetch_one(pool).await.expect("released completed-prefix row");
+    assert!(dropped.is_empty(), "released columns of the completed row are gone: {dropped:?}");
+    assert!(filled.is_empty(), "columns added after the release hold values on the released row: {filled:?}");
+}
+
+/// The released prefix: definition, journal up to the cutoff, the completed `reserve` row on its released columns, its
+/// output and the captured items. On the release's own schema the projection is the whole row.
+async fn immutable_prefix(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid, cutoff: i64, columns: &[String]) -> String {
+    released_work_columns_kept(pool, tenant, run, columns).await;
+    let source:Value=sqlx::query_scalar("SELECT jsonb_build_object('definition',(SELECT to_jsonb(v) FROM workflow_versions v WHERE v.tenant_id=r.tenant_id AND v.id=r.workflow_version_id),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id AND e.seq<=$3),'work',(SELECT (SELECT jsonb_object_agg(c,to_jsonb(s)->c) FROM unnest($4::text[]) c) FROM steps s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node='reserve' AND s.instance_path_nodes=ARRAY['lines']::text[] AND s.instance_path_indices=ARRAY[0]::int[]),'output',(SELECT encode(s.output_digest,'hex') FROM steps s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node='reserve' AND s.instance_path_indices=ARRAY[0]::int[]),'captured',(SELECT jsonb_agg(to_jsonb(i) ORDER BY i.scope_id,i.iteration_index) FROM collection_scope_items i WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id)) FROM runs r WHERE r.tenant_id=$1 AND r.id=$2")
+        .bind(tenant).bind(run).bind(cutoff).bind(columns).fetch_one(pool).await.expect("immutable old prefix metadata");
     sha(&source)
 }
 
@@ -148,7 +173,9 @@ async fn write_release_upgrade_profile() {
     .round()
     .await
     .expect("old owner lease renewed before process exit");
-    let witness = json!({"releaseCommit":RELEASE,"database":flow.api.db.name,"tenant":flow.tenant.to_string(),"namespace":namespace.to_string(),"collectionRun":flow.run.to_string(),"rootWaitRun":wait_run,"cutoff":cutoff,"oldOwner":old_owner,"maxMigration":max_migration,"waitCutoff":wait_cutoff,"waitPrefixSha256":immutable_wait_prefix(&flow.api.db.pool,flow.tenant.as_uuid(),wait_id.as_uuid(),wait_cutoff).await,"waitStateSha256":sha(&wait_state),"waitStepId":wait_state["stepId"],"prefixSha256":immutable_prefix(&flow.api.db.pool,flow.tenant.as_uuid(),flow.run.as_uuid(),cutoff).await});
+    let work_columns =
+        released_work_columns(&flow.api.db.pool, flow.tenant.as_uuid(), flow.run.as_uuid()).await;
+    let witness = json!({"releaseCommit":RELEASE,"database":flow.api.db.name,"tenant":flow.tenant.to_string(),"namespace":namespace.to_string(),"collectionRun":flow.run.to_string(),"rootWaitRun":wait_run,"cutoff":cutoff,"oldOwner":old_owner,"maxMigration":max_migration,"waitCutoff":wait_cutoff,"waitPrefixSha256":immutable_wait_prefix(&flow.api.db.pool,flow.tenant.as_uuid(),wait_id.as_uuid(),wait_cutoff).await,"waitStateSha256":sha(&wait_state),"waitStepId":wait_state["stepId"],"workColumns":work_columns,"prefixSha256":immutable_prefix(&flow.api.db.pool,flow.tenant.as_uuid(),flow.run.as_uuid(),cutoff,&work_columns).await});
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -218,7 +245,8 @@ async fn read_upgraded_profile_with_release_upgrade_code() {
                 .expect("run")
                 .parse()
                 .expect("UUID"),
-            witness["cutoff"].as_i64().expect("cutoff")
+            witness["cutoff"].as_i64().expect("cutoff"),
+            &witness_columns(&witness)
         )
         .await,
         witness["prefixSha256"]

@@ -6,6 +6,120 @@
 
 use sqlx::migrate::Migrator;
 
+/// The predicate of a rate-limit grant (alias `$g`, its window row `$w`) that the purge may delete at the instant `$now`
+/// (FR-022-056: once its window row's longest period and one minute more have passed since its lease; exactly at that
+/// instant it is kept). One text for the purge (transaction T25) and for a decision's reclaim of its namespace's windows
+/// (decision D022-066 item 1), so the purge's boundary test holds for both. A step grant whose root step is still `LEASED` at
+/// the grant's attempt is kept, however old its lease instant (decision D022-146): its lease may still be withdrawn and its
+/// slot given back. Both callers hold the grant's window row, which a withdrawal also locks before it changes the grant
+/// (decision D022-148), so the step's status is not read across a withdrawal in flight.
+macro_rules! purgeable_grant {
+    ($g:literal, $w:literal, $now:literal) => {
+        concat!(
+            $g,
+            ".leased_at IS NOT NULL AND ",
+            $g,
+            ".leased_at + make_interval(secs => ",
+            $w,
+            ".max_period_ms / 1000.0 + 60) < ",
+            $now,
+            " AND NOT (",
+            $g,
+            ".limit_scope = 'STEP' AND EXISTS (SELECT 1 FROM steps leased WHERE leased.tenant_id = ",
+            $g,
+            ".tenant_id AND leased.run_id = ",
+            $g,
+            ".run_id AND leased.node = ",
+            $g,
+            ".node AND leased.instance_path_nodes = '{}' AND leased.instance_path_indices = '{}' \
+               AND leased.status = 'LEASED' AND leased.attempt = ",
+            $g,
+            ".attempt))"
+        )
+    };
+}
+
+/// The rate grant (alias `$g`) of a withdrawn lease whose slot may not count again (decision D022-157): its lease instant
+/// is recorded and another grant of its key was decided at an instant for which this one no longer counted under that
+/// grant's own window (a grant counts for a decision at `t` over `p` while its lease instant is after `t - p`). Every decision
+/// that counts the key holds its window row, and the callers hold it too, so no such grant appears before their commit. One
+/// text for the decision before a withdrawal and the commit's defence.
+macro_rules! spent_rate_slot {
+    ($g:literal) => {
+        concat!(
+            $g,
+            ".leased_at IS NOT NULL AND EXISTS (SELECT 1 FROM rate_limit_grants other WHERE other.tenant_id = ",
+            $g,
+            ".tenant_id AND other.namespace_id = ",
+            $g,
+            ".namespace_id AND other.pool = ",
+            $g,
+            ".pool AND other.limit_scope = ",
+            $g,
+            ".limit_scope AND other.group_name = ",
+            $g,
+            ".group_name AND other.key_digest = ",
+            $g,
+            ".key_digest AND NOT (other.run_id = ",
+            $g,
+            ".run_id AND other.node = ",
+            $g,
+            ".node AND other.attempt = ",
+            $g,
+            ".attempt) AND other.granted_at >= ",
+            $g,
+            ".leased_at + make_interval(secs => other.period_ms / 1000.0))"
+        )
+    };
+}
+
+/// The run of a waiter (alias `$r`) that the grant pass serves: running or waiting, and not paused (ADR-0089 decision 4).
+/// One text for the pass's eligibility and for the place estimate's "skipped" (task T022-112, decision D022-068 item 6).
+macro_rules! live_gate_run {
+    ($r:literal) => {
+        concat!(
+            $r,
+            ".status IN ('RUNNING', 'WAITING') AND NOT ",
+            $r,
+            ".paused"
+        )
+    };
+}
+
+/// A waiter (alias `$w`, its run `$r`) the grant pass serves at the instant `$now`: not past its queue deadline, of a
+/// run the pass serves ([`live_gate_run!`]). The pass's listing of a key's waiters reads these, so that a waiter whose
+/// grant keeps failing is still tried, in its place (decision D022-124); every other use reads
+/// [`eligible_gate_waiter!`].
+macro_rules! queued_gate_waiter {
+    ($w:literal, $r:literal, $now:literal) => {
+        concat!($w, ".deadline_at > ", $now, " AND ", live_gate_run!($r))
+    };
+}
+
+/// A waiter (alias `$w`, its run `$r`) the grant pass may grant at the instant `$now`: a [`queued_gate_waiter!`] whose
+/// grant has not kept failing (no `flow_control_grant_failures` row, decision D022-124). Its own limit is checked
+/// beside it by each statement, over its own window. One text for every use of the predicate (the grant routine's
+/// waiters ahead, admission's eligible waiter, the place estimate, the stuck alert; task T022-112, decision D022-068
+/// item 6), as [`purgeable_grant!`] is for the purge; `scripts/check-architecture.py` refuses a copy written out
+/// elsewhere.
+macro_rules! eligible_gate_waiter {
+    ($w:literal, $r:literal, $now:literal) => {
+        concat!(
+            queued_gate_waiter!($w, $r, $now),
+            " AND NOT EXISTS (SELECT 1 FROM flow_control_grant_failures grant_failure \
+               WHERE grant_failure.tenant_id = ",
+            $w,
+            ".tenant_id AND grant_failure.run_id = ",
+            $w,
+            ".run_id AND grant_failure.node = ",
+            $w,
+            ".node AND grant_failure.attempt = ",
+            $w,
+            ".attempt)"
+        )
+    };
+}
+
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;
@@ -33,6 +147,7 @@ mod event_codec;
 mod event_payloads;
 mod events;
 mod execution;
+mod flow_control;
 mod handover_auto;
 mod handover_role;
 mod identity;
@@ -85,6 +200,20 @@ pub use definitions::{
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
+/// The statements of the concurrency-key listing, exposed so a test can ask the planner about the very text they run
+/// (D022-058).
+#[doc(hidden)]
+pub use flow_control::{
+    CONCURRENCY_GROUP_AFTER_SQL, CONCURRENCY_GROUP_NAMED_AFTER_SQL, CONCURRENCY_GROUP_SUMS_SQL,
+    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_GROUP_AFTER_SQL, RATE_GROUP_NAMED_AFTER_SQL,
+    RATE_GROUP_SUMS_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
+};
+/// The deciding transactions of feature 022's gates file their keys through these, inside the store; exposed for the
+/// integration suite that proves the rotation (T022-095).
+#[doc(hidden)]
+pub use flow_control::{
+    FiledKey, KEY_ROW_VANISHED, KeyTable, KeyToFile, file_keys, key_versions, missing_key_versions,
+};
 pub use handover_auto::{
     AuditCompleted, AutoActivated, AutoAsk, HANDOVER_ROLE, HandoverDbError,
     ROUND_STATEMENT_TIMEOUT, Retirement, Round, RoundOutcome, complete_handover_audit,
@@ -97,8 +226,9 @@ pub use handover_role::{
 };
 pub use identity::PgIdentityStore;
 pub use instances::{
-    CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep, OperatorBounds, PgInstanceStore,
-    capability_census, census_step, may_activate, requirement_recorded,
+    ActivationPrerequisite, CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep,
+    OperatorBounds, PREREQUISITE_MISSING, PgInstanceStore, capability_census, census_step,
+    may_activate, no_feature_step, requirement_recorded,
 };
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
@@ -168,3 +298,33 @@ mod blobs;
 pub use blobs::PgBlobCatalog;
 
 mod secret_cleanup;
+
+#[cfg(test)]
+mod gate_predicate_tests {
+    /// Task T022-112: the one text of the grant pass's eligibility, as each of its uses expands it.
+    #[test]
+    fn the_eligibility_of_a_waiter_is_one_text() {
+        assert_eq!(
+            queued_gate_waiter!("w", "r", "now()"),
+            // split as the macro is, so that the architecture check does not read it as a copy
+            concat!(
+                "w.deadline_at > now() AND r.status IN ('RUNNING', 'WAITING') ",
+                "AND NOT r.paused"
+            )
+        );
+        // decision D022-124: a waiter whose grant keeps failing is queued, not eligible
+        assert_eq!(
+            eligible_gate_waiter!("w", "r", "now()"),
+            concat!(
+                "w.deadline_at > now() AND r.status IN ('RUNNING', 'WAITING') ",
+                "AND NOT r.paused AND NOT EXISTS (SELECT 1 FROM flow_control_grant_failures grant_failure ",
+                "WHERE grant_failure.tenant_id = w.tenant_id AND grant_failure.run_id = w.run_id ",
+                "AND grant_failure.node = w.node AND grant_failure.attempt = w.attempt)"
+            )
+        );
+        assert_eq!(
+            live_gate_run!("mr"),
+            concat!("mr.status IN ('RUNNING', 'WAITING') ", "AND NOT mr.paused")
+        );
+    }
+}

@@ -10,8 +10,11 @@
 use crate::pool::BeginSafely;
 mod ad_hoc;
 mod database;
+mod gate_queue;
+mod held_signals;
 mod path;
 mod path_read;
+mod readiness_gate;
 mod resets;
 #[doc(hidden)]
 pub use resets::EXPIRED_RESETS_SQL;
@@ -146,6 +149,11 @@ pub struct PgRunStore {
     verify_skipped_loads: bool,
     /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
     pub(crate) lake_enabled: bool,
+    /// The deployment's `flow-control.*` switches (feature 022): whether a run of a gated definition may be admitted
+    /// at all. Off unless set.
+    flow_control: sagat_application::flow_control::FlowControlSwitches,
+    /// The digest keys of the gates (feature 022): without them a gated step is never decided (fail closed).
+    flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
     /// Design 041's spike only: the hook a report transaction runs before its commit.
     #[cfg(feature = "perf-spike")]
     report_hook: crate::report_hook::HookSlot,
@@ -163,9 +171,92 @@ impl PgRunStore {
             scoped_worker_protocol: false,
             verify_skipped_loads: false,
             lake_enabled: false,
+            flow_control: sagat_application::flow_control::FlowControlSwitches {
+                concurrency_keys: false,
+                rate_limits: false,
+            },
+            flow_control_keys: None,
             #[cfg(feature = "perf-spike")]
             report_hook: crate::report_hook::HookSlot::default(),
         }
+    }
+
+    /// The digest keys of the flow-control gates (feature 022, `KeyRing::parse` of the deployment's configuration).
+    #[must_use]
+    pub fn with_flow_control_keys(
+        mut self,
+        keys: Arc<sagat_application::keyed_digest::KeyRing>,
+    ) -> Self {
+        self.flow_control_keys = Some(keys);
+        self
+    }
+
+    /// The digest keys this store was given, if any.
+    pub(crate) fn flow_control_keys(&self) -> Option<&sagat_application::keyed_digest::KeyRing> {
+        self.flow_control_keys.as_deref()
+    }
+
+    /// The flow-control capabilities this process serves (D022-057): built, switched on, and backed by the digest keys.
+    fn served_flow_control(&self) -> Vec<sagat_application::flow_control::FlowControlCapability> {
+        use sagat_application::flow_control::served;
+        served(self.flow_control, self.flow_control_keys.is_some())
+    }
+
+    /// The deployment's `flow-control.*` switches (feature 022), read by the one admission point.
+    #[must_use]
+    pub const fn with_flow_control(
+        mut self,
+        switches: sagat_application::flow_control::FlowControlSwitches,
+    ) -> Self {
+        self.flow_control = switches;
+        self
+    }
+
+    /// Whether a gated definition is admitted here (FR-022-059, D022-057): every capability it needs is switched on,
+    /// activated for the fleet, and served by this process; `None` admits it, a refusal says which condition failed,
+    /// in that order.
+    async fn flow_control_admission(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        definition: &WorkflowDefinition,
+    ) -> Result<Option<sagat_application::flow_control::FlowControlRefusal>, StoreError> {
+        use sagat_application::flow_control::{FlowControlRefusal, required};
+        let required = required(definition);
+        if let Some(capability) = required
+            .iter()
+            .find(|capability| !self.flow_control.enabled(**capability))
+        {
+            return Ok(Some(FlowControlRefusal::CapabilityDisabled {
+                capability: *capability,
+            }));
+        }
+        let names: Vec<&str> = required
+            .iter()
+            .map(|capability| capability.registry().as_str())
+            .collect();
+        let recorded: Vec<String> = sqlx::query_scalar(
+            "SELECT capability FROM platform_requirements WHERE capability = ANY($1)",
+        )
+        .bind(&names)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(capability) = required
+            .iter()
+            .find(|capability| !recorded.iter().any(|r| r == capability.registry().as_str()))
+        {
+            return Ok(Some(FlowControlRefusal::ActivationPending {
+                capability: *capability,
+            }));
+        }
+        let served = self.served_flow_control();
+        if required
+            .iter()
+            .any(|capability| !served.contains(capability))
+        {
+            return Ok(Some(FlowControlRefusal::BinaryCapabilityMissing));
+        }
+        Ok(None)
     }
 
     /// Design 041's spike T041-35 only: runs `hook` in every root report transaction, before its commit.
@@ -331,7 +422,7 @@ impl PgRunStore {
         let step_rows = sqlx::query(concat!(
             "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, event_type, event_since, \
-                    child_run_id, approval_request_id, s.namespace_id, s.step_id, s.node_kind AS stored_node_kind, (",
+                    child_run_id, approval_request_id, s.namespace_id, s.step_id, s.node_kind AS stored_node_kind, s.flow_control_gates, (",
             scoped_control_metadata_empty!(),
             ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid, (",scoped_event_metadata_valid!(),") AS event_metadata_valid \
              FROM steps s WHERE tenant_id = $1 AND run_id = $2",
@@ -351,7 +442,11 @@ impl PgRunStore {
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
             stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
-            steps.insert(instance, step_state(row)?);
+            let mut step = step_state(row)?;
+            if let Some(gates) = col::<Option<serde_json::Value>>(row, "flow_control_gates")? {
+                step = step.with_restored_gates(readiness_gate::restore_gates(&gates)?);
+            }
+            steps.insert(instance, step);
         }
         // The pinned definition says which kinds of state the run can have; the others are not read.
         let definition = self
@@ -393,7 +488,12 @@ impl PgRunStore {
                         .map_err(|_| corrupt("run start delay"))
                 })
                 .transpose()?,
-        );
+        )
+        .with_gated_steps(&definition);
+        // feature 022 (T022-022): the gates of the run's start, from their projection on the run's row (no statement more)
+        if let Some(gates) = col::<Option<serde_json::Value>>(&row, "flow_control_gates")? {
+            state = state.with_restored_run_gates(readiness_gate::restore_gates(&gates)?);
+        }
         if kinds.collections {
             load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
         }
@@ -469,6 +569,11 @@ impl PgRunStore {
             chain_lock,
             initialize_chain: false,
             cancelled_waits: Vec::new(),
+            flow_control_keys: self.flow_control_keys.clone(),
+            gate_returns_applied: BTreeSet::new(),
+            gate_outcomes: Vec::new(),
+            run_gate_outcomes: Vec::new(),
+            held_signal: None,
             #[cfg(feature = "perf-spike")]
             report_hook: self.report_hook.clone(),
             #[cfg(feature = "perf-spike")]
@@ -619,11 +724,74 @@ impl PgRunStore {
                 })?,
             );
         }
-        let replayed =
-            RunState::replay_addressed(run, &events).map_err(|e| format!("replay failed: {e}"))?;
+        let replayed = RunState::replay_addressed_gated(run, &stored_tx.def, &events)
+            .map_err(|e| format!("replay failed: {e}"))?;
         if replayed != stored {
             return Err(format!(
                 "projection differs from the journal:\n  replayed: {replayed:?}\n  stored:   {stored:?}"
+            ));
+        }
+        // feature 022: the journal alone reaches the same state, without knowing which nodes are gated (every commit
+        // that makes a gated step ready journals its decisions), and no gated step is ready or leased without a grant
+        // of each gate it declares, nor waits without a decision of each (invariant 11, T022-096)
+        let alone = RunState::replay_addressed(run, &events)
+            .map_err(|e| format!("replay of the journal alone failed: {e}"))?
+            .with_gated_steps(&stored_tx.def);
+        if alone != replayed {
+            return Err(format!(
+                "the journal alone does not reach the state its transactions folded:\n  alone:    {alone:?}\n  folded:   {replayed:?}"
+            ));
+        }
+        if let Some((node, breach)) = replayed.flow_control_breach() {
+            return Err(format!(
+                "invariant 11 of feature 022 fails at node '{node}': {breach}"
+            ));
+        }
+        // feature 022, invariants 1 and 2 of `data-model.md` for the run's start (T022-022): the run has a holder row
+        // exactly while its journal holds a permit, a waiter row (with the journal's deadline) exactly while it waits,
+        // and the counters of the key those rows are under equal its rows
+        let (holders, waiters, deadline, counters_agree): (i64, i64, Option<OffsetDateTime>, bool) =
+            sqlx::query_as(
+                "SELECT (SELECT count(*) FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'RUN'),                         (SELECT count(*) FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'RUN'),                         (SELECT deadline_at FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'RUN'),                         NOT EXISTS (SELECT 1 FROM concurrency_semaphores s                                      WHERE s.tenant_id = $1 AND s.permit_scope = 'RUN'                                        AND EXISTS (SELECT 1 FROM (                                              SELECT namespace_id, pool, group_name, key_digest FROM concurrency_holders                                               WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'RUN'                                              UNION SELECT namespace_id, pool, group_name, key_digest FROM concurrency_waiters                                               WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'RUN') k                                             WHERE k.namespace_id = s.namespace_id AND k.pool = s.pool                                               AND k.group_name = s.group_name AND k.key_digest = s.key_digest)                                        AND (s.holders <> (SELECT count(*) FROM concurrency_holders h                                                            WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id                                                              AND h.pool = s.pool AND h.holder_scope = s.permit_scope                                                              AND h.group_name = s.group_name AND h.key_digest = s.key_digest)                                          OR s.waiters <> (SELECT count(*) FROM concurrency_waiters w                                                            WHERE w.tenant_id = s.tenant_id AND w.namespace_id = s.namespace_id                                                              AND w.pool = s.pool AND w.permit_scope = s.permit_scope                                                              AND w.group_name = s.group_name AND w.key_digest = s.key_digest)))",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_one(&mut *stored_tx.tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        let journal = replayed.run_gates().concurrency().map(|slot| slot.phase());
+        let deadline_us = deadline
+            .map(|at| i64::try_from(at.unix_timestamp_nanos() / 1_000))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let agrees = match journal {
+            Some(sagat_domain::execution::GatePhase::Held) => holders == 1 && waiters == 0,
+            Some(sagat_domain::execution::GatePhase::Queued { deadline_us: due }) => {
+                holders == 0 && waiters == 1 && deadline_us == Some(due)
+            }
+            _ => holders == 0 && waiters == 0,
+        };
+        if !agrees || !counters_agree {
+            return Err(format!(
+                "invariants 1 and 2 of feature 022 fail for the run's start: the journal says {journal:?}, the rows are \
+                 {holders} holder(s) and {waiters} waiter(s), the key's counters agree: {counters_agree}"
+            ));
+        }
+        verify_start_rate(&mut stored_tx.tx, tenant, run, &replayed, &events).await?;
+        // feature 022 (decision D022-087; batch 5 correctness minor 3): a held signal exists only while the run's start
+        // waits in its queue; its grant takes it, and the end of a run whose start never ran drops it
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM flow_control_held_signals WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&mut *stored_tx.tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if held > 0 && !(replayed.run_gates().is_waiting() && !replayed.status().is_terminal()) {
+            return Err(format!(
+                "a held signal is kept for a run whose start does not wait (status {:?})",
+                replayed.status()
             ));
         }
         drop(stored_tx);
@@ -646,6 +814,136 @@ impl PgRunStore {
             Err("the run's result is not the payload its end.reached event names".into())
         }
     }
+}
+
+/// Feature 022, invariants 8 to 10 of `data-model.md` for the rate gate of a run's start (T022-072, T022-079): the run
+/// has a waiter row (with the journal's deadline) exactly while its journal waits for a slot; a grant row with the
+/// journal's grant instant, whose lease instant is that instant, while its journal holds one and the grant can still
+/// count (the purge may delete it only after its window and one minute more); the key's counters equal its rows; and no
+/// window of the grant's length ending at its instant holds more run-scope grants of the key than its limit, counted
+/// from the journals of the key (its pool, group and label).
+async fn verify_start_rate(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    replayed: &RunState,
+    events: &[AddressedRunEvent],
+) -> Result<(), String> {
+    use sagat_domain::execution::{GateChange, GatePhase, GateTarget};
+    let (grants, granted_at, leased_is_granted, waiters, deadline, counters_agree, now): (
+        i64,
+        Option<OffsetDateTime>,
+        Option<bool>,
+        i64,
+        Option<OffsetDateTime>,
+        bool,
+        OffsetDateTime,
+    ) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT granted_at FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT leased_at = granted_at FROM rate_limit_grants \
+                  WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT count(*) FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT deadline_at FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                NOT EXISTS (SELECT 1 FROM rate_limit_windows w \
+                             WHERE w.tenant_id = $1 AND w.limit_scope = 'RUN' \
+                               AND EXISTS (SELECT 1 FROM ( \
+                                     SELECT namespace_id, pool, group_name, key_digest FROM rate_limit_grants \
+                                      WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN' \
+                                     UNION SELECT namespace_id, pool, group_name, key_digest FROM rate_limit_waiters \
+                                      WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN') k \
+                                    WHERE k.namespace_id = w.namespace_id AND k.pool = w.pool \
+                                      AND k.group_name = w.group_name AND k.key_digest = w.key_digest) \
+                               AND (w.live_grants <> (SELECT count(*) FROM rate_limit_grants g \
+                                                       WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                                         AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                                         AND g.group_name = w.group_name AND g.key_digest = w.key_digest) \
+                                 OR w.waiters <> (SELECT count(*) FROM rate_limit_waiters x \
+                                                   WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                                                     AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                                                     AND x.group_name = w.group_name AND x.key_digest = w.key_digest))), \
+                clock_timestamp()",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let micros = |at: OffsetDateTime| i64::try_from(at.unix_timestamp_nanos() / 1_000);
+    // the last run-scope grant of the journal: its instant, limit, window and key
+    let grant = events
+        .iter()
+        .rev()
+        .find_map(|addressed| match addressed.event() {
+            RunEvent::Gate(gate) if matches!(gate.target, GateTarget::Run) => match gate.change {
+                GateChange::RateGranted {
+                    limit,
+                    per,
+                    granted_at_us,
+                    ..
+                } => Some((limit, per, granted_at_us, gate.gate.clone())),
+                _ => None,
+            },
+            _ => None,
+        });
+    let journal = replayed.run_gates().rate().map(|slot| slot.phase());
+    let row_at = granted_at
+        .map(micros)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let deadline_us = deadline
+        .map(micros)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let now_us = micros(now).map_err(|e| e.to_string())?;
+    let agrees = match (journal, &grant) {
+        (Some(GatePhase::Held), Some((_, per, at, _))) => {
+            let window_us = i64::try_from(per.duration().as_micros()).map_err(|e| e.to_string())?;
+            waiters == 0
+                && ((grants == 1 && row_at == Some(*at) && leased_is_granted == Some(true))
+                    // purged: only once it cannot count any more (the purge keeps it a minute longer)
+                    || (grants == 0 && *at + window_us <= now_us))
+        }
+        (Some(GatePhase::Queued { deadline_us: due }), _) => {
+            grants == 0 && waiters == 1 && deadline_us == Some(due)
+        }
+        _ => grants == 0 && waiters == 0,
+    };
+    if !agrees || !counters_agree {
+        return Err(format!(
+            "invariants 8 and 9 of feature 022 fail for the run's start: the journal says {journal:?}, the rows are \
+             {grants} grant(s) and {waiters} waiter(s), the key's counters agree: {counters_agree}"
+        ));
+    }
+    // invariant 10 for this run's grant, from the journals of its key: the run-scope grants whose instants lie in
+    // (t - period, t] are at most its limit (D022-032); a grant a reset copied with its prefix (`restored`) is its
+    // source's, counted once in the source's journal (D022-069)
+    if let Some((limit, per, at, gate)) = grant {
+        let window_us = i64::try_from(per.duration().as_micros()).map_err(|e| e.to_string())?;
+        let within: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM run_events \
+              WHERE tenant_id = $1 AND event_type = 'rate_limit.granted' AND detail->>'scope' = 'RUN' \
+                AND detail->>'pool' = $2 AND detail->>'group' = $3 AND detail->>'key_label' = $4 \
+                AND (detail->>'granted_at_us')::bigint > $5 AND (detail->>'granted_at_us')::bigint <= $6 \
+                AND NOT coalesce((detail->>'restored')::boolean, false)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(gate.pool.as_str())
+        .bind(gate.group.as_str())
+        .bind(gate.key_label.as_str())
+        .bind(at - window_us)
+        .bind(at)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if within > i64::from(limit) {
+            return Err(format!(
+                "invariant 10 of feature 022 fails for the run's start: {within} grants of its key in the window of \
+                 {per:?} ending at its grant, over its limit {limit}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Serialize a pinned member mutation on its immutable, tenant-scoped chain before its own run.
@@ -740,6 +1038,44 @@ pub(crate) async fn locked_scheduler_time(
     locked_scheduler_time_sql(tx, run, owner, lease)
         .await
         .map_err(store_error)
+}
+
+/// The database clock while `owner` holds `lease` on its shard, whatever run the transaction locked: the fence of a
+/// flow-control key's home shard (feature 022, ADR-0089 decision 3), which is not the shard of the waiter's run.
+pub(crate) async fn locked_shard_time(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &str,
+    lease: sagat_application::shards::Lease,
+) -> Result<Option<OffsetDateTime>, StoreError> {
+    let Ok(generation) = i64::try_from(lease.generation) else {
+        return Ok(None);
+    };
+    // as `locked_scheduler_time_sql`: the row is locked first, then one fresh clock is compared with its expiry
+    let held: Option<i16> = sqlx::query_scalar(
+        "SELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE",
+    )
+    .bind(i16::from(lease.shard.index()))
+    .bind(generation)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if held.is_none() {
+        return Ok(None);
+    }
+    let now: Option<Option<OffsetDateTime>> = sqlx::query_scalar(
+        "WITH tick AS MATERIALIZED (SELECT clock_timestamp() AS now) \
+         SELECT CASE WHEN s.expires_at>tick.now THEN tick.now END \
+         FROM scheduler_shards s CROSS JOIN tick \
+         WHERE s.shard=$1 AND s.generation=$2 AND s.owner=$3",
+    )
+    .bind(i16::from(lease.shard.index()))
+    .bind(generation)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    Ok(now.flatten())
 }
 
 /// Preserve the shared lock/clock order while letting sensitive callers redact driver failures.
@@ -1146,6 +1482,21 @@ impl RunStore for PgRunStore {
                     .await?;
                 return Ok(Admitted::Replayed(existing));
             }
+            // Feature 022: every run creator passes here, so a gated definition is decided here, before any lock of the
+            // admission is taken (FR-022-059): admitted when every capability it needs is switched on, activated for the
+            // fleet and served by this process (D022-057).
+            if new.definition.declares_gates()
+                && let Some(refusal) = self
+                    .flow_control_admission(&mut tx, &new.definition)
+                    .await
+                    .transpose()
+            {
+                let _ = tx.rollback().await;
+                return Err(match refusal {
+                    Ok(refusal) => StoreError::FlowControl(refusal),
+                    Err(error) => error,
+                });
+            }
             // The action of a schedule takes its fence and the schedule row before any other
             // admission lock (ADR-0050 decision 7).
             if let Some(schedule) = &new.schedule {
@@ -1523,7 +1874,7 @@ impl RunStore for PgRunStore {
                     scoped_event_delivery_attempted: false,
                     scoped_event_persistence_failed: false,
                     def: Arc::clone(&new.definition),
-                    state: RunState::new(new.info.run_id),
+                    state: RunState::new(new.info.run_id).with_gated_steps(&new.definition),
                     persisted: 0,
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
@@ -1543,6 +1894,11 @@ impl RunStore for PgRunStore {
                     chain_lock: None,
                     initialize_chain: true,
                     cancelled_waits: Vec::new(),
+                    flow_control_keys: self.flow_control_keys.clone(),
+                    gate_returns_applied: BTreeSet::new(),
+                    gate_outcomes: Vec::new(),
+                    run_gate_outcomes: Vec::new(),
+                    held_signal: None,
                     #[cfg(feature = "perf-spike")]
                     report_hook: self.report_hook.clone(),
                     #[cfg(feature = "perf-spike")]
@@ -1617,7 +1973,7 @@ impl RunStore for PgRunStore {
     }
 
     async fn get(&self, tenant: TenantId, run: RunId) -> Result<Option<RunRecord>, StoreError> {
-        sqlx::query(RUN_SELECT)
+        let mut record = sqlx::query(RUN_SELECT)
             .bind(tenant.as_uuid())
             .bind(run.as_uuid())
             .fetch_optional(&self.pool)
@@ -1625,7 +1981,10 @@ impl RunStore for PgRunStore {
             .map_err(store_error)?
             .as_ref()
             .map(run_record)
-            .transpose()
+            .transpose()?;
+        // a waiting run shows the limit it is decided with, also when its place cannot be read (decision D022-076 item 5)
+        crate::flow_control::bound_waiting_rate_slots(&self.pool, record.as_mut_slice()).await?;
+        Ok(record)
     }
 
     async fn list(
@@ -1636,21 +1995,25 @@ impl RunStore for PgRunStore {
         before: Option<RunId>,
         limit: u32,
     ) -> Result<Vec<RunRecord>, StoreError> {
-        sqlx::query(
+        let mut records = sqlx::query(concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
                     start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
                     schedule_revision, reset_sequence, \
-                    seg_chain_id, seg_index, seg_completion, seg_successor \
+                    seg_chain_id, seg_index, seg_completion, seg_successor, \
+                    cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline, \
+                    rl_state, rl_pool, rl_group, rl_key, rl_since, rl_deadline, rl_limit, rl_period \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
                       completion_kind AS seg_completion, successor_run_id AS seg_successor \
                FROM chain_segments \
                WHERE chain_segments.tenant_id = runs.tenant_id \
-                 AND chain_segments.run_id = runs.id) segment ON true \
-             WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
+                 AND chain_segments.run_id = runs.id) segment ON true",
+            crate::flow_control::run_permit_lateral_sql!(),
+            crate::flow_control::run_rate_lateral_sql!(),
+            "WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
                AND ($3::uuid IS NULL OR runs.id < $3) \
                AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
                AND ($5::text IS NULL OR runs.status = $5) \
@@ -1659,7 +2022,7 @@ impl RunStore for PgRunStore {
                AND ($9::text IS NULL OR runs.business_id LIKE $9 ESCAPE '\\') \
                AND ($10::uuid IS NULL OR runs.schedule_id = $10) \
              ORDER BY runs.id DESC LIMIT $6",
-        )
+        ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(before.map(RunId::as_uuid))
@@ -1679,7 +2042,10 @@ impl RunStore for PgRunStore {
         .map_err(store_error)?
         .iter()
         .map(run_record)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+        // a waiting run shows the limit it is decided with (decision D022-076 item 5)
+        crate::flow_control::bound_waiting_rate_slots(&self.pool, &mut records).await?;
+        Ok(records)
     }
 
     async fn journal(
@@ -2010,6 +2376,9 @@ impl RunStore for PgRunStore {
                         Some("LOOP") => Some("loop"),
                         Some("APPROVAL") => Some("approval"),
                         Some("COLLECTION") => Some("collection"),
+                        // feature 022 (T022-078, decision D022-067 item 7): the gate the step's row waits for, rate first
+                        Some("RATE_LIMIT") => Some("rate_limit"),
+                        Some("CONCURRENCY") => Some("concurrency"),
                         _ => None,
                     },
                     child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
@@ -2158,19 +2527,25 @@ async fn claim_reservation(
 // when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
 // outside any chain. They read as well the columns a run was created with that say where it came from
 // (the schedule action and the reset sequence), from the row they already load: no query per run.
-const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
+const RUN_SELECT: &str = concat!(
+    "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
-     seg_chain_id, seg_index, seg_completion, seg_successor \
+     seg_chain_id, seg_index, seg_completion, seg_successor, \
+     cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline, \
+                    rl_state, rl_pool, rl_group, rl_key, rl_since, rl_deadline, rl_limit, rl_period \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
               completion_kind AS seg_completion, successor_run_id AS seg_successor \
        FROM chain_segments \
        WHERE chain_segments.tenant_id = runs.tenant_id AND chain_segments.run_id = runs.id) segment \
-     ON true \
-     WHERE runs.tenant_id = $1 AND runs.id = $2";
+     ON true",
+    crate::flow_control::run_permit_lateral_sql!(),
+    crate::flow_control::run_rate_lateral_sql!(),
+    "WHERE runs.tenant_id = $1 AND runs.id = $2"
+);
 
 /// The columns a command transaction reads about a run; `$tail` is the lock clause, if any.
 ///
@@ -2187,6 +2562,7 @@ macro_rules! run_columns_sql {
      (to_jsonb(runs.*) ->> 'start_delayed_until')::timestamptz AS start_delayed_until, \
      (to_jsonb(runs.*) ->> 'schedule_id')::uuid AS origin_schedule_id, \
      (to_jsonb(runs.*) ->> 'schedule_nominal_at')::timestamptz AS origin_schedule_nominal_at, \
+     NULLIF(to_jsonb(runs.*) -> 'flow_control_gates', 'null'::jsonb) AS flow_control_gates, \
      clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2",
             $tail
@@ -2310,6 +2686,8 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         failure_code: selected::<String>(row, "stop_code")?
             .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
             .transpose()?,
+        concurrency: crate::flow_control::run_permit(row)?,
+        rate_limit: crate::flow_control::run_rate_slot(row)?,
     })
 }
 
@@ -2320,7 +2698,7 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
 /// `start_delayed_until` already do (those are reads of the API, which runs the schema it was built for). What the
 /// engine's passes read tolerates it: `run_columns_sql!` does not select them, and `add_schedule_origin` reads them
 /// through a snapshot of the row.
-fn selected<'r, T>(row: &'r PgRow, name: &'static str) -> Result<Option<T>, StoreError>
+pub(crate) fn selected<'r, T>(row: &'r PgRow, name: &'static str) -> Result<Option<T>, StoreError>
 where
     T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
 {
@@ -2503,6 +2881,8 @@ pub(crate) fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
                     .ok_or_else(|| corrupt("approval request"))?,
             ),
         }),
+        // feature 022: a step waiting for its gates; their state is restored from `flow_control_gates`
+        (Some("CONCURRENCY" | "RATE_LIMIT"), _) => Some(WaitingOn::Gate),
         _ => return Err(corrupt("waiting step")),
     };
     let failure: Option<String> = col(row, "failure_code")?;
@@ -3861,6 +4241,23 @@ pub struct PgRunTx {
     /// How long each approval request this transaction cancelled had waited, recorded as
     /// `workflow_approval_wait_seconds{outcome="cancelled"}` when (and only when) it commits.
     cancelled_waits: Vec<f64>,
+    /// The digest keys of the flow-control gates, from the store (feature 022).
+    flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
+    /// The gate returns (node, attempt, event) the gate round gave back already; `persist` skips them (feature 022).
+    gate_returns_applied: BTreeSet<(Option<NodeId>, u32, &'static str)>,
+    /// The flow-control decisions and returns of this transaction, recorded once it commits (G022-001).
+    gate_outcomes: Vec<(
+        sagat_domain::workflow::GateKind,
+        readiness_gate::GateOutcome,
+    )>,
+    /// The same, for the gates of the run's start (T022-022), counted at run scope.
+    run_gate_outcomes: Vec<(
+        sagat_domain::workflow::GateKind,
+        readiness_gate::GateOutcome,
+    )>,
+    /// What this transaction did with the signal a Signal-with-Start held with the run, counted once it commits
+    /// (decision D022-127).
+    held_signal: Option<sagat_telemetry::flow_control::HeldSignalOutcome>,
     /// Design 041's spike only: the store's report hook, and the attempt this transaction reported.
     #[cfg(feature = "perf-spike")]
     report_hook: crate::report_hook::HookSlot,
@@ -4151,6 +4548,56 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl RunTx for PgRunTx {
+    fn decide_step_gates<'a>(
+        &'a mut self,
+        steps: &'a [sagat_application::flow_control::StepGateKeys],
+        pending: &'a [RunEvent],
+    ) -> impl Future<Output = Result<sagat_application::flow_control::StepGateAnswer, StoreError>>
+    + Send
+    + 'a {
+        self.decide_gates(steps, pending)
+    }
+
+    fn decide_run_gates<'a>(
+        &'a mut self,
+        keys: &'a sagat_application::flow_control::RunGateKeys,
+    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
+    {
+        self.decide_start_gates(keys)
+    }
+
+    fn grant_queued_step<'a>(
+        &'a mut self,
+        node: Option<&'a NodeId>,
+        attempt: u32,
+        order: sagat_application::flow_control::PassOrder<'a>,
+    ) -> impl Future<Output = Result<sagat_application::flow_control::QueueDecision, StoreError>>
+    + Send
+    + 'a {
+        self.grant_from_queue(node, attempt, order)
+    }
+
+    fn refusing_gate<'a>(
+        &'a mut self,
+        node: Option<&'a NodeId>,
+        attempt: u32,
+    ) -> impl Future<Output = Result<sagat_domain::workflow::GateKind, StoreError>> + Send + 'a
+    {
+        self.gate_that_refuses(node, attempt)
+    }
+
+    async fn holds_key_shard<'a>(
+        &'a mut self,
+        owner: &'a str,
+        lease: sagat_application::shards::Lease,
+    ) -> Result<bool, StoreError> {
+        let Some(now) = locked_shard_time(&mut self.tx, owner, lease).await? else {
+            return Ok(false);
+        };
+        self.now = now;
+        Ok(true)
+    }
+
     async fn restore_prefix<'a>(
         &'a mut self,
         prefix: &'a sagat_application::runs::RestoredPrefix,
@@ -4222,6 +4669,29 @@ impl RunTx for PgRunTx {
             insert_audit(&mut self.tx, audit).await?;
         }
         Ok(())
+    }
+
+    async fn hold_start_signal<'a>(
+        &'a mut self,
+        signal: &'a sagat_application::execution::HeldSignal,
+        receipt: &'a Idempotency,
+        marker: &'a Idempotency,
+    ) -> Result<(), StoreError> {
+        self.hold_start_signal_inner(signal, receipt, marker).await
+    }
+
+    async fn take_held_signal(
+        &mut self,
+    ) -> Result<Option<sagat_application::execution::HeldSignal>, StoreError> {
+        self.take_held_signal_inner().await
+    }
+
+    async fn audit_held_signal_dropped<'a>(
+        &'a mut self,
+        signal: &'a sagat_application::execution::HeldSignal,
+        reason: sagat_application::execution::HeldSignalDrop,
+    ) -> Result<(), StoreError> {
+        self.audit_held_signal_dropped_inner(signal, reason).await
     }
 
     async fn apply_declared_update<'a>(
@@ -5060,6 +5530,13 @@ impl RunTx for PgRunTx {
         lease_withdrawal_required(&mut self.tx).await
     }
 
+    async fn lock_withdrawn_gates(
+        &mut self,
+        leases: &[(NodeId, u32)],
+    ) -> Result<Vec<bool>, StoreError> {
+        PgRunTx::lock_withdrawn_gates(self, leases).await
+    }
+
     async fn reported_by(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -5116,6 +5593,53 @@ impl RunTx for PgRunTx {
         }
         let tenant = self.info.tenant_id;
         let run = self.info.run_id;
+
+        // 0. Feature 022: what the events give back of a gate, before any usage row is locked (the keys come before
+        // slot 8b, D022-038). Nothing for a transaction without a flow-control event.
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                RunEvent::Gate(_) | RunEvent::RunPaused | RunEvent::RunResumed
+            ) || self.withdraws_a_rate_slot(event)
+        }) {
+            // a commit that ends the run sets `finished_at`, whose trigger locks the run's active-run counter row (slot 6
+            // of ADR-0050's merged order): it is locked first, before any key, as an admission locks it (correctness
+            // review M1 of 2026-11-20); a commit that does not end the run, the hot path, takes nothing more
+            if self.state.status().is_terminal() {
+                sqlx::query("SELECT run_active_counts_lock_slot($1, $2)")
+                    .bind(self.info.tenant_id.as_uuid())
+                    .bind(self.info.run_id.as_uuid())
+                    .execute(&mut *self.tx)
+                    .await
+                    .map_err(store_error)?;
+            }
+            // a reset's restored prefix is history: it gave nothing back in this run and holds no row of it (FR-022-038)
+            if effects.restored.is_none() {
+                self.persist_gate_returns(events).await?;
+            }
+        }
+        // a commit of a run that ended and whose start never ran (each gate of its start still queued, timed out or
+        // dequeued, none ever held) drops the signal a Signal-with-Start held with it, audited, whatever ended the run
+        // (decision D022-087 item 4; batch 5 correctness minor 3, security suspicion 1); the end of a run whose start
+        // ran adds no statement
+        let start_never_ran = {
+            let gates = self.state.run_gates();
+            let mut slots = gates.concurrency().into_iter().chain(gates.rate());
+            let mut any = false;
+            let never_held = slots.all(|slot| {
+                any = true;
+                matches!(
+                    slot.phase(),
+                    sagat_domain::execution::GatePhase::Queued { .. }
+                        | sagat_domain::execution::GatePhase::TimedOut
+                        | sagat_domain::execution::GatePhase::Dequeued
+                )
+            });
+            any && never_held
+        };
+        if self.state.status().is_terminal() && start_never_ran {
+            self.drop_held_signal_of_ended_run().await?;
+        }
 
         // 1. Outputs: content-addressed payloads, remembered per root node.
         let output_charges = effects
@@ -5286,10 +5810,33 @@ impl RunTx for PgRunTx {
                 | RunEvent::CompensationPlanned { node, .. } => {
                     sagas.insert(node.clone());
                 }
+                // no task is announced for a step that waits for its gates (feature 022): the grant announces it
                 RunEvent::StepReleased { node }
                 | RunEvent::StepRetryDue { node }
                 | RunEvent::StepLeaseWithdrawn { node, .. }
-                | RunEvent::StepRetryRequested { node } => {
+                | RunEvent::StepRetryRequested { node }
+                    if self.state.declared_gates(node).is_none()
+                        || self
+                            .state
+                            .step(node)
+                            .is_some_and(|step| step.status() == StepStatus::Ready) =>
+                {
+                    hinted.insert(node.clone());
+                    self.outbox_task_ready(node).await?;
+                }
+                // a step the grant routine granted from its queue is announced by its grant (feature 022, T26)
+                RunEvent::Gate(sagat_domain::execution::GateEvent {
+                    target: sagat_domain::execution::GateTarget::Step { node, .. },
+                    change:
+                        sagat_domain::execution::GateChange::ConcurrencyAcquired
+                        | sagat_domain::execution::GateChange::RateGranted { .. },
+                    ..
+                }) if !hinted.contains(node)
+                    && self
+                        .state
+                        .step(node)
+                        .is_some_and(|step| step.status() == StepStatus::Ready) =>
+                {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
                 }
@@ -5329,6 +5876,8 @@ impl RunTx for PgRunTx {
                     }
                 }
                 RunEvent::StepCancelRequested { node } => self.release_child(node, false).await?,
+                // feature 022: a paused waiter is not granted nor counted ahead; its keys were made due at step 0, under
+                // the one sorted lock of the transaction's keys
                 RunEvent::RunFinished { status } => self.outbox_run_finished(*status).await?,
                 _ => {}
             }
@@ -5403,6 +5952,16 @@ impl RunTx for PgRunTx {
             _ => None,
         });
         if written > 0 {
+            // a reset clears the start's restored gates (D022-053): its projection is rewritten even when no fresh
+            // decision follows in the commit (reviews of 2026-11-20, security minor 3, correctness m3)
+            let gated_start = self.def.run_flow_control().is_gated();
+            let run_gates_changed = events.iter().any(|event| match event {
+                RunEvent::Gate(gate) => {
+                    matches!(gate.target, sagat_domain::execution::GateTarget::Run)
+                }
+                RunEvent::RunReset { .. } => gated_start,
+                _ => false,
+            });
             let updated = sqlx::query(
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \
                         paused = $8, updated_at = $9, \
@@ -5429,6 +5988,22 @@ impl RunTx for PgRunTx {
                 return Err(StoreError::Internal {
                     detail: "the run changed while its row was locked".into(),
                 });
+            }
+            // feature 022 (T022-022): the gates of the run's start follow its gate events, in a statement of their own: the
+            // run's own UPDATE does not name the column, so a process runs on a schema that predates it (a rollback, or a
+            // rollout whose migration has not run), and a run with no such event writes nothing more (NFR-022-007)
+            if run_gates_changed {
+                sqlx::query(
+                    "UPDATE runs SET flow_control_gates = $3 WHERE tenant_id = $1 AND id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(readiness_gate::run_gates_projection(
+                    self.state.run_gates(),
+                )?)
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
             }
             // The start delay is a column of its own so that the pass that releases it finds the due
             // ones by index; it follows the two events that set and clear it, in this transaction.
@@ -5634,6 +6209,10 @@ impl RunTx for PgRunTx {
         worker_capacity::available(&mut self.tx, &self.info).await
     }
 
+    async fn rollback(self) -> Result<(), StoreError> {
+        self.tx.rollback().await.map_err(store_error)
+    }
+
     async fn commit(mut self) -> Result<(), StoreError> {
         if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
             return Err(corrupt(
@@ -5695,6 +6274,17 @@ impl RunTx for PgRunTx {
         #[cfg(feature = "perf-spike")]
         if let Some((hook, xid, sent)) = timed {
             hook.on_committed(xid, sent, crate::report_hook::now_us());
+        }
+        readiness_gate::record_gate_outcomes(
+            &self.gate_outcomes,
+            sagat_telemetry::flow_control::FlowControlScope::Step,
+        );
+        readiness_gate::record_gate_outcomes(
+            &self.run_gate_outcomes,
+            sagat_telemetry::flow_control::FlowControlScope::Run,
+        );
+        if let Some(outcome) = self.held_signal {
+            sagat_telemetry::flow_control::record_held_signal(outcome);
         }
         for waited in self.cancelled_waits {
             metrics::histogram!(
@@ -7318,7 +7908,18 @@ impl PgRunTx {
                         .into(),
                 });
             }
+            // feature 022: the first gate the step still waits for, rate first; a wait with no decision is refused
+            Some(WaitingOn::Gate) => (
+                Some(readiness_gate::gate_waiting_kind(
+                    &step,
+                    self.state.declared_gates(node),
+                    self.state.waits_for_resume(node),
+                )?),
+                None,
+                None,
+            ),
         };
+        let gates = readiness_gate::gates_projection(&step)?;
         // How far back an event wait accepts events, beyond the moment it began waiting.
         let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {
             Some(NodeKind::WaitEvent { lookback, .. }) => micros(*lookback),
@@ -7388,11 +7989,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since, switch_case_id, secrets, node_kind) \
+                  event_since, switch_case_id, secrets, node_kind, flow_control_gates) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28, $29)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28, $29, $30)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -7427,6 +8028,7 @@ impl PgRunTx {
             .bind(switch_case_id)
             .bind(declared)
             .bind(node_kind)
+            .bind(&gates)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -7475,7 +8077,7 @@ impl PgRunTx {
                                                  $20 - $31 * interval '1 microsecond') END, \
                 event_scanned_at = CASE WHEN $15 = 'EVENT' AND waiting_kind = 'EVENT' \
                                         THEN event_scanned_at END, \
-                updated_at = $20, switch_case_id = $33 \
+                updated_at = $20, switch_case_id = $33, flow_control_gates = $34 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
                AND cardinality(instance_path_nodes) = 0",
         )
@@ -7516,6 +8118,7 @@ impl PgRunTx {
         .bind(lookback)
         .bind(reported.map(|r| r.token_hash.clone()))
         .bind(switch_case_id)
+        .bind(&gates)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
@@ -7546,6 +8149,25 @@ fn versioned_script_retention(
 
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
+    async fn flow_control_activated(
+        &self,
+        capability: sagat_application::instances::Capability,
+    ) -> Result<bool, StoreError> {
+        self.definitions.flow_control_activated(capability).await
+    }
+
+    async fn flow_control_group_declarations(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        except: WorkflowId,
+        groups: &[sagat_domain::workflow::GroupName],
+    ) -> Result<Vec<(Slug, sagat_domain::workflow::GroupDeclaration)>, StoreError> {
+        self.definitions
+            .flow_control_group_declarations(tenant, namespace, except, groups)
+            .await
+    }
+
     async fn replay_publication(
         &self,
         tenant: TenantId,

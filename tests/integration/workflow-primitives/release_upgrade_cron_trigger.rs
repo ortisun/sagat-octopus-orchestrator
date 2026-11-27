@@ -289,6 +289,8 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
             .env("RUST_TEST_THREADS", "1")
             .stdin(Stdio::from(OwnedFd::from(old)))
             .kill_on_drop(true);
+        // its database sessions carry the released name, as in every released profile (D022-141)
+        super::release_upgrade::label_released(&mut command);
         let mut old_process = command.spawn().expect("actual released process");
 
         progress.enter("1. the released legacy pass fires the first tick");
@@ -320,7 +322,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         progress.enter("2. the current migrations, with the released process still up");
         sagat_infra_postgres::migrate(&pool).await.expect("current migrations");
         let after: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&pool).await.expect("current schema boundary");
-        assert_eq!(after, 20270211000300, "the beat that reports a change in progress (feature 006, ADR-0099) is the last migration; the automatic handover's (ADR-0091) is before it");
+        assert_eq!(after, 20270217000100, "the drop of the flow-control activation function (feature 022) is the last migration; the automatic handover's (ADR-0091) is before it");
         let state: String = sqlx::query_scalar("SELECT state FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover state");
         assert_eq!(state, "LEGACY");
         let schedules: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules").fetch_one(&pool).await.expect("schedules");
@@ -440,7 +442,8 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         let marked: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules WHERE reconciled_at IS NOT NULL").fetch_one(&pool).await.expect("marks");
         assert!(marked > 0, "the upgrade's backlog leaves the reconciliation's marks");
         // the scenario runs no control-plane process: one is registered, by the runtime role, as a control plane of this release
-        // does, with what one in the default `enforce` mode lists (design 043, feature 006)
+        // does, with what one in the default `enforce` mode lists (design 043, feature 006) and no flow-control gate
+        // (feature 022: its switches are off by default)
         use sagat_application::instances::InstanceStore as _;
         let token = sagat_application::instances::InstanceToken::from_bytes([5; 32]);
         let control_plane = Uuid::new_v4();
@@ -451,7 +454,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
                 kind: sagat_application::instances::InstanceKind::ControlPlane,
                 scheduler_owner: None,
                 binary_version: "0.3.0-scenario",
-                capabilities: &sagat_control_plane::registry::capabilities(sagat_application::run_input::InputValidationMode::Enforce),
+                capabilities: &sagat_control_plane::registry::capabilities(sagat_application::run_input::InputValidationMode::Enforce, &[]),
             })
             .await
             .expect("a control plane registers");

@@ -4,6 +4,13 @@
 //! was, and the next pass releases it once. The connection of the transaction is killed inside
 //! PostgreSQL after each of its writing statements in turn (`tripwire.rs`). Real PostgreSQL, the real
 //! scheduler.
+//!
+//! The watched and the armed passes run the release alone (`release_starts`), not a whole tick: the switch records and
+//! kills every transaction of the database, and a tick runs other passes beside the release. Until 2026-11-26 the test
+//! watched a tick, and the lease recording of feature 022 (transaction T23), which a tick runs before the release in a
+//! transaction of its own, entered the capture: its `UPDATE rate_limit_grants` fires the statement trigger in every tick,
+//! even when it changes no row (pull request #237, integration shard 6 of 6, `[(32224, 1, "rate_limit_grants"), (32227,
+//! 1, "run_events"), ...]`). The release itself was one transaction; the passes after a death still run whole ticks.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
@@ -69,7 +76,7 @@ async fn a_release_that_dies_at_any_write_leaves_the_run_held_and_the_next_pass_
     // Which writes does the release make? Watch a normal one.
     let probe = due_run(&f, "release-probe-key").await;
     wire.watch().await;
-    let report = passes.tick().await;
+    let report = passes.release_starts().await;
     wire.disarm().await;
     assert_eq!(report.starts_released, 1, "{report:?}");
     let writes = wire.writes().await;
@@ -108,7 +115,7 @@ async fn a_release_that_dies_at_any_write_leaves_the_run_held_and_the_next_pass_
         let digests = table_digests(&f.w.db.pool).await;
 
         wire.arm(*position).await;
-        let cut_off = passes.tick().await;
+        let cut_off = passes.release_starts().await;
         wire.disarm().await;
 
         assert_eq!(

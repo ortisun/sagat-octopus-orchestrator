@@ -154,6 +154,18 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::IdempotencyKeyReused => "IDEMPOTENCY_KEY_REUSED",
         AppError::PayloadTooLarge(_) => "PAYLOAD_TOO_LARGE",
         AppError::DeclaredUpdate(error) => declared_update_code(error),
+        // feature 022: what the single start would have answered (`contracts/errors.md`)
+        AppError::FlowControl(refusal) => {
+            use crate::flow_control::FlowControlRefusal as R;
+            match refusal {
+                R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::Limit { .. } => {
+                    "QUOTA_EXCEEDED"
+                }
+                R::ActivationPending { .. } | R::CapabilityDisabled { .. } => "VALIDATION_FAILED",
+                R::BinaryCapabilityMissing => "UNAVAILABLE",
+                R::PermitUnavailable | R::SlotUnavailable => "CONFLICT",
+            }
+        }
         _ => "INTERNAL",
     }
 }
@@ -450,7 +462,10 @@ where
             }
             NextItem::Item(item) => {
                 let principal = Principal::new(job.tenant_id, creator, membership.role());
-                self.apply(job, &item, &principal, fence, now).await
+                // boxed: an item's use case is a whole run command (a rerun admits a run through its gates), and inline it
+                // would make every caller of `step` carry it on its stack (a debug build overflowed a 2 MiB test thread;
+                // `future_sizes` pins the bound)
+                Box::pin(self.apply(job, &item, &principal, fence, now)).await
             }
         }
     }

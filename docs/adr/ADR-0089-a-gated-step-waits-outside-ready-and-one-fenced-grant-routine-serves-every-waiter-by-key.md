@@ -65,6 +65,33 @@ The reviews found four more facts:
    its own limit. An older waiter refused only by its other gate therefore keeps room reserved; an older
    waiter refused by its own lower limit does not block (ADR-0056's skip-ahead stands). With feature 019,
    positions follow (priority, enqueue instant).
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decisions D022-073, D022-076 items 3 and 9):* a
+   narrowing, not a departure. Strict order returns at admission: a new arrival that may wait (a start, a step) is
+   granted at once only when its key has no eligible waiter and its counted holders or grants are below its limit, and
+   otherwise queues behind them. The grant routine keeps the reservation rule above and tries a key's waiters in
+   admission order, counting as of the pass's selection of the key, and grants no younger waiter whose limit and window
+   are not looser than one the same pass refused for lack of room (decision D022-078 item 2). A start that may not
+   queue (a reset, a pending reset) is decided by the reservation rule: granted when its key's counted holders or
+   grants plus the eligible waiters are below its limit, refused otherwise. Every limit is the lower of the waiter's
+   declaration and the namespace's current ceiling.
+   *Amended 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-088, D022-121 and D022-122):* a waiter
+   the grant routine cannot decide now ends its key's pass, and every younger waiter of the key waits for the next
+   pass, so that no younger waiter is granted before an older one the window may have room for. Two cases are "cannot
+   decide now": its run is held by another transaction (`SKIP LOCKED` found it locked), and its grant failed for a
+   reason that clears on its own (the store unavailable: a pool or statement timeout, a serialization failure, a
+   deadlock). Any other failure of a waiter's grant (a version this build cannot load, an execution error, a row a
+   constraint refuses) would end the pass on every pass, so it is skipped: counted `failed`, logged with its run, and
+   the pass goes on; the waiter stays queued until its deadline. A held signal whose delivery fails is dropped with its
+   audit record (`DELIVERY_FAILED`) and the start is granted without it. A waiter's transaction that does not commit is
+   rolled back, and the rollback awaited, before the next waiter is tried, so that a second waiter of the same run
+   finds the run free.
+   *Amended 2026-11-26, delegate (OD-2026-11-24-4; feature 022 decisions D022-124 and D022-125):* a skipped waiter
+   whose grant keeps failing is no longer eligible: its failure is recorded in a row of its own outside the run's
+   journal (`flow_control_grant_failures`: its class and first instant), and the one eligibility text excludes a
+   waiter with such a row, so it neither reserves room ahead of a younger waiter nor holds back a new arrival at
+   admission, on a key of limit 1 too. The pass still tries it first, in its place; the first later try that decides
+   it deletes the row, and it counts ahead again. A commit that fails after a held signal was delivered is a failure
+   of the delivery: the grant is tried once more without the signal.
 5. **One timeout routine.** A waiter has one deadline, the earlier of its gates'. At it, one transaction
    MUST journal the `wait_timed_out` of the gate that refuses it then (`rate_limit` first when both do) and
    the `dequeued` of the other. A grant MUST skip a waiter past its deadline. A waiter of a terminal run is
@@ -73,6 +100,10 @@ The reviews found four more facts:
    control-plane and engine instances; until an operator activation, their use is refused
    (`FLOW_CONTROL_ACTIVATION_PENDING`). The current keyed-digest version MUST be a database row read in each
    deciding transaction.
+   *Amended 2026-11-26, delegate (OD-2026-11-24-4; feature 022 decisions D022-136 and D022-137, task T022-116):* the
+   operator activation is the generic `control-plane capability-activate flow-control-concurrency-v1` (and
+   `flow-control-rate-v1`) of ADR-0098 decision 4, which keeps every check of the feature's own command (now removed)
+   and refuses while no digest key version is `ACTIVE`.
 
 ## Considered options
 
@@ -108,3 +139,7 @@ None yet; the tests named under "Enforced by" are required before acceptance of 
 implementation, plus the benchmark of feature 022 SC-022-029 (three engines, one key at 100 a second).
 Spec: `specs/022-flow-control-step-policies/spec.md` FR-022-019, FR-022-044, FR-022-046, FR-022-051..053;
 research: D022-019..023, O1169; reviews: `specs/022-flow-control-step-policies/reviews/2026-11-13/`.
+
+Note (2026-11-19, OD-2026-11-19-2 and OD-2026-11-19-3): decision 2 is refined by ADR-0094 (the readiness gate decides in
+an evaluation round the planner asks for, before `persist`), and decision 6's "the current keyed-digest version" reads
+"the versions in force" under ADR-0093. The rest stands.

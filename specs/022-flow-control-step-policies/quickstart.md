@@ -16,6 +16,18 @@ existing ones from `docs/quickstarts/README.md`.
 
 - The four capabilities enabled for the local deployment *(proposed configuration, task T022-005)* and the
   flow-control digest key generated into the ignored local env file *(proposed, task T022-007)*.
+- The digest key version activated and the two gates activated for the fleet, as the schema-owning role, with the
+  one operator command of every fleet requirement (decisions D022-136 and D022-137; runbook
+  `docs/runbooks/flow-control.md`, section 7):
+
+  ```sh
+  psql "$OWNER_DATABASE_URL" -c "SELECT * FROM flow_control_key_activate(1::smallint, '$USER')"
+  control-plane capability-activate flow-control-concurrency-v1 --operator "$USER" --expect-live 2
+  control-plane capability-activate flow-control-rate-v1 --operator "$USER" --expect-live 2
+  ```
+
+  Failure scenario: run the second command before the first and observe the refusal naming the missing digest key
+  version, with nothing changed.
 - A `dev` namespace (seeded) and a `prod` namespace for the refusal checks.
 - The demo workflow `order-intake` from
   [contracts/workflow-ir-fragment.schema.json](contracts/workflow-ir-fragment.schema.json) (`examples`),
@@ -31,6 +43,10 @@ sagat worker dev --mocks order-intake.mocks.yaml --workflow order-intake.workflo
 `order-intake.mocks.yaml` answers `catalog.price` after 2 s with a fixed price, `crm.notify` after 5 s, and
 fails `crm.notify` permanently when `input.failNotify` is true. (These are worker canned answers, the
 existing `sagat worker dev --mocks` feature, not test-mode pins.)
+
+- A development database that applied this branch's migrations under their first numbers (`20270210000000` and
+  `20270210000100` for the waiters' declarations) does not start against this build: recreate it (the branch is
+  unreleased; decision D022-078 item 1).
 
 ## 1. Step cache (US01)
 

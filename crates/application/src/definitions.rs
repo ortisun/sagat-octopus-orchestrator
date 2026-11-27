@@ -179,6 +179,12 @@ pub enum IrError {
         "node '{node}' is a collection with operators, and this deployment has not enabled collection operators"
     )]
     CollectionOperatorsDisabled { node: String },
+    /// A `concurrency` or `rateLimit` declaration whose capability the operator has not activated for the fleet yet
+    /// (feature 022, `FLOW_CONTROL_ACTIVATION_PENDING`, FR-022-053). `capability` is the IR capability's name.
+    #[error(
+        "the {capability} capability is not activated for the fleet yet: an operator activates it once every control plane and engine runs it"
+    )]
+    FlowControlActivationPending { capability: &'static str },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -396,6 +402,10 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
             Problem::error("COLLECTION_OPERATORS_DISABLED", error.to_string())
                 .at_node(node.clone()),
         ],
+        IrError::FlowControlActivationPending { .. } => vec![Problem::error(
+            "FLOW_CONTROL_ACTIVATION_PENDING",
+            error.to_string(),
+        )],
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
@@ -472,6 +482,27 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
         E::InvalidContinuationPolicy(_) => ("INVALID_CONTINUATION_POLICY", None),
         E::InvalidSwitch { node, .. } => ("INVALID_SWITCH", Some(node.to_string())),
+        // feature 022 (`contracts/errors.md`): a key per run has a code of its own (FR-022-056), every other rule the code
+        // of the gate the declaration is for
+        E::InvalidFlowControl {
+            node,
+            rule: sagat_domain::workflow::FlowControlRule::UnboundedKey,
+            ..
+        } => ("FLOW_CONTROL_KEY_UNBOUNDED", node.clone()),
+        // a key over a `secret` location (FR-022-057, decision D022-085)
+        E::InvalidFlowControl {
+            node,
+            rule: sagat_domain::workflow::FlowControlRule::SecretKey,
+            ..
+        } => ("FLOW_CONTROL_KEY_SECRET", node.clone()),
+        E::InvalidFlowControl { kind, node, .. } => (
+            match kind {
+                sagat_domain::workflow::GateKind::Concurrency => "CONCURRENCY_POLICY_INVALID",
+                sagat_domain::workflow::GateKind::RateLimit => "RATE_LIMIT_POLICY_INVALID",
+            },
+            node.clone(),
+        ),
+        E::FlowControlCombination { node, .. } => ("FLOW_CONTROL_COMBINATION", node.clone()),
     }
 }
 
@@ -485,6 +516,15 @@ pub fn warning_problem(warning: &DefinitionWarning) -> Problem {
         DefinitionWarning::RecursiveChild { node } => {
             ("RECURSIVE_CHILD", Some(node.to_string()), None)
         }
+        DefinitionWarning::ConcurrencySelfChild { node } => {
+            ("CONCURRENCY_SELF_CHILD", Some(node.to_string()), None)
+        }
+        DefinitionWarning::ConcurrencyLimitMismatch { node, .. } => {
+            return mismatch_problem("CONCURRENCY_LIMIT_MISMATCH", node.as_ref(), warning);
+        }
+        DefinitionWarning::RateLimitMismatch { node, .. } => {
+            return mismatch_problem("RATE_LIMIT_MISMATCH", node.as_ref(), warning);
+        }
         DefinitionWarning::InputSchemaOutsideSubset { issue, at, .. } => {
             (issue.as_str(), None, Some(format!("/inputSchema{at}")))
         }
@@ -493,6 +533,11 @@ pub fn warning_problem(warning: &DefinitionWarning) -> Problem {
             None,
             Some("/inputSchema".to_owned()),
         ),
+        DefinitionWarning::FlowControlKeyPii { node, .. } => (
+            "FLOW_CONTROL_KEY_PII",
+            node.as_ref().map(ToString::to_string),
+            None,
+        ),
     };
     Problem {
         severity: Severity::Warning,
@@ -500,6 +545,38 @@ pub fn warning_problem(warning: &DefinitionWarning) -> Problem {
         message: warning.to_string(),
         node,
         path,
+    }
+}
+
+/// The refusal of the namespace's `flow_control_node_declarations` (or the domain's own bound): a publication asked again
+/// with its own key after the namespace lowered it is answered by the store's replay (as D042-105), not refused.
+fn is_node_declarations_ceiling(error: &IrError) -> bool {
+    matches!(
+        error,
+        IrError::Invalid(WorkflowError::InvalidFlowControl {
+            rule: sagat_domain::workflow::FlowControlRule::TooManyDeclarations { .. },
+            ..
+        })
+    )
+}
+
+/// A namespace warning of feature 022: at its node, or at the top-level field for a run-level declaration.
+fn mismatch_problem(
+    code: &'static str,
+    node: Option<&sagat_domain::workflow::NodeId>,
+    warning: &DefinitionWarning,
+) -> Problem {
+    let field = if code == "RATE_LIMIT_MISMATCH" {
+        "rateLimit"
+    } else {
+        "concurrency"
+    };
+    Problem {
+        severity: Severity::Warning,
+        code,
+        message: warning.to_string(),
+        node: node.map(ToString::to_string),
+        path: node.is_none().then(|| format!("/{field}")),
     }
 }
 
@@ -772,6 +849,29 @@ pub struct Published {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Send + Sync {
+    /// Whether the operator has activated `capability` for the fleet (feature 018's registry: a requirement is
+    /// recorded for it). An adapter that cannot read the registry says no: flow control stays refused (fail closed).
+    fn flow_control_activated(
+        &self,
+        _capability: crate::instances::Capability,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// The explicit flow-control groups of `groups` that the active versions of the namespace's other workflows declare
+    /// (feature 022, `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH`), with the name of the workflow that
+    /// declares each. Bounded by the adapter. Required, with no default: a delegating store that forgot it would silence
+    /// the warnings without a sound.
+    fn flow_control_group_declarations(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        except: WorkflowId,
+        groups: &[sagat_domain::workflow::GroupName],
+    ) -> impl Future<
+        Output = Result<Vec<(Slug, sagat_domain::workflow::GroupDeclaration)>, StoreError>,
+    > + Send;
+
     /// Current connection/secret authority, for author feedback before publication. The publisher
     /// repeats the check in its transaction. Adapters without managed support fail closed.
     fn check_database_access(
@@ -946,6 +1046,9 @@ pub struct DefinitionService<S, C, X> {
     /// `collection-operators` (design 042): whether a `forEach` may declare `operators`. Off unless the deployment says
     /// so. Checked at publication only; a stored definition stays readable whatever it is (FR-042-003).
     collection_operators_enabled: bool,
+    /// `flow-control.*` (feature 022): whether a definition may declare `concurrency` and `rateLimit`. Off unless the
+    /// deployment says so; a capability that is on still needs its fleet activation (FR-022-053).
+    flow_control: crate::flow_control::FlowControlSwitches,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -957,7 +1060,151 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             lake_enabled: false,
             input_validation: InputValidationMode::Enforce,
             collection_operators_enabled: false,
+            flow_control: crate::flow_control::FlowControlSwitches {
+                concurrency_keys: false,
+                rate_limits: false,
+            },
         }
+    }
+
+    /// Lets a definition declare `concurrency` or `rateLimit` (the deployment's `flow-control.*`, feature 022). The
+    /// fleet activation of each capability is still read at every publication.
+    #[must_use]
+    pub const fn with_flow_control(
+        mut self,
+        switches: crate::flow_control::FlowControlSwitches,
+    ) -> Self {
+        self.flow_control = switches;
+        self
+    }
+
+    /// Why this deployment may not publish the gates `definition` declares now, if it may not (feature 022): a
+    /// capability switched off (`UNSUPPORTED_NODE`, before a version exists, FR-022-031) or not yet activated for the
+    /// fleet (`FLOW_CONTROL_ACTIVATION_PENDING`, FR-022-053). A definition without a gate costs no read.
+    async fn refused_flow_control(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        definition: &WorkflowDefinition,
+    ) -> Result<Option<IrError>, StoreError> {
+        let required = crate::flow_control::required(definition);
+        for capability in &required {
+            if !self.flow_control.enabled(*capability) {
+                let reason = "this workflow capability is not enabled by the runtime";
+                return Ok(Some(
+                    match crate::flow_control::first_use(definition, *capability).flatten() {
+                        Some(node) => IrError::Unsupported {
+                            node: node.as_str().to_owned(),
+                            kind: capability.field().to_owned(),
+                            reason,
+                        },
+                        None => IrError::UnsupportedDeclaration {
+                            field: capability.field(),
+                            reason,
+                        },
+                    },
+                ));
+            }
+        }
+        for capability in required {
+            if !self
+                .store
+                .flow_control_activated(capability.registry())
+                .await?
+            {
+                return Ok(Some(IrError::FlowControlActivationPending {
+                    capability: capability.as_str(),
+                }));
+            }
+        }
+        if !definition.gated_nodes().any(|_| true) {
+            return Ok(None);
+        }
+        // the namespace's ceiling of node-level declarations (T022-013, `flow_control_node_declarations`): reported as the
+        // domain reports its own bound, under the code of the kind
+        let ceilings = sagat_domain::workflow::FlowControlCeilings {
+            node_declarations: self
+                .store
+                .effective_limit(
+                    tenant,
+                    Some(namespace),
+                    sagat_domain::quota::QuotaResource::FlowControlNodeDeclarations,
+                )
+                .await?,
+            ..sagat_domain::workflow::FlowControlCeilings::DEFAULT
+        };
+        if let Err(sagat_domain::workflow::FlowControlLimit::NodeDeclarations { kind, max }) =
+            ceilings.admits_declarations(definition)
+        {
+            return Ok(Some(IrError::Invalid(
+                sagat_domain::workflow::flow_control::invalid(
+                    kind,
+                    None,
+                    sagat_domain::workflow::FlowControlRule::TooManyDeclarations {
+                        max: usize::try_from(max).unwrap_or(usize::MAX),
+                    },
+                ),
+            )));
+        }
+        Ok(None)
+    }
+
+    /// The namespace warnings of feature 022 (G1187): each explicit group this definition declares that the active
+    /// version of another workflow of the namespace declares at the same level with a different limit (or window). One
+    /// warning per declaration of this definition, naming the first such workflow by name. A warning never refuses: a
+    /// failed read gives none (logged), never a failed publication (review of 2026-11-16).
+    async fn flow_control_mismatches(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        workflow: WorkflowId,
+        definition: &WorkflowDefinition,
+    ) -> Vec<DefinitionWarning> {
+        match self
+            .read_flow_control_mismatches(tenant, namespace, workflow, definition)
+            .await
+        {
+            Ok(warnings) => warnings,
+            Err(error) => {
+                tracing::warn!(%error, "flow-control group warnings were not computed");
+                Vec::new()
+            }
+        }
+    }
+
+    async fn read_flow_control_mismatches(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        workflow: WorkflowId,
+        definition: &WorkflowDefinition,
+    ) -> Result<Vec<DefinitionWarning>, StoreError> {
+        let own = definition.explicit_group_declarations();
+        if own.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut groups: Vec<_> = own.iter().map(|d| d.group.clone()).collect();
+        groups.sort();
+        groups.dedup();
+        let others = self
+            .store
+            .flow_control_group_declarations(tenant, namespace, workflow, &groups)
+            .await?;
+        Ok(own
+            .into_iter()
+            .filter_map(|mine| {
+                let (other, _) = others.iter().find(|(_, theirs)| mine.mismatches(theirs))?;
+                let (node, group, other) = (mine.node.clone(), mine.group.clone(), other.clone());
+                Some(match mine.kind {
+                    sagat_domain::workflow::GateKind::Concurrency => {
+                        DefinitionWarning::ConcurrencyLimitMismatch { node, group, other }
+                    }
+                    sagat_domain::workflow::GateKind::RateLimit => {
+                        DefinitionWarning::RateLimitMismatch { node, group, other }
+                    }
+                })
+            })
+            .collect())
     }
 
     /// Publication and its dry run apply `mode` to an `inputSchema` outside the supported subset (D043-073):
@@ -1267,6 +1514,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
+        if let Some(refusal) = self
+            .refused_flow_control(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await?
+        {
+            return Err(AppError::InvalidDefinition(Box::new(refusal)));
+        }
+        let mut parsed = parsed;
+        parsed.warnings.extend(
+            self.flow_control_mismatches(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                id,
+                &parsed.definition,
+            )
+            .await,
+        );
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         let database_check = self
@@ -1309,7 +1576,8 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             // D042-105: a publication asked again with its own key after the switch was turned off is answered by
             // the store's replay, as it would have been with the switch on; only a new publication reads the switch.
             Err(AppError::InvalidDefinition(error))
-                if matches!(*error, IrError::CollectionOperatorsDisabled { .. }) =>
+                if matches!(*error, IrError::CollectionOperatorsDisabled { .. })
+                    || is_node_declarations_ceiling(&error) =>
             {
                 return self
                     .replay_refused(
@@ -1510,6 +1778,24 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 node: node.as_str().to_owned(),
             }));
         }
+        if let Some(refusal) = self
+            .refused_flow_control(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await?
+        {
+            problems.extend(problems_of(&refusal));
+        }
+        let mismatches = self
+            .flow_control_mismatches(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                record.workflow.id(),
+                &parsed.definition,
+            )
+            .await;
         match self
             .store
             .check_database_access(
@@ -1534,7 +1820,12 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();
-        let mut warnings: Vec<_> = parsed.warnings.iter().map(warning_problem).collect();
+        let mut warnings: Vec<_> = parsed
+            .warnings
+            .iter()
+            .chain(&mismatches)
+            .map(warning_problem)
+            .collect();
         warnings.extend(classification_warnings);
         Ok(Validation {
             problems,

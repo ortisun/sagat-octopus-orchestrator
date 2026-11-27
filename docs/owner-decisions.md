@@ -402,6 +402,19 @@ approval the coordinating session put three more questions (OD-2026-11-21-8 to -
 | OD-2026-11-21-204 | "Full review, capped" (OD-2026-11-20-17): the architecture reviewer's final-read finding 1 of design 041's approval run, the same pooler sizing rule (written with the default Logs cap rather than the configured one, not cited by `docs/runbooks/scaling.md`, and changing what the pooler rows measure), is accepted as is, with OD-2026-11-21-201 | owner | Decided | docs/designs/041-step-logs.reviews/2026-11-20-approval/final/architecture.md#1 |
 | OD-2026-11-21-205 | "Full review, capped" (OD-2026-11-20-17): the correctness reviewer's final-read finding 1 of design 041's approval run, the same owner-report threshold as OD-2026-11-21-200, is accepted as is, with that row | owner | Decided | docs/designs/041-step-logs.reviews/2026-11-20-approval/final/correctness.md#1 |
 
+## 2026-11-20 — Feature 022: the rate live-keys count
+
+The security re-review of feature 022's rate gate (pull request 237) asked in writing whether the owner's acceptance of
+an unlocked live-keys count, given for the concurrency keys, also covers the rate-limit keys. The coordinating session
+asked the owner: "Extend the acceptance of the unlocked live-keys count (OD-2026-11-19-4, OD-2026-11-20-3, concurrency
+only) to the rate keys? Yes: same documented bound (overshoot at most the number of transactions creating rate keys at
+the same moment), no namespace lock on rate-key creation. No: make it exact, at the cost of that lock." The owner
+answered on 2026-11-20: "Yes, extend it". Decisions OD-2026-11-20-8, -9 and -10 are recorded in the section below.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-11 | "Yes, extend it": the acceptance of OD-2026-11-19-4 and OD-2026-11-20-3 extends to `rate_limit_live_keys`. The count of a namespace's rate-limit window rows is read without a namespace lock, as the concurrency count is: transactions that create rate-limit keys at the same moment can pass the ceiling by at most the new keys the other transactions of that moment create (their number minus one when each creates one key). The bound is documented; no namespace lock is added to rate-key creation | owner | Decided; the bound is pinned by `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed` | specs/022-flow-control-step-policies/research.md G022-002, D022-066, docs/runbooks/flow-control.md section 4, specs/022-flow-control-step-policies/plan.md "Finite ceilings (rate limits)", data-model.md "Revision of 2026-11-20 (rate re-review)" |
+
 ## 2026-11-20 — Design 041 (step logs): the fourth carry spike, the busy loss, ADR-0095, ADR-0097 and the amendment of ADR-0027
 
 After task T041-35's fourth run (run 44834024933, decision D041-122 of `specs/041-step-logs/research.md`; the record in
@@ -492,6 +505,19 @@ de simplicidade. Quero que o código seja altamente flexível, coeso, adaptável
 | OD-2026-11-20-7 | "Yes, merge #254" (owner, 2026-11-20, asked because this narrows the owner's OD-2026-11-06-2 and amends the constitution, which the delegation does not cover). Proposed on architecture review finding m7 of design 022: a pull request that changes only a contract file (`specs/<feature>/contracts/`) selected no suite, so a contract regression could merge untested. A contract change is a change: it now selects the contract suites (`tests/contract/`) and the workspace packages whose Rust sources read that file (and the packages that depend on them), derived by `scripts/select-test-targets.py` from the sources, never from a hand list. Weighed: every reader including the integration and e2e suites (an OpenAPI change would run twenty suites, five of them integration or e2e, against the delivery time OD-2026-11-04-1 protects); a hand table (rots when a suite is added); nothing (the hole stays). This narrows OD-2026-11-06-2 for contract files only; every other shared input still selects no suite. Reversible by a later amendment; to be reported to the owner | owner | Decided | docs/constitution.md 4.6.0, docs/governance/constitution-4.6.0-sync-impact.md, scripts/select-test-targets.py, docs/test-strategy.md |
 | OD-2026-11-20-12 | "Yes, in 0.3.0" (owner, 2026-11-20), to the question "Add delivery acknowledgement (option C: a lease is provisional until the host acknowledges it, or the first heartbeat before the handler with the server withdrawing unacknowledged leases; a new protocol minor in all six SDKs) in release 0.3.0?". Asked because it changes the guarantees of the worker protocol, which the delegation does not cover. Context: a lease the engine committed and no host received lapses and, since feature 037, becomes `step.needs_review` for work that never ran (CI jobs 136567175914 and 136453650156, and the C# play of `flow-rate-limit` on PR #251). The withdrawal of leases the server knows never left the process and the hosts' report of leases they dropped (D006-001 to D006-008) close the cases the platform can see; delivery acknowledgement closes the rest (a frame lost on the wire, a lost answer of a unary poll). Which variant, the protocol minor and the acknowledgement deadline are decided in the design that follows, under OD-2026-11-20-6 | owner | Decided, not built | specs/006-sdk-multilanguage/research.md O006-001, specs/006-sdk-multilanguage/stream-completion.md "Leases that never reach a host", sdks/SPEC.md §10 |
 
+## 2026-11-20 — Feature 022: the pause's returns, the live-keys bound in keys and the force's bound
+
+The fifth build of feature 022's 0.3.0 slice (pull request 237) left the owner three questions, each with a
+recommendation: O1175 (ADR-0096), O1173 and O1174. The owner answered on 2026-11-20: "Aceitar ADR-0096" for O1175 and
+"Aceitar as duas" for O1173 and O1174. The three rows of feature 022 follow; the other numbers of the 2026-11-20 range
+are recorded on the branches they belong to.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-2 | "Aceitar ADR-0096": O1175 option (a). Pausing a run gives back the permit and the slot of each of its gated steps that is granted and not leased and makes it wait again; resuming asks again for the same attempt; a step made ready while the run is paused is decided in that commit and a grant is given back at once. ADR-0096 is Accepted and partly supersedes ADR-0094 decisions 2 and 3 (a step a pause gave back is not asked while its run is paused, and `persist` accepts it waiting without a decision). The deadline of a step queued before the pause still runs during the pause (G022-008; option (c) was not chosen) | owner | Decided; built and ticked under T022-100 | docs/adr/ADR-0096-*.md, docs/adr/ADR-0094-*.md, specs/022-flow-control-step-policies/research.md O1175, D022-048, tasks.md T022-100 |
+| OD-2026-11-20-3 | "Aceitar as duas": O1173 option (a). When one commit creates several new keys (gated steps released together), the live-keys overshoot accepted by OD-2026-11-19-4 is bounded in keys, not transactions: at most the new keys created by the other transactions of the same moment, each bounded by the plan's gated steps per commit. The bound is documented; no namespace lock is added | owner | Decided | specs/022-flow-control-step-policies/research.md O1173, G022-002, D022-047, docs/runbooks/flow-control.md section 4 |
+| OD-2026-11-20-4 | "Aceitar as duas": O1174 option (a). "Its old row's holders" in the force's bound (ADR-0093 decision 5, OD-2026-11-19-2) is read at each moment: a forced key is over-admitted by what its old row holds at that moment, never more than that row's limit, until its holders and waiters drain; the old row keeps its waiters and grants them within its own limit | owner | Decided | docs/adr/ADR-0093-*.md decision 5, specs/022-flow-control-step-policies/research.md O1174, D022-046, tasks.md T022-108, docs/runbooks/flow-control.md section 3 |
+
 ## 2026-11-20 — Design 041 (step logs): the carry's tail after its first spike
 
 The spike T041-35 of design 041 passed its rate and ticket gates and failed the completion p99 (+40.6% and +23.7% at the
@@ -502,6 +528,19 @@ medians, against +10%; `specs/041-step-logs/validation-report.md`). The assistan
 |---|---|---|---|---|
 | OD-2026-11-20-1 | O041-039, "Cortar custo, depois limite absoluto" ("cut the cost, then an absolute limit"): (a) cut the carry's cost (its statements in one round trip, and the step-log quota charged once per transaction instead of per row, an amendment of ADR-0027's Amendment whose wording is put to the owner as O041-040) and run the spike again; (b) if it still misses +10%, the p99 criterion for completions that carry records is the capture-off p99 plus 2 ms, at both sizes, fixed before the rounds, the other gates unchanged | owner | Decided | docs/designs/041-step-logs.md T041-5, T041-35, T041-36 |
 | OD-2026-11-20-5 | "Confirmo" ("I confirm"), before any round of the second carry spike: the coordinator's reading of OD-2026-11-20-1 (D041-101) holds; per size, a carrying completion's p99 must be at most the capture-off p99 plus the larger of 10% of it and 2 ms, and the report says which allowance decided each size | owner | Decided | docs/designs/041-step-logs.md T041-35 |
+
+## 2026-11-19 — Feature 022: the digest-key rotation, the readiness round and the live-keys bound
+
+The fourth build of feature 022's 0.3.0 slice (pull request 237) left the owner six pending decisions, each with a
+recommendation. The assistant asked "Há seis decisões pendentes, todas com recomendação … Aceitas todas como
+recomendado?" and the owner answered "Sim, como recomendado" on 2026-11-19. The three rows of feature 022 follow; the
+other numbers of the 2026-11-19 range are recorded on the branches they belong to.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-19-2 | "Sim, como recomendado": O1170 option (a) with (b) for incidents. The per-key rotation of ADR-0093 is accepted: a rotation ends when the old version's last row goes, and the runbook tells the operator to wait for or cancel the runs that hold old keys. For an emergency (a leaked key) an operator-only, audited **force** retires the old version at once; a key may then have two rows until the old one drains, and its limit may be over-admitted by at most the holders of its old row. ADR-0093 is Accepted | owner | Decided; the force is built under T022-108 (ADR-0093 decision 5) | docs/adr/ADR-0093-*.md, specs/022-flow-control-step-policies/research.md O1170, tasks.md T022-095 |
+| OD-2026-11-19-3 | "Sim, como recomendado": O1171 option (a). The readiness gate decides in an evaluation round the planner asks for, before `persist` (ADR-0094); ADR-0089 decision 2 is refined accordingly. ADR-0094 is Accepted | owner | Decided | docs/adr/ADR-0094-*.md, specs/022-flow-control-step-policies/research.md O1171, tasks.md T022-096 |
+| OD-2026-11-19-4 | "Sim, como recomendado": O1172 option (a). In release 0.3.0 the namespace's live-keys ceiling is checked without a namespace lock and may be overshot by at most the number of transactions creating keys at the same moment; the bound is documented, no new lock is added | owner | Decided | specs/022-flow-control-step-policies/research.md O1172, G022-002, D022-047, docs/runbooks/flow-control.md section 4 |
 
 ## 2026-11-19 — Design 041 (step logs): the redesign of the transport after the ingest spike
 
@@ -526,6 +565,19 @@ three of feature 022 are recorded on its branch.
 | OD-2026-11-19-5 | O043-005 (a), "Sim, como recomendado": an `inputSchema` with tuple positions (`prefixItems`, or `items` as an array) stays outside the supported subset in 0.3.0; in `enforce` such a version is refused at publication and refuses its starts, the inventory lists it, `report` publishes it, the 016 contract and the release notes say so, and tuples are designed into the subset later | owner | Decided | O043-005, D043-095, D043-110, specs/043-run-input-validation/research.md |
 | OD-2026-11-19-6 | O043-006 (a), "Sim, como recomendado": a repeat, trigger-now or private rerun refused on its input answers `/` and `other` to every caller, as built; no graded disclosure in 0.3.0 | owner | Decided | O043-006, D043-121, D043-144, D043-148, G043-040 |
 | OD-2026-11-19-7 | O043-008 (a), "Sim, como recomendado": ADR-0092 decision 6 is accepted: a release that makes the subset stricter ships `run-input-validation-v2`, required by the operator as v1 is, never a silent edit | owner | Decided | O043-008, ADR-0092 decision 6 |
+
+## 2026-11-16 — Feature 022: the checklist deviations and the quota resources of the OpenAPI
+
+The foundation of the 0.3.0 slice of feature 022 (pull request 237) left two things that only the owner could settle:
+the five unticked items of `specs/022-flow-control-step-policies/checklists/requirements.md`, which the transitional
+clause of the constitution makes blocking until the owner accepts them (OD-2026-11-03-33), and the change to the
+pinned OpenAPI baseline that T022-013's new quota resources need (the foundation did not bless it, PR 237 "What is
+left"). The owner answered both on 2026-11-16.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-16-1 | "Aceitar os 5": the five unticked items of feature 022's `checklists/requirements.md` (no implementation details, written for non-technical stakeholders, technology-agnostic success criteria, measurable outcomes met, no implementation details leaking) are accepted as the deliberate deviations the checklist documents; they no longer block the implementation (the gate of OD-2026-11-03-33) | owner | Decided | specs/022-flow-control-step-policies/checklists/requirements.md, research.md |
+| OD-2026-11-16-2 | "Autorizar, ler o diff": the quota-resource enum of the canonical OpenAPI gains the concurrency resources of T022-013. The pinned baseline is changed once, after reading its diff, and the reading is recorded | owner | Decided; done 2026-11-16: the bless diff was read (18 operations added, all of 018 and 035 that the baseline leaves out on purpose; no digest changed or removed, since the digest does not follow `$ref`), so the baseline was not re-pinned (D022-040); the enum is pinned to the code by `contract_flow_control_step_policies::quotas` | specs/001-platform-foundation/contracts/openapi.yaml, tests/contract/iceberg-writes/fixtures/openapi-operations.json, specs/022-flow-control-step-policies/tasks.md T022-013 |
 
 ## 2026-11-16 — Design 041 (step logs): the approval path and the answers to Q1 to Q8
 

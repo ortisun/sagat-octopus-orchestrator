@@ -103,7 +103,8 @@ async fn report(mode: control::ProfileMode) {
         } else {forward.clone()};
         assert_eq!(lease.instance.as_ref().expect("scoped lease").instance_path.len(),1);
         let cutoff:i64=sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2").bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("old journal cutoff");
-        let prefix=super::immutable_prefix(&platform.api.db.pool,platform.tenant.as_uuid(),run.as_uuid(),cutoff).await;
+        let work_columns=super::released_work_columns(&platform.api.db.pool,platform.tenant.as_uuid(),run.as_uuid()).await;
+        let prefix=super::immutable_prefix(&platform.api.db.pool,platform.tenant.as_uuid(),run.as_uuid(),cutoff,&work_columns).await;
         platform.api.executions.verify_run(platform.tenant,run).await.expect("actual released leased-path replay");
         if mode.refuses_output() {
             let ledger:i64=sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2").bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("actual released ledger");
@@ -118,7 +119,7 @@ async fn report(mode: control::ProfileMode) {
         let mut request=Worker::complete_message(&lease,report_output);
         request.idempotency_key="released-inflight-report".into();
         let request_hash=control::sha(&request.encode_to_vec());
-        control::send(&mut stream,&json!({"scenario":mode.scenario(),"cutoff":cutoff,"prefixSha256":prefix,"appliedLookup":applied_lookup,"forwardStep":forward.step_id,"forwardAttempt":forward.attempt,"forwardGeneration":forward.generation,"forwardTokenSha256":control::sha(forward.lease_token.as_bytes()),"forwardKeySha256":control::sha(forward.idempotency_key.as_bytes()),"reserveKeySha256":control::sha(reserve.idempotency_key.as_bytes()),"refusedOutput":mode.refuses_output(),"outputSources":output_sources,"requestSha256":request_hash,"tokenSha256":control::sha(lease.lease_token.as_bytes()),"expiresAtMs":lease.expires_at_epoch_ms,"releaseCommit":super::RELEASE,"database":platform.api.db.name,"tenant":platform.tenant.to_string(),"run":run.to_string(),"step":lease.step_id,"attempt":lease.attempt,"generation":lease.generation,"owner":owner})).await;
+        control::send(&mut stream,&json!({"scenario":mode.scenario(),"cutoff":cutoff,"workColumns":work_columns,"prefixSha256":prefix,"appliedLookup":applied_lookup,"forwardStep":forward.step_id,"forwardAttempt":forward.attempt,"forwardGeneration":forward.generation,"forwardTokenSha256":control::sha(forward.lease_token.as_bytes()),"forwardKeySha256":control::sha(forward.idempotency_key.as_bytes()),"reserveKeySha256":control::sha(reserve.idempotency_key.as_bytes()),"refusedOutput":mode.refuses_output(),"outputSources":output_sources,"requestSha256":request_hash,"tokenSha256":control::sha(lease.lease_token.as_bytes()),"expiresAtMs":lease.expires_at_epoch_ms,"releaseCommit":super::RELEASE,"database":platform.api.db.name,"tenant":platform.tenant.to_string(),"run":run.to_string(),"step":lease.step_id,"attempt":lease.attempt,"generation":lease.generation,"owner":owner})).await;
         let endpoint=control::receive(&mut stream).await;
         let mut client=WorkerServiceClient::connect(endpoint["url"].as_str().expect("current endpoint").to_owned()).await.expect("old client connects current endpoint");
         let authorization=tonic::metadata::MetadataValue::try_from(format!("Bearer {}",endpoint["token"].as_str().expect("refreshed test authentication"))).expect("valid authentication metadata");
@@ -143,7 +144,7 @@ async fn report(mode: control::ProfileMode) {
         let retained:Option<Vec<u8>>=sqlx::query_scalar("SELECT p.content FROM steps s LEFT JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.step_id=$3 AND s.node='charge'").bind(platform.tenant.as_uuid()).bind(run.as_uuid()).bind(forward.step_id.parse::<uuid::Uuid>().expect("old forward UUID")).fetch_one(&platform.api.api_pool).await.expect("released reader exact retained forward output");
         assert_eq!(retained.as_ref().map(Vec::len),mode.retained_output().map(str::len));
         if let (Some(actual),Some(expected))=(&retained,mode.retained_output()) { assert_eq!(control::sha(actual),control::sha(expected.as_bytes())); }
-        assert_eq!(super::immutable_prefix(&platform.api.db.pool,platform.tenant.as_uuid(),run.as_uuid(),cutoff).await,prefix);
+        assert_eq!(super::immutable_prefix(&platform.api.db.pool,platform.tenant.as_uuid(),run.as_uuid(),cutoff,&work_columns).await,prefix);
         platform.api.executions.verify_run(platform.tenant,run).await.expect("released replay after current in-flight completion");
         control::send(&mut stream,&json!({"reported":true,"replayed":true,"command":applied.command_id,"requestSha256":request_hash})).await;
     }).await;
@@ -178,7 +179,7 @@ async fn read_finished_inflight_profile_with_released_code() {
         let expected=match witness["scenario"].as_str() {Some("inflight-worker"|"applied-lookup")=>"SUCCEEDED",Some("applied-output-quota")=>"COMPENSATED",_=>panic!("unknown released terminal profile")};
         assert_eq!(crate::support::api::json_of(response).await["status"],expected);
         api.executions.verify_run(tenant,run).await.expect("actual old native terminal replay");
-        assert_eq!(super::immutable_prefix(&api.db.pool,tenant.as_uuid(),run.as_uuid(),witness["cutoff"].as_i64().expect("old prefix boundary")).await,witness["prefixSha256"].as_str().expect("old prefix hash"));
+        assert_eq!(super::immutable_prefix(&api.db.pool,tenant.as_uuid(),run.as_uuid(),witness["cutoff"].as_i64().expect("old prefix boundary"),&super::witness_columns(&witness)).await,witness["prefixSha256"].as_str().expect("old prefix hash"));
         control::send(&mut stream,&json!({"terminalOldReader":true,"prefixVerifiedAfterFinalization":true,"scenario":witness["scenario"]})).await;
     }).await;
 }

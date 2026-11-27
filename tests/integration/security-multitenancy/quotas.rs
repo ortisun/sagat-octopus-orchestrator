@@ -544,6 +544,17 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::BatchJobs, false),
             (QuotaResource::TenantBatchJobs, true),
             (QuotaResource::PendingResets, false),
+            (QuotaResource::QueuedRuns, false),
+            (QuotaResource::ConcurrencyLiveKeys, false),
+            (QuotaResource::FlowControlKeyWaiters, false),
+            (QuotaResource::ConcurrencyLimit, false),
+            (QuotaResource::FlowControlQueueTimeoutMs, false),
+            (QuotaResource::FlowControlNodeDeclarations, false),
+            // feature 022, task T022-077: the rate-limit ceilings are per namespace (plan "Finite ceilings (rate limits)")
+            (QuotaResource::RateLimitLiveKeys, false),
+            (QuotaResource::RateLimitPerSecond, false),
+            (QuotaResource::RateLimitPerMinute, false),
+            (QuotaResource::RateLimitPerHour, false),
             // Feature 041: the admin holds run:logs:read, so the step-log usage is shown.
             // Withheld: the admin holds no PII reveal grant (decision D041-133).
             (QuotaResource::TenantStepLogBytes, false),
@@ -601,10 +612,59 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::ScheduleBackfills, Some(0)),
             (QuotaResource::BatchJobs, Some(0)),
             (QuotaResource::PendingResets, Some(0)),
+            (QuotaResource::QueuedRuns, Some(0)),
+            // feature 022, decision D022-133: the live-key counts and the busiest key's waiters tell which runs share a
+            // key, so they are withheld from a caller without the reveal grant in the namespace, as the admin here
+            (QuotaResource::ConcurrencyLiveKeys, None),
+            (QuotaResource::FlowControlKeyWaiters, None),
+            (QuotaResource::ConcurrencyLimit, None),
+            (QuotaResource::FlowControlQueueTimeoutMs, None),
+            (QuotaResource::FlowControlNodeDeclarations, None),
+            // feature 022, task T022-077: the window rows are counted (withheld here, D022-133); the three window
+            // limits are policies
+            (QuotaResource::RateLimitLiveKeys, None),
+            (QuotaResource::RateLimitPerSecond, None),
+            (QuotaResource::RateLimitPerMinute, None),
+            (QuotaResource::RateLimitPerHour, None),
             (QuotaResource::StepLogAttemptRecords, None),
             (QuotaResource::StepLogAttemptBytes, None),
             (QuotaResource::StepLogRetentionDays, None),
         ]
+    );
+    // D022-133: the three are listed with their usage withheld, not as policies without one; with the reveal grant in
+    // the namespace the admin reads their exact usage
+    const KEY_SHARING: [QuotaResource; 3] = [
+        QuotaResource::ConcurrencyLiveKeys,
+        QuotaResource::FlowControlKeyWaiters,
+        QuotaResource::RateLimitLiveKeys,
+    ];
+    let withheld = |views: &[sagat_application::quotas::QuotaView]| {
+        KEY_SHARING
+            .iter()
+            .map(|resource| {
+                let view = views
+                    .iter()
+                    .find(|q| q.resource == *resource)
+                    .expect("listed");
+                (*resource, view.used, view.usage_withheld)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        withheld(&namespace_view),
+        KEY_SHARING.map(|resource| (resource, None, true)),
+        "withheld without the reveal grant"
+    );
+    crate::support::flow_control::reveal_to_admin(&w).await;
+    let revealed = w
+        .quotas
+        .list(&w.admin, Some(w.namespace.id()), &ctx())
+        .await
+        .expect("list");
+    assert_eq!(
+        withheld(&revealed),
+        KEY_SHARING.map(|resource| (resource, Some(0), false)),
+        "the exact usage with the reveal grant"
     );
 }
 

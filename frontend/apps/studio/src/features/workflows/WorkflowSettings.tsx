@@ -11,6 +11,8 @@ import { Banner } from '../../ui/Banner';
 import { Button } from '../../ui/Button';
 import { Field } from '../../ui/Field';
 import { JsonField } from './JsonField';
+import { FlowControlFields } from './FlowControlFields';
+import { WORKFLOW } from './flowControl';
 import { TRIGGER_FIELDS, TRIGGER_KINDS, addTrigger, removeTrigger, setDescription, setSchema, setTriggerField, setTriggerKind, triggerKindOf } from './operations';
 import type { TriggerKind } from './operations';
 import type { Change } from './fields';
@@ -256,6 +258,7 @@ export const WorkflowSettings = forwardRef(function WorkflowSettings(
         </select>
       </Field>
       <Triggers doc={doc} disabled={disabled} change={change} />
+      <FlowControlFields doc={doc} owner={WORKFLOW} disabled={disabled} change={change} />
       <section aria-label="Data contract">
         <h3>Data contract</h3>
         <JsonField

@@ -51,6 +51,15 @@ pub enum Evaluation {
         node: NodeId,
         expression: Expression,
     },
+    /// Decide the flow-control gates of the root steps that wait for them (feature 022, T28 of the plan): for each,
+    /// the attempt it would start next. Asked once the planner has nothing else to do, so that every step this
+    /// transition makes ready is decided in one round, under one sorted lock of its keys (D022-020, D022-038).
+    Gates { steps: Vec<super::GateRequest> },
+    /// Decide the gates of the run's start (feature 022, T10 at a later instant): asked when a delayed start is released
+    /// ([`super::StartCause::Release`], FR-022-018) and right after a reset, which takes a fresh permit or is refused and
+    /// never queues ([`super::StartCause::Reset`]; 018's plan, row 17). Asked before anything of the run goes on, so the
+    /// decision comes right after the event that asks for it.
+    StartGates { cause: super::StartCause },
 }
 
 /// One planning decision.
@@ -291,15 +300,34 @@ pub fn plan(
     if state.is_finished() {
         return Ok(Plan::Idle);
     }
+    if let Some(given_back) = give_back_ended_gates(state) {
+        return Ok(Plan::Emit(given_back));
+    }
     if let Some(reason) = state.stop_reason() {
         return drain(def, state, reason);
     }
     if state.is_paused() {
+        // feature 022: a step that the retry pass or an operator made ready while the run is paused is decided in that
+        // commit, so the journal says why it waits (invariant 11); a grant is then given back above, and the step asks
+        // again on resume (FR-022-046); a running run asks once everything else is planned, below
+        if let Some(steps) = undecided_gates(state) {
+            return Ok(Plan::Evaluate(Evaluation::Gates { steps }));
+        }
         return Ok(Plan::Idle);
     }
     // A start delay holds the entry: nothing is released, no timer starts, no wait begins until the
     // release (a stop is handled above, so a delayed run can still be cancelled or time out).
     if state.is_start_delayed() {
+        return Ok(Plan::Idle);
+    }
+    // The start's gates that no decision has reached yet (feature 022): a released delay or a reset asks for them before
+    // anything else of the run goes on.
+    if let Some(cause) = undecided_start_of(def, state) {
+        return Ok(Plan::Evaluate(Evaluation::StartGates { cause }));
+    }
+    // A run whose start waits for a permit or a slot (feature 022) holds its entry the same way, until the grant
+    // routine grants every gate it waits for, or it is stopped.
+    if state.run_gates().holds_entry() {
         return Ok(Plan::Idle);
     }
     if let Some(action) = start_pending(def, state, now)? {
@@ -317,14 +345,20 @@ pub fn plan(
     if let Some(action) = route_finished(def, state)? {
         return Ok(action);
     }
+    if let Some(steps) = undecided_gates(state) {
+        return Ok(Plan::Evaluate(Evaluation::Gates { steps }));
+    }
     let all_done = state.has_started()
         && state
             .instances()
             .all(|(_, step)| step.status().is_terminal() && step.routed());
     Ok(if all_done {
-        Plan::Emit(RunEvent::RunFinished {
-            status: super::state::RunStatus::Succeeded,
-        })
+        finishing(
+            state,
+            RunEvent::RunFinished {
+                status: super::state::RunStatus::Succeeded,
+            },
+        )
     } else {
         Plan::Idle
     })
@@ -340,11 +374,155 @@ fn node_of<'a>(
 
 /// The run is being stopped: the sagas compensate what they are to, then what is not in flight is
 /// cancelled, what is gets asked to stop, and the run finishes.
+/// What a step no longer needs is given back as soon as it no longer needs it (feature 022, FR-022-019, FR-022-046): the
+/// permit of an attempt that ended, and the permit and slot of a granted step that left `READY` without being leased.
+fn give_back_ended_gates(state: &RunState) -> Option<RunEvent> {
+    // a pause gives back what a granted, unleased step holds, and it waits to ask again on resume (FR-022-046, T29)
+    let pausing = state.is_paused() && state.stop_reason().is_none();
+    for (instance, step) in state.instances() {
+        let Some(node) = instance.path().is_root().then(|| instance.node().clone()) else {
+            continue;
+        };
+        let waiting_on_gate = matches!(step.waiting_on(), Some(WaitingOn::Gate));
+        for (slot, change) in [
+            (
+                step.gates().concurrency(),
+                super::GateChange::ConcurrencyReleased,
+            ),
+            (step.gates().rate(), super::GateChange::RateReturned),
+        ] {
+            let Some(slot) = slot.filter(|slot| slot.phase() == super::GatePhase::Held) else {
+                continue;
+            };
+            let leased_this = step.attempt() >= slot.attempt();
+            let left_ready_unleased =
+                !leased_this && step.status() != StepStatus::Ready && !waiting_on_gate;
+            let returned_on_pause =
+                pausing && !leased_this && (step.status() == StepStatus::Ready || waiting_on_gate);
+            let due = match change {
+                super::GateChange::ConcurrencyReleased => {
+                    (leased_this && !step.status().is_leased())
+                        || left_ready_unleased
+                        || returned_on_pause
+                }
+                _ => left_ready_unleased || returned_on_pause,
+            };
+            if due {
+                return Some(RunEvent::Gate(super::GateEvent {
+                    target: super::GateTarget::Step {
+                        node,
+                        attempt: slot.attempt(),
+                    },
+                    gate: slot.gate().clone(),
+                    change,
+                }));
+            }
+        }
+    }
+    None
+}
+
+/// The root steps that wait for their gates without a decision of each for the attempt they would start next (feature
+/// 022): what the readiness gate decides. Only a state that knows its definition's gated nodes has any.
+#[must_use]
+pub fn undecided_gates(state: &RunState) -> Option<Vec<super::GateRequest>> {
+    let steps: Vec<_> = state
+        .instances()
+        .filter(|(instance, _)| instance.path().is_root())
+        .filter_map(|(instance, step)| {
+            let declared = state.declared_gates(instance.node())?;
+            let next = step.attempt().saturating_add(1);
+            (step.status() == StepStatus::Waiting
+                && matches!(step.waiting_on(), Some(WaitingOn::Gate))
+                && !step.gates().decided_all(declared, next)
+                // what a pause gave back is asked again on resume, not while paused (FR-022-046)
+                && !state.waits_for_resume(instance.node()))
+            .then(|| super::GateRequest {
+                node: instance.node().clone(),
+                attempt: next,
+            })
+        })
+        .collect();
+    (!steps.is_empty()).then_some(steps)
+}
+
+/// Whether the start of a run of `def` has gates no decision has reached, and if so why it is decided now: a delayed start
+/// once released (its entry still held), a reset right after `run.reset`. An admission decides in the transaction that
+/// starts the run ([`super::start_run_gated`]), so it is never asked here.
+pub(super) fn undecided_start_of(
+    def: &WorkflowDefinition,
+    state: &RunState,
+) -> Option<super::StartCause> {
+    let declared = super::DeclaredGates::of(def.run_flow_control())?;
+    if declared
+        .kinds()
+        .any(|kind| state.run_gates().of_kind(kind).is_some())
+    {
+        return None;
+    }
+    state.start_undecided()
+}
+
+/// The run's last event, preceded by giving back the run permit it holds (feature 022, ADR-0056 decision 4): a run
+/// never finishes with a permit, and gives it back only once nothing of it is active.
+fn finishing(state: &RunState, finished: RunEvent) -> Plan {
+    match state.run_gates().held_permit() {
+        Some(slot) => Plan::Emit(RunEvent::Gate(super::GateEvent {
+            target: super::GateTarget::Run,
+            gate: slot.gate().clone(),
+            change: super::GateChange::ConcurrencyReleased,
+        })),
+        None => Plan::Emit(finished),
+    }
+}
+
+/// A stopped run whose start still waits for a gate leaves its queues first, rate first (FR-022-021, FR-022-052):
+/// it is never granted, and holds nothing.
+fn dequeue_stopped_start(state: &RunState) -> Option<RunEvent> {
+    let (kind, slot) = state.run_gates().waiting().next()?;
+    Some(RunEvent::Gate(super::GateEvent {
+        target: super::GateTarget::Run,
+        gate: slot.gate().clone(),
+        change: match kind {
+            crate::workflow::GateKind::RateLimit => super::GateChange::RateDequeued,
+            crate::workflow::GateKind::Concurrency => super::GateChange::ConcurrencyDequeued,
+        },
+    }))
+}
+
+/// A stopped run's steps that wait for their gates leave their queues first, rate first (FR-022-021, FR-022-052): they
+/// are never granted, and the step is then cancelled with the run's other waiting steps.
+fn dequeue_stopped_steps(state: &RunState) -> Option<RunEvent> {
+    state.instances().find_map(|(instance, step)| {
+        if !instance.path().is_root() {
+            return None;
+        }
+        let (kind, slot) = step.gates().waiting().next()?;
+        Some(RunEvent::Gate(super::GateEvent {
+            target: super::GateTarget::Step {
+                node: instance.node().clone(),
+                attempt: slot.attempt(),
+            },
+            gate: slot.gate().clone(),
+            change: match kind {
+                crate::workflow::GateKind::RateLimit => super::GateChange::RateDequeued,
+                crate::workflow::GateKind::Concurrency => super::GateChange::ConcurrencyDequeued,
+            },
+        }))
+    })
+}
+
 fn drain(
     def: &WorkflowDefinition,
     state: &RunState,
     reason: StopReason,
 ) -> Result<Plan, ExecutionError> {
+    if let Some(dequeued) = dequeue_stopped_start(state) {
+        return Ok(Plan::Emit(dequeued));
+    }
+    if let Some(dequeued) = dequeue_stopped_steps(state) {
+        return Ok(Plan::Emit(dequeued));
+    }
     if let Some(action) = sagas::advance(def, state, Some(reason))? {
         return Ok(action);
     }
@@ -437,9 +615,12 @@ fn drain(
     }
     Ok(
         if state.steps().all(|(_, step)| step.status().is_terminal()) {
-            Plan::Emit(RunEvent::RunFinished {
-                status: state.final_status_for(reason),
-            })
+            finishing(
+                state,
+                RunEvent::RunFinished {
+                    status: state.final_status_for(reason),
+                },
+            )
         } else {
             Plan::Idle
         },
