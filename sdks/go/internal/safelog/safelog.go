@@ -19,6 +19,16 @@ func New(l *slog.Logger) *slog.Logger {
 	return slog.New(handler{inner: l.Handler()})
 }
 
+// Handler wraps a handler so that a panic in any of its methods is swallowed: the per-attempt handler of step-log
+// capture is wrapped with it, so that a logger call of an activity never panics into the activity whatever the
+// capture path or the application's handler does (sdks/SPEC.md sections 6.9 and 10).
+func Handler(inner slog.Handler) slog.Handler {
+	if already, ok := inner.(handler); ok {
+		return already
+	}
+	return handler{inner: inner}
+}
+
 type handler struct{ inner slog.Handler }
 
 func (h handler) Enabled(ctx context.Context, level slog.Level) (enabled bool) {

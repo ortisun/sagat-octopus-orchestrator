@@ -77,6 +77,21 @@ type fakeService struct {
 	// holds keeps the successful answer to a method until its condition is true (or ten seconds have passed): a
 	// call the test holds in flight until what it claims has happened meanwhile, instead of a window of time.
 	holds map[string]func() bool
+	// stepLogs is the StepLogPolicy of a registration (protocol 1.7); nil sends none.
+	stepLogs *pb.StepLogPolicy
+	// appendAnswers are the answers to AppendStepLogs, in order; past them every call is answered CONTINUE.
+	appendAnswers []appendAnswer
+}
+
+// appendAnswer is one scripted answer of AppendStepLogs: a verdict, or a failure with a gRPC code and its
+// retry-after-ms trailer; hold keeps it until its condition is true, the call is cancelled, or ten seconds passed.
+type appendAnswer struct {
+	verdict    pb.StepLogVerdict
+	stopReason pb.StepLogStopReason
+	retryMs    int32
+	code       codes.Code
+	retryAfter string
+	hold       func() bool
 }
 
 func newFakeService(t *testing.T) *fakeService { return newFakeServiceWith(t, nil) }
@@ -148,7 +163,37 @@ func (f *fakeService) RegisterWorker(ctx context.Context, r *pb.RegisterWorkerRe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registrations++
-	return &pb.RegisterWorkerResponse{WorkerId: "w-1", SessionToken: fmt.Sprintf("session-%d", f.registrations), AcceptedProtocolVersion: f.accepted}, nil
+	return &pb.RegisterWorkerResponse{WorkerId: "w-1", SessionToken: fmt.Sprintf("session-%d", f.registrations), AcceptedProtocolVersion: f.accepted, StepLogs: f.stepLogs}, nil
+}
+
+func (f *fakeService) AppendStepLogs(ctx context.Context, r *pb.AppendStepLogsRequest) (*pb.AppendStepLogsResponse, error) {
+	if err := f.enter(ctx, "AppendStepLogs", r); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	answer := appendAnswer{verdict: pb.StepLogVerdict_STEP_LOG_VERDICT_CONTINUE}
+	if len(f.appendAnswers) > 0 {
+		answer = f.appendAnswers[0]
+		f.appendAnswers = f.appendAnswers[1:]
+	}
+	f.mu.Unlock()
+	if answer.hold != nil {
+		end := time.Now().Add(10 * time.Second)
+		for !answer.hold() && time.Now().Before(end) && ctx.Err() == nil {
+			time.Sleep(time.Millisecond)
+		}
+		if ctx.Err() != nil {
+			return nil, status.Error(codes.Canceled, "cancelled")
+		}
+		f.note("answered AppendStepLogs")
+	}
+	if answer.code != codes.OK {
+		if answer.retryAfter != "" {
+			_ = grpc.SetTrailer(ctx, metadata.Pairs("retry-after-ms", answer.retryAfter))
+		}
+		return nil, status.Error(answer.code, "scripted")
+	}
+	return &pb.AppendStepLogsResponse{Verdict: answer.verdict, StopReason: answer.stopReason, RetryAfterMs: answer.retryMs}, nil
 }
 
 func (f *fakeService) PollTasks(ctx context.Context, r *pb.PollTasksRequest) (*pb.PollTasksResponse, error) {

@@ -6,7 +6,7 @@ Internal faithful JSON encoding, raw-object reading and canonicalization. [jsonx
 
 ## Interface
 
-- Internal callers use Encode, Canonical, Object, String, Int, Bool, Time, IsNull, Instant and ParseInstant. [jsonx.go:Encode] [canonical.go:Canonical] [jsonx.go:Object] [jsonx.go:String] [jsonx.go:Int] [jsonx.go:Bool] [jsonx.go:Time] [jsonx.go:IsNull] [jsonx.go:Instant] [jsonx.go:ParseInstant]
+- Internal callers use Encode, Canonical, NumberText (the ECMAScript text of a double, for step-log fields), Object, String, Int, Bool, Time, IsNull, Instant and ParseInstant. [jsonx.go:Encode] [canonical.go:Canonical] [canonical.go:NumberText] [jsonx.go:Object] [jsonx.go:String] [jsonx.go:Int] [jsonx.go:Bool] [jsonx.go:Time] [jsonx.go:IsNull] [jsonx.go:Instant] [jsonx.go:ParseInstant]
 
 ## Invariants
 
