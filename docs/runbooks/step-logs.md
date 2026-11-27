@@ -111,6 +111,9 @@ A long step streams its earlier lines through `AppendStepLogs`, admitted in a cl
   fourth run (decision D041-127): ⌈batches per second × the batch's p99 service time / 0.7⌉ gave 7 with 1 replica and
   16 workers and 5 per replica with 8 replicas and 128 workers.
 
+A batch is charged to rate budgets of its own, the worker API's per-identity and per-tenant rates in separate buckets
+(`http_rate_limited_total{scope="step_logs_subject"|"step_logs_tenant"}`), so a worker that logs a lot never spends the
+budget its heartbeats and reports need. `SAGAT_GRPC_MAX_LOG_CALLS` above half the pool is refused at start.
 A batch that finds no ticket free is answered `RETRY_LATER` at once and resent; it is lost only after 10 seconds. It is
 counted `step_log_ticket_refusals_total`, never in `step_log_batches_total`, which counts what the ingest answered (a
 lock timeout or a quota refusal is a `retry_later` there). A call over the class cap is shed `RESOURCE_EXHAUSTED` with

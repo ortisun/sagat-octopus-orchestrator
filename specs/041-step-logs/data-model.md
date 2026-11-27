@@ -478,8 +478,8 @@ the replica's database pool, which the benchmark builds as `API_POOL` = 20, desi
   Headroom: the 0.7 use factor is 1 / 0.7 − 1 = 43% over the mean need at the p99 service time. Two of the eight valid
   rounds needed 10 at 1 × 16 (rounds 4 and 6), so one tenant at the benchmark's saturation can meet `RETRY_LATER` (the
   batch is resent; it is lost only after 10 s); the runbook names the setting.
-- `SAGAT_GRPC_MAX_LOG_CALLS` (the Logs class cap per replica): half of `SAGAT_DB_MAX_CONNECTIONS`, rounded down, at
-  least 1: 10 of a pool of 20 (the chart's; 5 of the binary's default of 10), the configuration the fourth run measured (cap and tickets 10) and the most the
+- `SAGAT_GRPC_MAX_LOG_CALLS` (the Logs class cap per replica; a value above the default is refused at start,
+  decision D041-150): half of `SAGAT_DB_MAX_CONNECTIONS`, rounded down, at least 1: 10 of a pool of 20 (the chart's; 5 of the binary's default of 10), the configuration the fourth run measured (cap and tickets 10) and the most the
   design allows (half the pool). A second tenant keeps 10 − 7 = 3 slots while the first holds its 7 tickets.
 - `sagat.step_log_wait_slots` (*Q*, set by the store per transaction, decisions D041-134 and D041-137):
   max(1, ⌊N / 4⌋), 5 of 20; the tenant's wait slots *P* = ⌈*Q* / 2⌉, 3. Step-log waits and Logs calls then hold at most
@@ -513,7 +513,8 @@ Server, each metric with exactly one producer (decision D041-128):
 - `step_log_ticket_refusals_total` (no label): the gRPC handler, one per batch answered `RETRY_LATER` because its
   tenant's tickets (P3) were all taken; the ingest never sees such a batch, so `step_log_batches_total` does not count
   it (decision D041-149). The Logs class itself is counted by the transport's `grpc_log_calls_in_flight` (a gauge) and
-  `grpc_shed_total{class="logs"}`.
+  `grpc_shed_total{class="logs"}`, and a batch refused by its own rate budgets by
+  `http_rate_limited_total{scope="step_logs_subject"|"step_logs_tenant"}` (decision D041-150).
 - `step_log_cross_tenant_check_failures_total` (no label): the ingest, when the check for a run of another tenant after
   a `LEASE` answer fails, so that a skipped cross-tenant audit is never silent (decision D041-148 (9)).
 - `step_log_quota_top_ups_total{outcome}` (`room`, `made`, `limit`, `busy`, `contended`, `error`): the store,
