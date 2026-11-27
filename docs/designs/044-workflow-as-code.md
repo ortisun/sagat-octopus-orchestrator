@@ -3335,6 +3335,22 @@ a replaying worker derives from `ReadHistory`.
   `integration_workflow_as_code::signals::a_signal_past_2_mib_of_pending_bytes_is_refused_pending_bytes_full`.
   Refs: Requirement 044-014, Requirement 044-027
   Owner-gate: OD-2026-11-26-565
+- [ ] T044-42 Before Task 044-6 and Task 044-22 land, and as a 0.3.0 exception to Requirements 044-023 and 044-019 that
+  design 039 requires (`docs/designs/039-nested-collections.md`, Requirement 039-015; Owner decision 2026-11-27-479): a
+  run whose `capacity_member` flag is set (a run of a nested capacity group) keeps its version. The migration that
+  creates `code_run_pins` also creates a `BEFORE UPDATE` trigger on it that raises `nested_member_version_fence` when
+  `code_version_id` changes for a run whose `capacity_member` is set (it fires inside `sagat_move_code_run` too); the
+  move adds `NESTED_RUN_NOT_MOVABLE` to its closed skip reasons (beside `REPLAY_MISMATCH`, `ENVELOPE_MISMATCH` and
+  `RUN_NOT_MUTABLE`) and skips such a run with that reason, its pin unchanged; the completion of a code continue-as-new
+  that asks another version (`version: active` naming a different version) for such a run is refused `COMMAND_INVALID`
+  with the reason `NESTED_RUN_NOT_MOVABLE`. When design 039's Task 039-19 lands first, this task carries the trigger;
+  when it lands after, it cites this one. This task supersedes, for flagged runs, the wording of Requirements 044-023
+  and 044-019 and of the skip reasons of the move.
+  Red tests: `integration_workflow_as_code::move::a_member_run_is_skipped_nested_run_not_movable`,
+  `integration_workflow_as_code::continue_as_new::a_member_run_asking_another_version_is_refused`,
+  `integration_workflow_as_code::move::the_pin_trigger_refuses_a_version_change_of_a_member_run`.
+  Refs: Requirement 044-019, Requirement 044-023
+  Owner-gate: OD-2026-11-27-479
 
 ### Verification Plan
 

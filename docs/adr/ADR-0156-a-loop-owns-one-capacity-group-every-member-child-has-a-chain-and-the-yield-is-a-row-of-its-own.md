@@ -178,3 +178,12 @@ a continue-as-new to another version are refused for a flagged run, with trigger
 group's fixed `reserved_bound`, never from the policy at the child's admission. A run's place in a group is
 `runs.capacity_role` (`ROOT` or `MEMBER_CHILD`), bound at insert and never changed. The decisions above are otherwise
 unchanged.
+
+## Revision of 2026-11-27 (design 039, fourth security re-read)
+
+Recorded under Owner decision 2026-11-24-4 (Owner decision 2026-11-27-479, Decision 039-034). The segment copy that
+sets a successor's `capacity_member`, `fan_out_share` and `capacity_role` is a `SECURITY DEFINER` function owned by the
+table's owner, with `search_path` pinned to `pg_catalog, pg_temp` and every relation schema-qualified; `sagat_app` holds
+no `UPDATE` on `fan_out_share` or `capacity_role`, which are bound at the run's insert, and three checks on `runs` tie the
+flag, the role and the share. A member run keeps its version in release 0.3.0; design 044's follow-up Task 044-42
+carries the `code_run_pins` trigger, the skip reason and the completion refusal when this design lands first.

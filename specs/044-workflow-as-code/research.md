@@ -774,6 +774,10 @@ finding was answered.
   claim, extended by reading up to 3,600 s; a move requires equal gated entries and `state.maxBytes`; a child's output is
   classified by the union of the parent's entry and the child's current version; the verifier's session is matched by
   id, token hash and namespace; the continue-as-new suggestion fires at 2.5 MiB.
+- **D044-232** (2026-11-27) Design 039 (nested collections) needs a run of a nested capacity group to keep its version:
+  follow-up Task 044-42 adds the `code_run_pins` trigger `nested_member_version_fence`, the move skip reason
+  `NESTED_RUN_NOT_MOVABLE` and the refusal of a member run's continue-as-new to another version, a release 0.3.0
+  exception to Requirements 044-023 and 044-019 recorded by Owner decision 2026-11-27-479 (design 039, Decision 039-034).
 
 ## 3. Gaps
 
