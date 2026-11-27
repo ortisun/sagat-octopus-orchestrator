@@ -337,7 +337,7 @@ pools, max_inflight, protocol_version}}`:
   (field 13). The server offers `1.7` to an ordinary worker on a store that proves the scoped, database and step-log
   paths; a database-runner or runner identity is served at most `1.6`, since its batches are always refused. A host
   that accepted `1.7` and does not capture yet sends no batch and no carry, which the contract allows. `1.7` includes
-  `1.6`.
+  `1.6`. How a host captures is §6.9.
 - Protocol `1.8` adds delivery acknowledgement (Architecture decision 0099): a lease the server marked provisional
   carries `acknowledge_before_start = true`, and the host acknowledges it with `AcknowledgeTasks` and calls or runs
   nothing else for it but the hand-back before the server answers (§6.2); an unflagged lease is dispatched at once,
@@ -467,7 +467,7 @@ from 1.8 only, decision D006-080):
      starts nothing new;
   2. the leases beyond what the host may run: beyond the credit it asked for in this poll or receive window, or beyond
      its free slots;
-  3. the rest of a frame the host stops reading because the frame breaks the receive contract (§10: the 8 MiB input
+  3. the rest of a frame the host stops reading because the frame breaks the receive contract (§12: the 8 MiB input
      budget of the window), the lease that broke it included. A window whose credit is used up exactly is read until it
      ends, so a frame that still comes is handed back under item 2; a frame that breaks the credit or the budget ends
      the window: the host hands back the rest of that frame and cancels the receive, and the frames it does not read
@@ -519,7 +519,8 @@ For a `TaskLease` the host (at 1.8, for a flagged lease, only once it was answer
    `idempotencyKey`, `traceparent`, `deadline`, `taskKind` (`FORWARD` when empty, `COMPENSATION`,
    `RECONCILIATION`), `targetNode`, `targetIdempotencyKey`, `item`/`index` (the immutable captured value
    and index for collection work; absent otherwise), `steps` (the outputs of earlier steps,
-   by node), a cancellation token, a logger and `secrets()`;
+   by node), a cancellation token, a logger (the attempt's own object: its calls, levels, fields and error argument,
+   and what it captures at protocol 1.7, are §6.9) and `secrets()`;
 3. starts the **heartbeat** before the handler and keeps it until the report is made (§6.4);
 4. runs the handler with the lease as its deadline; its result is the output;
 5. reports (§6.5). If the lease was lost or the call answered `STALE_ATTEMPT`, it stops, drops the
@@ -643,6 +644,15 @@ them when the handler returns (a later `secrets()` raises), and does not cache a
 the attempt. Against protocol 1 it
 raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
+**The process's secret set** (design 041, Owner decision 2026-11-15-7). Every value `ResolveSecrets` returns in the
+process is also added, before the handler can see it, to one set kept for the life of the process, which step-log
+capture redacts every captured line with (§6.9). Only distinct values of at least 6 UTF-8 bytes are added (a shorter one
+is never replaced); the set holds at most 1,024 values or 256 KiB of them. The set is the SDK's own: it is never logged,
+never printed by a string, `Debug`, `inspect` or debugger form, never reachable from activity code, and wiped when the
+last running host of the process stops (`stop()`, §6.8). The per-attempt rule above is unchanged: the copies handed to
+a handler are still wiped when it returns. A value that does not fit the set stops capture for the whole process
+(§6.9).
+
 ### 6.8 Lifecycle
 
 `start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling (it cancels the
@@ -656,6 +666,172 @@ server then reconciles or holds review according to task kind and available evid
 restartable. Metrics hooks (counters for tasks taken, completed,
 failed, stale, heartbeats, polls, reconnects; a histogram of activity duration) are optional callbacks
 or the ecosystem's standard (C#: `System.Diagnostics.Metrics`).
+
+### 6.9 Step logs (protocol 1.7, design 041)
+
+What an activity writes to its logger is kept with the run, per attempt, and read through `listRunLogs` and
+`listRunLogStreams` ([design 041](../docs/designs/041-step-logs.md), section 6; the wire is
+[contracts.md](../specs/041-step-logs/contracts.md) §1, the answers its §4). The logger keeps writing to the host's own
+logging exactly as before; capture is added behind it, in the attempt's own logger object, and never depends on the host
+logger's enabled check, nor installs a handler, sink, appender or `tracing` layer on anything other attempts share
+(Requirement 041-001).
+
+**The logger each SDK has, and what it gains.**
+
+| SDK | Today | Gains (public API) | Capture point and the host's enabled check |
+|---|---|---|---|
+| TypeScript | `ActivityLogger`: `debug/info/warn/error(message, fields?)`; one object per attempt that merges `{task}` | `trace(message, fields?)`, and an optional `error?: unknown` third parameter on all five | the attempt's object, before it calls the host `Logger`, which has no enabled method; `trace` reaches the host's `debug` |
+| Go | `*slog.Logger` from `TaskFrom(ctx).Logger`, built with `With("task","activity","run","node","attempt")` | `worker.LevelTrace = slog.Level(-8)` | a per-attempt `slog.Handler` wrapping the host's: `Enabled` is true at or above the capture level or when the host is enabled, and `Handle` forwards to the host only when the host is enabled |
+| Python | `_TaskLog(LoggerAdapter)` per attempt; `process()` replaces `extra` with `{"sagat": fields}` and appends `key=value` to the message | `TRACE = 5` (registered with `logging.addLevelName`) and `_TaskLog.trace(msg, *args, **kwargs)` | `_TaskLog.log`, before `LoggerAdapter.log` checks `isEnabledFor`, from the raw message and arguments, before `process` runs |
+| C# | `ILogger Logger` per attempt, category `SagatOctopusOrchestrator.Activity.<activity>`, wrapped in `SafeLogger` | nothing: `ILogger` has `Trace`, exceptions and state | a per-attempt decorator inside `SafeLogger`: `IsEnabled` is true at or above the capture level or when the inner logger is, and `Log` forwards only when the inner logger is enabled |
+| Java | `ActivityLogger`: abstract `log(System.Logger.Level, String)` and `debug/info/warn/error(String)`; a lambda per context prefixing `task=<id> ` | default methods (binary compatible): `trace(String)`; `log(Level, String, Map<String, ?>, Throwable)` whose default calls `log(level, message)`; `trace/debug/info/warn/error(String, Map<String, ?>)`; `warn(String, Throwable)`; `error(String, Throwable)`; `error(String, Map<String, ?>, Throwable)` | the SDK's per-attempt implementation of the four-argument `log`, before the `task=` prefix |
+| Rust | none | `ActivityContext::log(&self) -> &StepLogger`; `StepLogger::{trace, debug, info, warn, error}(&self, message: impl AsRef<str>)` and `StepLogger::log(&self, level: Level, message: impl AsRef<str>, fields: &[(&str, FieldValue)], error: Option<&(dyn std::error::Error + 'static)>)`; `FieldValue::{Str, Int, Float, Bool}` with `From` impls; `Level` of five | `StepLogger` itself; it also emits a `tracing` event with the message at the same level (target `sagat_octopus_orchestrator::activity`); no `tracing` layer is installed, so only these calls are captured |
+
+**Levels, exceptions, context and the option.**
+
+| SDK | Level onto the five | Exception text | Language context, captured as fields | Not captured | Worker option (default: capture on, at `info`) |
+|---|---|---|---|---|---|
+| TypeScript | identity | an `Error`: `name: message`, then `stack`; anything else: `String(value)` | the `fields` argument | the `task` key the SDK merges | `WorkerConfig.stepLogs?: {capture?: boolean; level?: StepLogLevel}` |
+| Go | below -4 trace; -4 to -1 debug; 0 to 3 info; 4 to 7 warn; 8 and above error | an attribute whose value is an `error`: `err.Error()` (`%+v` when it implements `fmt.Formatter`), also kept as a field | attributes of the call and of `With` by the activity; groups flattened as `group.key` | the five attributes the SDK adds with `With` | `worker.WithStepLogs(capture bool, level slog.Level)` |
+| Python | below 10 trace; 10 to 19 debug; 20 to 29 info; 30 to 39 warn; 40 and above error (`CRITICAL` included) | `exc_info` (and `exception()`) through `traceback.format_exception`; `stack_info=True` appended | the caller's `extra`, taken before `process` replaces it | `task`, `run`, `node`, `attempt` | `WorkerConfig.step_logs_capture: bool = True`, `step_logs_level: int = logging.INFO` |
+| C# | `Trace`, `Debug`, `Information` to info, `Warning` to warn, `Error` and `Critical` to error; `None` is not captured | the `Exception` argument's `ToString()` (type, message, stack, inner exceptions) | a state that is `IReadOnlyList<KeyValuePair<string, object?>>` without `{OriginalFormat}`; scopes begun on the activity logger, kept per attempt in an `AsyncLocal` stack | none (the host's `sagat.*` scope is on another logger) | `WorkerOptions.StepLogs` with `Capture` and `Level` |
+| Java | `ALL` and `TRACE` to trace, `DEBUG`, `INFO`, `WARNING` to warn, `ERROR`; `OFF` is not captured | the `Throwable`'s stack trace with its causes | the `Map` argument | the `task=` prefix | `WorkerConfig.Builder.stepLogs(boolean capture, System.Logger.Level level)` |
+| Rust | identity | the error's `Display`, then each `source()` joined by `\nCaused by: ` | the `fields` argument | none | `WorkerOptions.step_logs: StepLogOptions {capture: bool, level: Level}` |
+
+The message is formatted as the language formats it for its host (Python `msg % args`, C# the formatter's result) before
+it is redacted. A field value is a string, an integer (a language integer that fits 64 bits; a larger one is captured as
+its decimal string), a double, or a boolean; a null or absent value is dropped; any other value is captured as a string:
+its compact JSON text (no insignificant whitespace) where the language has a JSON encoder for it, else its string form.
+
+**When an attempt captures.** An attempt captures when, at its dispatch, all of these hold: the session was accepted at
+`1.7` or later; the `StepLogPolicy` of the registration that made the session says `enabled` (an absent policy is
+`enabled = false`); the worker's option is on; the session's capture has not been stopped since that registration (below);
+and the process's capture has not been stopped (the secret set is full). Otherwise the attempt captures nothing, sends
+nothing and logs locally only (Requirement 041-014). A logger call at or above the capture level of a capturing attempt
+takes the attempt's next **sequence** (1, 2, 3 and so on, one per call, whether the record is later sent or dropped); a
+call below the level takes none. When the handler has returned or raised, the attempt's logger captures nothing more
+(the calls still reach the host's logging).
+
+**A call, in order** (Requirement 041-005: it never blocks on the network or on a full buffer, and never throws into the
+activity):
+
+1. take the sequence and the worker's time (epoch milliseconds);
+2. drop the record now, before any formatting or redaction, when it will be dropped anyway, and count the reason
+   locally: the attempt was answered `FINAL_ONLY` (`after_ceiling`); the process's capture stopped (`secret_set_full`);
+   the attempt's buffer holds 1,000 records or at least 256 KiB (`buffer_full`); the process holds at least 16 MiB of
+   records (`process_bound`). A dropped record leaves a gap in the sequences, which is the server's evidence;
+3. format the message, the exception text and the fields (the tables above); replace NUL (U+0000) and any lone
+   surrogate by U+FFFD in the message, the exception text, every field key and every string value; a double that is not
+   finite becomes the string `NaN`, `Infinity` or `-Infinity`;
+4. redact with the whole process's secret set (§6.7; the rule below);
+5. cut to the line ceilings: the message and the exception text each to 8,192 UTF-8 bytes, at a character boundary;
+   the fields by data-model.md §5 (below); anything cut sets `truncated`;
+6. append the record to the attempt's buffer.
+
+The buffers count each record's encoded `StepLogRecord` size (protobuf bytes). The attempt's buffer and the process's
+bound admit a record while they are below their bound, so either can pass it by one record at most; the process's bound
+counts the records of every attempt that the SDK holds, the batch in flight included.
+
+**Redaction** (Requirement 041-007 (a)). The rule is `sagat_domain::scripts::redact` without its credential shapes, which
+are the server's: every value of the process's secret set that has at least 6 UTF-8 bytes, the longest first (values of
+equal length in the order they joined the set), is replaced by `[REDACTED]` in the text the previous replacement left.
+It applies to the message, to every field key, to every string field value, to the exception text, and to the canonical
+decimal text of every number field (data-model.md §5, the form ECMAScript's `Number::toString` prints): a number whose
+text holds a value becomes the string `[REDACTED]`. An SDK may first find, with a multi-pattern matcher (Aho–Corasick)
+over the whole set, whether any value occurs in the text; when none occurs, the text is the result (no replacement
+happens, so the rule leaves it unchanged); when one occurs, the SDK applies the rule in full. Either way the result
+equals `redact` on every text.
+
+**Fields** (data-model.md §5). The fields of a call (its argument and the language context) are taken in the order of
+their original keys' UTF-8 bytes; each key is redacted, and a key that collides with an earlier one after redaction gets
+`~2`, `~3` and so on, the first suffix that is free. The canonical JSON of the fields sorts the keys by their UTF-8 bytes,
+writes no whitespace, escapes in strings only `"`, `\` and U+0000 to U+001F (as `\u00XX`), writes an integer in decimal and
+a double as ECMAScript prints it; the fields are kept in key order until the next would pass 32 keys or 2,048 bytes of
+that JSON, and the rest are dropped and `truncated` is set. On the wire each field is a `StepLogField` (`string_value`,
+`int_value`, `double_value` finite only, `bool_value`).
+
+**Sending.** Each capturing attempt has one sender. It sends a batch through `AppendStepLogs` one second after the
+attempt's first buffered record and every second after, or as soon as 256 records are buffered, one batch in flight at a
+time. A batch's records are taken when it becomes due, in the same step that makes it due, so that which records a batch
+holds never depends on when a thread or a task wakes: by the logger call that buffers the 256th record, in that call; by
+the tick of a second, when records are buffered; or by the answer to the batch before it, when 256 or more are buffered
+then. A tick that finds a batch in flight sends nothing. A batch names the attempt as `Heartbeat` names it (task id, run id, step id, attempt, generation, lease token, and
+the lease's instance identity), the session id and the session token the host holds now, and the oldest buffered
+records, at most 500 and at most 192 KiB for the encoded `AppendStepLogsRequest`. Each call's deadline is the configured
+call timeout, at most what is left of the batch's 10 seconds. A short step (it reports before its first send, and its
+records fit one carry) makes no `AppendStepLogs` call. The answers (contracts.md §4):
+
+| Answer | What the attempt does | Counts toward the two retries |
+|---|---|---|
+| `CONTINUE` | the next batch when one is due | no |
+| `FINAL_ONLY` | drops what it buffered and every later record (`after_ceiling`); its report carries a carry with no record | no |
+| `STOP_ATTEMPT` | drops what it buffered; sends nothing more for the attempt, in a batch or a carry | no |
+| `STOP_CAPTURE`, `CAPTURE_OFF` | as `STOP_ATTEMPT` for every attempt of the session, until the next successful registration | no |
+| `STOP_CAPTURE`, `SESSION` | if the session token the host holds now differs from the one the batch sent, sends the batch once more with it; otherwise as `CAPTURE_OFF` | no |
+| `RETRY_LATER` | waits `retry_after_ms` (held to 50 to 5,000) and sends the same batch again; a batch older than 10 seconds is dropped (`send_failed`) | no |
+| `RESOURCE_EXHAUSTED` | as `RETRY_LATER`, with the `retry-after-ms` trailer (200 ms when absent) | no |
+| `UNAVAILABLE`, `DEADLINE_EXCEEDED`, a transport failure, any status not listed | sends the same batch again after 200 ms, then after 1 s (each ±20%), then drops it (`send_failed`) | yes |
+| `INVALID_ARGUMENT` | drops the batch (`send_failed`; the server counts the gap) and goes on | no |
+| `UNAUTHENTICATED`, `PERMISSION_DENIED` | as `CAPTURE_OFF` | no |
+| `UNIMPLEMENTED` | sends no more batches for the attempt (an older API replica); its report still carries the newest records | no |
+
+A session whose capture stops writes one local line per process, at the warning level; a stopped attempt or session
+sends no carry. A re-registration replaces the session id and token the next batch sends, and brings a new policy for the
+attempts dispatched after it.
+
+**The carry** (Owner decision 2026-11-19-1). When the handler has returned or raised and the host is about to report
+(`CompleteStep` or `FailStep`, §6.5), an attempt that took at least one sequence puts a `StepLogCarry` in the report's
+field 13: its newest records that fit one carry (at most 64 records, and at most 16 KiB for the encoded `StepLogCarry`)
+and `highest_sequence`, the last sequence it took, which counts every drop. Before it builds the carry:
+
+1. an attempt answered `STOP_ATTEMPT` or `STOP_CAPTURE`, or whose session's capture stopped, sends no carry;
+2. an attempt answered `FINAL_ONLY`, or whose process's capture stopped, sends a carry with no record;
+3. otherwise, within 2 seconds of the handler's end: the attempt waits for its batch in flight, if any, to be answered
+   (its resends go on inside the 2 seconds); then, while its buffered records do not fit one carry, it sends as batches,
+   oldest first, the records the carry will not hold, one batch in flight; each answer is applied as the table says,
+   which can end in 1 or 2. When the 2 seconds end, it stops waiting (an answer that comes later is ignored), drops what
+   is still buffered beyond one carry (`report_deadline`), and the carry holds the newest records that fit. An attempt
+   whose batches stopped at `UNIMPLEMENTED` drops what does not fit one carry at once (`report_deadline`).
+
+A resent report (a lost answer, `UNAVAILABLE`) carries the same carry. A report that hands a lease back
+(`TASK_NOT_STARTED`, §6.2) or that is made before a handler ran (`NO_HANDLER`, `INPUT_INVALID`) took no sequence and
+carries nothing. Nothing about the carry is in the report's answer. The SDK never prints, logs or traces a batch or a
+report that holds a carry (Requirement 041-007 (d)).
+
+**Shutdown and the process.** The buffers are in memory only and are dropped with the attempt. Capture uses no thread,
+timer or task that can keep the process alive after the host stopped (a Node timer is `unref`ed, a Java thread is a
+daemon). When `stop` cancels the tasks left after its grace (§6.8), the host sends each of their buffered records once,
+as one batch per attempt with no resend, before it closes its connection; an attempt that still reports carries the
+rest.
+
+**What is counted locally.** Records dropped by the SDK are counted by reason (`report_deadline`, `buffer_full`,
+`send_failed`, `after_ceiling`, `process_bound`, `secret_set_full`; data-model.md §7) through the SDK's metrics facility
+(the host's event hook, or C#'s `System.Diagnostics.Metrics`). Nothing about capture is written at a level the host logs
+by default, except the one line per process when the server stops capture or the secret set is full.
+
+**The constants** (Requirement 041-015; never sent by the server):
+
+| Constant | Value |
+|---|---|
+| Capture level by default | `info` |
+| Attempt buffer | 1,000 records or 256 KiB of encoded records |
+| Process bound | 16 MiB of encoded records |
+| Flush | 1 s after the first buffered record and every 1 s after, or at 256 buffered records |
+| Batch | 1 to 500 records, at most 192 KiB encoded; one in flight per attempt |
+| Retries of a failed call | 2, after 200 ms and 1 s, each ±20% |
+| A batch's age | 10 s from its first send |
+| Carry | at most 64 records and 16 KiB encoded |
+| The wait before a report | at most 2 s from the handler's end |
+| Line ceilings | 8,192 bytes a message and an exception text; 32 keys and 2,048 bytes of fields |
+| Secret set | 1,024 values or 256 KiB, values of at least 6 bytes |
+
+**The cost of a call.** Each SDK has a micro-benchmark of one logger call with an 8 KiB message and a secret set of 1,024
+values, on the language's monotonic clock, in the SDK's test tree: 1,000 warm-up calls, then 10,000 calls, the p99
+printed. It is run by hand, not in CI, and its p99 is under 1 ms on the machine of
+`specs/041-step-logs/validation-report.md`, where the figure is recorded.
+
+**Conformance.** The scenarios `step-logs-capture`, `step-logs-redaction`, `step-logs-limits`,
+`step-logs-transport-faults` and `step-logs-negotiation` of `tests/contract/sdk-conformance` (its README, "Step logs").
 
 ## 7. Workflow builders
 
@@ -845,7 +1021,8 @@ where the language can express one. The shared scenario is `collection-operators
 ## 10. Observability and safety
 
 - Logs are structured and never contain a payload, a token, a lease token, a session token or a secret.
-  Identifiers (run id, task id, node, attempt, trace id) are fine.
+  Identifiers (run id, task id, node, attempt, trace id) are fine. What an activity writes to its own logger is the
+  activity's (§6.9); the SDK's own logs never hold a step-log record, a batch or a report that holds a carry.
 - Every request and RPC propagates `traceparent`; the C# SDK emits `Activity` spans from an
   `ActivitySource` named `SagatOctopusOrchestrator.Sdk`, and the others expose a tracing hook.
 - Lease tokens and session tokens live in memory only and are dropped with the task / session.
@@ -857,7 +1034,9 @@ where the language can express one. The shared scenario is `collection-operators
   repeated; the heartbeat, the poll loop and a task in flight survive an exception of the caller's hooks and of the
   runtime's observers (a token provider, a logger, an event or metrics callback, a trace listener) instead of dying
   with it or dropping a leased task; a token provider that throws is `UNAUTHENTICATED` with a reason, never the
-  provider's own exception.
+  provider's own exception. Step-log capture (§6.9) never does either: no failure of capture (a refused or lost batch,
+  a server that is down, a ceiling, a full buffer, a bug of the capture path) changes a task's outcome, its output, its
+  retry or its heartbeat, and a logger call never throws into the activity.
 - **Ids and names in a URL path** (run id, signal name, event type...) are percent-encoded; a run id is a UUID and
   a name of `.`, `..` or the empty string is refused as `VALIDATION_FAILED` before anything is sent.
 - Errors follow §2: a message that could carry a payload is replaced by its class.
@@ -868,7 +1047,7 @@ Client, worker host, builders, errors (catalog), a README with a minimal example
 tests, the conformance runner (`sdks/<language>/conformance`), a package manifest with the runtime
 matrix, and nothing that needs a network to be tested except the conformance suite itself.
 
-## 10. Task streaming (worker protocol 1.4)
+## 12. Task streaming (worker protocol 1.4)
 
 The normative receive contract is
 [`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), ADR-0029.
