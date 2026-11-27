@@ -160,3 +160,11 @@ revision supersedes stay as written; where they differ, this revision rules.
   revision above (no hourly table; `transfer_count` on `capacity.group.retired`). `capacity_purge_retired` is revoked
   from `PUBLIC`, executable by its owner only, and requires feature 020's purge authorization for its transaction and
   run.
+
+## Revision of 2026-11-27 (second security re-read)
+
+Recorded under Owner decision 2026-11-24-4 after `docs/designs/039-nested-collections.reviews/2026-11-27/reread-2/security.md`
+(design 039, Decision 039-032). Unit ownership is checked against the slot the group names: the header carries its
+root owner node and iteration index, set at insert and never changed, and one group at most owns the unit of one slot
+(a partial unique index over the groups not retired that own a unit). A code version (design 044) whose envelope lists
+children is refused as a member child, because its fan-out is not declared. The decisions above are otherwise unchanged.
