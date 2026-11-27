@@ -40,8 +40,9 @@
 //   other kind, a terminal command included; the stop events that follow a terminal command are not visible.
 // - Origins: run.started, workflow_task.started, step, timer, child, approval and saga outcomes are ENGINE; a signal, an
 //   update's admission, a cancellation request and the event that satisfies a wait are EXTERNAL; a completion's
-//   workflow_task.completed and records are COMPLETION; a cancellation of a step that no worker held (READY, or waiting
-//   on an event or an approval) is EFFECT, a STEP_OUTCOME_CANCELLED whatever the step's kind (Decision 044-245).
+//   workflow_task.completed and records are COMPLETION; a cancellation of a step whose attempt has not begun (READY, or
+//   waiting on an event, an approval or a gate) is EFFECT, a STEP_OUTCOME_CANCELLED (Decision 044-245); a leased step's
+//   cancelled outcome comes later and is ENGINE.
 // - Creating transactions journal run.started first: a with-start signal or update follows it (Decision 044-246).
 
 import { createHash } from 'node:crypto';

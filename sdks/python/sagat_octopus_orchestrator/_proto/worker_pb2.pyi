@@ -1408,7 +1408,7 @@ class CompleteWorkflowTaskResponse(_message.Message):
     def __init__(self, outcome: _Optional[_Union[WorkflowTaskOutcome, str]] = ..., cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ..., already_applied: _Optional[bool] = ..., eager_activity_leases: _Optional[_Iterable[_Union[TaskLease, _Mapping]]] = ...) -> None: ...
 
 class FailWorkflowTaskRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "attempt", "generation", "lease_token", "idempotency_key", "cause", "command_number", "actual_kind", "actual_target", "exception_type", "code_digest", "traceparent")
+    __slots__ = ("task_id", "run_id", "attempt", "generation", "lease_token", "idempotency_key", "cause", "command_number", "actual_kind", "actual_target", "exception_type", "code_digest", "traceparent", "actual_saga_scope")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
@@ -1422,6 +1422,7 @@ class FailWorkflowTaskRequest(_message.Message):
     EXCEPTION_TYPE_FIELD_NUMBER: _ClassVar[int]
     CODE_DIGEST_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    ACTUAL_SAGA_SCOPE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     attempt: int
@@ -1435,7 +1436,8 @@ class FailWorkflowTaskRequest(_message.Message):
     exception_type: str
     code_digest: str
     traceparent: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ..., command_number: _Optional[int] = ..., actual_kind: _Optional[_Union[CommandKind, str]] = ..., actual_target: _Optional[str] = ..., exception_type: _Optional[str] = ..., code_digest: _Optional[str] = ..., traceparent: _Optional[str] = ...) -> None: ...
+    actual_saga_scope: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., cause: _Optional[_Union[WorkflowTaskFailureCause, str]] = ..., command_number: _Optional[int] = ..., actual_kind: _Optional[_Union[CommandKind, str]] = ..., actual_target: _Optional[str] = ..., exception_type: _Optional[str] = ..., code_digest: _Optional[str] = ..., traceparent: _Optional[str] = ..., actual_saga_scope: _Optional[str] = ...) -> None: ...
 
 class FailWorkflowTaskResponse(_message.Message):
     __slots__ = ("already_applied",)

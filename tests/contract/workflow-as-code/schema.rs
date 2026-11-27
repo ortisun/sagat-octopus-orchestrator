@@ -244,18 +244,23 @@ fn every_code_profile_refuses_the_fields_outside_it() {
     );
 }
 
-/// A script is bounded by its artifact's policy, not by the command, and a wait always has a bound: the graph nodes'
-/// rules, which the code profile keeps (Decision 044-247).
+/// A script command takes the graph script node's `timeoutMs` and a wait always has a bound, each within the code
+/// profile's 366 days (Decision 044-247).
 #[test]
-fn a_script_takes_no_timeout_and_a_wait_needs_one() {
+fn a_script_takes_a_bounded_timeout_and_a_wait_needs_one() {
     let script = json!({
         "type": "script",
         "artifactDigest": format!("sha256:{}", "b".repeat(64)),
-        "timeoutMs": 1000
+        "timeoutMs": 31_622_400_000_u64
     });
     assert!(
-        !definition("codeProfileScript").is_valid(&script),
-        "a script command takes no timeoutMs"
+        definition("codeProfileScript").is_valid(&script),
+        "a script command takes timeoutMs up to 366 days, as a graph script node does"
+    );
+    let longer_script = with(script, "/timeoutMs", json!(31_622_400_001_u64));
+    assert!(
+        !definition("codeProfileScript").is_valid(&longer_script),
+        "and no longer"
     );
     let unbounded =
         json!({"type": "waitEvent", "eventType": "payment.confirmed", "correlationKey": "o-1"});

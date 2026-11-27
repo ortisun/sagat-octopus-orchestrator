@@ -3562,6 +3562,10 @@
         "retry": {
           "$ref": "#/$defs/retry"
         },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration",
+          "description": "As for a graph script node; the artifact's policy (wall) bounds the attempt as well (Decision 044-247)."
+        },
         "secrets": {
           "type": "array",
           "maxItems": 16,

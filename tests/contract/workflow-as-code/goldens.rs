@@ -1038,6 +1038,92 @@ fn recorded(event: &Value) -> (String, String, String) {
     )
 }
 
+/// Each step ends at most once (Decision 044-245): with its outcome event, or for a timer with the record of the
+/// function's `timer_cancel`. An outcome of the origin `EFFECT` follows, in the same completion, the `step_cancel`
+/// record of its step; a cancelled outcome is `EFFECT` or `ENGINE`; a timer's cancelled step outcome comes from the
+/// stop drain, after which no workflow task starts.
+fn one_end_per_step_with_its_origin(
+    events: &[Value],
+    kind_of_node: &BTreeMap<&str, &str>,
+    leased: &BTreeMap<String, u64>,
+    at: &str,
+) {
+    let mut ends: BTreeMap<String, u64> = BTreeMap::new();
+    let mut cancelled_in_this_completion: BTreeSet<String> = BTreeSet::new();
+    for (index, event) in events.iter().enumerate() {
+        let kind = text(event, "kind");
+        let seq = int64(&event["seq"], at);
+        // A completion's own rows (its records and their immediate effects) are contiguous: any other row ends them.
+        if kind == "HISTORY_WORKFLOW_TASK_COMPLETED"
+            || !matches!(
+                text(event, "origin"),
+                "HISTORY_ORIGIN_COMPLETION" | "HISTORY_ORIGIN_EFFECT"
+            )
+        {
+            cancelled_in_this_completion.clear();
+        }
+        if kind == "HISTORY_WORKFLOW_TASK_COMPLETED" || kind == "HISTORY_WORKFLOW_TASK_STARTED" {
+            continue;
+        }
+        let end = match kind {
+            "HISTORY_STEP_OUTCOME" => Some(text(&event["stepOutcome"], "node").to_owned()),
+            "HISTORY_TIMER_FIRED" => Some(text(&event["timerFired"], "node").to_owned()),
+            "HISTORY_WAIT_OUTCOME" => Some(text(&event["waitOutcome"], "node").to_owned()),
+            "HISTORY_CHILD_FINISHED" => Some(text(&event["childFinished"], "node").to_owned()),
+            "HISTORY_APPROVAL_DECIDED" => Some(text(&event["approvalDecided"], "node").to_owned()),
+            "HISTORY_COMMAND_RECORDED" => {
+                let record = &event["commandRecord"];
+                let noop = record.get("noop") == Some(&Value::Bool(true));
+                let target = record
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                match text(record, "kind") {
+                    "COMMAND_STEP_CANCEL" if !noop => {
+                        cancelled_in_this_completion.insert(target.to_owned());
+                        None
+                    }
+                    "COMMAND_TIMER_CANCEL" if !noop => Some(target.to_owned()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(node) = end else { continue };
+        if let Some(first) = ends.insert(node.clone(), seq) {
+            panic!("{at}: {node} ends twice, at sequences {first} and {seq}");
+        }
+        let origin = text(event, "origin");
+        if origin == "HISTORY_ORIGIN_EFFECT" {
+            // A step whose attempt began is never cancelled by the command alone (Decision 044-245).
+            assert!(
+                leased.get(&node).is_none_or(|lease| *lease > seq),
+                "{at}: {node} was leased, so its outcome at {seq} is not the command's effect"
+            );
+            assert!(
+                cancelled_in_this_completion.contains(&node),
+                "{at}: the EFFECT outcome of {node} at {seq} follows its step_cancel in the same completion"
+            );
+        }
+        if kind == "HISTORY_STEP_OUTCOME"
+            && text(&event["stepOutcome"], "outcome") == "STEP_OUTCOME_CANCELLED"
+        {
+            assert!(
+                matches!(origin, "HISTORY_ORIGIN_EFFECT" | "HISTORY_ORIGIN_ENGINE"),
+                "{at}: a cancelled step's outcome at {seq} is EFFECT or ENGINE"
+            );
+            if kind_of_node.get(node.as_str()) == Some(&"timer_start") {
+                assert!(
+                    events[index + 1..]
+                        .iter()
+                        .all(|later| text(later, "kind") != "HISTORY_WORKFLOW_TASK_STARTED"),
+                    "{at}: a timer's cancelled outcome at {seq} comes from the stop drain"
+                );
+            }
+        }
+    }
+}
+
 /// One run of a scenario: its history, its activations and windows, and its chain recomputed from its commands.
 fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles, cancelled: &mut BTreeSet<String>) {
     let at = dir.display().to_string();
@@ -1276,6 +1362,12 @@ fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles, cancelled: &mut BTr
             cancelled.insert((*kind).to_owned());
         }
     }
+    let leased: BTreeMap<String, u64> = array(&commands["invisibleJournal"])
+        .iter()
+        .filter(|row| row["journalKind"] == "step.leased")
+        .filter_map(|row| Some((row.get("node")?.as_str()?.to_owned(), row["seq"].as_u64()?)))
+        .collect();
+    one_end_per_step_with_its_origin(&events, &kind_of_node, &leased, &at);
     assert_eq!(
         u64::try_from(chain_commands.len()).expect("small"),
         count,

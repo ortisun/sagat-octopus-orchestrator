@@ -6635,7 +6635,7 @@ type Command struct {
 	Kind          CommandKind            `protobuf:"varint,2,opt,name=kind,proto3,enum=sagat_octopus_orchestrator.v1.CommandKind" json:"kind,omitempty"`
 	FragmentJson  []byte                 `protobuf:"bytes,3,opt,name=fragment_json,json=fragmentJson,proto3" json:"fragment_json,omitempty"`
 	Value         *CommandValue          `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`                          // a work command's literal input or an approval's subject
-	SagaScope     string                 `protobuf:"bytes,5,opt,name=saga_scope,json=sagaScope,proto3" json:"saga_scope,omitempty"` // `s-<n>` of the scope an activity or script is scheduled in
+	SagaScope     string                 `protobuf:"bytes,5,opt,name=saga_scope,json=sagaScope,proto3" json:"saga_scope,omitempty"` // `s-<n>` of the scope an activity or script is scheduled in; any other kind: COMMAND_INVALID
 	// Types that are valid to be assigned to Typed:
 	//
 	//	*Command_Target
@@ -7684,8 +7684,11 @@ type FailWorkflowTaskRequest struct {
 	ExceptionType  string                   `protobuf:"bytes,11,opt,name=exception_type,json=exceptionType,proto3" json:"exception_type,omitempty"` // WORKFLOW_TASK_FAILED: kept only if it matches its pattern
 	CodeDigest     string                   `protobuf:"bytes,12,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`          // the session's digest, checked by the server
 	Traceparent    string                   `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// NONDETERMINISM of an activity or a script: the saga scope the function scheduled it in (empty outside a scope),
+	// so a change of scope alone is reported with what differs (Decision 044-244).
+	ActualSagaScope string `protobuf:"bytes,14,opt,name=actual_saga_scope,json=actualSagaScope,proto3" json:"actual_saga_scope,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *FailWorkflowTaskRequest) Reset() {
@@ -7805,6 +7808,13 @@ func (x *FailWorkflowTaskRequest) GetCodeDigest() string {
 func (x *FailWorkflowTaskRequest) GetTraceparent() string {
 	if x != nil {
 		return x.Traceparent
+	}
+	return ""
+}
+
+func (x *FailWorkflowTaskRequest) GetActualSagaScope() string {
+	if x != nil {
+		return x.ActualSagaScope
 	}
 	return ""
 }
@@ -9296,7 +9306,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\aoutcome\x18\x01 \x01(\x0e22.sagat_octopus_orchestrator.v1.WorkflowTaskOutcomeR\aoutcome\x12M\n" +
 	"\x05cause\x18\x02 \x01(\x0e27.sagat_octopus_orchestrator.v1.WorkflowTaskFailureCauseR\x05cause\x12'\n" +
 	"\x0falready_applied\x18\x03 \x01(\bR\x0ealreadyApplied\x12\\\n" +
-	"\x15eager_activity_leases\x18\x04 \x03(\v2(.sagat_octopus_orchestrator.v1.TaskLeaseR\x13eagerActivityLeases\"\x9f\x04\n" +
+	"\x15eager_activity_leases\x18\x04 \x03(\v2(.sagat_octopus_orchestrator.v1.TaskLeaseR\x13eagerActivityLeases\"\xcb\x04\n" +
 	"\x17FailWorkflowTaskRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
@@ -9316,7 +9326,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0eexception_type\x18\v \x01(\tR\rexceptionType\x12\x1f\n" +
 	"\vcode_digest\x18\f \x01(\tR\n" +
 	"codeDigest\x12 \n" +
-	"\vtraceparent\x18\r \x01(\tR\vtraceparent\"C\n" +
+	"\vtraceparent\x18\r \x01(\tR\vtraceparent\x12*\n" +
+	"\x11actual_saga_scope\x18\x0e \x01(\tR\x0factualSagaScope\"C\n" +
 	"\x18FailWorkflowTaskResponse\x12'\n" +
 	"\x0falready_applied\x18\x01 \x01(\bR\x0ealreadyApplied\"\xd9\x01\n" +
 	"\x12ReadHistoryRequest\x12\x17\n" +

@@ -767,7 +767,7 @@ message Command {
   CommandKind kind = 2;
   bytes fragment_json = 3;
   CommandValue value = 4;                // a work command's literal input or an approval's subject
-  string saga_scope = 5;                 // `s-<n>` of the scope an activity or script is scheduled in
+  string saga_scope = 5;                 // `s-<n>` of the scope an activity or script is scheduled in; any other kind: COMMAND_INVALID
   oneof typed {
     TargetCommand target = 10;           // timer cancel and step cancel: the step `c-<m>`
     SagaOpenCommand saga_open = 11;
@@ -889,6 +889,9 @@ message FailWorkflowTaskRequest {
   string exception_type = 11;            // WORKFLOW_TASK_FAILED: kept only if it matches its pattern
   string code_digest = 12;               // the session's digest, checked by the server
   string traceparent = 13;
+  // NONDETERMINISM of an activity or a script: the saga scope the function scheduled it in (empty outside a scope),
+  // so a change of scope alone is reported with what differs (Decision 044-244).
+  string actual_saga_scope = 14;
 }
 message FailWorkflowTaskResponse { bool already_applied = 1; }
 

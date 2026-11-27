@@ -634,6 +634,11 @@
         "repeated": false,
         "type": "String"
       },
+      "14": {
+        "name": "actual_saga_scope",
+        "repeated": false,
+        "type": "String"
+      },
       "2": {
         "name": "run_id",
         "repeated": false,
