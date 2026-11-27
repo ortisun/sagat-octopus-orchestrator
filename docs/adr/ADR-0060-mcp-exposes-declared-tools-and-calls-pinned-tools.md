@@ -119,7 +119,7 @@ to change once clients depend on it:
    delivery, and dropped when the attempt ends. MCP servers authenticated by OAuth reach access tokens
    only through design 047's token broker, under the third declared set of Principle V that the owner
    approved for constitution 5.1.0 (Owner decision 2026-11-25-3); the `oauth-client-credentials` mode is refused at
-   save until 5.1.0 merges and the broker is built. When it is enabled, the issuer and token endpoint are recorded in the server revision by an
+   save until the broker is built (constitution 5.1.0 merged in pull request 286). When it is enabled, the issuer and token endpoint are recorded in the server revision by an
    `ai:manage` holder, never discovered at call time, and a refresh that finds different advertised
    metadata audits it and blocks calls until the revision is updated. User-delegated authorization,
    `input_required` and client-side tasks are not supported until a later decision.

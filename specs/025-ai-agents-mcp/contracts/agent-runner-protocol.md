@@ -90,8 +90,8 @@ stricter of the pinned and the current ceiling, and the pinned model against the
 This grants no general secret read and no `database:execute`. MCP servers authenticated by OAuth, and
 the two provider modes above, are outside it: they reach access tokens only through design 047's token
 broker, under the third declared set of Principle V that the owner approved for constitution 5.1.0
-(Owner decision 2026-11-25-3), not yet merged; `auth_mode` `oauth-client-credentials` is refused at save
-until 5.1.0 merges and the broker is built (Gap 025-001), and the OAuth fields of `McpEndpoint` below
+(Owner decision 2026-11-25-3), merged in pull request 286; `auth_mode` `oauth-client-credentials` is refused at save
+until the broker is built (Gap 025-001), and the OAuth fields of `McpEndpoint` below
 are reserved for that case. Once the broker exists, the two provider modes are delivered through it
 (Decision 025-017): the client secret and the long-lived AWS key pair are read by the broker only; for
 `azure-entra-client-credentials` the broker runs the client-credentials grant against the recorded
@@ -168,8 +168,8 @@ message McpEndpoint {
   string url = 1;
   string protocol_version = 2;       // "2026-07-28" or "2025-11-25"
   string auth_mode = 3;              // none | bearer (oauth-client-credentials reserved, Gap 025-001)
-  // Fields 4 to 8 are reserved for OAuth servers and stay empty until constitution 5.1.0 (its third
-  // declared set, approved by the owner, not yet merged) merges and design 047's broker is built;
+  // Fields 4 to 8 are reserved for OAuth servers and stay empty until design 047's broker is built (the third
+  // declared set of constitution 5.1.0, merged in pull request 286, admits them);
   // tokens will then come from that broker.
   string client_id = 4;
   string token_endpoint = 5;         // recorded in the server revision; never discovered at call time

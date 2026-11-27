@@ -56,7 +56,7 @@ This feature adds no second engine, approval mechanism, secret authority or stre
   the `azure-entra-client-credentials` mode and the `aws-access-key` mode reach a provider only through
   design 047's token broker, under the third declared set of Principle V that the owner approved for
   constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and
-  its current access token); until 5.1.0 merges and the broker issues access tokens, those modes are
+  its current access token; merged in pull request 286); until the broker issues access tokens, those modes are
   refused at save (Gap 025-001). The first set does not cover a declared resource's client secret or
   signing key (Owner question 025-001, answered no by Owner decision 2026-11-27-400, Decision 025-017):
   for `azure-entra-client-credentials` the broker runs the client-credentials grant and the runner
@@ -852,7 +852,7 @@ fails before work.
   2026-11-26-122). The classification, never the server's annotations, decides whether an `mcp` tool may
   run without approval (Requirement 025-010, Decision 025-018). The static bearer secret is a declared secret of the task definition as in
   Requirement 025-003. OAuth client credentials with a resource indicator rest on the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token), and are refused at save until
-  5.1.0 merges and design 047's broker is built
+  design 047's broker is built (5.1.0 merged in pull request 286)
   (`MCP_AUTH_MODE_UNAVAILABLE`, Gap 025-001); when enabled, the revision records the issuer and token
   endpoint, confirmed by the saving `ai:manage` holder, and tokens come only from design 047's broker
   (D1306). User-delegated authorization is not supported (G1288).
