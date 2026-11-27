@@ -121,21 +121,60 @@ pub fn texts(scenario: &Value, key: &str, unique: &str) -> Vec<String> {
         .collect()
 }
 
-/// Where a text that must not be stored appears: one entry per source and text, naming the source and never
-/// repeating more of the text than its first characters. `sources` are (name, gathered text).
+/// Where a text that must not be stored appears: one entry per source and text, naming the source and the text's
+/// place in the list, never a character of it. `sources` are (name, gathered text).
 pub fn stored_appearances(sources: &[(String, String)], markers: &[String]) -> Vec<String> {
     let mut found = Vec::new();
-    for marker in markers {
+    for (index, marker) in markers.iter().enumerate() {
         for (source, text) in sources {
             if text.contains(marker.as_str()) {
                 found.push(format!(
-                    "{source} holds \"{}…\", which the scenario lists under mustNotStore",
-                    marker.chars().take(4).collect::<String>()
+                    "{source} holds the text number {} of the ones that must not be stored",
+                    index + 1
                 ));
             }
         }
     }
     found
+}
+
+/// The texts with, after them, the form each takes inside a JSON string when the encoder escapes it (a `"`, a
+/// backslash, a control character), since every source is JSON or holds JSON.
+pub fn with_escaped_forms(markers: &[String]) -> Vec<String> {
+    let mut all = markers.to_vec();
+    for marker in markers {
+        let encoded = serde_json::to_string(marker).unwrap_or_default();
+        let escaped = encoded
+            .strip_prefix('"')
+            .and_then(|inner| inner.strip_suffix('"'))
+            .unwrap_or_default()
+            .to_owned();
+        if !escaped.is_empty() && &escaped != marker && !all.contains(&escaped) {
+            all.push(escaped);
+        }
+    }
+    all
+}
+
+/// A scenario that lists `mustNotStore` lists every value of its `secrets` there: a secret left out would never be
+/// searched for.
+pub fn every_secret_is_listed(scenario: &Value) -> Result<(), String> {
+    let listed: Vec<&str> = scenario["mustNotStore"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    for (name, value) in scenario["secrets"].as_object().into_iter().flatten() {
+        if let Some(value) = value.as_str()
+            && !listed.contains(&value)
+        {
+            return Err(format!(
+                "the value of the secret {name} is not listed under mustNotStore"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Replaces the `exception` of every line a `stepLogs` step read by the list of the scenario's `exceptionTexts` it
@@ -229,30 +268,47 @@ fn capture() -> Result<Arc<Capture>, String> {
 /// Starts capturing the server's output, from empty.
 pub fn start_capture() -> Result<(), String> {
     let capture = capture()?;
+    // One capture at a time: the harness is shared by test binaries whose tests run in parallel threads, and one
+    // capture would clear or end another's.
+    if capture
+        .on
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("another scenario is capturing the server's output".to_owned());
+    }
     capture
         .bytes
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     capture.overflowed.store(false, Ordering::Relaxed);
-    capture.on.store(true, Ordering::Relaxed);
     Ok(())
 }
 
-/// Stops capturing and hands back what was captured, or why it cannot be searched whole.
-pub fn finish_capture() -> Result<String, String> {
+/// What was captured so far, or why it cannot be searched whole.
+pub fn captured_output() -> Result<String, String> {
     let capture = capture()?;
-    capture.on.store(false, Ordering::Relaxed);
-    let bytes = std::mem::take(
-        &mut *capture
-            .bytes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
     if capture.overflowed.load(Ordering::Relaxed) {
         return Err(format!(
             "the server's output passed {MAX_CAPTURED_BYTES} bytes and cannot be searched whole"
         ));
     }
+    let bytes = capture
+        .bytes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Stops the capture this play started and lets its output go.
+pub fn finish_capture() {
+    if let Ok(capture) = capture() {
+        capture
+            .bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        capture.on.store(false, Ordering::Release);
+    }
 }

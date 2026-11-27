@@ -19,7 +19,7 @@ import {
 } from './activity.js';
 import { WorkerRpc, checkGrpcConfig, type TaskLease, type WriteBlobRequest } from './grpc.js';
 import {
-  AttemptCapture, CaptureSession, hostStarted, hostStopped, isStepLogLevel, outcomeOfError, processCapture,
+  AttemptCapture, CaptureSession, addProcessSecrets, isStepLogLevel, outcomeOfError, processCaptureStopped,
   type StepLogCarry, type StepLogDropReason, type StepLogOptions,
 } from './step-logs.js';
 import type * as grpc from '@grpc/grpc-js';
@@ -266,7 +266,6 @@ export class WorkerHost {
     }
     this.running = true;
     this.stopping = false;
-    hostStarted();
     this.loop = this.run();
   }
 
@@ -329,7 +328,9 @@ export class WorkerHost {
     for (const stopBeat of this.#beats) stopBeat();
     this.#beats.clear();
     this.running = false;
-    hostStopped();
+    // The captures still open send nothing more once the channel closes (SPEC §6.9).
+    for (const capture of this.#captures) capture.discard();
+    this.#captures.clear();
     this.#rpc?.close();
     this.#rpc = undefined;
   }
@@ -682,7 +683,12 @@ export class WorkerHost {
     const logAt = (level: 'trace' | 'debug' | 'info' | 'warn' | 'error', host: 'debug' | 'info' | 'warn' | 'error') =>
       (message: string, fields?: Record<string, unknown>, error?: unknown): void => {
         capture?.log(level, message, fields, error);
-        this.log[host](message, { ...fields, task });
+        try {
+          // Spreading the fields runs their getters: one that throws must not reach the activity (SPEC §10).
+          this.log[host](message, { ...fields, task });
+        } catch {
+          /* the host's line is lost, never the activity */
+        }
       };
     let secretsCache: Promise<Secrets> | undefined;
     const secretsHolder: { dispose?: () => void; finished?: boolean } = {};
@@ -844,7 +850,8 @@ export class WorkerHost {
    */
   #capture(lease: TaskLease, minor: number): AttemptCapture | undefined {
     const session = this.#captureSession;
-    if (!session.enabled || session.stopped || processCapture.secrets.full) return undefined;
+    // An attempt dispatched after stop began does not capture (SPEC §6.9).
+    if (this.stopping || !session.enabled || session.stopped || processCaptureStopped()) return undefined;
     const rpc = this.#channel();
     const capture = new AttemptCapture({
       session: () => ({ workerId: this.workerId, token: this.#session }),
@@ -1137,7 +1144,7 @@ export class WorkerHost {
       lease.traceparent || undefined,
     );
     // Every value the process resolves joins its secret set before any handler can see it (SPEC §6.7, §6.9).
-    if (processCapture.secrets.add(answer.secrets.map((secret) => secret.value))) {
+    if (addProcessSecrets(answer.secrets.map((secret) => secret.value))) {
       const line = 'the secret set of the process is full: step-log capture stops for the process';
       if (!warnedOnce.has(line)) {
         warnedOnce.add(line);
@@ -1146,10 +1153,12 @@ export class WorkerHost {
     }
     // The handler returned while this was on its way: nothing of it is kept.
     if (holder.finished) {
-      for (const secret of answer.secrets) Buffer.from(secret.value).fill(0);
+      for (const secret of answer.secrets) secret.value.fill(0);
       throw new SagatError({ code: 'VALIDATION_FAILED', message: 'the secrets of an attempt are only valid while its handler runs' });
     }
     const values = new Map(answer.secrets.map((secret) => [secret.name, Buffer.from(secret.value)]));
+    // The received buffers are wiped now that the host holds its copies.
+    for (const secret of answer.secrets) secret.value.fill(0);
     let disposed = false;
     const alive = (): void => {
       if (disposed) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'the secrets of an attempt are only valid while its handler runs' });

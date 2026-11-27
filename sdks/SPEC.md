@@ -648,8 +648,8 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 process is also added, before the handler can see it, to one set kept for the life of the process, which step-log
 capture redacts every captured line with (§6.9). Only distinct values of at least 6 UTF-8 bytes are added (a shorter one
 is never replaced); a value that is not valid UTF-8 is added as the text the SDK's text accessor hands out for it
-(each invalid sequence replaced by U+FFFD), since that is the text an activity can log. The set holds at most 1,024
-values or 256 KiB of them. The set is the SDK's own: it is never logged, never printed by a string, `Debug`, `inspect`
+(each invalid sequence replaced by U+FFFD), since that is the text an activity can log, and its length and the bound
+below count that text. The set holds at most 1,024 values or 256 KiB of them. The set is the SDK's own: it is never logged, never printed by a string, `Debug`, `inspect`
 or debugger form, and nothing of the SDK reachable from activity code reads it or redacts with it (not even an internal
 module imported by its file path: the SDK exposes only a way to add to it). It is not wiped when a host stops: a host
 that is started again in the same process, or a second host, still redacts the values an earlier attempt resolved, which
@@ -765,8 +765,11 @@ holds never depends on when a thread or a task wakes: by the logger call that bu
 the tick of a second, when records are buffered; or by the answer to the batch before it, when 256 or more are buffered
 then. A tick that finds a batch in flight sends nothing. A batch names the attempt as `Heartbeat` names it (task id, run id, step id, attempt, generation, lease token, and
 the lease's instance identity), the session id and the session token the host holds now, and the oldest buffered
-records, at most 500 and at most 192 KiB for the encoded `AppendStepLogsRequest`. Each call's deadline is the configured
-call timeout, at most what is left of the batch's 10 seconds. A short step (it reports before its first send, and its
+records, at most 500 and at most 192 KiB for the encoded `AppendStepLogsRequest`, counted with a session token of 128
+bytes, its longest, so that a resend under a new token stays within the bound. Each call's deadline is the configured
+call timeout, at most what is left of the batch's 10 seconds. A batch is not sent again once its attempt stopped, its
+session's or the process's capture stopped, or the 2 seconds before its attempt's report ended; a call the host
+abandons because it is stopping is dropped (`send_failed`) and not retried. A short step (it reports before its first send, and its
 records fit one carry) makes no `AppendStepLogs` call. The answers (contracts.md §4):
 
 | Answer | What the attempt does | Counts toward the two retries |
@@ -781,9 +784,9 @@ records fit one carry) makes no `AppendStepLogs` call. The answers (contracts.md
 | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, a transport failure, any status not listed | sends the same batch again after 200 ms, then after 1 s (each ±20%), then drops it (`send_failed`) | yes |
 | `INVALID_ARGUMENT` | drops the batch (`send_failed`; the server counts the gap) and goes on | no |
 | `UNAUTHENTICATED`, `PERMISSION_DENIED` | as `CAPTURE_OFF` | no |
-| `UNIMPLEMENTED` | sends no more batches for the attempt (an older API replica); its report still carries the newest records | no |
+| `UNIMPLEMENTED` | sends no more batches for the attempt (an older API replica), and from then on keeps only the newest records that fit one carry, dropping the oldest (`report_deadline`); its report carries them | no |
 
-A session whose capture stops writes one local line per process, at the warning level; a stopped attempt or session
+A session whose capture stops writes one local line per process, at the warning level, whatever answer stopped it; a stopped attempt or session
 sends no carry. Once the process's capture stopped (the secret set is full), no record is sent at all, by a batch, a
 tick or a shutdown flush: what an attempt buffered is dropped (`secret_set_full`) and its report carries the final mark
 with no record. An attempt dispatched after `stop` began does not capture. A re-registration replaces the session id and token the next batch sends, and brings a new policy for the
@@ -810,13 +813,17 @@ report that holds a carry (Requirement 041-007 (d)).
 
 **Shutdown and the process.** The buffers are in memory only and are dropped with the attempt. Capture uses no thread,
 timer or task that can keep the process alive after the host stopped (a Node timer is `unref`ed, a Java thread is a
-daemon). When `stop` cancels the tasks left after its grace (§6.8), the host sends each of their buffered records once,
-as one batch per attempt with no resend, before it closes its connection; an attempt that still reports carries the
-rest.
+daemon). When `stop` cancels the tasks left after its grace (§6.8), the host sends, for each of them whose handler is
+still running and that has no batch in flight, its oldest buffered records once, as that attempt's batch in flight
+with no resend, before it closes its connection; what does not fit stays buffered, and an attempt that still reports
+carries it. An attempt whose handler has ended and that waits before its report is left to its report.
 
-**What is counted locally.** Records dropped by the SDK are counted by reason (`report_deadline`, `buffer_full`,
-`send_failed`, `after_ceiling`, `process_bound`, `secret_set_full`; data-model.md §7) through the SDK's metrics facility
-(the host's event hook, or C#'s `System.Diagnostics.Metrics`). Nothing about capture is written at a level the host logs
+**What is counted locally.** Every record the SDK took a sequence for and did not send, or whose batch it gave up on,
+is counted once by reason (`report_deadline`, `buffer_full`, `send_failed`, `after_ceiling`, `process_bound`,
+`secret_set_full`; data-model.md §7) through the SDK's metrics facility (the host's event hook, or C#'s
+`System.Diagnostics.Metrics`): a batch abandoned when the 2 seconds before the report end counts `report_deadline`,
+and what an attempt still holds when it ends without a report (its lease lost, its session stopped) counts
+`send_failed`. Nothing about capture is written at a level the host logs
 by default, except the one line per process when the server stops capture or the secret set is full.
 
 **The constants** (Requirement 041-015; never sent by the server):
