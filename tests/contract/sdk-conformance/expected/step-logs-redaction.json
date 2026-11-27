@@ -1,0 +1,993 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "first",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "second",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "first-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "second-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "third",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "third-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "first-logs",
+      "ok": true,
+      "op": "stepLogs",
+      "result": {
+        "lines": [
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "first",
+            "sequence": "1",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "first",
+            "sequence": "2",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "first",
+            "sequence": "3",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "first",
+            "sequence": "4",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "first",
+            "sequence": "5",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "first",
+            "sequence": "6",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "first",
+            "sequence": "7",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "first",
+            "sequence": "8",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "first",
+            "sequence": "9",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "first",
+            "sequence": "10",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "first",
+            "sequence": "11",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "first",
+            "sequence": "12",
+            "truncated": false
+          }
+        ],
+        "streams": [
+          {
+            "attempt": 1,
+            "ceiling": null,
+            "droppedByServer": 0,
+            "droppedByWorker": 0,
+            "instancePath": [],
+            "node": "first",
+            "notStoredReason": null,
+            "records": 12,
+            "source": "worker",
+            "state": "ended"
+          }
+        ]
+      }
+    },
+    {
+      "id": "second-logs",
+      "ok": true,
+      "op": "stepLogs",
+      "result": {
+        "lines": [
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "second",
+            "sequence": "1",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "second",
+            "sequence": "2",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "second",
+            "sequence": "3",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "second",
+            "sequence": "4",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "second",
+            "sequence": "5",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "second",
+            "sequence": "6",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "second",
+            "sequence": "7",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "second",
+            "sequence": "8",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "second",
+            "sequence": "9",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "second",
+            "sequence": "10",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "second",
+            "sequence": "11",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "second",
+            "sequence": "12",
+            "truncated": false
+          }
+        ],
+        "streams": [
+          {
+            "attempt": 1,
+            "ceiling": null,
+            "droppedByServer": 0,
+            "droppedByWorker": 0,
+            "instancePath": [],
+            "node": "second",
+            "notStoredReason": null,
+            "records": 12,
+            "source": "worker",
+            "state": "ended"
+          }
+        ]
+      }
+    },
+    {
+      "id": "third-logs",
+      "ok": true,
+      "op": "stepLogs",
+      "result": {
+        "lines": [
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "third",
+            "sequence": "1",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "third",
+            "sequence": "2",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "third",
+            "sequence": "3",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "third",
+            "sequence": "4",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "third",
+            "sequence": "5",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "third",
+            "sequence": "6",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "third",
+            "sequence": "7",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "third",
+            "sequence": "8",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "third",
+            "sequence": "9",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "third",
+            "sequence": "10",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "third",
+            "sequence": "11",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "third",
+            "sequence": "12",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "third",
+            "sequence": "13",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "third",
+            "sequence": "14",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "third",
+            "sequence": "15",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "third",
+            "sequence": "16",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "third",
+            "sequence": "17",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "[REDACTED]": "key"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field key",
+            "node": "third",
+            "sequence": "18",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "third",
+            "sequence": "19",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "third",
+            "sequence": "20",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "third",
+            "sequence": "21",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "third",
+            "sequence": "22",
+            "truncated": false
+          }
+        ],
+        "streams": [
+          {
+            "attempt": 1,
+            "ceiling": null,
+            "droppedByServer": 0,
+            "droppedByWorker": 0,
+            "instancePath": [],
+            "node": "third",
+            "notStoredReason": null,
+            "records": 22,
+            "source": "worker",
+            "state": "ended"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "third",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "second",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "first",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "red.first",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:first",
+        "input": {
+          "case": "first"
+        },
+        "instance": {
+          "definitionNodeId": "first",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "first",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "red.second",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:second",
+        "input": {
+          "case": "second"
+        },
+        "instance": {
+          "definitionNodeId": "second",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "second",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "red.third",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:third",
+        "input": {
+          "case": "third"
+        },
+        "instance": {
+          "definitionNodeId": "third",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "third",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

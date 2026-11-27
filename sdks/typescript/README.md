@@ -127,6 +127,32 @@ both are absent from root and non-collection work. The handler's ordinary `input
 Platform guarantees stay at-least-once for external effects: the SDK gives you the idempotency key and the
 reconciliation hook, it cannot make a provider exactly-once.
 
+### Step logs
+
+`ctx.log` writes to the host's `logger` as before and, when the server accepted worker protocol 1.7 and its policy
+says capture is on, keeps each call at or above the capture level as a line of the run's log
+(`GET /runs/{runId}/logs`; [sdks/SPEC.md](../SPEC.md) section 6.9):
+
+```ts
+host.registerActivity('payments.charge', async (input, ctx) => {
+  ctx.log.info('charging', { amount: input.amount, currency: 'EUR' });
+  try {
+    return await provider.charge(input.amount);
+  } catch (error) {
+    ctx.log.error('the provider refused', { attempt: ctx.attempt }, error); // the third argument is the exception
+    throw error;
+  }
+});
+```
+
+The levels are `trace`, `debug`, `info`, `warn` and `error`; `WorkerConfig.stepLogs: {capture?, level?}` turns capture
+off or changes its level (`info` by default). Before a line leaves the process, every secret value the process has
+resolved is replaced by `[REDACTED]` (in the message, the field keys and values, the numbers and the exception text);
+a message or an exception is cut at 8,192 bytes and the fields at 32 keys and 2,048 bytes. A logger call never waits
+for the network and never throws: lines travel in batches while the activity runs, and the last ones on its report,
+which waits at most 2 seconds for a batch still on its way. Lines the SDK had to drop are counted through `onEvent`
+(`steplogs.dropped`, with the reason and the number of records).
+
 ## TLS
 
 The worker accepts `http://` and `https://` URLs; `https://` URLs use the system trust roots and verify the server certificate;
@@ -172,7 +198,7 @@ or a saga without a body). These checks do not establish server acceptance. `bui
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0`
 the public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has
-its own version, negotiated at registration: this SDK offers `1.5`; a server that speaks an older minor
+its own version, negotiated at registration: this SDK offers `1.7`; a server that speaks an older minor
 serves it at that minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL`
 ([ADR-0015](../../docs/adr/ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md)).
 

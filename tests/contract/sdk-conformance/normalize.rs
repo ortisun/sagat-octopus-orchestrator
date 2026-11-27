@@ -69,6 +69,18 @@ impl Normalizer {
                                 }),
                             );
                         }
+                        // Design 041: how long after a held answer a report went, compared as the side of 1.5 s it
+                        // fell on: a report that waited for the release comes at once, one sent at the end of the
+                        // 2-second wait before a report comes later (README, "Step logs", `holdAnswer`; D041-165).
+                        "afterHoldMs" if item.is_number() => {
+                            let at_least = item.as_f64().is_some_and(|ms| ms >= 1500.0);
+                            out.insert(
+                                key.clone(),
+                                Value::String(
+                                    if at_least { "atLeast1500" } else { "under1500" }.into(),
+                                ),
+                            );
+                        }
                         // A journal counter: depends on when it was read.
                         "version" if is_run && item.is_number() => {
                             out.insert(key.clone(), Value::String("<n>".into()));
@@ -167,6 +179,7 @@ pub fn compared(out: &Value, normalizer: &mut Normalizer) -> Value {
         "auditEvidence",
         "reviewEvidence",
         "publicationEvidence",
+        "heldAnswers",
     ] {
         if let Some(value) = out.get(key) {
             doc.insert(key.to_owned(), normalizer.value(value));

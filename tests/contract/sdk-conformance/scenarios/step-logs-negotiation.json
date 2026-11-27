@@ -1,0 +1,168 @@
+{
+  "name": "step-logs-negotiation",
+  "description": "Design 041, Requirement 041-014: a worker pinned to protocol 1.5 sends nothing, and a worker accepted at 1.7 whose registration's policy says capture is off (the namespace's step_log_attempt_records set to 0 before it registers) sends nothing either; both still log to their host. Each logs 260 lines, more than one carry holds, so a worker that captured would have to send a batch: a fault that answers every AppendStepLogs counts none, and the run holds no line and no stream. The refusal of ResolveDatabase to an ordinary worker served at 1.7 is the server's and is tested in its own suite (decision D041-161, gap G041-030).",
+  "server": {
+    "stepLogs": true
+  },
+  "pendingLanguages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java",
+    "rust"
+  ],
+  "faults": [
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "verdict",
+      "verdict": "CONTINUE"
+    }
+  ],
+  "workflows": {
+    "old": {
+      "name": "step-logs-negotiation-old",
+      "program": [
+        {
+          "op": "step",
+          "id": "old",
+          "activity": "neg.old"
+        }
+      ]
+    },
+    "off": {
+      "name": "step-logs-negotiation-off",
+      "program": [
+        {
+          "op": "step",
+          "id": "off",
+          "activity": "neg.off"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "old": {
+      "workerName": "step-logs-negotiation-old",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "neg.old": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "old"
+            }
+          }
+        }
+      }
+    },
+    "off": {
+      "workerName": "step-logs-negotiation-off",
+      "protocolVersion": "1.7",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "neg.off": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "off"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-old",
+      "op": "startWorker",
+      "worker": "old"
+    },
+    {
+      "id": "old",
+      "op": "start",
+      "workflow": "old",
+      "input": {
+        "case": "old"
+      }
+    },
+    {
+      "id": "old-done",
+      "op": "waitForCompletion",
+      "run": "old",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-old",
+      "op": "stopWorker",
+      "worker": "old"
+    },
+    {
+      "id": "capture-off",
+      "op": "control",
+      "action": "stepLogCaptureOff"
+    },
+    {
+      "id": "start-off",
+      "op": "startWorker",
+      "worker": "off"
+    },
+    {
+      "id": "off",
+      "op": "start",
+      "workflow": "off",
+      "input": {
+        "case": "off"
+      }
+    },
+    {
+      "id": "off-done",
+      "op": "waitForCompletion",
+      "run": "off",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-off",
+      "op": "stopWorker",
+      "worker": "off"
+    },
+    {
+      "id": "old-logs",
+      "op": "stepLogs",
+      "run": "old"
+    },
+    {
+      "id": "off-logs",
+      "op": "stepLogs",
+      "run": "off"
+    }
+  ]
+}

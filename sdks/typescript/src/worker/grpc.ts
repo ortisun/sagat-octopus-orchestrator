@@ -8,6 +8,7 @@ import type { TlsOptions, TokenSource } from '../config.js';
 import { resolveToken } from '../http.js';
 import { SagatError, type ErrorCode } from '../errors.js';
 import { checkTraceparent } from '../traceparent.js';
+import type { StepLogCarry, StepLogRecord } from './step-logs.js';
 
 // ---- the messages of worker.proto, as the SDK sees them (int64 fields as numbers, which hold epoch
 // milliseconds and generations with room to spare) ---------------------------------------------
@@ -20,7 +21,11 @@ export interface WorkerCapabilities {
   protocol_version: string;
 }
 export interface RegisterWorkerRequest { worker_name: string; namespace: string; capabilities: WorkerCapabilities }
-export interface RegisterWorkerResponse { worker_id: string; session_token: string; accepted_protocol_version: string }
+export interface RegisterWorkerResponse {
+  worker_id: string; session_token: string; accepted_protocol_version: string;
+  /** Protocol 1.7 (design 041): sent only when 1.7 or later is accepted. */
+  step_logs?: { enabled: boolean } | null;
+}
 export interface PollTasksRequest { worker_id: string; session_token: string; max_tasks: number }
 export interface ScopePathSegment { scope_node_id: string; iteration_index: number }
 export interface ExecutionInstanceIdentity { instance_path: ScopePathSegment[]; definition_node_id: string }
@@ -41,11 +46,15 @@ export interface CompleteStepRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
   idempotency_key: string; output_json: string; output_blob_ref: string; output_sha256: string; traceparent: string;
   instance?: ExecutionInstanceIdentity;
+  /** Protocol 1.7 (design 041): the attempt's last log records and its final mark. */
+  step_logs?: StepLogCarry;
 }
 export interface FailStepRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
   idempotency_key: string; error_code: string; safe_message: string; retryable: boolean; traceparent: string;
   instance?: ExecutionInstanceIdentity;
+  /** Protocol 1.7 (design 041): the attempt's last log records and its final mark. */
+  step_logs?: StepLogCarry;
 }
 export interface ResolveSecretsRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string; traceparent: string;
@@ -66,8 +75,14 @@ export interface ReadBlobRequest {
 }
 export interface ReadBlobResponse { header?: WriteBlobResponse; chunk?: Buffer; part?: string }
 export interface StepCommandResponse { command_id: string; already_applied: boolean; step_status: string; run_status: string }
+/** Protocol 1.7 (design 041): the records of one leased attempt that is still running. */
+export interface AppendStepLogsRequest {
+  worker_id: string; session_token: string; task_id: string; generation: number; lease_token: string;
+  run_id: string; step_id: string; attempt: number; instance?: ExecutionInstanceIdentity; records: StepLogRecord[];
+}
+export interface AppendStepLogsResponse { verdict: string; stop_reason: string; stored_through_sequence: number; retry_after_ms: number }
 
-export type Method = 'RegisterWorker' | 'PollTasks' | 'StreamTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob';
+export type Method = 'RegisterWorker' | 'PollTasks' | 'StreamTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob' | 'AppendStepLogs';
 
 export interface GrpcConfig {
   grpcUrl: string;
@@ -227,11 +242,11 @@ export class WorkerRpc {
     this.client.close();
   }
 
-  private async call<Req, Res>(method: Method, request: Req, traceparent?: string): Promise<Res> {
+  private async call<Req, Res>(method: Method, request: Req, traceparent?: string, timeoutMs?: number): Promise<Res> {
     const metadata = new grpc.Metadata();
     metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
     if (traceparent) metadata.set('traceparent', checkTraceparent(traceparent));
-    const deadline = new Date(Date.now() + (this.#config.timeoutMs ?? 30_000));
+    const deadline = new Date(Date.now() + (timeoutMs ?? this.#config.timeoutMs ?? 30_000));
     const fn = this.client[method.charAt(0).toLowerCase() + method.slice(1)] as (
       request: Req,
       metadata: grpc.Metadata,
@@ -292,6 +307,10 @@ export class WorkerRpc {
   }
   resolveSecrets(request: ResolveSecretsRequest, traceparent?: string): Promise<ResolveSecretsResponse> {
     return this.call('ResolveSecrets', request, traceparent);
+  }
+  /** Protocol 1.7 (design 041); its deadline is the attempt's (`sdks/SPEC.md` §6.9). Never logged. */
+  appendStepLogs(request: AppendStepLogsRequest, timeoutMs: number): Promise<AppendStepLogsResponse> {
+    return this.call('AppendStepLogs', request, undefined, timeoutMs);
   }
 
   async writeBlob(parts: AsyncIterable<WriteBlobRequest>, traceparent?: string, signal?: AbortSignal): Promise<WriteBlobResponse> {

@@ -1,0 +1,710 @@
+{
+  "name": "step-logs-transport-faults",
+  "description": "Design 041, Requirements 041-004, 041-005 and 041-015, contracts.md section 4, Architecture decision 0095 decision 8: every answer of AppendStepLogs, and lost answers to carrying reports, in twelve runs played one after another, each one step. A short step (three lines) makes no batch and travels in its report's carry: a lost answer to its CompleteStep and to its FailStep sends the same report again and the carry is stored once. A long step (260 lines) sends one batch of 256, cut by the call that buffers the 256th record, and carries the last 4: a lost answer resends the same batch and nothing is stored twice; INVALID_ARGUMENT drops the batch; RETRY_LATER and RESOURCE_EXHAUSTED resend it after their delay; UNAVAILABLE three times drops it after its two retries (that case waits 1.5 s after its last line, so its third call never races the end of the 2 seconds before its report); UNIMPLEMENTED stops the attempt's batches and its report still carries the rest; FINAL_ONLY leaves a carry with no record; STOP_CAPTURE for the session, with the token the host still holds, stops capture and sends no carry. A batch whose answer the fault proxy holds is waited for: released, the report follows the release; never released, the report is sent 2 seconds after the activity ended (compared on the side of 1.5 s it fell on). The reads filter on the carried lines (q = last); the streams' counts show that nothing was stored twice and that every missing record is counted.",
+  "server": {
+    "stepLogs": true
+  },
+  "pendingLanguages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java",
+    "rust"
+  ],
+  "faults": [
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "dropResponse",
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "status",
+      "code": "INVALID_ARGUMENT",
+      "after": 2,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "verdict",
+      "verdict": "RETRY_LATER",
+      "retryAfterMs": 100,
+      "after": 3,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "status",
+      "code": "RESOURCE_EXHAUSTED",
+      "retryAfterMs": 100,
+      "after": 5,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "after": 7,
+      "times": 3
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "status",
+      "code": "UNIMPLEMENTED",
+      "after": 10,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "verdict",
+      "verdict": "FINAL_ONLY",
+      "after": 11,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "holdAnswer",
+      "after": 12,
+      "times": 1,
+      "maxHoldMs": 5000
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "holdAnswer",
+      "after": 13,
+      "times": 1,
+      "maxHoldMs": 5000
+    },
+    {
+      "channel": "grpc",
+      "match": "AppendStepLogs",
+      "action": "verdict",
+      "verdict": "STOP_CAPTURE",
+      "stopReason": "SESSION",
+      "after": 14,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "CompleteStep",
+      "action": "dropResponse",
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "FailStep",
+      "action": "dropResponse",
+      "times": 1
+    }
+  ],
+  "workflows": {
+    "complete-lost": {
+      "name": "step-logs-fault-complete-lost",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.complete-lost"
+        }
+      ]
+    },
+    "fail-lost": {
+      "name": "step-logs-fault-fail-lost",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.fail-lost"
+        }
+      ]
+    },
+    "lost": {
+      "name": "step-logs-fault-lost",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.lost"
+        }
+      ]
+    },
+    "invalid": {
+      "name": "step-logs-fault-invalid",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.invalid"
+        }
+      ]
+    },
+    "retry-later": {
+      "name": "step-logs-fault-retry-later",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.retry-later"
+        }
+      ]
+    },
+    "exhausted": {
+      "name": "step-logs-fault-exhausted",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.exhausted"
+        }
+      ]
+    },
+    "down": {
+      "name": "step-logs-fault-down",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.down"
+        }
+      ]
+    },
+    "unimplemented": {
+      "name": "step-logs-fault-unimplemented",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.unimplemented"
+        }
+      ]
+    },
+    "final-only": {
+      "name": "step-logs-fault-final-only",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.final-only"
+        }
+      ]
+    },
+    "hold-release": {
+      "name": "step-logs-fault-hold-release",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.hold-release"
+        }
+      ]
+    },
+    "hold-expire": {
+      "name": "step-logs-fault-hold-expire",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.hold-expire"
+        }
+      ]
+    },
+    "session": {
+      "name": "step-logs-fault-session",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "faults.session"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "step-logs-faults",
+      "protocolVersion": "1.7",
+      "transport": "poll",
+      "maxInflight": 1,
+      "activities": {
+        "faults.complete-lost": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 3
+              }
+            ],
+            "returns": {
+              "case": "complete-lost"
+            }
+          }
+        },
+        "faults.fail-lost": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 3
+              }
+            ],
+            "fails": {
+              "code": "BROKEN",
+              "message": "broken for good",
+              "retryable": false
+            }
+          }
+        },
+        "faults.lost": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "lost"
+            }
+          }
+        },
+        "faults.invalid": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "invalid"
+            }
+          }
+        },
+        "faults.retry-later": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "retry-later"
+            }
+          }
+        },
+        "faults.exhausted": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "exhausted"
+            }
+          }
+        },
+        "faults.down": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "down"
+            },
+            "sleepMs": 1500
+          }
+        },
+        "faults.unimplemented": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "unimplemented"
+            }
+          }
+        },
+        "faults.final-only": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "final-only"
+            }
+          }
+        },
+        "faults.hold-release": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "hold-release"
+            }
+          }
+        },
+        "faults.hold-expire": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "hold-expire"
+            }
+          }
+        },
+        "faults.session": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "early {{i}}",
+                "repeat": 256
+              },
+              {
+                "level": "info",
+                "message": "last {{i}}",
+                "repeat": 4
+              }
+            ],
+            "returns": {
+              "case": "session"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "complete-lost",
+      "op": "start",
+      "workflow": "complete-lost",
+      "input": {
+        "case": "complete-lost"
+      }
+    },
+    {
+      "id": "complete-lost-done",
+      "op": "waitForCompletion",
+      "run": "complete-lost",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "fail-lost",
+      "op": "start",
+      "workflow": "fail-lost",
+      "input": {
+        "case": "fail-lost"
+      }
+    },
+    {
+      "id": "fail-lost-done",
+      "op": "waitForCompletion",
+      "run": "fail-lost",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "lost",
+      "op": "start",
+      "workflow": "lost",
+      "input": {
+        "case": "lost"
+      }
+    },
+    {
+      "id": "lost-done",
+      "op": "waitForCompletion",
+      "run": "lost",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "invalid",
+      "op": "start",
+      "workflow": "invalid",
+      "input": {
+        "case": "invalid"
+      }
+    },
+    {
+      "id": "invalid-done",
+      "op": "waitForCompletion",
+      "run": "invalid",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "retry-later",
+      "op": "start",
+      "workflow": "retry-later",
+      "input": {
+        "case": "retry-later"
+      }
+    },
+    {
+      "id": "retry-later-done",
+      "op": "waitForCompletion",
+      "run": "retry-later",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "exhausted",
+      "op": "start",
+      "workflow": "exhausted",
+      "input": {
+        "case": "exhausted"
+      }
+    },
+    {
+      "id": "exhausted-done",
+      "op": "waitForCompletion",
+      "run": "exhausted",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "down",
+      "op": "start",
+      "workflow": "down",
+      "input": {
+        "case": "down"
+      }
+    },
+    {
+      "id": "down-done",
+      "op": "waitForCompletion",
+      "run": "down",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "unimplemented",
+      "op": "start",
+      "workflow": "unimplemented",
+      "input": {
+        "case": "unimplemented"
+      }
+    },
+    {
+      "id": "unimplemented-done",
+      "op": "waitForCompletion",
+      "run": "unimplemented",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "final-only",
+      "op": "start",
+      "workflow": "final-only",
+      "input": {
+        "case": "final-only"
+      }
+    },
+    {
+      "id": "final-only-done",
+      "op": "waitForCompletion",
+      "run": "final-only",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "hold-release",
+      "op": "start",
+      "workflow": "hold-release",
+      "input": {
+        "case": "hold-release"
+      }
+    },
+    {
+      "id": "release",
+      "op": "releaseAnswer",
+      "timeoutMs": 5000
+    },
+    {
+      "id": "hold-release-done",
+      "op": "waitForCompletion",
+      "run": "hold-release",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "hold-expire",
+      "op": "start",
+      "workflow": "hold-expire",
+      "input": {
+        "case": "hold-expire"
+      }
+    },
+    {
+      "id": "hold-expire-done",
+      "op": "waitForCompletion",
+      "run": "hold-expire",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "session",
+      "op": "start",
+      "workflow": "session",
+      "input": {
+        "case": "session"
+      }
+    },
+    {
+      "id": "session-done",
+      "op": "waitForCompletion",
+      "run": "session",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "complete-lost-logs",
+      "op": "stepLogs",
+      "run": "complete-lost",
+      "q": "last"
+    },
+    {
+      "id": "fail-lost-logs",
+      "op": "stepLogs",
+      "run": "fail-lost",
+      "q": "last"
+    },
+    {
+      "id": "lost-logs",
+      "op": "stepLogs",
+      "run": "lost",
+      "q": "last"
+    },
+    {
+      "id": "invalid-logs",
+      "op": "stepLogs",
+      "run": "invalid",
+      "q": "last"
+    },
+    {
+      "id": "retry-later-logs",
+      "op": "stepLogs",
+      "run": "retry-later",
+      "q": "last"
+    },
+    {
+      "id": "exhausted-logs",
+      "op": "stepLogs",
+      "run": "exhausted",
+      "q": "last"
+    },
+    {
+      "id": "down-logs",
+      "op": "stepLogs",
+      "run": "down",
+      "q": "last"
+    },
+    {
+      "id": "unimplemented-logs",
+      "op": "stepLogs",
+      "run": "unimplemented",
+      "q": "last"
+    },
+    {
+      "id": "final-only-logs",
+      "op": "stepLogs",
+      "run": "final-only",
+      "q": "last"
+    },
+    {
+      "id": "hold-release-logs",
+      "op": "stepLogs",
+      "run": "hold-release",
+      "q": "last"
+    },
+    {
+      "id": "hold-expire-logs",
+      "op": "stepLogs",
+      "run": "hold-expire",
+      "q": "last"
+    },
+    {
+      "id": "session-logs",
+      "op": "stepLogs",
+      "run": "session",
+      "q": "last"
+    }
+  ]
+}

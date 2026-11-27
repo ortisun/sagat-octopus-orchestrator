@@ -1,0 +1,85 @@
+{
+  "canonical": {
+    "capture": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"levels\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-capture-flow\"},\"nodes\":[{\"activity\":\"logs.levels\",\"id\":\"levels\",\"next\":\"fields\",\"type\":\"activity\"},{\"activity\":\"logs.fields\",\"id\":\"fields\",\"next\":\"flaky\",\"type\":\"activity\"},{\"activity\":\"logs.flaky\",\"id\":\"flaky\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":2,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}",
+    "collection": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"item\":{\"entrypoint\":\"each\",\"nodes\":[{\"activity\":\"logs.item\",\"id\":\"each\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.each.output\",\"type\":\"return\"}]}},\"entrypoint\":\"items\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-collection-flow\"},\"nodes\":[{\"body\":\"item\",\"id\":\"items\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":1,\"next\":\"done\",\"result\":\"bodyResult.n\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.items.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "capture": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "levels",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-capture-flow"
+      },
+      "nodes": [
+        {
+          "activity": "logs.levels",
+          "id": "levels",
+          "next": "fields",
+          "type": "activity"
+        },
+        {
+          "activity": "logs.fields",
+          "id": "fields",
+          "next": "flaky",
+          "type": "activity"
+        },
+        {
+          "activity": "logs.flaky",
+          "id": "flaky",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 2,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "collection": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "item": {
+          "entrypoint": "each",
+          "nodes": [
+            {
+              "activity": "logs.item",
+              "id": "each",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.each.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "items",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-collection-flow"
+      },
+      "nodes": [
+        {
+          "body": "item",
+          "id": "items",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 1,
+          "next": "done",
+          "result": "bodyResult.n",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.items.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

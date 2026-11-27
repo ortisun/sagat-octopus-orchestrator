@@ -782,6 +782,95 @@ match those previously published. Reviewed outputs retain journals, instance-awa
 ordered scope results, peak active count and independent persisted server state. Rust joins this
 case through the release integration with feature034; existing five-language results are not a
 new all-six acceptance claim.
+## Step logs (design 041)
+
+Five scenarios hold the step-log capture of `sdks/SPEC.md` §6.9 (design 041, section 6, task T041-14):
+`step-logs-capture`, `step-logs-redaction`, `step-logs-limits`, `step-logs-transport-faults` and
+`step-logs-negotiation`. Their goldens were written by hand from the scenarios, since no SDK could play them when they
+were written; the first SDK whose conformance lands reads the diff of each and corrects what the hand got wrong
+(design 041, tasks T041-15 to T041-20).
+
+**Pending languages.** A scenario's `pendingLanguages` names the SDKs whose step-log task has not landed. A pending
+language is not compared with the golden: it passes only by refusing, as its runner does today, the first operation new
+to design 041 that the scenario plays (`stepLogs`, or `releaseAnswer` where it comes first). Go ends its run with
+`unknown step op "<op>"` and Rust with `scenario operation <op> is not implemented yet` in the runner's standard error;
+TypeScript, Python, C# and Java record that step as failed with `{"code": "UNEXPECTED", "message": "<class>"}`, the class
+being `Error`, `ValueError` (Python's standard error also holds `unknown step op <op>`), `InvalidOperationException` and
+`IllegalArgumentException`. Anything else fails the scenario with a message that says the language is to be removed
+from the list (decision D041-162 of `specs/041-step-logs/research.md`). Each SDK task removes its language from the five
+files once its runner plays them.
+
+**Server settings.** `server.stepLogs: true` grants the reader (the subject of `clientToken`) the namespace's PII reveal
+grant through `PUT /namespaces/{namespaceId}/payload-reveal-grants/{subject}` at boot, which every step-log read route
+needs; `server.stepLogAttemptRecords: N` sets the namespace's `step_log_attempt_records` through
+`PUT /namespaces/{namespaceId}/quotas/step_log_attempt_records`. The control endpoint gains the action
+`stepLogCaptureOff`, which sets that resource to 0 (capture off in the namespace) for the workers registered after it.
+
+**Worker settings.** A worker definition may hold `"stepLogs": {"capture": true|false, "level": "trace"|"debug"|"info"|"warn"|"error"}`,
+the SDK's worker option of §6.9 (absent: the SDK's default, capture on at `info`), and `"hostLogLevel"`, one of the same
+five levels: the host logger the runner gives the SDK writes only at or above it, so that a scenario shows capture does
+not depend on the host's own enabled check.
+
+**Behaviours.**
+
+| Behavior | Effect |
+|---|---|
+| `{"logs": [entry, …], …}` | before the rest of the entry, the activity makes these logger calls in order, through the attempt's logger of §6.9 |
+| `{"logsSecret": {"resolve": [name, …], "afterResolved": [name, …], "values": [name, …], "numbers": [n, …]}, …}` | resolves the named secrets with `ctx.secrets()`; waits, at most 10 s, until every secret of `afterResolved` has been resolved by some attempt of the runner's process (a set the runner keeps, so that concurrent attempts are ordered by what happened, not by time); then, for each secret of `values` (its value `v` read from the scenario's `secrets`), makes five `info` calls, the positions of Success criterion 041-004: the message `v`; the message `before v after`; the message `field key` with a field whose key is `v` and whose value is `"key"`; the message `field value` with a field `value` whose value is `v`; the message `exception` with an exception whose message is `failure v`; then, for each number `n` of `numbers`, one `info` call, the message `number` with a field `number` holding `n` as the runner's JSON parser read it (an integer, or a double for `1e15`), the sixth position. With `returnAfterLogged: n` it then waits, at most 10 s, until the worker's log holds at least `n` entries, so that attempts in flight together end in one order. Then it behaves as the rest of the entry says |
+
+An entry of `logs` is `{"level", "message", "fields"?, "context"?, "exception"?, "repeat"?}`: `level` is one of the five,
+mapped onto the language's level by the tables of §6.9; `fields` is passed as the call's
+fields; `context` is attached the language's way (§6.9, "Language context": Go `With`, Python `extra`, C# a scope begun on
+the activity logger, and the fields argument in TypeScript, Java and Rust); `exception` is the message of an ordinary
+error of the language (TypeScript `Error`, Go `errors.New`, Python `RuntimeError`, C# `InvalidOperationException`, Java
+`RuntimeException`, Rust a `std::io::Error` of kind `Other`) passed as the call's error or exception; `repeat` (default
+1) makes the same call that many times, with `{{i}}` in the message replaced by the call's 1-based count. A field value
+is a JSON value; `{"$double": "NaN" | "Infinity" | "-Infinity"}` is that double.
+
+**Steps.**
+
+| `op` | Fields | Does | Result |
+|---|---|---|---|
+| `stepLogs` | `run`, `node?`, `attempt?`, `q?`, `timeoutMs?` (20,000) | `GET /runs/{runId}/logs` from no cursor, with `node`, `attempt` and `q` when given and `limit=200`, following `nextCursor`, until a page answers `complete: true` with `heldBack: false` (a page with `heldBack: true` is read again from the same cursor), within `timeoutMs`; then `GET /runs/{runId}/logs/streams?source=worker`, following `nextCursor` until it is null; a plain HTTP request with `clientToken` | `{"lines": [...], "streams": [...]}`: each line keeps only `node`, `attempt`, `instancePath`, `sequence`, `kind`, `level`, `message`, `exception`, `fields`, `truncated` and `marker`, in the order the route gave; each stream keeps only `source`, `node`, `attempt`, `instancePath`, `state`, `records`, `droppedByWorker`, `droppedByServer`, `ceiling` and `notStoredReason`, sorted by `node`, then `attempt`, then the iteration indexes of `instancePath` (the stream's `bytes` is not kept: it counts the exception text, whose stack is the language's own) |
+| `releaseAnswer` | `timeoutMs?` (5,000) | waits until a `holdAnswer` fault holds an answer, then releases it | none |
+
+**Faults.** Two actions are added for `AppendStepLogs`, applied at each runner's gRPC interceptor (in Rust, its fault
+proxy) as every other fault, with the same `match`, `times` and `after`:
+
+- `verdict`: the call never reaches the server; the runner answers it with an `AppendStepLogsResponse` of the fault's
+  `verdict` (`CONTINUE`, `FINAL_ONLY`, `STOP_ATTEMPT`, `STOP_CAPTURE`, `RETRY_LATER`), `stopReason` (`FINAL_RECORDED`,
+  `LEASE`, `AUTHORITY`, `REMOVED`, `CAPTURE_OFF`, `SESSION`; absent is unspecified), `retryAfterMs` (absent is 0) and a
+  `stored_through_sequence` of 0;
+- `holdAnswer`: `{"channel": "grpc", "match": "AppendStepLogs", "action": "holdAnswer", "times": 1, "after": <n − 1>,
+  "maxHoldMs": 5000}` lets the *n*-th matching call reach the server, holds its answer, and releases it when the
+  scenario plays `releaseAnswer` or when `maxHoldMs` has passed. The runner records, in `out.json`, `heldAnswers`, one
+  entry per hold in file order: `{"reportSent": "beforeRelease" | "afterRelease", "afterHoldMs": <ms>}`, where the report
+  is the first `CompleteStep` or `FailStep` the runner's interceptor sees after the hold began and `afterHoldMs` the
+  milliseconds from the hold to it. The normalizer replaces `afterHoldMs` by `under1500` or `atLeast1500`, so that a
+  golden asserts, identically in six languages, `afterRelease` (a report that waited for the release comes at once), or
+  `beforeRelease` with `atLeast1500` (one sent at the end of the 2-second wait, which a sender thread may have started
+  a little after the batch was sent; decision D041-165).
+
+**What is compared, and what must not be stored.** A line's `exception` is compared through the scenario's
+`exceptionTexts`: the harness replaces it by the list of those texts it holds, in the list's order. `mustNotStore` lists
+texts (a scenario's secret values) that must appear in none of: the stored lines (`step_log_lines`, read from the
+database), the bodies of `listRunLogs` and `listRunLogStreams` that the harness reads itself for every run of the
+scenario, the runner's output (its worker log excluded, as for `mustNotAppear`), the platform's state, the tenant's audit
+trail, and the server's own output, captured in the harness's process at the `trace` level while the scenario plays. A
+test that needs no platform, `must_not_store_finds_a_planted_canary_in_every_source`, shows the search failing on a
+planted canary in each source. Each text is also searched in the form a JSON encoder gives it, escaped once and twice
+(a text column holding JSON), and as the hexadecimal of its UTF-8 bytes (a binary column); the run's tokens are searched
+in the server's output. A pending language runs these checks too; a pending Go or Rust runner, which ends its run
+without writing an output, is searched in the database, the routes and the server's output only.
+
+```text
+SAGAT_SDK_SCENARIO=step-logs-capture cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=step-logs-redaction cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=step-logs-limits cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=step-logs-transport-faults cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=step-logs-negotiation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
 ## Rust runner
 
 Set `SAGAT_RUST_SDK_TARGET_DIR` to an owned absolute directory outside the repository and

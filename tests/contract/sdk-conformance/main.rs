@@ -140,3 +140,233 @@ fn compensation_safety_scenario_covers_the_shared_delivery_contract() {
         })
     }));
 }
+
+/// Design 041, task T041-14: the search behind `mustNotStore` finds a canary planted in any one of the sources it
+/// reads, names that source alone, and never repeats the canary whole.
+#[test]
+fn must_not_store_finds_a_planted_canary_in_every_source() {
+    let canary = "canary-planted-4Rk9".to_owned();
+    let names = [
+        "the stored lines",
+        "the bodies of the step-log routes",
+        "the runner's output",
+        "the platform's state",
+        "the audit trail",
+        "the server's output",
+    ];
+    let clean = |n: &str| (n.to_owned(), format!("{n}: [REDACTED] and nothing else"));
+    let none: Vec<(String, String)> = names.iter().map(|n| clean(n)).collect();
+    assert!(
+        harness::step_logs::stored_appearances(&none, std::slice::from_ref(&canary)).is_empty()
+    );
+    for planted in names {
+        let sources: Vec<(String, String)> = names
+            .iter()
+            .map(|n| {
+                if *n == planted {
+                    ((*n).to_owned(), format!("before {canary} after"))
+                } else {
+                    clean(n)
+                }
+            })
+            .collect();
+        let found = harness::step_logs::stored_appearances(&sources, std::slice::from_ref(&canary));
+        assert_eq!(found.len(), 1, "{planted}: {found:?}");
+        assert!(found[0].starts_with(planted), "{found:?}");
+        assert!(
+            !found[0].contains(&canary),
+            "the report repeats the canary: {found:?}"
+        );
+    }
+}
+
+/// Design 041, decision D041-162: a pending language passes only by refusing the first step-log operation as its
+/// runner refuses an unknown operation today, and fails once it stops refusing it.
+#[test]
+fn a_pending_language_passes_only_by_its_runners_refusal() {
+    use harness::step_logs::pending_refusal;
+    use serde_json::json;
+    let scenario =
+        json!({"steps": [{"id": "run", "op": "start"}, {"id": "logs", "op": "stepLogs"}]});
+    let recorded = |class: &str| {
+        json!({"observations": [
+            {"id": "run", "op": "start", "ok": true},
+            {"id": "logs", "op": "stepLogs", "ok": false, "error": {"code": "UNEXPECTED", "message": class}},
+        ]})
+    };
+    let served = json!({"observations": [{"id": "logs", "op": "stepLogs", "ok": true, "result": {"lines": []}}]});
+    let ok = |stderr: &str| Ok((String::new(), stderr.to_owned()));
+    for (lang, class, stderr) in [
+        ("typescript", "Error", ""),
+        (
+            "python",
+            "ValueError",
+            "ValueError: unknown step op stepLogs",
+        ),
+        ("dotnet", "InvalidOperationException", ""),
+        ("java", "IllegalArgumentException", ""),
+    ] {
+        assert_eq!(
+            pending_refusal(lang, &scenario, &ok(stderr), Some(&recorded(class))),
+            Ok(()),
+            "{lang}"
+        );
+        assert!(
+            pending_refusal(lang, &scenario, &ok(stderr), Some(&served)).is_err(),
+            "{lang} served the op"
+        );
+        assert!(
+            pending_refusal(lang, &scenario, &ok(stderr), Some(&recorded("Other"))).is_err(),
+            "{lang}"
+        );
+        assert!(
+            pending_refusal(lang, &scenario, &Err("crashed".into()), None).is_err(),
+            "{lang} crashed"
+        );
+    }
+    assert!(pending_refusal("python", &scenario, &ok(""), Some(&recorded("ValueError"))).is_err());
+    let failed = |text: &str| Err(format!("run.sh exited with 1:\n{text}"));
+    assert_eq!(
+        pending_refusal(
+            "go",
+            &scenario,
+            &failed("step logs: unknown step op \"stepLogs\""),
+            None
+        ),
+        Ok(())
+    );
+    assert!(
+        pending_refusal(
+            "go",
+            &scenario,
+            &failed("step run: unknown step op \"other\""),
+            None
+        )
+        .is_err()
+    );
+    assert!(pending_refusal("go", &scenario, &ok(""), Some(&served)).is_err());
+    assert_eq!(
+        pending_refusal(
+            "rust",
+            &scenario,
+            &failed("Rust runtime scenario operation stepLogs is not implemented yet"),
+            None
+        ),
+        Ok(())
+    );
+    assert!(pending_refusal("rust", &scenario, &ok(""), Some(&served)).is_err());
+    // The first new operation decides: here a release of a held answer comes before the read.
+    let release_first = json!({"steps": [{"id": "release", "op": "releaseAnswer"}, {"id": "logs", "op": "stepLogs"}]});
+    assert_eq!(
+        pending_refusal(
+            "go",
+            &release_first,
+            &failed("unknown step op \"releaseAnswer\""),
+            None
+        ),
+        Ok(())
+    );
+    assert!(
+        harness::step_logs::pending_languages(&json!({"pendingLanguages": ["csharp"]})).is_err()
+    );
+}
+
+/// Design 041, task T041-14: the wait after a held answer is compared by the side of the 2-second wait before a
+/// report it fell on, and a line's exception by the scenario's texts it holds.
+#[test]
+fn held_answers_and_exceptions_are_compared_by_what_every_language_shares() {
+    use serde_json::json;
+    let mut normalizer = harness::normalize::Normalizer::new("", Vec::new());
+    let held = harness::normalize::compared(
+        &json!({"heldAnswers": [
+            {"reportSent": "afterRelease", "afterHoldMs": 1499},
+            {"reportSent": "beforeRelease", "afterHoldMs": 1500},
+        ]}),
+        &mut normalizer,
+    );
+    assert_eq!(
+        held["heldAnswers"],
+        json!([
+            {"reportSent": "afterRelease", "afterHoldMs": "under1500"},
+            {"reportSent": "beforeRelease", "afterHoldMs": "atLeast1500"},
+        ])
+    );
+    let mut out = json!({"observations": [{"op": "stepLogs", "result": {"lines": [
+        {"exception": "java.lang.RuntimeException: failure [REDACTED]\n\tat Runner.main(Runner.java:1)"},
+        {"exception": null},
+    ]}}]});
+    harness::step_logs::compare_exceptions_by_texts(
+        &mut out,
+        &["failure [REDACTED]".to_owned(), "absent".to_owned()],
+    );
+    assert_eq!(
+        out["observations"][0]["result"]["lines"],
+        json!([{"exception": ["failure [REDACTED]"]}, {"exception": null}])
+    );
+}
+
+/// Design 041, decision D041-164: a text the encoder escapes is found in its escaped form too, the report names no
+/// character of it, and a scenario cannot leave one of its secrets out of `mustNotStore`.
+#[test]
+fn must_not_store_finds_an_escaped_canary_and_every_secret_is_listed() {
+    use serde_json::json;
+    let canary = "quote\"and\nnewline-7Qw".to_owned();
+    let markers = harness::step_logs::with_escaped_forms(std::slice::from_ref(&canary));
+    let hex: String = canary.bytes().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        markers,
+        vec![
+            canary.clone(),
+            r#"quote\"and\nnewline-7Qw"#.to_owned(),
+            r#"quote\\\"and\\nnewline-7Qw"#.to_owned(),
+            hex.clone(),
+        ]
+    );
+    // A binary column holding the text is written by `row_to_json` as its hexadecimal.
+    let binary = format!(r#"{{"content":"\\x{hex}"}}"#);
+    assert_eq!(
+        harness::step_logs::stored_appearances(
+            &[("the platform's database".to_owned(), binary)],
+            &markers
+        )
+        .len(),
+        1
+    );
+    let stored = json!({"fields": format!("{{\"k\":{}}}", json!(canary))}).to_string();
+    let found = harness::step_logs::stored_appearances(
+        &[("the platform's database".to_owned(), stored)],
+        &markers,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        !found[0].contains("quote") && !found[0].contains("newline"),
+        "{found:?}"
+    );
+    assert!(
+        harness::step_logs::every_secret_is_listed(&json!({
+            "secrets": {"a": "value-a-123", "b": "value-b-456"}, "mustNotStore": ["value-a-123"]
+        }))
+        .is_err()
+    );
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contract/sdk-conformance/scenarios");
+    for name in [
+        "step-logs-capture",
+        "step-logs-redaction",
+        "step-logs-limits",
+        "step-logs-transport-faults",
+        "step-logs-negotiation",
+    ] {
+        let scenario: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(format!("{name}.json"))).expect("scenario"),
+        )
+        .expect("scenario JSON");
+        if scenario.get("mustNotStore").is_some() {
+            assert_eq!(
+                harness::step_logs::every_secret_is_listed(&scenario),
+                Ok(()),
+                "{name}"
+            );
+        }
+    }
+}

@@ -9,7 +9,9 @@ mod control;
 #[path = "database.rs"]
 mod database;
 #[path = "normalize.rs"]
-mod normalize;
+pub mod normalize;
+#[path = "step_logs.rs"]
+pub mod step_logs;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -370,6 +372,7 @@ async fn boot(scenario: &Value) -> Run {
             .await;
         assert_eq!(status, 200, "setting iteration concurrency: {quota}");
     }
+    step_log_settings(scenario, &platform).await;
     platform
         .grant(platform.tenant, "conformance-worker", Role::Worker)
         .await;
@@ -443,6 +446,35 @@ async fn boot(scenario: &Value) -> Run {
         tasks: vec![serving],
         _blob_dir: blob_dir,
         database,
+    }
+}
+
+/// What a step-log scenario asks of the server (README, "Step logs"): the reader's PII reveal grant, which every
+/// step-log read route needs, and a lower attempt ceiling, both through the public routes.
+async fn step_log_settings(scenario: &Value, platform: &Platform) {
+    let settings = &scenario["server"];
+    if settings["stepLogs"] != true && settings.get("stepLogAttemptRecords").is_none() {
+        return;
+    }
+    let namespace = platform.namespace_id().await;
+    if settings["stepLogs"] == true {
+        let (status, grant) = platform
+            .rest(
+                Method::PUT,
+                &format!("/namespaces/{namespace}/payload-reveal-grants/{HUMAN}"),
+                Some(&json!({})),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "granting the reader the PII reveal grant: {grant}"
+        );
+    }
+    if let Some(records) = settings.get("stepLogAttemptRecords") {
+        let records = records
+            .as_u64()
+            .expect("server.stepLogAttemptRecords is a non-negative integer");
+        control::set_step_log_attempt_records(platform, records).await;
     }
 }
 
@@ -1011,6 +1043,136 @@ fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
     found
 }
 
+/// Every place a step-log scenario's `mustNotStore` texts are searched in (README, "Step logs"): the stored lines,
+/// the bodies of the two list routes for every run, the runner's output without its worker log, the platform's
+/// state, the tenant's audit trail and the server's own output captured while the scenario played.
+async fn must_not_store_sources(run: &Run, out: &Value) -> Result<Vec<(String, String)>, String> {
+    let pool = &run.platform.api.db.pool;
+    let lines: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT message, exception, fields FROM step_log_lines WHERE tenant_id = $1 ORDER BY stream_id, sequence",
+    )
+    .bind(run.platform.tenant.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("reading the stored lines: {e}"))?;
+    let stored = lines
+        .into_iter()
+        .flat_map(|(message, exception, fields)| [message, exception, fields])
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut bodies = String::new();
+    for state in out["serverState"].as_array().into_iter().flatten() {
+        let Some(id) = state["runId"].as_str() else {
+            continue;
+        };
+        for route in ["logs?limit=200", "logs/streams?limit=200"] {
+            let mut cursor: Option<String> = None;
+            // Every page, up to a bound that no scenario reaches: a cursor that never ends is a failure.
+            for page in 0.. {
+                if page == 1000 {
+                    return Err(format!("/runs/{id}/{route} never stopped paging"));
+                }
+                let at = cursor
+                    .as_deref()
+                    .map(|c| format!("&cursor={c}"))
+                    .unwrap_or_default();
+                let (status, body) = run
+                    .platform
+                    .rest(Method::GET, &format!("/runs/{id}/{route}{at}"), None)
+                    .await;
+                bodies.push_str(&body.to_string());
+                let next = body["nextCursor"].as_str().map(str::to_owned);
+                let empty = body["items"].as_array().is_none_or(Vec::is_empty);
+                if status != 200 || next.is_none() || empty || next == cursor {
+                    break;
+                }
+                cursor = next;
+            }
+        }
+    }
+    let mut output = out.clone();
+    if let Some(all) = output.as_object_mut() {
+        all.remove("workerLog");
+    }
+    // Every row of every table of the language's own database: the journal, the payloads, the outbox, the commands
+    // and their idempotency rows, the audit trail, wherever a value could have been written.
+    let tables: Vec<(String,)> = sqlx::query_as(
+        "SELECT quote_ident(table_name) FROM information_schema.tables \
+         WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("listing the tables: {e}"))?;
+    let mut database = String::new();
+    for (table,) in tables {
+        // The name comes from the catalogue, quoted by `quote_ident`: no input of a scenario reaches it.
+        let rows: (Option<String>,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT string_agg(row_to_json(t)::text, E'\\n') FROM {table} t"
+        )))
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("reading the table {table}: {e}"))?;
+        database.push_str(&rows.0.unwrap_or_default());
+        database.push('\n');
+    }
+    let server = step_logs::captured_output()?;
+    Ok(vec![
+        ("the stored lines".to_owned(), stored),
+        ("the bodies of the step-log routes".to_owned(), bodies),
+        ("the runner's output".to_owned(), output.to_string()),
+        (
+            "the platform's state".to_owned(),
+            out["serverState"].to_string(),
+        ),
+        ("the platform's database".to_owned(), database),
+        ("the server's output".to_owned(), server),
+    ])
+}
+
+/// What `mustNotStore` finds (README, "Step logs"): the scenario's texts, in their plain and their JSON-escaped forms,
+/// in every source, and the run's tokens in the server's own output.
+async fn must_not_store_failures(
+    run: &Run,
+    out: &Value,
+    config: &Value,
+    scenario: &Value,
+    unique: &str,
+) -> Vec<String> {
+    let markers =
+        step_logs::with_escaped_forms(&step_logs::texts(scenario, "mustNotStore", unique));
+    match must_not_store_sources(run, out).await {
+        Ok(sources) => {
+            let mut found = step_logs::stored_appearances(&sources, &markers);
+            let tokens: Vec<String> = [
+                "clientToken",
+                "workerToken",
+                "otherTenantToken",
+                "unboundWorkerToken",
+                "operatorToken",
+                "viewerToken",
+                "runnerToken",
+                "revokedToken",
+            ]
+            .iter()
+            .filter_map(|key| config[*key].as_str().map(str::to_owned))
+            .filter(|token| !token.is_empty())
+            .collect();
+            let server: Vec<(String, String)> = sources
+                .into_iter()
+                .filter(|(source, _)| source == "the server's output")
+                .collect();
+            found.extend(
+                step_logs::stored_appearances(&server, &tokens)
+                    .into_iter()
+                    .map(|found| format!("{found} (a token of the run)")),
+            );
+            found
+        }
+        Err(e) => vec![e],
+    }
+}
+
 /// Where a text the scenario listed under `mustNotAppear` (a secret-shaped value it put into a run's input)
 /// shows up in what the run reports: the observations, the server state and the evidence read from the
 /// journal and the audit trail. The worker's log is not searched: a handler is meant to see its input.
@@ -1322,8 +1484,38 @@ async fn play(
     // 2. Play it, language by language, each on a platform of its own: the runs, the leases, the events
     //    and the quotas of one language are not there for the next to meet.
     let expected_path = suite().join("expected").join(format!("{name}.json"));
+    let pending = match step_logs::pending_languages(&scenario) {
+        Ok(pending) => pending,
+        Err(e) => {
+            return Outcome {
+                failures: vec![format!("{name}: {e}")],
+                played: Vec::new(),
+            };
+        }
+    };
+    let must_not_store = scenario
+        .get("mustNotStore")
+        .is_some_and(|texts| texts.as_array().is_some_and(|all| !all.is_empty()));
+    if must_not_store && let Err(e) = step_logs::every_secret_is_listed(&scenario) {
+        return Outcome {
+            failures: vec![format!("{name}: {e}")],
+            played: Vec::new(),
+        };
+    }
     let mut results: Vec<(&str, Value)> = Vec::new();
     for (lang, root) in langs {
+        // The server's output is captured from before the language's platform is staged, which is when the
+        // scenario's secrets are stored, for every language, pending or not.
+        let capturing = must_not_store
+            && match step_logs::start_capture() {
+                Ok(()) => true,
+                Err(e) => {
+                    failures.push(format!("{name}/{lang}: {e}"));
+                    false
+                }
+            };
+        // The capture ends when this language's play ends, on every path, a panic of the staging included.
+        let _capture_end = capturing.then_some(step_logs::CaptureEnd);
         let (run, config, unique, publication_evidence) = stage(&scenario, &first, lang).await;
         // The process id is in the names: two plays of the suite at once (two people, a CI job and a
         // developer) do not overwrite each other's configuration and output.
@@ -1336,7 +1528,8 @@ async fn play(
         )
         .expect("write config");
         let _ = std::fs::remove_file(&out_path);
-        match script(
+        let is_pending = pending.iter().any(|p| p == lang);
+        let played = script(
             root,
             "run.sh",
             &[
@@ -1347,8 +1540,40 @@ async fn play(
             ],
             timeout,
         )
-        .await
-        {
+        .await;
+        if is_pending {
+            // A language whose step-log task has not landed passes only by refusing as its runner does today.
+            let out = std::fs::read(&out_path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            match step_logs::pending_refusal(lang, &scenario, &played, out.as_ref()) {
+                Ok(()) => println!("{name}/{lang}: pending, refused as its runner does today"),
+                Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+            }
+            // Only the comparison with the golden waits for the language's task: every leak check runs, since the
+            // runner played every step before the one it refused against a real platform.
+            let mut out = out.unwrap_or_else(|| json!({}));
+            for leak in leaks(&out, &config, &scenario) {
+                failures.push(format!("{name}/{lang}: {leak}"));
+            }
+            match server_state(&run).await {
+                Ok(state) => out["serverState"] = state,
+                Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+            }
+            for appearance in marker_appearances(&out, &scenario) {
+                failures.push(format!("{name}/{lang}: {appearance}"));
+            }
+            if capturing {
+                for failure in
+                    must_not_store_failures(&run, &out, &config, &scenario, &unique).await
+                {
+                    failures.push(format!("{name}/{lang}: {failure}"));
+                }
+            }
+            run.stop().await;
+            continue;
+        }
+        match played {
             Ok((_, stderr)) => match std::fs::read(&out_path)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -1412,6 +1637,17 @@ async fn play(
                     for appearance in marker_appearances(&out, &scenario) {
                         failures.push(format!("{name}/{lang}: {appearance}"));
                     }
+                    if capturing {
+                        for failure in
+                            must_not_store_failures(&run, &out, &config, &scenario, &unique).await
+                        {
+                            failures.push(format!("{name}/{lang}: {failure}"));
+                        }
+                    }
+                    step_logs::compare_exceptions_by_texts(
+                        &mut out,
+                        &step_logs::texts(&scenario, "exceptionTexts", &unique),
+                    );
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
                     let doc = compared(&out, &mut normalizer);
                     if name == "blobs"

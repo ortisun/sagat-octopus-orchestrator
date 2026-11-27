@@ -84,11 +84,17 @@ export interface Secrets {
   names(): string[];
 }
 
+/**
+ * The attempt's own logger (SPEC §6.3, §6.9). It writes to the host's logger as it always did and, at protocol 1.7,
+ * captures each call at or above the capture level as a step-log line: `fields` are captured as the line's fields and
+ * `error` as its exception text. A call never blocks on the network and never throws.
+ */
 export interface ActivityLogger {
-  debug(message: string, fields?: Record<string, unknown>): void;
-  info(message: string, fields?: Record<string, unknown>): void;
-  warn(message: string, fields?: Record<string, unknown>): void;
-  error(message: string, fields?: Record<string, unknown>): void;
+  trace(message: string, fields?: Record<string, unknown>, error?: unknown): void;
+  debug(message: string, fields?: Record<string, unknown>, error?: unknown): void;
+  info(message: string, fields?: Record<string, unknown>, error?: unknown): void;
+  warn(message: string, fields?: Record<string, unknown>, error?: unknown): void;
+  error(message: string, fields?: Record<string, unknown>, error?: unknown): void;
 }
 
 /** One repeated scope that addresses a runtime activation of a definition node. */
