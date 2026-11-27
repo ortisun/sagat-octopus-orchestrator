@@ -136,7 +136,7 @@ impl std::fmt::Debug for pb::step_log_field::Value {
 
 // Every message with a field whose name ends in `_token` (a lease token or a session token, the bearer authority of a worker)
 // skips the generated `Debug` and prints counts and fences only (delivery acknowledgement, Task 006-043; `stream-completion.md`,
-// "Wire"): no token, no identity, no payload.
+// "Wire"): no token, no identity, no payload. A report keeps the counts of its step-log carry (feature 041, FR-041-007 (d)).
 impl std::fmt::Debug for pb::RegisterWorkerResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegisterWorkerResponse")
@@ -176,6 +176,8 @@ impl std::fmt::Debug for pb::CompleteStepRequest {
         f.debug_struct("CompleteStepRequest")
             .field("attempt", &self.attempt)
             .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
             .finish_non_exhaustive()
     }
 }
@@ -184,6 +186,8 @@ impl std::fmt::Debug for pb::FailStepRequest {
         f.debug_struct("FailStepRequest")
             .field("attempt", &self.attempt)
             .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
             .finish_non_exhaustive()
     }
 }
