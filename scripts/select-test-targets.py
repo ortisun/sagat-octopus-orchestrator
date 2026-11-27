@@ -266,7 +266,8 @@ class Readers:
     suite that only its own changes select (OD-2026-11-06-2). A reader reads `specs/<feature>/contracts/<file>` when a
     string literal of its sources is a path that ends in `specs/<feature>/contracts/<file>`, or when one is a path that
     ends in the directory `specs/<feature>/contracts` and another is `<file>` or ends in `/<file>` (a helper that joins
-    the two). A literal that only mentions a contract inside a sentence is not a path to it, and a comment is not a
+    the two), or when one is a path that ends in a directory beneath `specs/<feature>/contracts` that holds `<file>` at
+    any depth (a corpus the suite walks). A literal that only mentions a contract inside a sentence is not a path to it, and a comment is not a
     literal. The literals of a suite are those of the files its directory owns (the deepest target directory, as for a
     changed file) and of a module of tests/support that it names (`contract::`, or `mod support` for
     tests/support/mod.rs); those of a package are those of every .rs file under its directory, `build.rs` and
@@ -326,13 +327,19 @@ class Readers:
         if not match:
             return set()
         directory, name = match.groups()
+        # A literal that ends in a directory inside the contracts directory reads every file beneath it (a corpus that
+        # the suite walks, such as design 044's goldens): its parents are the candidate directories.
+        parts = name.split("/")
+        parents = ["/".join(parts[:i]) for i in range(1, len(parts))]
         found = set()
         for reader, literals in self.literals.items():
             whole = any(literal.endswith(f"{directory}/{name}") for literal in literals)
             joined = any(literal.rstrip("/").endswith(directory) for literal in literals) and any(
                 literal == name or (literal.endswith("/" + name) and not CONTRACT_PATH.search(literal))
                 for literal in literals)
-            if whole or joined:
+            beneath = any(literal.rstrip("/").endswith(directory + "/" + parent)
+                          for literal in literals for parent in parents)
+            if whole or joined or beneath:
                 found.add(reader)
         return found
 

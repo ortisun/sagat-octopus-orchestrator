@@ -306,6 +306,23 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.chosen(), {"contract_a"})
 
+    def test_a_directory_inside_a_contracts_directory_is_a_read_of_every_file_beneath_it(self):
+        # A golden corpus is walked, not named file by file (design 044's contract_workflow_as_code reads
+        # specs/044-workflow-as-code/contracts/goldens and every scenario below it).
+        self.readers()
+        self.write(f"{self.CONTRACTS}/goldens/scenarios/s/history.jsonl", "{}\n")
+        self.write(f"{self.CONTRACTS}/goldensmith.json", "{}\n")
+        self.write("tests/contract/a/goldens.rs", f'const GOLDENS: &str = "{self.CONTRACTS}/goldens";\n')
+        self.base = self.commit("a reader of a corpus")
+        self.write(f"{self.CONTRACTS}/goldens/scenarios/s/history.jsonl", "{\"changed\": true}\n")
+        head = self.commit()
+        self.assertEqual(self.chosen(), {"contract_a"})
+        # A sibling whose name only begins with the directory's is not beneath it.
+        self.base = head
+        self.write(f"{self.CONTRACTS}/goldensmith.json", "{\"changed\": true}\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
+
     def test_a_file_named_under_another_contracts_directory_is_not_a_read_of_this_one(self):
         self.readers()
         self.write("tests/contract/a/errors.rs", 'const TABLE: &str = "specs/014-other/contracts/README.md";\n')
