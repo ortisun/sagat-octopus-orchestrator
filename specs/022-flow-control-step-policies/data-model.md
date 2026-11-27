@@ -145,7 +145,8 @@ PK `(tenant_id, run_id)`; `namespace_id`, `pool`, `permit_scope` (always `RUN`),
 key's youngest waiter when the clock reads earlier, so that the queue is in admission order whatever the clock does,
 decision D022-160; ties broken by `run_id`),
 `deadline_at` (the admission's clock reading plus the wait bound, and at least one microsecond after
-`enqueued_at`, decision D022-163), `shard smallint` (= `run_shard(run_id)`, ADR-0020).
+`enqueued_at`, the same for every gate of the target; both computed by the insert itself, which returns the
+deadline the journal announces, decision D022-163), `shard smallint` (= `run_shard(run_id)`, ADR-0020).
 Indexes: `(tenant_id, namespace_id, group_name, key_digest, enqueued_at, run_id)` for oldest-first;
 `(shard, enqueued_at)` for the grant pass. FK to `runs` and to the semaphore. Grants: SELECT, INSERT,
 DELETE. Protected.
@@ -310,7 +311,7 @@ SELECT, INSERT, UPDATE (`leased_at` only), DELETE.
 PK `(tenant_id, run_id, node)`; `node` is `''` for a buffered run; `attempt integer`; `namespace_id`,
 `pool`, `limit_scope`, `group_name`, `key_digest` (FK to `rate_limit_windows`); `declared_limit`,
 `period_ms`; `enqueued_at` (database clock of the buffering transaction, raised to one microsecond after the key's
-youngest waiter when the clock reads earlier, decision D022-160; ties broken by `run_id`, then `node`); `deadline_at` (at least one microsecond after `enqueued_at`, decision D022-163); `shard smallint` (= `run_shard(run_id)`). Indexes: `(tenant_id, namespace_id,
+youngest waiter when the clock reads earlier, decision D022-160; ties broken by `run_id`, then `node`); `deadline_at` (at least one microsecond after `enqueued_at`, the same for every gate of the target; both computed by the insert itself, decision D022-163); `shard smallint` (= `run_shard(run_id)`). Indexes: `(tenant_id, namespace_id,
 pool, limit_scope, group_name, key_digest, enqueued_at, run_id, node)` for oldest first; `(shard,
 enqueued_at)` for the grant pass. FK `(tenant_id, run_id)` → `runs`. Grants: SELECT, INSERT, DELETE.
 

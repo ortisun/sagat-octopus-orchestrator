@@ -453,6 +453,88 @@ async fn a_fan_out_admitted_after_a_step_back_queues_every_branch_behind_the_old
     w.assert_keys_consistent().await;
 }
 
+/// Decision D022-163 (amended for the work budget of pull request 237): a start gated by a rate limit and a permit,
+/// admitted after a step back on its permit's key only, is queued on both gates with one deadline (FR-022-044), after
+/// both of its places, which both journal entries announce. Its rate gate is inserted first, before its permit's place
+/// exists, so that insert reads the permit key's youngest waiter in the same statement; without it the rate row kept the
+/// admission's clock plus the timeout and the permit row a deadline a minute later.
+#[tokio::test]
+async fn a_dual_gated_start_admitted_after_a_step_back_on_its_permit_keeps_one_deadline() {
+    const STEP_US: i64 = 60_000_000;
+    let w = gated_world().await;
+    let permit_rule = json!({"group": "dual-place", "key": "input.accountId", "limit": 1});
+    let long = publish(
+        &w,
+        document(
+            "dual-place-long",
+            "g",
+            vec![with(activity("g"), "concurrency", permit_rule.clone())],
+        ),
+    )
+    .await;
+    let mut short_permit = permit_rule;
+    short_permit["queueTimeoutMs"] = json!(1_000);
+    let short_slot = json!({
+        "group": "dual-place-rate", "key": "input.accountId", "limit": 1, "per": "hour", "queueTimeoutMs": 1_000
+    });
+    let dual = publish(
+        &w,
+        document(
+            "dual-place-short",
+            "d",
+            vec![with(
+                with(activity("d"), "concurrency", short_permit),
+                "rateLimit",
+                short_slot,
+            )],
+        ),
+    )
+    .await;
+    let account = json!({"accountId": "dual-place-1"});
+    let holder = w.start(long, &account).await;
+    let older = w.start(long, &account).await;
+    set_clock_back_after(&w, "concurrency_waiters", older, STEP_US).await;
+    let run = w.start(dual, &account).await;
+    queued(&w, run, "d", (true, true)).await;
+    let older_place = place_and_deadline_us(&w, "concurrency_waiters", older).await[0].0;
+    let permit_rows = place_and_deadline_us(&w, "concurrency_waiters", run).await;
+    let slot_rows = place_and_deadline_us(&w, "rate_limit_waiters", run).await;
+    assert_eq!(
+        (permit_rows.len(), slot_rows.len()),
+        (1, 1),
+        "the start waits on both gates: {permit_rows:?} {slot_rows:?}"
+    );
+    let ((permit_place, permit_deadline), (slot_place, slot_deadline)) =
+        (permit_rows[0], slot_rows[0]);
+    assert!(permit_place > older_place, "behind the older waiter");
+    assert!(
+        slot_place < permit_place,
+        "the slot's key has no other waiter: its place is the clock's reading"
+    );
+    assert_eq!(
+        slot_deadline, permit_deadline,
+        "one deadline for the target"
+    );
+    assert!(
+        permit_deadline > permit_place && slot_deadline > slot_place,
+        "the deadline follows both places"
+    );
+    assert_eq!(
+        journal_deadlines_us(&w, run, "concurrency.queued").await,
+        [permit_deadline],
+        "the permit's journal entry announces the rows' deadline"
+    );
+    assert_eq!(
+        journal_deadlines_us(&w, run, "rate_limit.queued").await,
+        [slot_deadline],
+        "the slot's journal entry announces the rows' deadline"
+    );
+    for run in [holder, older, run] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
 /// A saturated second key is granted at its limit and no further, beside the first key's grant.
 #[tokio::test]
 async fn a_saturated_second_key_is_granted_at_its_limit() {

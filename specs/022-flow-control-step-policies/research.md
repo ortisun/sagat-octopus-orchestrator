@@ -3098,6 +3098,20 @@ outcome below is delegate (OD-2026-11-24-4), written before its code.
   bound into the insert, instead of the subquery inside it. Tests, red before:
   `queue::a_start_admitted_after_a_step_back_larger_than_its_queue_timeout_is_queued_with_a_later_deadline` (both
   gates) and `queue::a_fan_out_admitted_after_a_step_back_queues_every_branch_behind_the_older_waiter`.
+  *Amended 2026-11-26 (work budget of pull request 237):* reading the place in its own statement cost every queued
+  admission one statement per gate (`QUEUED_START_ADMISSION` measured 49 against its 48). The place and the deadline
+  are now computed in the waiter's insert itself, one statement as before D022-163: a derived table in its `FROM` reads
+  the place once, `greatest(now, youngest + 1 µs)`, under the key lock the admission holds (a derived table, not a
+  common table expression, so the statement still begins with `INSERT` and the budget's row count, which reads
+  `pg_stat_statements` by the statement's first word, still counts its row); the insert writes it as
+  `enqueued_at` and `greatest(floor, place + 1 µs)` as `deadline_at`, and returns `deadline_at`, which is what the
+  journal's `queue_deadline_us` announces, so the journal and the rows agree to the microsecond the database stored.
+  The target keeps its one deadline (FR-022-044): its gates are rate first, so the rate insert's deadline also covers
+  its concurrency gate's place, read in the same statement from that key's waiters under that key's lock (the key's
+  youngest waiter plus 2 µs); the floor of the first insert is `now + timeout` and the concurrency insert's floor is
+  the deadline the rate insert returned, which its own place cannot pass, since another admission inserts on that
+  key only under its lock and a removal only lowers the youngest. Test added, beside the ones above:
+  `queue::a_dual_gated_start_admitted_after_a_step_back_on_its_permit_keeps_one_deadline`.
 - **D022-164 — The clock-step tests step further than a slow runner (2026-11-26; D022-160, D022-161, D022-162;
   correctness review of `e0fffa984`, minors 2 and 3, nit 5).** Delegate. The D022-160 test moved the older waiter
   only 300 ms ahead; on a slow runner more than 300 ms pass before the next admission, whose own reading is then

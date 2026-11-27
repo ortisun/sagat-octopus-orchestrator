@@ -512,6 +512,17 @@ T022-063 (020 erasure).
     and 278 and 4 with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, every failure `No space left on device` in the Docker virtual
     machine's PostgreSQL at the end of the suite; the 4 of each run passed when rerun alone in a fresh process.
     `fault_flow_control_step_policies` 36 passed in both roles.
+  - *Amended 2026-11-26 (decision D022-163, amended):* the place and the deadline are computed in the waiter's insert
+    itself, which returns the deadline the journal announces, so a queued admission costs the 48 statements of its
+    budget again; a dual-gated target keeps one deadline. Evidence: `work_budget::a_gated_start_costs_what_the_budget_says`
+    red before (queued admission 49 statements against 48), green after at 48, 1, 12 with the budgets unchanged;
+    `queue::a_dual_gated_start_admitted_after_a_step_back_on_its_permit_keeps_one_deadline` green, and red with the
+    permit's place left out of the rate insert's deadline (the rate row's deadline 58,968,470 µs before the permit
+    row's); the three D022-160 and D022-163 tests green. `integration_claim_transition_efficiency` 74 passed;
+    `integration_flow_control_step_policies` 283 tests: 281 passed and 2 failed as the owner and 281 and 2 with
+    `SAGAT_TEST_AS_RUNTIME_ROLE=1`, every failure `No space left on device` in the test PostgreSQL's migration at the
+    end of the suite; the 2 of each run passed when rerun in a fresh process. `fault_flow_control_step_policies` 36
+    passed in both roles.
   - *Amended 2026-11-24 (decisions D022-076 and D022-078):* the answers to the re-review of this task (`reviews/2026-11-24/rate-faults-rereview-correctness-reviewer.md`) are built with it: the hint a waiter queued with room writes, the hint of a full window of mixed lengths, a reset decided by the reservation rule, the order bound within a pass, the place and the run view on the effective limit, the weak tests made to fail, and the waiter's declaration (`pinned_limit`) bounding it under the current ceiling. Each is evidence of this task; the timing-dependent cases of this suite are driven by the database clock or by moved counted instants.
   *Built 2026-11-21, not ticked:* `tests/fault/flow-control-step-policies/rate_limits.rs`, 15 cases (crashes in T19,
   T20, T21, T22, T23 at both commits and T24; grant against timeout and grant against cancel, 20 rounds each; takeover;

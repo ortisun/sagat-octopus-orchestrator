@@ -440,29 +440,14 @@ impl PgRunTx {
                     detail: "a gated target declares no gate".into(),
                 }
             })?;
+            // the target's one deadline (FR-022-044): no earlier than the admission's clock plus its smallest wait bound,
+            // and at least one microsecond after each of its places, which the inserts compute and return (decisions
+            // D022-160 and D022-163)
             let mut deadline = now
                 .checked_add(
                     time::Duration::try_from(timeout).map_err(|_| corrupt("queue timeout"))?,
                 )
                 .ok_or_else(|| corrupt("queue deadline"))?;
-            // a queued target's place on each of its keys, read before its deadline: the place follows the key's
-            // youngest waiter whatever the clock does (decision D022-160), and the deadline is at least one microsecond
-            // after the latest of its places, so that the table's `deadline_at > enqueued_at` holds after a step back
-            // larger than the wait bound, which then delays the timeout by at most the step (decision D022-163)
-            let mut places = Vec::with_capacity(gates.len());
-            if !admits {
-                for gate in &gates {
-                    let filed = gate.filed.as_ref().ok_or_else(|| StoreError::Internal {
-                        detail: "a gate's key was not filed".into(),
-                    })?;
-                    let place = self.place(gate, filed, now).await?;
-                    let after = place
-                        .checked_add(time::Duration::MICROSECOND)
-                        .ok_or_else(|| corrupt("queue deadline"))?;
-                    deadline = deadline.max(after);
-                    places.push(place);
-                }
-            }
             for (index, (gate, has_room)) in gates.iter().zip(room).enumerate() {
                 let filed = gate.filed.as_ref().ok_or_else(|| StoreError::Internal {
                     detail: "a gate's key was not filed".into(),
@@ -473,13 +458,20 @@ impl PgRunTx {
                         .is_some_and(|count| count.waiters > 0);
                     self.grant(gate, filed, now, waiting).await?
                 } else {
-                    let place = places
-                        .get(index)
-                        .copied()
-                        .ok_or_else(|| StoreError::Internal {
-                            detail: "a queued gate has no place".into(),
-                        })?;
-                    self.queue(gate, filed, place, deadline, has_room).await?
+                    let later = match gates.get(index + 1) {
+                        Some(next) => Some((
+                            next,
+                            next.filed.as_ref().ok_or_else(|| StoreError::Internal {
+                                detail: "a gate's key was not filed".into(),
+                            })?,
+                        )),
+                        None => None,
+                    };
+                    let (change, held) = self
+                        .queue(gate, filed, later, now, deadline, has_room)
+                        .await?;
+                    deadline = held;
+                    change
                 };
                 let outcomes = if node.is_some() {
                     &mut self.gate_outcomes
@@ -1123,56 +1115,34 @@ impl PgRunTx {
         }
     }
 
-    /// A new waiter's place on `gate`'s key: the clock reading `now`, or one microsecond after the key's youngest waiter
-    /// when the clock reads earlier (a step back), read under the key row's lock this transaction holds since the keys
-    /// were filed, so the key's admissions queue in their commit order (decisions D022-160 and D022-163).
-    async fn place(
-        &mut self,
-        gate: &Pending,
-        filed: &FiledKey,
-        now: OffsetDateTime,
-    ) -> Result<OffsetDateTime, StoreError> {
-        let statement = match gate.kind {
-            GateKind::Concurrency => {
-                "SELECT greatest($1::timestamptz, max(x.enqueued_at) + interval '1 microsecond') FROM concurrency_waiters x \
-                  WHERE x.tenant_id = $2 AND x.namespace_id = $3 AND x.pool = $4 AND x.permit_scope = $5 \
-                    AND x.group_name = $6 AND x.key_digest = $7"
-            }
-            GateKind::RateLimit => {
-                "SELECT greatest($1::timestamptz, max(x.enqueued_at) + interval '1 microsecond') FROM rate_limit_waiters x \
-                  WHERE x.tenant_id = $2 AND x.namespace_id = $3 AND x.pool = $4 AND x.limit_scope = $5 \
-                    AND x.group_name = $6 AND x.key_digest = $7"
-            }
-        };
-        sqlx::query_scalar(statement)
-            .bind(now)
-            .bind(self.info.tenant_id.as_uuid())
-            .bind(self.info.namespace_id.as_uuid())
-            .bind(GatePool::Ordinary.as_str())
-            .bind(gate.level().as_str())
-            .bind(gate.group.as_str())
-            .bind(filed.digest.as_slice())
-            .fetch_one(&mut *self.tx)
-            .await
-            .map_err(store_error)
-    }
-
-    /// Queues `gate`'s target at `place` (see [`Self::place`]) until `deadline`, which is after it.
+    /// Queues `gate`'s target at its place on `gate`'s key, computed by the insert itself under the key row's lock this
+    /// transaction holds since the keys were filed: the clock reading `now`, or one microsecond after the key's youngest
+    /// waiter when the clock reads earlier (a step back), so the key's admissions queue in their commit order (decision
+    /// D022-160). Its deadline is the later of `floor` and one microsecond after that place, and, for the rate gate of a
+    /// target that also waits for `later` (its concurrency gate: gates are rate first), one microsecond after the place
+    /// `later`'s key will give it, read in the same statement under that key's lock, so the target's gates share one
+    /// deadline (FR-022-044). Returns the change, which announces the deadline the row holds, and that deadline, the
+    /// floor of the target's next gate (decision D022-163).
     async fn queue(
         &mut self,
         gate: &Pending,
         filed: &FiledKey,
-        place: OffsetDateTime,
-        deadline: OffsetDateTime,
+        later: Option<(&Pending, &FiledKey)>,
+        now: OffsetDateTime,
+        floor: OffsetDateTime,
         has_room: bool,
-    ) -> Result<GateChange, StoreError> {
+    ) -> Result<(GateChange, OffsetDateTime), StoreError> {
         let attempt_column = i32::try_from(gate.attempt).map_err(|_| corrupt("attempt"))?;
         let limit = i32::try_from(gate.limit).map_err(|_| corrupt("declared limit"))?;
         let pinned = i32::try_from(gate.pinned).map_err(|_| corrupt("declared limit"))?;
-        let deadline_us = unix_micros(deadline)?;
         let level = gate.level();
         match (gate.kind, gate.per) {
             (GateKind::Concurrency, _) => {
+                if later.is_some() {
+                    return Err(StoreError::Internal {
+                        detail: "a target's concurrency gate is not its last".into(),
+                    });
+                }
                 self.key_due(
                     KeyTable::Semaphores,
                     level,
@@ -1182,11 +1152,20 @@ impl PgRunTx {
                     0,
                 )
                 .await?;
-                // at its place, so the queue's order is its admission order whatever the clock does (decision D022-160)
-                sqlx::query(
+                // at its place, so the queue's order is its admission order whatever the clock does (decision D022-160),
+                // until a deadline after it (decision D022-163), both in this one statement
+                let deadline: OffsetDateTime = sqlx::query_scalar(
                     "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
                      group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard, pinned_limit) \
-                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, $10, $11, run_shard($3), $13)",
+                     SELECT $1, $2, $3, $4, $12, $5, $6, $7, $8, $9, place.at, \
+                            greatest($11::timestamptz, place.at + interval '1 microsecond'), run_shard($3), $13 \
+                       FROM (SELECT greatest($10::timestamptz, \
+                                             (SELECT max(x.enqueued_at) + interval '1 microsecond' \
+                                                FROM concurrency_waiters x \
+                                               WHERE x.tenant_id = $1 AND x.namespace_id = $2 AND x.pool = $6 \
+                                                 AND x.permit_scope = $12 AND x.group_name = $7 \
+                                                 AND x.key_digest = $8)) AS at) place \
+                     RETURNING deadline_at",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1197,18 +1176,30 @@ impl PgRunTx {
                 .bind(gate.group.as_str())
                 .bind(filed.digest.as_slice())
                 .bind(limit)
-                .bind(place)
-                .bind(deadline)
+                .bind(now)
+                .bind(floor)
                 .bind(level.as_str())
                 .bind(pinned)
-                .execute(&mut *self.tx)
+                .fetch_one(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
-                Ok(GateChange::ConcurrencyQueued {
-                    queue_deadline_us: deadline_us,
-                })
+                Ok((
+                    GateChange::ConcurrencyQueued {
+                        queue_deadline_us: unix_micros(deadline)?,
+                    },
+                    deadline,
+                ))
             }
             (GateKind::RateLimit, Some(per)) => {
+                let later = match later {
+                    Some((next, key)) if next.kind == GateKind::Concurrency => Some((next, key)),
+                    Some(_) => {
+                        return Err(StoreError::Internal {
+                            detail: "a target's later gate is not its concurrency gate".into(),
+                        });
+                    }
+                    None => None,
+                };
                 self.key_due(
                     KeyTable::Windows,
                     level,
@@ -1218,11 +1209,26 @@ impl PgRunTx {
                     period_ms(gate),
                 )
                 .await?;
-                // at its place, in admission order whatever the clock does, as a concurrency waiter (decision D022-160)
-                sqlx::query(
+                // at its place, in admission order whatever the clock does, as a concurrency waiter (decision D022-160),
+                // until a deadline after it and after the place of the target's concurrency gate, if it has one: that
+                // key's youngest waiter plus two microseconds (its place is at least one after it, and the deadline one
+                // after that); with no such gate, `$15` is null and the term is too (decision D022-163)
+                let deadline: OffsetDateTime = sqlx::query_scalar(
                     "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                      group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard, pinned_limit) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, $11, $12, run_shard($3), $14)",
+                     SELECT $1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, place.at, \
+                            greatest($12::timestamptz, place.at + interval '1 microsecond', later.at), run_shard($3), $14 \
+                       FROM (SELECT greatest($11::timestamptz, \
+                                             (SELECT max(x.enqueued_at) + interval '1 microsecond' \
+                                                FROM rate_limit_waiters x \
+                                               WHERE x.tenant_id = $1 AND x.namespace_id = $2 AND x.pool = $6 \
+                                                 AND x.limit_scope = $13 AND x.group_name = $7 \
+                                                 AND x.key_digest = $8)) AS at) place, \
+                            (SELECT max(y.enqueued_at) + interval '2 microseconds' AS at FROM concurrency_waiters y \
+                              WHERE $15::bytea IS NOT NULL AND y.tenant_id = $1 AND y.namespace_id = $2 \
+                                AND y.pool = $6 AND y.permit_scope = $17 AND y.group_name = $16 \
+                                AND y.key_digest = $15) later \
+                     RETURNING deadline_at",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
@@ -1234,18 +1240,24 @@ impl PgRunTx {
                 .bind(filed.digest.as_slice())
                 .bind(limit)
                 .bind(i32::try_from(period_ms(gate)).map_err(|_| corrupt("period"))?)
-                .bind(place)
-                .bind(deadline)
+                .bind(now)
+                .bind(floor)
                 .bind(level.as_str())
                 .bind(pinned)
-                .execute(&mut *self.tx)
+                .bind(later.map(|(_, key)| key.digest.as_slice()))
+                .bind(later.map(|(next, _)| next.group.as_str()))
+                .bind(later.map(|(next, _)| next.level().as_str()))
+                .fetch_one(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
-                Ok(GateChange::RateQueued {
-                    limit: gate.limit,
-                    per,
-                    queue_deadline_us: deadline_us,
-                })
+                Ok((
+                    GateChange::RateQueued {
+                        limit: gate.limit,
+                        per,
+                        queue_deadline_us: unix_micros(deadline)?,
+                    },
+                    deadline,
+                ))
             }
             (GateKind::RateLimit, None) => Err(corrupt("rate limit without a window")),
         }
