@@ -16,7 +16,9 @@
   "declarations": {
     "state": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
       },
       "initial": "{}",
       "updates": {
@@ -25,9 +27,11 @@
             "type": "object",
             "properties": {
               "sku": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               }
             },
+            "additionalProperties": false,
             "required": [
               "sku"
             ]
@@ -40,6 +44,7 @@
                 "type": "integer"
               }
             },
+            "additionalProperties": false,
             "required": [
               "items"
             ]

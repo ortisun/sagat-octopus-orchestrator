@@ -496,6 +496,13 @@ const acknowledgeCancellation = () => ({
 // I-JSON (RFC 7493), which RFC 8785 assumes: a command refuses an integer outside +-(2^53 - 1) anywhere (COMMAND_INVALID).
 // Every double of magnitude 2^53 or more is an integer, so no command or scenario value may reach it.
 const SAFE = 2 ** 53 - 1;
+// A closed object schema of the IR (`$defs/resultSchema`): every declared schema of the corpus is one.
+const closed = (properties, required) => ({
+  type: 'object',
+  properties,
+  additionalProperties: false,
+  ...(required ? { required } : {}),
+});
 // A code version's `state.maxBytes` when it declares state without one (Decision 044-257).
 const STATE_MAX_BYTES_DEFAULT = 65536;
 function checkIntegers(value, where) {
@@ -1179,13 +1186,13 @@ scenario('code-updates', (name) => {
   const r = new Run(name, 'main', { workflowType: 'credit-line', input: { accountId: 'acc-3', limit: 100 } });
   r.declarations = {
     state: {
-      schema: { type: 'object' },
+      schema: closed({}),
       initial: '{}',
       updates: {
         raiseLimit: {
-          argsSchema: { type: 'object', properties: { amount: { type: 'integer' } }, required: ['amount'] },
+          argsSchema: closed({ amount: { type: 'integer' } }, ['amount']),
           disclosure: 'declared-business-result-v1',
-          resultSchema: { type: 'object', properties: { limit: { type: 'integer' } }, required: ['limit'] },
+          resultSchema: closed({ limit: { type: 'integer' } }, ['limit']),
         },
       },
     },
@@ -1275,13 +1282,13 @@ scenario('code-update-with-start', (name) => {
   const r = new Run(name, 'main', { workflowType: 'basket', input: { basketId: 'b-12' } });
   r.declarations = {
     state: {
-      schema: { type: 'object' },
+      schema: closed({}),
       initial: '{}',
       updates: {
         addItem: {
-          argsSchema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] },
+          argsSchema: closed({ sku: { type: 'string', maxLength: 64 } }, ['sku']),
           disclosure: 'declared-business-result-v1',
-          resultSchema: { type: 'object', properties: { items: { type: 'integer' } }, required: ['items'] },
+          resultSchema: closed({ items: { type: 'integer' } }, ['items']),
         },
       },
     },
@@ -1328,13 +1335,13 @@ scenario('code-declared-state', (name) => {
   const r = new Run(name, 'main', { workflowType: 'fulfilment', input: { orderId: 'ord-77' } });
   r.declarations = {
     state: {
-      schema: { type: 'object' },
+      schema: closed({ status: { type: 'string', maxLength: 64 }, items: { type: 'integer' } }),
       initial: '{}',
       maxBytes: 4096,
       queries: {
         status: {
-          argsSchema: { type: 'object' },
-          resultSchema: { type: 'string' },
+          argsSchema: closed({}),
+          resultSchema: { type: 'string', maxLength: 64 },
           expression: 'state.status',
           disclosure: 'declared-business-result-v1',
         },
@@ -1497,7 +1504,9 @@ workflow labelPrint(input):                                 // code version of l
 
 scenario('code-continue-as-new', (name) => {
   const r = new Run(name, 'main', { workflowType: 'subscription', input: { cycle: 1, amountCents: 990 } });
-  const subscriptionState = { state: { schema: { type: 'object' }, initial: '{}' } };
+  const subscriptionState = {
+    state: { schema: closed({ charged: { type: 'array', items: { type: 'integer' }, maxItems: 64 } }), initial: '{}' },
+  };
   r.declarations = subscriptionState;
   r.begin();
   r.cmd(activity('audit.write', { cycle: 1 }));
@@ -1717,7 +1726,7 @@ scenario('code-gated-activity', (name) => {
     input: { batchId: 'pay-3' },
     lease: { gatedEntries: ['payouts.send'] },
   });
-  r.declarations = { state: { schema: { type: 'object' }, initial: '{}', maxBytes: 131072 } };
+  r.declarations = { state: { schema: closed({}), initial: '{}', maxBytes: 131072 } };
   r.begin();
   r.cmd(activity('payouts.send', { payoutId: 'p-1', amountCents: 250000 }));
   r.cmd(activity('payouts.send', { payoutId: 'p-2', amountCents: 990000 }));

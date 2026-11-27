@@ -17,7 +17,9 @@
   "declarations": {
     "state": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
       },
       "initial": "{}",
       "updates": {
@@ -29,6 +31,7 @@
                 "type": "integer"
               }
             },
+            "additionalProperties": false,
             "required": [
               "amount"
             ]
@@ -41,6 +44,7 @@
                 "type": "integer"
               }
             },
+            "additionalProperties": false,
             "required": [
               "limit"
             ]

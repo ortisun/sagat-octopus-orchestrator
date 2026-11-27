@@ -552,6 +552,7 @@ string
 | `compensateWith` | [`codeActivityName`](#codeActivityName) |  |  |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of [`name`](#name) (max items 16) |  |  |
+| `timeoutMs` | [`duration`](#duration) |  | As for a graph script node; the artifact's policy (wall) bounds the attempt as well (Decision 044-247). |
 | `type` | `"script"` | yes |  |
 
 ### codeProfileTimer
@@ -757,6 +758,7 @@ any
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `initial` | [`expression`](#expression) | yes |  |
+| `maxBytes` | integer (min 1, max 131072) |  | Design 044 (Decision 044-257), a code version only: the most bytes the declared state may take as RFC 8785 JSON, 1 to 131,072 (128 KiB); 65,536 (64 KiB) when absent. Every workflow lease of the version carries it as `state_max_bytes`, from which the SDK reserves room for the state at an activation's start; a set-state over it, or a carried state over the successor's, is `COMMAND_INVALID`. A code version that declares no state has a bound of 0: it sets no state and carries none. A graph version refuses the field. |
 | `queries` | object |  |  |
 | `schema` | [`resultSchema`](#resultSchema) | yes |  |
 | `updates` | object |  |  |

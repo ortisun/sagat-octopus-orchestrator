@@ -1129,6 +1129,16 @@ fn one_end_per_step_with_its_origin(
 /// state without it, and absent (0) when it declares none; every set-state and carried state fits it.
 fn the_lease_carries_the_versions_state_bound(commands: &Value, at: &str) {
     let state = &commands["declarations"]["state"];
+    if !state.is_null() {
+        let errors: Vec<String> = ir_state()
+            .iter_errors(state)
+            .map(|error| format!("{} at {}", error, error.instance_path()))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "{at}: declarations.state is the IR's state: {errors:?}"
+        );
+    }
     let expected = if state.is_null() {
         0
     } else {
@@ -1156,6 +1166,20 @@ fn the_lease_carries_the_versions_state_bound(commands: &Value, at: &str) {
             );
         }
     }
+}
+
+/// The IR's `$defs/state`, with every definition in reach.
+fn ir_state() -> &'static jsonschema::Validator {
+    static VALIDATOR: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
+    VALIDATOR.get_or_init(|| {
+        let schema = read_json("specs/001-platform-foundation/contracts/workflow.schema.json");
+        let wrapper = json!({
+            "$schema": schema["$schema"],
+            "$ref": "#/$defs/state",
+            "$defs": schema["$defs"],
+        });
+        jsonschema::validator_for(&wrapper).expect("the state definition compiles")
+    })
 }
 
 fn commands_of(activation: &Value) -> &[Value] {
