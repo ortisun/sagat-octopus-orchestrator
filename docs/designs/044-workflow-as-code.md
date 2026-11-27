@@ -311,7 +311,7 @@ graph declares, and the versioning rules that keep code and history together.
   the tests of Task 044-21.
 - **Requirement 044-016** A code version MAY declare state and queries in the IR's `state` form (feature 014). The
   function MUST be able to set the declared state by a command, validated against `state.schema`, inline and at most
-  128 KiB, at most once per completion (the last set-state of an activation wins in the SDK);
+  the version's `state.maxBytes` (1 to 128 KiB, 64 KiB when absent; Decision 044-257), at most once per completion (the last set-state of an activation wins in the SDK);
   the engine MUST answer the declared queries from the committed state with no worker, also after the run ended while
   its data is retained. *Acceptance:* the conformance scenario `code-declared-state`.
 - **Requirement 044-017** A code version MAY declare worker queries, each with a closed `argsSchema`, its `disclosure`
@@ -925,7 +925,9 @@ signal<T>(name: string): Promise<T>
 onUpdate(name: string, validator: (args: unknown) => void, handler: (args: unknown) => Promise<unknown>): void
 setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
-sideEffect<T>(compute: () => T): T                                        // a recorded marker, at most 64 KiB
+sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
+  // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258)
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
 requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
@@ -1131,7 +1133,10 @@ A code version is a workflow document of the additive v1 schema in which the top
 - `signals` has the shape of Architecture decision 0111; every signal of a code version is `buffered`, with its
   `maxPending` (1 to 1,000; at most 1,000 per run), its `maxBytes` (default 64 KiB, at most 256 KiB) and a closed
   `schema`.
-- `state` keeps the IR's form (a closed `schema`, an `initial` expression); `state.updates` of a code version are the
+- `state` keeps the IR's form (a closed `schema`, an `initial` expression) and, in a code version only, `maxBytes`: the
+  most bytes the declared state takes as RFC 8785 JSON, 1 to 131,072 (128 KiB), 65,536 when absent; the version's
+  workflow leases carry it as `state_max_bytes`, and a version that declares no state has a bound of 0 (Decision
+  044-257). `state.updates` of a code version are the
   code variant of the IR's update: `argsSchema`, `disclosure` and `resultSchema` required; `validate`, `state` and
   `result` absent, because the function validates and handles the update (section 8.2). `state.queries` keep their
   expression form: they are the engine-answered queries.
@@ -1264,7 +1269,9 @@ version (Requirement 044-026).
      deferral record's sequence), the blob-reference check accepts a blob held by the run's latest deferral record,
      acceptance commits it, and the run's end or a re-emission naming another blob releases it. A re-emission refers to
      the held blob by its descriptor alone, which the server resolves to the blob the latest deferral holds, so a cold
-     worker uploads nothing and nothing is charged twice; a retained-bytes check of a re-emission that names a new blob
+     worker uploads nothing and nothing is charged twice; an inline value of a deferred command (a continue-as-new's
+     input and carried state, an inline output) is held by the deferral record as well, and a re-emission may name it
+     by its descriptor alone too, whatever carrier the deferral used (Decision 044-259); a retained-bytes check of a re-emission that names a new blob
      nets off the held blob it releases. A blob
      whose carrier schema classifies any field `secret` is never delivered to a workflow, query or replay-check token:
      its `HistoryEvent` payload is the placeholder `EXTERNAL_CONTENT_NOT_INSPECTED`, `ReadBlob` refuses it and no
@@ -1629,8 +1636,10 @@ The bytes of `d(k)`: `seq` a number; `body` 64 lowercase hexadecimal characters;
 | `consume_signals` | `""` (one command whose body lists each signal name with its sequences; the list counts against the inline values, at most 1,000 sequences as the inbox holds) |
 | `set_state`, `complete`, `fail`, `continue_as_new`, `acknowledge_cancellation` | `""` |
 
-A command on a step that is already terminal keeps its own kind and target. A deferral record holds its blob until the command is accepted or the run ends, and a re-emission may name
-that blob or another with the same descriptor. The history never carries a command body, so a worker can produce the
+A command on a step that is already terminal keeps its own kind and target. A deferral record holds its values (a blob,
+and an inline value as well) until the command is accepted or the run ends, and a re-emission may name each value by its
+descriptor alone, whatever its first carrier, or carry it again, inline or as another blob with the same descriptor
+(Decision 044-259). The history never carries a command body, so a worker can produce the
 chain only by producing the same commands, their bodies included: a worker that skipped replay, an input or a state that changed between two runs of the same code (an
 escaped `uuid4()`, a clock read) or an SDK bug all end as `CHAIN_MISMATCH`. A worker that reuses its cached state and
 chain, whose state is corrupted but whose chain is intact, is caught when its next commands differ from what a replay
@@ -2835,6 +2844,8 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_from_a_session_of_another_digest_is_stale`, `...::a_completion_during_the_stop_drain_is_stale`,
   `...::a_completion_below_the_window_reviews_as_nondeterminism_risk`, `...::an_immediate_effect_of_a_command_makes_the_workflow_task_ready`,
   `...::a_deferred_command_re_emitted_with_another_body_is_a_chain_mismatch`,
+  `...::a_re_emission_names_an_inline_held_value_by_its_descriptor_alone` (Decision 044-259; the successor's input and
+  state are the held bytes), `...::a_re_emission_by_descriptor_after_the_run_ended_is_stale`,
   `...::a_command_naming_a_blob_of_another_run_is_refused`, `...::a_deferral_answers_ok_with_its_cause`,
   `...::the_first_workflow_task_delivers_the_input_in_run_started`,
   `...::a_look_back_wait_satisfied_in_the_same_completion_is_not_unseen`,
@@ -3078,7 +3089,9 @@ a replaying worker derives from `ReadHistory`.
   `...::update_with_start_journals_run_started_first`, `...::signal_with_start_journals_run_started_first` (Decision 044-246),
   `...::an_update_beyond_the_backlog_is_refused_429`, `...::update_waits_beyond_the_process_bound_are_refused`,
   `integration_workflow_as_code::state::a_declared_query_is_answered_with_no_worker`,
-  `...::a_set_state_outside_its_schema_is_refused`, `...::a_consumed_sequence_beyond_the_window_is_refused`,
+  `...::a_set_state_outside_its_schema_is_refused`,
+  `...::a_set_state_over_the_versions_max_bytes_is_refused` and `...::a_set_state_in_a_version_without_state_is_refused`
+  (Decision 044-257), `...::a_consumed_sequence_beyond_the_window_is_refused`,
   `...::a_signal_into_a_full_inbox_is_refused_409`, `...::signals_are_refused_at_3_mib_of_retained_bytes`,
   `...::another_principals_identical_update_key_is_another_update`, `...::an_unknown_update_key_is_not_found`,
   `...::a_code_signal_never_satisfies_a_wait_for_event`, `...::an_open_update_fails_run_ended_when_the_run_ends` and

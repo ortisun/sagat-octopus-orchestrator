@@ -5,6 +5,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import {
+  descriptorOf,
   goldenCompletion,
   listScenarioRuns,
   startFakeWorkflowServer,
@@ -98,6 +99,7 @@ async function answer(
       command_number: failed.report?.commandNumber ?? 0,
       actual_kind: failed.report?.actualKind ?? 'COMMAND_KIND_UNSPECIFIED',
       actual_target: failed.report?.actualTarget ?? '',
+      actual_saga_scope: failed.report?.actualSagaScope ?? '',
       exception_type: failed.exceptionType ?? '',
       code_digest: failed.report?.codeDigest ?? lease['workflow_task'].code_digest,
     });
@@ -248,6 +250,7 @@ test('code-nondeterminism: the FailWorkflowTask of the golden is recorded with i
         commandNumber: 2,
         actualKind: 'COMMAND_ACTIVITY',
         actualTarget: 'sms.send',
+        actualSagaScope: '',
         exceptionType: '',
         codeDigest: 'sha256:8bda44227549b57a1fe57d76a6c51d275ff8000efc070132fb35de5cdfcb3971',
       },
@@ -258,6 +261,132 @@ test('code-nondeterminism: the FailWorkflowTask of the golden is recorded with i
     client.close();
     await fake.close();
   }
+});
+
+/** Serves code-nondeterminism/scope-moved up to its failed attempt and sends that report with `actual_saga_scope`. */
+async function reportScope(scope: string): Promise<FakeWorkflowServer> {
+  const fake = await startFakeWorkflowServer({ scenario: 'code-nondeterminism', run: 'scope-moved' });
+  const client = workerServiceClient(fake.address);
+  try {
+    const session = await register(fake, client);
+    for (;;) {
+      const lease = await take(client, session, false);
+      if (!lease) break;
+      const { activation, attempt } = planOf(fake, lease);
+      const failed = activation.failedAttempts?.[attempt - 1];
+      if (!failed) {
+        await answer(fake, client, lease);
+        continue;
+      }
+      await unary(client, 'FailWorkflowTask', {
+        ...fence(lease),
+        idempotency_key: `fail-${lease['task_id']}`,
+        cause: failed.cause,
+        command_number: failed.report?.commandNumber ?? 0,
+        actual_kind: failed.report?.actualKind ?? 'COMMAND_KIND_UNSPECIFIED',
+        actual_target: failed.report?.actualTarget ?? '',
+        actual_saga_scope: scope,
+        code_digest: failed.report?.codeDigest ?? lease['workflow_task'].code_digest,
+      });
+    }
+    return fake;
+  } finally {
+    client.close();
+    await fake.close();
+  }
+}
+
+test('code-nondeterminism/scope-moved: the report names the scope the function used', async () => {
+  const fake = await reportScope('s-1');
+  assert.deepEqual(fake.failures.map((f) => [f.commandNumber, f.actualKind, f.actualTarget, f.actualSagaScope]), [
+    [2, 'COMMAND_ACTIVITY', 'hotel.book', 's-1'],
+  ]);
+  assert.deepEqual(fake.mismatches, []);
+});
+
+test('a report whose actual_saga_scope is not the golden\'s is a mismatch', async () => {
+  for (const scope of ['', 's-2']) {
+    const fake = await reportScope(scope);
+    assert.equal(fake.mismatches.length, 1, `scope ${JSON.stringify(scope)}`);
+    assert.match(fake.mismatches[0]!.message, /actual_saga_scope: expected "s-1", received/);
+  }
+});
+
+test('a report whose actual_saga_scope is outside its pattern is a mismatch, as the server drops it', async () => {
+  for (const scope of ['s-0', 's-01', 'scope', 's-12345678901', 'S-1']) {
+    const fake = await reportScope(scope);
+    assert.ok(
+      fake.mismatches.some((m) => /outside \^s-\[1-9\]\[0-9\]\{0,9\}\$/.test(m.message)),
+      `scope ${JSON.stringify(scope)}: ${JSON.stringify(fake.mismatches)}`,
+    );
+  }
+});
+
+test('a report that names a scope for a kind other than an activity or a script is a mismatch', async () => {
+  const fake = await startFakeWorkflowServer({ scenario: 'code-nondeterminism' });
+  const client = workerServiceClient(fake.address);
+  try {
+    const session = await register(fake, client);
+    for (;;) {
+      const lease = await take(client, session, false);
+      if (!lease) break;
+      const { activation, attempt } = planOf(fake, lease);
+      const failed = activation.failedAttempts?.[attempt - 1];
+      if (!failed) {
+        await answer(fake, client, lease);
+        continue;
+      }
+      await unary(client, 'FailWorkflowTask', {
+        ...fence(lease),
+        idempotency_key: `fail-${lease['task_id']}`,
+        cause: failed.cause,
+        command_number: 2,
+        actual_kind: 'COMMAND_TIMER_START',
+        actual_target: '',
+        actual_saga_scope: 's-1',
+        code_digest: failed.report?.codeDigest ?? lease['workflow_task'].code_digest,
+      });
+    }
+    assert.ok(fake.mismatches.some((m) => /actual_saga_scope is set for COMMAND_TIMER_START/.test(m.message)), JSON.stringify(fake.mismatches));
+  } finally {
+    client.close();
+    await fake.close();
+  }
+});
+
+/** Serves code-continue-as-new and sends its re-emitted continue-as-new with each value named by `describe`. */
+async function reEmitContinueAsNew(describe: (descriptor: { sha256: string; size: number }) => Record<string, unknown>): Promise<FakeWorkflowServer> {
+  const fake = await startFakeWorkflowServer({ scenario: 'code-continue-as-new' });
+  const client = workerServiceClient(fake.address);
+  try {
+    const session = await register(fake, client);
+    for (;;) {
+      const lease = await take(client, session, false);
+      if (!lease) break;
+      await answer(fake, client, lease, (completion) => {
+        const next = completion['deferred_command']?.['continue_as_new'];
+        if (!next) return;
+        for (const field of ['input', 'state']) {
+          if (next[field]) next[field] = describe(descriptorOf(JSON.parse(Buffer.from(next[field].json).toString('utf8'))));
+        }
+      });
+    }
+    return fake;
+  } finally {
+    client.close();
+    await fake.close();
+  }
+}
+
+test('a re-emitted deferral may name a value its deferral held inline by its descriptor alone', async () => {
+  const fake = await reEmitContinueAsNew((d) => ({ descriptor_sha256: d.sha256, descriptor_size: d.size }));
+  assert.deepEqual(fake.mismatches, []);
+  assert.equal(fake.finished, true);
+});
+
+test('a re-emitted deferral whose descriptor is not its value\'s is a mismatch', async () => {
+  const fake = await reEmitContinueAsNew((d) => ({ descriptor_sha256: d.sha256, descriptor_size: d.size + 1 }));
+  assert.ok(fake.mismatches.some((m) => /descriptor_size: expected/.test(m.message)), JSON.stringify(fake.mismatches));
 });
 
 test('a completion for a lease that is not current is refused as a stale attempt', async () => {

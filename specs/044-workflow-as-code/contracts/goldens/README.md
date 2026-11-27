@@ -94,7 +94,16 @@ among them) can differ on a tie and must not be used.
   was applied), and the engine's `RUN_ENDED` and `RUN_CONTINUED` (Decision 044-251).
 
 A deferred command is chained when it is accepted, with the number it takes then; until then its deferral record holds
-`hex(SHA(C(B)))`.
+`hex(SHA(C(B)))`. A re-emission may name each of its values by its descriptor alone, whatever carrier the deferral used:
+the server resolves the descriptor to the value its deferral holds (Decision 044-259). The goldens show the carrier of
+the first emission; the fake server of `sdks/typescript/test/` also accepts the descriptor alone in a re-emission.
+
+## The lease of a run
+
+`commands.json`'s `lease` holds what the run's workflow leases carry besides the history: `gatedEntries` (the run's
+current version's gated activity entries) and `stateMaxBytes`, the version's `state.maxBytes` (Decision 044-257): the
+declared value, 65,536 when `declarations.state` declares none, and absent (0 on the wire) when the version declares no
+state. `generate.mjs` derives `stateMaxBytes` from `declarations`, never by hand, and refuses a carried state over it.
 
 ## The deterministic primitives (Technical Plan 1.8)
 

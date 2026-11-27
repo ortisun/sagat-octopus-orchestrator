@@ -998,6 +998,56 @@ finding was answered.
   every entry of `develop`'s and every entry of this contract's, except `AppendStepLogsRequest` fields 11 and 12, which
   design 041 removed on `develop` before its minor was served; the generated code differs from this contract's only by
   design 041's field 13 and comments. delegate (OD-2026-11-24-4).
+- **D044-257** (2026-11-27) The IR's `state` gains **`maxBytes`** in a code version: an integer from 1 to 131,072
+  (128 KiB, the ceiling of Requirement 044-016), **65,536 when absent**, the bound the version's workflow leases carry
+  as `state_max_bytes` (and query and replay-check tasks, and the export header's `stateMaxBytes`). A code version that
+  declares no `state` has a bound of 0: it sets no state (`set_state` is `COMMAND_INVALID`) and carries none (a
+  continue-as-new's state must be absent). A graph version refuses the field in the schema, because no graph rule reads
+  it. The corpus declares it where state exists (`code-declared-state` 4,096, `code-gated-activity` 131,072,
+  `code-continue-as-new` the default on its three runs), and `generate.mjs` derives each lease's `stateMaxBytes` from
+  the declarations, never by hand, and refuses a carried state over it. delegate (OD-2026-11-24-4): the design named
+  `state.maxBytes` (Non-functional requirement 044-006, Technical Plan 7.3, Requirement 044-016's 128 KiB) but the IR
+  schema had no such field, so every lease of a scenario with state sent 0 and the TypeScript runtime refused the
+  scenario's own set-state (relayed by the TypeScript lane). Changing the corpus instead (no state in those scenarios)
+  would have left the design's reserve without a source. The default is the signals' 64 KiB, not the 128 KiB ceiling,
+  because the SDK reserves the bound from every activation's start (Decision 044-308): a version that never needed 128
+  KiB of state would otherwise leave a gated input only 64 KiB. Held by
+  `contract_workflow_as_code::schema::a_code_version_bounds_its_declared_state_and_a_graph_version_cannot`; the server's
+  tests are named in Task 044-12's list (`a_set_state_over_the_versions_max_bytes_is_refused`,
+  `a_set_state_in_a_version_without_state_is_refused`).
+- **D044-258** (2026-11-27) `sideEffect(compute, options?: { id?: string })`: the side-effect marker's identifier is
+  the option `id` (the pattern of a patch identifier, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`), `side-effect` when absent;
+  each language takes it as its own optional argument named `id`. The corpus keeps its named side effects (`fx-rate`,
+  `exchange-rate`), and `sdks/SPEC.md` 12.1 and Technical Plan 1.12 name the option. delegate (OD-2026-11-24-4): the
+  TypeScript lane's Decision 044-322, taken rather than renaming the corpus's markers, because `MarkerCommand.marker_id`
+  already carries any identifier, the option is additive (a call without it is unchanged), and a target that names the
+  side effect lets the replay report a reordered pair at the first one that moved instead of returning the other's
+  recorded value.
+- **D044-259** (2026-11-27) A re-emitted deferral may name **each** of its values by its descriptor alone, whatever
+  carrier the deferral used, inline included. The deferral record holds every value of the deferred command (an
+  inline value as well as a blob) until the command is accepted or the run ends; the server first compares the
+  re-emission's kind, target and body digest with the deferral record (a difference is `CHAIN_MISMATCH`, as before),
+  then resolves each descriptor to the value it holds, and uses the held value, never a re-sent one, so the accepted
+  command is the deferral's. A re-emission that carries a value again (inline, or another blob with the same
+  descriptor) is accepted as well. delegate (OD-2026-11-24-4): a cold worker cannot know which carrier the first
+  emission used (the history records the deferral's kind and target only), so a rule that depended on the carrier
+  would make the SDK guess; resolving every descriptor makes a re-emission cost nothing of the 192 KiB of inline values
+  and uploads nothing, for every kind that can be deferred. A descriptor can only name a value of the run's own latest
+  deferral, after the body digest matched, so it reaches nothing another run holds. Written in `worker.proto`
+  (`CommandValue`), Technical Plan 4.2 and 6.2, `sdks/SPEC.md` 12.6 and the corpus README; the fake server accepts it
+  (`a re-emitted deferral may name a value its deferral held inline by its descriptor alone`), and Task 044-9 names
+  `a_re_emission_names_an_inline_held_value_by_its_descriptor_alone`.
+- **D044-260** (2026-11-27) The fake server of `sdks/typescript/test/` checks `FailWorkflowTaskRequest.actual_saga_scope`:
+  against the golden report's `actualSagaScope` (empty when the report names none), against `^s-[1-9][0-9]{0,9}$`, and
+  only on an activity or a script; the corpus gains `code-nondeterminism/scope-moved`, a pure change of scope (the same
+  activity moved into a saga, reported with `actual_saga_scope` `s-1`). delegate (OD-2026-11-24-4): relayed by the
+  TypeScript lane; a fake that ignores a field cannot hold an SDK to it.
+- **D044-261** (2026-11-27) The test-target selector (`scripts/select-test-targets.py`) treats a string literal that
+  ends in a directory beneath `specs/<feature>/contracts` as a read of every file beneath it, so a change of one golden
+  selects `contract_workflow_as_code`, which walks `specs/044-workflow-as-code/contracts/goldens`; held by
+  `scripts/tests/test_select_test_targets.py`
+  (`test_a_directory_inside_a_contracts_directory_is_a_read_of_every_file_beneath_it`, and the repository-wide
+  `test_every_path_into_a_contracts_directory_is_seen_as_a_read`, which failed on pull request 291).
 
 ## 3. Gaps
 

@@ -332,3 +332,41 @@ fn an_envelope_entry_name_is_at_most_128_characters() {
         assert_eq!(pattern.is_valid(&json!(name)), valid, "{name}");
     }
 }
+
+/// Decision 044-257: a code version's declared state takes `state.maxBytes` (1 to 128 KiB, 64 KiB when absent), the
+/// bound its workflow leases carry as `state_max_bytes`; a graph version has no such field, because nothing bounds it.
+#[test]
+fn a_code_version_bounds_its_declared_state_and_a_graph_version_cannot() {
+    for (bytes, valid) in [
+        (json!(1), true),
+        (json!(65_536), true),
+        (json!(131_072), true),
+        (json!(131_073), false),
+        (json!(0), false),
+        (json!(-1), false),
+        (json!(1.5), false),
+        (json!("4096"), false),
+    ] {
+        let code = with(code_document(), "/state/maxBytes", bytes.clone());
+        assert_eq!(
+            document().is_valid(&code),
+            valid,
+            "a code version with state.maxBytes {bytes}"
+        );
+    }
+    let graph = with(
+        graph_document(),
+        "/state",
+        json!({"schema": {"type": "object"}, "initial": "{}", "maxBytes": 4096}),
+    );
+    assert!(
+        !document().is_valid(&graph),
+        "a graph version refuses state.maxBytes"
+    );
+    let graph = with(
+        graph_document(),
+        "/state",
+        json!({"schema": {"type": "object"}, "initial": "{}"}),
+    );
+    assert!(document().is_valid(&graph), "a graph version keeps its state");
+}

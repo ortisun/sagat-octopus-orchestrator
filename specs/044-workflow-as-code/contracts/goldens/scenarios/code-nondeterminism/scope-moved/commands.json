@@ -1,0 +1,152 @@
+{
+  "scenario": "code-nondeterminism",
+  "run": "scope-moved",
+  "runId": "a3a5de6d-c234-448d-88ad-5d7213271ca6",
+  "workflowType": "book-trip",
+  "seedHex": "475c094c568276e85fd886c33018863c11437423608b7db13b18e7fcd3c3f46d",
+  "input": {
+    "tripId": "trip-12"
+  },
+  "codeVersions": {
+    "v1": "sha256:5a86f86eed9a1d414bfad634906dd3b10f558010d292a02b8a0bcc3c8dabea57"
+  },
+  "activations": [
+    {
+      "k": 1,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 0,
+        "throughSeq": 2
+      },
+      "nowUs": 1767225600000274,
+      "worker": "A",
+      "replayedChainHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "appliedThroughSeq": 2,
+      "commands": [
+        {
+          "commandNumber": 1,
+          "kind": "saga_open",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaOpen": {
+              "scope": "s-1",
+              "onCompensationFailure": "manual_review",
+              "cancelPolicy": "compensate_completed"
+            }
+          },
+          "body": {
+            "scope": "s-1",
+            "parentScope": null,
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "bodySha256": "759f0f4db6632e7393f74c35b66d1d1871e45595c405229e96a8dbda315172ad",
+          "journalKind": "saga.entered"
+        },
+        {
+          "commandNumber": 2,
+          "kind": "activity",
+          "target": "hotel.book",
+          "node": "c-2",
+          "fragment": {
+            "type": "activity",
+            "activity": "hotel.book"
+          },
+          "value": {
+            "tripId": "trip-12"
+          },
+          "body": {
+            "type": "activity",
+            "activity": "hotel.book",
+            "input": {
+              "sha256": "5dfc510d0c82e7151876f2e1cba1a6829ce996724350dfc993867e7c90766d86",
+              "size": 20
+            }
+          },
+          "bodySha256": "78a8d29de16b474109af2b363882fc022b5b9c05c93c0702d250e6d8e6c443da",
+          "journalKind": "step.released"
+        },
+        {
+          "commandNumber": 3,
+          "kind": "saga_close",
+          "target": "s-1",
+          "node": "s-1",
+          "typed": {
+            "sagaClose": {
+              "target": "s-1"
+            }
+          },
+          "body": {
+            "scope": "s-1"
+          },
+          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
+          "journalKind": "saga.completed"
+        }
+      ],
+      "outcome": "WORKFLOW_TASK_ACCEPTED",
+      "completedSeq": 3,
+      "chainAfterHex": "a587d1d0e52ab98c4f13d362da8dea16488418dc80af64a47648151c10e0c096",
+      "commandCountAfter": 3
+    },
+    {
+      "k": 2,
+      "codeVersion": 1,
+      "window": {
+        "afterSeq": 2,
+        "throughSeq": null
+      },
+      "failedAttempts": [
+        {
+          "startedSeq": 9,
+          "nowUs": 1767225600001233,
+          "worker": "B",
+          "cause": "CAUSE_NONDETERMINISM",
+          "report": {
+            "commandNumber": 2,
+            "actualKind": "COMMAND_ACTIVITY",
+            "actualTarget": "hotel.book",
+            "actualSagaScope": "s-1",
+            "codeDigest": "sha256:5a86f86eed9a1d414bfad634906dd3b10f558010d292a02b8a0bcc3c8dabea57"
+          },
+          "expected": {
+            "kind": "COMMAND_ACTIVITY",
+            "target": "hotel.book",
+            "sagaScope": "",
+            "from": "the server's own record of command 2"
+          },
+          "replayFromSeq": 1
+        }
+      ],
+      "review": "NONDETERMINISM"
+    }
+  ],
+  "invisibleJournal": [
+    {
+      "seq": 7,
+      "journalKind": "step.leased",
+      "node": "c-2"
+    },
+    {
+      "seq": 10,
+      "journalKind": "workflow_task.failed",
+      "cause": "CAUSE_NONDETERMINISM"
+    },
+    {
+      "seq": 11,
+      "journalKind": "step.needs_review",
+      "node": "~workflow",
+      "code": "NONDETERMINISM"
+    }
+  ],
+  "observedGraph": [
+    {
+      "node": "c-2",
+      "kind": "activity",
+      "target": "hotel.book",
+      "commandNumber": 2,
+      "issuedSeq": 2,
+      "outcomeSeq": 8
+    }
+  ]
+}
