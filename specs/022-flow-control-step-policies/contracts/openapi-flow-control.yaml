@@ -369,7 +369,7 @@ paths:
       summary: Bind a RunRecovery subject to a namespace
       tags: [Governance]
       x-proposed: '022'
-      description: Added 2026-11-26 (decisions D022-274, D022-276). Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with the role `run-recovery` (422 NOT_A_RECOVERY_SUBJECT otherwise); refused 422 FLOW_CONTROL_ACTIVATION_PENDING before `failure-handler-v1` is activated. The binding and its `run_recovery.bound` audit record commit together; the subject's next request is authorized in this namespace.
+      description: Added 2026-11-26 (decisions D022-274, D022-276). Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with the role `run-recovery` (422 NOT_A_RECOVERY_SUBJECT otherwise); refused 422 FLOW_CONTROL_ACTIVATION_PENDING before `failure-handler-v1` is activated. The binding and its `run_recovery.bound` audit record commit together; the subject's next request is authorized in this namespace. Since 2026-11-27 (decision D022-298) the binding references the subject's membership with its role, so the member's role cannot be changed while it is bound.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: subject, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
@@ -399,7 +399,7 @@ paths:
       summary: Remove the binding of a RunRecovery subject in a namespace
       tags: [Governance]
       x-proposed: '022'
-      description: Added 2026-11-26 (decisions D022-274, D022-277). Needs `membership:manage`. 404 when the subject has no binding there. The removal and its `run_recovery.unbound` audit record commit together; a write of the subject that has not yet reached its binding's lock in slot 4a is refused 404 after it.
+      description: Added 2026-11-26 (decisions D022-274, D022-277). Needs `membership:manage`. 404 when the subject has no binding there. The removal and its `run_recovery.unbound` audit record commit together; a write of the subject that has not yet reached its binding's lock in slot 4a is refused 404 after it. Since 2026-11-27 (decision D022-298) the route is served while `failure-handler-v1` is switched off, and it is how an administrator frees a member's role for a change.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: subject, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
@@ -702,7 +702,7 @@ components:
         items: {type: array, items: {$ref: '#/components/schemas/RunRecoveryBinding'}}
         nextCursor: {type: [string, 'null']}
     MembershipRoleAdditions:
-      description: Value added to the canonical `AuthContext.role` enumeration (and the stored `memberships.role`), decisions D022-244, D022-266 and D022-285 (the stored spelling).
+      description: Value added to the canonical `AuthContext.role` enumeration (and the stored `memberships.role`), decisions D022-244, D022-266 and D022-285 (the stored spelling); lands in the pull request of T022-256, with the migration that admits the value (decision D022-307).
       type: string
       enum: [run-recovery]
     RunOriginAdditions:

@@ -103,3 +103,70 @@ lives. Decisions in `research.md`, "Decisions of the second security re-read of 
 
 Note on the suspicion's citation: `crates/api-http/src/routes/execution.rs:1276` is not stale; it is the call of
 `stream_deadline`, whose body is at `:1304`. Both are cited now.
+
+## Third re-reads (2026-11-27)
+
+Where each item of [design-fixes-3-rereview-security-reviewer.md](design-fixes-3-rereview-security-reviewer.md) (of
+`5ef574f16`) and [design-fixes-3-rereview-architecture-reviewer.md](design-fixes-3-rereview-architecture-reviewer.md)
+(of `9960a3c1` and `5ef574f16`) now lives. Decisions in `research.md`, "Decisions of the third re-reads of 2026-11-27",
+each delegate (OD-2026-11-24-4); every security item is fixed in the design, none accepted or deferred. "Plan" is
+`plan.md`, subsection "Revision of 2026-11-27 after the third re-reads" unless a row says otherwise; "data model" is
+`data-model.md`, section "Revision of 2026-11-27 after the third re-reads"; "tasks" is `tasks.md`, subsection "Revision
+of 2026-11-27 after the third re-reads". Code facts checked at `5ef574f16`. Three facts were checked by hand on
+`postgres:16-alpine` by the coordinating session and are cited in the decisions as facts 1 to 3: a row lock needs
+UPDATE privilege; the race of the security suspicion is real at REPEATABLE READ; a restricting foreign key closes it at
+every isolation level.
+
+Acceptance of the revisions of 2026-11-26 and 2026-11-27 to the accepted ADRs (ADR-0050, ADR-0056, ADR-0135, ADR-0136,
+ADR-0137) is recorded after the short re-read of these fixes (OD-2026-11-25-2 step 4), not here (architecture nit K).
+
+### Security
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Earlier minor 1 (a role change leaves the bindings in place): fixed, residual in nit 2 and the suspicion | D022-298 (the trigger replaced, see the suspicion) | as the suspicion |
+| Earlier minor 2 (the fitness rule, `Membership::restore`, the role-only method): partly fixed, `.permissions().contains(` unseen and the allow list keyed by file | D022-303 | tasks T022-258 as it reads now; research D022-287 (amended) |
+| Earlier minor 3 (the pending reset completion): partly fixed | D022-297 (the lock), D022-301 (the error and `PendingAdmission.namespace_id`) | tasks T022-262 as it reads now; plan, the scope table of 2026-11-26 (marked) and the table of 2026-11-27; data model (the readers row); research D022-288 (amended); `contracts/errors.md` (pending resets) |
+| Earlier minor 4 (the battery's "403 or 404"): fixed | no change | — |
+| Earlier minor 5 (the activation trigger's function attributes): fixed | no change; the list of functions restated by D022-300 | data model, the functions paragraph |
+| Earlier minor 6 (merge order): fixed, residual in nit 4 | D022-307 (see nit 4) | as nit 4 |
+| Earlier nit 1 (the scope class of the role's permissions): fixed | no change; its test moves to T022-263 (D022-307) | tasks T022-263 |
+| Earlier nit 2 ("before every other refusal"): partly fixed | D022-306 | `contracts/errors.md` (the revised `404` row); `spec.md` FR-022-014 line after the re-reads (reworded); plan, the table of 2026-11-27 |
+| Earlier nit 3 (time tells existing slugs): fixed, residual in nit 3 | D022-305 (see nit 3) | as nit 3 |
+| Earlier nit 4 ("machine identity" in T022-228): fixed | no change | — |
+| Earlier suspicion (the stream lifetime sets the window): partly fixed, it depends on new finding 2 | D022-301 | as new finding 2; research D022-296 (completed) |
+| New finding 1, minor: the runtime role cannot take the binding row lock | D022-297 (fact 1; the false premise "follows worker bindings" corrected, `20261010000100_worker_bindings.up.sql:25`) | data model (the lock function and readers rows); research D022-273, D022-277, D022-288 (amended); ADR-0050 decision 7 (slot 4a and the paragraph written 2026-11-27); ADR-0136 decision 4 (revision of 2026-11-27); plan, the tables of 2026-11-26 (marked) and 2026-11-27; tasks T022-264, T022-253, T022-259 and T022-262 as they read now (run as `sagat_app`) |
+| New finding 2, minor: a new `AppError` variant misses the stream's `NotFound` arms | D022-301 (no new variant: `IdentityError::OutsideNamespaceScope` converts to `AppError::NotFound`; `complete_reset` checks the scope first and answers `StateConflict(AUTHORITY_REVOKED)`; `PendingAdmission` gains `namespace_id`) | plan, the table of 2026-11-26 (marked) and of 2026-11-27; research D022-288 (amended), D022-296 (completed); `contracts/errors.md` (pending resets); ADR-0136 decision 4; tasks T022-256, T022-259 (the stream case) and T022-262 as they read now |
+| New finding 3, minor: the allow list admits payload disclosure, which is not fenced against a revocation | D022-302 | `contracts/errors.md` (the payload row); plan, failure matrix and the table of 2026-11-27; data model (the readers row); ADR-0136 decision 4; tasks T022-259 as it reads now (the payload case) |
+| New finding 4 (counted under earlier minor 2) | D022-303 | as earlier minor 2 |
+| Nit 1: a role change deletes bindings without an audit row | D022-298 (no trigger deletes: the role change is refused until the administrator unbinds through the audited route), D022-299 (a removal by a cascade of a membership or namespace deletion audited by a trigger; checked: the platform has no deletion path of its own, `crates/infra-postgres/src/identity.rs:141-168`) | data model (the audit trigger); `contracts/errors.md` (the provisioning paragraph of 2026-11-27); plan, failure matrix; tasks T022-266, T022-261 as it reads now |
+| Nit 2: `check_role_before_lookup` "returning `()`" | D022-304 | plan, the scope table of 2026-11-26 (corrected); research D022-287 (amended); tasks T022-256 as it reads now |
+| Nit 3: a call-log test cannot see the decoded rows | D022-305 (`AND namespace_id = ANY($bound)` in the lookups of a bound principal; the call-log test becomes a rows test) | data model ("The scoped lookups of a bound principal"); plan, the table of 2026-11-27; research D022-294 (refined); tasks T022-256 as it reads now |
+| Nit 4: which slice-2 task carries the empty scope | D022-307 | tasks T022-263 (slice 2), T022-011, T022-240 and T022-256 as they read now; research D022-291 (amended) |
+| Suspicion: the bind and role-change race reopens at REPEATABLE READ | D022-298, superseding D022-286; confirmed by fact 2, closed by the restricting foreign key of fact 3 at READ COMMITTED, REPEATABLE READ and SERIALIZABLE; the provisioning error `RUN_RECOVERY_BINDINGS_EXIST` and the runbook step (T022-267) | data model (`run_recovery_namespaces` and `memberships`, revised; the trigger of 2026-11-26 struck); research D022-286 (superseded), D022-290, D022-291 (amended); `contracts/errors.md` (the bind's `422` row, the provisioning paragraph); `contracts/openapi-flow-control.yaml` (`bindRunRecovery`, `unbindRunRecovery`); ADR-0136 decision 4; ADR-0050 decision 7; spec FR-022-014 line of 2026-11-27; plan, failure matrix (the old row struck, three rows added) and the table of 2026-11-27; tasks T022-261 (rewritten), T022-253, T022-265, T022-267 |
+
+### Architecture
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Major 1, Major 2, minors 3, 4, 6, 7, 9, 10, 11, 12, the earlier nits, rulings 1, 3, 4, 6, 8, 11: fixed | no change | — |
+| Minor 5 (the binding check has no lock): partly fixed | D022-297 (see A) | as A |
+| Minor 8 (T022-255 too broad): partly fixed | D022-308 (see B) | as B |
+| Ruling 7 (`RunRecovery`): partly fixed | D022-297 (see A) | as A |
+| Acceptance (index against status lines): holds | no change; every changed ADR keeps `Accepted` as the first word of its Status line | — |
+| A, Major: the binding row cannot be read `FOR SHARE` by the runtime role | D022-297 | as security new finding 1; the `pg_proc` test of T022-253 reads the lock function (D022-300) |
+| B, minor: the narrowed step-lock rule is in neither ADR and cannot be checked from the SQL text | D022-308 | ADR-0056 decision 2(a) and ADR-0135 decision 2 (restated in D022-282's words); research D022-282 (amended); plan, the table of 2026-11-27; tasks T022-255 as it reads now (an allow list of enclosing functions, one entry `prepare_delivery`, a test that the row is `WAITING`) |
+| C, minor: the empty scope of slice 2 needs parts of T022-256 | D022-307 | tasks T022-263, T022-256 as it reads now (the OpenAPI role enum in its pull request); `contracts/openapi-flow-control.yaml` (`MembershipRoleAdditions`); plan, the table of 2026-11-27 |
+| D, minor: ADR-0136's record lags; ADR-0050 names no feature 022 `slot_order.rs` case | D022-309 | ADR-0136 Status, "Decided by", "Enforced by" and Evidence; ADR-0050 "Enforced by" (T022-224, T022-254, T022-259, T022-262) |
+| E, minor: a start by a `RunRecovery` principal is not a handler-tree run | D022-310 | ADR-0136 decisions 5 and 9; data model (`runs.handler_tree` row and "extended"); `contracts/errors.md` (the continue-as-new row); spec FR-022-016 line of 2026-11-27; plan, the `RunRecovery` table, failure matrix and the table of 2026-11-27; tasks T022-244 as it reads now |
+| F, minor: "every principal rebuilt from a stored member" has no check | D022-303 (`Principal::new(` with a non-literal role on the same allow-list rule; the sentence narrowed to what the rule checks) | research D022-272 (narrowed), D022-287 (amended); tasks T022-258 as it reads now |
+| G, nit: the membership statement also reads `platform_requirements` | D022-311 | plan, "Hot-path budget lines to record" (the member's request line) |
+| H, nit: leftovers (spec "before any other refusal", "the revision read with the run's definition", ADR-0050 calling ADR-0056 proposed) | D022-312, D022-306 | `spec.md` FR-022-014 and FR-022-016 lines (struck and replaced); ADR-0056 decision 2; ADR-0050 Status, "Refines / supersedes" and Evidence |
+| I, nit: the batch rerun case needs one sentence | D022-313 (`RunRecovery` holds no `run:batch`, `crates/domain/src/identity.rs:514`; a batch item runs under its creator's re-read role, `crates/application/src/batch_executor.rs:440`) | `contracts/errors.md` (the batch item row) |
+| J, nit: "after the memberships" assumes a lock a start does not take | D022-314 (the foreign key of D022-298 replaces the trigger the reviewer named: it refuses a role change while the row exists, so the binding row fences an unbind, a role change and a membership removal) | ADR-0050 decision 7 (slot 4a and the paragraph written 2026-11-27); research D022-277 (amended); data model (the readers row); plan, the scope table of 2026-11-26 (marked) |
+| K, nit: the 2026-11-26 amendments have no recorded acceptance | none: the acceptance of the revisions of 2026-11-26 and 2026-11-27 is recorded after the short re-read of these fixes (OD-2026-11-25-2 step 4) | the paragraph above; the amendments of 2026-11-27 say so where they are written (ADR-0050 decision 7, ADR-0056 decision 2(a), the Status lines of ADR-0135 and ADR-0136) |
+
+Note on the architecture reviewer's scope check, which it could not run: on this branch's machine at `5ef574f16`,
+`git branch -a` and `git worktree list` show the 022 branches `feature/022-step-policies` (this one),
+`feature/022-throughput-control` and `feature/022-sdk-builders` in sibling worktrees, and neither of the other two (nor
+`origin/develop`) has `RunRecovery` or `run_recovery` code under `crates/`, so no duplicate of this scope was found.

@@ -90,7 +90,8 @@ ceiling above the proposed defaults is published.
    takers of cache rows (invalidation, purge, erasure, the store writer's insert) lock nothing after one but usage rows
    (ADR-0135 decision 7). *Revised 2026-11-25 (decisions D022-225, D022-234, D022-237):* the lookup round takes the
    secret-access and membership locks of the step's secrets, shared, before the cache rows; the namespace handler's
-   revision is read with the run's definition, not on the terminal path; a domain property test checks that no progress
+   revision is ~~read with the run's definition, not on the terminal path~~ read by the left join of the statement that
+   locks the run (struck and replaced 2026-11-27, feature 022 decision D022-312, as D022-255 corrected); a domain property test checks that no progress
    emits a filed gate decision and `run.finished` in one commit (task T022-234).
 
    *Struck and restated 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-254 and D022-255; ADR-0094 is
@@ -110,9 +111,15 @@ ceiling above the proposed defaults is published.
    binding advisory lock (shared), all before the cache rows, the entry read `FOR SHARE` re-checking the subject; at an
    admission the locks and the pre-read are at slot 5 of ADR-0050 decision 7 and the re-check at slot 7. The binding
    lock is not a leaf: a binding replacement takes it exclusively and then locks `worker_sessions` and `steps` rows
-   (`crates/infra-postgres/src/bindings.rs`). The rule that keeps it safe is: no decider locks a step or a
-   `worker_sessions` row before its lookup round; it is stated here and checked by `scripts/check-architecture.py` and a
-   `slot_order.rs` case (a binding replacement against a lease-expiry pass that releases a cacheable successor).
+   (`crates/infra-postgres/src/bindings.rs`). The rule that keeps it safe is: ~~no decider locks a step or a
+   `worker_sessions` row before its lookup round~~ no deciding path locks a `steps` row in `LEASED` or `RUNNING`, or a
+   `worker_sessions` row, before its lookup round (restated 2026-11-27, feature 022 decisions D022-282 and D022-308: the
+   scoped-event finish locks a `WAITING` step, `crates/infra-postgres/src/execution/scoped_events.rs:164`, and a binding
+   replacement updates only `LEASED` or `RUNNING` rows, `crates/infra-postgres/src/bindings.rs:245-246`; its acceptance
+   is recorded after the short re-read of these fixes); it is stated here and checked by `scripts/check-architecture.py`
+   (every `steps ... FOR UPDATE` and every `worker_sessions` lock on a deciding path refused unless its enclosing
+   function is on the rule's allow list with its argument, task T022-255) and a `slot_order.rs` case (a binding
+   replacement against a lease-expiry pass that releases a cacheable successor, task T022-254).
 
    *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
    specs/022-flow-control-step-policies/reviews/2026-11-25/ (decision D022-271):* the feature 022 amendments of this

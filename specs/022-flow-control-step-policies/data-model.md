@@ -663,7 +663,7 @@ ceiling skips the insert (counted `skipped_backlog`).
 
 | Column | Type | Notes |
 |---|---|---|
-| `handler_tree` | boolean | NOT NULL DEFAULT false; true for a dispatched handler run, an `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a handler-tree run (*2026-11-26, decision D022-279:* "initiator" reads "whose request's principal holds `RunRecovery`"); never dispatched |
+| `handler_tree` | boolean | NOT NULL DEFAULT false; true for a dispatched handler run, an `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a handler-tree run (*2026-11-26, decision D022-279:* "initiator" reads "whose request's principal holds `RunRecovery`"; *2026-11-27, decision D022-310:* and every start whose principal holds `RunRecovery`); never dispatched |
 | `handler_kind` | text null | CHECK `IN ('DISPATCHED','REGION_CHILD')`; `REGION_CHILD` is the `onFailure~h` child form |
 | `handler_for_run_id` | uuid null | only when `handler_kind = 'DISPATCHED'` (CHECK); FK `(tenant_id, namespace_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null; never inherited by a reset or rerun |
 | `lineage_run_id` | uuid | ~~NOT NULL; the source's `lineage_run_id` (read under the source's identity guard) for a reset or a rerun whose initiator is a machine identity or a handler-tree run; otherwise the run's own id, so a reset or rerun a member starts begins a lineage of its own (decision D022-241, O1176 (b)); the initiator's principal kind is recorded with the reset or rerun provenance~~ *(struck 2026-11-25, decision D022-270: superseded by D022-242 and D022-245; see "Revision of 2026-11-25 after the re-reviews")* |
@@ -812,11 +812,11 @@ Replaces the line of the section above, whose SELECT-only grant could not serve 
 
 | Column or rule | Notes |
 |---|---|
-| `tenant_id`, `subject`, `namespace_id` | PK `(tenant_id, subject, namespace_id)` (the membership statement reads by subject on every request); index `(tenant_id, namespace_id)` for the listing and the namespace's foreign key; FK `(tenant_id, namespace_id)` → `namespaces (tenant_id, id)` `ON DELETE CASCADE`; FK `(tenant_id, subject)` → `memberships (tenant_id, subject)` `ON DELETE CASCADE`; `subject` CHECK as `worker_bindings_subject_valid` (1 to 255 characters, no control character) |
+| `tenant_id`, `subject`, `namespace_id` | PK `(tenant_id, subject, namespace_id)` (the membership statement reads by subject on every request); index `(tenant_id, namespace_id)` for the listing and the namespace's foreign key; FK `(tenant_id, namespace_id)` → `namespaces (tenant_id, id)` `ON DELETE CASCADE`; ~~FK `(tenant_id, subject)` → `memberships (tenant_id, subject)` `ON DELETE CASCADE`~~ *(replaced 2026-11-27, D022-298, by the key `(tenant_id, subject, role)`, see the last section)*; `subject` CHECK as `worker_bindings_subject_valid` (1 to 255 characters, no control character) |
 | `created_by`, `created_at` | the administrator's subject (bounded) and `clock_timestamp()` |
-| Grants | SELECT, INSERT, DELETE to `sagat_app`; no UPDATE (nothing to change) |
+| Grants | SELECT, INSERT, DELETE to `sagat_app`; no UPDATE (nothing to change); *2026-11-27 (D022-297):* so `sagat_app` cannot lock a row, and every row lock goes through `public.sagat_lock_run_recovery_binding` |
 | Usage | the quota delta and flush triggers of `worker_bindings` (`sagat_quota_row_delta` over `subject`; `sagat_quota_flush_deltas`), `ENABLE ALWAYS` |
-| Readers | the membership statement (the bound set of a `run-recovery` member, as an array, on every request; empty while `platform_requirements` does not hold `failure-handler-v1`); an admission or a command by such a member (its row `FOR SHARE`, slot 4a after the memberships) |
+| Readers | the membership statement (the bound set of a `run-recovery` member, as an array, on every request; empty while `platform_requirements` does not hold `failure-handler-v1`); an admission or a command by such a member (its row `FOR SHARE`, slot 4a after the memberships) *(2026-11-27, D022-297, D022-302, D022-314: through `public.sagat_lock_run_recovery_binding`, after the memberships where the path takes them; also `recheck_requester` and the payload disclosure transaction)* |
 | Writers | `bindRunRecovery` (INSERT, idempotent) and `unbindRunRecovery` (DELETE), each with its audit row; nothing else |
 | Classification | the subject is an identifier, protected as `worker_bindings.subject` is |
 
@@ -842,17 +842,58 @@ then usage rows.
 
 ### Revision of 2026-11-26 after the second security re-read (decisions D022-286 to D022-294)
 
-- `memberships` gains a second trigger, `AFTER UPDATE OF role ... FOR EACH ROW WHEN (OLD.role IS DISTINCT FROM
+- ~~`memberships` gains a second trigger, `AFTER UPDATE OF role ... FOR EACH ROW WHEN (OLD.role IS DISTINCT FROM
   NEW.role)`, `ENABLE ALWAYS`, that deletes every `run_recovery_namespaces` row of the subject in the tenant, as
-  `memberships_role_change_revokes_reveal_grants` does for reveal grants (D022-286).
+  `memberships_role_change_revokes_reveal_grants` does for reveal grants (D022-286).~~ *(Superseded 2026-11-27 by
+  D022-298: a restricting foreign key refuses the role change instead; see the last section.)*
 - The functions of both `memberships` triggers (the activation gate of D022-276 and the role change) are `SECURITY
   DEFINER`, `SET search_path = pg_catalog, pg_temp`, name `public.platform_requirements`, `public.memberships` and
-  `public.run_recovery_namespaces` with their schema, and are `REVOKE ALL ... FROM PUBLIC` (D022-290).
+  `public.run_recovery_namespaces` with their schema, and are `REVOKE ALL ... FROM PUBLIC` (D022-290). *(Amended
+  2026-11-27, D022-300: "and the role change" is struck; the functions are the activation gate's, the audit trigger's
+  and the lock function's.)*
 - `bindRunRecovery` reads the subject's role through `sagat_lock_memberships` (`FOR SHARE`) in its own transaction
-  before the insert (D022-286).
+  before the insert (D022-286). *(2026-11-27, D022-298: kept for the typed answer; the foreign key closes the race.)*
 - The membership statement loads the bound set with each namespace's id and slug, so a namespace addressed by id or
   slug is checked against the scope before any lookup (D022-294).
 - The completion of a pending reset (`recheck_requester`) reads the actor's binding row of the entry's namespace `FOR
-  SHARE` after `sagat_lock_memberships` when the role is namespace-bound (D022-288).
+  SHARE` after `sagat_lock_memberships` when the role is namespace-bound (D022-288). *(2026-11-27, D022-297, D022-301:
+  through `public.sagat_lock_run_recovery_binding`, with the namespace carried by `PendingAdmission.namespace_id`.)*
 - The migration that widens `memberships_role_valid` and adds both triggers lands with task T022-256, not before it
-  (D022-291).
+  (D022-291). *(2026-11-27, D022-300: "both triggers" reads "the activation trigger, the audit trigger, the restricting
+  foreign key and the lock function".)*
+
+## Revision of 2026-11-27 after the third re-reads (decisions D022-297 to D022-314)
+
+The third re-reads ([reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md), third
+part). Where this section and any above disagree, this section wins.
+
+### `run_recovery_namespaces` and `memberships`, revised (decisions D022-297 to D022-300)
+
+| Column or rule | Notes |
+|---|---|
+| `tenant_id`, `subject`, `namespace_id` | as revised 2026-11-26: PK `(tenant_id, subject, namespace_id)`, index `(tenant_id, namespace_id)`, FK `(tenant_id, namespace_id)` → `namespaces` `ON DELETE CASCADE`, the subject CHECK |
+| `role` (new) | `text NOT NULL DEFAULT 'run-recovery'`, `CHECK (role = 'run-recovery')`; written by nobody but the default |
+| `run_recovery_namespaces_membership_fk` (new) | `(tenant_id, subject, role)` → `memberships (tenant_id, subject, role)` `ON UPDATE RESTRICT ON DELETE CASCADE`; replaces the key `(tenant_id, subject)`. A role change of a subject with a binding is refused (SQLSTATE `23503`, reported by provisioning as `RUN_RECOVERY_BINDINGS_EXIST`); a bind for a subject of another role violates it (`422 NOT_A_RECOVERY_SUBJECT`); a membership deletion cascades (D022-298) |
+| `memberships_subject_role_key` (new, on `memberships`) | `UNIQUE (tenant_id, subject, role)`, the target of the key; redundant with the PK for uniqueness, needed for the reference; one more index written on a membership insert, which provisioning alone does |
+| Grants | SELECT, INSERT, DELETE to `sagat_app`, unchanged |
+| Lock function (new) | `public.sagat_lock_run_recovery_binding(p_tenant uuid, p_subject text, p_namespace uuid) RETURNS TABLE(namespace_id uuid)`, `LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp`, `... FOR SHARE OF b`; `REVOKE ALL ... FROM PUBLIC`; `GRANT EXECUTE` to `sagat_app` (D022-297) |
+| Readers | the membership statement (the bound set, with each namespace's id and slug, on every request; empty while `platform_requirements` does not hold `failure-handler-v1`); through the lock function: an admission or a command of a bound actor in slot 4a, after the memberships where the path takes them (D022-277, D022-314), `recheck_requester` of a pending reset (D022-288, D022-301), the payload disclosure transaction after `sagat_lock_memberships` (D022-302) |
+| Writers | `bindRunRecovery` (INSERT) and `unbindRunRecovery` (DELETE), each with its audit row; a referential cascade from `memberships` or `namespaces` (DELETE), audited by the trigger below |
+| Audit trigger (new) | `AFTER DELETE ... FOR EACH ROW`, `ENABLE ALWAYS`; its function writes one `run_recovery.unbound` row (actor `system:provisioning`, reason "removed by a referential cascade") into `public.audit_records` only when `pg_trigger_depth()` is above 1, that is for a delete issued by a referential action; the route's delete is audited by the route (D022-299) |
+| Role-change trigger | none: D022-286's trigger is not built (D022-298) |
+
+The functions of the migration (D022-300): the activation trigger's and the audit trigger's, executable by no role;
+the lock function, executable by `sagat_app` alone. All three `SECURITY DEFINER`, `SET search_path = pg_catalog,
+pg_temp`, every table named with its schema; read from `pg_proc` by the migration test of T022-253. The migration lands
+in the pull request of T022-256; its `down` refuses while a `run-recovery` membership or a binding row exists.
+
+### `runs.handler_tree`, extended (decision D022-310)
+
+Every admission whose principal holds `RunRecovery` (start, reset, rerun) is a handler-tree run, `handler_kind` null;
+such an admission of a definition that continues as new is refused (`CONTINUE_AS_NEW_REFUSED`), so invariant 21 holds
+for it, and invariant 17 keeps it from being dispatched.
+
+### The scoped lookups of a bound principal (decision D022-305)
+
+For a namespace-bound principal the statements that look up a run, a workflow or a request by id carry `AND
+namespace_id = ANY($bound)`, so a row outside the scope is not returned; a tenant principal's statements are unchanged.

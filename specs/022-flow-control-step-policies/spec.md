@@ -593,16 +593,23 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-26 after the re-reads, delegate (OD-2026-11-24-4; decisions D022-272 to D022-277):* the binding is
   part of the authenticated principal, read with the membership on every request (no binding: no namespace), so a route
   cannot forget it: a namespace-scoped permission is granted to a bound subject only for a namespace of its binding,
-  and outside it the answer is the opaque `404`, audited and counted, before any other refusal. A write by a bound
+  and outside it the answer is the opaque `404`, audited and counted, ~~before any other refusal~~ before every refusal
+  that depends on the addressed resource (reworded 2026-11-27, D022-306). A write by a bound
   subject reads its binding again in its transaction, and a replay is checked again. An administrator binds and
   unbinds with `membership:manage`, audited; the role (stored as `run-recovery`) cannot be given before
   `failure-handler-v1` is active, and switching the capability off binds every such subject to no namespace, the rows
   kept.
   *Amended 2026-11-26 after the second security re-read, delegate (OD-2026-11-24-4; decisions D022-286 to D022-296):* a
-  change of a member's role removes its bindings; a pending reset of a bound subject completes only inside its binding
-  and otherwise fails `AUTHORITY_REVOKED`; the role acts nowhere before its scope is built; a refusal outside the
-  binding answers exactly as a missing resource does, in body and in time; an open event stream is cut within its
-  30-second re-check.
+  ~~change of a member's role removes its bindings~~ *(superseded 2026-11-27, D022-298; see the next line)*; a pending
+  reset of a bound subject completes only inside its binding and otherwise fails `AUTHORITY_REVOKED`; the role acts
+  nowhere before its scope is built; a refusal outside the binding answers exactly as a missing resource does, in body
+  and in time; an open event stream is cut within its 30-second re-check.
+  *Amended 2026-11-27 after the third re-reads, delegate (OD-2026-11-24-4; decisions D022-297 to D022-306):* the role of
+  a member that still has a binding cannot be changed: the administrator unbinds first, audited, and the database refuses
+  the change otherwise, whatever the transaction's isolation; a binding removed with its membership or its namespace is
+  audited too; a payload read checks the binding again in its transaction; a refusal outside the binding is the same
+  answer as a missing resource in every path, the event stream's included, and a lookup outside the binding returns no
+  row at all.
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose
@@ -619,8 +626,9 @@ Added after the review of 2026-11-13:
   child is covered by its parent's dispatch.
   *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-208, D022-211, D022-214):* the configuration is read without a lock
   in the terminal commit and its `config_revision` is recorded on the dispatch row; there is no policy lock.
-  *(Revised 2026-11-25, decisions D022-222, D022-223, D022-228, D022-237: the revision is read with the run's
-  definition; the handler workflow's head is read without a lock; see the line below.)* The
+  *(Revised 2026-11-25, decisions D022-222, D022-223, D022-228, D022-237: ~~the revision is read with the run's
+  definition~~ the revision is read by the left join of the statement that locks the run (struck and replaced
+  2026-11-27, D022-312, as D022-255 corrected); the handler workflow's head is read without a lock; see the line below.)* The
   dispatcher admits through `Engine::start`, in ADR-0050's slots (dispatch row slot 3, the source run's identity guard
   3R, the handler workflow's head 4b, the run 6, its gates 7). Activated as `failure-handler-v1`.
   *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-223, D022-228):* the terminal commit always inserts its dispatch
@@ -648,6 +656,10 @@ Added after the review of 2026-11-13:
   or rerun of a definition that continues as new is refused `422` (`CONTINUE_AS_NEW_REFUSED`), and a run that reaches
   the boundary anyway ends `FAILED` with that code. The dispatch statements are followed in the commit only by the
   run's own `run.finished` row; `namespace_dispatch` is present exactly when a dispatch row for the run exists.
+  *Amended 2026-11-27 after the third re-reads, delegate (OD-2026-11-24-4; decision D022-310):* a start whose principal
+  holds `RunRecovery` is a handler-tree run as well: it is never dispatched to the namespace handler, so a handler that
+  recovers by a fresh start cannot loop, and a start of a definition that continues as new is refused `422`
+  (`CONTINUE_AS_NEW_REFUSED`).
 
 #### Concurrency limits by key (US02)
 
