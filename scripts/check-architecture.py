@@ -513,6 +513,89 @@ def run_creator_errors(root):
     return errors
 
 
+# Constitution 5.1.0, principle I: journal rows leave only by two audited paths (feature 020's per-run purge, design 049's
+# partition retirement), both privileged, and the runtime role holds no DELETE or TRUNCATE on runs, steps, the journal
+# or payloads. A migration (up or down) is where such a grant would come from, so every way of giving it is refused: a
+# GRANT of DELETE, TRUNCATE or ALL on one of those tables (named, or through ALL TABLES or default privileges) to the
+# runtime role or to PUBLIC, with or without GRANT OPTION or GRANTED BY; any role granted to the runtime role; a table
+# given to the runtime role as owner; and such a GRANT built as dynamic SQL. A runtime check of the privileges the role
+# really has (through memberships too) is feature 020's privilege sweep.
+JOURNAL_TABLES = {"runs", "steps", "run_events", "payloads", "run_payloads"}
+RUNTIME_GRANTEES = {"sagat_app", "public"}
+GRANT_STATEMENT = re.compile(r"\bgrant\s+(?P<privs>.*?)\s+on\s+(?P<target>.*?)\s+to\s+(?P<grantees>[^;]*);", re.I | re.S)
+ROLE_GRANT = re.compile(r"\bgrant\s+(?P<roles>[\w\"]+(?:\s*,\s*[\w\"]+)*)\s+to\s+(?P<grantees>[^;]*);", re.I)
+OWNER_TO_RUNTIME = re.compile(r"\bowner\s+to\s+\"?sagat_app\"?\b", re.I)
+SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
+DYNAMIC_GRANT = re.compile(r"\bgrant\b.*\b(delete|truncate|all)\b.*\bto\s+\"?sagat_app\b", re.I | re.S)
+GRANTEE_TAIL = re.compile(r"\b(with|granted\s+by)\b.*$", re.I | re.S)
+JOURNAL_PARTITION = re.compile(r"(" + "|".join(sorted(["runs", "steps", "run_events", "payloads", "run_payloads"])) + r")_([0-9]{4}_[0-9]{2}|legacy)")
+MEMBERSHIP_TO_RUNTIME = [
+    re.compile(r"\bcreate\s+(role|group|user)\b[^;]*\b(role|user|admin)\s+\"?sagat_app\b", re.I),
+    re.compile(r"\bcreate\s+(role|user)\s+\"?sagat_app\"?[^;]*\bin\s+(role|group)\b", re.I),
+    re.compile(r"\balter\s+group\b[^;]*\badd\s+user\b[^;]*\bsagat_app\b", re.I),
+    re.compile(r"\breassign\s+owned\s+by\b[^;]*\bto\s+\"?sagat_app\b", re.I),
+]
+FORMAT_GRANT = re.compile(r"\bformat\s*\(\s*'(?:[^']|'')*\bgrant\b(?:[^']|'')*'[^;]*", re.I)
+
+
+def grantee_set(text):
+    return {g.strip().strip('"').lower() for g in GRANTEE_TAIL.sub("", text).split(",") if g.strip()}
+
+
+def journal_delete_grant_errors(root):
+    errors = []
+    base = pathlib.Path(root)
+    for path in sorted(base.glob("crates/infra-postgres/migrations/*.sql")):
+        text = path.read_text()
+        rel = path.relative_to(base).as_posix()
+        # comments and REVOKE statements carry no grant ("REVOKE GRANT OPTION FOR ..." is not one)
+        masked = re.sub(r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
+        masked = re.sub(r"--[^\n]*", lambda m: " " * len(m.group(0)), masked)
+        if not masked.rstrip().endswith(";"):
+            masked = masked.rstrip() + ";"  # a last statement without its semicolon is still read
+        masked = re.sub(r"\brevoke\b[^;]*;", lambda m: re.sub(r"[^\n]", " ", m.group(0)), masked, flags=re.I)
+        line = lambda offset: text.count(chr(10), 0, offset) + 1
+        why = "journal rows leave only by the two audited privileged paths of principle I (constitution 5.1.0)"
+        for m in GRANT_STATEMENT.finditer(masked):
+            if not re.search(r"\b(delete|truncate|all)\b", m.group("privs"), re.I):
+                continue
+            target = re.sub(r"\s+", " ", m.group("target").strip().lower())
+            if re.search(r"\ball tables\b", target) or target == "tables":
+                hit = "every table"
+            else:
+                names = {n.strip().strip('"').split(".")[-1].strip('"')
+                         for n in re.sub(r"^table\s+", "", target).split(",")}
+                hit = ", ".join(sorted(n for n in names if n in JOURNAL_TABLES or JOURNAL_PARTITION.fullmatch(n)))
+            if hit and grantee_set(m.group("grantees")) & RUNTIME_GRANTEES:
+                privileges = re.sub(r"\s+", " ", m.group("privs").strip())
+                errors.append(f"{rel}:{line(m.start())}: a migration grants {privileges} on {hit} to the runtime role: {why}")
+        for m in ROLE_GRANT.finditer(masked):
+            if re.search(r"\bon\b", m.group(0), re.I):
+                continue
+            if grantee_set(m.group("grantees")) & RUNTIME_GRANTEES:
+                errors.append(f"{rel}:{line(m.start())}: a migration grants the role {m.group('roles')} to the runtime role, "
+                              f"which would carry that role's privileges: {why}")
+        for m in OWNER_TO_RUNTIME.finditer(masked):
+            errors.append(f"{rel}:{line(m.start())}: a migration makes the runtime role the owner of a relation, which may "
+                          f"delete from it: {why}")
+        for pattern in MEMBERSHIP_TO_RUNTIME:
+            for m in pattern.finditer(masked):
+                errors.append(f"{rel}:{line(m.start())}: a migration makes the runtime role a member of a role, or the "
+                              f"owner of another role's objects, which would carry their privileges: {why}")
+        for m in FORMAT_GRANT.finditer(masked):
+            if re.search(r"\bsagat_app\b", m.group(0)) and re.search(r"\b(delete|truncate|all)\b", m.group(0), re.I):
+                errors.append(f"{rel}:{line(m.start())}: a migration builds a GRANT of DELETE, TRUNCATE or ALL to the "
+                              f"runtime role as dynamic SQL: {why}")
+        for m in SQL_LITERAL.finditer(masked):
+            if FORMAT_GRANT.search(masked[max(0, m.start() - 40):m.end()]):
+                continue  # already judged as a whole format() call above
+            if not DYNAMIC_GRANT.search(m.group(0)):
+                continue
+            errors.append(f"{rel}:{line(m.start())}: a migration builds a GRANT of DELETE, TRUNCATE or ALL to the runtime role "
+                          f"as dynamic SQL: {why}")
+    return errors
+
+
 # The creators a composition root builds, each of which holds the unwired gate until it is given one (D043-120): a
 # service built without `.with_run_inputs` refuses every start of a version with an `inputSchema` as busy, and an engine
 # creator retries it forever (architecture review of 2026-11-15, Major 3).
@@ -795,6 +878,7 @@ def main(argv):
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
     errors.extend(test_probe_errors(rust_root))
+    errors.extend(journal_delete_grant_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -826,7 +910,8 @@ def main(argv):
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
-          f"the capability checks list the code's capabilities, no test probe in production)")
+          f"the capability checks list the code's capabilities, no test probe in production, "
+          f"the runtime role cannot delete the journal)")
     return 0
 
 
