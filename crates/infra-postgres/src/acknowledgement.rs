@@ -93,19 +93,25 @@ impl Addresses {
 
 /// The request's addresses `u(run_id, path_nodes, path_indices, node, ...)` with their paths decoded once, in a materialized
 /// table expression `a`, so that the join to the step row is by its whole primary key (a decoded path in the join itself
-/// would be a subquery per row, which no index condition can carry).
+/// would be a subquery per row, which no index condition can carry). A statement writes
+/// `concat!(decoded_addresses!(), "<the further columns of u>", address_arrays!(), "<their arrays>) AS u(...)) ...")`: both
+/// macros are fixed texts, so that the audit of the runtime role's privileges reads the whole statement (a template with an
+/// argument in its middle is not expanded by it, and what follows would escape it).
 macro_rules! decoded_addresses {
-    ($columns:literal) => {
-        concat!(
-            "WITH a AS MATERIALIZED (SELECT u.run_id, \
-               ARRAY(SELECT e FROM jsonb_array_elements_text(u.path_nodes::jsonb) WITH ORDINALITY AS x(e, o) ORDER BY o) \
-                 AS path_nodes, \
-               ARRAY(SELECT e::integer FROM jsonb_array_elements_text(u.path_indices::jsonb) WITH ORDINALITY AS x(e, o) \
-                     ORDER BY o) AS path_indices, \
-               u.node, ",
-            $columns,
-            " FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[], $6::bigint[]"
-        )
+    () => {
+        "WITH a AS MATERIALIZED (SELECT u.run_id, \
+           ARRAY(SELECT e FROM jsonb_array_elements_text(u.path_nodes::jsonb) WITH ORDINALITY AS x(e, o) ORDER BY o) \
+             AS path_nodes, \
+           ARRAY(SELECT e::integer FROM jsonb_array_elements_text(u.path_indices::jsonb) WITH ORDINALITY AS x(e, o) \
+                 ORDER BY o) AS path_indices, \
+           u.node, "
+    };
+}
+
+/// The arrays of the addresses' first five columns, `$2` to `$6`, for the `unnest` of [`decoded_addresses!`].
+macro_rules! address_arrays {
+    () => {
+        " FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[], $6::bigint[]"
     };
 }
 
@@ -245,7 +251,9 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         let tenant = self.tenant;
         let ordinals = ordinals(leases.len());
         let rows = sqlx::query(concat!(
-            decoded_addresses!("u.ordinal, u.hash"),
+            decoded_addresses!(),
+            "u.ordinal, u.hash",
+            address_arrays!(),
             ", $7::bytea[]) AS u(run_id, path_nodes, path_indices, node, ordinal, hash)) \
              SELECT a.ordinal, s.namespace_id, s.activity, s.lease_token_hash = a.hash AS current \
                FROM a JOIN steps s ON ",
@@ -336,7 +344,9 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         // The rows are locked in primary-key order and read with what the decision needs; the clock is sampled outside the
         // locking query, so once each row's lock is held (a query with a locking clause is never inlined).
         let rows = sqlx::query(concat!(
-            decoded_addresses!("u.ordinal"),
+            decoded_addresses!(),
+            "u.ordinal",
+            address_arrays!(),
             ") AS u(run_id, path_nodes, path_indices, node, ordinal)), \
              locked AS ( \
                SELECT a.ordinal, s.step_id, s.status, s.attempt, s.generation, s.kind, s.lease_token_hash, \
@@ -386,7 +396,9 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         // The rows are held by this transaction; the conditions repeat what the decision found, so a broken caller writes
         // nothing it did not lock and find provisional.
         let rows = sqlx::query(concat!(
-            decoded_addresses!("u.ordinal, u.generation, u.hash"),
+            decoded_addresses!(),
+            "u.ordinal, u.generation, u.hash",
+            address_arrays!(),
             ", $7::bigint[], $8::bytea[]) AS u(run_id, path_nodes, path_indices, node, ordinal, generation, hash)) ",
             "UPDATE steps s SET lease_acknowledged_at = clock_timestamp() FROM a WHERE ",
             addressed_steps!(),
