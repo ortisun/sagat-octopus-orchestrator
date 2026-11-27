@@ -15,7 +15,7 @@ tenant. `GET /audit` never returned that record, but it was stored in the tenant
   administrator sees a credential that keeps naming things it cannot reach.
 - The detail (the caller's tenant and actor, the identifier, the tenant that owns it) goes to a new platform-scope table,
   `security_audit_records` (migration `20270219000000_platform_security_audit`), which no API reads; operators query it
-  with SQL (`docs/runbooks/security-governance.md`). It is bounded: at most 100 records per caller in five minutes.
+  with SQL (`docs/runbooks/security-governance.md`). It is bounded: in five minutes at most 100 records per caller and owning tenant, and 1000 per caller's tenant and owning tenant.
 - New metrics `cross_tenant_probes_total{resource_type}` and `security_audit_writes_total{outcome}`, and the alert
   `SagatCrossTenantProbing`.
 - Records `access.denied.cross_tenant` written before the upgrade stay in `audit_records` and stay hidden from tenants.
