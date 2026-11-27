@@ -127,6 +127,27 @@ both are absent from root and non-collection work. The handler's ordinary `input
 Platform guarantees stay at-least-once for external effects: the SDK gives you the idempotency key and the
 reconciliation hook, it cannot make a provider exactly-once.
 
+## Serve workflow code
+
+Workflow functions (design 044, `@sagat-octopus-orchestrator/sdk/workflows`) are bundled with
+`sagat-workflows bundle` (package `@sagat-octopus-orchestrator/workflows-bundler`), which writes the bundle and its
+manifest. A host given them serves the workflow tasks of the bundle's types:
+
+```ts
+const host = new WorkerHost({
+  grpcUrl: 'https://octopus.example.com:443', namespace: 'payments', token, workerName: 'payments-workflows-1',
+  workflowBundlePath: 'dist/workflows.js', workflowManifestPath: 'dist/workflows.manifest.json',
+});
+await host.start();
+```
+
+`workflowBundles: [{ bundlePath, manifestPath }, ...]` serves several code versions from one session while runs move
+between them. At start the host checks Node 22.8 or later and the process time zone UTC, verifies each manifest against
+its bundle under this Node and this SDK, and registers protocol 1.10 with the (workflow type, code digest) pairs; it
+refuses a server below 1.10. Each run's code runs in its own `vm` context on one workflow thread; a run is kept in a
+cache of 256 (`workflowCacheSize`) and replayed from its history by any other worker. A host serves workflow types or
+activities, not both yet (research Gap 044-305): run activities in a host of their own.
+
 ## TLS
 
 The worker accepts `http://` and `https://` URLs; `https://` URLs use the system trust roots and verify the server certificate;

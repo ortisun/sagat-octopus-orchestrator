@@ -1402,3 +1402,56 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
     starts ends `child.finished` `cancelled`, origin `effect`. delegate (OD-2026-11-24-4): a developer's unit test can
     then prove both halves of the rule a function must live with (a cancellation that came too late leaves the activity's
     outcome to its attempt), with the same events a real run would hold.
+- **D044-319** (2026-11-27) The worker side of the TypeScript SDK (Gap 044-300) is the `WorkerHost` itself, given
+  workflow bundles:
+  - Configuration: `workflowBundlePath` and `workflowManifestPath` (`sdks/SPEC.md` 12.1), or `workflowBundles`, a list
+    of such pairs, so that one session serves two code versions of a type while runs move between them (each pair
+    registers its own digests). At start the host checks the runtime's precondition, verifies every manifest against
+    the bundle file it names (content, runtime, SDK and each digest, Decision 044-314), loads the bundles on one
+    workflow thread, and checks that each bundle exports the types its manifest lists.
+  - Registration offers minor 1.10 with `workflow_types` (at most 64 pairs, the host refusing more) and
+    `offers_workflow_as_code`; a host whose server accepts a lower minor refuses to start (`UNSUPPORTED_PROTOCOL`),
+    because no workflow task would ever reach it.
+  - A lease of the kind `WORKFLOW` is served only when its `(workflow_type, code_digest)` is a pair the host offered and
+    its seed is 32 bytes; otherwise no code of the host may answer it, so it is left to lapse (logged, counted), never
+    answered by other code.
+  - The history is the lease's first page, then `ReadHistory` pages from the next sequence until `last_page` (on a
+    cache hit, from the larger of that and S(k − 1) + 1), so a page is never read twice. A blob payload is read with
+    `ReadBlob` under the workflow lease (step `~workflow`) and checked against its size and SHA-256; a `placeholder` is
+    a withheld value. The open activation ends at the last `workflow_task.started` read, S(k).
+  - A cached run is reused only at `window_start_seq` (Technical Plan 4.2); any other worker replays every completed
+    activation in a new context, and a replay that does not end at `window_start_seq` fails the workflow task
+    `NONDETERMINISM_RISK`, because the history and the lease disagree. A live replay that differs after reading a
+    withheld value is reported `NONDETERMINISM_RISK` at that command, not `NONDETERMINISM`: the difference may be the
+    withheld value's.
+  - A completion sends its commands as the corpus maps them (`Command.fragment_json` without the value field, the value
+    in `Command.value`, the typed member for every other kind); a value the runtime moved to a blob is written with
+    `WriteBlob` under the workflow lease (`application/json`, its expected size and SHA-256 those of its descriptor)
+    and sent as its `blob_id` with its descriptor; a re-emitted deferral names its blob by the descriptor alone
+    (Decision 044-243). A failure sends its cause, the command number, the actual kind, target and saga scope, the
+    exception type and the session's code digest.
+  - Every report carries an idempotency key that is the same on every retry (`workflow-complete-<task>-<generation>`,
+    `workflow-fail-<task>-<generation>`) and is repeated on a retriable error. `ACCEPTED` and `ACCEPTED_DEFERRED`
+    commit the run and keep it in the cache; `REVIEW`, `STALE_ATTEMPT` and any other error drop it, so the next lease
+    replays.
+  - A workflow thread that ends (a stuck request, a crash) loses its runs: the lease is not answered and lapses, and the
+    host starts a new thread for the next lease. No failure is reported, because nothing of the function's is known to
+    have failed.
+  delegate (OD-2026-11-24-4): the host the SPEC names, one session for every version a deployment serves, and no lease
+  answered by code whose digest the run is not pinned to.
+- **D044-320** (2026-11-27) The lines of an export (format 1) are `HistoryEvent` in the proto3 JSON mapping of
+  `worker.proto`, as the corpus's `history.jsonl` are: the replayer reads them through the same adapter the worker uses
+  (`sdks/typescript/src/workflows/protocol.ts`), ignores the fields it does not know (`sdks/SPEC.md` 12.9) and refuses an
+  event without a kind or a sequence; the test environment's `exportLines` writes the same mapping. A blob in an export
+  is a withheld value. delegate (OD-2026-11-24-4): one adapter for the wire, the export and the corpus, so that a
+  history any SDK reads is the history every SDK reads.
+- **D044-321** (2026-11-27) A child whose run ended `PARTIAL` (`HistoryChildFinished.status`) rejects with
+  `ChildWorkflowError` of status `partial`, beside `failed`, `cancelled` and `timed_out`. delegate (OD-2026-11-24-4): the
+  protocol names the status; a function must be able to tell a partly compensated child from a failed one.
+- **G044-305** (2026-11-27) A TypeScript host that registers activities and workflow types together would speak minor
+  1.10 for its activities too, which carries the host procedures of 1.7 (step logs) and 1.9 (activity timeouts) that
+  the TypeScript activity host does not have yet; until it has them, such a host refuses to start and the activities
+  run in a host of their own (which keeps its minor, as `sdks/SPEC.md` 12.5 allows).
+- **G044-306** (2026-11-27) The TypeScript host does not serve `QUERY` (Task 044-29, deferrable) or `REPLAY_CHECK`
+  (Task 044-13) leases yet: it leaves them to lapse, logged. The runtime already computes what a replay check answers
+  (every body digest, the chain, S(k) and a deferral's digest).

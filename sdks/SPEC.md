@@ -932,8 +932,9 @@ cancellation: { requested: boolean; promise: Promise<void> }; acknowledgeCancell
 class WorkflowFailure extends Error { constructor(code: string, safeMessage: string) }
 continueAsNewSuggested(): boolean; historyLimitReached(): boolean
 Replayer.replay(history: AsyncIterable<string>, options: { bundlePath: string; workflowType: string }): Promise<ReplayVerdict>
-// worker side: WorkerConfig gains workflowBundlePath and workflowManifestPath; the host loads the bundle into its vm
-// context and registers the manifest's (workflow type, code digest) pairs
+// worker side: WorkerConfig gains workflowBundlePath and workflowManifestPath (or workflowBundles, a list of such pairs, to
+// serve several code versions from one session); the host loads each bundle into its vm contexts and registers the
+// manifests' (workflow type, code digest) pairs
 ```
 
 The calls are made on the workflow context the function receives (`ctx.activity(...)`, `ctx.saga(...)`,
