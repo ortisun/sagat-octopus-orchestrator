@@ -1316,3 +1316,17 @@ where each finding lives in the fifth part of `reviews/2026-11-26/design-fixes-r
 Slices: T022-272 lands in its own pull request, merged alone before slice 7 opens (any time after slice 1); T022-210
 does not merge before it. The amended T022-255 and T022-271 land in slice 7 with T022-210; T022-258's amendment with
 T022-258; T022-266, T022-269 and T022-270 in slice 13 in the pull request of T022-256; T022-239 in slices 10 to 13.
+
+### Revision of 2026-11-27 after the narrow re-reads
+
+Both reviewers re-read the last two fixes of `83d30cd75`: `reviews/2026-11-26/design-fixes-6-narrow-security-reviewer.md`
+and `reviews/2026-11-26/design-fixes-6-narrow-architecture-reviewer.md`. The revisions of 2026-11-26 and 2026-11-27 to the
+accepted ADRs are accepted (decision D022-350); the narrow findings are fixed by decision D022-351. Nothing is ticked.
+
+#### Tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-272 | evidence replaced: an `against_at` case of `tests/support/lock_order.rs` with the reference [the claimer's binding key exclusive, that session row `FOR UPDATE`, `UPDATE steps`], with `Slot` variants for the binding key and the session row; red before the fix ("the path ended without waiting"), green after it; the line of `docs/architecture/execution-semantics.md` on the claim order changes in the same pull request | D022-351 (a), (c) |
+| T022-255 | plus: the free function `worker_session_room` is called only from `PgRunTx::worker_session_room` and `PgPathExecutionTx::worker_session_room`; `PgRunTx::hold_worker_binding`, `PgRunTx::bound_patterns` and `PgPathExecutionTx::bound_patterns` each contain a `crate::bindings::hold_worker_binding(` call; a negative fixture for each | D022-351 (b) |
+| T022-270 | the evidence "its obligation never recorded paid" holds for a demotion committed before `fire`'s read; plus a held-lock case of the bound: a demotion committed between that read and the cancel lets exactly one owed cancel commit, and the next firing pauses the schedule with no run started | D022-351 (d) |

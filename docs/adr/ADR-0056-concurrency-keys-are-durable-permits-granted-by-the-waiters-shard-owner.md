@@ -1,6 +1,6 @@
 # ADR-0056: Concurrency keys are durable permits taken after the run lock, and a queued run is granted oldest first by its own shard owner
 
-**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo") The feature 022 revisions of 2026-11-26 and 2026-11-27 are accepted (2026-11-27, delegate OD-2026-11-24-4, decision D022-350, after the narrow re-reads in `specs/022-flow-control-step-policies/reviews/2026-11-26/`).
 **Decided by:** agent proposal, accepted by the owner on 2026-11-13 (OD-2026-11-13-17) (2026-10-26; revised after architecture review 2026-10-27)
 **Refines / supersedes:** refines ADR-0020 (sharded, fenced scheduler) and ADR-0027 (lock order and
 quotas); builds on ADR-0002, ADR-0012 and ADR-0030 (chain-before-run order). Supersedes none.
@@ -81,7 +81,7 @@ ceiling above the proposed defaults is published.
    - terminal transaction of a holder: run → `runs` update → (cache scope → cache entry, when the same
      transaction completes a step from the cache) → semaphore → namespace failure-handler policy row
      (`FOR SHARE`) → usage;
-   - claim: run → drain fence → worker session → sorted activity-quota rows → sorted semaphores → usage;
+   - claim: run → drain fence → the claimer's binding key (shared; added 2026-11-27, decision D022-351) → worker session → sorted activity-quota rows → sorted semaphores → usage;
    - attempt end (completion, failure, cancellation, lease expiry): run → step → semaphore → usage.
 
    *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decisions D022-204 and D022-208, ADR-0135 and ADR-0136

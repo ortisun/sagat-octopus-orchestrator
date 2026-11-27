@@ -4029,6 +4029,43 @@ this branch at `1b2547d5e`.
   `DELETE`, and `Engine::run_addressed` is named as a precaution (D022-338, D022-340). The "Enforced by" lines of
   ADR-0056 and ADR-0135 name task T022-272 beside T022-255 and T022-271.
 
+
+### Decisions of the narrow re-reads of 2026-11-27
+
+- **D022-350 — The revisions of 2026-11-26 and 2026-11-27 are accepted.** Delegate (OD-2026-11-24-4), under the approval
+  rule OD-2026-11-25-2. The amendments made after decision D022-271 to ADR-0050, ADR-0056, ADR-0135, ADR-0136 and ADR-0137
+  (decisions D022-272 to D022-349, D022-351) are accepted on 2026-11-27, after five rounds of security and architecture
+  re-reads (`reviews/2026-11-26/`) and a narrow re-read of the last two fixes by both reviewers
+  (`design-fixes-6-narrow-security-reviewer.md`, `design-fixes-6-narrow-architecture-reviewer.md`). Every security finding
+  is fixed in the design, none accepted or deferred; every Major is fixed; no Blocker was found. The architecture reviewer
+  states that the amendments can be accepted now and that nothing blocks the build slice by slice; the security reviewer
+  that no remaining security finding blocks acceptance or the build. The findings of the narrow re-reads are fixed by
+  D022-351. Recorded in the Status lines of the five ADRs.
+- **D022-351 — The fixes of the narrow re-reads.** Delegate (OD-2026-11-24-4). (a) Task T022-272's evidence is a case that
+  can be seen failing (Rule 18; architecture minor 1): until T022-210 adds the lookup round the old order does not
+  deadlock, so "never `40P01`" is true with or without the fix. The case is `against_at` of `tests/support/lock_order.rs`
+  with the reference [the claimer's binding key exclusive, then that session row `FOR UPDATE`, then `UPDATE steps`], with
+  slots for the binding key and the session row added to the harness's `Slot` enum (the same choice task T022-254 needs);
+  today's claim never waits for the key, so the harness fails "the path ended without waiting", red before the fix and
+  green after it. (b) The `key-held` argument of D022-334 is checked, not trusted (architecture minor 2): task T022-255
+  also refuses a call of the free function `worker_session_room` (`crates/infra-postgres/src/execution.rs:985`) outside
+  `PgRunTx::worker_session_room` and `PgPathExecutionTx::worker_session_room`, and requires each of
+  `PgRunTx::hold_worker_binding`, `PgRunTx::bound_patterns` and `PgPathExecutionTx::bound_patterns` to contain a
+  `crate::bindings::hold_worker_binding(` call; a negative fixture for each. (c) ADR-0056's claim order (decision 2,
+  around line 84) gains "the claimer's binding key (shared)" after the drain fence, matching decision 2(a); the same line
+  of `docs/architecture/execution-semantics.md` (about lines 259-262) changes in task T022-272's pull request (Rule 10).
+  (d) The owed cancel of a schedule (security, the open point): `ScheduleFiring::pay_obligation` cancels through
+  `RunService::operate_item`, which checks `run:operate` against the principal `fire` built from an unlocked membership
+  read and takes no membership lock (`crates/application/src/runs.rs:2859-2922`), so a demotion that commits inside that
+  window lets at most one owed cancel commit. It is bounded and accepted as designed, not a finding left open: the cancel
+  can only end a run the schedule itself started in its own tenant (`crates/infra-postgres/src/schedules.rs:1770-1772`),
+  owed by a decision taken under valid authority, idempotent under the obligation key and fenced by the shard; the
+  subject gains nothing (the actor recorded is the schedule); the next firing reads the demotion and pauses the schedule;
+  and the window exists today for any demotion. Closing it would put a membership re-check in the cancel every caller
+  uses, out of proportion to its effect. Task T022-270's evidence says so and gains a held-lock case of the bound: a
+  demotion committed between `fire`'s read and the cancel lets exactly one owed cancel commit, and the next firing pauses
+  the schedule with no run started.
+
 ## Gaps
 
 | ID | Gap | Status |

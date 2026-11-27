@@ -269,3 +269,17 @@ worktree list` show the 022 branches `feature/022-step-policies` (this one), `fe
 `feature/022-sdk-builders`, each in its own worktree; this round changes documents of this branch only.
 
 Numbers: decisions D022-333 to D022-349 and task T022-272 are used; D022-350 and T022-273 to T022-280 are left free.
+
+## Narrow re-reads (2026-11-27)
+
+[design-fixes-6-narrow-security-reviewer.md](design-fixes-6-narrow-security-reviewer.md) and
+[design-fixes-6-narrow-architecture-reviewer.md](design-fixes-6-narrow-architecture-reviewer.md), both of `83d30cd75`.
+Both find the fixes hold and nothing blocking; the revisions are accepted (D022-350).
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Security: the owed cancel of a schedule acts on a stale principal (open point, low) | D022-351 (d), bounded and accepted as designed | `research.md`; tasks T022-270 (the held-lock case of the bound) |
+| Architecture minor 1: T022-272's evidence cannot be seen failing | D022-351 (a) | tasks T022-272 |
+| Architecture minor 2: the `key-held` check trusts the methods it names | D022-351 (b) | tasks T022-255 |
+| Architecture leftover: ADR-0056's claim order and the execution-semantics document | D022-351 (c) | ADR-0056 decision 2; tasks T022-272 |
+| Acceptance (architecture nit K of the third architecture re-read) | D022-350 | the Status lines of ADR-0050, ADR-0056, ADR-0135, ADR-0136, ADR-0137 |
