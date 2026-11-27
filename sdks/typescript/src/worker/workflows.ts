@@ -1,0 +1,372 @@
+/*
+ * The worker side of workflow tasks (design 044, Technical Plan 4 and 13.1; Decision 044-319 of
+ * `specs/044-workflow-as-code/research.md`): a `WorkerHost` given workflow bundles hands each `WORKFLOW` lease here. The
+ * history is read from the lease's first page and `ReadHistory`, a cached run is reused only at the lease's window start
+ * and any other is replayed in a new context, the live activation runs on the workflow thread, and its commands or its
+ * failure are reported under the lease with a key that is the same on every retry. The host loads this module only when
+ * it serves workflow code, so an activity-only host keeps Node 20.
+ */
+import { createHash } from 'node:crypto';
+import { SagatError, isRetriable } from '../errors.js';
+import { backoffDelayMs, sleep, type RetryPolicy } from '../retry.js';
+import type { Logger } from '../config.js';
+import { DEFAULT_CACHE_SIZE, WorkflowRunCache } from '../workflows/cache.js';
+import { hex } from '../workflows/chain.js';
+import type { HistoryEvent, WorkflowTaskFailure } from '../workflows/context.js';
+import { ActivationCutter } from '../workflows/history.js';
+import { checkWorkflowRuntime } from '../workflows/preconditions.js';
+import { MalformedHistory, blobRefsOf, blobValueOf, commandToWire, eventFromWire, failureToWire, type ValueCarrier } from '../workflows/protocol.js';
+import { WorkflowThread, WorkflowThreadError, type LoadedBundle, type RunHandle } from '../workflows/threaded.js';
+import { rfc8785 } from '../workflows/context.js';
+import type { Completion, PreparedCommand } from '../workflows/run.js';
+import type { TaskLease, WireCommand, WireHistoryEvent, WorkerRpc, WorkflowTaskLease, WorkflowTypeOffer } from './grpc.js';
+
+/** The protocol minor of workflow tasks (`sdks/SPEC.md` section 9, Architecture decision 0109). */
+export const WORKFLOW_PROTOCOL_MINOR = 10;
+/** At most this many (workflow type, code digest) pairs per session (`WorkerCapabilities.workflow_types`). */
+export const MAX_WORKFLOW_OFFERS = 64;
+/** The reserved step of a run's workflow tasks: blobs are read and written under it. */
+const WORKFLOW_STEP = '~workflow';
+const REPORT_ATTEMPTS = 5;
+
+/** One code version a host serves: the pair it registers and the bundle text whose digest it is. */
+export interface OfferedCode { workflowType: string; codeDigest: string; bundleCode: string; filename?: string }
+
+/** What became of one workflow lease (the `workflow.task` event of the host). */
+export type WorkflowTaskOutcome =
+  | 'ACCEPTED' | 'ACCEPTED_DEFERRED' | 'REVIEW' | 'FAILED' | 'STALE' | 'DROPPED' | 'LOST' | 'UNREPORTED';
+
+export interface WorkflowTaskEvent {
+  type: 'workflow.task';
+  taskId: string;
+  runId: string;
+  outcome: WorkflowTaskOutcome;
+  /** The server's cause for REVIEW and ACCEPTED_DEFERRED, the SDK's for FAILED. */
+  cause?: string;
+  /** The run's context was reused from the cache (no replay). */
+  cacheHit: boolean;
+  durationMs: number;
+}
+
+export interface WorkflowTasksOptions {
+  offers: OfferedCode[];
+  rpc: () => WorkerRpc;
+  log: Logger;
+  emit: (event: WorkflowTaskEvent) => void;
+  retry: RetryPolicy;
+  cacheSize?: number;
+  activationDeadlineMs?: number;
+}
+
+const offerKey = (workflowType: string, codeDigest: string): string => `${workflowType}\n${codeDigest}`;
+
+/** The workflow tasks of one host: its offers, its workflow thread and bundles, and its cache of runs. */
+export class WorkflowTasks {
+  readonly #options: WorkflowTasksOptions;
+  readonly #offers = new Map<string, OfferedCode>();
+  readonly #cache: WorkflowRunCache;
+  #thread: WorkflowThread | undefined;
+  #bundles = new Map<string, Promise<LoadedBundle>>();
+
+  constructor(options: WorkflowTasksOptions) {
+    this.#options = options;
+    if (options.offers.length === 0) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'a workflow host serves at least one workflow type' });
+    if (options.offers.length > MAX_WORKFLOW_OFFERS) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: `a session serves at most ${MAX_WORKFLOW_OFFERS} (workflow type, code digest) pairs` });
+    }
+    for (const offer of options.offers) {
+      if (!/^sha256:[0-9a-f]{64}$/.test(offer.codeDigest)) throw new SagatError({ code: 'VALIDATION_FAILED', message: `the code digest of ${offer.workflowType} is not sha256:<64 hexadecimal characters>` });
+      const key = offerKey(offer.workflowType, offer.codeDigest);
+      if (this.#offers.has(key)) throw new SagatError({ code: 'VALIDATION_FAILED', message: `the pair (${offer.workflowType}, ${offer.codeDigest}) is offered twice` });
+      this.#offers.set(key, offer);
+    }
+    this.#cache = new WorkflowRunCache(options.cacheSize ?? DEFAULT_CACHE_SIZE);
+  }
+
+  /** The pairs the session registers. */
+  get offers(): WorkflowTypeOffer[] {
+    return [...this.#offers.values()].map((offer) => ({ workflow_type: offer.workflowType, code_digest: offer.codeDigest }));
+  }
+
+  /** Checks the runtime's precondition and loads every bundle, refusing one that does not export its workflow type. */
+  async load(): Promise<void> {
+    checkWorkflowRuntime();
+    for (const offer of this.#offers.values()) {
+      const bundle = await this.#bundle(offer);
+      if (!bundle.workflowTypes.includes(offer.workflowType)) {
+        throw new SagatError({ code: 'VALIDATION_FAILED', message: `the bundle of ${offer.codeDigest} exports no workflow ${offer.workflowType}` });
+      }
+    }
+  }
+
+  async close(): Promise<void> {
+    const thread = this.#thread;
+    this.#thread = undefined;
+    this.#bundles = new Map();
+    if (thread) await thread.terminate();
+  }
+
+  #threadNow(): WorkflowThread {
+    if (!this.#thread || this.#thread.dead) {
+      // A thread that ended took its runs and bundles with it (Decision 044-319): the next lease starts a new one.
+      this.#thread = new WorkflowThread();
+      this.#bundles = new Map();
+    }
+    return this.#thread;
+  }
+
+  #bundle(offer: OfferedCode): Promise<LoadedBundle> {
+    const thread = this.#threadNow();
+    const key = offerKey(offer.workflowType, offer.codeDigest);
+    let loaded = this.#bundles.get(key);
+    if (!loaded) {
+      loaded = thread.loadBundle(offer.bundleCode, offer.filename);
+      this.#bundles.set(key, loaded);
+      loaded.catch(() => { if (this.#bundles.get(key) === loaded) this.#bundles.delete(key); });
+    }
+    return loaded;
+  }
+
+  /** Serves one lease of the kind WORKFLOW; never rejects. */
+  async serve(lease: TaskLease): Promise<void> {
+    const started = Date.now();
+    let cacheHit = false;
+    const emit = (outcome: WorkflowTaskOutcome, cause?: string): void => {
+      const event: WorkflowTaskEvent = { type: 'workflow.task', taskId: lease.task_id, runId: lease.run_id, outcome, cacheHit, durationMs: Date.now() - started };
+      if (cause !== undefined) event.cause = cause;
+      this.#options.emit(event);
+    };
+    const task = lease.workflow_task ?? undefined;
+    const offer = task ? this.#offers.get(offerKey(task.workflow_type, task.code_digest)) : undefined;
+    if (lease.task_kind !== 'WORKFLOW' || !task || !offer || task.run_id !== lease.run_id || task.lease_token !== lease.lease_token
+      || !(task.seed instanceof Uint8Array) || task.seed.length !== 32) {
+      // No code of this host may answer it: it lapses, and the server leases it again (Decision 044-319).
+      this.#options.log.warn('a workflow lease this host does not serve is left to lapse', { task: lease.task_id, kind: lease.task_kind });
+      emit('DROPPED');
+      return;
+    }
+    let run: RunHandle | undefined = this.#cache.take(lease.run_id, task.window_start_seq, task.code_digest);
+    cacheHit = run !== undefined;
+    try {
+      const history = await this.#history(lease, task, cacheHit ? task.window_start_seq + 1 : 1);
+      const startedEvent = lastStarted(history);
+      if (!startedEvent || (task.started_at_us > 0 && startedEvent.atUs !== task.started_at_us)) {
+        throw new MalformedHistory('the history does not end at the workflow_task.started of the lease');
+      }
+      if (!run) {
+        const replayed = await this.#replay(lease, task, offer, history);
+        if (Array.isArray(replayed)) { emit(...replayed); return; }
+        run = replayed;
+      }
+      const answer = await run.activate(history, startedEvent);
+      this.#relayLogs(lease, answer.logs);
+      if (answer.kind === 'failure') {
+        run.dispose();
+        run = undefined;
+        emit(...await this.#fail(lease, task, answer.failure));
+        return;
+      }
+      const reported = await this.#complete(lease, task, answer);
+      if (reported.outcome === 'ACCEPTED' || reported.outcome === 'ACCEPTED_DEFERRED') {
+        // The server's state moved whatever happens here: a context that cannot take the answer is only dropped.
+        const accepted = run;
+        run = undefined;
+        try {
+          await accepted.commit(reported.outcome);
+          this.#cache.put(lease.run_id, accepted, task.code_digest);
+        } catch {
+          accepted.dispose();
+        }
+      }
+      emit(reported.outcome, reported.cause);
+    } catch (error) {
+      if (error instanceof MalformedHistory) {
+        // A history this SDK cannot read cannot be replayed with certainty.
+        emit(...await this.#fail(lease, task, { cause: 'NONDETERMINISM_RISK' }));
+      } else if (error instanceof SagatError && error.code === 'STALE_ATTEMPT') {
+        emit('STALE');
+      } else if (error instanceof WorkflowThreadError) {
+        this.#options.log.error('the workflow thread ended; the lease lapses and a new thread serves the next one', { task: lease.task_id });
+        emit('LOST');
+      } else {
+        this.#options.log.error('a workflow task could not be served; its lease lapses', {
+          task: lease.task_id, code: error instanceof SagatError ? error.code : error instanceof Error ? error.name : 'unknown',
+        });
+        emit('UNREPORTED');
+      }
+    } finally {
+      run?.dispose();
+    }
+  }
+
+  /** A new context replayed through every completed activation; a failure is reported and named instead. */
+  async #replay(lease: TaskLease, task: WorkflowTaskLease, offer: OfferedCode, history: HistoryEvent[]): Promise<RunHandle | [WorkflowTaskOutcome, string]> {
+    const bundle = await this.#bundle(offer);
+    const init = {
+      workflowType: task.workflow_type, seed: hex(task.seed), stateMaxBytes: task.state_max_bytes, gatedEntries: [...task.gated_entries],
+    };
+    const deadline = this.#options.activationDeadlineMs;
+    const run = await this.#threadNow().createRun(bundle, init, deadline === undefined ? {} : { activationDeadlineMs: deadline });
+    try {
+      const cutter = new ActivationCutter();
+      const activations = [...cutter.push(history), ...cutter.flush().activations];
+      for (const activation of activations) {
+        const step = await run.replay(activation);
+        if (step.kind === 'replayed') continue;
+        // A replay that differs after reading a withheld value may differ because of that value (Decision 044-319).
+        const failure: WorkflowTaskFailure = step.kind === 'failure' ? step.failure : { cause: 'NONDETERMINISM_RISK', commandNumber: step.commandNumber };
+        run.dispose();
+        return await this.#fail(lease, task, failure);
+      }
+      if (run.windowStart !== task.window_start_seq) {
+        // The history and the lease disagree on where the last completed activation started.
+        run.dispose();
+        return await this.#fail(lease, task, { cause: 'NONDETERMINISM_RISK' });
+      }
+      return run;
+    } catch (error) {
+      run.dispose();
+      throw error;
+    }
+  }
+
+  /** The visible history from `from`: the first page, then ReadHistory pages until the last (Technical Plan 4.2). */
+  async #history(lease: TaskLease, task: WorkflowTaskLease, from: number): Promise<HistoryEvent[]> {
+    const wire: WireHistoryEvent[] = [];
+    let last = 0;
+    const take = (event: WireHistoryEvent): void => {
+      if (!(event.seq > last)) throw new MalformedHistory(`history event ${String(event.seq)} is not after ${last}`);
+      last = event.seq;
+      if (event.seq >= from) wire.push(event);
+    };
+    for (const event of task.first_page) take(event);
+    if (task.first_page.length < task.visible_count) {
+      const next = Math.max(last, from - 1) + 1;
+      last = next - 1;
+      for await (const page of this.#options.rpc().readHistory({
+        task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
+        read_token: '', from_seq: next,
+      }, task.traceparent || undefined)) {
+        for (const event of page.events) take(event);
+        if (page.last_page) break;
+      }
+    }
+    const blobs = new Map<string, unknown>();
+    for (const ref of blobRefsOf(wire)) blobs.set(ref.blobId, await this.#readBlob(lease, ref));
+    return wire.map((event) => eventFromWire(event, blobs));
+  }
+
+  async #readBlob(lease: TaskLease, ref: { blobId: string; size: number; sha256: string }): Promise<unknown> {
+    const hash = createHash('sha256');
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const part of this.#options.rpc().readBlob({
+      task_id: lease.task_id, run_id: lease.run_id, step_id: WORKFLOW_STEP, attempt: lease.attempt, generation: lease.generation,
+      lease_token: lease.lease_token, blob_id: ref.blobId,
+    }, lease.traceparent || undefined)) {
+      if (!part.chunk) continue;
+      size += part.chunk.length;
+      if (size > ref.size) throw new MalformedHistory('a history blob is larger than its reference');
+      hash.update(part.chunk);
+      chunks.push(Buffer.from(part.chunk));
+    }
+    if (size !== ref.size || hash.digest('hex') !== ref.sha256) throw new MalformedHistory('a history blob does not match its reference');
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+    } catch {
+      throw new MalformedHistory('a history blob is not JSON');
+    }
+  }
+
+  async #writeBlob(lease: TaskLease, value: unknown): Promise<string> {
+    const bytes = Buffer.from(rfc8785(value), 'utf8');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    async function* parts(): AsyncIterable<{ header?: Record<string, unknown>; chunk?: Buffer }> {
+      yield { header: {
+        task_id: lease.task_id, run_id: lease.run_id, step_id: WORKFLOW_STEP, attempt: lease.attempt, generation: lease.generation,
+        lease_token: lease.lease_token, content_type: 'application/json', expected_size: bytes.length, expected_sha256: sha256,
+      } };
+      for (let offset = 0; offset < bytes.length; offset += 256 * 1024) yield { chunk: bytes.subarray(offset, offset + 256 * 1024) };
+    }
+    const response = await this.#options.rpc().writeBlob(parts() as AsyncIterable<never>, lease.traceparent || undefined);
+    if (response.size !== bytes.length || response.sha256 !== sha256 || response.blob_id === '') {
+      throw new SagatError({ code: 'PROTOCOL', message: 'the command value blob does not match the bytes uploaded' });
+    }
+    return response.blob_id;
+  }
+
+  async #complete(lease: TaskLease, task: WorkflowTaskLease, completion: Completion): Promise<{ outcome: WorkflowTaskOutcome; cause?: string }> {
+    const commands: WireCommand[] = [];
+    for (const command of completion.commands) commands.push(commandToWire(command, command.commandNumber!, await this.#carrier(lease, command, false)));
+    const request = {
+      task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
+      idempotency_key: `workflow-complete-${lease.task_id}-${lease.generation}`,
+      applied_through_seq: completion.appliedThroughSeq, replayed_chain: Buffer.from(completion.replayedChain), commands, traceparent: task.traceparent,
+      ...(completion.deferredCommand ? { deferred_command: commandToWire(completion.deferredCommand, 0, await this.#carrier(lease, completion.deferredCommand, true)) } : {}),
+    };
+    const answer = await this.#report(() => this.#options.rpc().completeWorkflowTask(request, task.traceparent || undefined));
+    if (answer === 'stale') return { outcome: 'STALE' };
+    const cause = answer.cause && answer.cause !== 'WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED' ? answer.cause : undefined;
+    switch (answer.outcome) {
+      case 'WORKFLOW_TASK_ACCEPTED': return { outcome: 'ACCEPTED' };
+      case 'WORKFLOW_TASK_ACCEPTED_DEFERRED': return cause === undefined ? { outcome: 'ACCEPTED_DEFERRED' } : { outcome: 'ACCEPTED_DEFERRED', cause };
+      case 'WORKFLOW_TASK_REVIEW': return cause === undefined ? { outcome: 'REVIEW' } : { outcome: 'REVIEW', cause };
+      default:
+        this.#options.log.error('the server answered a workflow completion with no outcome this SDK knows', { task: lease.task_id });
+        return { outcome: 'UNREPORTED' };
+    }
+  }
+
+  /** How a command's blob-capable value travels: inline, a blob written now, or a re-emitted deferral's descriptor. */
+  async #carrier(lease: TaskLease, command: PreparedCommand, reEmitted: boolean): Promise<ValueCarrier> {
+    if (!command.valueAsBlob) return undefined;
+    if (reEmitted) return 'descriptor';
+    return { blobId: await this.#writeBlob(lease, blobValueOf(command)) };
+  }
+
+  async #fail(lease: TaskLease, task: WorkflowTaskLease, failure: WorkflowTaskFailure): Promise<[WorkflowTaskOutcome, string]> {
+    const request = {
+      task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
+      idempotency_key: `workflow-fail-${lease.task_id}-${lease.generation}`, code_digest: task.code_digest, traceparent: task.traceparent,
+      ...failureToWire(failure),
+    };
+    try {
+      const answer = await this.#report(() => this.#options.rpc().failWorkflowTask(request, task.traceparent || undefined));
+      return answer === 'stale' ? ['STALE', request.cause] : ['FAILED', request.cause];
+    } catch (error) {
+      this.#options.log.error('the failure of a workflow task could not be reported', { task: lease.task_id, code: error instanceof SagatError ? error.code : 'unknown' });
+      return ['UNREPORTED', request.cause];
+    }
+  }
+
+  /** A report repeated with the same idempotency key on a retriable error, at most five times. */
+  async #report<T>(call: () => Promise<T>): Promise<T | 'stale'> {
+    for (let n = 0; ; n++) {
+      try {
+        return await call();
+      } catch (error) {
+        if (error instanceof SagatError) {
+          if (error.code === 'STALE_ATTEMPT') return 'stale';
+          if (isRetriable(error) && n + 1 < REPORT_ATTEMPTS) {
+            await sleep(Math.max(backoffDelayMs(this.#options.retry, n), error.retryAfterMs ?? 0));
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+  }
+
+  /** The function's own log output goes to the host's logger (it is empty in replay). */
+  #relayLogs(lease: TaskLease, logs: { level: 'debug' | 'info' | 'warn' | 'error'; message: string }[]): void {
+    for (const line of logs) this.#options.log[line.level](line.message, { task: lease.task_id, run: lease.run_id, source: 'workflow' });
+  }
+}
+
+function lastStarted(history: HistoryEvent[]): Extract<HistoryEvent, { kind: 'workflow_task.started' }> | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const event = history[i]!;
+    if (event.kind === 'workflow_task.started') return event;
+  }
+  return undefined;
+}

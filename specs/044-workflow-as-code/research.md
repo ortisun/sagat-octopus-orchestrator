@@ -1419,7 +1419,9 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
     cache hit, from the larger of that and S(k − 1) + 1), so a page is never read twice. A blob payload is read with
     `ReadBlob` under the workflow lease (step `~workflow`) and checked against its size and SHA-256; a `placeholder` is
     a withheld value. The open activation ends at the last `workflow_task.started` read, S(k).
-  - A cached run is reused only at `window_start_seq` (Technical Plan 4.2); any other worker replays every completed
+  - A cached run is reused only at `window_start_seq` (Technical Plan 4.2) and under the code digest that made it: after
+    a move the lease names the new digest, and a context of the old code would run the new version's activations
+    (`code-patch-and-move` found it: activation 2 ran the first version's code). Any other worker replays every completed
     activation in a new context, and a replay that does not end at `window_start_seq` fails the workflow task
     `NONDETERMINISM_RISK`, because the history and the lease disagree. A live replay that differs after reading a
     withheld value is reported `NONDETERMINISM_RISK` at that command, not `NONDETERMINISM`: the difference may be the
