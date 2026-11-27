@@ -7,9 +7,13 @@ Owner decision 2026-11-15-8; this draft writes it `1.N`). The merge adds the reg
 feature 024. A worker that registers with a lower minor never receives a task of a new driver or a
 data task; the candidate query filters such tasks before its cap and the claim transaction repeats
 the check (ADR-0023 run-input precedent). `worker.baseline.json` is regenerated only after reading
-its diff. Field numbers below were checked against `develop` at `e5bda041` on 2026-11-26 and are
-confirmed against the canonical file at merge (a field taken by another feature in between moves
-this draft's number, never the other's).
+its diff. Field numbers below were checked against the canonical
+`specs/001-platform-foundation/contracts/worker.proto` on 2026-11-27 (after the correctness review
+found that `CompleteStepRequest` field 13 is already feature 041's `StepLogCarry step_logs`, protocol
+1.7): `ResolvedDatabase` uses 1 to 15, `WriteBlobHeader` 1 to 10, `CompleteStepRequest` and
+`FailStepRequest` 1 to 13. They are confirmed again at merge by a contract test that reads the
+canonical file and fails when a number this draft names is already taken in its message (Task
+024-008); a field taken by another feature in between moves this draft's number, never the other's.
 
 ## Remote engines on `ResolveDatabase`
 
@@ -80,6 +84,8 @@ message ResolvedData {
   string script_layer_digest = 12;       // polars only
 }
 enum DataEngine { DATA_ENGINE_UNSPECIFIED = 0; DATA_ENGINE_DUCKDB = 1; DATA_ENGINE_POLARS = 2; }
+// The level each input counts at for a dataQuery output is the server's (step_data_inputs.level)
+// and is not sent: the data runner never decides a classification.
 message DataInput {
   string alias = 1; string asset_name = 2; string snapshot_id = 3;
   repeated DataPart parts = 4;           // snapshot parts, or one step-output Parquet blob
@@ -117,18 +123,28 @@ runner and the host program enforce in software below the class budget.
   transaction writes one such row per pinned part (Decision 024-007). A part uploaded by that same
   attempt and generation may also be read (the audit phase reads its own parts back, because the
   transform container's `/out` tmpfs is gone). Any other blob id answers like a missing blob.
-  Generic `ReadBlob` by a SQL managed lease stays refused (017).
+  Generic `ReadBlob` by a SQL managed lease stays refused (017). Two pieces are new code, not the
+  lake path reused as is: the data pin writer (feature 035's `lake_blob_pin` admits only committed
+  `STEP_OUTPUT` blobs of the same run), which admits committed `DATA_SNAPSHOT_PART` parts of the
+  pinned snapshots of any run of the namespace (never a part in state `DELETING`), a committed step
+  output of the same run, and, in a run created by an 018 reset, the source run's committed step
+  output that a restored pin names by id and digest; and a `ManagedKind::DataTransform` /
+  `DataQuery` branch of the `ReadBlob` gate (`check_blob_access`), which today admits only
+  `ManagedKind::Lake`. Task 024-031 tests both.
 - `WriteBlobHeader` gains `BlobPurpose purpose = 11` (`BLOB_PURPOSE_UNSPECIFIED` keeps today's
   step-output meaning) with `BLOB_PURPOSE_DATA_SNAPSHOT_PART`; content type
   `application/vnd.apache.parquet`; the reservation records the exact fence and counts against the
-  data pending-upload ceiling and `tenant_data_bytes`.
+  data pending-upload ceiling and `tenant_data_bytes`. The finalization of such an upload rechecks
+  that its fence is still the step's live lease; when the attempt has ended it claims the blob for
+  deletion in the same transaction.
 
 ## Completion
 
 ```proto
 message CompleteStepRequest {
-  // fields 1..12 unchanged
-  DataStepResult data_result = 13;      // set only for data transforms
+  // fields 1..12 unchanged; 13 is StepLogCarry step_logs (1.7, feature 041), which a data runner
+  // never sends (Requirement 041-016)
+  DataStepResult data_result = 14;      // set only for data transforms
 }
 message DataStepResult {
   repeated DataOutputResult outputs = 1;
@@ -137,14 +153,22 @@ message DataOutputResult {
   uint32 index = 1;
   repeated DataPartResult parts = 2;    // blob ids returned by WriteBlob, in order
   repeated DataAuditOutcome audits = 3;
-  repeated string audited_part_sha256 = 4; // must equal the committed parts' digests, in order
+  // The SHA-256 of each part the data runner staged into the audit attempt directory, in order;
+  // must equal the committed parts' digests. A data-runner self-check, not proof of what the audit
+  // container read (its outcomes rest on the sandbox, Gap 1249).
+  repeated string staged_part_sha256 = 4;
 }
 message DataPartResult { string blob_id = 1; int64 rows = 2; }
 message DataAuditOutcome { string name = 1; string outcome = 2; int64 failing = 3; }
 ```
 
 The engine treats `rows` and audit outcomes as claims: it verifies parts itself (data runtime
-contract) and the completion transaction decides `AUDITED`, `QUARANTINED` or a failure. The
+contract) and the completion transaction decides `AUDITED`, `QUARANTINED`, `ABANDONED` (a stale
+auto-publication that no later node reads) or a failure. When the object store is unavailable while
+the engine reads a footer, `CompleteStep` answers `UNAVAILABLE` and changes nothing, and the data
+runner sends the same request again with the same idempotency key. The output document a transform
+completion stores is the closed, protected record of FR-024-027 (at most 4 KiB), never charged to
+content quota. The
 idempotency key, fingerprint and receipt replay rules of `CompleteStep` are unchanged; the
 fingerprint covers `data_result`. A `dataQuery` completes with inline `output_json` only (at most
 256 KiB, no blob output) in the 017 typed-cell shape, validated by the 017 result validator; the
@@ -156,4 +180,6 @@ runner never sends a step-log carry (Requirement 041-016; the ingest refuses its
 Unchanged. The data runner heartbeats from claim until report; cancellation or lease loss ends the
 attempt through the attempt API (`DELETE /v1/attempts/{id}`), after the attempt socket has stopped;
 a report after cancellation follows the 017 cancellation-acknowledgement rule and never commits
-parts.
+parts. The cancellation, a `FailStep`, a refused completion and a lease expiry that grants a new
+generation each claim the attempt's uncommitted `DATA_SNAPSHOT_PART` uploads for deletion in their
+own transaction; a `WriteBlob` of that fence that finishes afterwards is claimed when it finishes.

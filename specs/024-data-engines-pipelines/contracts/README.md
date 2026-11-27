@@ -2,7 +2,9 @@
 
 Draft fragments for review. None is canonical; T024-008 merges each into its canonical file in
 `specs/001-platform-foundation/contracts/` and regenerates the compatibility baselines only after
-reading their diffs. Every change is additive within its current version. Revised 2026-11-26 against
+reading their diffs. Every change is additive within its current version. Revised 2026-11-27 after
+the correctness review (Decision 024-016: `CompleteStepRequest.data_result` is field 14, the event
+payload is closed, the encoding table, the `TOMBSTONE` publication origin). Revised 2026-11-26 against
 `develop` at `e5bda041`: the canonical files already carry feature 035's connection union, lake
 drivers, egress ceiling and `ResolvedDatabase` fields 13 to 15, and these fragments extend them.
 
@@ -38,11 +40,11 @@ in `crates/api-http/src/error.rs` and named in the OpenAPI:
 | `VALIDATION_FAILED` | `ASSET_PRODUCER_MISMATCH` | A workflow writes an asset whose producer is another workflow or node |
 | `VALIDATION_FAILED` | `ASSET_CONTRACT_INCOMPATIBLE` | A revision breaks the compatibility mode, or a transform's declared output cannot match the contract |
 | `VALIDATION_FAILED` | `ASSET_KIND_MISMATCH` | A transform writes an external asset, or an observation names a managed one |
-| `VALIDATION_FAILED` | `DATA_NODE_SCOPE` | A data node is inside a body, a saga, or a definition with continuation, or declares `destinations` |
+| `VALIDATION_FAILED` | `DATA_NODE_SCOPE` | A data node is inside a body, a saga, or a definition with continuation, declares `destinations`, names the same output asset twice or the same input alias twice, or a `dataQuery` names a 017 database step as a step source |
 | `CONFLICT` | `ASSET_NOT_ACTIVE` | The asset is paused or deleted |
 | `CONFLICT` | `ASSET_PUBLISH_STALE` | `expectedPointerVersion` or the snapshot's base no longer matches |
 | `CONFLICT` | `SNAPSHOT_QUARANTINED` | Publication of a quarantined snapshot |
-| `CONFLICT` | `SNAPSHOT_NOT_PUBLISHABLE` | The snapshot is abandoned or retired, or a rollback target was never published |
+| `CONFLICT` | `SNAPSHOT_NOT_PUBLISHABLE` | The snapshot is abandoned or retired (a rollback to a snapshot retention retired included: its metadata survives, so it is never `NOT_FOUND`), or a rollback target was never published |
 | `CONFLICT` | `SNAPSHOT_RETIRED` | An 018 reset point would rematerialize a pin or reference to a retired snapshot |
 | `QUOTA_EXCEEDED` | existing `limit` names plus the seven new resources | A ceiling refuses admission |
 

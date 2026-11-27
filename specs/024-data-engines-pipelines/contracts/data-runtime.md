@@ -1,6 +1,9 @@
 # Draft contract — data runtime, data runner and data mode (FR-024-021..024, 028, 029; ADR-0058)
 
-Revised 2026-11-26 against `develop` at `e5bda041` (Decisions 024-001, 024-007, 024-008, 024-013).
+Revised 2026-11-26 against `develop` at `e5bda041` (Decisions 024-001, 024-007, 024-008, 024-013), and
+on 2026-11-27 after the correctness review (Decision 024-016: the encoding table, the audit class and
+failures, what the digest check proves, the classification of step sources, transient footer reads,
+orphaned attempts).
 Three parts work together, and only the last one runs tenant code:
 
 - the **data runner** (`apps/data-runner`, role `data-runner`, binding profile `data`): platform code
@@ -67,6 +70,11 @@ The data mode's state lives in engine labels (attempt, slot, class, absolute dea
 it sweeps at start-up and every 30 s, drains on shutdown without killing running containers, and
 answers every rejection with a closed body (Architecture decision 0079 rules 4 and 6 to 13).
 
+When the data runner starts, before it offers any activity, it reads the attempt ids of the attempt
+directories it finds in its work volume and ends each through `DELETE …`, then removes the directory
+once the container is gone; an attempt its previous process left running therefore frees its slot
+at the restart instead of at its label deadline.
+
 ## Mount profile (ADR-0058 decision 1; refines ADR-0013 for this profile only, as the lake profile did)
 
 | Mount | Kind and options | Size mechanism |
@@ -107,11 +115,11 @@ container are not read by the data runner, and the data mode keeps neither.
 | Starts | after inputs are staged and verified | after the transform attempt ended successfully and its parts were uploaded |
 | Attempt directory `in/` | staged input parts, one directory per alias | the attempt's own uploaded parts, read back from the platform with `ReadBlob` into a new attempt directory, each verified against the SHA-256 the server measured at upload |
 | `/out` | tmpfs `noexec,nosuid,nodev`, `size=` the class's snapshot bytes | absent |
-| `/spill` | tmpfs `noexec,nosuid,nodev`, `size=` the class's spill bytes | tmpfs `noexec,nosuid,nodev`, small |
-| Class | from the step's limits | `small` |
+| `/spill` | tmpfs `noexec,nosuid,nodev`, `size=` the class's spill bytes | tmpfs `noexec,nosuid,nodev`, `size=` the class's spill bytes |
+| Class | from the step's limits | the transform's class (it covers the snapshot size the limits allow), never a fixed `small` |
 | Network | none (no interface but loopback; the socket is a file) | none |
 | Root FS | read-only | read-only |
-| Limits | memory, CPUs, PIDs from the class budget; wall time from the deadline | audit limits |
+| Limits | memory, CPUs, PIDs from the class budget; wall time default 10 minutes, at most the step's `timeoutMs` minus the audit time and the staging allowance | memory, CPUs, PIDs from the class budget; wall time `limits.auditTimeoutMs` (default 2 minutes) |
 | Credentials | none | none |
 | Capabilities | all dropped, `no-new-privileges`, default seccomp, the slot's unprivileged user | same |
 
@@ -174,18 +182,77 @@ column, key uniqueness
 (`SELECT count(*) FROM (SELECT key, count(*) c … GROUP BY key HAVING c > 1)`), accepted values, and
 each custom check statement authored on the asset (one SELECT returning one row with one `BIGINT`
 column `failures`). The audit container returns
-`{"checks":[{"name":"unique_order_id","outcome":"FAILED","failing":"12"}]}`; the data runner adds
-the SHA-256 of every part it staged, and the engine refuses the completion unless they equal the
-committed parts (they are, by construction, the bytes read back from the platform). Outcomes are
+`{"checks":[{"name":"unique_order_id","outcome":"FAILED","failing":"12"}]}`. Outcomes are
 `PASSED`, `FAILED`, `ERROR`; counts only, never rows.
+
+What each part of this proves:
+
+- **The audit is bound to the uploaded bytes by the data runner's read-back.** The data runner reads
+  back exactly the parts this attempt and generation uploaded, with `ReadBlob`, and checks each
+  against the size and SHA-256 the server measured at upload before it writes the file into the audit
+  attempt directory. That read-back, in trusted platform code, is the binding.
+- **The digest comparison is a data-runner self-check.** The data runner reports the SHA-256 of every
+  part it staged for the audit, and the engine refuses the completion (`DATA_CONTRACT_VIOLATION`)
+  unless they equal the committed parts. A correct data runner always passes it; it fails when the
+  data runner staged a blob other than the committed part (a defect or a fault), which a fault
+  injection tests. The audit container reports no digest, and nothing here proves which bytes the
+  untrusted container actually read.
+- **The audit outcomes rest on the sandbox** (Gap 1249): a container escape could forge them.
+  Footer-level checks are the engine's own (below).
+
+Which outcomes quarantine:
+
+| Audit attempt outcome | Result |
+|---|---|
+| Every check `PASSED` | snapshot `AUDITED` |
+| A check `FAILED`, or a check the asset manager authored (custom statement) reports `ERROR` | snapshot `QUARANTINED`, step `DATA_AUDIT_FAILED`, not retryable |
+| The data mode refused or was unavailable for the audit attempt, the container was killed for memory, timed out or crashed, the result was malformed, or a platform-generated check (row count, not-null, unique, accepted values) reports `ERROR` | no snapshot; step `DATA_RUNTIME_UNAVAILABLE`, retryable; the attempt's parts are claimed for deletion |
 
 ## What the engine checks itself (not trusting the containers or the data runner)
 
 Per part: blob row `UPLOADED` with this attempt's fence, measured size and SHA-256, magic bytes at
-both ends, footer length ≤ 1 MiB, footer not encrypted, schema (names, order, physical/logical
-types, repetition) equal to the pinned contract, row count consistent with the reported one; per
-output: part count and total bytes within ceilings. Row-level audit outcomes are taken from the
-audit container (G1249).
+both ends, footer length ≤ 1 MiB, footer not encrypted, a schema the pinned contract accepts under
+the encoding table below (column names and order equal, nothing extra, each column's encoding one
+the table lists), row count consistent with the reported one; per output: part count and total bytes
+within ceilings. Row-level audit outcomes are taken from the audit container (G1249).
+
+An object-store error while the engine reads a footer (`BlobReadError::Unavailable`) is not a
+verification result: `CompleteStep` answers the transient gRPC status `UNAVAILABLE` with no state
+change, and the data runner sends the same completion again with the same idempotency key while its
+lease holds. It is never `DATA_CONTRACT_VIOLATION`.
+
+## Contract types and Parquet encodings
+
+Normative. The engine accepts a column only in an encoding of its row; everything else is
+`DATA_CONTRACT_VIOLATION`. Two writers may encode the same contract type differently (DuckDB writes
+`decimal(18,2)` as `INT64`, PyArrow as `FIXED_LEN_BYTE_ARRAY`); both are accepted, so equal snapshots
+from two engines are equal in rows and contract fingerprint, not in bytes. Task 024-033 confirms each
+row against the pinned DuckDB image and the Polars starter lock.
+
+| Contract type | Accepted Parquet physical type | Accepted logical (or converted) type |
+|---|---|---|
+| `boolean` | `BOOLEAN` | none |
+| `int32` | `INT32` | none, or `INTEGER(32, signed)` |
+| `int64` | `INT64` | none, or `INTEGER(64, signed)` |
+| `decimal(p,s)` | `INT32` (p ≤ 9), `INT64` (p ≤ 18), `FIXED_LEN_BYTE_ARRAY` of the minimal length for p, or `BYTE_ARRAY` | `DECIMAL(p,s)` with exactly the contract's p and s |
+| `float64` | `DOUBLE` | none |
+| `string` | `BYTE_ARRAY` | `STRING` (converted `UTF8`) |
+| `binary` | `BYTE_ARRAY` | none |
+| `date` | `INT32` | `DATE` |
+| `timestamp` (UTC microseconds) | `INT64` | `TIMESTAMP(isAdjustedToUTC = true, MICROS)`; milliseconds, nanoseconds and local timestamps are refused (the author casts) |
+| `json` | `BYTE_ARRAY` | `JSON`, or `STRING` |
+
+Refused whatever the contract says: `INT96`, unsigned integers, `FLOAT`, nested groups (Gap 1253) and
+repetition `REPEATED`.
+
+| Contract nullability | Accepted repetition |
+|---|---|
+| `nullable: true` | `OPTIONAL` or `REQUIRED` |
+| `nullable: false` | `REQUIRED`, or `OPTIONAL`: a query result has no known NOT NULL (DuckDB's `COPY (SELECT …)` writes `OPTIONAL`), so the nulls are caught by the generated not-null audit, which quarantines the snapshot |
+
+The schema fingerprint of a snapshot is the SHA-256 of the canonical contract column list it matched
+(data model), not of the Parquet schema, so two accepted encodings of one contract give one
+fingerprint.
 
 ## dataQuery
 
@@ -194,8 +261,15 @@ host runs the single statement and encodes its result into the 017 typed-cell JS
 effective row limit and the 256 KiB inline bound (`DATA_OUTPUT_LIMIT` above it), sent on the socket;
 the engine validates it with the 017 result validator (a reusable function) and completes the step
 with it as inline output. The output is a 016 carrier whose platform-derived schema is annotated
-with the highest `x-sagat-classification` level among the pinned input columns. DuckDB types map to
-cells as follows:
+with the highest `x-sagat-classification` level among the pinned inputs, each counted at the `level`
+its first-lease pin recorded: an asset or `from` input at the highest level of its pinned columns;
+a step source at `pii`, as an undeclared column is, unless the source step's output is a 016 carrier
+whose pinned schema declares a level for every field (then the highest of them). A `dataQuery` never
+reads a 017 database result: publication refuses a step source that is a database step
+(`VALIDATION_FAILED`, reason `DATA_NODE_SCOPE`), so such a result stays readable only through the 017
+result view with `database:result:read`, and only a `dataTransform` stages one. The output
+carries values and is charged to content quota; at full quota it fails `STORAGE_QUOTA_EXCEEDED`.
+DuckDB types map to cells as follows:
 
 | Cell type | DuckDB types |
 |---|---|
@@ -214,21 +288,25 @@ cells as follows:
 
 | Condition | Code | Retryable |
 |---|---|---|
-| Image or runtime unavailable, probe failed; the data mode refused the attempt (`ceiling`, `slot`, `class`, `deadline`, `directory`) or was `unavailable` | `DATA_RUNTIME_UNAVAILABLE` | yes |
-| Input part missing, digest mismatch, object store error | `DATA_INPUT_UNAVAILABLE` | yes |
+| Image or runtime unavailable, probe failed; the data mode refused the attempt (`ceiling`, `slot`, `class`, `deadline`, `directory`) or was `unavailable` | `DATA_RUNTIME_UNAVAILABLE` | yes; when no container of the attempt started it does not count against `maxAttempts`, at most 10 such attempts per step |
+| The audit attempt itself failed (refused, unavailable, killed for memory, timed out, crashed, a malformed result, `ERROR` of a platform-generated check) | `DATA_RUNTIME_UNAVAILABLE`, no snapshot committed | yes (counts against `maxAttempts`) |
+| Input part missing, digest mismatch, object store error while staging | `DATA_INPUT_UNAVAILABLE` | yes |
+| Object store error while the engine reads a footer at completion | none: transient gRPC `UNAVAILABLE`, no state change, the same completion is sent again | — |
 | A `from` input resolved to a quarantined snapshot | `DATA_INPUT_QUARANTINED` | no |
+| A `from` input resolved to an `ABANDONED` or `RETIRED` snapshot (unreachable while the run's pin holds) | `DATA_CONFIGURATION_INVALID` | no |
 | Statement not a single query / script refused / a Polars package blocked at lease (`PACKAGE_BLOCKED`) | `DATA_STATEMENT_DENIED` | no |
 | Tenant SQL or script error | `DATA_TRANSFORM_FAILED` | no |
 | A `dataQuery` result column of an unsupported type | `DATA_TYPE_UNSUPPORTED` | no |
 | Memory (`memory_killed`), PIDs or spill exhausted | `DATA_RESOURCE_EXHAUSTED` | no |
 | Output above bytes or parts ceiling | `DATA_OUTPUT_LIMIT` | no |
-| Engine footer/schema check failed, or audited digests differ from the parts | `DATA_CONTRACT_VIOLATION` | no |
-| Audit failed / audit errored | `DATA_AUDIT_FAILED` | no / yes |
+| Engine footer/schema check failed, or the digests the data runner staged for the audit differ from the parts | `DATA_CONTRACT_VIOLATION` | no |
+| A check `FAILED`, or a check the asset manager authored reported `ERROR` (snapshot `QUARANTINED`) | `DATA_AUDIT_FAILED` | no |
 | Lease deadline or wall time | `DATA_TIMEOUT` | yes |
 | Cancellation | `DATA_CANCELLED` | no |
-| Pointer moved since first lease (`onStale: fail`) | `DATA_PUBLISH_STALE` | no |
+| Pointer moved since first lease, or a `dataPublish` met an `ABANDONED` snapshot (`onStale: fail`) | `DATA_PUBLISH_STALE` | no |
 | Asset paused or deleted at completion | `DATA_ASSET_NOT_ACTIVE` | no |
 | Unexpected host failure, a broken socket conversation | `WORKER_ERROR` | yes |
 
 Every code above is a `worker`-origin entry of `sdks/error-catalog.json` with this retryable flag
-(Decision 024-015).
+(Decision 024-015). Every failure that ends an attempt without committing its parts claims them for
+deletion in the same transaction (FR-024-035).

@@ -148,8 +148,13 @@ paths:
         replay the stored publication after current authorization; changed content conflicts.
         PUBLISH needs an AUDITED snapshot whose base pointer version equals the current one;
         ROLLBACK needs a retained snapshot that was PUBLISHED. A QUARANTINED snapshot answers 409
-        reason SNAPSHOT_QUARANTINED; a changed pointer answers 409 reason ASSET_PUBLISH_STALE.
-        Pointer, publication record, inbox event, webhook deliveries and audit commit together.
+        reason SNAPSHOT_QUARANTINED; an ABANDONED or RETIRED snapshot, or a rollback target that was
+        never published, answers 409 reason SNAPSHOT_NOT_PUBLISHABLE (a retired snapshot's metadata
+        survives, so it is never 404); a changed pointer answers 409 reason ASSET_PUBLISH_STALE.
+        Pointer, publication record, inbox event, webhook deliveries and audit commit together. The
+        event is a protected_system record, but the justification is tenant-authored text charged to
+        the content quota (ADR-0027): at a full content quota the request answers QUOTA_EXCEEDED and
+        nothing is written.
       parameters:
         - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 160, pattern: '^[\x21-\x7E]+$'}}
       requestBody:
@@ -164,6 +169,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
   /namespaces/{namespaceId}/data-assets/{assetName}/freshness:
     parameters:
       - $ref: '#/components/parameters/NamespaceId'
@@ -421,7 +427,12 @@ components:
         kind: {type: string, enum: [PUBLISH, ROLLBACK]}
         snapshotId: {type: string, format: uuid}
         expectedPointerVersion: {type: integer, minimum: 0}
-        justification: {type: string, minLength: 1, maxLength: 1024}
+        justification:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+          description: Plain text without control characters, at most 1,024 bytes (the server also counts bytes); charged to the content quota (ADR-0027), so a full quota refuses the publication with QUOTA_EXCEEDED.
     DataPublication:
       type: object
       additionalProperties: false
@@ -429,9 +440,12 @@ components:
       properties:
         assetName: {$ref: '#/components/schemas/AssetNameValue'}
         pointerVersion: {type: integer, minimum: 1}
-        snapshotId: {type: string, format: uuid}
+        snapshotId:
+          type: [string, 'null']
+          format: uuid
+          description: 'Null only for origin TOMBSTONE, which clears the pointer.'
         previousSnapshotId: {type: [string, 'null'], format: uuid}
-        origin: {type: string, enum: [RUN_AUTO, RUN_NODE, API_PUBLISH, API_ROLLBACK]}
+        origin: {type: string, enum: [RUN_AUTO, RUN_NODE, API_PUBLISH, API_ROLLBACK, TOMBSTONE]}
         runId: {type: [string, 'null'], format: uuid}
         node: {type: [string, 'null']}
         justification: {type: [string, 'null'], description: only for data:asset:publish holders}
@@ -453,6 +467,10 @@ components:
         status: {type: string, enum: [FRESH, STALE, NEVER_PUBLISHED, NOT_TRACKED]}
         reason: {type: string, enum: [MAX_LAG, DEADLINE]}
         lastPublishedAt: {type: [string, 'null'], format: date-time}
+        dataCreatedAt:
+          type: [string, 'null']
+          format: date-time
+          description: 'What the lag is measured from: the creation time of the current snapshot (managed) or the last observation (external), never the publication time, so a rollback does not refresh the asset.'
         staleSince: {type: [string, 'null'], format: date-time}
         evaluatedAt: {type: string, format: date-time, description: database clock}
     DataLineage:

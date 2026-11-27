@@ -6,7 +6,9 @@
 
 **Status**: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision 2026-11-24-1); Architecture decision 0058 accepted (delegate, Owner decision 2026-11-26-164); not started
 
-**Revised**: 2026-11-26 against `develop` at `e5bda041` after an independent audit: the data containers are requested through the sandbox runner's attempt API of Architecture decision 0079 by a data runner of their own; feature 035's lake path, managed kinds, binding profiles, egress ceilings and blob allow-list are reused; six SDKs; the next free worker-protocol minor; instance-registry capabilities; Owner questions 1240 to 1243 decided (Owner decisions 2026-11-26-160 to 2026-11-26-163). What changed is listed in [research](research.md) (Decisions 024-001 to 024-015).
+**Revised**: 2026-11-26 against `develop` at `e5bda041` after an independent audit: the data containers are requested through the sandbox runner's attempt API of Architecture decision 0079 by a data runner of their own; feature 035's lake path, managed kinds, binding profiles, egress ceilings and blob allow-list are reused; six SDKs; the next free worker-protocol minor; instance-registry capabilities; Owner questions 1240 to 1243 decided (Owner decisions 2026-11-26-160 to 2026-11-26-163). What changed is listed in [research](research.md) (Decisions 024-001 to 024-015). Revised again on
+2026-11-27 after the correctness review (`reviews/2026-11-27-correctness.md`): every finding and what
+changed is Decision 024-016.
 
 **Input**: Add more database engines to the feature-017 database model (driver boundary in `crates/infra-database`, executor `apps/database-runner`): MySQL/MariaDB, Microsoft SQL Server, Google BigQuery, Snowflake and DuckDB (executor-local over object storage/Parquet), each with typed result-cell mapping, TLS, auth modes (BigQuery service account, Snowflake key pair) held in OpenBao, limits, probes and read-only versus execute. Add data pipelines in the sense of Windmill 2026: DuckDB/Polars transformation steps over namespace object storage, declared data assets (identity, producer, schema contract), a lineage view in the Studio, freshness status/SLAs, schema contracts and write-audit-publish (stage → validate → publish an atomic pointer).
 
@@ -182,7 +184,9 @@ and a crash at each commit point leaves no half-published state.
 
 **Failure scenario**: The transform writes a Parquet file whose schema differs from the contract and
 reports success. The engine reads the footer itself, refuses the output with
-`DATA_CONTRACT_VIOLATION` and commits nothing; the uploaded parts are swept as unused uploads.
+`DATA_CONTRACT_VIOLATION` and commits no snapshot; the transaction that records the failure claims
+the attempt's uploaded parts for deletion, and their charge is released once the deletion is
+confirmed.
 
 ---
 
@@ -204,7 +208,14 @@ US03 and the 016 disclosure, and touches neither the 017 driver catalog nor its 
    **Then** the snapshots current at the first lease are pinned, the bounded typed result is the
    step's output, and its values are disclosed only to a caller holding the namespace
    `payload:reveal-pii` grant, the highest level among the pinned input columns.
-2. **Given** a query whose result exceeds 256 KiB, **When** it completes, **Then** it fails
+2. **Given** a MySQL query step `extract` and a `dataQuery` with the input
+   `{alias: "x", step: "extract"}`, **When** the workflow is published, **Then** publication is
+   refused (`VALIDATION_FAILED`, reason `DATA_NODE_SCOPE`): a 017 database result stays readable only
+   through the 017 result view with `database:result:read`. **Given** instead an activity step
+   `fetch` whose Parquet output declares no level, **When** a `dataQuery` reads it as a step source,
+   **Then** its output counts as `pii` and only a caller holding the namespace reveal grant sees
+   its values.
+3. **Given** a query whose result exceeds 256 KiB, **When** it completes, **Then** it fails
    `DATA_OUTPUT_LIMIT`; large results are written to an asset with a `dataTransform`.
 
 **Failure scenario**: The query exhausts its memory limit; the container is killed and the step
@@ -223,12 +234,15 @@ builds on US03 data but is not required to produce assets.
 
 **Independent Test**: A fixture of three assets and two producers yields the documented lineage
 graph and table; a policy of 10 minutes turns an asset `STALE` on the database clock and the alert
-fires and resolves; a duplicate delivery of the publication event starts exactly one run.
+fires and resolves; a trigger dispatcher that crashes after creating the run and before marking the
+publication event processed, and a redelivered webhook row, still start exactly one run.
 
 **Acceptance Scenarios**:
 
-1. **Given** a policy `maxLagSeconds: 3600`, **When** no snapshot is published for an hour, **Then**
-   the asset is `STALE`, `DATA_ASSET_STALE` fires for it and resolves after the next publication.
+1. **Given** a policy `maxLagSeconds: 3600`, **When** the current snapshot was created more than an
+   hour ago, **Then** the asset is `STALE`, `DATA_ASSET_STALE` fires for it and resolves after a
+   snapshot created within the hour is published. A rollback to an older snapshot, or a late
+   publication of an old one, does not make the asset fresh.
 2. **Given** a workflow with an event trigger on `data.asset.published` from source `sagat.data`
    filtered on `event.subject == "orders-daily"`, **When** a snapshot is published, **Then** one run
    starts with the payload-free publication document as its event.
@@ -260,8 +274,8 @@ and the other is a typed, audited no-op.
 2. **Given** a quarantined snapshot, **When** anyone tries to publish it, **Then** the request fails
    with `CONFLICT` reason `SNAPSHOT_QUARANTINED`; quarantine is never released by hand.
 
-**Failure scenario**: A rollback names a snapshot that retention already deleted; it fails with
-`NOT_FOUND` and the pointer stays.
+**Failure scenario**: A rollback names a snapshot that retention already retired; its metadata row
+survives, so it fails with `CONFLICT` reason `SNAPSHOT_NOT_PUBLISHABLE` and the pointer stays.
 
 ---
 
@@ -276,8 +290,10 @@ semantics as DuckDB.
 own lock under the namespace's supply-chain policy, so the platform keeps no package catalog (Owner
 decision 2026-11-26-162), but it needs design 046 built first.
 
-**Independent Test**: A Polars script produces the same snapshot as the DuckDB fixture of US03 from
-the same inputs; a lock that the namespace's supply-chain policy refuses does not publish, and a
+**Independent Test**: From the same inputs, a Polars script produces a snapshot equal to the DuckDB
+fixture of US03: the same multiset of rows and the same contract fingerprint (the bytes may differ,
+because the two writers encode the same contract type differently, which the encoding table of the
+data runtime contract accepts); a lock that the namespace's supply-chain policy refuses does not publish, and a
 package blocked after publication stops the lease with `PACKAGE_BLOCKED`.
 
 **Acceptance Scenarios**:
@@ -325,19 +341,29 @@ not refreshed by a write nobody can confirm.
 - An empty result (zero rows) is a valid snapshot unless an audit sets a minimum row count.
 - A transform that writes more than the snapshot byte ceiling is stopped by the output quota in the
   container and fails `DATA_OUTPUT_LIMIT`; the platform never truncates a snapshot silently.
-- The object store is unavailable while parts are uploaded or footers are read: the attempt fails
-  retryably before the completion transaction; nothing is published.
+- The object store is unavailable while parts are uploaded: the attempt fails retryably before the
+  completion transaction; nothing is published. It is unavailable while the engine reads footers:
+  `CompleteStep` answers a transient status and changes no state, and the data runner sends the same
+  completion again with the same idempotency key; it is never `DATA_CONTRACT_VIOLATION`.
 - A snapshot is pinned by a live run when retention looks at it: it is kept until 24 hours after
-  that run ends.
+  that run ends, and it is never moved to `ABANDONED` while the run is live (an own staged snapshot
+  awaiting `dataPublish` behind a long approval, a `from` input or an output base).
 - A tenant's data quota is exhausted while parts upload: the part reservation is refused (ADR-0027
-  charges at reservation, not again at commit), the step ends with `STORAGE_QUOTA_EXCEEDED`, earlier
-  parts are swept and the pointer stays.
+  charges at reservation, not again at commit), the step ends with `STORAGE_QUOTA_EXCEEDED`, the
+  failure transaction claims the attempt's earlier parts for deletion and the pointer stays.
+- An attempt fails, is retried under a new generation after its lease lapsed, or is cancelled after
+  it uploaded parts: the transaction that ends it claims its uncommitted parts for deletion, so a
+  retried transform does not hold `tenant_data_bytes` or pending-upload slots for a day.
 - An asset is tombstoned while a producer run is in flight: the completion refuses publication
-  (`DATA_ASSET_NOT_ACTIVE`) and the snapshot is abandoned.
+  (`DATA_ASSET_NOT_ACTIVE`) and the snapshot is abandoned. The tombstone transaction clears the
+  pointer with a publication record, so no retired snapshot is ever named by a pointer.
+- One node names the same output asset twice, or the same input alias twice: publication refuses it
+  (`VALIDATION_FAILED`, reason `DATA_NODE_SCOPE`), never a store error at lease.
 - An encrypted field (031) is read by a database or data-node parameter expression: publication
   refuses it with 031's `VALIDATION_FAILED` reason `ENCODING`, issue `ENCODING_READ_BY_EXPRESSION`.
-- Cancellation of a run whose transform already uploaded parts: the parts are never committed; a
-  cancellation of a warehouse write is never treated as proof that nothing was written.
+- Cancellation of a run whose transform already uploaded parts: the parts are never committed and the
+  cancellation transaction claims them for deletion; a cancellation of a warehouse write is never
+  treated as proof that nothing was written.
 
 ## Requirements *(mandatory)*
 
@@ -434,14 +460,26 @@ The per-driver details these requirements refer to are normative in
   `pii`; an undeclared level MUST be `pii`; `secret` MUST be refused because assets never hold
   secrets. The level is pinned with the revision. This feature adds no new value endpoint: asset
   values leave only as `dataQuery` outputs (FR-024-029), which are 016 classification carriers whose
-  platform-derived schema carries the highest level among the pinned input columns, because no
-  column-level taint is tracked (ADR-0036 decision 6); the existing 016 disclosure then applies its
+  platform-derived schema carries the highest level among the pinned inputs, because no
+  column-level taint is tracked (ADR-0036 decision 6). An asset input counts at the highest level of
+  its pinned columns. A step source has no declared columns and, as an undeclared column does, counts
+  as `pii`, unless the source step's output is a 016 carrier whose pinned output schema declares a
+  level for every field (it then counts at the highest of them). A `dataQuery` MUST NOT read a 017
+  database result at all (FR-024-029), so its values never become readable under the 016 reveal
+  grant instead of `database:result:read`; a `dataTransform` may read one, and the asset manager's
+  column levels then classify what it writes. The level of every input is recorded with its first-lease pin,
+  and the highest of an empty set is never taken: a `dataQuery` has at least one input. The existing
+  016 disclosure then applies its
   audience rules (`payload:read-internal`, the namespace `payload:reveal-pii` grant). Any later
   surface MUST apply the level likewise.
 - **FR-024-017 — Producer binding:** A managed asset MUST name exactly one producer (workflow name
   and node id). Publication of a workflow version MUST refuse an output on an asset whose producer is
   another workflow or node (`ASSET_PRODUCER_MISMATCH`) and re-check the binding at admission and at
-  publication of each snapshot. Changing the producer is a new revision, audited.
+  publication of each snapshot. Changing the producer is a new revision, audited. For a `dataPublish`
+  node (origin `RUN_NODE`) the binding is checked against the `dataTransform` node named by its `from`,
+  which is the producer, never against the `dataPublish` node itself. A node MUST name each output
+  asset at most once and each input alias at most once; publication refuses a repeat
+  (`VALIDATION_FAILED`, reason `DATA_NODE_SCOPE`).
 - **FR-024-018 — Snapshots:** A snapshot MUST be an immutable set of Parquet parts stored in the
   ADR-0023 blob store under the purpose `DATA_SNAPSHOT_PART`, with recorded size, SHA-256, row count
   and schema fingerprint per part, and states `AUDITED`, `QUARANTINED`, `PUBLISHED`, `ABANDONED`,
@@ -453,16 +491,31 @@ The per-driver details these requirements refer to are normative in
   an earlier node of the same run (`from`), or, for ingestion, the committed output of an earlier
   step of the same run (`step`): a 017 database result, staged as a table with its mapped column
   types, or a step-output blob of type `application/vnd.apache.parquet`, verified by the engine like
-  a snapshot part. A `from` input MUST resolve only an `AUDITED` or `PUBLISHED` snapshot; a
-  quarantined one fails `DATA_INPUT_QUARANTINED`, so an `onError` route cannot launder it. A reader
-  MUST never observe a partially written or unaudited snapshot.
+  a snapshot part. A `from` input and a `dataPublish` resolve the snapshot that the named node
+  committed in its successful completion, never one an earlier attempt committed as `QUARANTINED`. In
+  a run created by an 018 reset, a restored `from` or `dataPublish` whose node's
+  `data.snapshot_committed` is in the restored prefix resolves the snapshot that restored event names,
+  which the reset run references (`run_data_snapshot_refs`), and a `dataPublish` after the reset
+  point may publish it under the reset run's `RUN_NODE` origin; a restored step-source pin names the
+  source run's committed step output, which the lease admits through the run's reset link and the
+  pinned blob id and digest, never a caller-chosen blob. A `from` input MUST resolve only an
+  `AUDITED` or `PUBLISHED` snapshot; a quarantined one fails `DATA_INPUT_QUARANTINED`, so an
+  `onError` route cannot launder it; an `ABANDONED` or `RETIRED` one, which the live-run pin of
+  FR-024-034 makes unreachable, fails `DATA_CONFIGURATION_INVALID`. A reader MUST never observe a
+  partially written or unaudited snapshot.
 
 ### Functional Requirements — transforms and write-audit-publish
 
 - **FR-024-020 — `dataTransform` node:** The IR MUST gain an additive node kind `dataTransform` with
   `engine: duckdb|polars`, inputs (alias, asset reference, selector), outputs (asset reference,
   statement or script, parameters, publish mode, stale policy), limits, `next`, `onError`, timeout and
-  a bounded retry policy. Like 017 database nodes (ADR-0036 decision 3), data nodes MUST be accepted
+  a bounded retry policy. The timeout (`timeoutMs`, default 15 minutes) bounds the whole attempt:
+  staging, the transform, the upload, the read-back, the audit and the report; the transform's wall
+  time (default 10 minutes) is bounded by what is left after the audit time
+  (`limits.auditTimeoutMs`, default 2 minutes) and a fixed staging allowance, and publication
+  refuses a timeout that leaves the transform less than one minute. An attempt that ends `DATA_RUNTIME_UNAVAILABLE` before any container of it started does
+  not count against `maxAttempts`; such attempts are bounded separately (10 per step), after which
+  they count. Like 017 database nodes (ADR-0036 decision 3), data nodes MUST be accepted
   only in the root graph of a definition without collection, loop or continuation nodes until scoped
   pins are proven; the same holds for `dataQuery` and `dataPublish`. Data nodes exist only in
   graph-model versions (Decision 024-010) and declare no `destinations`. Publication and admission
@@ -496,28 +549,50 @@ The per-driver details these requirements refer to are normative in
   MUST be refused at publication and again in the container.
 - **FR-024-023 — Output verification by the engine:** Before committing a snapshot the engine MUST
   verify every part itself: exact upload fence, measured size and SHA-256, Parquet magic and footer
-  within a bounded size, unencrypted footer, schema equal to the pinned contract and row counts. A
-  mismatch MUST fail the attempt with `DATA_CONTRACT_VIOLATION` and commit nothing, whatever the
-  sandbox reported.
+  within a bounded size, unencrypted footer, a schema that the pinned contract accepts under the
+  normative encoding table of the [data runtime contract](contracts/data-runtime.md#contract-types-and-parquet-encodings)
+  (column names and order equal; each column's physical and logical type one the table lists for its
+  contract type; repetition `REQUIRED` or `OPTIONAL`, never `REPEATED`; a `nullable: false` column
+  written `OPTIONAL` is accepted and its nulls are caught by the generated not-null audit), and row
+  counts. A mismatch MUST fail the attempt with `DATA_CONTRACT_VIOLATION` and commit nothing,
+  whatever the sandbox reported. An object-store error while reading a footer MUST NOT be a mismatch:
+  `CompleteStep` answers a transient status with no state change and the same completion is sent again.
 - **FR-024-024 — Audits and quarantine:** Declared audits (row-count bounds, not-null from the
   contract, key uniqueness, accepted values, custom check statements authored on the asset) MUST run
-  in a fresh attempt of the data mode after the transform container has ended, over exactly the uploaded parts,
-  read back from the platform because the transform's `/out` tmpfs is gone (the runner reports the SHA-256 of every part it audited and the engine checks them against the
-  committed parts) and the pinned declaration. Results MUST be payload-free (check name, outcome,
-  failing count).
-  A failed or errored audit MUST commit the snapshot as `QUARANTINED`, keep the pointer, and fail the
-  step with `DATA_AUDIT_FAILED`.
+  in a fresh attempt of the data mode after the transform container has ended, in the transform's
+  budget class (the class is chosen from the step's limits, which cover the snapshot size, never a
+  fixed `small`), over exactly the uploaded parts and the pinned declaration. The parts are read back
+  from the platform because the transform's `/out` tmpfs is gone. What binds the audit to the
+  uploaded bytes is the data runner's read-back: it reads exactly this attempt's uploads with
+  `ReadBlob` and checks each against the SHA-256 the server measured at upload. The data runner
+  reports the SHA-256 of what it staged and the engine refuses a completion whose digests differ from
+  the committed parts, which catches a data runner that staged other bytes; it proves nothing about
+  what the untrusted audit container read, and the audit outcomes rest on the sandbox (Gap 1249).
+  Results MUST be payload-free (check name, outcome, failing count).
+  A `FAILED` outcome, or an `ERROR` outcome of a check the asset manager authored, MUST commit the
+  snapshot as `QUARANTINED`, keep the pointer, and fail the step with `DATA_AUDIT_FAILED` (not
+  retryable). A failure of the audit attempt itself (the data mode refused it or was unavailable, the
+  container was killed for memory, timed out or crashed, or a platform-generated check reported
+  `ERROR`) MUST commit no snapshot and fail the step retryably with `DATA_RUNTIME_UNAVAILABLE`; it is
+  never a quarantine.
 - **FR-024-025 — Publication:** With `publish: auto`, the pointer compare-and-set MUST commit in the
   completion transaction of an audited snapshot. With `publish: manual`, the snapshot stays `AUDITED`
   until a `dataPublish` node (an engine node that needs no worker) or the API publishes it. The
   compare-and-set MUST be against the pointer version captured at the producer's first lease;
   `onStale: fail` (default) fails with `DATA_PUBLISH_STALE`, `onStale: skip` completes without
   publishing. A quarantined snapshot MUST never be published; publishing the snapshot that is already
-  current MUST be an idempotent success.
+  current MUST be an idempotent success. A `dataPublish` that meets an `ABANDONED` snapshot (which the
+  live-run pin of FR-024-034 makes unreachable) treats it as stale and follows its `onStale`. An
+  auto-publishing output whose compare-and-set is stale commits its snapshot directly as `ABANDONED`
+  when no `from` input or `dataPublish` of the definition names its node; otherwise it stays
+  `AUDITED`, pinned by the live run.
 - **FR-024-026 — Manual publication and rollback API:** Holders of `data:asset:publish` MUST be able
   to publish an audited snapshot or roll back to a retained previously published snapshot, with an
-  `Idempotency-Key`, `expectedPointerVersion` and a justification, in one transaction with the
-  publication record and audit. Replay MUST recheck current authorization. Rollback creates a new
+  `Idempotency-Key`, `expectedPointerVersion` and a justification (plain text without control
+  characters, at most 1,024 bytes), in one transaction with the publication record and audit. The
+  justification is tenant-authored text and stays in the charged `content` class, as ADR-0027
+  requires of free text: at a full content quota an API publication or rollback is refused
+  `QUOTA_EXCEEDED` with nothing written, like any synchronous API mutation. Replay MUST recheck current authorization. Rollback creates a new
   publication record; it deletes nothing.
 - **FR-024-027 — Publication event and triggers:** Every publication MUST write, in its transaction,
   a payload-free inbox event (source `sagat.data`, type `data.asset.published`, subject the asset
@@ -525,8 +600,14 @@ The per-driver details these requirements refer to are normative in
   snapshot is a new event) and the outbound delivery rows for webhook subscriptions that ask for
   `data.asset.published`. The event document MUST be a closed, bounded (≤ 1 KiB) `protected_system`
   record under ADR-0027: it is not charged to content quota and does not spend the
-  `events_per_second` bucket, so a full quota can never roll back a completion or a publication.
-  Existing 004 event triggers MUST be able to start runs from it (their run admission keeps its own
+  `events_per_second` bucket. The other records these transactions write are protected too: the
+  output document of a `dataTransform` step and of a `dataPublish` node is a closed record of asset
+  names, snapshot ids, states, pointer versions and counts, at most 4 KiB, that the content
+  accounting measures as zero (data model). A run publication carries no free text, so a full content
+  quota can never roll back an auto-publishing completion or a `dataPublish`. An API publication
+  carries the charged justification of FR-024-026 and obeys the content quota: it is refused
+  `QUOTA_EXCEEDED` before any write when the quota is full. A `dataQuery` output carries values and stays charged: at full content quota it fails
+  `STORAGE_QUOTA_EXCEEDED` (ADR-0027), which publishes nothing. Existing 004 event triggers MUST be able to start runs from it (their run admission keeps its own
   quotas); the inbox key deduplicates redelivery of the same publication.
 - **FR-024-028 — Polars transforms:** A Polars transform MUST reference a published script version
   of the language `python-data` (reserved by feature 023) whose artifact is design 046's bundle
@@ -543,12 +624,15 @@ The per-driver details these requirements refer to are normative in
 ### Functional Requirements — DuckDB queries, lineage, freshness, external assets
 
 - **FR-024-029 — DuckDB queries:** The IR MUST gain an additive data node `dataQuery` (root-only,
-  like `dataTransform`) with inputs (alias, asset or step source), one `SELECT` statement, typed
+  like `dataTransform`) with inputs (alias, asset or step source; a step source MUST NOT be a 017
+  database step, which publication refuses with `VALIDATION_FAILED` reason `DATA_NODE_SCOPE`, so a
+  database result keeps the 017 audience of ADR-0035 decision 10), one `SELECT` statement, typed
   parameters and limits. It runs in the data sandbox as the reserved activity `sagat.data.query`,
   pins its inputs at first lease, writes nothing, and returns the 017 typed-cell result shape as its
   inline step output (≤ 256 KiB; above it `DATA_OUTPUT_LIMIT`). That output MUST be a 016
   classification carrier whose platform-derived schema is annotated with the highest level among
-  the pinned input columns, disclosed only through the existing 016 payload disclosure. DuckDB MUST
+  its pinned inputs as FR-024-016 counts them (a step source with no declared level counts as
+  `pii`), disclosed only through the existing 016 payload disclosure. DuckDB MUST
   NOT be a 017 database driver, and the 017 result view MUST NOT serve these outputs. Ad hoc
   queries use 022 standalone steps when they exist.
 - **FR-024-030 — Lineage:** The platform MUST serve a bounded lineage graph per namespace combining
@@ -557,15 +641,26 @@ The per-driver details these requirements refer to are normative in
   bounded in nodes, edges and depth, and MUST show a producer the caller may not read as opaque.
 - **FR-024-031 — Freshness:** An asset MAY declare `maxLagSeconds` and an optional cron deadline
   (five fields, IANA zone, grace). Status `FRESH|STALE|NEVER_PUBLISHED|NOT_TRACKED` MUST be derived
-  from the database clock and the last publication or observation, served by the API and shown in
-  the Studio. The 008 monitor MUST raise `DATA_ASSET_STALE` and `DATA_SNAPSHOT_QUARANTINED` alerts
-  (subject: asset name) with the existing fire/resolve semantics. No automatic re-run is triggered.
+  from the database clock and the age of the data: for a managed asset the creation time of the
+  current snapshot (its producer's completion), never the time it was published, so a rollback to an
+  older snapshot or a late publication of an old one does not make the asset fresh; for an external
+  asset the last observation. It is served by the API and shown in the Studio. The 008 monitor MUST
+  raise `DATA_ASSET_STALE` (fires while the asset is `STALE`, resolves when it is not) and
+  `DATA_SNAPSHOT_QUARANTINED` (fires while a `QUARANTINED`, not yet `RETIRED` snapshot of the asset
+  exists that was created after the current snapshot, or at all when the asset was never published;
+  resolves when none does, because a newer snapshot was published or the quarantined one was retired)
+  alerts (subject: asset name) with the existing fire/resolve semantics. No automatic re-run is
+  triggered.
 - **FR-024-032 — External assets:** An external asset MUST name a connection (a SQL driver's, or a
   feature 035 Iceberg connection's), an opaque locator and one producer (workflow and node). A
   database step or a feature 035 `icebergWrite` step MAY declare `assets.reads` and `assets.writes`;
   a declared write MUST be refused at publication unless the step is the asset's producer and uses
   the asset's connection. A successful declared write MUST record an observation in its completion
-  transaction; an unknown or failed outcome MUST record none. External assets have no snapshots, pointer, audits or write-audit-publish; lineage
+  transaction, after locking the external asset heads and rechecking under that lock that each asset
+  is `ACTIVE` and that the node is still its producer on the current revision; when the recheck fails
+  the step still completes (the write happened) but no observation is recorded and the refusal is
+  audited. An unknown or failed outcome MUST record none. The completion of a database or
+  `icebergWrite` step without `assets.writes` keeps its statement budget unchanged. External assets have no snapshots, pointer, audits or write-audit-publish; lineage
   is declared, never inferred from SQL text.
 
 ### Functional Requirements — cross-cutting
@@ -582,7 +677,12 @@ The per-driver details these requirements refer to are normative in
   snapshot publication and receipt replay. The exact matrix is in the plan.
 - **FR-024-034 — Retention:** Per asset, the current snapshot plus the declared number of previous
   published snapshots, every snapshot pinned by a live run, and pins of runs that ended less than 24
-  hours ago MUST be kept. Quarantined and abandoned snapshots MUST be kept for their declared period.
+  hours ago MUST be kept. A snapshot pinned by a live run (its own staged snapshot, a `from` input, an
+  output base, or a reference of a reset run) MUST NOT move to `ABANDONED`, whether by its time to
+  live or by being passed over by another publication. Unpublished, quarantined and abandoned
+  snapshots MUST be kept for their declared period, counted from the snapshot's creation whatever its
+  state, so no snapshot is kept twice that period. A snapshot that an asset's pointer names MUST NOT
+  become `RETIRED`; tombstoning an asset clears its pointer with a publication record first.
   Deletion MUST mark the snapshot `RETIRED` and its parts `DELETING` in one audited transaction
   before provider deletion, with ADR-0023's durable retry; bytes are released only after confirmed
   deletion. Destroying customer data this way supersedes in part ADR-0023 and ADR-0027 and is
@@ -595,7 +695,12 @@ The per-driver details these requirements refer to are normative in
   ceiling (plan table); the effective value is the minimum of request, namespace and deployment;
   zero refuses new admission and never means unlimited; admission fails before work. Snapshot bytes
   MUST count against a new tenant aggregate `tenant_data_bytes`, separate from
-  `tenant_content_bytes`.
+  `tenant_content_bytes`. The transaction that fails a data attempt, retries it under a new
+  generation after its lease lapsed, cancels it or refuses its completion MUST claim that attempt's
+  uncommitted `DATA_SNAPSHOT_PART` uploads for deletion (ADR-0023 tombstone with an immediate retry
+  time), and an upload of that fence that finishes later is claimed when it finishes; the bytes and
+  the pending-upload slot are released after confirmed deletion (ADR-0027), not after the 24-hour
+  upload time to live, which stays only as a backstop.
 - **FR-024-036 — Observability and audit:** The feature MUST emit OTel spans and metrics with closed
   labels only (`driver`, `engine`, `outcome`, `origin`) and redacted logs. SQL text, parameters,
   result cells, asset content, credentials, provider bodies and locators MUST NOT appear in logs,
@@ -650,7 +755,8 @@ The per-driver details these requirements refer to are normative in
 
 This feature adds exactly one carrier to FR-016-002: the output of a `dataQuery` node, whose schema
 is platform-derived (the 017 typed-cell result shape) and annotated at the highest
-`x-sagat-classification` level among the pinned input columns. `dataTransform` and `dataPublish`
+`x-sagat-classification` level among the pinned inputs (asset columns at their declared level, a
+step source with no declared level at `pii`, FR-024-016). `dataTransform` and `dataPublish`
 outputs are not carriers (structure only). The single consolidated amendment of FR-016-002 is opened
 by the first of the parity features to be implemented (T024-069).
 
@@ -697,16 +803,16 @@ All evidence below is required future evidence, not completed tests.
 | SC-024-003 | Every row of the per-engine type table either maps to its cell type or fails `DATABASE_TYPE_UNSUPPORTED`, tested on each engine; zero partial results | FR-024-008 |
 | SC-024-004 | DuckDB and Polars canaries (read outside mounts, extension install, socket, executing a file written to `/out` or `/spill`, filling them past `size=`, fork bomb, memory exhaustion) fail inside the container in 100% of runs; the mount-profile unit test asserts every writable mount `noexec` and sized and the signed layer as the only executable mount; no DuckDB or Polars code is linked into or executed by the control plane, engine, scheduler, database runner or data runner, and the data runner links no container engine (architecture check) | FR-024-021, 022, 028, 029 |
 | SC-024-005 | Under barrier-controlled concurrency, readers observe only whole published snapshots in 100% of rounds; stale compare-and-set loses with a typed error; a quarantined snapshot is never current | FR-024-018, 019, 023, 025, 026 |
-| SC-024-006 | Crash injection at every commit point of staging, completion, publication, rollback and retention leaves either the old or the new state, no orphan pointer, no double publication, and recovers after restart; an 018 reset after each data journal event type follows its declared registry rule and never re-publishes | FR-024-019, 023..027, 034 |
-| SC-024-007 | A sandbox that reports success for a contract-violating file is refused by the engine's own footer check; contract compatibility modes accept and refuse the documented revision pairs | FR-024-015..017, 023, 024 |
-| SC-024-008 | The lineage fixture matches its expected graph and table; freshness flips on the database clock and the alert fires and resolves; duplicate deliveries of a publication event start exactly one run per trigger per publication, and a rollback is a new event; external observations follow outcomes and only the producer can record them | FR-024-027, 030..032 |
-| SC-024-009 | The tenant battery covers every new REST operation and worker RPC: another tenant's or namespace's resource is indistinguishable from a missing one and the probe is audited; a `dataQuery` output over `pii` columns is disclosed only with the reveal grant, and the 017 result view never serves it | FR-024-014, 016, 029, 033 |
-| SC-024-010 | Exhausting each ceiling of the plan table fails with its typed error before any work, including BigQuery bytes billed and `tenant_data_bytes` at part upload; a publication and its event commit while content quota and `events_per_second` are exhausted | FR-024-009, 027, 035 |
+| SC-024-006 | Crash injection at every commit point of staging, completion, publication, rollback and retention leaves either the old or the new state, no orphan pointer, no double publication, and recovers after restart; an 018 reset after each data journal event type follows its declared registry rule and never re-publishes, a reset after a step-source pin and a reset between a manual transform and its `dataPublish` resolve the source run's step output and snapshot, and a reset racing retention on the same snapshot (barrier) either is refused `SNAPSHOT_RETIRED` or keeps the snapshot | FR-024-019, 023..027, 034 |
+| SC-024-007 | A sandbox that reports success for a contract-violating file is refused by the engine's own footer check; every row of the encoding table is accepted as written by the pinned DuckDB image and by the Polars starter lock, and every other encoding is refused; a data runner made to stage a blob other than the committed part (fault injection) is refused with `DATA_CONTRACT_VIOLATION`; contract compatibility modes accept and refuse the documented revision pairs | FR-024-015..017, 023, 024 |
+| SC-024-008 | The lineage fixture matches its expected graph and table; freshness flips on the database clock, a rollback to an old snapshot leaves the asset `STALE`, and both alerts fire and resolve on their stated conditions; a trigger dispatcher crash after creating the run and before marking the event processed, and a redelivered webhook row, still give exactly one run per trigger per publication, and a rollback is a new event; external observations follow outcomes, only the producer can record them, and a producer change that commits first leaves no observation | FR-024-027, 030..032 |
+| SC-024-009 | The tenant battery covers every new REST operation and worker RPC: another tenant's or namespace's resource is indistinguishable from a missing one and the probe is audited; a `dataQuery` output over `pii` columns, and a `dataQuery` over a Parquet step output with no declared level, is disclosed only with the reveal grant; a `dataQuery` whose step source is a 017 database step (a MySQL query step) is refused at publication; and the 017 result view never serves a `dataQuery` output | FR-024-014, 016, 029, 033 |
+| SC-024-010 | Exhausting each ceiling of the plan table fails with its typed error before any work, including BigQuery bytes billed and `tenant_data_bytes` at part upload; an auto-publishing completion and a `dataPublish` node each commit with their event while content quota and `events_per_second` are exhausted, and an API publication at that full content quota is refused `QUOTA_EXCEEDED` with the pointer, receipt and audit unchanged; after a retried failing transform the tenant's data bytes and pending uploads return to their baseline once the deletions are confirmed, without waiting a day | FR-024-009, 026, 027, 035 |
 | SC-024-011 | Real OTLP export, logs and audit of every scenario contain no SQL, parameter, cell, asset-content, credential or locator canary; every metric label is in its closed set; every error is a catalogued code or reason | FR-024-013, 036, 037 |
 | SC-024-012 | The new shared conformance scenarios pass in TypeScript, Go, Python, C#, Java and Rust with identical canonical documents and outcomes | FR-024-020, 028, 038 |
 | SC-024-017 | Ordinary lease and completion budgets are unchanged and the data shapes hold their recorded budget (`integration_claim_transition_efficiency`); a `pii` write to a new-driver connection without a `pii` ceiling is refused, and revoking the saver's reveal grant pauses the connection; a run started from a publication event is checked by the run-input gate | FR-024-042 |
 | SC-024-013 | Real-browser tests cover each driver form, the asset catalog, lineage graph and table, freshness and publish/rollback, with no accessibility violation of WCAG 2.2 AA in automated checks | FR-024-039, NFR-024-006 |
-| SC-024-014 | Retention keeps every pinned and in-window snapshot and deletes the rest only after commit; a crash during deletion retries without losing a retained snapshot; a quarantined snapshot cannot reach a reader through `from` | FR-024-014, 019, 034 |
+| SC-024-014 | Retention keeps every pinned and in-window snapshot and deletes the rest only after commit; a crash during deletion retries without losing a retained snapshot; a quarantined snapshot cannot reach a reader through `from`; a snapshot staged by a live run stays `AUDITED` through an approval longer than its window and through a rollback that passes it over; no pointer ever names a `RETIRED` snapshot; a feature 020 run purge leaves `DATA_SNAPSHOT_PART` blobs and snapshot metadata untouched (once that purge exists) | FR-024-014, 019, 025, 034 |
 | SC-024-015 | Existing 017 suites pass unchanged; an older generated client reads a connection list containing a MySQL connection; a runner registered below the new minor never receives a new task kind; encrypted-field, cache and mock combinations are refused at publication | FR-024-038, 041, NFR-024-003 |
 | SC-024-016 | The quickstart demo runs from a clean checkout with the documented commands, showing the happy path and the audit-failure path, and its runbooks are linked from the operator index | FR-024-040 |
 
@@ -774,7 +880,7 @@ question is kept, with its answer first.
   not reached; until the owner decides, retention marks snapshots `RETIRED` and keeps their bytes.
   (This is a fourth owner question; the coordinator asked for it explicitly.)
 
-See [research](research.md) for decisions D1240–D1279 and D024-001–D024-015 and gaps G1240–G1256
+See [research](research.md) for decisions D1240–D1279 and D024-001–D024-016 and gaps G1240–G1256
 and G024-001–G024-005, the
 [plan](plan.md), the [data model](data-model.md), the [contracts](contracts/README.md), the
 [quickstart](quickstart.md), the [tasks](tasks.md) and the [requirements checklist](checklists/requirements.md).

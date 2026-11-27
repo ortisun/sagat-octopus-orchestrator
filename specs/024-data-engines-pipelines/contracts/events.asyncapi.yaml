@@ -40,7 +40,9 @@ components:
           X-Octopus-Schema-Version: {type: string, const: '1'}
       payload:
         type: object
-        additionalProperties: true
+        # Closed (FR-024-027): the platform writes exactly these members, and the inbox CHECK bounds
+        # the stored document to 1 KiB. A later member is added by a schema revision, never by a writer.
+        additionalProperties: false
         required: [type, tenantId, namespaceId, assetName, snapshotId, pointerVersion, origin, publishedAt]
         properties:
           type: {type: string, const: data.asset.published}
@@ -56,7 +58,7 @@ components:
           rowCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
           byteCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
           publishedAt: {type: string, format: date-time}
-          traceId: {type: string}
+          traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
     OpsAlertKindAdditions:
       name: ops.alert.fired / ops.alert.resolved (kind enum growth)
       title: Two alert kinds appended to the existing alert payload enum

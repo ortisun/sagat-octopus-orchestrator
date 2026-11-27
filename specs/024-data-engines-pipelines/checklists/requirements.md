@@ -1,7 +1,8 @@
 # Specification Quality Checklist: Data engines and pipelines
 
 **Purpose**: Validate specification completeness and quality before planning and implementation
-**Created**: 2026-10-26; revised 2026-11-26 against `develop` at `e5bda041`
+**Created**: 2026-10-26; revised 2026-11-26 against `develop` at `e5bda041`; items marked
+*(2026-11-27)* rechecked after the correctness review (research Decision 024-016)
 **Feature**: [spec.md](../spec.md)
 
 **Marker semantics**: `[x]` means the author checked the criterion against the text on the date of
@@ -41,7 +42,10 @@ implementation. On 2026-11-26 every item that was unticked was disposed under th
   asks for evidence on named engines and checks, and a criterion without them could not fail.
 - [x] All acceptance scenarios are defined (Given/When/Then plus a failure scenario per story).
 - [x] Edge cases are identified (pins vs pointer moves, overlapping producers, quota during upload,
-  tombstone in flight, encrypted parameters, cancellation of uploaded parts).
+  tombstone in flight, encrypted parameters, cancellation of uploaded parts). *(2026-11-27)* Added:
+  parts of failed, retried and cancelled attempts released in the deciding transaction, a live run's
+  staged snapshot never abandoned, an object-store outage during footer reads, repeated output assets
+  or aliases in one node, and the tombstone clearing the pointer.
 - [x] Scope is clearly bounded (out-of-scope list; gaps G1240–G1256 and G024-001–G024-005).
 - [x] Dependencies and assumptions identified (merged features 001–018, 035, 038, 041 and 043, design
   046, parallel features 018–032, the refinements of ADR-0013, ADR-0023, ADR-0027, ADR-0035 and
@@ -70,6 +74,20 @@ implementation. On 2026-11-26 every item that was unticked was disposed under th
   reveal grant, recheck, pause, audit), and the publication event carries no column value.
 - [x] Tenant boundary: foreign resources are opaque `NOT_FOUND`; the tenant battery covers every new
   operation and RPC (SC-024-009, Task 024-062).
+- [x] *(2026-11-27)* Classification never drops below the source: a `dataQuery` output counts each
+  input at a recorded level, a step source with no declared level at `pii`, so no input leaves the
+  highest level undefined, and a `dataQuery` may not read a 017 database result at all, which keeps
+  `database:result:read` as its only audience (FR-024-016, FR-024-029, SC-024-009, Task 024-041;
+  correctness review Blocker 1; Decision 024-017).
+- [x] *(2026-11-27)* Every guarantee has a test that can fail: the audit digest check is stated as a
+  data-runner self-check and tested by fault injection; the Parquet schema check has a normative
+  encoding table; the run-purge exclusion waits, in Task 024-077, for the feature 020 purge it needs
+  (correctness review Majors 5, 6 and 11).
+- [x] *(2026-11-27)* A full content quota never rolls back a run publication: the publication event
+  and the transform and `dataPublish` output documents are bounded `protected_system` records; an API
+  publication, whose justification is tenant text in the charged `content` class, is refused
+  `QUOTA_EXCEEDED` with nothing written (FR-024-026, FR-024-027, SC-024-010; correctness review
+  Major 3; Decision 024-017).
 - [x] Six-SDK conformance (TypeScript, Go, Python, C#, Java, Rust) for the new nodes and the
   `assets` property (SC-024-012).
 - [x] No exactly-once claim; every driver names its recovery rule; ambiguous writes wait for a person.
@@ -97,7 +115,10 @@ implementation. On 2026-11-26 every item that was unticked was disposed under th
   no allocation is needed. The register of `sdks/SPEC.md` section 9 gives this feature the next free
   minor when its contract merges (Owner decision 2026-11-15-8; Decision 024-014), and the foundation
   slice takes the migration versions after the latest of `develop` when it writes them (Task
-  024-010); field numbers are rechecked against the canonical file at merge.
+  024-010); field numbers are rechecked against the canonical file at merge. *(2026-11-27)* The
+  2026-11-26 recheck was wrong (`CompleteStepRequest` field 13 is feature 041's), so `data_result`
+  takes 14 and Task 024-008 adds a contract test that fails on a taken number instead of a manual
+  recheck.
 
 ## Notes
 
@@ -131,3 +152,9 @@ implementation. On 2026-11-26 every item that was unticked was disposed under th
   ADR-0058 is accepted (Owner decisions 2026-11-26-160 to 2026-11-26-164); the checklist items above
   are disposed (Owner decision 2026-11-26-165). The research register records the new entries as
   Decisions 024-001 to 024-015 and Gaps 024-001 to 024-005.
+- Round 4 (2026-11-27): an independent correctness review (`reviews/2026-11-27-correctness.md`,
+  1 Blocker, 12 Majors, 12 Nits). Every claim about code was checked against the code it cites; all
+  were confirmed and every finding was fixed in the set and in ADR-0058 decisions 4, 9 and 10
+  (research Decision 024-016; new Tasks 024-077 and 024-078). Task 024-077 needs an owner row
+  (OD-2026-11-27-240, requested) because it waits for feature 020's run purge. Not re-reviewed after
+  these edits.

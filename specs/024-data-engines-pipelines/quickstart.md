@@ -134,8 +134,11 @@ Expected:
   `filter: event.subject == "orders-daily"`) starts exactly once for that publication.
 
 The casts matter: a staged database result exposes integers as `HUGEINT` and decimals with their
-retained scale, and the engine refuses any output whose Parquet schema differs from the contract
-(`DATA_CONTRACT_VIOLATION`).
+retained scale, and the engine refuses any output whose Parquet schema the contract does not accept
+under the encoding table of the data runtime contract (`DATA_CONTRACT_VIOLATION`). DuckDB writes
+every query column `OPTIONAL`; that is accepted for `order_id` and `order_date` (`nullable: false`)
+because the generated not-null audit catches a null, and it writes `decimal(18,2)` as `INT64`, one of
+the accepted encodings.
 
 ## 4. Failure path (US03)
 
@@ -147,7 +150,9 @@ Expected:
 - The run fails at `transform` with `DATA_AUDIT_FAILED`.
 - The new snapshot is `QUARANTINED` with `unique_order_id: FAILED, failingCount: 1`; the pointer is
   still version 1; no `data.asset.published` event is written; `DATA_SNAPSHOT_QUARANTINED` fires for
-  `orders-daily` on the next monitor look.
+  `orders-daily` on the next monitor look, because an unretired quarantined snapshot newer than the
+  current one exists, and resolves once a newer snapshot is published or the quarantined one is
+  retired.
 - `POST …/publications` with that snapshot answers `409` reason `SNAPSHOT_QUARANTINED`.
 - Logs, spans, metrics and audit contain no SQL text, row value or credential (checked by the
   canary script of T024-063).

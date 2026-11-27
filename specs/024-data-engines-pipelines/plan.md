@@ -6,7 +6,7 @@
 Status: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
 2026-11-24-1); Architecture decision 0058 accepted (delegate, Owner decision 2026-11-26-164); not started.
 Revised 2026-11-26 against `develop` at `e5bda041` after an independent audit (research Decisions
-024-001 to 024-015).
+024-001 to 024-015), and on 2026-11-27 after the correctness review (Decision 024-016).
 
 ## Summary
 
@@ -72,7 +72,9 @@ quota class, and retention deletes bytes under the declared retention (T024-038)
 work: the real-service suite on owner-provided accounts before `database-warehouses-v1` is recorded
 (T024-027, Owner decision 2026-11-26-161); design 046 built and Gap 024-002 designed (T024-076)
 before T024-051; Architecture decision 0079's acceptance and its Kubernetes half before the data
-deployment ships on Kubernetes (Gap 024-001; Compose is not blocked). Constitution Governance also
+deployment ships on Kubernetes (Gap 024-001; Compose is not blocked); feature 020's run purge built
+before T024-077 proves that the purge leaves snapshot parts and metadata alone (owner row
+OD-2026-11-27-240, requested). Constitution Governance also
 requires benchmark data and operational cost for the ADR-0023/0027 refinements before ADR-0058 is
 accepted as implemented (T024-066).
 
@@ -188,11 +190,20 @@ specs/024-data-engines-pipelines/
    the attempt socket, reads the request, runs the statement or script and, before it exits, streams
    each part of `/out` in bounded length-prefixed frames; the data runner uploads each part as it
    arrives (`WriteBlob`, digest computed while streaming) and keeps no copy. It then reads its own
-   uploaded parts back with `ReadBlob` into a new attempt directory, asks for a fresh audit attempt
-   with that directory read-only, and reports the audited digests, which the engine compares with the
-   committed parts (D1276). A memory kill reported by `DELETE` (`memory_killed`) is
-   `DATA_RESOURCE_EXHAUSTED`; a refusal or an unavailable sandbox is `DATA_RUNTIME_UNAVAILABLE`
-   (retryable). Step sources (D1274) are staged the same way: a committed Parquet step-output blob
+   uploaded parts back with `ReadBlob` into a new attempt directory, checking each against the
+   SHA-256 the server measured at upload (this read-back is what binds the audit to the uploaded
+   bytes), asks for a fresh audit attempt in the transform's class with that directory read-only, and
+   reports the digests of what it staged, which the engine compares with the committed parts: that
+   comparison catches a data-runner fault that staged other bytes, not a lying audit container, whose
+   outcomes rest on the sandbox (Gap 1249; Decision 024-016). A memory kill of the transform reported
+   by `DELETE` (`memory_killed`) is `DATA_RESOURCE_EXHAUSTED`; a refusal or an unavailable sandbox is
+   `DATA_RUNTIME_UNAVAILABLE` (retryable, not counted against `maxAttempts` when no container of the
+   attempt started, at most 10 such attempts per step); any failure of the audit attempt itself
+   (refusal, unavailable, memory kill, timeout, crash, `ERROR` of a platform-generated check) is
+   `DATA_RUNTIME_UNAVAILABLE` with no snapshot committed, never a quarantine. On start-up the data
+   runner ends, through `DELETE`, every attempt whose directory it finds in its work volume before it
+   offers the activities, so an attempt orphaned by its crash does not hold a slot until its label
+   deadline. Step sources (D1274) are staged the same way: a committed Parquet step-output blob
    as one part, an inline or blob 017 database result as a typed JSON table. See
    [data runtime](contracts/data-runtime.md).
 7. **Output acceptance.** The runner uploads parts with `WriteBlob` purpose `DATA_SNAPSHOT_PART`.
@@ -201,21 +212,35 @@ specs/024-data-engines-pipelines/
    `object_store` range requests in `crates/infra-blobstore`, so a footer is read without streaming
    the whole part), verifies schema/row counts/encryption flag against the pinned contract
    with `crates/infra-data` in `apps/execution-engine` (bounded decoder limits, a blocking task under
-   `catch_unwind`, a fuzz target; G1256), then opens the completion transaction, rechecks the fence
-   and the blob rows, and commits (data model). A mismatch, limit hit or decoder panic is
-   `DATA_CONTRACT_VIOLATION`.
+   `catch_unwind`, a fuzz target; G1256) under the normative encoding table of the
+   [data runtime contract](contracts/data-runtime.md#contract-types-and-parquet-encodings), then
+   opens the completion transaction, rechecks the fence and the blob rows, and commits (data model).
+   A mismatch, limit hit or decoder panic is `DATA_CONTRACT_VIOLATION`. An object-store error while
+   reading a footer (`BlobReadError::Unavailable`) is not a mismatch: `CompleteStep` answers the
+   transient gRPC status `UNAVAILABLE` with no state change, and the data runner sends the same
+   completion again with the same idempotency key while its lease holds.
 8. **Publication.** One application function performs the CAS for the three origins: lock the asset
-   head(s) in id order, check status `ACTIVE`, current producer binding (run origins), snapshot
+   head(s) in id order, check status `ACTIVE`, current producer binding (run origins; for
+   `RUN_NODE` against the `dataTransform` node the `dataPublish` names in `from`), snapshot
    state `AUDITED` or (rollback) previously `PUBLISHED`, and the expected version; then write the
-   pointer, the publication record, abandon passed-over `AUDITED` snapshots, the inbox event, the
-   webhook delivery rows and the audit. A snapshot equal to the current pointer returns
-   `alreadyPublished` without writing.
+   pointer, the publication record, abandon passed-over `AUDITED` snapshots that no live run pins,
+   the inbox event, the webhook delivery rows and the audit. A snapshot equal to the current pointer
+   returns `alreadyPublished` without writing. An `ABANDONED` snapshot met by a `dataPublish` is
+   stale and follows `onStale`; a stale auto-publication commits its snapshot directly as `ABANDONED`
+   when no `from` or `dataPublish` of the definition names its node. The output documents of the
+   transform and of `dataPublish` are `protected_system` records, so a run publication never meets a
+   content-quota refusal (Decision 024-016); the API justification is charged `content`, so an API
+   publication at a full content quota is refused `QUOTA_EXCEEDED` with everything rolled back
+   (Decision 024-017).
 9. **`dataPublish` in the reducer.** The node activates like `end`/`timer` (no lease); the scheduler
    path that applies the reducer's commands calls the publication function in the same transaction.
    Run cancellation, deadline and a concurrent API publication are decided by first commit.
 10. **Freshness and alerts.** The 008 monitor gains two conditions computed in SQL with the database
     clock, bounded to 25 alerts per kind per namespace per look, with the existing fire/resolve rows
-    and `ops.alert.*` deliveries.
+    and `ops.alert.*` deliveries. Lag is measured from the current snapshot's `created_at` (managed)
+    or `last_observed_at` (external), never from `last_published_at`, so a rollback does not refresh
+    an asset. `DATA_SNAPSHOT_QUARANTINED` is seen while an unretired quarantined snapshot newer than
+    the current one exists (or any, before the first publication).
 11. **Retention.** A loop on `engine_leases` processes one asset per transaction in UUID order, bounded
     batches and wall time; mark phase commits before deletes; confirm phase follows ADR-0023. Byte
     deletion follows the retention the asset manager declared (Owner decision 2026-11-26-163) and
@@ -226,7 +251,11 @@ specs/024-data-engines-pipelines/
     container, encodes the result into the 017 typed-cell shape (≤ 256 KiB inline, validated by the
     017 result validator as a reusable function) and completes with it as its output. The output is a
     016 carrier: its schema is platform-derived and annotated with the highest level among the
-    pinned input columns, so the existing payload disclosure decides who sees it. No 017 driver,
+    pinned inputs, an asset input at its highest pinned column level and a step source at `pii`
+    unless its output is a 016 carrier that declares a level for every field; publication refuses a
+    step source that is a 017 database step (`DATA_NODE_SCOPE`), so a database result keeps the
+    017 audience (`database:result:read`); the first-lease transaction records each input's level in `step_data_inputs`, so the
+    existing payload disclosure decides who sees it and never meets an undefined level. No 017 driver,
     role rule or result endpoint changes.
 13. **Studio and SDKs.** The Studio follows the generated client; the driver form is driven by
     `listDatabaseDrivers`; lineage uses the graph component with a table alternative. The six SDK
@@ -263,22 +292,40 @@ BEGIN;
      key first and upgrading later would let two completions deadlock); recheck ACTIVE and the
      producer binding under that lock (DATA_ASSET_NOT_ACTIVE / refusal otherwise);
   for each output: check every part blob is UPLOADED with this exact fence, size and sha256, and
-     that the audited digests equal the parts' digests;
-  insert data_snapshots (AUDITED|QUARANTINED), parts (blobs -> COMMITTED), inputs, audits;
+     that the digests the data runner staged for the audit equal the parts' digests (a data-runner
+     self-check; the audit outcomes rest on the sandbox, Gap 1249);
+  insert data_snapshots (AUDITED|QUARANTINED, or ABANDONED for a stale auto-publication no later
+     node reads), parts (blobs -> COMMITTED), inputs, audits;
   if publish = auto and AUDITED: CAS(pointer_version = base);
-     write pointer, publication, abandon passed-over AUDITED, inbox event (protected_system:
-     no content charge, no events_per_second spend), deliveries, audit;
+     write pointer, publication, abandon passed-over AUDITED that no live run pins, inbox event
+     (protected_system: no content charge, no events_per_second spend), deliveries, audit;
      on stale: fail -> step FAILED DATA_PUBLISH_STALE | skip -> published=false;
   no new tenant_data_bytes charge: parts were charged at upload reservation (ADR-0027, D1278);
-  update step, journal, next tasks/timers, outbox, completion receipt;
+  update step, journal, next tasks/timers, outbox, completion receipt; the step's output document
+     is a protected_system record (listed in data_protected_outputs, measured as zero);
 COMMIT;
+-- A refused completion (DATA_CONTRACT_VIOLATION, STORAGE_QUOTA_EXCEEDED, an audit-attempt failure),
+-- FailStep, a lease expiry that grants a new generation and a cancellation each also claim the
+-- attempt's UPLOADED DATA_SNAPSHOT_PART blobs of that fence for deletion (UPLOADED -> DELETING, retry
+-- due now), after the run lock, in the same transaction (Decision 024-016).
 
 -- API publish / rollback
 BEGIN;
   receipt lookup (same key+fingerprint -> replay after current authorization);
   current membership guard (before any asset lock, D1273);
   lock asset head FOR NO KEY UPDATE; check ACTIVE, snapshot eligibility, expectedPointerVersion;
-  write pointer, publication, receipt, inbox event, deliveries, audit;
+  write pointer, publication (justification class content, at most 1,024 bytes; a full content
+     quota refuses QUOTA_EXCEEDED and rolls everything back), receipt, inbox event, deliveries, audit;
+COMMIT;
+
+-- Declared external write completion (database or icebergWrite step with assets.writes)
+BEGIN;
+  lock run; existing managed completion guards; check lease/generation/receipt;
+  lock the external asset heads FOR NO KEY UPDATE ascending; recheck ACTIVE and that the node is
+     the producer of the current revision (otherwise no observation, the refusal audited);
+  insert data_asset_observations, update data_assets.last_observed_at, journal
+     data.observation_recorded;
+  update step, journal, next tasks, outbox, completion receipt;
 COMMIT;
 ```
 
@@ -295,7 +342,7 @@ two-phase capability pattern). Every new adapter transaction starts with `begin_
 | Ad hoc execution on a remote driver | `run:start` + `database:adhoc` + `database:use` (+ `database:write` for execute) | admin, developer |
 | Read a remote database result | `run:read` + `database:result:read` (017, unchanged) | admin |
 | Run a `dataQuery` (published, or as a 022 standalone step) | `run:start` + `data:asset:use` | admin, developer |
-| Read a `dataQuery` output | 016 payload disclosure at the highest pinned column level (`payload:read-internal`; the namespace `payload:reveal-pii` grant) | per 016 |
+| Read a `dataQuery` output | 016 payload disclosure at the highest pinned input level, a step source with no declared level counting as `pii` (`payload:read-internal`; the namespace `payload:reveal-pii` grant); a `dataQuery` cannot read a 017 database result, which stays behind `database:result:read` | per 016 |
 | Read assets, revisions, snapshots, audits, publications, freshness | `namespace:read` | admin, developer, operator, viewer |
 | Read lineage | `namespace:read` + `definition:read` | admin, developer, operator, viewer |
 | Declare, revise, pause or delete an asset | `data:asset:manage` | admin |
@@ -340,8 +387,11 @@ lower if a measured run does not support it.
 | Container memory (includes the `/out` and `/spill` tmpfs) / CPUs | 3 GiB / 1 (class `small`) | 16 GiB / 4 (class `large`) | the data mode's class budgets (Architecture decision 0079 rule 5), memory cgroup |
 | `/spill` tmpfs | 1 GiB | 4 GiB | `size=`, DuckDB `max_temp_directory_size` |
 | `dataQuery` result (inline output) / rows / wall time | 256 KiB / 1,000 / 2 min | 256 KiB / 10,000 / 10 min | engine, container |
-| Transform wall time / audit wall time | 10 min / 2 min | 60 min / 10 min | lease deadline, container |
+| Data step timeout (`timeoutMs`: staging, transform, upload, read-back, audit, report) | 15 min | 60 min | lease deadline |
+| Transform wall time / audit wall time | 10 min / 2 min | the step timeout minus the audit time and the staging allowance / 10 min | container deadlines inside the lease |
 | Transform attempts | 2 | 5 | retry policy |
+| Attempts ended `DATA_RUNTIME_UNAVAILABLE` before any container started (not counted in the attempts above) | 10 per step | 10 per step | retry policy |
+| Output document of a `dataTransform` or `dataPublish` step (protected) | — | 4 KiB | `data_protected_outputs` check |
 | Concurrent data attempts namespace / tenant | 4 / 16 | 32 / 128 | `data_concurrency`, `tenant_data_concurrency` |
 | Pending data part uploads per tenant | 128 | 512 | blob catalog |
 | Retained published snapshots per asset | 5 | 50 | retention |
@@ -350,7 +400,7 @@ lower if a measured run does not support it.
 | `tenant_data_bytes` | 10 GiB | 2^50 bytes | ADR-0027 accounting, class `data` |
 | Lineage response | 200 nodes, depth 4 | 500 nodes, 2,000 edges, depth 8 | API |
 | Freshness `maxLagSeconds` | — | 60 s .. 31,536,000 s | domain |
-| Publication justification | — | 1,024 bytes | API |
+| Publication justification (charged `content`, plain text without control characters) | — | 1,024 bytes | API and a column CHECK; content quota |
 
 Effective = min(request, namespace, deployment). Zero refuses new admission and is never
 unlimited. Lowering a ceiling never rewrites a retained revision, kills dispatched work or deletes
@@ -360,7 +410,8 @@ retained snapshots; it refuses new growth.
 
 | Failure | Expected state | Handling and test |
 | --- | --- | --- |
-| Runner crash after uploading parts, before completion | Parts `UPLOADED`, no snapshot | Lease expiry → retry with new generation and same pins; parts swept by ADR-0023 (fault) |
+| Runner crash after uploading parts, before completion | Parts `UPLOADED`, no snapshot | Lease expiry → retry with new generation and same pins; the expiry transaction claims the old fence's parts for deletion, and the charge is released after confirmed deletion (fault; Task 024-078) |
+| Retried failing transform | Each failed attempt's parts claimed for deletion in its failure transaction | Tenant data bytes and pending uploads back to baseline once deletions are confirmed, without waiting for the 24-hour time to live (integration; Task 024-078) |
 | Crash after completion commit, before acknowledgement | Snapshot and pointer committed | Receipt replay returns the same outcome; no second snapshot (fault) |
 | Duplicate `CompleteStep` / stale generation | — | Receipt replay / `STALE_ATTEMPT`; stale parts never committed (integration) |
 | Lost broker hint for a data task | Task `READY` | Reconciler re-emits; runner polls (fault) |
@@ -369,25 +420,30 @@ retained snapshots; it refuses new growth.
 | API publication races a run publication | Asset row lock serializes | CAS loser `DATA_PUBLISH_STALE` / `CONFLICT` (race test) |
 | Pointer moves after a step pinned its input | Step reads its pinned snapshot | Retention keeps it (integration) |
 | Retention races a new pin | Pin takes asset head `FOR SHARE`; retention `FOR NO KEY UPDATE` and recheck | Pinned snapshot never deleted (race test) |
-| Object store unavailable during staging or footer read | Attempt fails retryably | Nothing published (fault) |
+| Retention races an 018 reset that references the snapshot | Reset takes asset heads `FOR SHARE` in slot 4b and reads the snapshot state under that lock; retention `FOR NO KEY UPDATE` and rechecks `run_data_snapshot_refs` | Reset refused `SNAPSHOT_RETIRED`, or the snapshot kept (barrier race test, Task 024-068) |
+| Approval longer than `retainUnpublishedDays` before `dataPublish`; a rollback during the approval | The run's staged snapshot stays `AUDITED` (live-run pin) | `dataPublish` publishes, or is stale and follows `onStale` after the rollback (race tests, Task 024-049) |
+| Object store unavailable during staging | Attempt fails retryably | Nothing published (fault) |
+| Object store unavailable while the engine reads footers | No state change | `CompleteStep` answers `UNAVAILABLE`; the same completion is sent again with the same key; never `DATA_CONTRACT_VIOLATION` (fault) |
 | Sandbox reports success for a bad file | Engine refuses | `DATA_CONTRACT_VIOLATION` (security) |
-| Audit container crash or timeout | Snapshot `QUARANTINED` with `ERROR` outcome | Step fails `DATA_AUDIT_FAILED`; retry policy applies to a new attempt (fault) |
+| Audit attempt refused, unavailable, killed for memory, timed out or crashed, or a platform-generated check reports `ERROR` | No snapshot; the attempt's parts claimed for deletion | Step fails `DATA_RUNTIME_UNAVAILABLE`, retryable; never a quarantine (fault; Task 024-035) |
+| A check the asset manager authored reports `ERROR` | Snapshot `QUARANTINED` | Step fails `DATA_AUDIT_FAILED`, not retryable (integration; Task 024-035) |
 | A tenant file written to `/out` or `/spill` is executed | `EACCES` (`noexec`) | Step fails `DATA_TRANSFORM_FAILED`; mount-profile unit test and container canary (security) |
 | `/out` filled past `size=` | `ENOSPC` in the container | `DATA_OUTPUT_LIMIT`; nothing committed (security) |
-| Publication while content quota and `events_per_second` are exhausted | Commits: the event is `protected_system` and not rate-charged | Publication and completion succeed (integration at full quota) |
-| An 018 reset point after a data node | Per the registry rules: pins and snapshot references rematerialized, publications and observations copied, never re-executed | Reset refused (`SNAPSHOT_RETIRED`) when a referenced snapshot is retired (integration with 018) |
+| Publication while content quota and `events_per_second` are exhausted | A run publication commits: the event and the step output documents are `protected_system` and not rate-charged. An API publication is refused: its justification is charged `content` | An auto-publishing completion and a `dataPublish` succeed; an API publication answers `QUOTA_EXCEEDED` with nothing written (integration at full quota) |
+| An 018 reset point after a data node | Per the registry rules: pins and snapshot references rematerialized (a step-source pin names the source run's output, admitted through the reset link), publications and observations copied, never re-executed | Reset refused (`SNAPSHOT_RETIRED`) when a referenced snapshot is retired; a reset after a step-source pin and between a manual transform and `dataPublish` resolve the source run's records (integration with 018) |
+| A declaration revision changes the producer of an external asset while its producer's write completes | Asset head lock serializes | First commit wins: the observation is recorded before the revision, or not at all after it (race test, Task 024-054) |
 | Binary rollback to 0.2.0 after a new-driver connection exists | 0.2.0 store raises an internal error on the whole connection list | Prevented operationally: new drivers stay disabled until rollback is no longer planned; schema downgrade refuses (integration on a 0.2.0 binary) |
-| `tenant_data_bytes` exhausted during part upload | Reservation refused; attempt fails `STORAGE_QUOTA_EXCEEDED` (ADR-0027 path) | Earlier parts swept; pointer unchanged (integration) |
+| `tenant_data_bytes` exhausted during part upload | Reservation refused; attempt fails `STORAGE_QUOTA_EXCEEDED` (ADR-0027 path) | The failure transaction claims the earlier parts for deletion; pointer unchanged (integration) |
 | Quarantined snapshot routed by `onError` to a `from` input | Input refused | `DATA_INPUT_QUARANTINED`; nothing derived from it published (integration) |
-| Audit container reports digests of other files | Engine refuses | `DATA_CONTRACT_VIOLATION`; nothing committed (security) |
+| The data runner stages a blob other than the committed part for the audit (fault injection) | Engine refuses: the staged digests differ from the parts | `DATA_CONTRACT_VIOLATION`; nothing committed (fault) |
 | Warehouse write, ambiguous response, lease held | Lookup decides | Known outcome reported; else `OUTCOME_UNKNOWN` (fake-server fault) |
 | MySQL/MariaDB/SQL Server write, ambiguous response | `OUTCOME_UNKNOWN`, manual review | No automatic retry (real-container SIGKILL fault) |
 | Failed compensation: the explicit compensating write on the error path fails | Run records both outcomes; review if unknown | Never assumed undone (fault) |
-| Engine or runner restart mid-transform | Lease expiry, retry | Pins reused; old parts unused (restart test) |
+| Engine or runner restart mid-transform | Lease expiry, retry | Pins reused; old parts claimed for deletion by the expiry transaction (restart test) |
 | Data-mode sandbox runner restarts mid-transform | Containers keep running to their label deadline; the new process rebuilds its slots and reservations from the labels | The data runner's `wait` answers `unavailable` and is asked again; nothing is committed twice (restart test against the engine double, Architecture decision 0079 rules 7 and 13) |
-| Data mode refuses the attempt (ceiling, slot, class, deadline, directory) or is unavailable | No container | `DATA_RUNTIME_UNAVAILABLE`, retryable, counted as an attempt (integration with the engine double) |
-| Data runner dies with a container running | Container ends at its label deadline; the attempt directory is removed only after that time | Lease expiry, retry with a new attempt id and the same pins (fault) |
-| Publication event redelivered | Inbox key dedupe | One run per trigger per snapshot (fault) |
+| Data mode refuses the attempt (ceiling, slot, class, deadline, directory) or is unavailable | No container | `DATA_RUNTIME_UNAVAILABLE`, retryable, not counted against `maxAttempts`, at most 10 such attempts per step (integration with the engine double) |
+| Data runner dies with a container running | The restarted data runner ends, through `DELETE`, every attempt whose directory it finds before it offers activities; a container whose directory is gone ends at its label deadline | Lease expiry, retry with a new attempt id and the same pins; the slot is free again at the restart (fault) |
+| Trigger dispatcher crashes after creating the run and before marking the publication event processed; an outbound webhook row is redelivered | Inbox key and the trigger's run key dedupe | One run per trigger per publication; the webhook receiver sees the delivery id again (fault) |
 | OpenBao unavailable | Fail closed | `DATABASE_CREDENTIAL_UNAVAILABLE`, no fallback (integration) |
 | Monitor lease lost mid-look | Alerts unchanged | Next look recomputes (integration) |
 
@@ -432,7 +488,9 @@ decision.
   set gains the `dataQuery` output. AsyncAPI grows (new message `DataAssetPublished`, alert kind
   values); baseline regenerated after reading the diff. Worker protocol: the next free minor of the
   register in `sdks/SPEC.md` section 9 when the contract merges (1.7 is feature 041's; Decision
-  024-014), new RPC and optional fields only, `ResolvedDatabase` fields from 16 on. The connection
+  024-014), new RPC and optional fields only, `ResolvedDatabase` fields from 16 on,
+  `WriteBlobHeader.purpose = 11` and `CompleteStepRequest.data_result = 14` (13 is feature 041's
+  `step_logs`), each checked against the canonical file by a contract test (T024-008). The connection
   `config` union and `DatabaseDriverList` already exist (feature 035); they grow.
 - **Database**: additive migrations, written once in the foundation slice after the latest migration
   of `develop` (`20270210000100` on 2026-11-26); downgrade refuses while assets, snapshots or
