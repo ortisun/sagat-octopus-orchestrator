@@ -6,7 +6,8 @@ use crate::privilege::{self, LeastPrivilegeError};
 use sagat_application::definitions::{Applied, Idempotency};
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityStore;
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_application::tenant_boundary::BoundaryAudit;
+use sagat_domain::audit::{AuditAction, AuditRecord, BoundaryDenial, ResourceType};
 use sagat_domain::identity::{
     Environment, Membership, Namespace, NamespaceId, Role, Slug, Subject, Tenant, TenantId,
     Workspace, WorkspaceId,
@@ -20,7 +21,8 @@ use time::OffsetDateTime;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-/// Identical cross-tenant denials from one actor are recorded at most once per this window.
+/// Identical denials from one actor are recorded at most once per this window; it is also the window of the platform's
+/// security audit (`crate::security_audit`).
 pub const DEFAULT_DENIAL_WINDOW: Duration = Duration::from_secs(300);
 
 /// Most denial events being written at the same time; beyond this they are dropped (and logged).
@@ -58,6 +60,7 @@ impl PgIdentityStore {
 
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
+        crate::security_audit::register_probe_counters();
         Self {
             pool,
             denial_window: DEFAULT_DENIAL_WINDOW,
@@ -72,7 +75,7 @@ impl PgIdentityStore {
         self
     }
 
-    /// Waits until every denial write already accepted by this store has finished.
+    /// Waits until every denial write already accepted by this store has finished, the platform's security audit's too.
     pub async fn flush_denial_writes(&self) {
         let permits = Arc::clone(&self.denial_slots)
             .acquire_many_owned(MAX_PENDING_DENIALS as u32)
@@ -81,6 +84,7 @@ impl PgIdentityStore {
             Ok(permits) => drop(permits),
             Err(error) => tracing::error!(%error, "denial-write barrier unexpectedly closed"),
         }
+        crate::security_audit::flush().await;
     }
 
     /// Creates a tenant and its first administrator atomically.
@@ -608,7 +612,7 @@ impl IdentityStore for PgIdentityStore {
                 }
                 Err(error) => {
                     metrics::counter!("audit_denials_total", "outcome" => "failed").increment(1);
-                    tracing::error!(%error, "failed to record a cross-tenant denial");
+                    tracing::error!(%error, "failed to record a denial");
                 }
             }
         });
@@ -648,6 +652,17 @@ impl IdentityStore for PgIdentityStore {
                 ),
             }))
         }
+    }
+}
+
+impl BoundaryAudit for PgIdentityStore {
+    async fn record_boundary_denial(&self, denial: &BoundaryDenial) -> Result<(), StoreError> {
+        // The platform's probe first, so that nothing the tenant's write does can keep it from its own gate.
+        if let Some(probe) = denial.probe() {
+            crate::security_audit::record_probe(&self.pool, probe, self.denial_window);
+        }
+        // The caller's tenant: the same record through the same gate, whatever the check found (feature 009, D60).
+        IdentityStore::record_denial(self, denial.tenant_record()).await
     }
 }
 

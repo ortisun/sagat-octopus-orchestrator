@@ -319,7 +319,7 @@ pub trait DisclosureEvaluator: Send + Sync {
 /// Persistence boundary. Implementations must resolve the selected immutable record, recheck the
 /// current role and effective namespace grant, call `evaluator`, append the selected audit and
 /// commit before returning `Ready`. Reveal denial appends `audits.reveal_denied` before `Refused`.
-pub trait PayloadDisclosureStore: Send + Sync {
+pub trait PayloadDisclosureStore: crate::tenant_boundary::BoundaryAudit + Send + Sync {
     fn disclosure_run(
         &self,
         tenant: TenantId,
@@ -331,11 +331,6 @@ pub trait PayloadDisclosureStore: Send + Sync {
         tenant: TenantId,
         run: RunId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
-
-    fn record_disclosure_denial(
-        &self,
-        audit: &AuditRecord,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     fn disclose_and_audit(
         &self,
@@ -411,24 +406,16 @@ where
             .disclosure_run(principal.tenant_id(), run)
             .await?
         else {
-            if let Ok(true) = self
-                .store
-                .run_exists_outside(principal.tenant_id(), run)
-                .await
-            {
-                let denial = AuditRecord::by(
-                    principal,
-                    AuditAction::CrossTenantAccessDenied,
-                    ResourceType::Run,
-                    run.to_string(),
-                    ctx.trace_id.clone(),
-                    self.clock.now(),
-                )
-                .with_reason("resource not accessible from this tenant");
-                if let Err(error) = self.store.record_disclosure_denial(&denial).await {
-                    tracing::error!(error = %error, action = %denial.action(), "failed to record audit entry");
-                }
-            }
+            crate::tenant_boundary::deny_unresolved(
+                &self.store,
+                principal,
+                ResourceType::Run,
+                run.to_string(),
+                self.store.run_exists_outside(principal.tenant_id(), run),
+                ctx.trace_id.clone(),
+                self.clock.now(),
+            )
+            .await;
             return Err(AppError::NotFound);
         };
         Ok(PreparedDisclosure {

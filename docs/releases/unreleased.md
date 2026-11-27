@@ -3,6 +3,24 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Security: a tenant's audit no longer tells whether an identifier exists in another tenant (gap G041-028)
+
+What a tenant's audit trail shows changes. A caller who names a run, workflow, namespace, workspace, publication request
+or approval request that is not in its tenant (an HTTP read or admission, a worker report, a step-log batch) used to leave
+`access.denied.cross_tenant` in its own tenant's trail, with the identifier, only when the identifier existed in another
+tenant. `GET /audit` never returned that record, but it was stored in the tenant's part of the trail.
+
+- The caller's tenant now gets `access.denied.not_found` for a missing and a foreign identifier alike: the kind of
+  resource, no identifier, a fixed reason, once per actor and kind in five minutes. `GET /audit` returns it, so an
+  administrator sees a credential that keeps naming things it cannot reach.
+- The detail (the caller's tenant and actor, the identifier, the tenant that owns it) goes to a new platform-scope table,
+  `security_audit_records` (migration `20270219000000_platform_security_audit`), which no API reads; operators query it
+  with SQL (`docs/runbooks/security-governance.md`). It is bounded: in five minutes at most 100 records per caller and owning tenant, and 1000 per caller's tenant and owning tenant.
+- New metrics `cross_tenant_probes_total{resource_type}` and `security_audit_writes_total{outcome}`, and the alert
+  `SagatCrossTenantProbing`.
+- Records `access.denied.cross_tenant` written before the upgrade stay in `audit_records` and stay hidden from tenants.
+  A query or a SIEM rule that looked for that action in `audit_records` should look in `security_audit_records`.
+
 ## Workers: leases no host received are withdrawn (feature 006, ADR-0098)
 
 - A lease the engine committed and never handed to a host goes back to `READY` with its attempt unspent, recorded as the new

@@ -162,7 +162,7 @@ async fn bindings_of_one_tenant_are_invisible_and_unchangeable_by_another() {
     // The probes are recorded against the tenant that made them, naming the namespace asked for.
     let probes = crate::support::eventually("the probes are audited", || async {
         let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT resource_id FROM audit_records WHERE tenant_id = $1 \
+            "SELECT resource_id FROM security_audit_records WHERE caller_tenant_id = $1 \
              AND action = 'access.denied.cross_tenant' AND resource_type = 'namespace'",
         )
         .bind(w.other_admin.tenant_id().as_uuid())
@@ -223,7 +223,7 @@ async fn each_binding_operation_audits_a_probe_of_a_foreign_namespace_on_its_own
         let tenant = w.other_admin.tenant_id();
         let audited = crate::support::eventually(operation, || async {
             let rows: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM audit_records WHERE tenant_id = $1 \
+                "SELECT count(*) FROM security_audit_records WHERE caller_tenant_id = $1 \
                  AND action = 'access.denied.cross_tenant' AND resource_type = 'namespace'",
             )
             .bind(tenant.as_uuid())

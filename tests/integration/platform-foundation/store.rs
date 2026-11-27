@@ -466,7 +466,7 @@ async fn the_store_recovers_after_every_connection_is_killed() {
 fn denial(p: &Principal, resource_id: &str) -> AuditRecord {
     AuditRecord::by(
         p,
-        AuditAction::CrossTenantAccessDenied,
+        AuditAction::ResourceNotFoundDenied,
         ResourceType::Workspace,
         resource_id,
         None,
@@ -476,7 +476,7 @@ fn denial(p: &Principal, resource_id: &str) -> AuditRecord {
 
 async fn denial_rows(pool: &sqlx::PgPool) -> i64 {
     sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.not_found'",
     )
     .fetch_one(pool)
     .await
@@ -681,4 +681,186 @@ async fn adding_a_membership_outside_the_api_is_audited_with_its_role() {
         ("membership.granted", "carol")
     );
     assert!(reason.is_some_and(|r| r.contains("developer")));
+}
+
+// ------------------------------------------------- the platform's security audit (feature 009, D60; gap G041-028)
+
+/// The security review of 2026-11-27, Major 1: a caller who fills its share of the platform's security audit with
+/// identifiers of a tenant of its own cannot hide a probe of a third tenant; the share is counted per tenant that owns the
+/// resource. A repeat of one identifier is one record.
+#[tokio::test]
+async fn a_caller_cannot_hide_a_probe_of_a_third_tenant_behind_probes_of_its_own() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let caller = &w.admin_a;
+    // The caller's own second tenant (globex) holds as many workspaces as the share; a third tenant is the victim.
+    let own: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) \
+         SELECT gen_random_uuid(), $1, 'ws-' || n, now() FROM generate_series(1, $2::int) AS n RETURNING id",
+    )
+    .bind(w.tenant_b.id().as_uuid())
+    .bind(i32::try_from(sagat_infra_postgres::MAX_PROBES_PER_CALLER).expect("share"))
+    .fetch_all(&db.pool)
+    .await
+    .expect("the caller's own workspaces");
+    let victim = uuid::Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, slug, created_at) VALUES ($1, 'initech', now())")
+        .bind(victim)
+        .execute(&db.pool)
+        .await
+        .expect("a third tenant");
+    let target = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES ($1, $2, 'secret', now())",
+    )
+    .bind(target)
+    .bind(victim)
+    .execute(&db.pool)
+    .await
+    .expect("the victim's workspace");
+    let probe = |id: uuid::Uuid| {
+        sagat_domain::audit::BoundaryDenial::new(
+            caller,
+            ResourceType::Workspace,
+            id.to_string(),
+            true,
+            None,
+            now(),
+        )
+    };
+    use sagat_application::tenant_boundary::BoundaryAudit as _;
+    for id in &own {
+        w.store
+            .record_boundary_denial(&probe(*id))
+            .await
+            .expect("accepted");
+        w.store.flush_denial_writes().await;
+    }
+    for _ in 0..3 {
+        w.store
+            .record_boundary_denial(&probe(own[0]))
+            .await
+            .expect("accepted");
+    }
+    w.store
+        .record_boundary_denial(&probe(target))
+        .await
+        .expect("accepted");
+    w.store.flush_denial_writes().await;
+
+    let rows: Vec<(String, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT resource_id, owner_tenant_id FROM security_audit_records WHERE caller_tenant_id = $1",
+    )
+    .bind(caller.tenant_id().as_uuid())
+    .fetch_all(&db.pool)
+    .await
+    .expect("probes");
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.1 == Some(w.tenant_b.id().as_uuid()))
+            .count(),
+        own.len(),
+        "the caller's own share, each identifier once"
+    );
+    assert!(
+        rows.contains(&(target.to_string(), Some(victim))),
+        "the probe of the third tenant is recorded: {} rows",
+        rows.len()
+    );
+}
+
+/// The correctness review of 2026-11-27, Minor 6: the share of one caller's tenant about one owning tenant is bounded
+/// whatever the number of its actors (1000 in a window), and a probe of another owning tenant still finds room.
+#[tokio::test]
+async fn the_callers_of_one_tenant_share_a_bound_per_owning_tenant() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let share = sagat_infra_postgres::MAX_PROBES_PER_TENANT;
+    let per_actor = sagat_infra_postgres::MAX_PROBES_PER_CALLER;
+    let own: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) \
+         SELECT gen_random_uuid(), $1, 'ws-' || n, now() FROM generate_series(1, $2::int) AS n RETURNING id",
+    )
+    .bind(w.tenant_b.id().as_uuid())
+    .bind(i32::try_from(share + 1).expect("share"))
+    .fetch_all(&db.pool)
+    .await
+    .expect("workspaces of the second tenant");
+    use sagat_application::tenant_boundary::BoundaryAudit as _;
+    let actors = share / per_actor + 1;
+    let mut sent = 0;
+    for (index, id) in own.iter().enumerate() {
+        let actor = Principal::new(
+            w.tenant_a.id(),
+            subject(&format!(
+                "prober-{}",
+                (index as i64 / per_actor).min(actors - 1)
+            )),
+            sagat_domain::identity::Role::Admin,
+        );
+        let denial = sagat_domain::audit::BoundaryDenial::new(
+            &actor,
+            ResourceType::Workspace,
+            id.to_string(),
+            true,
+            None,
+            now(),
+        );
+        w.store
+            .record_boundary_denial(&denial)
+            .await
+            .expect("accepted");
+        sent += 1;
+        if sent % 50 == 0 {
+            w.store.flush_denial_writes().await;
+        }
+    }
+    let victim = uuid::Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, slug, created_at) VALUES ($1, 'initech', now())")
+        .bind(victim)
+        .execute(&db.pool)
+        .await
+        .expect("a third tenant");
+    let target = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES ($1, $2, 'secret', now())",
+    )
+    .bind(target)
+    .bind(victim)
+    .execute(&db.pool)
+    .await
+    .expect("the victim's workspace");
+    let last = Principal::new(
+        w.tenant_a.id(),
+        subject("prober-last"),
+        sagat_domain::identity::Role::Admin,
+    );
+    let denial = sagat_domain::audit::BoundaryDenial::new(
+        &last,
+        ResourceType::Workspace,
+        target.to_string(),
+        true,
+        None,
+        now(),
+    );
+    w.store
+        .record_boundary_denial(&denial)
+        .await
+        .expect("accepted");
+    w.store.flush_denial_writes().await;
+
+    let counts: Vec<(Option<uuid::Uuid>, i64)> = sqlx::query_as(
+        "SELECT owner_tenant_id, count(*) FROM security_audit_records WHERE caller_tenant_id = $1 \
+         GROUP BY owner_tenant_id ORDER BY 2 DESC",
+    )
+    .bind(w.tenant_a.id().as_uuid())
+    .fetch_all(&db.pool)
+    .await
+    .expect("counts");
+    assert_eq!(
+        counts,
+        vec![(Some(w.tenant_b.id().as_uuid()), share), (Some(victim), 1)],
+        "{} probes of the second tenant from {actors} actors keep {share}; the third tenant's is kept",
+        own.len()
+    );
 }

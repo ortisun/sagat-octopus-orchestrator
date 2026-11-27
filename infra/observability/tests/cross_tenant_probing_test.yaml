@@ -1,0 +1,86 @@
+rule_files:
+  - /rules/alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # six probes a minute: above 20 in ten minutes from the fourth minute (24), firing two minutes later
+  - interval: 1m
+    input_series:
+      - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="run"}'
+        values: '0+6x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SagatCrossTenantProbing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SagatCrossTenantProbing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Callers keep naming resources of other tenants.
+              runbook: docs/runbooks/security-governance.md#4-symptoms
+
+  # probes spread over replicas and kinds add up: four series of one a minute are 40 in ten minutes
+  - interval: 1m
+    input_series:
+      - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="run"}'
+        values: '0+1x40'
+      - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="namespace"}'
+        values: '0+1x40'
+      - series: 'cross_tenant_probes_total{instance="engine-a:9091",resource_type="run"}'
+        values: '0+1x40'
+      - series: 'cross_tenant_probes_total{instance="cp-b:9090",resource_type="workflow"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SagatCrossTenantProbing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Callers keep naming resources of other tenants.
+              runbook: docs/runbooks/security-governance.md#4-symptoms
+
+  # a stray probe now and then (a mistyped identifier, a stale link): one a minute is 10 in ten minutes, no alert
+  - interval: 1m
+    input_series:
+      - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="run"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatCrossTenantProbing
+        exp_alerts: []
+
+  # a burst of 50 at the third minute: firing two minutes later, and resolved once the burst has left the ten minutes
+  - interval: 1m
+    input_series:
+      - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="run"}'
+        values: '0 0 0 50x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SagatCrossTenantProbing
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SagatCrossTenantProbing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Callers keep naming resources of other tenants.
+              runbook: docs/runbooks/security-governance.md#4-symptoms
+      - eval_time: 15m
+        alertname: SagatCrossTenantProbing
+        exp_alerts: []
+
+  # a replica that had counted 1000 restarts and counts from zero again, one a minute: the reset inside the ten
+  # minutes is not taken for 1000 probes (a rule that subtracted the samples would see a drop of 1000)
+  - interval: 1m
+    input_series:
+      - series: 'cross_tenant_probes_total{instance="cp-a:9090",resource_type="run"}'
+        values: '1000x10 0+1x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SagatCrossTenantProbing
+        exp_alerts: []

@@ -89,6 +89,20 @@ impl FakeStore {
     }
 }
 
+impl sagat_application::tenant_boundary::BoundaryAudit for FakeStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        self.0
+            .lock()
+            .expect("state")
+            .audits
+            .push(denial.tenant_record().clone());
+        Ok(())
+    }
+}
+
 impl PayloadDisclosureStore for FakeStore {
     async fn disclosure_run(
         &self,
@@ -107,11 +121,6 @@ impl PayloadDisclosureStore for FakeStore {
     async fn run_exists_outside(&self, tenant: TenantId, run: RunId) -> Result<bool, StoreError> {
         let state = self.0.lock().expect("state");
         Ok(state.tenant != tenant && state.run == run)
-    }
-
-    async fn record_disclosure_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
-        self.0.lock().expect("state").audits.push(audit.clone());
-        Ok(())
     }
 
     async fn disclose_and_audit(

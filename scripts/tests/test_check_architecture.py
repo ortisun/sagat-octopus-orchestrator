@@ -912,5 +912,152 @@ class CapabilityListsFollowTheCode(unittest.TestCase):
         self.assertIn("would check nothing", out)
 
 
+BOUNDARY_DOMAIN_SOURCE = (
+    "pub enum AuditAction { CrossTenantAccessDenied, ResourceNotFoundDenied }\n"
+    "impl AuditAction { fn as_str(self) -> &'static str { \"access.denied.cross_tenant\" } }\n"
+)
+BOUNDARY_HOME_SOURCE = (
+    "pub async fn deny_unresolved<F>(audit: &A, elsewhere: F) { let _ = elsewhere.await; }\n"
+    "pub async fn deny_unless_own<F>(audit: &A, tenancy: F) { let _ = tenancy.await; }\n"
+)
+BOUNDARY_PATH = (
+    "async fn missing(&self, principal: &Principal, id: RunId) -> AppError {\n"
+    "    tenant_boundary::deny_unresolved(\n"
+    "        &self.store,\n"
+    "        self.store.run_exists_outside(principal.tenant_id(), id),\n"
+    "    )\n"
+    "    .await;\n"
+    "    AppError::NotFound\n"
+    "}\n"
+)
+
+
+def boundary_tree(**extra):
+    files = creator_tree(**{
+        "crates/domain/src/audit.rs": BOUNDARY_DOMAIN_SOURCE,
+        "crates/application/src/tenant_boundary.rs": BOUNDARY_HOME_SOURCE,
+        "crates/application/src/runs.rs": BOUNDARY_PATH,
+    })
+    files.update(extra)
+    return files
+
+
+class OneWayOfAuditingALookupAcrossTheTenantBoundary(unittest.TestCase):
+    """Feature 009, D60 (gap G041-028): every check for another tenant goes through the shared function."""
+
+    def test_the_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("one way of auditing a lookup across the tenant boundary", result.stdout)
+
+    def test_a_check_handed_to_the_shared_function_passes(self):
+        code, out = creator_check(boundary_tree())
+        self.assertEqual(code, 0, out)
+
+    def test_a_check_outside_the_shared_function_is_refused_and_named(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/worker.rs": (
+                "async fn missing(&self, p: &Principal, run: RunId) {\n"
+                "    if let Ok(true) = self.store.run_exists_outside(p.tenant_id(), run).await {\n"
+                "        self.audit(run).await;\n"
+                "    }\n"
+                "}\n"
+            ),
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/application/src/worker.rs:2", out)
+        self.assertIn("run_exists_outside", out)
+        self.assertIn("G041-028", out)
+
+    def test_a_check_after_the_call_of_the_shared_function_is_refused(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/runs.rs": BOUNDARY_PATH
+            + "async fn again(&self) { deny_unresolved(&self.store, ready(false)).await; self.store.run_tenancy(t, r).await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("run_tenancy", out)
+
+    def test_a_forwarder_of_the_same_method_and_a_test_module_pass(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/infra-postgres/src/payloads.rs": (
+                "impl PayloadInspectionStore for PgRunStore {\n"
+                "    async fn run_exists_outside(&self, t: TenantId, r: RunId) -> Result<bool, StoreError> {\n"
+                "        RunStore::run_exists_outside(self, t, r).await\n"
+                "    }\n"
+                "}\n"
+                "#[cfg(test)]\nmod tests {\n    fn f() { store.run_exists_outside(t, r); AuditAction::CrossTenantAccessDenied; }\n}\n"
+            ),
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_check_that_records_something_itself_is_refused(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/infra-postgres/src/payloads.rs": (
+                "async fn run_exists_outside(&self, t: TenantId, r: RunId) -> bool {\n"
+                "    let found = exists_outside(self, \"runs\", t, r).await;\n"
+                "    self.record_denial(&audit).await;\n"
+                "    found\n"
+                "}\n"
+            ),
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-postgres/src/payloads.rs:2", out)
+
+    def test_a_bare_call_of_a_check_is_seen(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/other.rs": "async fn f(s: &S) { let _ = exists_outside(s, \"runs\", t, r).await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/application/src/other.rs:1", out)
+
+    def test_an_argument_of_the_shared_function_that_records_is_refused(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/other.rs": (
+                "async fn f(&self) {\n"
+                "    deny_unresolved(&self.store, async { self.store.record_denial(&a).await; self.store.run_exists_outside(t, r).await }).await;\n"
+                "}\n"
+            ),
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("records something itself", out)
+
+    def test_the_word_cross_tenant_in_any_text_is_refused_but_not_inside_a_longer_name(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/infra-postgres/src/other.rs": 'fn f() { let a = concat!("access.denied.", "cross_tenant"); }\n',
+        }))
+        self.assertEqual(code, 1, out)
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/other.rs": 'fn f() { metrics::counter!("step_log_cross_tenant_check_failures_total"); }\n',
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_the_platform_action_or_the_tenant_record_named_elsewhere_is_refused(self):
+        for source, needle in (
+            ("fn f(p: &Principal) { AuditRecord::by(p, AuditAction::CrossTenantAccessDenied, t, id, None, now); }\n",
+             "CrossTenantAccessDenied"),
+            ("fn f(p: &Principal) { AuditRecord::by(p, AuditAction::ResourceNotFoundDenied, t, id, None, now); }\n",
+             "ResourceNotFoundDenied"),
+            ('fn f() { let q = "INSERT INTO audit_records (action) VALUES (\'access.denied.cross_tenant\')"; }\n',
+             "access.denied.cross_tenant"),
+        ):
+            with self.subTest(needle=needle):
+                code, out = creator_check(boundary_tree(**{"crates/infra-postgres/src/identity.rs": source}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("crates/infra-postgres/src/identity.rs:1", out)
+                self.assertIn(needle, out)
+
+    def test_the_names_in_a_comment_are_not_a_use(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/notes.rs": "// CrossTenantAccessDenied, run_exists_outside(t, r), access.denied.cross_tenant\nfn f() {}\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_domain_without_the_shared_function_is_an_error_and_not_a_pass(self):
+        files = boundary_tree()
+        del files["crates/application/src/tenant_boundary.rs"]
+        code, out = creator_check(files)
+        self.assertEqual(code, 1, out)
+        self.assertIn("would check nothing", out)
+
 if __name__ == "__main__":
     unittest.main()

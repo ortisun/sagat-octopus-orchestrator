@@ -72,6 +72,20 @@ impl FakeStore {
     }
 }
 
+impl sagat_application::tenant_boundary::BoundaryAudit for FakeStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        self.state
+            .lock()
+            .expect("state")
+            .audits
+            .push(denial.tenant_record().clone());
+        Ok(())
+    }
+}
+
 impl PayloadInspectionStore for FakeStore {
     async fn inspection_run(
         &self,

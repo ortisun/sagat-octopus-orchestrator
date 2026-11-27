@@ -228,27 +228,67 @@ async fn authority_is_answered_whatever_else_was_due() {
     .await;
 }
 
-/// T2: a valid task lease sent with another run's id is `LEASE`, and a run of another tenant is audited as
-/// `access.denied.cross_tenant`; nothing is stored.
+/// T2: a valid task lease sent with another run's id is `LEASE`. A run of the caller's own tenant is no lookup across the
+/// boundary and is not recorded; a run that exists nowhere and a run of another tenant leave the caller's tenant the same
+/// record, naming no run, and only the second gives the platform's security audit a probe (feature 009, D60; D041-155).
+/// Nothing is stored.
 #[tokio::test]
-async fn a_lease_sent_with_another_runs_id_is_lease_and_a_foreign_run_is_audited() {
+async fn a_lease_sent_with_another_runs_id_is_lease_and_a_foreign_run_is_recorded_as_a_missing_one()
+{
     bounded::within("lease", LIMIT, async {
         let w = world().await;
         let ingest = ingest(&w);
         let a = leased(&w, "a").await;
-        let mine = w.start(crate::support::step_logs::one_activity(&w, "x").await, &json!({})).await;
+        let caller = a.session.principal.clone();
+        let trail =
+            || crate::support::trail_of(&w.db.pool, caller.tenant_id(), caller.subject().as_str());
+        let before = trail().await;
+        let mine = w
+            .start(
+                crate::support::step_logs::one_activity(&w, "x").await,
+                &json!({}),
+            )
+            .await;
         let mut wrong = batch(&a, records([1]));
         wrong.run_id = mine;
         assert_eq!(
-            ingest.append(&a.session.principal, &wrong).await.expect("answered"),
+            ingest.append(&caller, &wrong).await.expect("answered"),
             stopped(StopReason::Lease)
         );
-        let foreign_workflow = w.publish_as_other_tenant(document(
-            "foreign",
-            "f",
-            vec![crate::support::engine::activity("f")],
-        ))
-        .await;
+        ingest.store().flush_denial_writes().await;
+        assert_eq!(
+            trail().await,
+            before,
+            "a run of the caller's own tenant is no lookup across the boundary"
+        );
+
+        let mut nowhere = batch(&a, records([1]));
+        nowhere.run_id = RunId::generate();
+        assert_eq!(
+            ingest.append(&caller, &nowhere).await.expect("answered"),
+            stopped(StopReason::Lease)
+        );
+        ingest.store().flush_denial_writes().await;
+        let after_missing = trail().await;
+        assert_eq!(
+            after_missing.len(),
+            before.len() + 1,
+            "a missing run is recorded: {after_missing:?}"
+        );
+        assert!(after_missing.contains(&(
+            "access.denied.not_found".to_owned(),
+            "run".to_owned(),
+            String::new(),
+            Some(sagat_domain::audit::BoundaryDenial::TENANT_REASON.to_owned())
+        )));
+
+        let foreign_workflow = w
+            .publish_as_other_tenant(document(
+                "foreign",
+                "f",
+                vec![crate::support::engine::activity("f")],
+            ))
+            .await;
         let foreign: RunId = w
             .start_as_other_tenant(foreign_workflow, &json!({}))
             .await
@@ -256,26 +296,26 @@ async fn a_lease_sent_with_another_runs_id_is_lease_and_a_foreign_run_is_audited
         let mut across = batch(&a, records([1]));
         across.run_id = foreign;
         assert_eq!(
-            ingest.append(&a.session.principal, &across).await.expect("answered"),
+            ingest.append(&caller, &across).await.expect("answered"),
             stopped(StopReason::Lease)
         );
         ingest.store().flush_denial_writes().await;
-        let audited: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' AND resource_id = $1",
-        )
-        .bind(foreign.to_string())
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("the audit");
-        assert_eq!(audited, 1);
-        let unaudited: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' AND resource_id = $1",
-        )
-        .bind(mine.to_string())
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("the audit");
-        assert_eq!(unaudited, 0, "a run of the caller's own tenant is no cross-tenant access");
+        // The same record within its window adds nothing: a record that told the two apart would be a second row.
+        assert_eq!(
+            trail().await,
+            after_missing,
+            "the caller's tenant tells a foreign run from a missing one"
+        );
+        assert_eq!(
+            crate::support::probes_of(&w.db.pool, caller.tenant_id()).await,
+            vec![(
+                caller.subject().as_str().to_owned(),
+                "run".to_owned(),
+                foreign.to_string(),
+                Some(w.other_admin.tenant_id().as_uuid())
+            )],
+            "only the foreign run is in the platform's security audit, with its tenant"
+        );
         nothing_stored(&w, &a).await;
     })
     .await;

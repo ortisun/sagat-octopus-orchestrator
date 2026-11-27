@@ -342,6 +342,9 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     .await;
     let acme = api.tenant("acme", "alice").await;
     let globex = api.tenant("globex", "bob").await;
+    // A third tenant whose `bob` sends every call that globex's `bob` sends with the victim's ids, with ids that exist
+    // nowhere: the two trails must be the same (feature 009, D60; gap G041-028).
+    let initech = api.tenant("initech", "bob").await;
     api.owner_store
         .insert_membership(&Membership::restore(
             acme,
@@ -360,6 +363,15 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ))
         .await
         .expect("grant runner");
+    api.owner_store
+        .insert_membership(&Membership::restore(
+            initech,
+            subject("runner-bob"),
+            Role::Runner,
+            now(),
+        ))
+        .await
+        .expect("grant runner");
 
     // The victim: a tenant with data of every kind the API can hold.
     let ws = api.create_workspace("alice", "acme", "platform").await;
@@ -369,6 +381,9 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     // The attacker has a namespace with the same slug, so the header resolves for it too.
     let globex_ws = api.create_workspace("bob", "globex", "platform").await;
     api.create_namespace("bob", "globex", &globex_ws, "payments", "dev")
+        .await;
+    let initech_ws = api.create_workspace("bob", "initech", "platform").await;
+    api.create_namespace("bob", "initech", &initech_ws, "payments", "dev")
         .await;
 
     let alice = ("alice", "acme");
@@ -645,6 +660,11 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         } else {
             bob
         };
+        let baseline = if incident {
+            ("runner-bob", "initech")
+        } else {
+            ("bob", "initech")
+        };
         let (status, answer) = send(&api, &method, &real, attacker, body.as_ref()).await;
 
         if names_a_victim_resource {
@@ -666,7 +686,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 .expect("json")
             });
             let (fake_status, fake_answer) =
-                send(&api, &method, &fake, attacker, fake_body.as_ref()).await;
+                send(&api, &method, &fake, baseline, fake_body.as_ref()).await;
             assert_eq!(fake_status, absent_status, "{operation} (baseline)");
             assert_eq!(
                 shape(&answer),
@@ -725,23 +745,106 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     // The victim's data did not move.
     assert_eq!(snapshot(&api, &victim).await, before);
 
-    // The attempts are on record against the attacker's tenant and never against the victim's.
-    let globex: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
-         WHERE t.slug = 'globex' AND a.action = 'access.denied.cross_tenant'",
+    // What the two callers left in their own tenants' trails about lookups that found nothing is the same: a foreign
+    // identifier leaves what a missing one leaves (feature 009, D60; gap G041-028). The writes are off the request path.
+    let boundary = |slug: &'static str| {
+        let pool = api.db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String, String, Option<String>)>(
+                "SELECT DISTINCT a.action, a.resource_type, a.resource_id, a.reason FROM audit_records a \
+                 JOIN tenants t ON t.id = a.tenant_id \
+                 WHERE t.slug = $1 AND a.action IN ('access.denied.not_found', 'access.denied.cross_tenant') \
+                 ORDER BY 1, 2, 3, 4",
+            )
+            .bind(slug)
+            .fetch_all(&pool)
+            .await
+            .expect("the boundary records")
+        }
+    };
+    let (globex_trail, initech_trail) = crate::support::eventually_within(
+        "the same boundary records in both callers' tenants",
+        std::time::Duration::from_secs(30),
+        || async {
+            let globex_trail = boundary("globex").await;
+            let initech_trail = boundary("initech").await;
+            (!initech_trail.is_empty() && globex_trail == initech_trail)
+                .then_some((globex_trail, initech_trail))
+        },
     )
-    .fetch_one(&api.db.pool)
-    .await
-    .expect("count");
-    assert!(globex >= 1, "no cross-tenant attempt was recorded");
-    let acme_denials: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
-         WHERE t.slug = 'acme' AND a.action = 'access.denied.cross_tenant'",
-    )
-    .fetch_one(&api.db.pool)
-    .await
-    .expect("count");
-    assert_eq!(acme_denials, 0);
+    .await;
+    // Every write accepted by now has landed: the sets must still be the same, so that a late stray record is seen.
+    api.store.flush_denial_writes().await;
+    api.executions.flush_denial_writes().await;
+    api.execution_store.flush_denial_writes().await;
+    assert_eq!(globex_trail, initech_trail);
+    assert_eq!(boundary("globex").await, globex_trail);
+    assert_eq!(boundary("initech").await, initech_trail);
+    // A record of the attacker's own trail that names an identifier of the victim's must be one that the same call with
+    // an identifier that exists nowhere leaves too (the identifier is then only what the caller sent, as for
+    // `database.denied`); a boundary record names none at all.
+    let trail_of = |slug: &'static str| {
+        let pool = api.db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String, Option<String>)>(
+                "SELECT a.action, a.resource_id, a.reason FROM audit_records a \
+                 JOIN tenants t ON t.id = a.tenant_id WHERE t.slug = $1",
+            )
+            .bind(slug)
+            .fetch_all(&pool)
+            .await
+            .expect("the trail")
+        }
+    };
+    let (trail, baseline_trail) = (trail_of("globex").await, trail_of("initech").await);
+    for id in &victim_ids {
+        for row in trail
+            .iter()
+            .filter(|row| format!("{row:?}").contains(id.as_str()))
+        {
+            assert!(
+                !row.0.starts_with("access.denied."),
+                "a boundary record names the victim's {id}: {row:?}"
+            );
+            assert!(
+                baseline_trail
+                    .iter()
+                    .any(|other| other.0 == row.0 && other.2 == row.2 && other.1 != row.1),
+                "only a foreign identifier leaves {row:?}: a missing one leaves no such record"
+            );
+        }
+    }
+
+    // The attempts are in the platform's security audit against the attacker's tenant, with the victim's tenant, and
+    // never against the victim's; the probes of ids that exist nowhere left nothing there.
+    let probes: Vec<(String, Option<Uuid>)> = crate::support::eventually("the probes", || async {
+        let rows: Vec<(String, Option<Uuid>)> = sqlx::query_as(
+            "SELECT a.resource_id, a.owner_tenant_id FROM security_audit_records a \
+             JOIN tenants t ON t.id = a.caller_tenant_id WHERE t.slug = 'globex'",
+        )
+        .fetch_all(&api.db.pool)
+        .await
+        .expect("probes");
+        (!rows.is_empty()).then_some(rows)
+    })
+    .await;
+    assert!(
+        probes
+            .iter()
+            .all(|(id, owner)| victim_ids.contains(&id) && *owner == Some(acme.as_uuid())),
+        "{probes:?}"
+    );
+    for slug in ["acme", "initech"] {
+        let others: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM security_audit_records a JOIN tenants t ON t.id = a.caller_tenant_id \
+             WHERE t.slug = $1",
+        )
+        .bind(slug)
+        .fetch_one(&api.db.pool)
+        .await
+        .expect("count");
+        assert_eq!(others, 0, "{slug}");
+    }
 }
 
 #[tokio::test]

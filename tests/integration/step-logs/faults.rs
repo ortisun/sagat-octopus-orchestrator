@@ -631,7 +631,8 @@ async fn the_server_canary_reaches_no_row_event_audit_record_or_trace() {
         .await
         .expect("the journal");
         let audit: String = sqlx::query_scalar(
-            "SELECT coalesce(string_agg(a::text, E'\\n'), '') FROM audit_records a",
+            "SELECT coalesce(string_agg(a::text, E'\\n'), '') FROM \
+             (SELECT a::text FROM audit_records a UNION ALL SELECT s::text FROM security_audit_records s) a",
         )
         .fetch_one(&w.db.pool)
         .await

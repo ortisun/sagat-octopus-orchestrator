@@ -771,7 +771,14 @@ pub struct Published {
 /// Storage port for definitions. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Send + Sync {
+pub trait DefinitionStore:
+    QuotaLookup
+    + SecretAccessLookup
+    + ScriptLookup
+    + crate::tenant_boundary::BoundaryAudit
+    + Send
+    + Sync
+{
     /// Current connection/secret authority, for author feedback before publication. The publisher
     /// repeats the check in its transaction. Adapters without managed support fail closed.
     fn check_database_access(
@@ -1847,24 +1854,17 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         id: WorkflowId,
         ctx: &RequestContext,
     ) -> AppError {
-        if let Ok(true) = self
-            .store
-            .workflow_exists_outside(principal.tenant_id(), id)
-            .await
-        {
-            let record = AuditRecord::by(
-                principal,
-                AuditAction::CrossTenantAccessDenied,
-                ResourceType::Workflow,
-                id.to_string(),
-                ctx.trace_id.clone(),
-                self.clock.now(),
-            )
-            .with_reason("resource not accessible from this tenant");
-            if let Err(error) = self.store.record_denial(&record).await {
-                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
-            }
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Workflow,
+            id.to_string(),
+            self.store
+                .workflow_exists_outside(principal.tenant_id(), id),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         AppError::NotFound
     }
 }

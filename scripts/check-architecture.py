@@ -641,6 +641,82 @@ def gate_wiring_errors(root):
     return errors
 
 
+# Feature 009, decision D60 (gap G041-028): a lookup that found nothing in the caller's tenant is denied and audited by one
+# function, `tenant_boundary::deny_unresolved` (or `deny_unless_own`, for a check that can also find the caller's own resource,
+# or `deny_unresolved_among`, for a call that named several),
+# so that the caller's tenant gets the same record for a missing and a foreign identifier and only the platform's security audit
+# names the foreign one. A path that wrote its own record would bring the existence oracle back. So, in production sources:
+# every call of a check for another tenant's resource (a method named `*_outside`, `run_tenancy` or `*another_tenant*`) is an
+# argument of one of the two functions, unless it is the forwarder of a method of the same name; and the platform's action
+# (`AuditAction::CrossTenantAccessDenied`, the text `access.denied.cross_tenant`) and the tenant's record
+# (`AuditAction::ResourceNotFoundDenied`) are named only by the domain, which builds both from one `BoundaryDenial`.
+BOUNDARY_HOME = "crates/application/src/tenant_boundary.rs"
+BOUNDARY_DOMAIN = "crates/domain/src/audit.rs"
+BOUNDARY_CHECK_NAME = r"\w+_outside|run_tenancy|\w*another_tenant\w*"
+BOUNDARY_CHECK_CALL = re.compile(r"(?<![\w])(" + BOUNDARY_CHECK_NAME + r")\s*\(")
+# what records a denial by itself: a store method of the `record_*` family, or a record built by hand
+BOUNDARY_RECORDS = re.compile(r"\brecord_\w*\s*\(|\bAuditRecord\b")
+BOUNDARY_WORD = re.compile(r"(?<![\w])cross_tenant(?![\w])")
+BOUNDARY_FUNCTION_CALL = re.compile(r"\b(deny_unresolved|deny_unresolved_among|deny_unless_own)\s*\(")
+BOUNDARY_NAMES = re.compile(r"\b(CrossTenantAccessDenied|ResourceNotFoundDenied)\b")
+BOUNDARY_TEXT = "access.denied.cross_tenant"
+
+
+def tenant_boundary_errors(root):
+    """The errors of the rule that keeps one way of auditing a lookup across the tenant boundary (D60, G041-028)."""
+    errors = []
+    base = pathlib.Path(root)
+    if (base / BOUNDARY_DOMAIN).exists() and not (base / BOUNDARY_HOME).exists():
+        errors.append(f"{BOUNDARY_HOME} does not exist: the tenant-boundary rule would check nothing (D60)")
+    for rel, text, masked, literals in production_sources(root):
+        spans = []
+        for m in BOUNDARY_FUNCTION_CALL.finditer(masked):
+            if re.search(r"\bfn\s+$", masked[max(0, m.start() - 16):m.start()]):
+                continue  # the declaration
+            end = balanced_end(masked, m.end() - 1)
+            if end is not None:
+                spans.append((m.end() - 1, end))
+                if BOUNDARY_RECORDS.search(masked[m.end() - 1:end]):
+                    errors.append(
+                        f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: an argument of `{m.group(1)}` records something "
+                        f"itself: the shared function is the one that records a lookup across the tenant boundary (D60)"
+                    )
+        for m in BOUNDARY_CHECK_CALL.finditer(masked):
+            if rel.startswith("crates/domain/"):
+                break  # the domain reads no store, so a name of its own (`ended_from_outside`) is no check
+            if re.search(r"\bfn\s+$", masked[max(0, m.start() - 16):m.start()]):
+                continue  # the declaration
+            inside = enclosing_function(masked, m.start())
+            if (
+                inside is not None
+                and re.fullmatch(BOUNDARY_CHECK_NAME, inside[0])
+                and not BOUNDARY_RECORDS.search(masked[inside[1]:inside[2]])
+            ):
+                continue  # an implementation of a check, which records nothing
+            if any(start < m.start() < end for start, end in spans):
+                continue
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is called outside `deny_unresolved`, "
+                f"`deny_unresolved_among` and `deny_unless_own`: a check for another tenant's resource is handed to the one function that audits it the "
+                f"same way for a missing and a foreign identifier (D60, G041-028)"
+            )
+        if rel == BOUNDARY_DOMAIN:
+            continue
+        for m in BOUNDARY_NAMES.finditer(masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is named outside {BOUNDARY_DOMAIN}: the records "
+                f"of a lookup across the tenant boundary are built only from a `BoundaryDenial`, so that the caller's tenant "
+                f"gets the same record for a missing and a foreign identifier (D60, G041-028)"
+            )
+        for offset, content in literals:
+            if BOUNDARY_WORD.search(content) and masked[offset - 1] in "\"#":
+                errors.append(
+                    f"{rel}:{text.count(chr(10), 0, offset) + 1}: the text `cross_tenant` (as in `{BOUNDARY_TEXT}`) is written outside "
+                    f"{BOUNDARY_DOMAIN}: the platform's record is built only from a `BoundaryDenial` (D60, G041-028)"
+                )
+    return errors
+
+
 # Feature 006, decisions D006-008, D006-092 and D006-093: the delivery probe and the commit probe hold a claim (the commit probe
 # inside its open run transaction, with the run's locks) until a test lets it go. They are for the tests only: no production
 # source may call them; the tests package and a crate's own test modules may.
@@ -879,6 +955,7 @@ def main(argv):
     errors.extend(test_support_errors(pkgs))
     errors.extend(test_probe_errors(rust_root))
     errors.extend(journal_delete_grant_errors(rust_root))
+    errors.extend(tenant_boundary_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -911,7 +988,7 @@ def main(argv):
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
           f"the capability checks list the code's capabilities, no test probe in production, "
-          f"the runtime role cannot delete the journal)")
+          f"the runtime role cannot delete the journal, one way of auditing a lookup across the tenant boundary)")
     return 0
 
 

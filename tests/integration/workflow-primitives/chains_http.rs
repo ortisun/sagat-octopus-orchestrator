@@ -293,7 +293,7 @@ async fn inspect_and_signal_are_tenant_scoped_and_signal_replays_exactly() {
     assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
     fixture.api.executions.flush_denial_writes().await;
     let denied: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM audit_records WHERE tenant_id<>$1 \
+        "SELECT EXISTS(SELECT 1 FROM security_audit_records WHERE caller_tenant_id<>$1 \
          AND action='access.denied.cross_tenant' AND resource_id=$2)",
     )
     .bind(fixture.tenant.as_uuid())
@@ -665,7 +665,7 @@ async fn the_runs_of_a_chain_are_tenant_opaque_and_need_authentication() {
     assert_eq!(foreign_body["message"], missing_body["message"]);
     fixture.api.executions.flush_denial_writes().await;
     let denied: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM audit_records WHERE tenant_id<>$1 \
+        "SELECT EXISTS(SELECT 1 FROM security_audit_records WHERE caller_tenant_id<>$1 \
          AND action='access.denied.cross_tenant' AND resource_id=$2)",
     )
     .bind(fixture.tenant.as_uuid())

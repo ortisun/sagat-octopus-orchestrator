@@ -463,7 +463,7 @@ async fn each_operation_audits_a_probe_of_a_foreign_namespace_on_its_own() {
         let tenant = w.other_admin.tenant_id();
         let audited = crate::support::eventually(operation, || async {
             let rows: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM audit_records WHERE tenant_id = $1 \
+                "SELECT count(*) FROM security_audit_records WHERE caller_tenant_id = $1 \
                  AND action = 'access.denied.cross_tenant' AND resource_type = 'namespace'",
             )
             .bind(tenant.as_uuid())

@@ -140,7 +140,7 @@ pub struct SelectedPayload {
 
 /// Storage boundary. `inspect_and_audit` must select the immutable record and commit `audit` in one
 /// short transaction, returning inline bytes only after that commit succeeds.
-pub trait PayloadInspectionStore: Send + Sync {
+pub trait PayloadInspectionStore: crate::tenant_boundary::BoundaryAudit + Send + Sync {
     fn inspection_run(
         &self,
         tenant: TenantId,
@@ -363,24 +363,16 @@ where
             .inspection_run(principal.tenant_id(), run)
             .await?
         else {
-            if let Ok(true) = self
-                .store
-                .run_exists_outside(principal.tenant_id(), run)
-                .await
-            {
-                let denial = AuditRecord::by(
-                    principal,
-                    AuditAction::CrossTenantAccessDenied,
-                    ResourceType::Run,
-                    run.to_string(),
-                    ctx.trace_id.clone(),
-                    self.clock.now(),
-                )
-                .with_reason("resource not accessible from this tenant");
-                if let Err(store_error) = self.store.record_inspection_denial(&denial).await {
-                    tracing::error!(error = %store_error, action = %denial.action(), "failed to record audit entry");
-                }
-            }
+            crate::tenant_boundary::deny_unresolved(
+                &self.store,
+                principal,
+                ResourceType::Run,
+                run.to_string(),
+                self.store.run_exists_outside(principal.tenant_id(), run),
+                ctx.trace_id.clone(),
+                self.clock.now(),
+            )
+            .await;
             return Err(AppError::NotFound);
         };
         Ok(PreparedInspection {

@@ -645,9 +645,9 @@ async fn us04_the_audit_trail_shows_what_was_done_scrubs_what_looks_like_a_crede
     );
 }
 
-/// A denial is recorded only when the resource exists in another tenant, so a trail that listed it
-/// would answer "does this id exist elsewhere?" for anyone who could read it. The record stays for
-/// whoever runs the platform; the tenant does not get it back through the API.
+/// The tenant's trail gets the same record for an identifier of another tenant and one that exists nowhere, naming
+/// neither, and returns it; the identifier and the other tenant stay in the platform's security audit, which no API
+/// returns (feature 009, D60; gap G041-028). Records `access.denied.cross_tenant` written before stay withheld.
 #[tokio::test]
 async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probed_exists_elsewhere()
 {
@@ -676,7 +676,7 @@ async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probe
     let mut kept = 0_i64;
     for _ in 0..100 {
         kept = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
+            "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant' \
              AND resource_id = $1",
         )
         .bind(&ns)
@@ -689,6 +689,22 @@ async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probe
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert_eq!(kept, 1, "the platform keeps the denial");
+    // The caller's tenant keeps one record for the two lookups, naming neither (feature 009, D60).
+    let globex = crate::support::eventually("the caller's record", || async {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
+             WHERE t.slug = 'globex' AND a.action LIKE 'access.denied.%' AND a.action <> 'access.denied.permission'",
+        )
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("count");
+        (n > 0).then_some(n)
+    })
+    .await;
+    assert_eq!(
+        globex, 1,
+        "a foreign and a missing namespace leave the same record"
+    );
 
     let read = p
         .api
@@ -700,7 +716,12 @@ async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probe
     let body: Value = read.json().await.expect("json");
     let text = body.to_string();
     assert!(!text.contains(&ns), "{text}");
+    assert!(!text.contains(&ghost), "{text}");
     assert!(!text.contains("access.denied.cross_tenant"), "{text}");
+    assert!(
+        text.contains("access.denied.not_found"),
+        "the caller's administrator sees that its credential named what it cannot reach: {text}"
+    );
 
     // Asking for them by name gets nothing either.
     let by_name = p

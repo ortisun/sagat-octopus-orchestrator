@@ -67,6 +67,7 @@ pub mod shards;
 pub mod signing;
 pub mod step_logs;
 pub mod telemetry;
+pub mod tenant_boundary;
 pub mod worker;
 
 pub mod batch;

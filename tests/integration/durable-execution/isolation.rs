@@ -1,7 +1,5 @@
 //! Tenant boundaries of the execution plane (NFR-002-SEC; US04 of feature 001 applied to runs).
 
-use std::time::Duration;
-
 use sagat_application::error::AppError;
 use sagat_application::identity::PageRequest;
 use sagat_application::runs::{RunOperation, RunStore};
@@ -77,7 +75,7 @@ async fn another_tenant_cannot_read_operate_or_signal_a_run_and_the_attempt_is_a
     // The attempts were recorded, in the intruder's tenant, without anything about the victim.
     let records: Vec<(String, String)> = eventually("cross-tenant denials", || async {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT resource_id, tenant_id::text FROM audit_records WHERE action = 'access.denied.cross_tenant' AND resource_type = 'run'",
+            "SELECT resource_id, caller_tenant_id::text FROM security_audit_records WHERE action = 'access.denied.cross_tenant' AND resource_type = 'run'",
         )
         .fetch_all(&w.db.pool)
         .await
@@ -93,22 +91,57 @@ async fn another_tenant_cannot_read_operate_or_signal_a_run_and_the_attempt_is_a
     );
 }
 
+/// Feature 009, D60 (gap G041-028): a read of a run that exists nowhere and a read of another tenant's run leave the same
+/// record in the caller's tenant (no identifier); only the second gives the platform's security audit a probe.
 #[tokio::test]
-async fn a_run_that_does_not_exist_anywhere_is_indistinguishable_and_leaves_no_trace() {
+async fn a_run_that_does_not_exist_anywhere_leaves_the_caller_what_a_foreign_run_leaves() {
     let w = world().await;
+    let (wf, _) = w.publish(chain("victim")).await;
+    let victim = w.start(wf, &json!({})).await;
+    let other = w.other_admin.tenant_id();
+    let foreign_prober = Principal::new(other, subject("prober-foreign"), Role::Admin);
+    let missing_prober = Principal::new(other, subject("prober-missing"), Role::Admin);
     let ghost = RunId::generate();
+    for (prober, run) in [(&foreign_prober, victim), (&missing_prober, ghost)] {
+        assert_eq!(
+            w.runs.get(prober, run, &ctx()).await.map(|_| ()),
+            Err(AppError::NotFound)
+        );
+        assert_eq!(
+            w.runs
+                .journal(prober, run, &PageRequest::default(), &ctx())
+                .await
+                .map(|_| ()),
+            Err(AppError::NotFound)
+        );
+    }
+    w.store.flush_denial_writes().await;
+
+    let left_by_foreign = crate::support::trail_of(&w.db.pool, other, "prober-foreign").await;
     assert_eq!(
-        w.runs.get(&w.admin, ghost, &ctx()).await.map(|_| ()),
-        Err(AppError::NotFound)
+        left_by_foreign,
+        crate::support::trail_of(&w.db.pool, other, "prober-missing").await,
+        "the caller's tenant tells a foreign run from a missing one"
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let denials: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
-    )
-    .fetch_one(&w.db.pool)
-    .await
-    .expect("count");
-    assert_eq!(denials, 0);
+    assert_eq!(
+        left_by_foreign,
+        vec![(
+            "access.denied.not_found".to_owned(),
+            "run".to_owned(),
+            String::new(),
+            Some(sagat_domain::audit::BoundaryDenial::TENANT_REASON.to_owned())
+        )],
+        "one record for the kind, in the window, naming no run"
+    );
+    assert_eq!(
+        crate::support::probes_of(&w.db.pool, other).await,
+        vec![(
+            "prober-foreign".to_owned(),
+            "run".to_owned(),
+            victim.to_string(),
+            Some(w.admin.tenant_id().as_uuid())
+        )]
+    );
 }
 
 #[tokio::test]

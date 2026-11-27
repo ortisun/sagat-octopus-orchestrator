@@ -160,7 +160,7 @@ async fn cross_tenant_probes_of_the_event_reads_are_audited_against_the_prober()
     };
     let audited = || async {
         sqlx::query_scalar::<_, String>(
-            "SELECT resource_id FROM audit_records WHERE tenant_id = $1 AND action = $2",
+            "SELECT resource_id FROM security_audit_records WHERE caller_tenant_id = $1 AND action = $2",
         )
         .bind(w.other_admin.tenant_id().as_uuid())
         .bind(AuditAction::CrossTenantAccessDenied.as_str())

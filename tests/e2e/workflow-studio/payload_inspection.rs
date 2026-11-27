@@ -204,7 +204,8 @@ async fn structure_is_useful_but_every_key_and_scalar_is_absent_for_exact_roles_
     let audit_rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
         "SELECT actor, action, resource_type, resource_id, reason FROM audit_records \
          WHERE action IN ('payload.inspected', 'payload.inspection_denied', \
-                          'access.denied.cross_tenant')",
+                          'access.denied.not_found') \
+         UNION ALL SELECT actor, action, resource_type, resource_id, NULL FROM security_audit_records",
     )
     .fetch_all(&p.api.db.pool)
     .await

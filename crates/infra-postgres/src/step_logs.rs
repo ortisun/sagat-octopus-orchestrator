@@ -18,7 +18,7 @@ use sagat_application::step_logs::{
     STEP_LOG_PROTOCOL_MINOR, SessionRef, StepLogPolicy, StepLogStore, StepLogTx, StreamRead,
     StreamRef,
 };
-use sagat_domain::audit::AuditRecord;
+use sagat_application::tenant_boundary::Tenancy;
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{NamespaceId, Role, TenantId};
 use sagat_domain::quota::QuotaResource;
@@ -316,18 +316,33 @@ impl StepLogStore for PgStepLogStore {
         })
     }
 
-    async fn run_exists_outside(&self, tenant: TenantId, run: RunId) -> Result<bool, StoreError> {
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM runs WHERE id = $1 AND tenant_id <> $2)")
-            .bind(run.as_uuid())
-            .bind(tenant.as_uuid())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(store_error_without_text)
+    async fn run_tenancy(&self, tenant: TenantId, run: RunId) -> Result<Tenancy, StoreError> {
+        // One statement whatever the answer, so that a missing and a foreign run cost the same (D041-152 (1)).
+        let held: Option<bool> =
+            sqlx::query_scalar("SELECT tenant_id = $2 FROM runs WHERE id = $1")
+                .bind(run.as_uuid())
+                .bind(tenant.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_error_without_text)?;
+        Ok(match held {
+            Some(true) => Tenancy::Caller,
+            Some(false) => Tenancy::Other,
+            None => Tenancy::Nobody,
+        })
     }
+}
 
-    async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
-        use sagat_application::identity::IdentityStore as _;
-        self.identity.record_denial(audit).await
+impl sagat_application::tenant_boundary::BoundaryAudit for PgStepLogStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        sagat_application::tenant_boundary::BoundaryAudit::record_boundary_denial(
+            &self.identity,
+            denial,
+        )
+        .await
     }
 }
 

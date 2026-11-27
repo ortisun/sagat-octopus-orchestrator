@@ -80,9 +80,11 @@ async fn first_waiter(p: &Platform, pid: i32) -> Option<(i32, String)> {
 }
 
 /// The cross-tenant audit (decision D041-150's suspicion, recorded for this task): a batch naming another tenant's run
-/// is answered `LEASE` while its audit record still waits on a held `audit_records`, so its answer takes no longer than
-/// a missing run's (the audit write is off the answer's path, as for every worker call that reaches a foreign run);
-/// once the trail is released the record is written, outside the batch's rolled-back transaction, and kept.
+/// is answered `LEASE` while its audit writes still wait on the held trails, so its answer takes no longer than a
+/// missing run's (the writes are off the answer's path, as for every worker call that reaches a foreign run); once the
+/// trails are released the records are written, outside the batch's rolled-back transaction, and kept: the caller's
+/// tenant gets the record a missing run leaves, and the platform's security audit the probe (feature 009, D60;
+/// D041-155).
 #[tokio::test]
 async fn a_batch_for_another_tenants_run_is_answered_before_its_audit_is_written_and_the_audit_is_kept()
  {
@@ -117,30 +119,36 @@ async fn a_batch_for_another_tenants_run_is_answered_before_its_audit_is_written
     );
     assert_eq!(answer.verdict, i32::from(StepLogVerdict::StopAttempt));
     assert_eq!(answer.stop_reason, i32::from(StepLogStopReason::Lease));
-    blocked_on(&p, pid, 1).await;
-    // Filed under the caller's tenant and the caller, never under the run's tenant.
-    let tenant = p.tenant.as_uuid();
-    let audited = |run: String| {
-        let pool = p.api.db.pool.clone();
-        async move {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM audit_records \
-                 WHERE action = 'access.denied.cross_tenant' AND resource_id = $1 \
-                   AND tenant_id = $2 AND actor = 'wanda'",
-            )
-            .bind(run)
-            .bind(tenant)
-            .fetch_one(&pool)
-            .await
-            .expect("the cross-tenant audit")
-        }
-    };
-    locker.commit().await.expect("release the trail");
-    crate::support::eventually("the cross-tenant audit is written", || {
-        let count = audited(foreign.clone());
-        async move { (count.await == 1).then_some(()) }
+    // The caller's record and the probe both wait on the held trails.
+    blocked_on(&p, pid, 2).await;
+    locker.commit().await.expect("release the trails");
+    let trail = crate::support::eventually("the caller's record is written", || async {
+        let trail = crate::support::trail_of(&p.api.db.pool, p.tenant, "wanda").await;
+        trail
+            .iter()
+            .any(|row| row.0 == "access.denied.not_found")
+            .then_some(trail)
     })
     .await;
+    assert!(
+        trail.iter().all(|row| !row.2.contains(&foreign)),
+        "the foreign run is not on the caller's trail: {trail:?}"
+    );
+    let probes = crate::support::eventually("the probe is written", || async {
+        let probes = crate::support::probes_of(&p.api.db.pool, p.tenant).await;
+        (!probes.is_empty()).then_some(probes)
+    })
+    .await;
+    assert_eq!(
+        probes,
+        vec![(
+            "wanda".to_owned(),
+            "run".to_owned(),
+            foreign.clone(),
+            Some(p.other_tenant.as_uuid())
+        )],
+        "filed in the platform's security audit against the caller, with the run's tenant"
+    );
     assert_eq!(stored_lines(&p, &lease.run_id).await, 0);
 }
 

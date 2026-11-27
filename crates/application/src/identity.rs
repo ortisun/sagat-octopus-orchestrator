@@ -101,7 +101,7 @@ pub struct Session {
 ///
 /// Every method that reads or writes tenant data takes the tenant explicitly; adapters MUST apply
 /// it as a filter on every statement.
-pub trait IdentityStore: Send + Sync {
+pub trait IdentityStore: crate::tenant_boundary::BoundaryAudit + Send + Sync {
     /// Resolves a tenant by slug. The only lookup that is not tenant-scoped.
     fn find_tenant_by_slug(
         &self,
@@ -537,14 +537,17 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
         id: WorkspaceId,
         ctx: &RequestContext,
     ) -> AppError {
-        if let Ok(true) = self
-            .store
-            .workspace_exists_outside(principal.tenant_id(), id)
-            .await
-        {
-            self.audit_cross_tenant(principal, ResourceType::Workspace, id.to_string(), ctx)
-                .await;
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Workspace,
+            id.to_string(),
+            self.store
+                .workspace_exists_outside(principal.tenant_id(), id),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         AppError::NotFound
     }
 
@@ -554,38 +557,18 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
         id: NamespaceId,
         ctx: &RequestContext,
     ) -> AppError {
-        if let Ok(true) = self
-            .store
-            .namespace_exists_outside(principal.tenant_id(), id)
-            .await
-        {
-            self.audit_cross_tenant(principal, ResourceType::Namespace, id.to_string(), ctx)
-                .await;
-        }
-        AppError::NotFound
-    }
-
-    /// Records an attempt to reach another tenant's resource. The denial never depends on this
-    /// succeeding: a failure to write the record is logged and the caller still gets "not found".
-    async fn audit_cross_tenant(
-        &self,
-        principal: &Principal,
-        resource: ResourceType,
-        resource_id: String,
-        ctx: &RequestContext,
-    ) {
-        let record = AuditRecord::by(
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
             principal,
-            AuditAction::CrossTenantAccessDenied,
-            resource,
-            resource_id,
+            ResourceType::Namespace,
+            id.to_string(),
+            self.store
+                .namespace_exists_outside(principal.tenant_id(), id),
             ctx.trace_id.clone(),
             self.clock.now(),
         )
-        .with_reason("resource not accessible from this tenant");
-        if let Err(error) = self.store.record_denial(&record).await {
-            tracing::error!(%error, action = %record.action(), "failed to record audit entry");
-        }
+        .await;
+        AppError::NotFound
     }
 }
 

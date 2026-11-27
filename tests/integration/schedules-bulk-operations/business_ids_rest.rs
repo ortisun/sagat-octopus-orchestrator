@@ -423,7 +423,7 @@ async fn another_tenant_probing_a_binding_finds_nothing_and_the_probe_is_on_reco
     let namespace = r.p.namespace_id().await;
     let denials = || async {
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
+            "SELECT count(*) FROM security_audit_records a JOIN tenants t ON t.id = a.caller_tenant_id \
              WHERE t.slug = 'globex' AND a.action = 'access.denied.cross_tenant'",
         )
         .fetch_one(&r.p.api.db.pool)

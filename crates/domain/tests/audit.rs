@@ -1,7 +1,9 @@
 //! Audit record invariants (FR-001-007).
 #![allow(clippy::expect_used)]
 
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType, RunDataLimitAuditReason};
+use sagat_domain::audit::{
+    AuditAction, AuditRecord, BoundaryDenial, ResourceType, RunDataLimitAuditReason,
+};
 use sagat_domain::identity::{Principal, Role, Subject, TenantId};
 use time::OffsetDateTime;
 
@@ -115,6 +117,10 @@ fn stored_names_are_a_stable_contract() {
     assert_eq!(
         AuditAction::PermissionDenied.as_str(),
         "access.denied.permission"
+    );
+    assert_eq!(
+        AuditAction::ResourceNotFoundDenied.as_str(),
+        "access.denied.not_found"
     );
     assert_eq!(ResourceType::Endpoint.as_str(), "endpoint");
     assert_eq!(ResourceType::Tenant.as_str(), "tenant");
@@ -290,4 +296,63 @@ fn capacity_vacate_audit_keeps_every_transition() {
     assert!(!action.collapses_repeats());
     assert_eq!(action.repeat_window(), None);
     assert_eq!(action.distinct_cap(), None);
+}
+
+/// Feature 009, D60 (gap G041-028): what the caller's tenant is given cannot depend on whether the identifier names another
+/// tenant's resource; only the platform's probe does.
+#[test]
+fn the_tenant_record_of_a_foreign_and_a_missing_identifier_is_the_same() {
+    let caller = principal();
+    let at = OffsetDateTime::UNIX_EPOCH;
+    let trace = Some("4bf92f3577b34da6a3ce929d0e0e4736".to_owned());
+    let foreign = BoundaryDenial::new(
+        &caller,
+        ResourceType::Run,
+        "0190a5b2-0000-7000-8000-00000000f0e1",
+        true,
+        trace.clone(),
+        at,
+    );
+    let missing = BoundaryDenial::new(
+        &caller,
+        ResourceType::Run,
+        "0190a5b2-0000-7000-8000-00000000abcd",
+        false,
+        trace,
+        at,
+    );
+    let shape = |record: &AuditRecord| {
+        (
+            record.tenant_id(),
+            record.actor().clone(),
+            record.action(),
+            record.resource_type(),
+            record.resource_id().to_owned(),
+            record.reason().map(str::to_owned),
+            record.trace_id().map(str::to_owned),
+            record.created_at(),
+        )
+    };
+    assert_eq!(
+        shape(foreign.tenant_record()),
+        shape(missing.tenant_record())
+    );
+    let record = foreign.tenant_record();
+    assert_eq!(record.action(), AuditAction::ResourceNotFoundDenied);
+    assert_eq!(record.tenant_id(), caller.tenant_id());
+    assert_eq!(
+        record.resource_id(),
+        "",
+        "the identifier is never in the tenant's record"
+    );
+    assert_eq!(record.reason(), Some(BoundaryDenial::TENANT_REASON));
+
+    assert!(missing.probe().is_none());
+    let probe = foreign.probe().expect("a foreign identifier is a probe");
+    assert_eq!(probe.action(), AuditAction::CrossTenantAccessDenied);
+    assert_eq!(probe.caller_tenant_id(), caller.tenant_id());
+    assert_eq!(probe.actor(), caller.subject());
+    assert_eq!(probe.resource_type(), ResourceType::Run);
+    assert_eq!(probe.resource_id(), "0190a5b2-0000-7000-8000-00000000f0e1");
+    assert_eq!(probe.created_at(), at);
 }

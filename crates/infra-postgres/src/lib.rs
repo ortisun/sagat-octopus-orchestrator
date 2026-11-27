@@ -60,6 +60,7 @@ mod scope_frontier;
 mod scoped_leaf_finish;
 mod scripts;
 mod secrets;
+mod security_audit;
 mod signals;
 mod step_logs;
 mod telemetry;
@@ -112,6 +113,7 @@ pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use reveal_grants::has_effective_payload_reveal_grant;
 pub use schedules::PgScheduleStore;
 pub use scoped_leaf_finish::PgScopedLeafFinishStore;
+pub use security_audit::{MAX_PROBES_PER_CALLER, MAX_PROBES_PER_TENANT};
 pub use sqlx::PgPool;
 pub use step_logs::{
     PgStepLogStore, PgStepLogTx, STEP_LOG_LOCK_TIMEOUT, step_log_policy_fence_keys, stream_lock_key,

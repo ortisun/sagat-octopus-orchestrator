@@ -24,7 +24,6 @@ use sagat_application::step_logs::{
     StreamRead, StreamRef,
 };
 use sagat_application::worker::ClaimedTask;
-use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{NamespaceId, Principal, Role, TenantId};
 use sagat_domain::step_logs::{StepLogLevel, TenantAllowance};
@@ -437,12 +436,25 @@ impl StepLogStore for Hooked {
         })
     }
 
-    async fn run_exists_outside(&self, tenant: TenantId, run: RunId) -> Result<bool, StoreError> {
-        self.inner.run_exists_outside(tenant, run).await
+    async fn run_tenancy(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<sagat_application::tenant_boundary::Tenancy, StoreError> {
+        self.inner.run_tenancy(tenant, run).await
     }
+}
 
-    async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
-        self.inner.record_denial(audit).await
+impl sagat_application::tenant_boundary::BoundaryAudit for Hooked {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        sagat_application::tenant_boundary::BoundaryAudit::record_boundary_denial(
+            &self.inner,
+            denial,
+        )
+        .await
     }
 }
 

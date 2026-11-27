@@ -527,7 +527,7 @@ async fn permission_eligibility_initiator_and_tenant_boundaries_are_opaque_and_a
 
     fixture.api.execution_store.flush_denial_writes().await;
     let cross_tenant: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id=a.tenant_id \
+        "SELECT count(*) FROM security_audit_records a JOIN tenants t ON t.id=a.caller_tenant_id \
          WHERE t.slug='globex' AND a.action='access.denied.cross_tenant' \
          AND a.resource_type='approval_request' AND a.resource_id=$1",
     )

@@ -209,6 +209,11 @@ const ALLOWED: &[Allowed] = &[
         need: "UNRESOLVED placeholder {groups}",
         reason: "the sub-select text comes from the AlertKind match arms right above, each a literal statement that is audited on its own; the wrapper only reads",
     },
+    Allowed {
+        file: CONTENT_USAGE,
+        need: "UNRESOLVED placeholder {}",
+        reason: "the step-log policy fences (design 041, D041-146 (3)): the select list is only `pg_advisory_xact_lock(hashtextextended($n, 0))` calls whose keys are bound, and an advisory lock needs no table privilege",
+    },
 ];
 
 #[derive(Debug, Clone)]
