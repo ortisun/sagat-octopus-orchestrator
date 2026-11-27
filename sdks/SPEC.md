@@ -907,9 +907,11 @@ take the same options.
 ```typescript
 activity<T>(name: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number;
   concurrencyKey?: string; rateLimitKey?: string }): Promise<T>          // fragment: activity profile
-script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number }): Promise<T>
+script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy }): Promise<T>
+  // no timeoutMs: the artifact's policy (`wall`) bounds a script, as for a graph script node (Decision 044-247)
 sleep(durationMs: number): Promise<void>                                  // timer
-waitForEvent<T>(eventType: string, correlationKey: string, options?: { timeoutMs?: number; lookbackMs?: number }): Promise<T | undefined>
+waitForEvent<T>(eventType: string, correlationKey: string, options: { timeoutMs: number; lookbackMs?: number }): Promise<T | undefined>
+  // timeoutMs is required (1 ms to 366 days), as for a graph waitEvent node (Decision 044-247)
 child<T>(workflowId: string, input: unknown, options?: { cancelPolicy?: 'propagate' | 'request_cancel' | 'detach'; businessId?: string }): Promise<T>
 approval(policyName: string, subject: unknown): Promise<'approved' | 'rejected' | 'expired'>
 saga<T>(options: { onCompensationFailure?: 'manual_review' | 'fail'; cancelPolicy?: 'compensate_completed'
@@ -1010,7 +1012,8 @@ must match `^[A-Z][A-Z0-9_]{0,63}$` (another becomes `WORKFLOW_FAILED`); its mes
 (Requirement 044-009, scenario `code-failures`).
 
 **Nondeterminism.** During replay the SDK compares each command with the record at the same command number (its kind
-and target), and reports a command where the history has none, a recorded command the function no longer makes, a
+and target, and for an activity or a script the saga scope the record carries, `HistoryCommandRecord.saga_scope`,
+empty outside a scope; Decision 044-244), and reports a command where the history has none, a recorded command the function no longer makes, a
 `patched(id)` that disagrees with the markers and a deferred command not re-emitted last as a failure with cause
 `NONDETERMINISM`, the command number, the actual kind and target and the code digest, never a payload (Requirement
 044-006, scenario `code-nondeterminism`).
@@ -1104,7 +1107,8 @@ in a test of the language's own framework (Requirement 044-025):
 - The replayer **refuses a history of an unknown format version**.
 - A replay that reads a placeholder (a redacted field, a blob-carried value) stops with the verdict
   **`INCONCLUSIVE_REDACTED`** at that command, never with a false mismatch.
-- A mismatch names the command number and the expected and actual kind and target.
+- A mismatch names the command number and the expected and actual kind and target (and saga scope, for an activity or a
+  script).
 
 ### 12.10 Errors
 

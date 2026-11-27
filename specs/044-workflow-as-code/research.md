@@ -864,6 +864,53 @@ finding was answered.
   number 0, and is numbered when accepted. delegate (OD-2026-11-24-4): Technical Plan 4.4 and 13.1 named the re-emission
   only; found while building the fake server of Task 044-30, whose tests hold it.
 
+### Decisions on the TypeScript lane's relay (2026-11-27)
+
+- **D044-244** (2026-11-27) An activity's or a script's saga scope is compared at every level that compares commands.
+  It already enters the hashed body (`"scope": "s-<n>"`, the body table of the corpus README, Decision 044-232), so the
+  server's chain answers `CHAIN_MISMATCH` when a changed function schedules the same activity in another scope or
+  outside any; in addition `HistoryCommandRecord` gains `saga_scope` (field 5: `s-<n>` for an activity or script
+  scheduled in a scope, empty otherwise), so that the SDK compares kind, target and scope at replay (Technical Plan 6.1)
+  and reports `NONDETERMINISM` at the command that moved, and a replay of an exported history (Technical Plan 7.4),
+  which has no chain to compare, catches it as well. delegate (OD-2026-11-24-4): the scope decides which compensations
+  the engine plans (Technical Plan 10.1), so a replay that moves a member between scopes is another saga; left to the
+  chain alone it would be found only by the server and a dry-run move, under the less precise cause, and never by the
+  replayer in continuous integration. The scope is a structural identifier of the run, as `node` is, not a body, an
+  actor or risk metadata, so the rule that a record never carries a body holds. Answers the TypeScript lane's Gap
+  044-303.
+- **D044-245** (2026-11-27) A cancelled step that the function can cancel with `step_cancel` (an activity, a script, a
+  wait for an event, an approval command's step, or an activity held for its entry's approval) reaches the function as
+  `HISTORY_STEP_OUTCOME` with `STEP_OUTCOME_CANCELLED` and the error code `CANCELLED`, the history form of the journal's
+  `step.cancelled` for that step: with the origin `effect` when the completion's own `step_cancel` cancelled a step that
+  no worker held (`READY`, or `WAITING` on an event or an approval, whose open approval request is withdrawn in that
+  transaction), and with the origin `engine` when a leased attempt ends cancelled later or the stop drain cancels the
+  step (a timer included). `HistoryWaitOutcome` (satisfied or timed out) and `HistoryApprovalDecided` (approved,
+  rejected or expired) keep their outcomes; a child's cancellation is its `HISTORY_CHILD_FINISHED` with the status
+  `CANCELLED` once the child run ends; a timer the function cancels ends with the record of its `timer_cancel`, which is
+  that `step.cancelled`. delegate (OD-2026-11-24-4): one outcome for every cancellable step, the one the journal
+  already writes, instead of a cancelled variant in each of two messages; the TypeScript runtime already takes it. The
+  corpus gains the run `code-cancellation/own-steps`.
+- **D044-246** (2026-11-27) In every transaction that creates a run (a start, Signal-with-Start, Update-with-Start, a
+  schedule's or trigger's start, a child's start, a successor's handoff), `run.started` is the run's first journal row,
+  at sequence 1; the signal a Signal-with-Start buffers and the update an Update-with-Start admits are appended after it
+  in the same transaction, so activation 1 applies `run.started`, where the function begins and registers its handlers,
+  before the `signal.buffered` or the `update.admitted`. A reset's new run begins with the prefix it copies, whose first
+  row is the source's `run.started`. delegate (OD-2026-11-24-4): an SDK starts the function on `run.started`, and the
+  TypeScript runtime rejects an update applied before any handler exists (`HANDLER_NOT_REGISTERED`); the corpus
+  (`code-update-with-start`, sequences 1 and 2) and `the_goldens_parse_and_their_chains_recompute` ("run.started
+  first") hold it for the goldens, and Task 044-21 holds it on the server with
+  `update_with_start_journals_run_started_first`.
+- **D044-247** (2026-11-27) The code profile keeps the IR's rules: a script command takes no `timeoutMs`, because a
+  script is bounded by its artifact's policy (`wall`, 1 s to 15 min, `ScriptPolicy` in `crates/domain/src/scripts.rs`),
+  as a graph script node is, which has no `timeoutMs` either; and a wait for an event requires `timeoutMs` (1 ms to 366
+  days, the graph node's rule). Technical Plan 1.12's signatures are corrected to `script<T>(artifactDigest, input,
+  options?: { retry? })` and `waitForEvent<T>(eventType, correlationKey, options: { timeoutMs: number; lookbackMs?:
+  number })`, and `sdks/SPEC.md` with them. delegate (OD-2026-11-24-4): a per-call script timeout would be a second limit
+  beside the reviewed artifact policy, one the command could set and publication approval would not see; a wait without
+  a bound would hold its subscription for the run's lifetime, which the graph refuses for the same reason, and a
+  function that waits longer loops over bounded waits; per-command deadlines come with design 045's fields (Task
+  044-27).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap

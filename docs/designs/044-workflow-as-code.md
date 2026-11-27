@@ -910,9 +910,11 @@ naming and take the same options; `sdks/SPEC.md` gives each, by Task 044-1):
 ```typescript
 activity<T>(name: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number;
   concurrencyKey?: string; rateLimitKey?: string }): Promise<T>          // fragment: activity profile
-script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number }): Promise<T>
+script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy }): Promise<T>
+  // no timeoutMs: the artifact's policy (`wall`) bounds a script, as for a graph script node (Decision 044-247)
 sleep(durationMs: number): Promise<void>                                  // timer
-waitForEvent<T>(eventType: string, correlationKey: string, options?: { timeoutMs?: number; lookbackMs?: number }): Promise<T | undefined>
+waitForEvent<T>(eventType: string, correlationKey: string, options: { timeoutMs: number; lookbackMs?: number }): Promise<T | undefined>
+  // timeoutMs is required, as for a graph waitEvent node (Decision 044-247)
 child<T>(workflowId: string, input: unknown, options?: { cancelPolicy?: 'propagate' | 'request_cancel' | 'detach'; businessId?: string }): Promise<T>
 approval(policyName: string, subject: unknown): Promise<'approved' | 'rejected' | 'expired'>
 saga<T>(options: { onCompensationFailure?: 'manual_review' | 'fail'; cancelPolicy?: 'compensate_completed'
@@ -1299,7 +1301,8 @@ The domain decides what the function sees and what makes a workflow task due fro
 `RunEvent::is_visible()` is an exhaustive `match` over every kind with no catch-all arm, and
 `RunEvent::is_waking(origin)` is false for every event a completion writes as the record or immediate bookkeeping of its
 own commands and for the workflow-task events, and true for a visible event of any other origin and for a command's
-immediate effect (a `waitEvent` satisfied at once by its look-back, a cancellation of a step that was still `READY`),
+immediate effect (a `waitEvent` satisfied at once by its look-back, a cancellation of a step that no worker held: `READY`,
+or waiting on an event or an approval),
 which the completion appends with the origin `effect`. The history projection, the export, the visible count and the
 pending rule all use them.
 
@@ -1312,10 +1315,13 @@ pending rule all use them.
   is what the function sees, and the internals of a step's admission (a grant of feature 022, the approval decision that
   releases an activity held for approval: the function sees only the step's outcome).
 - **The history a worker receives** is typed `HistoryEvent` messages (section 13), not the journal's internal JSON.
-  Command records carry the command number, kind and target, never the body: the worker does not need the inputs of its
+  Command records carry the command number, kind and target, and for an activity or script scheduled in a saga scope
+  that scope (`s-<n>`, Decision 044-244), never the body: the worker does not need the inputs of its
   past commands, and it must not be able to compute the command chain without running the function (section 6.2). Each
   `HistoryEvent` carries its journal sequence and its origin, never an actor subject (a signal's sender, an update's
-  admitter). A visible kind added after this minor is never delivered
+  admitter). A step the function cancelled (an activity, a script, a wait, an approval) is delivered as a step outcome
+  `CANCELLED`, whatever its kind; a child's as its `child.finished`; a timer's as the record of its cancel (Decision
+  044-245). A visible kind added after this minor is never delivered
   to a session of an older minor, whose workflow types are then not offered such runs. The lease's first page is a
   history read like any other: its audit is collapsed per session and run within 300 s, as Architecture decision 0031
   decision 7 does for queries. `RunEvent::is_visible` and `is_waking` carry `#[deny(clippy::wildcard_enum_match_arm)]`.
@@ -1570,7 +1576,8 @@ kind) and drives each through its path for a code run (Task 044-9).
 
 During replay the SDK compares each command the function makes with the command record at the same command number:
 the kind and the target (activity name, script digest, child workflow, timer, event type, approval policy name, saga
-scope identifier, marker identifier, the step a no-op targeted). A recorded command the function did not make by the time
+scope identifier, marker identifier, the step a no-op targeted), and for an activity or a script the saga scope it is
+scheduled in, which the record carries (Decision 044-244). A recorded command the function did not make by the time
 it yields with no event left to apply, a command where the history has none, and a `patched(id)` that disagrees with the
 markers are mismatches, and so is an activation whose `workflow_task.completed` records a deferral in which the
 function does not make the deferred command last (section 4.4). The report (`FailWorkflowTask`, cause `NONDETERMINISM`) names the command number, the actual kind
@@ -1899,7 +1906,9 @@ answers the same `404` as a missing one. The stop drain and continue-as-new's ha
 every update that has not completed: an `ADMITTED` one becomes `REJECTED` and an `ACCEPTED` one `FAILED`, with the reason
 `RUN_ENDED` or `RUN_CONTINUED`, journaled with origin `engine`, so no receipt stays open on a finished run; an update to a
 run that is stopping or has ended is refused `409 RUN_NOT_MUTABLE`, as for a graph run. Update-with-Start admits the update
-in the creating transaction. A chain-addressed update resolves the head run and then behaves as for a run, except that
+in the creating transaction, after `run.started`: every creating transaction journals `run.started` first, at sequence 1,
+so activation 1 starts the function, which registers its handlers, before it applies the `update.admitted` or a
+Signal-with-Start's `signal.buffered` (Decision 044-246). A chain-addressed update resolves the head run and then behaves as for a run, except that
 its key keeps the chain's scope. A graph run's
 update keeps its synchronous expression form.
 
