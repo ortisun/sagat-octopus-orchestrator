@@ -3226,14 +3226,18 @@ Three facts were checked by hand by the coordinating session on `postgres:16-alp
   `run_recovery.unbound` row into `public.audit_records` (actor `system:provisioning`, `Subject::provisioning`,
   `crates/domain/src/identity.rs:168-170`; resource type `run_recovery_binding`, with the identifier the route writes;
   reason "removed by a referential cascade"; `gen_random_uuid()`, `clock_timestamp()`) only when the delete was issued
-  by a referential action, that is when `pg_trigger_depth()` inside the function is above 1. The route's own delete
-  (depth 1) is audited by the route in its transaction (D022-274), so no removal is audited twice or not at all. Two
-  premises are not checked by hand and are proved by tests: that a cascaded delete fires the trigger at depth 2 and a
-  direct one at depth 1 (task T022-266: an unbind through the route writes exactly one `run_recovery.unbound` row, a
-  membership deletion and a namespace deletion one per binding); and that a membership deletion against a concurrent
-  bind leaves no binding without its membership at any isolation level (PostgreSQL's referential actions read the
-  current rows and, in a snapshot transaction, raise a serialization failure rather than skip a row they cannot see;
-  task T022-261, at the three levels). Rejected: a `BEFORE DELETE` trigger on `memberships` auditing the subject's
+  by a referential action, that is when the binding's membership `(tenant_id, subject, role)` or its namespace no longer
+  exists as the function reads it. The route's own delete finds both parents present and is audited by the route in its
+  transaction (D022-274), so no removal is audited twice or not at all. Checked by hand on `postgres:16-alpine`
+  (2026-11-27): `pg_trigger_depth()` cannot tell the two apart, since an `AFTER DELETE` row trigger fired by an
+  `ON DELETE CASCADE` reads depth 1, as a direct delete does; the parents' presence can, since the trigger of a direct
+  unbind saw both present, the cascade of a namespace deletion saw the namespace gone, and the cascade of a membership
+  deletion saw the membership gone. Also checked by hand: a membership deletion against a concurrent bind (which locked
+  the membership `FOR SHARE` and inserted, committing while the deletion waits) leaves no binding without its
+  membership: at READ COMMITTED both rows are removed, at REPEATABLE READ and SERIALIZABLE the deletion fails "could not
+  serialize access due to concurrent update" and both rows stay. Tests T022-266 (one `run_recovery.unbound` row for an
+  unbind through the route, one per binding for a membership deletion and a namespace deletion) and T022-261 (the
+  deletion race at the three levels) keep these facts. Rejected: a `BEFORE DELETE` trigger on `memberships` auditing the subject's
   bindings (it reads the rows before the cascade, with the snapshot problem of fact 2, and misses a namespace deletion);
   `ON DELETE RESTRICT` (a binding would block the removal of a member, a security act).
 - **D022-300 — The functions of the scope's migration, restated (amends D022-290 and D022-291 (a)).** Delegate
