@@ -671,7 +671,7 @@ message TaskLease {
   bool heartbeat_from_handler = 27;
 }
 message FailStepRequest {
-  // fields 1 to 12 unchanged; 13 is design 041's step_logs (draft 019's details_json moved to 15, Decision 044-256)
+  // fields 1 to 12 unchanged; 13 named by draft 019
   // Added in 1.9. The handler's delay before the next attempt, 1 to 86,400,000; absent: the policy decides.
   optional uint32 next_retry_delay_ms = 14;
 }
