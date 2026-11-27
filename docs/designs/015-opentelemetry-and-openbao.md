@@ -202,10 +202,15 @@ day-long wait.
    `sagat/ring-check/v1`; it reveals nothing of the key. `key-authority begin-migration` records, through the
    owner-role `key_authority_record_retired_ring`, the check value and the id of every key of the ring the command
    holds, whether or not it sealed a row, in `key_authority_state.retired_ring_check_values` and
-   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id it re-seals away from. In `migrating`, a
-   control plane or engine whose ring holds a key whose check value is not recorded keeps its gate closed, so the
-   record covers every key a serving process holds. In `returning`, a control plane or engine whose ring holds a key
-   whose check value or id is recorded keeps its gate closed, and `reseal-secrets --to local` refuses such a ring.
+   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id it re-seals away from. The record only
+   grows: `key_authority_record_retired_ring` adds values and never removes or replaces one, and the state row's
+   `ENABLE ALWAYS` trigger refuses any update after which either array lacks a value it held before, so a second
+   migration keeps the first ring's values beside the second's and every ring ever retired stays refused. In
+   `migrating`, a control plane or engine whose ring holds a key whose check value is not recorded keeps its gate
+   closed, and `reseal-secrets --to transit` refuses such a ring too, so the record covers every key a serving process
+   or the re-seal command holds (an older key kept only for rows no serving process still opens included). In
+   `returning`, a control plane or engine whose ring holds a key whose check value or id is recorded keeps its gate
+   closed, and `reseal-secrets --to local` refuses such a ring.
 3. Record the registry requirement `key-authority-return-v1` for both kinds.
 4. `key-authority begin-return`. Every process sees `returning` within a heartbeat and has what the table asks.
 5. `reseal-secrets --to local`, `scripts resign`, and wait until no intent at binding version 2 is pending.
@@ -1461,7 +1466,10 @@ Two lanes that can run at the same time; where they touch the same file the orde
   platform's schemas and every `regprocedure` of `key_authority_reseal_inventory`, with a fixture entry whose count
   function lacks the pinned path and fails the row; `retired_ring_check_values`, `retired_ring_key_ids` and their
   function, with tests that a return ring holding archived material under a new id, or an old key that sealed no row,
-  keeps the gate closed and is refused by `reseal-secrets --to local`; the `secret_versions` trigger on insert
+  keeps the gate closed and is refused by `reseal-secrets --to local`; that an update shrinking either array is
+  refused by the trigger; that `reseal-secrets --to transit` refuses a ring holding a key whose check value is not
+  recorded; and a two-cycle test (migrate with ring R, return with a fresh ring R2, migrate again, then bring R back,
+  under its old ids and under new ones, on the second return) that sees the gate stay closed; the `secret_versions` trigger on insert
   and on update of the sealed columns, with the floor and the ceiling; `secrets.authority` widened; `wrapped_key`, `wrapped_key_version`, `data_key_issued_at` and the
   representation constraint with no key id on a `transit` row; the intent binding version and key version under the
   immutability trigger, and the binding-version trigger of Requirement 015-014; `script_artifact_signatures` with its
