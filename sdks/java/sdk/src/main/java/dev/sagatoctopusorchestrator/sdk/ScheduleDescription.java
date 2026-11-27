@@ -49,6 +49,6 @@ public record ScheduleDescription(
                 .toList();
         return new ScheduleDescription(
                 Schedule.parse(raw), next, recent, Wire.strings(raw.path("openRuns")),
-                Wire.num(raw, "bufferedCount", 0), Wire.counters(raw.path("counters")), raw);
+                Wire.num(raw, "bufferedCount", 0), Wire.counters(raw.path("counters")), Schedule.withoutInputDigest(raw));
     }
 }

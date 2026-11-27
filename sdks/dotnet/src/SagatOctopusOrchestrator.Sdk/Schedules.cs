@@ -189,12 +189,16 @@ public sealed record ScheduleWrite
     public long? RemainingActions { get; init; }
 }
 
-/// <summary>The action of a schedule as the server keeps it: without the input, with its digest.</summary>
+/// <summary>
+/// The action of a schedule as the server keeps it: without the input and without any digest of it, which would let a
+/// reader confirm a guessed input (T016-066, G665). <see cref="HasInput"/> says only whether it has one; its values come
+/// out only through an input disclosure.
+/// </summary>
 public sealed record ScheduleActionSummary(
     string? WorkflowId,
     string? VersionPolicy,
     string? VersionId,
-    string? InputDigest,
+    bool HasInput,
     string? NominalTimeField,
     long? RunTimeoutMs,
     string? BusinessIdPrefix = null,
@@ -206,7 +210,7 @@ public sealed record ScheduleActionSummary(
     {
         builder.Append(
             CultureInfo.InvariantCulture,
-            $"WorkflowId = {WorkflowId}, VersionPolicy = {VersionPolicy}, VersionId = {VersionId}, InputDigest = {InputDigest}, NominalTimeField = {NominalTimeField}, RunTimeoutMs = {RunTimeoutMs}, BusinessIdConflictPolicy = {BusinessIdConflictPolicy}, BusinessIdReusePolicy = {BusinessIdReusePolicy}");
+            $"WorkflowId = {WorkflowId}, VersionPolicy = {VersionPolicy}, VersionId = {VersionId}, HasInput = {HasInput}, NominalTimeField = {NominalTimeField}, RunTimeoutMs = {RunTimeoutMs}, BusinessIdConflictPolicy = {BusinessIdConflictPolicy}, BusinessIdReusePolicy = {BusinessIdReusePolicy}");
         return true;
     }
 }
@@ -876,7 +880,8 @@ public sealed class SchedulesClient
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "workflowId") : null,
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "versionPolicy") : null,
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "versionId") : null,
-                action.ValueKind == JsonValueKind.Object ? OptStr(action, "inputDigest") : null,
+                // An older server sends inputDigest instead: it only tells that there is an input, and is not kept.
+                action.ValueKind == JsonValueKind.Object && (Flag(action, "hasInput") || OptStr(action, "inputDigest") is not null),
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "nominalTimeField") : null,
                 action.ValueKind == JsonValueKind.Object ? OptNum(action, "runTimeoutMs") : null,
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "businessIdPrefix") : null,
@@ -888,8 +893,25 @@ public sealed class SchedulesClient
             NextActionAt = OptDate(raw, "nextActionAt"),
             CreatedAt = Date(raw, "createdAt"),
             UpdatedAt = OptDate(raw, "updatedAt"),
-            Raw = raw,
+            Raw = WithoutInputDigest(raw),
         };
+    }
+
+    /// <summary>
+    /// The answer without the digest of the input an older server still sends (<c>action.inputDigest</c>): it only tells that there is an
+    /// input, and nothing of it is kept, not even in <see cref="Schedule.Raw"/> (T016-066, G665).
+    /// </summary>
+    private static JsonElement WithoutInputDigest(JsonElement raw)
+    {
+        if (!raw.TryGetProperty("action", out var action) || action.ValueKind != JsonValueKind.Object || !action.TryGetProperty("inputDigest", out _))
+        {
+            return raw;
+        }
+
+        var copy = System.Text.Json.Nodes.JsonNode.Parse(raw.GetRawText())!.AsObject();
+        copy["action"]!.AsObject().Remove("inputDigest");
+        using var document = JsonDocument.Parse(copy.ToJsonString());
+        return document.RootElement.Clone();
     }
 
     private static ScheduleActionRecord ToActionRecord(JsonElement? value)

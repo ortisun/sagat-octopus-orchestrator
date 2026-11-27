@@ -463,8 +463,9 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   from the authenticated context; foreign schedules, jobs, resets, runs and business ids are opaque
   `NOT_FOUND` with the probe audited.
 - **FR-018-042 — Disclosure.** Schedule input, batch payloads and retained Update arguments are charged
-  content; ordinary schedule, batch and reset reads return digests and sizes only; schedule input values
-  only through an audited read with feature-016 audiences. Business ids MUST NOT appear in metric
+  content; ordinary schedule, batch and reset reads say only whether there is one (`action.hasInput`,
+  `hasPayload`), never a digest of it, which would let a reader confirm a guessed value (feature 016's FR-016-030,
+  G665); schedule input values only through an audited read with feature-016 audiences. Business ids MUST NOT appear in metric
   labels, span attributes, logs, audit reasons or outbox payloads. Payload-referencing columns
   (`schedule_revisions.input_digest`, `batch_jobs.payload_digest`, retained Update arguments) MUST be
   registered in 020's content-store registry (`specs/020-visibility-analytics-archival/data-model.md`).

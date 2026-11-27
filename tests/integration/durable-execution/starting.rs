@@ -399,12 +399,14 @@ async fn the_journal_and_the_runtime_graph_show_what_happened() {
     assert_eq!(completed.node.as_deref(), Some("a"));
     assert_eq!(completed.attempt, Some(1));
     assert_eq!(completed.actor, "worker:worker-1");
-    assert!(
-        completed
-            .payload_ref
-            .as_deref()
-            .is_some_and(|d| d.len() == 64),
-        "the output is referenced by digest"
+    // The output is referenced by its place, never by a digest of it (FR-016-030, G665).
+    assert_eq!(
+        completed.payload,
+        Some(sagat_application::runs::JournalPayloadRef {
+            run,
+            seq: completed.seq
+        }),
+        "the output is referenced by its place in the journal"
     );
 
     let graph = w.runs.graph(&w.admin, run, &ctx()).await.expect("graph");

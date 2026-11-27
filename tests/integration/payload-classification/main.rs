@@ -8,6 +8,7 @@ mod disclosure;
 mod events;
 mod grants;
 mod journal;
+mod journal_reference;
 mod pinning;
 mod pinning_routes;
 mod rest;
@@ -18,3 +19,4 @@ mod security;
 mod step_outputs;
 #[path = "../../support/mod.rs"]
 mod support;
+mod write_oracles;

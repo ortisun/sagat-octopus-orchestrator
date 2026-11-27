@@ -409,7 +409,7 @@ def schedule_action_json(action: ScheduleActionSummary) -> Obj:
         "workflowId": action.workflow_id,
         "versionPolicy": action.version_policy,
         "versionId": action.version_id,
-        "inputDigest": action.input_digest,
+        "hasInput": action.has_input,
         "nominalTimeField": action.nominal_time_field,
         "runTimeoutMs": number(action.run_timeout_ms),
     }

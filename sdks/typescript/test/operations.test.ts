@@ -29,7 +29,7 @@ const run = (overrides: Record<string, unknown> = {}): Record<string, unknown> =
 
 const schedule = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   scheduleId: SCHEDULE, name: 'nightly', origin: 'API', state: 'ACTIVE', revision: 2, createdAt: '2026-10-10T10:00:00Z',
-  action: { workflowId: WF, versionPolicy: 'ACTIVE', inputDigest: 'a'.repeat(64) }, note: null, remainingActions: null,
+  action: { workflowId: WF, versionPolicy: 'ACTIVE', hasInput: true }, note: null, remainingActions: null,
   nextActionAt: '2099-01-01T09:00:00Z', updatedAt: '2026-10-10T10:00:00Z', ...overrides,
 });
 
@@ -194,7 +194,8 @@ test('create sends the schedule with its instants in UTC and one key, and reads 
   });
   assert.equal(created.revision, 2);
   assert.equal(created.nextActionAt?.toISOString(), '2099-01-01T09:00:00.000Z');
-  assert.equal(created.action.inputDigest, 'a'.repeat(64), 'the input is never returned, only its digest');
+  assert.equal(created.action.hasInput, true, 'the input is never returned, nor its digest: only that there is one');
+  assert.equal('inputDigest' in created.action, false);
   assert.equal(created.raw['futureField'], 1);
 });
 
@@ -300,7 +301,7 @@ test('a backfill sends its range as UTC instants, a cancel names the backfill, a
 
 // Customer text: spaces and upper case are sent as they are, and the SDK has no opinion on the pattern or the length.
 const PREFIX = ' Order/Mixed-Case ';
-const SERVED = { workflowId: WF, versionPolicy: 'ACTIVE', inputDigest: 'a'.repeat(64) };
+const SERVED = { workflowId: WF, versionPolicy: 'ACTIVE', hasInput: true };
 const actionOf = (request: Seen): Record<string, unknown> => (request.body as { action: Record<string, unknown> }).action;
 const writeWith = (extra: Partial<ScheduleWrite['action']> = {}): ScheduleWrite =>
   ({ name: 'nightly', spec: { cron: ['0 9 * * *'] }, action: { workflowId: WF, input: { n: 1 }, ...extra } });
@@ -401,15 +402,24 @@ test('the conformance runner prints the business-id keys of a schedule action on
   prepare((_req, res) => reply(res, 200, schedule({ action: { ...SERVED, businessIdPrefix: PREFIX, businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } })));
   const withPrefix: Schedule = await client().schedules.create(NS, writeWith({ businessIdPrefix: PREFIX }));
   assert.deepEqual(scheduleJson(withPrefix)['action'], {
-    workflowId: WF, versionPolicy: 'ACTIVE', versionId: null, inputDigest: 'a'.repeat(64), nominalTimeField: null, runTimeoutMs: null,
+    workflowId: WF, versionPolicy: 'ACTIVE', versionId: null, hasInput: true, nominalTimeField: null, runTimeoutMs: null,
     businessIdPrefix: PREFIX, businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE',
   });
 
   prepare((_req, res) => reply(res, 200, schedule()));
   const plain = await client().schedules.create(NS, writeWith());
-  // What every golden has had: these six keys and nothing else, so no existing golden changes.
-  assert.deepEqual(Object.keys(scheduleJson(plain)['action']).sort(), ['inputDigest', 'nominalTimeField', 'runTimeoutMs', 'versionId', 'versionPolicy', 'workflowId']);
-  assert.deepEqual(scheduleJson(plain)['action'], { workflowId: WF, versionPolicy: 'ACTIVE', versionId: null, inputDigest: 'a'.repeat(64), nominalTimeField: null, runTimeoutMs: null });
+  // These six keys and nothing else; `hasInput` replaced `inputDigest` in every golden (T016-066).
+  assert.deepEqual(Object.keys(scheduleJson(plain)['action']).sort(), ['hasInput', 'nominalTimeField', 'runTimeoutMs', 'versionId', 'versionPolicy', 'workflowId']);
+  assert.deepEqual(scheduleJson(plain)['action'], { workflowId: WF, versionPolicy: 'ACTIVE', versionId: null, hasInput: true, nominalTimeField: null, runTimeoutMs: null });
+
+  // An older server still sends the digest: the SDK says there is an input, and keeps nothing of the digest.
+  prepare((_req, res) => reply(res, 200, schedule({ action: { workflowId: WF, versionPolicy: 'ACTIVE', inputDigest: 'a'.repeat(64) } })));
+  const legacy = await client().schedules.create(NS, writeWith());
+  assert.equal(legacy.action.hasInput, true);
+  assert.equal(JSON.stringify(scheduleJson(legacy)).includes('a'.repeat(64)), false);
+  assert.equal(JSON.stringify(legacy.raw).includes('a'.repeat(64)), false, 'not even raw keeps the digest');
+  prepare((_req, res) => reply(res, 200, schedule({ action: { workflowId: WF, versionPolicy: 'ACTIVE', hasInput: false } })));
+  assert.equal((await client().schedules.create(NS, writeWith())).action.hasInput, false);
 
   // A description prints the same action, and its recent actions print the outcome and reason strings as they came.
   prepare((_req, res) => reply(res, 200, {

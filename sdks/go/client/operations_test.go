@@ -29,7 +29,7 @@ const (
 func scheduleAnswer(overrides map[string]any) map[string]any {
 	m := map[string]any{
 		"scheduleId": scheduleID, "name": "nightly", "origin": "API", "state": "ACTIVE", "revision": 2, "createdAt": "2026-10-10T10:00:00Z",
-		"action": map[string]any{"workflowId": workflowID, "versionPolicy": "ACTIVE", "inputDigest": strings.Repeat("a", 64)}, "note": nil,
+		"action": map[string]any{"workflowId": workflowID, "versionPolicy": "ACTIVE", "hasInput": true}, "note": nil,
 		"remainingActions": nil, "nextActionAt": "2099-01-01T09:00:00Z", "updatedAt": "2026-10-10T10:00:00Z",
 	}
 	for k, v := range overrides {
@@ -350,8 +350,8 @@ func TestCreateSendsTheScheduleWithItsInstantsInUTCAndOneKeyAndReadsTheScheduleI
 	if created.Revision != 2 || !created.NextActionAt.Equal(time.Date(2099, 1, 1, 9, 0, 0, 0, time.UTC)) || created.NextActionAt.Location() != time.UTC {
 		t.Errorf("%+v", created)
 	}
-	if created.Action.InputDigest != strings.Repeat("a", 64) {
-		t.Error("the input is never returned, only its digest")
+	if !created.Action.HasInput {
+		t.Error("the input is never returned, nor its digest: only that there is one")
 	}
 	if string(created.Raw["futureField"]) != "1" {
 		t.Error("a field of a newer server is reachable")
@@ -477,7 +477,7 @@ func TestAScheduleActionWithABusinessIDPrefixSendsTheThreeFieldsAsGivenOnCreateA
 	prefix := " Order/{x}-é+%20 " // customer text: no trimming, no case folding, no local pattern or length check
 	f := newFake(t)
 	answer := scheduleAnswer(map[string]any{"action": map[string]any{
-		"workflowId": workflowID, "versionPolicy": "ACTIVE", "inputDigest": strings.Repeat("a", 64),
+		"workflowId": workflowID, "versionPolicy": "ACTIVE", "hasInput": true,
 		"businessIdPrefix": prefix, "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "REJECT_DUPLICATE",
 	}})
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 201, answer) })
@@ -528,7 +528,7 @@ func TestAScheduleActionThatNamesNoPrefixSendsNoneOfTheThreeFieldsAndReadsNoneBa
 	// The server writes null for what it has not: the same as absent.
 	f.answer(func(_ seen, w http.ResponseWriter) {
 		reply(w, 200, scheduleAnswer(map[string]any{"action": map[string]any{
-			"workflowId": workflowID, "inputDigest": strings.Repeat("a", 64), "businessIdPrefix": nil, "businessIdConflictPolicy": nil, "businessIdReusePolicy": nil,
+			"workflowId": workflowID, "hasInput": true, "businessIdPrefix": nil, "businessIdConflictPolicy": nil, "businessIdReusePolicy": nil,
 		}}))
 	})
 	updated, err := c.Schedules.Update(context.Background(), nsID, scheduleID, write, 2, client.WithIdempotencyKey("upd-key-0003"))
@@ -570,7 +570,7 @@ func TestAPolicyOfTheActionThatThisSDKDoesNotKnowIsKeptAsTheStringTheServerSentN
 	f := newFake(t)
 	f.answer(func(_ seen, w http.ResponseWriter) {
 		reply(w, 200, scheduleAnswer(map[string]any{"action": map[string]any{
-			"workflowId": workflowID, "inputDigest": strings.Repeat("a", 64),
+			"workflowId": workflowID, "hasInput": true,
 			"businessIdPrefix": "p", "businessIdConflictPolicy": "REPLACE", "businessIdReusePolicy": "SOMETHING_NEWER",
 		}}))
 	})
@@ -1187,6 +1187,39 @@ func TestTheTokenDoesNotAppearInAnythingAGroupOfTheClientExposes(t *testing.T) {
 			if strings.Contains(out, "tok-1") {
 				t.Errorf("%s shows the token: %s", name, out)
 			}
+		}
+	}
+}
+
+// T016-066 (G665): the server says hasInput; an older one sent the input's digest, which only tells that there is
+// an input and is not kept.
+func TestAScheduleSaysWhetherItHasAnInputAndNeverCarriesADigestOfIt(t *testing.T) {
+	legacy := map[string]any{"workflowId": workflowID, "inputDigest": strings.Repeat("a", 64)}
+	for _, tc := range []struct {
+		action map[string]any
+		want   bool
+	}{
+		{map[string]any{"workflowId": workflowID, "hasInput": true}, true},
+		{map[string]any{"workflowId": workflowID, "hasInput": false}, false},
+		{legacy, true},
+	} {
+		f := newFake(t)
+		f.answer(func(_ seen, w http.ResponseWriter) {
+			reply(w, 200, scheduleAnswer(map[string]any{"action": tc.action}))
+		})
+		c := newClient(t, f)
+		schedule, err := c.Schedules.Get(context.Background(), nsID, scheduleID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if schedule.Action.HasInput != tc.want {
+			t.Errorf("%v: hasInput %v", tc.action, schedule.Action.HasInput)
+		}
+		if strings.Contains(fmt.Sprintf("%+v", schedule.Action), strings.Repeat("a", 64)) {
+			t.Errorf("the digest is kept: %+v", schedule.Action)
+		}
+		if raw, _ := json.Marshal(schedule.Raw); strings.Contains(string(raw), strings.Repeat("a", 64)) {
+			t.Errorf("not even Raw keeps the digest: %s", raw)
 		}
 	}
 }

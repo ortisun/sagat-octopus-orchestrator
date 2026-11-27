@@ -4026,7 +4026,7 @@ export interface components {
             /** @description user:<sub>, worker:<id> or system:<component>. */
             actor: string;
             traceId?: string | null;
-            /** @description SHA-256 of the output payload the event refers to. */
+            /** @description Where the payload this event carries is kept: `journal:<runId>:<seq>`, the run and this event's sequence, which payload inspection and disclosure accept as `{"source": "journal", "sequence": <seq>}` (disclosure gives values for a step output, a wait's or a reconciliation's result and a child's finish, and structure only for `state.updated`, `run.continued` and `continuation.selected`). Null when the event carries none. It is not derived from the payload, so two equal payloads have different references, and it is no digest: no read returns a digest of a payload (FR-016-030, G665). Until T016-066 it was the SHA-256 of the payload. */
             payloadRef?: string | null;
             /** @description Why it happened, when the event is the result of something going wrong, a person's choice or the clock. */
             cause?: components["schemas"]["Cause"] | null;
@@ -6766,7 +6766,7 @@ export interface components {
             revision: number;
             spec?: components["schemas"]["ScheduleSpec"];
             policies?: components["schemas"]["SchedulePolicies"];
-            /** @description The action without its input; `inputDigest` (SHA-256, hex) describes the input. */
+            /** @description The action without its input. `hasInput` says whether it has one; its values come out only through `input-disclosures`. No digest of the input is returned (FR-016-030, G665); until T016-066 the read carried `inputDigest`, its SHA-256. */
             action?: {
                 /** Format: uuid */
                 workflowId?: string;
@@ -6774,7 +6774,8 @@ export interface components {
                 versionPolicy?: "ACTIVE" | "PINNED";
                 /** Format: uuid */
                 versionId?: string;
-                inputDigest?: string;
+                /** @description Whether the action has an input. */
+                hasInput: boolean;
                 nominalTimeField?: string;
                 runTimeoutMs?: number;
                 /** @description Present when the action names a prefix; with the two policies below, which are written out with their defaults. Customer text. */

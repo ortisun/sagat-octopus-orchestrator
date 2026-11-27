@@ -186,8 +186,8 @@ describe('JournalStore', () => {
 
 describe('entries', () => {
   it('says what only the journal knows: who, the trace, the payload digest; a live event carries none', () => {
-    const full = fromJournal(journalEvent(7, 'step.completed', { payloadRef: 'f'.repeat(64) }));
-    expect(full).toMatchObject({ detail: 'journal', actor: 'worker:w1', traceId: 'a'.repeat(32), payloadRef: 'f'.repeat(64) });
+    const full = fromJournal(journalEvent(7, 'step.completed', { payloadRef: 'journal:019b5d6e-0000-7000-8000-000000000001:7' }));
+    expect(full).toMatchObject({ detail: 'journal', actor: 'worker:w1', traceId: 'a'.repeat(32), payloadRef: 'journal:019b5d6e-0000-7000-8000-000000000001:7' });
     expect(fromLive(liveEvent(7))).toMatchObject({ detail: 'live', actor: undefined, traceId: null, payloadRef: null });
   });
 });

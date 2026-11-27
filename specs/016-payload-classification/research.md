@@ -377,7 +377,7 @@ administrator cannot even be created, G290), and G49 already treats a tenant adm
 | G272 | **The event inbox and dead letters disclosed values before this feature.** `getInboxEvent` returned `data` and `listConnectorDeadLetters` returned `body` and `headers` to any `event:read` holder, viewers included, against ADR-0033's premise. | Restricted in this increment by D302 to D305 (US08): values need the reveal grant, everyone else gets structure. Field classification of events remains open (G282). | Resolved by restriction (owner decision P2, 2026-10-17); classification open
 | G273 | An inline run input is not validated against `inputSchema` at start (only a claim-check descriptor is). | Disclosure validates at read (D269); non-conforming inputs show as structure only. Start-time validation is a separate behaviour change. | Open |
 | G274 | Until an author adds an `outputSchema` to a node, its output cannot be disclosed. | Adoption: `validate` reports activities without one as informational in the Studio panel; no default schema. | Accepted |
-| G275 | `JournalEvent.payloadRef` is a plain SHA-256 of the payload, readable by any `run:read` holder; a guessable payload (even a `secret` one) can be confirmed by hashing a guess. | Not changed: the digest is the payload's content identity (ADR-0002, ADR-0023). Options if the owner wants it closed: expose an HMAC under a per-tenant key (breaks equality across tenants, which is fine, and any client comparing digests), or hide the field for viewers. | Open |
+| G275 | `JournalEvent.payloadRef` is a plain SHA-256 of the payload, readable by any `run:read` holder; a guessable payload (even a `secret` one) can be confirmed by hashing a guess. | Not changed: the digest is the payload's content identity (ADR-0002, ADR-0023). Options if the owner wants it closed: expose an HMAC under a per-tenant key (breaks equality across tenants, which is fine, and any client comparing digests), or hide the field for viewers. | Closed by bugfix T016-066 (G665, D016-001): the journal read returns the place of the payload, never a digest. |
 | G276 | No taint tracking across expressions, child inputs and results (D283). | Documented; mitigated by report and review. | Accepted |
 | G277 | External (blob) payload values are not disclosed. | `external/EXTERNAL_CONTENT_NOT_INSPECTED`, as ADR-0028. Reading a blob for disclosure needs a size policy and a streaming validator. | Open |
 | G278 | Script execution logs (`ExecutionBody.log`, readable with `script:read`) and script test-run input/result are author-controlled text and test data, outside classification. | Documented boundary; log quotas are ADR-0027's. | Accepted |
@@ -627,7 +627,7 @@ is set, so an audience that reads `pii` and not `internal` cannot be built.
 | G662 | `T016-053` (benchmark) and `T016-054` (workspace gates) are not closed: the benchmark report states that the registered target and the cache tests must pass first and that the cache does not bound compiled-validator memory (414 MiB at the 16 MiB limit); the workspace gates were never run as one set on the integrated tree. | Unticked in `tasks.md`; the cache weight is an engine-side fix (D640+). Close both with the commands of the task on the merged tree. | Open |
 | G663 | `tasks/project-completion/` (about 1.7 million lines of command output) is not in git; 56 evidence lines and about 288 lines of specs and docs cite it. | The evidence lines say so; a tick stands only on a test that is in the repository and can be rerun. The output is kept outside git (local ref `handoff/016-project-completion-20261024`). | Accepted |
 | G664 | `npm audit --audit-level=moderate` in `frontend/` fails on this branch (2026-10-25): vitest and `@vitest/mocker` <= 4.1.11 (moderate), `dompurify` <= 3.4.16 (critical; the root `package.json` overrides it to 3.4.16) and `undici` 8.0.0 to 8.12.1 (high). No package or lockfile changed here. | Not fixed in this change (a dependency bump is its own change); it belongs to the advisory part of T016-054 and to whoever owns the Studio dependencies. | Open |
-| G665 | The journal read returns `run_events.payload_digest`, the unsalted SHA-256 of the event's payload bytes, as `payloadRef` to every `run:read` caller (`crates/infra-postgres/src/execution.rs`, the event list; `crates/api-http/src/dto_exec.rs`, `payload_ref`), step outputs included: a caller without a reveal grant can confirm a guessed value of a `pii` or `secret` output by hashing guesses offline. Found by the security review of design 054 (Major 1, its Gap 054-011); design 054 withholds it for `signal.buffered` only. | Bugfix Task T016-066, severity High (OD-2026-11-26-566). | Open |
+| G665 | The journal read returns `run_events.payload_digest`, the unsalted SHA-256 of the event's payload bytes, as `payloadRef` to every `run:read` caller (`crates/infra-postgres/src/execution.rs`, the event list; `crates/api-http/src/dto_exec.rs`, `payload_ref`), step outputs included: a caller without a reveal grant can confirm a guessed value of a `pii` or `secret` output by hashing guesses offline. Found by the security review of design 054 (Major 1, its Gap 054-011); design 054 withholds it for `signal.buffered` only. | Bugfix Task T016-066, severity High (OD-2026-11-26-566). Closed 2026-11-26 by bugfix T016-066 (FR-016-030, D016-001..003), on the branch `bugfix/payload-digest-disclosure`; the task stays unticked until the merge. Seen failing first, on the unfixed server: `integration_payload_classification journal_reference::no_run_read_surface_returns_the_digest_of_a_classified_output` (the viewer read `"payloadRef":"20ec2f38…"`, the SHA-256 of `{"approved":true}`, which the test computes from the guess) and `integration_schedules_bulk_operations disclosure_rest::no_schedule_answer_returns_the_digest_of_its_classified_input` (`"inputDigest":"2a819993…"`, the SHA-256 of `{"flag":true}`). After the fix both pass, as the database owner and with `SAGAT_TEST_AS_RUNTIME_ROLE=1`: the whole `integration_payload_classification` target passed 44, ignored 2, in both roles; `disclosure` 10 of `integration_schedules_bulk_operations` and `starting::` 10 of `integration_durable_execution` passed in both roles. Six-language conformance `schedules-crud`, `schedules-operate` and `schedules-overlap` passed against the goldens, where `hasInput` replaces the digest. The Studio, the six SDK suites and their linters pass. Design 054 still says the journal read returns `payload_digest` for events other than `signal.buffered`; under FR-016-030 it returns the place, and design 054 still answers `null` for `signal.buffered` when it is built. | Closed |
 
 ### Owner questions
 
@@ -635,3 +635,132 @@ is set, so an audience that reads `pii` and not `internal` cannot be built.
 |---|---|---|
 | O660 | Should the first version of a legacy workflow under the current rules list a relaxation per location (D664), or one finding per carrier that says how many locations became readable? | Per location, bounded at 100 with the exact remainder; it follows US01.7 ("an attention finding for each"). |
 | O661 | Should a promotion (for example `operator` to `admin`) keep the member's reveal grants, and only a demotion remove them (D663)? | Any change of role removes them; the administrator grants again. Simpler, and it needs no ranking of roles. |
+
+## Bugfix T016-066: no read returns a payload digest (2026-11-26)
+
+Gap G665 (and the older G275, which said the same and was left open) is a High disclosure (OD-2026-11-26-566). The
+journal read returned `run_events.payload_digest` as `payloadRef` to every `run:read` caller. That value is the unsalted
+SHA-256 of the payload bytes, and the bytes are a deterministic serialization of the value. A viewer could hash `true`
+and `false`, or every date of a year, and compare: an offline, silent confirmation of a `pii` or `secret` output. The
+search for every surface that returns such a digest found two:
+
+| Surface | Field | Who reads it |
+|---|---|---|
+| `GET /runs/{runId}/events` (`listRunJournalEvents`): Studio timeline and node panel, the Rust SDK's typed `JournalEvent.payload_ref`, the raw event of the five other SDKs | `payloadRef`, the digest of a step output, of a wait's result and of a reconciliation's result | `run:read`: every role but worker and runner |
+| `GET`/`POST`/`PATCH /namespaces/{namespaceId}/schedules…` (every answer that carries a `Schedule`): Studio schedule page, the six SDKs' typed schedule action, the six conformance runners | `action.inputDigest`, the digest of the schedule's input, which is the input of the runs it starts and is classified by the same `inputSchema` | `schedule:read`: viewer included |
+
+These surfaces do not carry a payload digest, and were checked: the graph, its changes and the stream (`seq`,
+`eventType`, `occurredAt`, `stepId` and `attempt` only), the run, telemetry and attempts. The batch job answers
+`hasPayload` (feature 018 already withheld its digest). Payload inspection and disclosure return sizes to callers
+allowed to inspect, never a digest. The audit records, the outbox and the NATS hints carry none. The CLI prints none: it
+reads the journal through the REST read and prints only the sequence, type, step, attempt and cause. The worker
+protocol is out of scope: a worker receives the input of its own lease and sends `output_sha256` itself. Feature 020's
+draft run-history export contract (`specs/020-visibility-analytics-archival/contracts/run-history.schema.json`,
+`$defs.payloadRef`) still describes a `sha256`. Nothing builds it yet (G016-001).
+
+### D016-001 — `payloadRef` names where the payload is, never what it is (delegate (OD-2026-11-24-4))
+
+**Decision**: `payloadRef` keeps its name and its type (`string` or `null`). Its value is `journal:<runId>:<seq>`, the
+run and the journal sequence of the event. Payload inspection (ADR-0028) and disclosure (D271) accept exactly that place
+as the selector `{"source": "journal", "sequence": <seq>}`. Disclosure gives values only for the events FR-016-014
+lists (a step output, a wait's or a reconciliation's result, a child's finish). The other events that keep a payload
+are `state.updated`, `run.continued` and `continuation.selected`. They have no carrier, so disclosure answers their
+structure to a caller who may inspect and nothing to the others, as before. It is `null` when the event carries no
+payload, as before. A reset run re-emits its source's events with their payloads, so its references resolve too.
+No caller gets the digest, whatever their grants. The application type cannot carry it: `JournalEntry.payload` is a
+`JournalPayloadRef { run, seq }`, not a string. A store that selected the digest into it would not compile.
+
+**Why this and not the alternatives**:
+
+- *A keyed HMAC under a per-namespace key held by the key authority.* It stops a guess made offline, but it keeps
+  equality: two equal payloads in a namespace have equal references. A reader who knows one value can then confirm the
+  same value elsewhere. Examples: a public output or a run input they wrote, compared with a `pii` output; or a guess
+  planted in a run they may start. Feature 016 promises that a reader learns nothing of a value they may not see, and an
+  equality oracle breaks that promise. The HMAC would also put the key authority (feature 015) on the read path of every
+  journal page, with rotation that silently changes every reference. It would cost more and protect less.
+- *A random opaque id per event.* It reveals as little as the place does, but it needs a new column, a migration and a
+  lookup, and it is not a selector anything accepts. It has no advantage.
+- *Remove the field, or replace it with a boolean.* It is as safe, and a larger break: the Studio, the end-to-end
+  tests and clients test `payloadRef !== null` to find the events whose payload they may inspect. The reference keeps
+  that working and gives them the selector directly.
+- *Keep the digest for a caller who may reveal every classified place of that payload.* That caller can disclose the
+  value and hash it if they need to. A second code path whose authorization must follow grants, `reveal` and the
+  pinned rules of each payload would be a new place to get the check wrong, for no use the platform has.
+- *Only `runId` and `seq`, or `journal:<seq>` alone.* A reference without the run would be the same string in every
+  run. A client that caches or deduplicates by `payloadRef`, which was safe with a digest, would then merge payloads of
+  different runs. With the run inside, two places never share a reference.
+
+**What the reference reveals**: that the event at `seq` of that run carries a payload. The event type already says
+so for a `step.completed`, `wait.satisfied` or `reconciliation.concluded`, and the old field said it too (it was
+non-null). It does not depend on the bytes, so it says nothing of the value, its size or its equality with any other
+payload.
+
+**Inside the server** the digest stays what it was. It is the content address of `payloads`
+(`payloads.digest`, deduplicated per tenant), and inspection, disclosure, retention and the reducers join on it. Only
+the API boundary changed. Integrity needs no client-visible digest: the payload is read from the authority over the
+authenticated channel, and a caller who reads the value can hash it.
+
+### D016-002 — A schedule says that it has an input, not the input's digest (delegate (OD-2026-11-24-4))
+
+**Decision**: the schedule read's `action.inputDigest` is replaced by `action.hasInput` (boolean, always present). This
+follows the batch job's `hasPayload`. FR-018-042 said "digests and sizes only" and now says "whether there is one, never
+a digest". The input's values still come out only through `input-disclosures`, which applies the audiences of this
+feature. The six SDKs replace the typed `inputDigest` with `hasInput`. They do not keep `inputDigest` returning `null`:
+code that compared two digests to learn whether an input changed would then see `null == null` and conclude "unchanged",
+which is wrong and gives no warning. Against an older server that still sends `inputDigest`, each SDK and the Studio
+answer `hasInput: true` when it is present. The value is never kept.
+
+**Why not a reference here**: no selector names a schedule's input by place (disclosure takes the schedule id and
+reads its current revision). Equality across revisions would be the same oracle: someone who may write the schedule
+could set a guess and compare it with the previous revision. A boolean is all the read may say.
+
+### D016-003 — A documented break, no compatibility switch (delegate (OD-2026-11-24-4))
+
+**Decision**: there is no setting that brings the digest back. A switch would keep the High disclosure one
+configuration away, and the platform has no use for the digest outside the server. The break is recorded in
+`docs/releases/unreleased.md` with the migration path. The guarded byte-identical check of the FR-016-016 surfaces
+(`tests/integration/payload-classification/compat.rs`) now compares the journal with every `payloadRef` removed on both
+sides and checks the new form apart.
+
+### Gaps of this section
+
+| # | Gap | Treatment | Status |
+|---|---|---|---|
+| G016-001 | Draft contracts still carry digests of payloads. Feature 020's run-history export defines `$defs.payloadRef` as `{sha256, size, level}` and `outputSha256` on steps and attempts (`specs/020-visibility-analytics-archival/contracts/run-history.schema.json`), and says "Digests are present in both modes"; feature 028's output-divergence check is written to compare those digests. Feature 030's operation messages carry `resultDigest` (`specs/030-cross-namespace-services/contracts/operation-messages.md`). Under FR-016-030 a reader who cannot read the content must not get any of them, and an equality check across runs is the same oracle (D016-001). | Nothing builds these yet. Their owners apply FR-016-030 when the contracts are next revised, as design 044's history export does (its Task 044-24): the export carries the place of a payload, and 028's comparison runs inside the server and answers only "same" or "different" to a caller who may read both values. The rule is written in FR-016-030, so the drafts cannot be built against an unstated rule. | Open (features 020, 028, 030) |
+| G016-002 | **Idempotency keys answer whether a guess equals a stored payload (security review of T016-066, Major 1).** A start's idempotency scope is `run.start:<namespace>`, and its fingerprint holds the input but not the caller (`crates/application/src/runs.rs`, the start). A signal's scope is the run or chain, and its fingerprint holds the name and payload (`runs.rs`, signal and signal-with-start; `runs/reset.rs`; `crates/infra-postgres/src/chain_progress.rs`). An Update receipt is found by `update_key` and refused on a different `request_hash`, which holds the arguments (`crates/infra-postgres/src/declared_operations.rs`, `crates/application/src/declared_operations.rs`). Another caller who knows or guesses the key, such as a business key `order-123`, sends a guess. A right guess replays (a start answers the original run id); a wrong guess is `409`. That is an online confirmation of a `pii` or `secret` value. The test `write_oracles::another_caller_reusing_a_start_key_learns_nothing_of_the_input` records it (ignored, red). | Bugfix Task T016-067: the caller joins the scope of start, signal and Update keys, as the blob start and batch already do in their fingerprint. A retry in flight across the upgrade needs a migration rule (an old record keyed without the caller must still replay for its own caller), so the change is its own decision and test set, not part of this read fix. Severity High (the same confirmation as G665, online, needs a write permission and the key). | Open |
+| G016-003 | **An API event id answers whether a guess equals the stored data (security review of T016-066, Major 2).** Every API publisher of a namespace shares the source `api` (`crates/application/src/events.rs`). A repeated event id is compared by payload digest: a match is `Duplicate` (`202`, `duplicate: true`), a mismatch `Reused` (`409`) (`crates/infra-postgres/src/events.rs`). The rate-bucket debit is rolled back on every collision, so a probe costs nothing. A caller with `event:publish` and no reveal grant can confirm a classified inbox value (FR-016-026). The test `write_oracles::another_publisher_reusing_an_event_id_learns_nothing_of_the_data` records it (ignored, red). | Bugfix Task T016-068: deduplicate an API event per publisher (`source`, subject, `event_id`), or give a collision from another subject one answer that does not depend on the content. Severity High. | Open |
+
+### Independent review of the bugfix (2026-11-26)
+
+The security review read the branch. It found no read surface left and no new leak in the reference. It did find these
+problems; each was fixed or registered, and none was accepted:
+
+| Finding | Disposition |
+|---|---|
+| Major 1: idempotency keys of start, signal and Update are an oracle | Shown by a red test, registered as G016-002, fixed by T016-067 |
+| Major 2: an API event id is an oracle | Shown by a red test, registered as G016-003, fixed by T016-068 |
+| Minor 3: the six SDKs kept an older server's `inputDigest` in `raw`, and Java and TypeScript printed it | Fixed: each SDK drops it from `raw`; each legacy test checks `raw` and the printed text |
+| Minor 4: the Studio showed and copied an older server's digest | Fixed: a reference that is not a place is replaced by the place built from the run and the sequence |
+| Minor 5: feature 018's contract still described `BatchJob.payloadDigest` | Fixed: `hasPayload`, as the code and the main contract already had |
+| Minor 6: G016-001 named only one draft contract | Fixed: it names 020's `outputSha256`, 028's comparison and 030's `resultDigest` |
+| Nits: stale comments in `dto_batch.rs` and design 054; `docs/reference/api.md` did not record the break | Fixed in `dto_batch.rs`. `docs/reference/api.md` is generated from the text of the operations, and two pinned guards hold every operation byte for byte (feature 016's `operations_outside_the_approved_additions…` and feature 035's `existing_operations_keep_their_exact_definition`, whose baseline is not re-blessed). So the break is recorded where the response is described: the `JournalEvent.payloadRef` schema, FR-016-030 and `docs/releases/unreleased.md`. `listRunJournalEvents` itself is unchanged, and both guards keep it (delegate, OD-2026-11-24-4; an earlier commit of this branch had changed it, and CI's 035 guard refused it). Design 054's body cannot change after its approval (`scripts/check-design-docs.py`, Rule 3); its Requirement 054-014 parenthesis about other events is superseded by FR-016-030, and its own rule (a null `payloadRef` for `signal.buffered`) stands, for its owner to build |
+| Test gaps: the schedule test read only create, read and list; the Rust SDK's typed journal field was not parsed with the new form; the compatibility check compared re-serialized JSON | Fixed: replace, pause and resume are checked; `journal_events_have_typed_fields…` parses `journal:<runId>:<seq>`; the frozen-binary comparison is byte for byte outside the `payloadRef` values, with a unit test of the comparison |
+| The canary of T016-049 looks for values, not digests | Not changed. The canary run has no step output, so there is no payload digest for it to find. The guard for this gap is `journal_reference`, which refuses any SHA-256-shaped value on the run reads, for every role that holds `run:read` |
+| The CLI's events are not tested | Not changed. The CLI reads the REST journal and prints sequence, type, step, attempt and cause, never `payloadRef` (`apps/cli/src/workflow.rs`, `inspect_run`), so it carries whatever the read carries |
+
+The correctness review read the branch after those fixes. It found the server change sound: references resolve for reset
+runs, children, scoped events and external payloads, and every schedule answer carries `hasInput`. Its findings and their
+dispositions:
+
+| Finding | Disposition |
+|---|---|
+| Major: `rest::a_schedule_goes_through_its_whole_life_over_http` still expected `inputDigest` | Fixed: it checks `hasInput` and the absence of the digest. The whole schedules target is run |
+| Major: the ignored red tests could not turn green under the fix their tasks prescribe | Fixed: two callers who are not the author each send one guess once, so the tests hold under either way of scoping the key |
+| Minor: the frozen-binary check compared only a journal with no payload | Fixed: it also compares the journal of the run with declared state, whose `state.updated` carries one |
+| Minor: the docs said only step, wait and reconciliation outputs get a reference, and that disclosure accepts every one | Fixed in FR-016-030, D016-001, the contract and the `JournalEntry` documentation: `state.updated`, `run.continued` and `continuation.selected` get one too, and disclosure gives their structure only |
+| Minor: the release note did not warn that an older SDK's empty `inputDigest` compares equal | Fixed |
+| Minor: the SDKs drop an older server's schedule digest but keep an older server's journal digest in raw events | Kept, on purpose (delegate, OD-2026-11-24-4). An older server has already sent that digest to that caller, so what the client does with it protects nothing; the fix is the server. The SDKs drop `inputDigest` only because their typed field is gone and to give one answer for `hasInput`. A raw journal event is the server's answer as sent, and its typed `payloadRef` keeps the server's string by design |
+| Minor: no golden has `hasInput: false` | Covered elsewhere: the server's `false` (a trigger-owned schedule has no input) is checked by `trigger_followup::the_schedules_over_http_say_whether…`, and each SDK's unit test parses `false`. No conformance scenario was blessed for it |
+| Minor: T016-066 names the CLI and the canary, which this change declines | The task stays unticked; its evidence line will say that the CLI prints no `payloadRef` and that `journal_reference` is the guard the canary could not be (see the table above) |
+| Nit: `listRunJournalEvents` leaves the byte-stability guard | Fixed: the operation's text is unchanged again, so it stays inside both guards (see the row on `docs/reference/api.md` above) |
+| Nit: the Go SDK kept the answer when it could not rewrite the action | Fixed: it keeps no action instead |

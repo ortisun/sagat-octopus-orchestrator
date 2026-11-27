@@ -112,7 +112,7 @@ func TestTheRunnerPassesTheThreeBusinessIDFieldsOfAScenarioActionThroughTheTyped
 		`,"businessIdConflictPolicy":"USE_EXISTING","businessIdReusePolicy":"ALLOW_DUPLICATE_FAILED_ONLY"}`
 	for _, op := range []string{"scheduleCreate", "scheduleUpdate"} {
 		c, bodies := scheduleServer(t, map[string]any{
-			"workflowId": testWorkflow, "versionPolicy": "ACTIVE", "inputDigest": strings.Repeat("a", 64),
+			"workflowId": testWorkflow, "versionPolicy": "ACTIVE", "hasInput": true,
 			"businessIdPrefix": prefix, "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY",
 		})
 		result := play(t, c, scheduleStep(t, op, action), op)
@@ -125,8 +125,8 @@ func TestTheRunnerPassesTheThreeBusinessIDFieldsOfAScenarioActionThroughTheTyped
 			want = `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":` + action + `,"expectedRevision":2}`
 		}
 		sameJSON(t, sent[0], want)
-		sameJSON(t, actionText(t, result), `{"workflowId":"`+testWorkflow+`","versionPolicy":"ACTIVE","versionId":null,"inputDigest":"`+strings.Repeat("a", 64)+
-			`","nominalTimeField":null,"runTimeoutMs":null,"businessIdPrefix":`+string(prefixJSON)+
+		sameJSON(t, actionText(t, result), `{"workflowId":"`+testWorkflow+`","versionPolicy":"ACTIVE","versionId":null,"hasInput":true,`+
+			`"nominalTimeField":null,"runTimeoutMs":null,"businessIdPrefix":`+string(prefixJSON)+
 			`,"businessIdConflictPolicy":"USE_EXISTING","businessIdReusePolicy":"ALLOW_DUPLICATE_FAILED_ONLY"}`)
 	}
 }
@@ -134,7 +134,7 @@ func TestTheRunnerPassesTheThreeBusinessIDFieldsOfAScenarioActionThroughTheTyped
 func TestTheRunnerSendsAndPrintsNoneOfTheThreeFieldsForAnActionThatHasNone(t *testing.T) {
 	action := `{"workflowId":"` + testWorkflow + `","input":{"n":1}}`
 	for _, op := range []string{"scheduleCreate", "scheduleUpdate"} {
-		c, bodies := scheduleServer(t, map[string]any{"workflowId": testWorkflow, "versionPolicy": "ACTIVE", "inputDigest": strings.Repeat("a", 64)})
+		c, bodies := scheduleServer(t, map[string]any{"workflowId": testWorkflow, "versionPolicy": "ACTIVE", "hasInput": true})
 		result := play(t, c, scheduleStep(t, op, action), op)
 		sent := bodies()[0]
 		for _, key := range []string{"businessIdPrefix", "businessIdConflictPolicy", "businessIdReusePolicy"} {
@@ -142,13 +142,13 @@ func TestTheRunnerSendsAndPrintsNoneOfTheThreeFieldsForAnActionThatHasNone(t *te
 				t.Errorf("%s sent %s: %s", op, key, sent)
 			}
 		}
-		// Byte for byte what the golden files already hold.
-		sameJSON(t, actionText(t, result), `{"workflowId":"`+testWorkflow+`","versionPolicy":"ACTIVE","versionId":null,"inputDigest":"`+strings.Repeat("a", 64)+
-			`","nominalTimeField":null,"runTimeoutMs":null}`)
+		// What the golden files hold; hasInput replaced the digest in all of them (T016-066).
+		sameJSON(t, actionText(t, result), `{"workflowId":"`+testWorkflow+`","versionPolicy":"ACTIVE","versionId":null,"hasInput":true,`+
+			`"nominalTimeField":null,"runTimeoutMs":null}`)
 	}
 	// An action the server answered with the three keys as null has none either.
 	c, _ := scheduleServer(t, map[string]any{
-		"workflowId": testWorkflow, "inputDigest": strings.Repeat("a", 64), "businessIdPrefix": nil, "businessIdConflictPolicy": nil, "businessIdReusePolicy": nil,
+		"workflowId": testWorkflow, "hasInput": true, "businessIdPrefix": nil, "businessIdConflictPolicy": nil, "businessIdReusePolicy": nil,
 	})
 	result := play(t, c, stepOf(t, `{"id":"describe","op":"scheduleGet","schedule":"create","nextCount":5,"recentCount":5}`), "scheduleGet")
 	if text := actionText(t, result); strings.Contains(text, "businessId") {
@@ -158,14 +158,14 @@ func TestTheRunnerSendsAndPrintsNoneOfTheThreeFieldsForAnActionThatHasNone(t *te
 
 func TestTheDescriptionOfAScheduleAndTheEmptyPrefixOfAScenarioFollowTheSameRules(t *testing.T) {
 	c, _ := scheduleServer(t, map[string]any{
-		"workflowId": testWorkflow, "versionPolicy": "ACTIVE", "inputDigest": strings.Repeat("a", 64),
+		"workflowId": testWorkflow, "versionPolicy": "ACTIVE", "hasInput": true,
 		"businessIdPrefix": "order", "businessIdConflictPolicy": "FAIL", "businessIdReusePolicy": "ALLOW_DUPLICATE",
 	})
 	result := play(t, c, stepOf(t, `{"id":"describe","op":"scheduleGet","schedule":"create","nextCount":5,"recentCount":5}`), "scheduleGet")
-	sameJSON(t, actionText(t, result), `{"workflowId":"`+testWorkflow+`","versionPolicy":"ACTIVE","versionId":null,"inputDigest":"`+strings.Repeat("a", 64)+
-		`","nominalTimeField":null,"runTimeoutMs":null,"businessIdPrefix":"order","businessIdConflictPolicy":"FAIL","businessIdReusePolicy":"ALLOW_DUPLICATE"}`)
+	sameJSON(t, actionText(t, result), `{"workflowId":"`+testWorkflow+`","versionPolicy":"ACTIVE","versionId":null,"hasInput":true,`+
+		`"nominalTimeField":null,"runTimeoutMs":null,"businessIdPrefix":"order","businessIdConflictPolicy":"FAIL","businessIdReusePolicy":"ALLOW_DUPLICATE"}`)
 	// The empty prefix of a scenario is sent as the empty string, for the server to refuse.
-	c, bodies := scheduleServer(t, map[string]any{"workflowId": testWorkflow, "inputDigest": strings.Repeat("a", 64)})
+	c, bodies := scheduleServer(t, map[string]any{"workflowId": testWorkflow, "hasInput": true})
 	play(t, c, scheduleStep(t, "scheduleCreate", `{"workflowId":"`+testWorkflow+`","input":{},"businessIdPrefix":""}`), "scheduleCreate")
 	sameJSON(t, bodies()[0], `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"`+testWorkflow+`","input":{},"businessIdPrefix":""}}`)
 }

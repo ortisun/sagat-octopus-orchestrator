@@ -153,9 +153,12 @@ export interface Schedule {
   state: string;
   revision: number;
   exhausted: boolean;
-  /** The action as the server keeps it: without the input, with its digest. */
+  /**
+   * The action as the server keeps it, without the input and without any digest of it (a digest would let a reader confirm a
+   * guessed input: T016-066, G665). `hasInput` says whether it has one; its values come out only through an input disclosure.
+   */
   action: {
-    workflowId: string | null; versionPolicy: string | null; versionId: string | null; inputDigest: string | null; nominalTimeField: string | null; runTimeoutMs: number | null;
+    workflowId: string | null; versionPolicy: string | null; versionId: string | null; hasInput: boolean; nominalTimeField: string | null; runTimeoutMs: number | null;
     /** The business-id prefix of the action (customer text), or null when the schedule has none. */
     businessIdPrefix: string | null;
     /** As the server sent it (`FAIL` or `USE_EXISTING` today, another string when the server is newer); null without a prefix. */
@@ -226,9 +229,21 @@ function toDate(raw: Record<string, unknown>, field: string): Date {
   return value;
 }
 
+/**
+ * The answer without the digest of the input an older server still sends (`action.inputDigest`): it only tells that there
+ * is an input, and nothing of it is kept, not even in `raw` (T016-066, G665).
+ */
+function withoutInputDigest(raw: Record<string, unknown>): Record<string, unknown> {
+  const action = raw['action'];
+  if (!action || typeof action !== 'object' || Array.isArray(action) || !('inputDigest' in action)) return raw;
+  const { inputDigest: _dropped, ...kept } = action as Record<string, unknown>;
+  return { ...raw, action: kept };
+}
+
 function toSchedule(value: unknown): Schedule {
-  const raw = object(value, 'a schedule');
-  const action = raw['action'] && typeof raw['action'] === 'object' ? (raw['action'] as Record<string, unknown>) : {};
+  const answer = object(value, 'a schedule');
+  const action = answer['action'] && typeof answer['action'] === 'object' ? (answer['action'] as Record<string, unknown>) : {};
+  const raw = withoutInputDigest(answer);
   return {
     scheduleId: str(raw, 'scheduleId'),
     name: str(raw, 'name'),
@@ -238,7 +253,8 @@ function toSchedule(value: unknown): Schedule {
     exhausted: raw['exhausted'] === true,
     action: {
       workflowId: optStr(action, 'workflowId'), versionPolicy: optStr(action, 'versionPolicy'), versionId: optStr(action, 'versionId'),
-      inputDigest: optStr(action, 'inputDigest'), nominalTimeField: optStr(action, 'nominalTimeField'),
+      // An older server sends `inputDigest` instead: it only tells that there is an input, and is not kept.
+      hasInput: action['hasInput'] === true || typeof action['inputDigest'] === 'string', nominalTimeField: optStr(action, 'nominalTimeField'),
       runTimeoutMs: typeof action['runTimeoutMs'] === 'number' ? action['runTimeoutMs'] : null,
       businessIdPrefix: optStr(action, 'businessIdPrefix'), businessIdConflictPolicy: optStr(action, 'businessIdConflictPolicy'),
       businessIdReusePolicy: optStr(action, 'businessIdReusePolicy'),

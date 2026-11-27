@@ -639,6 +639,7 @@ pub struct JournalEventBody {
     pub attempt: Option<u32>,
     pub actor: String,
     pub trace_id: Option<String>,
+    /// `journal:<runId>:<seq>`, where the payload the event carries is kept; never a digest of it (FR-016-030).
     pub payload_ref: Option<String>,
     /// Why it happened, when it has a cause.
     pub cause: Option<CauseBody>,
@@ -664,7 +665,7 @@ impl From<&JournalEntry> for JournalEventBody {
             attempt: e.attempt,
             actor: e.actor.clone(),
             trace_id: e.trace_id.clone(),
-            payload_ref: e.payload_ref.clone(),
+            payload_ref: e.payload.map(|place| place.to_string()),
             cause: e.cause.as_ref().map(|c| CauseBody {
                 kind: c.kind,
                 code: c.code.clone(),
@@ -1334,7 +1335,7 @@ mod switch_graph_tests {
                 actor: "worker:test".into(),
                 trace_id: None,
                 occurred_at: now,
-                payload_ref: None,
+                payload: None,
                 cause: None,
                 span_id: None,
                 touched: Some(vec![ExecutionInstanceId::in_path(

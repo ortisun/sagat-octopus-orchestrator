@@ -233,12 +233,16 @@ class ScheduleWrite:
 
 @dataclass(frozen=True)
 class ScheduleActionSummary:
-    """The action as the server keeps it: without the input, with its digest."""
+    """The action as the server keeps it: without the input and without any digest of it.
+
+    A digest would let a reader confirm a guessed input (T016-066, G665); ``has_input`` says only whether the action has
+    one, and its values come out only through an input disclosure.
+    """
 
     workflow_id: str | None
     version_policy: str | None
     version_id: str | None
-    input_digest: str | None
+    has_input: bool
     nominal_time_field: str | None
     run_timeout_ms: int | float | None
     business_id_prefix: str | None = field(default=None, repr=False)
@@ -321,10 +325,22 @@ def _opt_instant(raw: Mapping[str, Any], key: str) -> datetime | None:
     return parse_instant(raw.get(key))
 
 
-def to_schedule(value: Any) -> Schedule:
-    raw = object_of(value, "a schedule")
+def _without_input_digest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The answer without the digest of the input an older server still sends (``action.inputDigest``).
+
+    It only tells that there is an input, and nothing of it is kept, not even in ``raw`` (T016-066, G665).
+    """
     held = raw.get("action")
+    if not isinstance(held, dict) or "inputDigest" not in held:
+        return raw
+    return {**raw, "action": {key: value for key, value in held.items() if key != "inputDigest"}}
+
+
+def to_schedule(value: Any) -> Schedule:
+    answer = object_of(value, "a schedule")
+    held = answer.get("action")
     action = held if isinstance(held, dict) else {}
+    raw = _without_input_digest(answer)
     return Schedule(
         schedule_id=str_of(raw, "scheduleId"),
         name=str_of(raw, "name"),
@@ -336,7 +352,8 @@ def to_schedule(value: Any) -> Schedule:
             workflow_id=opt_str(action, "workflowId"),
             version_policy=opt_str(action, "versionPolicy"),
             version_id=opt_str(action, "versionId"),
-            input_digest=opt_str(action, "inputDigest"),
+            # An older server sends ``inputDigest`` instead: it only tells that there is an input, and is not kept.
+            has_input=action.get("hasInput") is True or isinstance(action.get("inputDigest"), str),
             nominal_time_field=opt_str(action, "nominalTimeField"),
             run_timeout_ms=opt_number(action, "runTimeoutMs"),
             business_id_prefix=opt_str(action, "businessIdPrefix"),

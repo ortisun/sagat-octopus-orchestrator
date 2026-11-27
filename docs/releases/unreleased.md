@@ -3,6 +3,41 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Breaking (security): no read returns a digest of a payload (feature 016, bugfix T016-066, G665)
+
+Two reads returned the unsalted SHA-256 of a payload the platform keeps. A reader could hash guesses (`true`, a date, a
+national identifier) and compare, offline, without a trace in the audit. That confirmed values of `pii` and `secret`
+outputs and inputs they may not see (severity High, OD-2026-11-26-566). Both now return something that does not depend
+on the payload:
+
+- **`GET /runs/{runId}/events`**: `payloadRef` keeps its name and type. Its value is now `journal:<runId>:<seq>`, the
+  place of the payload, where it used to be a 64-character hexadecimal digest. It is still `null` for an event that
+  carries no payload. Two equal outputs now have different references.
+- **Schedules** (every answer that carries a schedule): `action.inputDigest` is gone and `action.hasInput` (boolean)
+  says whether the action has an input. The typed schedule action of the six SDKs changes the same way:
+  `inputDigest`/`input_digest`/`InputDigest` becomes `hasInput`/`has_input`/`HasInput`. This is a compile-time break,
+  made on purpose (see below).
+
+There is no setting that restores the digest. What to do:
+
+- *You tested `payloadRef !== null` to find the events with a payload, or showed it as an opaque label*: nothing
+  changes.
+- *You passed the event's `seq` to `payload-inspections` or `payload-disclosures`*: nothing changes. The reference now
+  names that selector, `{"source": "journal", "sequence": <seq>}`.
+- *You compared `payloadRef` values to tell whether two outputs are equal, or hashed an output to check it against
+  `payloadRef`*: read the values through `POST /runs/{runId}/payload-disclosures` (with the audiences and the audit of
+  feature 016) and compare those. An output you may not disclose is one the platform no longer lets you compare.
+- *You compared `inputDigest` across schedule revisions to learn whether the input changed*: a change of input is a new
+  revision. Read the input through `input-disclosures` if you may. The SDKs drop the field and do not leave it `null`,
+  because `null == null` would silently answer "unchanged".
+- *You keep a client of an older release*: it still parses both answers. An older Studio shows the reference where it
+  showed a short digest. An older SDK's typed `inputDigest` is empty (`null`, or `""` in Go). **Code that compares it
+  between two reads now always finds the two equal**, whatever the input: upgrade the SDK before you rely on such a
+  comparison, or remove it. Against an older server, a new SDK and the new
+  Studio report `hasInput: true` when the server still sends `inputDigest`, without keeping the value.
+
+Inside the server nothing moves: the digest is still the content address of stored payloads, and no migration runs.
+
 ## Workers: leases no host received are withdrawn (feature 006, ADR-0098)
 
 - A lease the engine committed and never handed to a host goes back to `READY` with its attempt unspent, recorded as the new

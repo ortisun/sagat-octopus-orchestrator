@@ -50,7 +50,7 @@ def schedule_body(**overrides: Any) -> dict[str, Any]:
         "state": "ACTIVE",
         "revision": 2,
         "createdAt": "2026-10-10T10:00:00Z",
-        "action": {"workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a" * 64},
+        "action": {"workflowId": WF, "versionPolicy": "ACTIVE", "hasInput": True},
         "note": None,
         "remainingActions": None,
         "nextActionAt": "2099-01-01T09:00:00Z",
@@ -344,7 +344,8 @@ async def test_create_sends_the_schedule_with_its_instants_in_utc_and_one_key_an
     }
     assert created.revision == 2
     assert created.next_action_at == datetime(2099, 1, 1, 9, tzinfo=timezone.utc)
-    assert created.action.input_digest == "a" * 64, "the input is never returned, only its digest"
+    assert created.action.has_input is True, "the input is never returned, nor its digest: only that there is one"
+    assert not hasattr(created.action, "input_digest")
     assert created.raw["futureField"] == 1
 
 

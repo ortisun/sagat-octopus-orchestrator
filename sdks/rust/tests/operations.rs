@@ -46,7 +46,7 @@ fn schedule(overrides: Value) -> Value {
     let mut base = json!({
         "scheduleId": SCHEDULE, "name": "nightly", "origin": "API", "state": "ACTIVE", "revision": 2,
         "createdAt": "2026-10-10T10:00:00Z",
-        "action": {"workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a".repeat(64)},
+        "action": {"workflowId": WF, "versionPolicy": "ACTIVE", "hasInput": true},
         "note": null, "remainingActions": null, "nextActionAt": "2099-01-01T09:00:00Z",
         "updatedAt": "2026-10-10T10:00:00Z",
     });
@@ -548,10 +548,9 @@ async fn create_sends_the_schedule_with_its_instants_in_utc_and_one_key_and_read
         created.next_action_at.map(|at| at.unix_timestamp()),
         Some(4_070_941_200)
     );
-    assert_eq!(
-        created.action.input_digest.as_deref(),
-        Some("a".repeat(64).as_str()),
-        "the input is never returned, only its digest"
+    assert!(
+        created.action.has_input,
+        "the input is never returned, nor its digest: only that there is one"
     );
     assert_eq!(created.raw["futureField"], 1);
     // Text that is not an instant is refused before anything is sent.
@@ -1112,7 +1111,7 @@ async fn a_schedule_reads_the_business_id_prefix_and_policies_of_its_action_as_t
     let schedules = client.schedules();
     let with_prefix = |extra: Value| {
         let mut action = json!({
-            "workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a".repeat(64),
+            "workflowId": WF, "versionPolicy": "ACTIVE", "hasInput": true,
             "businessIdPrefix": PREFIX, "businessIdConflictPolicy": "FAIL",
             "businessIdReusePolicy": "ALLOW_DUPLICATE",
         });
@@ -1240,7 +1239,7 @@ async fn the_business_id_prefix_of_a_schedule_never_shows_in_a_debug_print_of_wh
     server.answer_with(
         201,
         schedule(json!({"action": {
-            "workflowId": WF, "inputDigest": "a".repeat(64), "businessIdPrefix": secret,
+            "workflowId": WF, "hasInput": true, "businessIdPrefix": secret,
             "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "ALLOW_DUPLICATE",
         }})),
     );
@@ -1960,5 +1959,48 @@ async fn a_start_with_an_input_blob_refuses_the_options_it_cannot_carry_and_the_
         format!("{client:?}"),
     ] {
         assert!(!shown.contains("tok-1"), "{shown}");
+    }
+}
+
+#[tokio::test]
+async fn a_schedule_says_whether_it_has_an_input_and_never_carries_a_digest_of_it() {
+    // T016-066 (G665): the server says `hasInput`; an older one sent `inputDigest`, which only
+    // tells that there is an input and is not kept.
+    for (action, expected) in [
+        (
+            json!({"workflowId": WF, "versionPolicy": "ACTIVE", "hasInput": true}),
+            true,
+        ),
+        (
+            json!({"workflowId": WF, "versionPolicy": "ACTIVE", "hasInput": false}),
+            false,
+        ),
+        (
+            json!({"workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a".repeat(64)}),
+            true,
+        ),
+    ] {
+        let server = Recorder::start().await;
+        server.answer_with(200, schedule(json!({"revision": 3, "action": action})));
+        let body = ScheduleWrite::new(
+            "nightly",
+            ScheduleSpec {
+                cron: vec!["0 9 * * *".into()],
+                ..ScheduleSpec::default()
+            },
+            ScheduleAction::new(WF, json!({})),
+        );
+        let client = server.client();
+        let updated = client
+            .schedules()
+            .update(NS, SCHEDULE, &body, 2, keyed("upd-key-0002"))
+            .await
+            .expect("updated");
+        assert_eq!(updated.action.has_input, expected, "{action}");
+        assert!(!format!("{:?}", updated.action).contains(&"a".repeat(64)));
+        assert!(
+            !updated.raw.to_string().contains(&"a".repeat(64)),
+            "not even raw keeps the digest"
+        );
     }
 }

@@ -402,7 +402,7 @@ describe('The business id of the runs of a schedule', () => {
             action: {
               workflowId: WORKFLOW,
               versionPolicy: 'ACTIVE',
-              inputDigest: 'ab'.repeat(32),
+              hasInput: true,
               nominalTimeField: 'at',
               runTimeoutMs: 30_000,
               businessIdPrefix: 'order-',
@@ -435,7 +435,7 @@ describe('The business id of the runs of a schedule', () => {
   it('takes the prefix off a schedule when the field is emptied: nothing is written, not even an empty string', async () => {
     const { user, platform } = await edit({
       routes: {
-        [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: 'order-', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } }),
+        [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', hasInput: false, businessIdPrefix: 'order-', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } }),
         [`PUT ${BASE}/${ID}`]: () => schedule({ revision: 4 }),
       },
     });

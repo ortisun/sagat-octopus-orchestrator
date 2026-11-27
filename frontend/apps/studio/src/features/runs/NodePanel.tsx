@@ -281,7 +281,7 @@ export function NodePanel({
           ) : (
             <p className="hint">Trace ids come with the journal events, which are not read yet.</p>
           )}
-          <p className="hint">The journal event holds only a payload digest. Retained values are read separately under the workflow&apos;s classification policy.</p>
+          <p className="hint">The journal event says only where its payload is kept, never the payload or a digest of it. Retained values are read separately under the workflow&apos;s classification policy.</p>
           {retainedPayloads.length > 0 ? (
             <div className="rn-payload-events">
               <h3>Retained payloads</h3>

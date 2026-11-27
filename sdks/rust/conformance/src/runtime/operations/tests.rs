@@ -51,14 +51,14 @@ async fn printed(action: Value) -> Value {
 #[tokio::test]
 async fn a_schedule_without_a_business_id_prints_the_action_it_always_printed() {
     let stored = json!({"workflowId": WORKFLOW, "versionPolicy": "ACTIVE",
-                        "inputDigest": "a".repeat(64)});
+                        "hasInput": true});
     assert_eq!(
         printed(stored.clone()).await,
         json!({
             "workflowId": WORKFLOW, "versionPolicy": "ACTIVE", "versionId": null,
-            "inputDigest": "a".repeat(64), "nominalTimeField": null, "runTimeoutMs": null,
+            "hasInput": true, "nominalTimeField": null, "runTimeoutMs": null,
         }),
-        "absent => the keys are not printed, so every existing golden stays as it is"
+        "absent => the keys are not printed; hasInput replaced inputDigest in every golden (T016-066)"
     );
     // A null from the server is absent too.
     let nulls = with_keys(
@@ -74,7 +74,7 @@ async fn a_schedule_without_a_business_id_prints_the_action_it_always_printed() 
 async fn a_schedule_with_a_business_id_prints_its_prefix_and_policies_as_the_strings_the_server_sent()
  {
     let stored = json!({"workflowId": WORKFLOW, "versionPolicy": "ACTIVE",
-                        "inputDigest": "a".repeat(64)});
+                        "hasInput": true});
     let action = printed(with_keys(
         stored.clone(),
         &json!({"businessIdPrefix": " Order/Nightly-A ", "businessIdConflictPolicy": "USE_EXISTING",
@@ -189,7 +189,7 @@ async fn create_update_and_get_play_the_prefix_through_the_typed_write_and_print
     let with = json!({"businessIdPrefix": PREFIX, "businessIdConflictPolicy": "USE_EXISTING",
                       "businessIdReusePolicy": "REJECT_DUPLICATE"});
     let stored = json!({"workflowId": WORKFLOW, "versionPolicy": "ACTIVE",
-                        "inputDigest": "a".repeat(64)});
+                        "hasInput": true});
     let (base, bodies) = double(server_schedule(with_keys(stored.clone(), &with))).await;
     let client = client_of(&base);
     let create = json!({"id": "create", "op": "scheduleCreate",

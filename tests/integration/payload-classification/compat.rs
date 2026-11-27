@@ -208,6 +208,14 @@ async fn unchanged_surfaces_match_actual_pre_classification_response_bytes() {
         Some(json!({"args":{}})),
     ));
     requests.push(("update", Method::POST, update_path, Some(update)));
+    // The journal of the run that holds declared state: its `state.updated` carries a payload, so the old binary
+    // answers a digest there and this one the place (T016-066, D016-003).
+    requests.push((
+        "operations-journal",
+        Method::GET,
+        format!("/runs/{operations}/events?limit=200"),
+        None,
+    ));
     let mut goldens = BTreeMap::new();
     for (label, method, path, body) in &requests {
         let (status, value, wire) = api(
@@ -257,9 +265,87 @@ async fn unchanged_surfaces_match_actual_pre_classification_response_bytes() {
         assert_eq!(status, StatusCode::OK, "current surface: {label}");
         fs::write(artifacts.join(format!("{label}.after.http-body")), &wire)
             .expect("current response artifact");
+        if matches!(*label, "journal" | "operations-journal") {
+            // The one documented break of these surfaces (T016-066, FR-016-030, D016-003): `payloadRef` was the
+            // payload's SHA-256 and is now its place. Every other byte stays what it was.
+            let run = if *label == "journal" {
+                terminal
+            } else {
+                operations
+            };
+            assert_journal_changed_only_in_payload_refs(&goldens[*label], &wire, run);
+            continue;
+        }
         assert!(
             goldens[*label].as_bytes() == wire.as_bytes(),
             "pre-classification response changed: {label}"
+        );
+    }
+}
+
+/// The journal of the frozen server and of this one: the same bytes once each `payloadRef` value is set aside, a
+/// 64-character digest before and `journal:<runId>:<seq>` after wherever there was one, and `null` where there was
+/// none. The rest is compared byte for byte, not re-serialized.
+fn assert_journal_changed_only_in_payload_refs(before: &str, after: &str, run: &str) {
+    let field = regex::Regex::new(r#""payloadRef":(null|"[^"]*")"#).expect("pattern");
+    let values = |wire: &str| -> Vec<String> {
+        field
+            .captures_iter(wire)
+            .map(|found| found[1].to_owned())
+            .collect()
+    };
+    let parsed: Value = serde_json::from_str(after).expect("current journal");
+    let sequences: Vec<u64> = parsed["items"]
+        .as_array()
+        .expect("journal items")
+        .iter()
+        .map(|event| event["seq"].as_u64().expect("sequence"))
+        .collect();
+    let old = values(before);
+    let new = values(after);
+    assert_eq!(
+        old.len(),
+        sequences.len(),
+        "one payloadRef per event before"
+    );
+    assert_eq!(new.len(), sequences.len(), "one payloadRef per event after");
+    for ((old, new), seq) in old.iter().zip(&new).zip(&sequences) {
+        if old == "null" {
+            assert_eq!(new, "null", "event {seq} carries no payload");
+        } else {
+            assert_eq!(old.len(), 66, "the baseline carried a quoted digest: {old}");
+            assert_eq!(new, &format!("\"journal:{run}:{seq}\""), "event {seq}");
+        }
+    }
+    assert!(
+        field.replace_all(before, "\"payloadRef\":_").as_bytes()
+            == field.replace_all(after, "\"payloadRef\":_").as_bytes(),
+        "pre-classification response changed beyond payloadRef: journal"
+    );
+}
+
+#[test]
+fn the_journal_comparison_sets_aside_only_the_payload_reference() {
+    let run = "01a217d1-c50d-7627-bd1d-037f45a42877";
+    let digest = "f".repeat(64);
+    let before = format!(
+        r#"{{"items":[{{"seq":1,"payloadRef":null,"actor":"a"}},{{"seq":2,"payloadRef":"{digest}","actor":"b"}}]}}"#
+    );
+    let after = format!(
+        r#"{{"items":[{{"seq":1,"payloadRef":null,"actor":"a"}},{{"seq":2,"payloadRef":"journal:{run}:2","actor":"b"}}]}}"#
+    );
+    assert_journal_changed_only_in_payload_refs(&before, &after, run);
+    for changed in [
+        after.replace(r#""actor":"b""#, r#""actor":"c""#),
+        after.replace(":2\"", ":3\""),
+        after.replace(&format!("\"journal:{run}:2\""), &format!("\"{digest}\"")),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| assert_journal_changed_only_in_payload_refs(
+                &before, &changed, run
+            ))
+            .is_err(),
+            "{changed}"
         );
     }
 }

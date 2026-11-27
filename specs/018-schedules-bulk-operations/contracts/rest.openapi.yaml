@@ -573,13 +573,13 @@ components:
         policies: {$ref: '#/components/schemas/SchedulePolicies'}
         action:
           type: object
-          description: The target without its input; inputDigest and inputBytes describe it.
+          description: The target without its input; hasInput says whether it has one. No digest of the input is returned (feature 016's FR-016-030, G665).
+          required: [hasInput]
           properties:
             workflowId: {type: string, format: uuid}
             versionPolicy: {type: string, enum: [ACTIVE, PINNED]}
             versionId: {type: string, format: uuid}
-            inputDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
-            inputBytes: {type: integer, minimum: 0}
+            hasInput: {type: boolean}
             nominalTimeField: {type: string}
             runTimeoutMs: {type: integer}
             businessIdPrefix: {type: string, description: 'Present when the action names a prefix; with the two policies, written out with their defaults.'}
@@ -827,7 +827,7 @@ components:
         state: {$ref: '#/components/schemas/BatchJobState'}
         failureReason: {type: [string, 'null']}
         createdBy: {type: string}
-        payloadDigest: {type: [string, 'null'], description: Signal payload or update arguments; never the value.}
+        hasPayload: {type: boolean, description: 'Whether the job carries a signal payload or update arguments; never the value, nor a digest of it (feature 016, FR-016-030).'}
         maxItems: {type: integer}
         itemsPerSecond: {type: number}
         counts:

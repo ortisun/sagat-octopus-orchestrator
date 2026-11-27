@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeEdge, RuntimeNode } from '../../api/types';
-import { edgeKindWords, kindView, shortId, waitingWords } from './display';
+import { edgeKindWords, kindView, payloadRefView, shortId, waitingWords } from './display';
 
 const node = (over: Partial<RuntimeNode>): RuntimeNode => ({ id: 'n', type: 'activity', status: 'NOT_STARTED', ...over });
 
@@ -39,5 +39,22 @@ describe('shortId', () => {
     expect(first.slice(0, 8)).toBe(second.slice(0, 8));
     expect(shortId(first)).not.toBe(shortId(second));
     expect(shortId('abc')).toBe('abc');
+  });
+});
+
+describe('how the reference of a payload is shown (T016-066, G665)', () => {
+  const RUN = '019b5d6e-0000-7000-8000-000000000001';
+
+  it('names the place in the journal, shortened, with the whole reference to copy', () => {
+    expect(payloadRefView(`journal:${RUN}:3`, RUN, 3)).toEqual({ short: 'journal #3', full: `journal:${RUN}:3` });
+  });
+
+  it('never shows nor copies a digest, and shows nothing for no reference', () => {
+    // An older server sent the SHA-256 of the payload: it only says there is one, and the place is made instead.
+    const legacy = payloadRefView('f'.repeat(64), RUN, 7);
+    expect(legacy).toEqual({ short: 'journal #7', full: `journal:${RUN}:7` });
+    expect(JSON.stringify(legacy)).not.toContain('ffff');
+    expect(payloadRefView(null, RUN, 7)).toBeUndefined();
+    expect(payloadRefView('', RUN, 7)).toBeUndefined();
   });
 });

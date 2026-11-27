@@ -29,7 +29,7 @@ const follow = () => screen.getByTestId('follow-state');
 const JOURNAL = [
   journalEvent(1, 'run.started', null, { actor: 'user:alice' }),
   journalEvent(2, 'step.leased', 'reserve', { traceId: null }),
-  journalEvent(3, 'step.completed', 'reserve', { traceId: null, payloadRef: 'f'.repeat(64) }),
+  journalEvent(3, 'step.completed', 'reserve', { traceId: null, payloadRef: `journal:${RUN_ID}:3` }),
   journalEvent(4, 'step.leased', 'pay', { attempt: 1 }),
   journalEvent(5, 'step.started', 'pay', { attempt: 1 }),
   journalEvent(7, 'step.retry_scheduled', 'pay', { attempt: 1 }),
@@ -675,7 +675,7 @@ describe('the run page: the timeline', () => {
   /** The sequence numbers on show. The table is looked up each time: it is drawn afresh when a filter leaves nothing. */
   const seqs = () => within(screen.getByRole('table', { name: 'Journal events, oldest first' })).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[0]?.textContent);
 
-  it('lists the journal with sequence, event in words, step, attempt, who, trace and payload digest', async () => {
+  it('lists the journal with sequence, event in words, step, attempt, who, trace and payload reference', async () => {
     const { grid } = await timeline();
     await waitFor(() => expect(seqs()).toHaveLength(JOURNAL.length));
     expect(seqs()).toEqual(JOURNAL.map((e) => String(e.seq)));
@@ -687,21 +687,21 @@ describe('the run page: the timeline', () => {
     expect(within(retry).getByText(/Problem/)).toBeInTheDocument();
     expect(within(retry).getByText('step.retry_scheduled')).toBeInTheDocument();
     expect(row(1)).toBeTruthy();
-    // The payload is never shown, only its digest: shortened, redacted, with the whole of it to copy.
+    // The payload is never shown, nor a digest of it: only where it is kept, shortened, with the whole reference to copy.
     const completed = within(grid).getByText('The step completed').closest('tr') as HTMLElement;
-    expect(within(completed).getByText('payload (redacted) sha256:ffffffffffff…')).toBeInTheDocument();
-    expect(within(completed).queryByText('f'.repeat(64))).not.toBeInTheDocument();
+    expect(within(completed).getByText('payload (redacted) journal #3')).toBeInTheDocument();
+    expect(within(completed).queryByText(/sha256/i)).not.toBeInTheDocument();
     // A worker that sent no trace.
     expect(within(completed).getByText('no trace')).toBeInTheDocument();
   });
 
-  it('copies the whole digest, not the short form', async () => {
+  it('copies the whole reference, not the short form', async () => {
     const { grid, user } = await timeline();
     await waitFor(() => expect(seqs()).toHaveLength(JOURNAL.length));
     // (user-event gives the page a clipboard of its own to read back.)
-    await user.click(within(grid).getByRole('button', { name: 'Copy payload digest' }));
-    expect(await navigator.clipboard.readText()).toBe('f'.repeat(64));
-    expect(await screen.findByText('Copied payload digest.')).toBeInTheDocument();
+    await user.click(within(grid).getByRole('button', { name: 'Copy payload reference' }));
+    expect(await navigator.clipboard.readText()).toBe(`journal:${RUN_ID}:3`);
+    expect(await screen.findByText('Copied payload reference.')).toBeInTheDocument();
     await user.click(within(grid).getAllByRole('button', { name: 'Copy trace id' })[0] as HTMLElement);
     expect(await navigator.clipboard.readText()).toBe(TRACE);
   });
@@ -923,9 +923,9 @@ describe('the run page: the details of a step', () => {
     expect(await within(panel).findByText(/no trace \(the worker did not send one/)).toBeInTheDocument();
   });
 
-  it('explains that the journal carries a digest and values require a separate classified read', async () => {
+  it('explains that the journal carries only where a payload is kept and values require a separate classified read', async () => {
     const { panel } = await select('pay');
-    expect(within(panel).getByText(/journal event holds only a payload digest/)).toBeInTheDocument();
+    expect(within(panel).getByText(/journal event says only where its payload is kept, never the payload or a digest of it/)).toBeInTheDocument();
   });
 
   it('lists what leads into the step and out of it, so the structure is readable without the canvas', async () => {

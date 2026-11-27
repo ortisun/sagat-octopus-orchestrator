@@ -78,13 +78,9 @@ async fn a_schedule_goes_through_its_whole_life_over_http() {
     assert_eq!(created["authorizedBy"], HUMAN);
     assert_eq!(created["spec"]["intervals"][0]["everyMs"], 3_600_000);
     assert_eq!(created["action"]["workflowId"], r.workflow);
-    assert_eq!(
-        created["action"]["inputDigest"]
-            .as_str()
-            .expect("digest")
-            .len(),
-        64
-    );
+    // the input is never returned, nor a digest of it (FR-016-030, G665): only that there is one
+    assert_eq!(created["action"]["hasInput"], true, "{created}");
+    assert!(created["action"].get("inputDigest").is_none(), "{created}");
     assert!(created["nextActionAt"].is_string());
 
     // describing it adds the next times and what it has done

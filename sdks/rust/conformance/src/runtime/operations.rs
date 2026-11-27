@@ -164,7 +164,7 @@ fn schedule_json(s: &Schedule) -> Value {
         "revision": s.revision, "exhausted": s.exhausted,
         "action": {
             "workflowId": s.action.workflow_id, "versionPolicy": s.action.version_policy,
-            "versionId": s.action.version_id, "inputDigest": s.action.input_digest,
+            "versionId": s.action.version_id, "hasInput": s.action.has_input,
             "nominalTimeField": s.action.nominal_time_field, "runTimeoutMs": s.action.run_timeout_ms,
         },
         "note": s.note, "noteBy": s.note_by, "remainingActions": s.remaining_actions,

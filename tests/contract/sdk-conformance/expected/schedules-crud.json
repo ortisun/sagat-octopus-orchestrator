@@ -7,7 +7,7 @@
       "op": "scheduleCreate",
       "result": {
         "action": {
-          "inputDigest": "ce58fba5218079971db20c4c6ca998517de97da1b71cfcc22f68e9f797427787",
+          "hasInput": true,
           "nominalTimeField": "scheduledFor",
           "runTimeoutMs": null,
           "versionId": null,
@@ -49,7 +49,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "ce58fba5218079971db20c4c6ca998517de97da1b71cfcc22f68e9f797427787",
+          "hasInput": true,
           "nominalTimeField": "scheduledFor",
           "runTimeoutMs": null,
           "versionId": null,
@@ -102,7 +102,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "ce58fba5218079971db20c4c6ca998517de97da1b71cfcc22f68e9f797427787",
+          "hasInput": true,
           "nominalTimeField": "scheduledFor",
           "runTimeoutMs": null,
           "versionId": null,
@@ -149,7 +149,7 @@
       "op": "scheduleUpdate",
       "result": {
         "action": {
-          "inputDigest": "363379742f80b51bdb9206579af7754911543079b9399cb3fc315fb199f476e8",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -176,7 +176,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "363379742f80b51bdb9206579af7754911543079b9399cb3fc315fb199f476e8",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -221,7 +221,7 @@
       "op": "scheduleCreate",
       "result": {
         "action": {
-          "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -476,7 +476,7 @@
       "op": "scheduleCreate",
       "result": {
         "action": {
-          "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,
@@ -533,7 +533,7 @@
       "op": "scheduleGet",
       "result": {
         "action": {
-          "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "hasInput": true,
           "nominalTimeField": null,
           "runTimeoutMs": null,
           "versionId": null,

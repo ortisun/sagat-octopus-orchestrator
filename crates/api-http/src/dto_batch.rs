@@ -3,7 +3,7 @@
 //! A request is decoded into the application's [`BatchWrite`] here, once, so that the service sees
 //! only values the domain accepts. A refusal names the closed `details.reason` of the contract and the
 //! JSON pointer of the place it concerns. The payload of a signal and the arguments of an update are
-//! never returned: a job shows only that it has one, by digest.
+//! never returned, nor a digest of them: a job shows only that it has one (`hasPayload`, FR-016-030).
 
 use sagat_application::batch::{BatchWrite, ItemRecord, JobRecord, NamedPayload, Preview};
 use sagat_application::error::AppError;
@@ -281,7 +281,7 @@ pub struct CountsBody {
     pub deferred: u32,
 }
 
-/// A batch job. The payload of a signal or an update is shown by its digest only.
+/// A batch job. Whether it carries the payload of a signal or an update is all it shows of it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobBody {

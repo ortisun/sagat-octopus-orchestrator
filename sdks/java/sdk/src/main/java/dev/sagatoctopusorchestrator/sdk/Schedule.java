@@ -5,8 +5,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Instant;
 
 /**
- * A schedule as the server keeps it. The input of its action is customer content: it is never returned, only its
- * digest. {@code raw} is the answer as sent, so a field of a newer server is reachable. The business-id prefix of the
+ * A schedule as the server keeps it. The input of its action is customer content: neither it nor a digest of it is
+ * returned ({@link ActionInfo#hasInput()} says whether there is one; T016-066, G665). {@code raw} is the answer as sent,
+ * less the digest of the input an older server still sends, so a field of a newer server is reachable. The business-id prefix of the
  * action is customer text: it is there for the caller ({@link ActionInfo#businessIdPrefix()}, {@code raw}) and is left
  * out of the debug text ({@code toString}) of the schedule.
  *
@@ -42,12 +43,14 @@ public record Schedule(
         JsonNode raw) {
 
     /**
-     * The action as the server keeps it: without the input, with its digest. Every member is nullable.
+     * The action as the server keeps it: without the input and without any digest of it, which would let a reader confirm
+     * a guessed input (T016-066, G665). Every other member is nullable.
      *
      * @param workflowId               the workflow it starts a run of
      * @param versionPolicy            {@code ACTIVE} or {@code PINNED}, as the server sent it
      * @param versionId                the pinned version
-     * @param inputDigest              the digest of the input (the input itself is never returned)
+     * @param hasInput                 whether the action has an input (its values come out only through an input
+     *                                 disclosure; neither the input nor a digest of it is returned)
      * @param nominalTimeField         the member of the input that receives the nominal time
      * @param runTimeoutMs             the timeout of each run it starts
      * @param businessIdPrefix         the prefix of the business identifier of every run it starts, which is
@@ -62,7 +65,7 @@ public record Schedule(
             String workflowId,
             String versionPolicy,
             String versionId,
-            String inputDigest,
+            boolean hasInput,
             String nominalTimeField,
             Long runTimeoutMs,
             String businessIdPrefix,
@@ -74,17 +77,17 @@ public record Schedule(
                 String workflowId,
                 String versionPolicy,
                 String versionId,
-                String inputDigest,
+                boolean hasInput,
                 String nominalTimeField,
                 Long runTimeoutMs) {
-            this(workflowId, versionPolicy, versionId, inputDigest, nominalTimeField, runTimeoutMs, null, null, null);
+            this(workflowId, versionPolicy, versionId, hasInput, nominalTimeField, runTimeoutMs, null, null, null);
         }
 
         /** The prefix is customer text: it does not appear here, only whether there is one. */
         @Override
         public String toString() {
             return "ActionInfo[workflowId=" + workflowId + ", versionPolicy=" + versionPolicy + ", versionId=" + versionId
-                    + ", inputDigest=" + inputDigest + ", nominalTimeField=" + nominalTimeField + ", runTimeoutMs=" + runTimeoutMs
+                    + ", hasInput=" + hasInput + ", nominalTimeField=" + nominalTimeField + ", runTimeoutMs=" + runTimeoutMs
                     + ", businessIdPrefix=" + (businessIdPrefix == null ? null : HIDDEN)
                     + ", businessIdConflictPolicy=" + businessIdConflictPolicy
                     + ", businessIdReusePolicy=" + businessIdReusePolicy + "]";
@@ -124,7 +127,9 @@ public record Schedule(
                 raw.path("exhausted").isBoolean() && raw.path("exhausted").booleanValue(),
                 new ActionInfo(
                         Wire.optStr(info, "workflowId"), Wire.optStr(info, "versionPolicy"), Wire.optStr(info, "versionId"),
-                        Wire.optStr(info, "inputDigest"), Wire.optStr(info, "nominalTimeField"), Wire.optNum(info, "runTimeoutMs"),
+                        // An older server sends inputDigest instead: it only tells that there is an input, and is not kept.
+                        info.path("hasInput").booleanValue() || Wire.optStr(info, "inputDigest") != null,
+                        Wire.optStr(info, "nominalTimeField"), Wire.optNum(info, "runTimeoutMs"),
                         Wire.optStr(info, "businessIdPrefix"), Wire.optStr(info, "businessIdConflictPolicy"),
                         Wire.optStr(info, "businessIdReusePolicy")),
                 Wire.optStr(raw, "note"),
@@ -133,6 +138,19 @@ public record Schedule(
                 Wire.optInstant(raw, "nextActionAt"),
                 Wire.instant(raw, "createdAt"),
                 Wire.optInstant(raw, "updatedAt"),
-                raw);
+                withoutInputDigest(raw));
+    }
+
+    /**
+     * The answer without the digest of the input an older server still sends ({@code action.inputDigest}): it only tells
+     * that there is an input, and nothing of it is kept, not even in {@code raw} (T016-066, G665).
+     */
+    static JsonNode withoutInputDigest(JsonNode raw) {
+        if (raw == null || !raw.path("action").isObject() || !raw.get("action").has("inputDigest")) {
+            return raw;
+        }
+        ObjectNode copy = raw.deepCopy();
+        ((ObjectNode) copy.get("action")).remove("inputDigest");
+        return copy;
     }
 }

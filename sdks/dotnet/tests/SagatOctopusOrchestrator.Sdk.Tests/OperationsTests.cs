@@ -69,7 +69,7 @@ public sealed class OperationsTests : IAsyncLifetime
             ["state"] = "ACTIVE",
             ["revision"] = 2,
             ["createdAt"] = "2026-10-10T10:00:00Z",
-            ["action"] = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["inputDigest"] = new string('a', 64) },
+            ["action"] = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["hasInput"] = true },
             ["note"] = null,
             ["remainingActions"] = null,
             ["nextActionAt"] = "2099-01-01T09:00:00Z",
@@ -314,7 +314,7 @@ public sealed class OperationsTests : IAsyncLifetime
             request);
         Assert.Equal(2, created.Revision);
         Assert.Equal(new DateTimeOffset(2099, 1, 1, 9, 0, 0, TimeSpan.Zero), created.NextActionAt);
-        Assert.Equal(new string('a', 64), created.Action.InputDigest);
+        Assert.True(created.Action.HasInput, "the input is never returned, nor its digest: only that there is one");
         Assert.Equal(1, created.Raw.GetProperty("futureField").GetInt32());
     }
 
@@ -386,7 +386,7 @@ public sealed class OperationsTests : IAsyncLifetime
 
     private static JsonObject ActionAnswer(string? prefix = null, string? conflict = null, string? reuse = null, Action<JsonObject>? change = null)
     {
-        var action = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["inputDigest"] = new string('a', 64) };
+        var action = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["hasInput"] = true };
         if (prefix is not null)
         {
             action["businessIdPrefix"] = prefix;
@@ -461,6 +461,20 @@ public sealed class OperationsTests : IAsyncLifetime
         Assert.Equal(Prefix, described.Action.BusinessIdPrefix);
         Assert.Equal("SOMETHING_NEWER", described.Action.BusinessIdConflictPolicy);
         Assert.Equal(BusinessIdReusePolicies.AllowDuplicateFailedOnly, described.Action.BusinessIdReusePolicy);
+    }
+
+    /// <summary>T016-066 (G665): the server says hasInput; an older one sent the input's digest, which only tells that there is an input and is not kept.</summary>
+    [Theory]
+    [InlineData("{\"workflowId\":\"w\",\"hasInput\":true}", true)]
+    [InlineData("{\"workflowId\":\"w\",\"hasInput\":false}", false)]
+    [InlineData("{\"workflowId\":\"w\",\"inputDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}", true)]
+    public async Task AScheduleSaysWhetherItHasAnInputAndNeverCarriesADigestOfIt(string action, bool expected)
+    {
+        server.Handler = _ => Reply(200, Schedule(s => s["action"] = JsonNode.Parse(action)));
+        var described = await NewClient().Schedules.GetAsync(Ns, ScheduleId);
+        Assert.Equal(expected, described.Action.HasInput);
+        Assert.DoesNotContain(new string('a', 64), described.Action.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('a', 64), described.Raw.GetRawText(), StringComparison.Ordinal);
     }
 
     [Fact]

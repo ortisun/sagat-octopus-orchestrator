@@ -102,7 +102,8 @@ pub async fn script(
 
 /// What the journal of a run says without the things that differ from one run to the next:
 /// the type of each event, the step it concerns and the attempt, and the fingerprint of the output
-/// it refers to when `with_outputs`.
+/// it refers to when `with_outputs`. No read returns that fingerprint (FR-016-030, G665): the test reads
+/// the digest the server keeps, from the database, by the event's sequence.
 async fn journal(p: &Platform, run: &str, with_outputs: bool) -> Vec<String> {
     let (status, body) = rest(
         p,
@@ -112,6 +113,16 @@ async fn journal(p: &Platform, run: &str, with_outputs: bool) -> Vec<String> {
     )
     .await;
     assert_eq!(status, 200, "{body}");
+    let kept: std::collections::BTreeMap<i64, Vec<u8>> = sqlx::query_as(
+        "SELECT seq, payload_digest FROM run_events \
+         WHERE run_id = $1::uuid AND payload_digest IS NOT NULL",
+    )
+    .bind(run)
+    .fetch_all(&p.api.db.pool)
+    .await
+    .expect("the digests the server keeps")
+    .into_iter()
+    .collect();
     body["items"]
         .as_array()
         .expect("items")
@@ -124,7 +135,11 @@ async fn journal(p: &Platform, run: &str, with_outputs: bool) -> Vec<String> {
                 e["attempt"]
             );
             if with_outputs {
-                line.push_str(&format!(" {}", e["payloadRef"].as_str().unwrap_or("-")));
+                let digest = e["seq"]
+                    .as_i64()
+                    .and_then(|seq| kept.get(&seq))
+                    .map_or_else(|| "-".to_owned(), |digest| hex(digest));
+                line.push_str(&format!(" {digest}"));
             }
             line
         })
