@@ -481,7 +481,7 @@ async fn row_4_a_batch_rerun_item_refused_for_its_input_fails_with_validation_fa
         &format!("rerun-refused-{}", Uuid::now_v7()),
     )
     .await;
-    select(&exec, &job_).await;
+    select(&f, &exec, &job_).await;
     // one item per slot: the second waits for the job's pace
     for _ in 0..12 {
         settle(&exec, &job_).await;
@@ -527,7 +527,7 @@ async fn a_batch_rerun_item_with_no_room_is_deferred_and_succeeds_once_there_is_
             &format!("rerun-no-room-{}", Uuid::now_v7()),
         )
         .await;
-        select(&exec, &job_).await;
+        select(&f, &exec, &job_).await;
         settle(&exec, &job_).await;
         let deferred = job(&f, job_.id).await;
         assert_eq!(

@@ -33,7 +33,7 @@ use crate::support::schedules::{Fixture, TestClock, fixture};
 
 /// The run service of the world, as the executor's single-run use cases.
 #[derive(Clone)]
-struct Runs(Arc<World>);
+pub(crate) struct Runs(Arc<World>);
 
 impl ItemActions for Runs {
     async fn apply(&self, request: &ItemRequest<'_>) -> Result<ItemEffect, AppError> {
@@ -41,9 +41,9 @@ impl ItemActions for Runs {
     }
 }
 
-type Executor = BatchExecutor<PgBatchStore, Runs, PgIdentityStore, TestClock>;
+pub(crate) type Executor = BatchExecutor<PgBatchStore, Runs, PgIdentityStore, TestClock>;
 
-fn executor(f: &Fixture) -> Arc<Executor> {
+pub(crate) fn executor(f: &Fixture) -> Arc<Executor> {
     Arc::new(BatchExecutor::new(
         PgBatchStore::new(f.w.db.pool.clone()),
         Runs(Arc::clone(&f.w)),
@@ -57,7 +57,7 @@ fn service(f: &Fixture) -> BatchService<PgBatchStore, TestClock> {
     BatchService::new(PgBatchStore::new(f.w.db.pool.clone()), f.clock.clone())
 }
 
-fn due(job: &JobRecord) -> DueJob {
+pub(crate) fn due(job: &JobRecord) -> DueJob {
     DueJob {
         tenant_id: job.tenant_id,
         id: job.id,
@@ -68,7 +68,7 @@ async fn job(f: &Fixture, id: Uuid) -> JobRecord {
     service(f).get(&f.w.admin, id).await.expect("job")
 }
 
-async fn item_state(f: &Fixture, id: Uuid) -> String {
+pub(crate) async fn item_state(f: &Fixture, id: Uuid) -> String {
     sqlx::query_scalar("SELECT state FROM batch_items WHERE job_id = $1")
         .bind(id)
         .fetch_one(&f.w.db.pool)
@@ -96,7 +96,11 @@ async fn cancellations(f: &Fixture, run: Uuid) -> i64 {
 }
 
 /// A job that cancels one open run, its run selected: the next step applies the item.
-async fn one_item_job(f: &Fixture, key: &str, fence: Option<&ShardFence>) -> (JobRecord, Uuid) {
+pub(crate) async fn one_item_job(
+    f: &Fixture,
+    key: &str,
+    fence: Option<&ShardFence>,
+) -> (JobRecord, Uuid) {
     let runs = runs_started(f, 1).await;
     f.clock
         .set(OffsetDateTime::now_utc() + Duration::seconds(2));

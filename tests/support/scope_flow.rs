@@ -363,6 +363,7 @@ impl Flow {
             .complete_step(worker_request(
                 &self.api,
                 CompleteStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),
@@ -398,6 +399,7 @@ impl Flow {
             .fail_step(worker_request(
                 &self.api,
                 FailStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),

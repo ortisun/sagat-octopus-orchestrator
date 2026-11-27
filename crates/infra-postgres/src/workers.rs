@@ -205,6 +205,12 @@ impl WorkerStore for PgRunStore {
         self.scoped_worker_protocol
     }
 
+    /// The binary that carries this adapter carries the step-log migrations of task T041-5 (`20270210000000_step_logs`
+    /// and its validation), which run before any engine serves, as for the database proof above.
+    fn supports_step_log_protocol(&self) -> bool {
+        true
+    }
+
     async fn bound_patterns(
         &self,
         tenant: TenantId,

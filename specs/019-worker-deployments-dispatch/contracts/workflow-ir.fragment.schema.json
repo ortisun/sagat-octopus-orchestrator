@@ -115,7 +115,7 @@
       "required": [
         "heartbeatTimeoutMs"
       ],
-      "description": "Merge as property `asyncCompletion` of activity nodes (and bodyActivity). Allows a worker or a push function to detach the attempt and complete it through REST with a task token. Both durations are clamped by the step timeout and the run deadline; above the ceilings the definition is refused.",
+      "description": "Merge as property `asyncCompletion` of activity nodes (and bodyActivity). Allows a worker or a push function to detach the attempt and complete it through REST with a task token. Both durations are clamped by the attempt's deadline (the claim time plus timeoutMs, and with design 045 the earlier of that and the step's schedule-to-close deadline) and the run deadline; above the ceilings the definition is refused. A detached timeout ends the attempt with DETACHED_TIMEOUT, an unknown outcome that goes to reconciliation or review (feature 037). While detached, the detached heartbeat timeout replaces the node's heartbeatTimeoutMs of design 045.",
       "properties": {
         "heartbeatTimeoutMs": {
           "type": "integer",

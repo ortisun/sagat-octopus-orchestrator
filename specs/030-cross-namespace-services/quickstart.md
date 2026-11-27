@@ -65,7 +65,7 @@ Expected: the endpoint is `ACTIVE`, `GET /service-endpoints/payments` lists it w
     {"id": "charge", "type": "serviceCall", "endpoint": "payments", "service": "payments",
      "operation": "charge", "contractRevision": 1, "input": "input.payment",
      "inputDisclosure": "declared-service-input-v1",
-     "timeoutMs": 600000, "startTimeoutMs": 60000, "next": "done", "onError": "rejected"},
+     "scheduleToCloseMs": 600000, "scheduleToStartMs": 60000, "next": "done", "onError": "rejected"},
     {"id": "done", "type": "end", "outputExpr": "steps.charge.output.receiptId"},
     {"id": "rejected", "type": "end"}
   ]

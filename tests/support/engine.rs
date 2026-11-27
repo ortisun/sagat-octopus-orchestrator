@@ -133,6 +133,7 @@ pub async fn world_with_breaker(
     // `RUST_LOG=debug cargo test ...` shows the causes the API deliberately hides from clients.
     static LOGGING: std::sync::Once = std::sync::Once::new();
     LOGGING.call_once(|| {
+        super::logs::keep_interest_shared();
         if std::env::var_os("RUST_LOG").is_some() {
             sagat_telemetry::init_logging(sagat_telemetry::LogFormat::Pretty);
         }

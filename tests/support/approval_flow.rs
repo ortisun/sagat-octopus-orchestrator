@@ -596,6 +596,7 @@ impl ApprovalFlow {
             .complete_step(approval_worker_request(
                 &self.api,
                 CompleteStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),

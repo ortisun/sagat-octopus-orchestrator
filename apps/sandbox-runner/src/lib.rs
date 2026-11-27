@@ -1100,6 +1100,8 @@ impl<S: Sandbox + 'static> Runner<S> {
         for attempt in 0..ENGINE_TRIES {
             let request = self
                 .authed(pb::CompleteStepRequest {
+                    // Design 041 (protocol 1.7): a runner's carry is ignored by the server; it sends none.
+                    step_logs: None,
                     task_id: lease.task_id.clone(),
                     run_id: lease.run_id.clone(),
                     step_id: lease.step_id.clone(),
@@ -1163,6 +1165,8 @@ impl<S: Sandbox + 'static> Runner<S> {
         for attempt in 0..ENGINE_TRIES {
             let request = self
                 .authed(pb::FailStepRequest {
+                    // Design 041 (protocol 1.7): a runner's carry is ignored by the server; it sends none.
+                    step_logs: None,
                     task_id: lease.task_id.clone(),
                     run_id: lease.run_id.clone(),
                     step_id: lease.step_id.clone(),

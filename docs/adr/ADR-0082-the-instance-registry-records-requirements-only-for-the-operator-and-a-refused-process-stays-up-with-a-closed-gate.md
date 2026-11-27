@@ -50,6 +50,7 @@ Bad: the operator needs the owner credentials to activate (a runbook step, as fo
 
 - **2026-11-08 (ADR-0083).** Decision 2's rule that the feature's step "reads, does not lock" is narrowed for the step of the cron-trigger handover, which takes the table lock of `workflow_triggers` (bounded at two seconds) and the handover row, for the reason and with the safety argument given in ADR-0083. It stands for every other step.
 - **2026-11-08, a gap (G2022 of feature 018).** The alert rule test of this ADR, `infra/observability/tests/instance_registry_test.yaml`, exists and passes locally with `promtool test rules`, but the CI step of `.github/workflows/ci.yml` that runs `promtool test rules` lists only `batch_stalled_test.yaml`, so CI does not run it. The line to add after `/tests/batch_stalled_test.yaml` is ` /tests/instance_registry_test.yaml /tests/trigger_schedules_test.yaml`; the workflow is changed with the next change of it.
+- **2026-11-14 (ADR-0091, accepted 2026-11-14 by OD-2026-11-14-13; D2252).** Decision 1's "the operator command runs with the schema-owning role" is widened for one command: `schedule-trigger-handover` may also run with the login role `sagat_handover`, which owns nothing and may execute only a wrapper that records `schedules-v1` for the execution engines and moves the handover, the functions of its rounds, its audit completion and its own retirement; the wrapper computes every condition of the automatic handover again under the epoch lock (ADR-0091, D2259), and the role cannot record or remove any other requirement. "Never the runtime role's" stands whole: `sagat_app` gains nothing it can execute or write; it reads the job's attempt rows and the count of the handover's audit left, for the engines' gauges (D2267, D2294; held by `trigger_auto_handover::the_runtime_role_may_only_read_the_handover_row_the_attempt_rows_and_the_audit_count`).
 - **2026-11-24, decision 5 for capability calls (ADR-0099, request (7) of Decision 006-059 of feature 006; Decision 006-098).** An
   engine whose last successful beat with no change in progress (or registration) started more than 25 seconds ago (the liveness
   window less 5 seconds) answers every lease-token call but `Heartbeat`, `CompleteStep` and `FailStep` (and, from protocol 1.8,
@@ -63,3 +64,9 @@ Bad: the operator needs the owner credentials to activate (a runbook step, as fo
   closes it. Enforced by the gate tests of `crates/application/src/instances.rs`, the beat and activation tests of
   `tests/integration/schedules-bulk-operations/instances.rs` and `a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports`
   of `tests/contract/durable-execution/grpc/lease_withdrawal.rs`.
+- **2026-11-26 (ADR-0131, design 053).** The gate gains the reason `SCHEMA_TOO_OLD`; decision 1's "a requirement is
+  removed and recorded again, never changed" admits one change, `active` to `draining` and back, through owner-only
+  functions; a removal takes two phases, the second only after every live process of the requirement's kinds has
+  applied the drain's epoch, recorded by its heartbeat (`instance_heartbeat_applied`), and after the capability's
+  fenced writes in flight have landed; `ServingGate::uses` replaces `requires`, answering only inside the capability
+  window and while counted.

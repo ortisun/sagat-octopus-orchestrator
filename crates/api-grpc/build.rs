@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // A step-log batch carries the text a step's code logged (feature 041, FR-041-007 (d)): it
         // never prints, and the replacements in `lib.rs` print counts only.
         "sagat_octopus_orchestrator.v1.AppendStepLogsRequest",
+        "sagat_octopus_orchestrator.v1.StepLogCarry",
         "sagat_octopus_orchestrator.v1.StepLogRecord",
         "sagat_octopus_orchestrator.v1.StepLogField",
         "sagat_octopus_orchestrator.v1.StepLogField.value",

@@ -59,17 +59,17 @@
           "const": "declared-service-input-v1",
           "description": "Required. The caller publisher declares that the input values leave the caller namespace for the handler namespace of the pinned endpoint. Never inferred."
         },
-        "timeoutMs": {
+        "scheduleToCloseMs": {
           "type": "integer",
           "minimum": 1,
           "maximum": 5184000000,
-          "description": "Schedule-to-close deadline; the pinned operation's defaultMs when absent. The effective deadline is the minimum of this value, the operation's maxMs, the caller run's remaining deadline and the deployment ceiling. At most 60000 for a sync operation."
+          "description": "Schedule-to-close deadline, with the name and the database clock of design 045 (renamed from timeoutMs on 2026-11-24, before anything was built). The node has no timeoutMs and no retry: a start-to-close of one attempt does not exist for a call, and an operation is never retried automatically (a new call attempt is an operator's retry, FR-030-010). The pinned operation's defaultMs when absent. The effective deadline is the minimum of this value, the operation's maxMs, the caller run's remaining deadline and the deployment ceiling. At most 60000 for a sync operation."
         },
-        "startTimeoutMs": {
+        "scheduleToStartMs": {
           "type": "integer",
           "minimum": 1,
           "maximum": 5184000000,
-          "description": "Schedule-to-start deadline, at most timeoutMs. A start that is still pending when it passes is withdrawn and the step fails OPERATION_START_TIMED_OUT."
+          "description": "Schedule-to-start deadline, at most scheduleToCloseMs. A start that is still pending when it passes is withdrawn and the step fails OPERATION_START_TIMED_OUT."
         },
         "cancelPolicy": {
           "enum": [
@@ -101,7 +101,7 @@
               "minLength": 1,
               "maxLength": 1024
             },
-            "timeoutMs": {
+            "scheduleToCloseMs": {
               "type": "integer",
               "minimum": 1,
               "maximum": 5184000000
@@ -135,8 +135,8 @@
       "operation": "charge",
       "contractRevision": 1,
       "input": "input.payment",
-      "timeoutMs": 3600000,
-      "startTimeoutMs": 300000,
+      "scheduleToCloseMs": 3600000,
+      "scheduleToStartMs": 300000,
       "cancelPolicy": "request_cancel",
       "next": "confirm",
       "onError": "notify-failure",

@@ -150,6 +150,7 @@ async fn poll_and_complete(
         .complete_step(worker_request(
             api,
             CompleteStepRequest {
+                step_logs: None,
                 task_id: task.task_id.clone(),
                 run_id: task.run_id.clone(),
                 step_id: task.step_id.clone(),
@@ -736,6 +737,7 @@ impl PublicLoop {
             .fail_step(worker_request(
                 &self.api,
                 FailStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),
@@ -1009,6 +1011,7 @@ impl PublicLoop {
             .complete_step(worker_request(
                 &self.api,
                 CompleteStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),
@@ -1129,6 +1132,7 @@ async fn a_public_cancel_while_an_iteration_is_leased_ends_the_run_cancelled() {
         .fail_step(worker_request(
             &public.api,
             FailStepRequest {
+                step_logs: None,
                 task_id: body.task_id.clone(),
                 run_id: body.run_id.clone(),
                 step_id: body.step_id.clone(),

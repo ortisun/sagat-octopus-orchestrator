@@ -107,6 +107,26 @@ nats:
   requireTls: true
   credentialsSecret: ""        # a Secret with the key nats.creds
 
+# Schedules (feature 018): the control plane serves the schedule routes and every engine runs the schedule pass. On by
+# default since 0.3.0 (OD-2026-11-13-8). Both read the same value, so they cannot disagree; false takes both out
+# (docs/runbooks/schedules.md, section 2).
+schedules:
+  enabled: true
+  # The automatic handover of the cron triggers after a deployment (ADR-0091; docs/runbooks/schedules.md, section 6): a plain Job of
+  # each release runs `schedule-trigger-handover --auto` as the role sagat_handover. `autoHandover: false` (or `enabled: false`)
+  # keeps the handover manual and renders neither the Job nor any reference to its Secret. The engines are given the same value only
+  # to export trigger_schedule_auto_handover_expected.
+  autoHandover:
+    enabled: true
+    # A Secret with DATABASE_URL (the role sagat_handover, without a password) and SAGAT_HANDOVER_PASSWORD; required while on.
+    databaseSecret: ""
+    # After the handover and its audit, take the login of sagat_handover away (off: the operator allows it).
+    retireRole: false
+    stable: 3
+    horizonSeconds: 600         # 600 to 3600
+    waitSeconds: 7200           # at most 86400; the Job's activeDeadlineSeconds is this plus 300
+    minLive: 0                  # 0: the engine's replicas, or the autoscaler's minimum
+
 controlPlane:
   replicas: 2
   resources:

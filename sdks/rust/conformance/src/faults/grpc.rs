@@ -12,9 +12,16 @@ impl std::fmt::Debug for pb::AppendStepLogsRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppendStepLogsRequest")
             .field("records", &self.records.len())
-            .field("final_batch", &self.final_batch)
-            .field("highest_sequence", &self.highest_sequence)
             .finish_non_exhaustive()
+    }
+}
+// The last records of an attempt on its report (design 041 section 2a): its counts only.
+impl std::fmt::Debug for pb::StepLogCarry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepLogCarry")
+            .field("records", &self.records.len())
+            .field("highest_sequence", &self.highest_sequence)
+            .finish()
     }
 }
 impl std::fmt::Debug for pb::StepLogRecord {
@@ -153,6 +160,31 @@ mod step_log_debug_tests {
             assert!(!text.contains("canary"), "{text}");
         }
         assert!(format!("{request:?}").contains("records: 1"));
+    }
+
+    /// A report holding a carry (design 041 section 2a) prints the carry's counts, never a record.
+    #[test]
+    fn the_debug_of_a_report_that_holds_a_carry_prints_counts_and_no_text() {
+        let carry = pb::StepLogCarry {
+            records: vec![pb::StepLogRecord {
+                sequence: 3,
+                message: "canary-message".into(),
+                ..Default::default()
+            }],
+            highest_sequence: 5,
+        };
+        let complete = pb::CompleteStepRequest {
+            step_logs: Some(carry.clone()),
+            ..Default::default()
+        };
+        let fail = pb::FailStepRequest {
+            step_logs: Some(carry),
+            ..Default::default()
+        };
+        for text in [format!("{complete:?}"), format!("{fail:#?}")] {
+            assert!(!text.contains("canary"), "{text}");
+            assert!(text.contains("records: 1") && text.contains("highest_sequence: 5"), "{text}");
+        }
     }
 }
 #[derive(Clone)]

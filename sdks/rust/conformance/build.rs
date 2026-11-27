@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = tonic_prost_build::Config::new();
     config.skip_debug([
         "sagat_octopus_orchestrator.v1.AppendStepLogsRequest",
+        "sagat_octopus_orchestrator.v1.StepLogCarry",
         "sagat_octopus_orchestrator.v1.StepLogRecord",
         "sagat_octopus_orchestrator.v1.StepLogField",
         "sagat_octopus_orchestrator.v1.StepLogField.value",

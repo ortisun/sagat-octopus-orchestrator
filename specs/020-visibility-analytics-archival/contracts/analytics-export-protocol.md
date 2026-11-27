@@ -1,13 +1,17 @@
 # Pull exporter protocol (draft excerpt of `worker.proto`, feature 020)
 
 Additive service in `specs/001-platform-foundation/contracts/worker.proto`, package
-`sagat_octopus_orchestrator.v1`, at the next free additive minor (1.7 at the time of writing; the number
-is assigned at merge, G1097, ADR-0015). Older workers and SDKs are unaffected: they never call it.
-Merged by T020-049. Not implemented.
+`sagat_octopus_orchestrator.v1`, at the next free additive minor of the register in `sdks/SPEC.md` §9
+when this contract merges (*corrected 2026-11-24:* 1.7 is feature 041's, 1.8 delivery acknowledgement's,
+1.9 design 045's, so 1.10 or later at the time of writing; G1097, ADR-0015, research Decision 020-009).
+Older workers and SDKs are unaffected: they never call it. Batch leases are not task leases: delivery
+acknowledgement (ADR-0099) and lease withdrawal (ADR-0098) do not apply to them. Merged by T020-049.
+Not implemented.
 
 ```proto
-// Added in 1.7 (additive, feature 020, ADR-0053). Only an identity with the machine role
-// `analytics-exporter` (permission analytics:sink:export) and a current binding to the sink may call it.
+// Added in 1.<next> (additive, feature 020, ADR-0053). Only an identity with the machine role
+// `analytics-exporter` (PULL sinks) or `database-runner` (connection-backed sinks and CONNECTION
+// archives), the permission analytics:sink:export and a current binding to the sink may call it.
 // A batch is frozen before it is leased: every lease of the same batch returns identical records.
 // Delivery is at-least-once: an exporter that crashes after writing and before AckBatch receives the
 // same batch again (same batch id, same record keys); its store must deduplicate by record key.
@@ -25,15 +29,23 @@ service AnalyticsExportService {
   // A permanent refusal pauses the sink (AUTO_PAUSED SINK_REJECTED); a transient one releases the lease
   // for a later attempt with backoff. Neither skips the batch.
   rpc NackBatch(NackBatchRequest) returns (BatchLeaseResponse);
-  // POSTGRESQL, CLICKHOUSE and ICEBERG sinks only, for a bound database-runner identity holding a current lease of
-  // one of the sink's batches: the destination settings pinned by the sink revision (the 017 connection
-  // for POSTGRESQL; the sink's ClickHouse settings), the effective limits and the credential, through the
-  // same two-phase OpenBao resolution as ResolveDatabase (current state and ACLs checked before and after
-  // provider I/O, no lock held across it), fenced by the batch lease token and generation instead of a
-  // step attempt. Audited as secret.resolved. The response carries no provider routing, provider token
-  // or platform key.
+  // POSTGRESQL, CLICKHOUSE, OBJECT_STORAGE and ICEBERG sinks and CONNECTION archives only, for a bound
+  // database-runner identity holding a current lease of one of the sink's batches (or of the archival
+  // job): the 017 connection pinned by the sink or policy revision, the effective limits and the
+  // credentials, through the same two-phase OpenBao resolution as ResolveDatabase (current state and
+  // ACLs checked before and after provider I/O, no lock held across it), fenced by the lease token and
+  // generation instead of a step attempt. Audited as secret.resolved. The response carries no provider
+  // routing, provider token or platform key.
   rpc ResolveSinkConnection(BatchLeaseRef) returns (ResolvedSinkDestination);
+  // CONNECTION archives (feature 020, retention): leases the export of one archival job. The stream is
+  // the sagat-run-archive-v1 document in chunks, then a trailer with its size and SHA-256. The ack
+  // carries the size and SHA-256 the runner read back from the object it wrote create-only; the job is
+  // VERIFIED only when both equal the trailer.
+  rpc LeaseArchive(LeaseArchiveRequest) returns (stream LeasedBatchFrame);
+  rpc AckArchive(AckArchiveRequest) returns (BatchLeaseResponse);
 }
+message LeaseArchiveRequest { string session_id = 1; string session_token = 2; string namespace = 3; }
+message AckArchiveRequest { BatchLeaseRef lease = 1; string request_id = 2; int64 object_size = 3; string object_sha256 = 4; }
 
 message RegisterExporterRequest {
   string exporter_name = 1;            // bounded label, logged; never a credential
@@ -75,31 +87,36 @@ message NackBatchRequest { BatchLeaseRef lease = 1; string request_id = 2; NackK
 enum NackKind { NACK_KIND_UNSPECIFIED = 0; NACK_TRANSIENT = 1; NACK_PERMANENT = 2; }
 message BatchLeaseResponse { bool already_applied = 1; int64 expires_at_epoch_ms = 2; string sink_state = 3; }
 message ResolvedSinkDestination {
-  oneof destination {
-    ResolvedDatabase postgresql = 1;            // the existing 1.6 message, unchanged
-    ResolvedClickHouse clickhouse = 2;
-  }
-  BatchKind batch_kind = 3;                     // RECORDS or PROBE
+  // The existing message, unchanged: `postgres` (1.6) or feature 035's `iceberg`, `object_storage` or
+  // `clickhouse` (fields 13 to 15), exactly one set; `statement`, `parameters` and `operation` unset.
+  ResolvedDatabase connection = 1;
+  BatchKind batch_kind = 2;                     // RECORDS, PROBE or ARCHIVE
+  string table_prefix = 3;                      // or the object prefix; from the sink or policy revision
+  string target_namespace = 4;                  // POSTGRESQL schema or ICEBERG namespace; empty otherwise
 }
-message ResolvedClickHouse { string url = 1; string database = 2; string table_prefix = 3; string username = 4; bytes password = 5; int64 statement_deadline_ms = 6; }
-enum BatchKind { BATCH_KIND_UNSPECIFIED = 0; BATCH_KIND_RECORDS = 1; BATCH_KIND_PROBE = 2; }
+enum BatchKind { BATCH_KIND_UNSPECIFIED = 0; BATCH_KIND_RECORDS = 1; BATCH_KIND_PROBE = 2; BATCH_KIND_ARCHIVE = 3; }
 ```
 
 Rules:
 
 - Lease, renew, ack and nack are each one PostgreSQL transaction that reads the batch row `FOR UPDATE`
   and the sink row `FOR SHARE`; lease expiry is sampled on the database clock after the lock (the
-  014/017 post-lock sampling rule).
+  014/017 post-lock sampling rule). An archive lease locks the `archival_jobs` row instead; its
+  `batch_id` is `archive:<regionEpoch>:<runId>` and it is renewed with `RenewBatchLease`.
 - An ack must carry the `content_sha256` of the trailer; a mismatch is `INVALID_ARGUMENT` and commits
   nothing (the exporter received a corrupted stream).
-- `reason_code` is a closed set (`SCHEMA_MISMATCH`, `AUTH_FAILED`, `DESTINATION_FULL`, `OTHER`); free
-  text from the exporter is never stored or logged.
+- `reason_code` is a closed set (`SCHEMA_MISMATCH`, `AUTH_FAILED`, `DESTINATION_FULL`, `OBJECT_CONFLICT`,
+  `CONNECTION_UNUSABLE`, `OTHER`); free text from the exporter is never stored or logged.
 - Unbinding a subject or removing its role makes its next call `PERMISSION_DENIED NOT_BOUND`; a lease it
   holds simply expires.
-- Roles: `PULL` batches are leasable by `analytics-exporter` subjects; `POSTGRESQL`, `CLICKHOUSE`
-  and `ICEBERG` batches only by `database-runner` subjects (which then call `ResolveSinkConnection`); each needs a
-  binding to the sink. PostgreSQL reuses the existing 1.6 `ResolvedDatabase`; `ResolvedClickHouse` is the
-  only new credential-bearing message (never logged, dropped when the batch ends).
-- Five SDK helpers (`AnalyticsExporter` in TypeScript, Go, Python, C#, Java) implement register, the
-  credit loop, renew at one third of the lease, ack/nack and backoff; they never retry an ack with a new
-  request id. Shared scenario: `tests/contract/sdk-conformance/scenarios/analytics-exporter.json`.
+- Roles: `PULL` batches are leasable by `analytics-exporter` subjects; `POSTGRESQL` and `CLICKHOUSE`
+  batches only by `database-runner` subjects on the `database` profile, `OBJECT_STORAGE` and `ICEBERG`
+  batches and `CONNECTION` archives only by `database-runner` subjects on the `lake` profile (each then
+  calls `ResolveSinkConnection`); each needs a binding to the sink (an archive needs a binding to the
+  namespace's retention destination). *Corrected 2026-11-24:* every kind reuses the existing
+  `ResolvedDatabase` (feature 035 added its `iceberg`, `object_storage` and `clickhouse` fields), so the
+  draft's `ResolvedClickHouse` is dropped and this service adds no credential-bearing message.
+- Six SDK helpers (`AnalyticsExporter` in TypeScript, Go, Python, C#, Java and Rust) implement register,
+  the credit loop, renew at one third of the lease, ack/nack and backoff; they never retry an ack with a
+  new request id. They lease `PULL` batches only. Shared scenario:
+  `tests/contract/sdk-conformance/scenarios/analytics-exporter.json`.

@@ -33,6 +33,8 @@ mod event_codec;
 mod event_payloads;
 mod events;
 mod execution;
+mod handover_auto;
+mod handover_role;
 mod identity;
 mod instances;
 mod leaf_certification;
@@ -85,6 +87,16 @@ pub use execution::EXPIRED_RESETS_SQL;
 #[doc(hidden)]
 pub use execution::lease_marks;
 pub use execution::{PgRunStore, PgRunTx};
+pub use handover_auto::{
+    AuditCompleted, AutoActivated, AutoAsk, HANDOVER_ROLE, HandoverDbError,
+    ROUND_STATEMENT_TIMEOUT, Retirement, Round, RoundOutcome, complete_handover_audit,
+    connect_handover, handover_activate, handover_note, handover_round, last_attempt,
+    may_auto_hand_over, read_handover_mode, retire_handover_role,
+};
+pub use handover_role::{
+    HANDOVER_ROLE_LOCK, LoginSet, RoleEnsured, RoleGrants, ensure_handover_role, is_scram_verifier,
+    set_handover_floor, set_handover_login,
+};
 pub use identity::PgIdentityStore;
 pub use instances::{
     CapabilityCensus, FOLLOWED_REQUIREMENT_MISSING, FeatureStep, OperatorBounds, PgInstanceStore,
@@ -103,6 +115,9 @@ pub use reveal_grants::has_effective_payload_reveal_grant;
 pub use schedules::PgScheduleStore;
 pub use scoped_leaf_finish::PgScopedLeafFinishStore;
 pub use sqlx::PgPool;
+pub use step_logs::{
+    PgStepLogStore, PgStepLogTx, STEP_LOG_LOCK_TIMEOUT, step_log_policy_fence_keys, stream_lock_key,
+};
 pub use telemetry::PROJECTOR_LEASE;
 pub use trigger_schedules::{
     Census, HandoverWritten, complete_handover, engine_census, handover_step, may_hand_over,
@@ -120,8 +135,34 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 ///
 /// # Errors
 /// Any migration or connection failure.
+///
+/// After the migrations it ensures the role of the automatic handover, `sagat_handover`, and grants it again (ADR-0091 decision 1,
+/// D2264): created `NOLOGIN` when it is missing and the migrating role may create roles, refused its grants when it is wider than
+/// the design. Neither outcome fails the migration; each is logged with what the operator must do.
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    MIGRATOR.run(pool).await
+    MIGRATOR.run(pool).await?;
+    let (ensured, granted) = ensure_handover_role(pool).await?;
+    match ensured {
+        RoleEnsured::Created => tracing::info!(
+            role = HANDOVER_ROLE,
+            "the role of the automatic handover was created without a login; give migrate SAGAT_HANDOVER_PASSWORD to let it log in"
+        ),
+        RoleEnsured::NotPermitted => tracing::warn!(
+            role = HANDOVER_ROLE,
+            "the role of the automatic handover does not exist and the migrating role may not create roles: create it once \
+             (CREATE ROLE sagat_handover NOLOGIN) and run migrate again, or keep the handover manual (docs/runbooks/schedules.md, 6.1)"
+        ),
+        RoleEnsured::Exists => {}
+    }
+    if granted == RoleGrants::Wider {
+        tracing::error!(
+            role = HANDOVER_ROLE,
+            "the role sagat_handover is wider than the automatic handover allows (an attribute beyond LOGIN, a membership in a \
+             role, or an object it owns): it was given none of its grants, and the job cannot hand over until it is made narrow \
+             (docs/runbooks/schedules.md, 6.1)"
+        );
+    }
+    Ok(())
 }
 
 mod blobs;

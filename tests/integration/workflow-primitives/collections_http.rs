@@ -334,6 +334,7 @@ async fn proven_collection_can_be_published_and_started_over_http() {
             .complete_step(worker_request(
                 &api,
                 CompleteStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),
@@ -402,6 +403,7 @@ async fn proven_collection_can_be_published_and_started_over_http() {
             .complete_step(worker_request(
                 &api,
                 CompleteStepRequest {
+                    step_logs: None,
                     task_id: task.task_id.clone(),
                     run_id: task.run_id.clone(),
                     step_id: task.step_id.clone(),
