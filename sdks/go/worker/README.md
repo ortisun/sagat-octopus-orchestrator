@@ -12,6 +12,7 @@ Activity, compensation and reconciliation worker host over gRPC. [host.go:Host]
 ## Invariants
 
 - The host retains original task/attempt/generation/token identity and scoped instance identity from protocol 1.5 for reports. Heartbeats propagate cancellation/deadlines; stale or conflicting leases cancel with ErrLeaseLost and suppress results. [task.go:instanceOf] [task.go:execute] [task.go:complete] [task.go:beat]
+- At protocol 1.7 with the server's policy and WithStepLogs on, the activity's logger captures each call at or above the capture level: numbered, redacted with the process's secret set, cut, buffered per attempt, sent through AppendStepLogs and carried on the report (sdks/SPEC.md section 6.9). [steplogs.go:WithStepLogs] [steplogs.go:LevelTrace] [steplogs.go:stepLogHandler] [steplogs.go:attemptCapture] [steplogs.go:secretSet] [task.go:newCapture]
 - Reports use deterministic keys and at most five attempts for safe failures. Successful secret resolution is cached per attempt; copied/redacted buffers are wiped and invalidated after the handler. [host.go:reportAttempts] [task.go:report] [activity.go:Secrets] [activity.go:wipe]
 - Inline output caps at 256 KiB. Blob streams enforce part order, chunk bounds, size/digest and clean EOF. Ordinary handler failures report type names, while deliberate failure codes/text are validated and bounded. [host.go:maxOutputBytes] [blob.go:maxBlobChunk] [blob.go:verifyingBlobReader] [task.go:failureOf] [task.go:safeMessage]
 

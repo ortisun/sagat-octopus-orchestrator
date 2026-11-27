@@ -191,8 +191,14 @@ type Task struct {
 	// Steps are the outputs of the steps that completed before this one, by node, as JSON.
 	Steps map[string]json.RawMessage
 	// Logger is the host's logger with the identity of the task. Never log an input, an output or a
-	// secret through it.
+	// secret through it. At protocol 1.7, when the server's policy and WithStepLogs say so, what the activity writes
+	// to it at or above the capture level is also kept as a step log of the attempt (sdks/SPEC.md section 6.9): the
+	// attributes of the call and of With are its fields (groups as group.key), an attribute whose value is an error
+	// gives its exception text, and the values the process resolved as secrets are replaced by [REDACTED]. The host
+	// logs exactly what it logged before; a call never waits for the network and never panics.
 	Logger *slog.Logger
+	// log is the host's logger with the identity of the task, for the host's own lines: none of them is captured.
+	log *slog.Logger
 
 	deadline atomic.Int64 // epoch milliseconds
 
@@ -297,10 +303,13 @@ func (s *Secrets) lookup(name string) ([]byte, error) {
 // Bytes returns a copy of the bytes of a secret the step declares.
 func (s *Secrets) Bytes(name string) ([]byte, error) { return s.lookup(name) }
 
-// Text returns a secret as UTF-8 text.
+// Text returns a secret as UTF-8 text: a value that is not valid UTF-8 has each invalid sequence replaced by U+FFFD,
+// the text the process's secret set of step-log capture holds for it (sdks/SPEC.md section 6.7).
 func (s *Secrets) Text(name string) (string, error) {
 	value, err := s.lookup(name)
-	return string(value), err
+	text := lenient(string(value))
+	clear(value)
+	return text, err
 }
 
 // Names lists the secrets the step declares, sorted.

@@ -188,6 +188,36 @@ defer host.Stop(graceCtx)                       // stops polling, waits for the 
 * Metrics: `worker.WithEventHandler(func(worker.Event))` is called for registrations, polls, tasks taken,
   completed, failed, stale or dropped, heartbeats and reconnects.
 
+### Step logs
+
+`worker.TaskFrom(ctx).Logger` writes to the host's logger (`WithLogger`) as before and, when the server accepted worker
+protocol 1.7 and its policy says capture is on, keeps each call at or above the capture level as a line of the run's
+log (`GET /runs/{runId}/logs`; [sdks/SPEC.md](../SPEC.md) section 6.9):
+
+```go
+host.RegisterActivity("payments.charge", worker.Typed(func(ctx context.Context, in ChargeInput) (Receipt, error) {
+	logger := worker.TaskFrom(ctx).Logger.With("currency", "EUR")
+	logger.Info("charging", "amount", in.Amount)
+	receipt, err := provider.Charge(ctx, in.Amount)
+	if err != nil {
+		logger.Error("the provider refused", "err", err) // an error value is the line's exception text
+	}
+	return receipt, err
+}))
+```
+
+The levels are `worker.LevelTrace` (`slog.Level(-8)`), `slog.LevelDebug`, `slog.LevelInfo`, `slog.LevelWarn` and
+`slog.LevelError`; `worker.WithStepLogs(capture, level)` turns capture off or changes its level (`slog.LevelInfo` by
+default; any other level is refused by `New`). The attributes of the call and of `With` are the line's fields (a group
+as `group.key`); the five the SDK adds (`task`, `activity`, `run`, `node`, `attempt`) are not captured. Before a line
+leaves the process, every secret value the process has resolved is replaced by `[REDACTED]` (in the message, the field
+keys and values, the numbers, the JSON of a map, slice or struct, and the exception text); a message or an exception is
+cut at 8,192 bytes and the fields at 32 keys and 2,048 bytes. A logger call never waits for the network and never
+panics: lines travel in batches while the activity runs, and the last ones on its report, which waits at most 2
+seconds for a batch still on its way. The host still logs exactly what its own logger is enabled for. Lines the SDK had
+to drop are counted through the event handler (`worker.EventStepLogsDropped`, the reason in `Code`, the number in
+`Records`).
+
 ## Build a workflow
 
 ```go
@@ -294,8 +324,8 @@ worker protocol is additive within `1.x`. A newer SDK against an older server ru
 server's protocol version and treats a call the server does not have (a `501`, a `404` that says `ROUTE_NOT_FOUND`, a `405` that says
 `METHOD_NOT_ALLOWED`, or a `404` that is not the platform's error envelope) as `NOT_FOUND` with the reason
 `UNSUPPORTED_BY_SERVER`; an older SDK ignores the fields it does not know (`Run.Raw` keeps them).
-This SDK offers worker protocol `1.5`; when `1.4` or older is negotiated, lease-bound requests omit
-scoped execution identity and remain root compatible.
+This SDK offers worker protocol `1.7` (step logs, see "Step logs" above); when `1.4` or older is negotiated,
+lease-bound requests omit scoped execution identity and remain root compatible, and below `1.7` nothing is captured.
 
 ## Runtime matrix
 
@@ -392,7 +422,7 @@ are resolved by the separate managed executor.
 ## Invariants
 
 - Token failures are privately marked before-I/O UNAUTHENTICATED failures; provider panic payloads are dropped. Error text excludes causes while Unwrap preserves inspectable causes. [token.go:BearerToken] [token.go:ask] [error.go:Unwrap]
-- The host advertises protocol 1.5; the copied schema also declares additive 1.6 database-runner messages. [version.go:ProtocolVersion] [proto/sagat_octopus_orchestrator/v1/worker.proto:ResolveDatabase]
+- The host advertises protocol 1.7 (step logs); the copied schema also declares additive 1.6 database-runner messages. [version.go:ProtocolVersion] [proto/sagat_octopus_orchestrator/v1/worker.proto:ResolveDatabase]
 
 ## Side Effects
 

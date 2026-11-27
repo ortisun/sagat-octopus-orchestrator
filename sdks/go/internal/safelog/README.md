@@ -6,7 +6,7 @@ Internal panic-containing slog adapter. [safelog.go:New]
 
 ## Interface
 
-- New wraps a logger for SDK consumers; the internal handler implements Enabled, Handle, WithAttrs and WithGroup. [safelog.go:New] [safelog.go:Enabled] [safelog.go:Handle] [safelog.go:WithAttrs] [safelog.go:WithGroup]
+- New wraps a logger for SDK consumers, and Handler wraps one handler (the per-attempt handler of step-log capture); the internal handler implements Enabled, Handle, WithAttrs and WithGroup. [safelog.go:New] [safelog.go:Handler] [safelog.go:Enabled] [safelog.go:Handle] [safelog.go:WithAttrs] [safelog.go:WithGroup]
 
 ## Invariants
 

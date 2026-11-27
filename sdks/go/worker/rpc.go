@@ -28,6 +28,7 @@ const (
 	methodResolveSecrets = "ResolveSecrets"
 	methodWriteBlob      = "WriteBlob"
 	methodReadBlob       = "ReadBlob"
+	methodAppendStepLogs = "AppendStepLogs"
 )
 
 var statusNames = map[codes.Code]string{
@@ -71,6 +72,11 @@ type rpc struct {
 // machine code the server puts in the x-sagat-error trailer is read through grpc.Trailer, so an
 // interceptor of the channel sees the very call the SDK made.
 func call[Req, Res any](ctx context.Context, r *rpc, method string, fn func(context.Context, *Req, ...grpc.CallOption) (*Res, error), request *Req, traceparent string) (*Res, error) {
+	return callWithin(ctx, r, method, fn, request, traceparent, r.timeout)
+}
+
+// callWithin is call with its own deadline.
+func callWithin[Req, Res any](ctx context.Context, r *rpc, method string, fn func(context.Context, *Req, ...grpc.CallOption) (*Res, error), request *Req, traceparent string, timeout time.Duration) (*Res, error) {
 	token, err := sagat.BearerToken(ctx, r.token)
 	if err != nil {
 		return nil, err
@@ -80,7 +86,7 @@ func call[Req, Res any](ctx context.Context, r *rpc, method string, fn func(cont
 	if traceparent != "" && sagat.ValidTraceparent(traceparent) {
 		md.Set("traceparent", traceparent)
 	}
-	callCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), r.timeout)
+	callCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), timeout)
 	defer cancel()
 	var header, trailer metadata.MD
 	response, err := fn(callCtx, request, grpc.Header(&header), grpc.Trailer(&trailer))
@@ -209,4 +215,10 @@ func (r *rpc) failStep(ctx context.Context, request *pb.FailStepRequest, tracepa
 
 func (r *rpc) resolveSecrets(ctx context.Context, request *pb.ResolveSecretsRequest, traceparent string) (*pb.ResolveSecretsResponse, error) {
 	return call(ctx, r, methodResolveSecrets, r.client.ResolveSecrets, request, traceparent)
+}
+
+// appendStepLogs sends one batch of step logs (protocol 1.7, design 041) with the deadline of its batch
+// (sdks/SPEC.md section 6.9). Neither the request nor anything of it is ever logged.
+func (r *rpc) appendStepLogs(ctx context.Context, request *pb.AppendStepLogsRequest, timeout time.Duration) (*pb.AppendStepLogsResponse, error) {
+	return callWithin(ctx, r, methodAppendStepLogs, r.client.AppendStepLogs, request, "", timeout)
 }

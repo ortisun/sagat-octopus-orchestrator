@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,8 @@ import (
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	boff "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/safelog"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/tokenfail"
 	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
 )
 
@@ -170,7 +173,7 @@ func (h *Host) handBackInTurn() {
 		h.handBackQueue[0] = handBackItem{}
 		h.handBackQueue = h.handBackQueue[1:]
 		h.mu.Unlock()
-		h.fail(item.l, item.lease, item.minor, "TASK_NOT_STARTED", "the host did not start this task", true, time.Now())
+		h.fail(item.l, item.lease, item.minor, "TASK_NOT_STARTED", "the host did not start this task", true, time.Now(), nil)
 		h.mu.Lock()
 		delete(h.handingBack, item.key)
 		h.mu.Unlock()
@@ -206,7 +209,7 @@ func (h *Host) invoke(ctx context.Context, reg *registered, input json.RawMessag
 		if recovered := recover(); recovered != nil {
 			err = panicError{}
 			if task := TaskFrom(ctx); task != nil {
-				task.Logger.Error("the activity panicked")
+				task.log.Error("the activity panicked")
 			}
 		}
 	}()
@@ -224,7 +227,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	minor := minorOf(sess.accepted)
 	reg := h.lookup(lease.GetActivityName())
 	if reg == nil {
-		h.fail(l, lease, minor, "NO_HANDLER", "no handler is registered for the activity", false, started)
+		h.fail(l, lease, minor, "NO_HANDLER", "no handler is registered for the activity", false, started, nil)
 		return
 	}
 
@@ -232,7 +235,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	document := map[string]json.RawMessage{}
 	if text := lease.GetInputJson(); text != "" {
 		if !json.Valid([]byte(text)) {
-			h.fail(l, lease, minor, "INPUT_INVALID", "the step document is not JSON", false, started)
+			h.fail(l, lease, minor, "INPUT_INVALID", "the step document is not JSON", false, started, nil)
 			return
 		}
 		if parsed, err := jsonx.Object([]byte(text)); err == nil {
@@ -265,7 +268,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 		if hasItem || hasIndex {
 			var parsed uint32
 			if !hasItem || !hasIndex || json.Unmarshal(rawIndex, &parsed) != nil {
-				h.fail(l, lease, minor, "INPUT_INVALID", "the collection item context is malformed", false, started)
+				h.fail(l, lease, minor, "INPUT_INVALID", "the collection item context is malformed", false, started, nil)
 				return
 			}
 			item = append(json.RawMessage(nil), rawItem...)
@@ -282,13 +285,20 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 		}
 	}
 
+	// The host's own lines about the task go to its logger with the identity of the task; the activity's logger is
+	// the same logger behind the attempt's step-log capture (sdks/SPEC.md section 6.9), which captures nothing of the
+	// SDK's own lines nor of the five attributes the SDK adds.
+	hostLog := h.log.With("task", lease.GetTaskId(), "activity", lease.GetActivityName(), "run", lease.GetRunId(), "node", node, "attempt", lease.GetAttempt())
+	capture := h.newCapture(l, lease, minor, sess)
+	defer h.dropCapture(capture)
 	task := &Task{
 		ActivityName: lease.GetActivityName(), TaskID: lease.GetTaskId(), RunID: lease.GetRunId(), Node: node,
 		StepID: lease.GetStepId(), Attempt: int(lease.GetAttempt()), Generation: lease.GetGeneration(),
 		Instance: activityInstanceOf(lease, minor), Item: item, Index: index,
 		IdempotencyKey: lease.GetIdempotencyKey(), Traceparent: lease.GetTraceparent(), Kind: kind,
 		TargetNode: lease.GetTargetNode(), TargetIdempotencyKey: lease.GetTargetIdempotencyKey(), Steps: steps,
-		Logger: h.log.With("task", lease.GetTaskId(), "activity", lease.GetActivityName(), "run", lease.GetRunId(), "node", node, "attempt", lease.GetAttempt()),
+		Logger: slog.New(safelog.Handler(&stepLogHandler{host: hostLog.Handler(), capture: capture})),
+		log:    hostLog,
 	}
 	task.deadline.Store(lease.GetExpiresAtEpochMs())
 	task.resolve = func(ctx context.Context) (*Secrets, error) { return h.resolveSecrets(ctx, l, lease, minor) }
@@ -308,10 +318,12 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 
 	result, verdict, err := h.invoke(handlerCtx, reg, input)
 	task.dropSecrets()
+	// The handler is done: its logger captures nothing more, and the report carries what it captured.
+	capture.end()
 
 	if lost.Load() {
 		h.emit(Event{Type: EventStale, TaskID: lease.GetTaskId()})
-		task.Logger.Warn("the lease was lost: the result is dropped")
+		task.log.Warn("the lease was lost: the result is dropped")
 		return
 	}
 	if err != nil {
@@ -319,11 +331,11 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 			// A deploy stopped this worker: failing the step for good would be wrong. Nothing is reported,
 			// the lease lapses and the platform leases the step again.
 			h.emit(Event{Type: EventDropped, TaskID: lease.GetTaskId(), Code: "SHUTDOWN"})
-			task.Logger.Warn("the host is stopping and the activity gave up: nothing is reported, the lease will lapse")
+			task.log.Warn("the host is stopping and the activity gave up: nothing is reported, the lease will lapse")
 			return
 		}
 		code, message, retryable := failureOf(ctx, err)
-		h.fail(l, lease, minor, code, message, retryable, started)
+		h.fail(l, lease, minor, code, message, retryable, started, capture.carry())
 		return
 	}
 
@@ -331,7 +343,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	var blob *BlobDescriptor
 	if reg.reconciler != nil {
 		if verdict.Effect != EffectApplied && verdict.Effect != EffectNotApplied && verdict.Effect != EffectUnknown {
-			h.fail(l, lease, minor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, not_applied or unknown", false, started)
+			h.fail(l, lease, minor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, not_applied or unknown", false, started, capture.carry())
 			return
 		}
 		answer := map[string]any{"effect": string(verdict.Effect)}
@@ -342,11 +354,11 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	}
 	if blobOutput, ok := result.(BlobOutput); ok {
 		if minor < 3 {
-			h.fail(l, lease, minor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started)
+			h.fail(l, lease, minor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started, capture.carry())
 			return
 		}
 		if err := validateDescriptor(blobOutput.descriptor); err != nil {
-			h.fail(l, lease, minor, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started)
+			h.fail(l, lease, minor, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started, capture.carry())
 			return
 		}
 		copy := blobOutput.descriptor
@@ -359,16 +371,16 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 			if errors.As(err, &se) {
 				message = se.Message
 			}
-			h.fail(l, lease, minor, "OUTPUT_INVALID", message, false, started)
+			h.fail(l, lease, minor, "OUTPUT_INVALID", message, false, started, capture.carry())
 			return
 		}
 		output = string(encoded)
 	}
 	if len(output) > maxOutputBytes {
-		h.fail(l, lease, minor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started)
+		h.fail(l, lease, minor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started, capture.carry())
 		return
 	}
-	h.complete(l, lease, minor, output, blob, started)
+	h.complete(l, lease, minor, output, blob, started, capture.carry())
 }
 
 func (h *Host) lookup(name string) *registered {
@@ -465,7 +477,7 @@ func (h *Host) beat(l *link, lease *pb.TaskLease, minor int, task *Task, cancel 
 					return
 				}
 				// Anything else: the next beat tries again; the lease is ours until it runs out.
-				task.Logger.Warn("a heartbeat failed", "code", codeOf(err))
+				task.log.Warn("a heartbeat failed", "code", codeOf(err))
 			}
 			timer.Reset(interval())
 		}
@@ -511,7 +523,9 @@ func (h *Host) report(l *link, call func(ctx context.Context) error) (stale bool
 	}
 }
 
-func (h *Host) complete(l *link, lease *pb.TaskLease, minor int, output string, blob *BlobDescriptor, started time.Time) {
+// complete reports the success of a task; carry is the attempt's step-log carry, sent from protocol 1.7 and the same
+// on every resend of the report.
+func (h *Host) complete(l *link, lease *pb.TaskLease, minor int, output string, blob *BlobDescriptor, started time.Time, carry *pb.StepLogCarry) {
 	request := &pb.CompleteStepRequest{
 		TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(),
 		Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), IdempotencyKey: "done-" + lease.GetTaskId(),
@@ -520,6 +534,9 @@ func (h *Host) complete(l *link, lease *pb.TaskLease, minor int, output string, 
 	if blob != nil {
 		request.OutputBlobRef = blob.ID
 		request.OutputSha256 = blob.SHA256
+	}
+	if minor >= stepLogMinor {
+		request.StepLogs = carry
 	}
 	stale, err := h.report(l, func(ctx context.Context) error {
 		_, err := l.rpc.completeStep(ctx, request, lease.GetTraceparent())
@@ -536,7 +553,9 @@ func (h *Host) complete(l *link, lease *pb.TaskLease, minor int, output string, 
 	}
 }
 
-func (h *Host) fail(l *link, lease *pb.TaskLease, minor int, code, message string, retryable bool, started time.Time) {
+// fail reports the failure of a task; carry is as for complete, and nil for a report made before a handler ran or a
+// hand-back.
+func (h *Host) fail(l *link, lease *pb.TaskLease, minor int, code, message string, retryable bool, started time.Time, carry *pb.StepLogCarry) {
 	if !errorCode.MatchString(code) {
 		code = "WORKER_ERROR"
 	}
@@ -545,6 +564,9 @@ func (h *Host) fail(l *link, lease *pb.TaskLease, minor int, code, message strin
 		Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), IdempotencyKey: "failed-" + lease.GetTaskId(),
 		ErrorCode: code, SafeMessage: safeMessage(message), Retryable: retryable, Traceparent: lease.GetTraceparent(),
 		Instance: instanceOf(lease, minor),
+	}
+	if minor >= stepLogMinor {
+		request.StepLogs = carry
 	}
 	stale, err := h.report(l, func(ctx context.Context) error {
 		_, err := l.rpc.failStep(ctx, request, lease.GetTraceparent())
@@ -585,9 +607,106 @@ func (h *Host) resolveSecrets(ctx context.Context, l *link, lease *pb.TaskLease,
 	if err != nil {
 		return nil, err
 	}
+	// Every value the process resolves joins its secret set before any handler can see it (sdks/SPEC.md sections 6.7
+	// and 6.9); the value that does not fit stops capture for the process, with one line.
+	resolved := make([][]byte, 0, len(answer.GetSecrets()))
+	for _, secret := range answer.GetSecrets() {
+		resolved = append(resolved, secret.GetValue())
+	}
+	if processCapture.secrets.add(resolved) {
+		h.warnOnce("the secret set of the process is full: step-log capture stops for the process")
+	}
 	values := make(map[string][]byte, len(answer.GetSecrets()))
 	for _, secret := range answer.GetSecrets() {
 		values[secret.GetName()] = append([]byte(nil), secret.GetValue()...)
 	}
+	// The received buffers are wiped: the handler gets the copies above (sdks/SPEC.md section 6.7).
+	for _, secret := range answer.GetSecrets() {
+		clear(secret.GetValue())
+	}
 	return &Secrets{values: values}, nil
+}
+
+// --------------------------------------------------------------------------------------------- step logs
+
+// warnOnce writes a line at the warning level once per process (sdks/SPEC.md section 6.9).
+func (h *Host) warnOnce(line string) {
+	if processCapture.warnOnce(line) {
+		h.log.Warn(line)
+	}
+}
+
+// newCapture is the step-log capture of an attempt when its session captures (sdks/SPEC.md section 6.9), on the link
+// the task was taken on, or nil: the session was accepted below 1.7, its policy is off or absent, the worker's option
+// is off, the session's or the process's capture stopped, or the host began to stop.
+func (h *Host) newCapture(l *link, lease *pb.TaskLease, minor int, sess *session) *attemptCapture {
+	if sess == nil || sess.capture == nil || !sess.capture.enabled || sess.capture.stopped.Load() ||
+		processCapture.secrets.full.Load() || h.stopping.Load() {
+		return nil
+	}
+	ticker := h.stepLogTicker
+	if ticker == nil {
+		ticker = func() (<-chan time.Time, func()) {
+			t := time.NewTicker(limitFlushEvery)
+			return t.C, t.Stop
+		}
+	}
+	taskID := lease.GetTaskId()
+	capture := newAttemptCapture(captureHost{
+		life: l.life,
+		session: func() (string, string) {
+			current := h.session.Load()
+			return current.workerID, current.token
+		},
+		append: func(ctx context.Context, request *pb.AppendStepLogsRequest, timeout time.Duration) appendOutcome {
+			return appendOutcomeOf(ctx, l, request, timeout)
+		},
+		timeout: h.timeout,
+		dropped: func(reason string, records int) {
+			h.emit(Event{Type: EventStepLogsDropped, TaskID: taskID, Code: reason, Records: records})
+		},
+		warnOnce: h.warnOnce,
+		ticker:   ticker,
+	}, sess.capture, attemptIdentity{
+		taskID: taskID, runID: lease.GetRunId(), stepID: lease.GetStepId(), leaseToken: lease.GetLeaseToken(),
+		attempt: lease.GetAttempt(), generation: lease.GetGeneration(), instance: instanceOf(lease, minor),
+	}, h.cfg.stepLogs.level)
+	h.mu.Lock()
+	h.captures[capture] = struct{}{}
+	h.mu.Unlock()
+	return capture
+}
+
+// dropCapture lets an attempt's capture go when its task ends: an attempt that made no report (its lease was lost,
+// it lapses at shutdown) sends nothing more.
+func (h *Host) dropCapture(capture *attemptCapture) {
+	if capture == nil {
+		return
+	}
+	capture.close()
+	h.mu.Lock()
+	delete(h.captures, capture)
+	h.mu.Unlock()
+}
+
+// appendOutcomeOf makes one AppendStepLogs and reads its answer, or the gRPC status of its failure, as the attempt
+// does (contracts.md section 4 of design 041).
+func appendOutcomeOf(ctx context.Context, l *link, request *pb.AppendStepLogsRequest, timeout time.Duration) appendOutcome {
+	answer, err := l.rpc.appendStepLogs(ctx, request, timeout)
+	if err == nil {
+		return appendOutcome{answered: true, verdict: answer.GetVerdict(), stopReason: answer.GetStopReason(), retryMs: answer.GetRetryAfterMs()}
+	}
+	if ctx.Err() != nil {
+		return appendOutcome{status: "CANCELLED"}
+	}
+	var se *sagat.Error
+	if !errors.As(err, &se) {
+		return appendOutcome{status: "UNAVAILABLE"}
+	}
+	status := se.GRPCStatus
+	// A token source that failed is not a refusal of the session: the call is tried again as after an outage.
+	if status == "" || tokenfail.Is(se) {
+		status = "UNAVAILABLE"
+	}
+	return appendOutcome{status: status, retryAfter: se.RetryAfter}
 }

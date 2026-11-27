@@ -75,6 +75,7 @@ type Event struct {
 	Retryable       bool          // EventFailed, EventReceiveFailed
 	Duration        time.Duration // EventCompleted, EventFailed: the time since the task was taken
 	Traceparent     string        // EventTaskTaken: the lease's W3C parent, or empty
+	Records         int           // EventStepLogsDropped: how many records were dropped for the reason in Code
 }
 
 type config struct {
@@ -91,6 +92,7 @@ type config struct {
 	logger            *slog.Logger
 	onEvent           func(Event)
 	dialOptions       []grpc.DialOption
+	stepLogs          stepLogOptions
 }
 
 // Transport selects how task leases are received. Auto streams on protocol 1.4 and polls older servers.
@@ -164,6 +166,8 @@ type session struct {
 	workerID string
 	token    string
 	accepted string
+	// capture is the step-log state this registration gives its session (sdks/SPEC.md section 6.9).
+	capture *captureSession
 }
 
 type running struct {
@@ -210,6 +214,12 @@ type Host struct {
 	// through export_test.go before Start: they read the pacing of the host from it instead of from the wall clock
 	// (AGENTS.md Rule 18).
 	pauses func(time.Duration)
+
+	// captures are the step-log captures of the attempts that run (guarded by mu): Stop sends what they buffered.
+	captures map[*attemptCapture]struct{}
+	// stepLogTicker makes the one-second tick of an attempt's sender; nil outside the tests of this package, which
+	// set it through export_test.go to tick when they say instead of when the wall clock does (AGENTS.md Rule 18).
+	stepLogTicker func() (<-chan time.Time, func())
 }
 
 // link is what one Start makes: the channel, the context the reports and heartbeats live in, and the
@@ -229,7 +239,10 @@ type link struct {
 // session: there is one live session per worker name and identity, and registering again replaces
 // it. Nothing is connected until Start.
 func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ...Option) (*Host, error) {
-	cfg := config{transport: TransportAuto, maxInflight: defaultMaxInflight, protocolVersion: sagat.ProtocolVersion}
+	cfg := config{
+		transport: TransportAuto, maxInflight: defaultMaxInflight, protocolVersion: sagat.ProtocolVersion,
+		stepLogs: stepLogOptions{capture: true, level: slog.LevelInfo},
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -244,6 +257,9 @@ func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ..
 	}
 	if cfg.maxInflight < 1 || cfg.maxInflight > 1000 {
 		return nil, sagat.Invalid("maxInflight is between 1 and 1000")
+	}
+	if !validStepLogLevel(cfg.stepLogs.level) {
+		return nil, sagat.Invalid("the step-log level is LevelTrace, slog.LevelDebug, slog.LevelInfo, slog.LevelWarn or slog.LevelError")
 	}
 	if _, _, err := targetOf(grpcURL); err != nil {
 		return nil, err
@@ -268,6 +284,7 @@ func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ..
 		tasks:       map[string]*running{},
 		handingBack: map[string]bool{},
 		wake:        make(chan struct{}, 1),
+		captures:    map[*attemptCapture]struct{}{},
 	}, nil
 }
 
@@ -498,20 +515,36 @@ func (h *Host) Stop(ctx context.Context) error {
 	case <-finished:
 	case <-ctx.Done():
 		result = ctx.Err()
+		// The attempts left send what they buffered once, as one batch each, before their contexts are cancelled
+		// and the channel closes (sdks/SPEC.md section 6.9).
+		flushed := h.flushStepLogs()
 		h.mu.Lock()
 		for _, task := range h.tasks {
 			task.cancel(ErrShutdown)
 		}
 		h.mu.Unlock()
+		late := time.After(2 * time.Second)
 		select {
 		case <-finished:
-		case <-time.After(2 * time.Second):
+			select {
+			case <-flushed:
+			case <-late:
+			}
+		case <-late:
 			h.log.Warn("tasks did not end after the shutdown: their leases will lapse")
 		}
 	}
 	h.mu.Lock()
 	h.active = false
+	captures := make([]*attemptCapture, 0, len(h.captures))
+	for capture := range h.captures {
+		captures = append(captures, capture)
+	}
 	h.mu.Unlock()
+	// The captures still open end before the channel closes: nothing of them is sent after (decision D041-164).
+	for _, capture := range captures {
+		capture.close()
+	}
 	l.endLife()
 	_ = l.conn.Close()
 	h.current = nil
@@ -550,7 +583,11 @@ func (h *Host) register(ctx context.Context, l *link) error {
 	for n := 0; ; n++ {
 		response, err := l.rpc.register(ctx, request)
 		if err == nil {
-			h.session.Store(&session{workerID: response.GetWorkerId(), token: response.GetSessionToken(), accepted: response.GetAcceptedProtocolVersion()})
+			accepted := response.GetAcceptedProtocolVersion()
+			// A new session: the policy of this registration, for the attempts dispatched from now on (an absent
+			// policy is off; sdks/SPEC.md section 6.9).
+			capture := &captureSession{enabled: minorOf(accepted) >= stepLogMinor && response.GetStepLogs().GetEnabled() && h.cfg.stepLogs.capture}
+			h.session.Store(&session{workerID: response.GetWorkerId(), token: response.GetSessionToken(), accepted: accepted, capture: capture})
 			h.log.Info("worker registered", "protocol", response.GetAcceptedProtocolVersion())
 			h.emit(Event{Type: EventRegistered, ProtocolVersion: response.GetAcceptedProtocolVersion()})
 			return nil
@@ -571,4 +608,33 @@ func (h *Host) register(ctx context.Context, l *link) error {
 			return sagat.NewError(sagat.CodeCancelled, "cancelled while registering").WithCause(err)
 		}
 	}
+}
+
+// flushStepLogs cuts, for each attempt still running when Stop cancels the tasks left after its grace, the one batch of
+// what it buffered, and sends them, once each, with no resend (sdks/SPEC.md section 6.9); the channel is closed when
+// they were answered, or failed. The batches are cut before it returns, so that they hold what was buffered when the
+// grace ended.
+func (h *Host) flushStepLogs() <-chan struct{} {
+	h.mu.Lock()
+	batches := map[*attemptCapture]*stepLogBatch{}
+	for capture := range h.captures {
+		if batch := capture.shutdownBatch(); batch != nil {
+			batches[capture] = batch
+		}
+	}
+	h.mu.Unlock()
+	flushed := make(chan struct{})
+	var group sync.WaitGroup
+	for capture, batch := range batches {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			capture.deliver(batch, true, min(h.timeout, limitShutdownFlush))
+		}()
+	}
+	go func() {
+		group.Wait()
+		close(flushed)
+	}()
+	return flushed
 }

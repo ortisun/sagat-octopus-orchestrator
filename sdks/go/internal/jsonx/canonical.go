@@ -138,6 +138,10 @@ func writeString(out *bytes.Buffer, s string) {
 	out.WriteByte('"')
 }
 
+// NumberText prints a finite double as ECMAScript's Number::toString does: the canonical decimal text that step-log
+// capture redacts and measures (sdks/SPEC.md section 6.9, data-model.md section 5 of design 041).
+func NumberText(f float64) string { return ecmaNumber(f) }
+
 // ecmaNumber prints a finite double as Number.prototype.toString does (ECMA-262, Number::toString).
 func ecmaNumber(f float64) string {
 	if f == 0 {
