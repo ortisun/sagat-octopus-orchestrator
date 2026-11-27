@@ -1020,7 +1020,9 @@ with other builds), never in CI. The bound is a p99 under 1 ms. Each SDK's pull 
 
 - Python (T041-17): recorded by its pull request.
 
-- C# (T041-18): recorded by its pull request.
+- C# (T041-18, `SAGAT_STEP_LOG_BENCH=1 dotnet test -c Release --filter FullyQualifiedName~StepLogBenchmark`): p50 0.053 ms,
+  p99 0.390 ms, max 2.43 ms (2026-11-27, Release; the build measured 0.205 ms and 0.216 ms on a quieter machine). Under
+  the bound.
 
 - Java (T041-19): recorded by its pull request.
 
