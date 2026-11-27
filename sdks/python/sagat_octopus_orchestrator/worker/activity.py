@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal, TypeVar
+from types import FrameType
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from ..errors import SagatError
+from ._step_logs import AttemptCapture
+
+TRACE = 5
+"""The level below ``logging.DEBUG`` an activity logs at with ``ctx.log.trace`` (step logs, ``sdks/SPEC.md`` section
+6.9); registered with ``logging`` under the name ``TRACE``."""
+logging.addLevelName(TRACE, "TRACE")
 
 TaskKind = Literal["FORWARD", "COMPENSATION", "RECONCILIATION"]
 CancelReason = Literal["run-cancelled", "lease-lost", "shutdown"]
@@ -226,6 +235,68 @@ class Secrets:
         return f"Secrets(names={self.names()!r})"
 
 
+if TYPE_CHECKING:
+    _AdapterBase = logging.LoggerAdapter[logging.Logger]
+else:
+    _AdapterBase = logging.LoggerAdapter
+
+_LOGGING_FILE = os.path.normcase(logging.addLevelName.__code__.co_filename)
+# The frames of this class between ``LoggerAdapter.log`` and the activity's call (``_emit`` and ``log`` or ``trace``):
+# the host's record names the activity's line as its caller. From Python 3.11 ``stacklevel`` counts the frames that are
+# not ``logging``'s own; Python 3.10 counts every frame from ``LoggerAdapter.log`` before it skips ``logging``'s.
+_OWN_FRAMES = 2 if sys.version_info >= (3, 11) else 3
+
+
+def _caller(frame: FrameType | None) -> FrameType | None:
+    """The first frame from ``frame`` outward that is not ``logging``'s own: the line that logged."""
+    while frame is not None and os.path.normcase(frame.f_code.co_filename) == _LOGGING_FILE:
+        frame = frame.f_back
+    return frame
+
+
+class _TaskLog(_AdapterBase):
+    """The logger of an activity: every line carries the task's identifiers, and nothing else of it.
+
+    At protocol 1.7 each call at or above the capture level is also captured as a step-log line (``sdks/SPEC.md``
+    section 6.9), before ``LoggerAdapter.log`` asks whether the host's logger is enabled and from the raw message and
+    arguments, before ``process`` replaces ``extra``: the caller's ``extra`` becomes the line's fields, ``exc_info`` and
+    ``stack_info`` its exception text. A call never waits for the network and never raises into the activity.
+    """
+
+    def __init__(
+        self, logger: logging.Logger, extra: Mapping[str, object], capture: AttemptCapture | None = None
+    ) -> None:
+        super().__init__(logger, extra)
+        self._capture = capture
+
+    def process(self, msg: Any, kwargs: Any) -> tuple[Any, Any]:
+        fields = dict(self.extra or {})
+        kwargs["extra"] = {"sagat": fields}
+        return f"{msg} " + " ".join(f"{key}={value}" for key, value in fields.items()), kwargs
+
+    def log(self, level: int, msg: object, *args: object, **kwargs: Any) -> None:
+        self._emit(level, msg, args, kwargs)
+
+    def trace(self, msg: object, *args: object, **kwargs: Any) -> None:
+        """Logs at ``TRACE`` (5), below ``DEBUG``."""
+        self._emit(TRACE, msg, args, kwargs)
+
+    def _emit(self, level: int, msg: object, args: tuple[object, ...], kwargs: dict[str, Any]) -> None:
+        capture = self._capture
+        if capture is not None:
+            try:
+                stack = _caller(sys._getframe(2)) if kwargs.get("stack_info") else None
+                capture.log(level, msg, args, kwargs.get("extra"), kwargs.get("exc_info"), stack)
+            except Exception:
+                pass
+        try:
+            stacklevel = kwargs.get("stacklevel", 1)
+            kwargs["stacklevel"] = (stacklevel if isinstance(stacklevel, int) else 1) + _OWN_FRAMES
+            super().log(level, msg, *args, **kwargs)
+        except Exception:
+            pass  # the host's own logging never raises into the activity (SPEC section 10)
+
+
 class ActivityContext:
     """What an activity knows about the attempt it is running (``sdks/SPEC.md`` section 6.3)."""
 
@@ -246,7 +317,7 @@ class ActivityContext:
         target_idempotency_key: str,
         steps: Mapping[str, Any],
         cancellation: CancellationToken,
-        log: logging.LoggerAdapter[logging.Logger],
+        log: _TaskLog,
         deadline_ms: Callable[[], int],
         secrets: Callable[[], Awaitable[Secrets]],
         write_blob: Callable[[AsyncIterable[bytes] | Iterable[bytes], str, int, str], Awaitable[BlobDescriptor]],
@@ -282,6 +353,8 @@ class ActivityContext:
         """The outputs of the steps that completed before this one, by node."""
         self.cancellation = cancellation
         self.log = log
+        """The attempt's logger (``logging.LoggerAdapter``): ``debug``, ``info``, ``warning``, ``error``, ``exception``,
+        ``critical``, ``log`` and ``trace``; captured as step logs at protocol 1.7 (``sdks/SPEC.md`` section 6.9)."""
         self._deadline_ms = deadline_ms
         self._secrets = secrets
         self._write_blob = write_blob

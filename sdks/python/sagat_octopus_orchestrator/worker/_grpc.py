@@ -27,6 +27,7 @@ METHODS = (
     "ResolveSecrets",
     "WriteBlob",
     "ReadBlob",
+    "AppendStepLogs",
 )
 
 
@@ -146,7 +147,9 @@ class WorkerRpc:
         self._closed = True
         await self._channel.close(grace=None)
 
-    async def _call(self, method: str, request: Any, traceparent: str | None = None) -> Any:
+    async def _call(
+        self, method: str, request: Any, traceparent: str | None = None, timeout: float | None = None
+    ) -> Any:
         if self._closed:
             raise SagatError("CANCELLED", "the connection to the worker service is closed")
         token = await resolve_token(self._config.token)
@@ -156,7 +159,9 @@ class WorkerRpc:
             # allowed to fail a report.
             metadata.append(("traceparent", traceparent))
         try:
-            return await getattr(self._stub, method)(request, metadata=metadata, timeout=self._config.timeout)
+            return await getattr(self._stub, method)(
+                request, metadata=metadata, timeout=self._config.timeout if timeout is None else timeout
+            )
         except grpc.aio.AioRpcError as error:
             raise error_of_status(method, error) from None
         except grpc.aio.BaseError:
@@ -239,6 +244,12 @@ class WorkerRpc:
         self, request: pb.ResolveSecretsRequest, traceparent: str | None = None
     ) -> pb.ResolveSecretsResponse:
         response: pb.ResolveSecretsResponse = await self._call("ResolveSecrets", request, traceparent)
+        return response
+
+    async def append_step_logs(self, request: pb.AppendStepLogsRequest, timeout: float) -> pb.AppendStepLogsResponse:
+        """Protocol 1.7 (design 041): the records of a running attempt, with the batch's own deadline in seconds
+        (``sdks/SPEC.md`` section 6.9). Never logged."""
+        response: pb.AppendStepLogsResponse = await self._call("AppendStepLogs", request, None, timeout)
         return response
 
     async def write_blob(

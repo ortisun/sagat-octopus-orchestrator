@@ -73,7 +73,7 @@ async def test_a_worker_registers_its_activities_and_the_newest_protocol_it_spea
     assert list(request.capabilities.languages) == ["python"]
     assert list(request.capabilities.activities) == ["a.undo", "b.second", "c.lookup"]
     assert list(request.capabilities.pools) == []
-    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.5")
+    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.7")
     assert register.metadata["authorization"] == "Bearer tok"
     assert host.protocol_version == "1.2"
 

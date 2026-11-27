@@ -98,6 +98,7 @@ from .retry import DEFAULT_RETRY, RetryPolicy, backoff_delay
 from .sync import SyncBatchOperations, SyncBusinessIds, SyncSagatClient, SyncSchedules
 from .traceparent import check_traceparent, is_traceparent, new_traceparent, trace_id_of
 from .worker import (
+    TRACE,
     ActivityContext,
     ActivityFailure,
     ActivityHandler,
@@ -141,6 +142,7 @@ __all__ = [
     "PROTOCOL_VERSION",
     "SDK_VERSION",
     "TERMINAL_STATUSES",
+    "TRACE",
     "ActivityContext",
     "ActivityFailure",
     "ActivityHandler",

@@ -1,6 +1,7 @@
 """The worker host: activities, sagas and reconciliations over the gRPC worker protocol."""
 
 from .activity import (
+    TRACE,
     ActivityContext,
     ActivityFailure,
     ActivityHandler,
@@ -18,6 +19,7 @@ from .activity import (
 from .host import WorkerConfig, WorkerEvent, WorkerHost, WorkerTransport
 
 __all__ = [
+    "TRACE",
     "ActivityContext",
     "ActivityFailure",
     "ActivityHandler",
