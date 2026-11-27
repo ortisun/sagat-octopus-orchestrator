@@ -5,6 +5,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -436,6 +438,74 @@ func TestStepLogAValueHeldTwiceIsCopiedOnceThenNamedByItsType(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a self-referencing map was not encoded within 10 seconds")
+	}
+}
+
+func TestStepLogARedactionDoesNotWaitForTheSetToBuild(t *testing.T) {
+	var set secretSet
+	set.add([][]byte{[]byte("secret-one")})
+	set.built = func() {
+		done := make(chan string, 1)
+		go func() { done <- set.redact("abc secret-one xyz") }()
+		select {
+		case got := <-done:
+			if got != "abc [REDACTED] xyz" {
+				t.Errorf("%q", got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("a redaction waited for the set to build its automaton")
+		}
+	}
+	set.add([][]byte{[]byte("secret-two")})
+	set.built = nil
+	if got := set.redact("secret-one secret-two"); got != "[REDACTED] [REDACTED]" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestStepLogALateAnswerToABatchGivenUpChangesNothing(t *testing.T) {
+	for name, late := range map[string]appendOutcome{
+		"unauthenticated": {status: "UNAUTHENTICATED"},
+		"unimplemented":   {status: "UNIMPLEMENTED"},
+		"stop capture":    {answered: true, verdict: pb.StepLogVerdict_STEP_LOG_VERDICT_STOP_CAPTURE, stopReason: pb.StepLogStopReason_STEP_LOG_STOP_REASON_CAPTURE_OFF},
+		"final only":      {answered: true, verdict: pb.StepLogVerdict_STEP_LOG_VERDICT_FINAL_ONLY},
+	} {
+		t.Run(name, func(t *testing.T) {
+			answer := make(chan appendOutcome)
+			called := make(chan struct{}, 1)
+			var warned atomic.Int32
+			session := &captureSession{enabled: true}
+			capture := newAttemptCapture(captureHost{
+				life:    context.Background(),
+				session: func() (string, string) { return "w-1", "session-1" },
+				append: func(context.Context, *pb.AppendStepLogsRequest, time.Duration) appendOutcome {
+					called <- struct{}{}
+					return <-answer // the late answer comes whatever the context says
+				},
+				timeout:  time.Second,
+				dropped:  func(string, int) {},
+				warnOnce: func(string) { warned.Add(1) },
+				ticker:   func() (<-chan time.Time, func()) { return nil, func() {} },
+			}, session, attemptIdentity{taskID: "run-1/charge/1"}, slog.LevelInfo)
+			record := &pb.StepLogRecord{Sequence: 1, Level: pb.StepLogLevel_STEP_LOG_LEVEL_INFO}
+			capture.mu.Lock()
+			capture.last = 1
+			capture.buffer = []heldRecord{{record: record, size: proto.Size(record)}}
+			processCapture.held.Add(int64(proto.Size(record)))
+			capture.send(capture.cut(1))
+			batch := capture.inFlight
+			capture.mu.Unlock()
+			<-called
+			capture.letGo(batch, dropReportDeadline) // the report's wait gave the batch up
+			answer <- late
+			<-batch.done
+			capture.mu.Lock()
+			defer capture.mu.Unlock()
+			if session.stopped.Load() || warned.Load() != 0 || capture.batchesStopped || capture.state != captureOn {
+				t.Errorf("the late answer changed the attempt: session stopped %v, warned %d, batches stopped %v, state %d",
+					session.stopped.Load(), warned.Load(), capture.batchesStopped, capture.state)
+			}
+		})
 	}
 }
 

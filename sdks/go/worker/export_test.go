@@ -64,3 +64,28 @@ func StepLogBatchesStopped(h *Host) bool {
 	}
 	return false
 }
+
+// StepLogBuffered is how many records the attempts of h that run hold in their buffers.
+func StepLogBuffered(h *Host) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	total := 0
+	for capture := range h.captures {
+		capture.mu.Lock()
+		total += len(capture.buffer)
+		capture.mu.Unlock()
+	}
+	return total
+}
+
+// StepLogEnded reports whether an attempt of h whose handler has ended still waits for its report.
+func StepLogEnded(h *Host) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for capture := range h.captures {
+		if capture.ended.Load() {
+			return true
+		}
+	}
+	return false
+}

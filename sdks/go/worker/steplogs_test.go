@@ -200,15 +200,24 @@ func TestStepLogsALevelThatIsNotOneOfTheFiveIsRefused(t *testing.T) {
 func TestStepLogsALongStepSendsTheBatchIts256thCallCutWaitsForItsAnswerAndCarriesTheRest(t *testing.T) {
 	f := stepLogService(t)
 	handlerDone := make(chan struct{})
+	var h *worker.Host
+	// The answer is held until the handler has returned and its attempt waits for its report; the number of reports
+	// then is what the release finds, and it must be none: the report waits for the answer.
+	reportsAtRelease := atomic.Int64{}
+	reportsAtRelease.Store(-1)
 	f.appendAnswers = []appendAnswer{{verdict: pb.StepLogVerdict_STEP_LOG_VERDICT_CONTINUE, hold: func() bool {
 		select {
 		case <-handlerDone:
-			return true
 		default:
 			return false
 		}
+		if !worker.StepLogEnded(h) {
+			return false
+		}
+		reportsAtRelease.Store(int64(len(f.of("CompleteStep"))))
+		return true
 	}}}
-	h, _ := stepLogHost(t, f)
+	h, _ = stepLogHost(t, f)
 	must(t, h.RegisterActivity("charge", logLines(260, func(context.Context) (any, error) {
 		close(handlerDone)
 		return 1, nil
@@ -226,6 +235,9 @@ func TestStepLogsALongStepSendsTheBatchIts256thCallCutWaitsForItsAnswerAndCarrie
 	}
 	if !slices.Equal(sequences(carry.GetRecords()), span(257, 260)) || carry.GetHighestSequence() != 260 {
 		t.Errorf("carry %v highest %d", sequences(carry.GetRecords()), carry.GetHighestSequence())
+	}
+	if n := reportsAtRelease.Load(); n != 0 {
+		t.Errorf("%d reports were made while the batch's answer was held", n)
 	}
 	// The report waited for the answer of the batch, which was held until the handler had returned.
 	order := []string{}
@@ -830,4 +842,164 @@ func TestStepLogsStopSendsOneBatchAndTheReportCarriesWhatDidNotFit(t *testing.T)
 	if carry := reports[0].request.(*pb.CompleteStepRequest).GetStepLogs(); !slices.Equal(sequences(carry.GetRecords()), span(29, 30)) || carry.GetHighestSequence() != 30 {
 		t.Errorf("%v", carry)
 	}
+}
+
+func TestStepLogsConcurrentCallsKeepTheAttemptBufferWithinOneRecordOfItsBound(t *testing.T) {
+	f := stepLogService(t)
+	released := make(chan struct{})
+	f.appendAnswers = []appendAnswer{{hold: func() bool {
+		select {
+		case <-released:
+			return true
+		default:
+			return false
+		}
+	}}}
+	var seen drops
+	var h *worker.Host
+	var buffered atomic.Int64
+	h, _ = stepLogHost(t, f, seen.option())
+	const callers = 8
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		logger := worker.TaskFrom(ctx).Logger
+		// The first 256 go in a batch held in flight; 999 more stay buffered.
+		for n := 1; n <= 256+999; n++ {
+			logger.Info(fmt.Sprintf("line %d", n))
+		}
+		// Eight calls pass the admission check together: each formats its record only once all have taken a sequence.
+		var admitted sync.WaitGroup
+		admitted.Add(callers)
+		var group sync.WaitGroup
+		for n := 0; n < callers; n++ {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				logger.Info("racing", "barrier", barrierValue{&admitted})
+			}()
+		}
+		group.Wait()
+		buffered.Store(int64(worker.StepLogBuffered(h)))
+		close(released)
+		return 1, nil
+	}))
+	start(t, h)
+	f.lease(lease())
+	reportOf(t, f)
+	if n := buffered.Load(); n != 1000 {
+		t.Errorf("the buffer holds %d records", n)
+	}
+	until(t, "the drops", func() bool { return strings.Contains(seen.String(), "buffer_full:7") })
+}
+
+// barrierValue is a value whose formatting waits until every caller of the test has taken its sequence.
+type barrierValue struct{ admitted *sync.WaitGroup }
+
+func (b barrierValue) LogValue() slog.Value {
+	b.admitted.Done()
+	b.admitted.Wait()
+	return slog.StringValue("passed")
+}
+
+func TestStepLogsTheShutdownBatchAnsweredContinueCountsNoDrop(t *testing.T) {
+	f := stepLogService(t)
+	var seen drops
+	h, _ := stepLogHost(t, f, seen.option())
+	logged := make(chan struct{})
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		for n := 1; n <= 10; n++ {
+			worker.TaskFrom(ctx).Logger.Info(fmt.Sprintf("line %d", n))
+		}
+		close(logged)
+		<-ctx.Done()
+		return nil, context.Cause(ctx) // the handler honours the shutdown: no report
+	}))
+	start(t, h)
+	f.lease(lease())
+	<-logged
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_ = h.Stop(ctx)
+	if batches := appends(f); len(batches) != 1 || !slices.Equal(sequences(batches[0].GetRecords()), span(1, 10)) {
+		t.Fatalf("%d batches", len(batches))
+	}
+	if got := seen.String(); got != "map[]" {
+		t.Errorf("drops %s", got)
+	}
+}
+
+func TestStepLogsCallsFromSeveralGoroutinesAcrossACutLoseNothing(t *testing.T) {
+	f := stepLogService(t)
+	var seen drops
+	h, _ := stepLogHost(t, f, seen.option())
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		logger := worker.TaskFrom(ctx).Logger
+		var group sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				for n := 0; n < 100; n++ {
+					logger.Info("line")
+				}
+			}()
+		}
+		group.Wait()
+		return 1, nil
+	}))
+	start(t, h)
+	f.lease(lease())
+	carry := reportOf(t, f)
+	var all []uint64
+	for _, batch := range appends(f) {
+		got := sequences(batch.GetRecords())
+		if !slices.IsSorted(got) {
+			t.Errorf("a batch is out of order: %v", got)
+		}
+		all = append(all, got...)
+	}
+	all = append(all, sequences(carry.GetRecords())...)
+	slices.Sort(all)
+	if !slices.Equal(all, span(1, 800)) || carry.GetHighestSequence() != 800 {
+		t.Errorf("%d records, highest %d", len(all), carry.GetHighestSequence())
+	}
+	if got := seen.String(); got != "map[]" {
+		t.Errorf("drops %s", got)
+	}
+}
+
+func TestStepLogsARecordThatLosesTheRaceWithCloseIsCountedSendFailed(t *testing.T) {
+	f := stepLogService(t)
+	var seen drops
+	h, _ := stepLogHost(t, f, seen.option())
+	inside := make(chan struct{})
+	reported := make(chan struct{})
+	finished := make(chan struct{})
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		logger := worker.TaskFrom(ctx).Logger
+		go func() {
+			defer close(finished)
+			// The call takes its sequence while the handler runs and is formatted after the attempt closed.
+			logger.Info("late", "value", gateValue{inside: inside, release: reported})
+		}()
+		<-inside
+		return 1, nil
+	}))
+	start(t, h)
+	f.lease(lease())
+	carry := reportOf(t, f)
+	close(reported)
+	<-finished
+	if carry == nil || len(carry.GetRecords()) != 0 || carry.GetHighestSequence() != 1 {
+		t.Errorf("%v", carry)
+	}
+	until(t, "the drop", func() bool { return seen.String() == "map[send_failed:1]" })
+}
+
+// gateValue is a value whose formatting says it began and waits for the test's release.
+type gateValue struct{ inside, release chan struct{} }
+
+func (g gateValue) LogValue() slog.Value {
+	close(g.inside)
+	<-g.release
+	return slog.StringValue("late")
 }

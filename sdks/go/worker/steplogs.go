@@ -292,18 +292,27 @@ func (m *matcher) occursIn(text string) bool {
 type secretSet struct {
 	full atomic.Bool
 
-	mu      sync.RWMutex
-	values  [][]byte // in the order they joined
-	bytes   int
-	warned  bool
-	matcher *matcher
-	ordered [][]byte // the longest first, equal lengths in the order they joined
+	building sync.Mutex // one build at a time
+	mu       sync.RWMutex
+	values   [][]byte // in the order they joined
+	bytes    int
+	warned   bool
+	matcher  *matcher
+	ordered  [][]byte // the longest first, equal lengths in the order they joined
+
+	// built is called while a new automaton is built; nil except in the tests, which redact from it to show that a
+	// build holds no lock a redaction needs.
+	built func()
 }
 
 // add adds what one resolution returned; it reports whether the set stopped capture with it (once).
 func (s *secretSet) add(values [][]byte) (stopped bool) {
+	// Resolutions build one at a time; a logger call never waits for a build: the new automaton and order are made
+	// outside the lock it reads them under, then swapped in, before add returns (and so before the handler that
+	// resolved the values can log them).
+	s.building.Lock()
+	defer s.building.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	changed := false
 	for _, raw := range values {
 		// A value that is not UTF-8 joins as the text Secrets.Text hands out for it (sdks/SPEC.md section 6.7); a
@@ -326,11 +335,20 @@ func (s *secretSet) add(values [][]byte) (stopped bool) {
 		s.bytes += len(value)
 		changed = true
 	}
-	if changed {
-		s.matcher = newMatcher(s.values)
-		s.ordered = append([][]byte(nil), s.values...)
-		sort.SliceStable(s.ordered, func(i, j int) bool { return len(s.ordered[i]) > len(s.ordered[j]) })
+	snapshot := append([][]byte(nil), s.values...)
+	s.mu.Unlock()
+	if !changed {
+		return stopped
 	}
+	if s.built != nil {
+		s.built()
+	}
+	automaton := newMatcher(snapshot)
+	ordered := append([][]byte(nil), snapshot...)
+	sort.SliceStable(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
+	s.mu.Lock()
+	s.matcher, s.ordered = automaton, ordered
+	s.mu.Unlock()
 	return stopped
 }
 
@@ -970,7 +988,8 @@ func (c *collected) flatten(prefix string, attr slog.Attr) {
 	}
 }
 
-// exceptionOf joins the exception texts of a call in the order of their original keys' UTF-8 bytes.
+// exceptionOf is the exception text of a call: the texts of its error attributes, several joined with "\n" in the
+// order of their original keys' UTF-8 bytes (sdks/SPEC.md section 6.9, the Go row).
 func exceptionOf(texts []keyedText) string {
 	switch len(texts) {
 	case 0:
@@ -1270,10 +1289,14 @@ func (c *attemptCapture) letGoLocked(batch *stepLogBatch, reason string) {
 	}
 }
 
-func (c *attemptCapture) letGo(batch *stepLogBatch, reason string) {
+// letGo counts a batch's records once; it reports whether this call settled the batch (false: it was settled before,
+// and what this call meant to do with it is not done).
+func (c *attemptCapture) letGo(batch *stepLogBatch, reason string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	settledNow := !batch.settled
 	c.letGoLocked(batch, reason)
+	return settledNow
 }
 
 // settled marks a batch answered; it reports false when the batch was let go meanwhile (its answer is ignored).
@@ -1356,6 +1379,22 @@ func (c *attemptCapture) buffered(record *pb.StepLogRecord, size int) {
 		}
 		return
 	}
+	// The bounds are checked again: calls admitted together by take() format at once, and only the first to reach a
+	// bound passes it, so a buffer or the process passes its bound by one record at most.
+	if len(c.buffer) >= limitAttemptRecords || c.bufferBytes >= limitAttemptBytes {
+		c.count(dropBufferFull, 1)
+		return
+	}
+	for {
+		held := processCapture.held.Load()
+		if held >= limitProcessBytes {
+			c.count(dropProcessBound, 1)
+			return
+		}
+		if processCapture.held.CompareAndSwap(held, held+int64(size)) {
+			break
+		}
+	}
 	at := len(c.buffer)
 	for at > 0 && c.buffer[at-1].record.GetSequence() > record.GetSequence() {
 		at--
@@ -1364,7 +1403,6 @@ func (c *attemptCapture) buffered(record *pb.StepLogRecord, size int) {
 	copy(c.buffer[at+1:], c.buffer[at:])
 	c.buffer[at] = heldRecord{record: record, size: size}
 	c.bufferBytes += size
-	processCapture.held.Add(int64(size))
 	if c.batchesStopped {
 		c.keepCarryLocked()
 		return
@@ -1615,14 +1653,18 @@ func (c *attemptCapture) deliver(batch *stepLogBatch, within time.Duration) {
 				c.letGo(batch, dropSendFailed)
 				return
 			case "UNAUTHENTICATED", "PERMISSION_DENIED":
-				c.letGo(batch, dropSendFailed)
-				c.stopSession()
+				// A late answer, to a batch the report's wait gave up, changes nothing.
+				if c.letGo(batch, dropSendFailed) {
+					c.stopSession()
+				}
 				return
 			case "UNIMPLEMENTED":
 				c.mu.Lock()
-				c.letGoLocked(batch, dropSendFailed)
-				c.batchesStopped = true
-				c.keepCarryLocked()
+				if !batch.settled {
+					c.letGoLocked(batch, dropSendFailed)
+					c.batchesStopped = true
+					c.keepCarryLocked()
+				}
 				c.mu.Unlock()
 				return
 			}
@@ -1753,6 +1795,10 @@ func (c *attemptCapture) carry() (carried *pb.StepLogCarry) {
 				timer.Stop()
 				c.mu.Lock()
 				locked = true
+				if c.closed {
+					// Stop closed the attempt while its report waited: it carries nothing.
+					return nil
+				}
 			}
 			if c.inFlight == batch {
 				// The 2 seconds ended with the batch on its way: it is given up, its answer ignored.
