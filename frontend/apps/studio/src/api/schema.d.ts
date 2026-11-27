@@ -753,10 +753,11 @@ export interface paths {
          *     classified field is replaced by a typed placeholder unless the caller may see it (`payload:read-internal` for an
          *     internal field, `payload:reveal-pii` and a reveal grant for a personal one), a field classified `secret` is never
          *     exported, a value without a schema is classified `pii` as a whole, and every blob is a reference marked
-         *     `EXTERNAL_CONTENT_NOT_INSPECTED` with its size only. Paged by `fromSeq`: the answer holds the visible events from
-         *     `fromSeq` (the start of the history when absent) to the end of the history committed when the export began, and
-         *     a download that broke resumes with `fromSeq` one past the last sequence it received; every answer begins with
-         *     the header line. Every export is audited. A graph run, another tenant's run and a missing run are `404`.
+         *     `EXTERNAL_CONTENT_NOT_INSPECTED` with its size only (no identifier, digest or content type). Paged by `fromSeq`:
+         *     an answer holds at most 1,024 visible events or 3 MiB from `fromSeq` (the start of the history when absent),
+         *     within the history committed when the export began; every answer begins with the header line, whose `lastPage`
+         *     says whether the history ends in this answer, and the next page is asked for with `fromSeq` one past the last
+         *     sequence received. Every export is audited. A graph run, another tenant's run and a missing run are `404`.
          *     Never cached.
          */
         get: operations["exportRunHistory"];
@@ -4968,7 +4969,7 @@ export interface components {
         SetWorkerBindingRequest: {
             /** @description At least one entry, unless `workflowTypes` has one (design 044): a binding names at least one activity entry or one workflow type. */
             activities: string[];
-            /** @description Design 044: replaces the code workflow types the identity may serve. Setting it needs `definition:publish` as well as `worker:bind`. Absent leaves them as they are; an empty list takes them away. Only for an ordinary binding of an identity with the `worker` role. A type outside the pattern, or more than 64, is 422. */
+            /** @description Design 044: replaces the code workflow types the identity may serve. Setting it needs `definition:publish` as well as `worker:bind`. Absent leaves them as they are; an empty list takes them away. The binding records who set them (`bound_by`), and only a request that sets `workflowTypes` changes it. Only for an ordinary binding of an identity with the `worker` role. A type outside the pattern, or more than 64, is 422. */
             workflowTypes?: string[];
             /** @description Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too. */
             pools?: string[];
