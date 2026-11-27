@@ -1168,7 +1168,7 @@ async fn refills(conn: &mut PgConnection) -> i64 {
         .expect("the refill counter")
 }
 
-/// The block's exact charge (review finding m1 of decision D041-156): the reservation asks for a bound (every sent
+/// The block's exact charge (minor review finding 1 of decision D041-156): the reservation asks for a bound (every sent
 /// record and a possible marker, 128 bytes a row), so a quota lease whose room lies between the carry's charge and that
 /// bound sends it to the block; there the write reserves the exact charge before its insert, finds it, and no refill
 /// runs: `path` is `fast`, not `refill`, and `step_log_quota_fallbacks_total` will not count it. A limit of 4,000 bytes,
@@ -1483,7 +1483,7 @@ async fn the_carry_function_refuses_a_reason_or_records_it_was_not_given() {
         );
         tx.rollback().await.expect("rolled back");
     }
-    // Records C2 would not pass (review findings m4 and N1 of decision D041-156): more than 64, a sequence of 0 or of
+    // Records C2 would not pass (review findings minor 4 and Nit 1 of decision D041-156): more than 64, a sequence of 0 or of
     // 2^62, and a highest sequence of 2^62.
     for (label, records, highest) in [
         ("65 records", sized_records(1, 65, 1), 65),
@@ -1539,7 +1539,7 @@ async fn the_carry_function_refuses_a_reason_or_records_it_was_not_given() {
         );
         tx.rollback().await.expect("rolled back");
     }
-    // A namespace that is not its existing stream's (review finding m3): its fences and ceilings would be another's.
+    // A namespace that is not its existing stream's (minor review finding 3): its fences and ceilings would be another's.
     let mut tx = conn.begin().await.expect("a transaction");
     insert_existing(
         &mut tx,
