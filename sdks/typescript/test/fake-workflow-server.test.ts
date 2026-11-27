@@ -354,9 +354,12 @@ test('a report that names a scope for a kind other than an activity or a script 
   }
 });
 
-/** Serves code-continue-as-new and sends its re-emitted continue-as-new with each value named by `describe`. */
-async function reEmitContinueAsNew(describe: (descriptor: { sha256: string; size: number }) => Record<string, unknown>): Promise<FakeWorkflowServer> {
-  const fake = await startFakeWorkflowServer({ scenario: 'code-continue-as-new' });
+/** Serves a scenario and rewrites the values of its re-emitted deferral with `rewrite`. */
+async function reEmit(
+  scenario: string,
+  rewrite: (command: Record<string, any>) => void,
+): Promise<FakeWorkflowServer> {
+  const fake = await startFakeWorkflowServer({ scenario });
   const client = workerServiceClient(fake.address);
   try {
     const session = await register(fake, client);
@@ -364,11 +367,7 @@ async function reEmitContinueAsNew(describe: (descriptor: { sha256: string; size
       const lease = await take(client, session, false);
       if (!lease) break;
       await answer(fake, client, lease, (completion) => {
-        const next = completion['deferred_command']?.['continue_as_new'];
-        if (!next) return;
-        for (const field of ['input', 'state']) {
-          if (next[field]) next[field] = describe(descriptorOf(JSON.parse(Buffer.from(next[field].json).toString('utf8'))));
-        }
+        if (completion['deferred_command']) rewrite(completion['deferred_command']);
       });
     }
     return fake;
@@ -378,15 +377,74 @@ async function reEmitContinueAsNew(describe: (descriptor: { sha256: string; size
   }
 }
 
-test('a re-emitted deferral may name a value its deferral held inline by its descriptor alone', async () => {
-  const fake = await reEmitContinueAsNew((d) => ({ descriptor_sha256: d.sha256, descriptor_size: d.size }));
+const descriptorOfInline = (value: Record<string, any>): { sha256: string; size: number } =>
+  descriptorOf(JSON.parse(Buffer.from(value['json']).toString('utf8')));
+
+test('a re-emitted complete may name an output its deferral held inline by its descriptor alone', async () => {
+  const fake = await reEmit('code-signal-at-return', (command) => {
+    const d = descriptorOfInline(command['complete']);
+    command['complete'] = { descriptor_sha256: d.sha256, descriptor_size: d.size };
+  });
   assert.deepEqual(fake.mismatches, []);
   assert.equal(fake.finished, true);
 });
 
-test('a re-emitted deferral whose descriptor is not its value\'s is a mismatch', async () => {
-  const fake = await reEmitContinueAsNew((d) => ({ descriptor_sha256: d.sha256, descriptor_size: d.size + 1 }));
+test('a re-emitted complete may carry its output again as a new blob with the same descriptor', async () => {
+  const fake = await reEmit('code-signal-at-return', (command) => {
+    const d = descriptorOfInline(command['complete']);
+    command['complete'] = { blob_id: 'a-new-upload', descriptor_sha256: d.sha256, descriptor_size: d.size };
+  });
+  assert.deepEqual(fake.mismatches, []);
+});
+
+test('a re-emitted complete whose descriptor is not its output\'s is a mismatch', async () => {
+  const fake = await reEmit('code-signal-at-return', (command) => {
+    const d = descriptorOfInline(command['complete']);
+    command['complete'] = { descriptor_sha256: d.sha256, descriptor_size: d.size + 1 };
+  });
   assert.ok(fake.mismatches.some((m) => /descriptor_size: expected/.test(m.message)), JSON.stringify(fake.mismatches));
+});
+
+test('a re-emitted continue-as-new must carry its values inline', async () => {
+  const fake = await reEmit('code-continue-as-new', (command) => {
+    const next = command['continue_as_new'];
+    if (!next) return;
+    const d = descriptorOfInline(next['input']);
+    next['input'] = { descriptor_sha256: d.sha256, descriptor_size: d.size };
+  });
+  assert.ok(fake.mismatches.some((m) => /expected the inline value/.test(m.message)), JSON.stringify(fake.mismatches));
+});
+
+test('a failed attempt without a report names no saga scope', async () => {
+  const fake = await startFakeWorkflowServer({ scenario: 'code-failures', run: 'uncaught-exception' });
+  const client = workerServiceClient(fake.address);
+  try {
+    const session = await register(fake, client);
+    for (;;) {
+      const lease = await take(client, session, false);
+      if (!lease) break;
+      const { activation, attempt } = planOf(fake, lease);
+      const failed = activation.failedAttempts?.[attempt - 1];
+      if (!failed) {
+        await answer(fake, client, lease);
+        continue;
+      }
+      assert.equal(failed.report, undefined, 'the golden attempt has no report');
+      await unary(client, 'FailWorkflowTask', {
+        ...fence(lease),
+        idempotency_key: `fail-${lease['task_id']}`,
+        cause: failed.cause,
+        actual_kind: 'COMMAND_ACTIVITY',
+        actual_saga_scope: 's-1',
+        exception_type: failed.exceptionType ?? '',
+        code_digest: lease['workflow_task'].code_digest,
+      });
+    }
+    assert.ok(fake.mismatches.some((m) => /actual_saga_scope: expected "", received "s-1"/.test(m.message)), JSON.stringify(fake.mismatches));
+  } finally {
+    client.close();
+    await fake.close();
+  }
 });
 
 test('a completion for a lease that is not current is refused as a stale attempt', async () => {

@@ -6586,10 +6586,11 @@ func (x *HistoryMarkerRecorded) GetValue() *HistoryPayload {
 
 // A value a command carries: inline canonical JSON (RFC 8785) or a blob written under this run's workflow
 // lease (purpose COMMAND_VALUE). Whatever the carrier, the chain hashes its descriptor
-// {"sha256", "size"} of the value's RFC 8785 bytes (Technical Plan 6.2). A re-emitted deferral may name any
-// value its deferral holds by `descriptor_sha256` and `descriptor_size` alone, whether the deferral carried it
-// inline or as a blob (Decision 044-259): the deferral record holds every value of the deferred command until the
-// command is accepted or the run ends, and the server resolves the descriptor to it after the body digest matched.
+// {"sha256", "size"} of the value's RFC 8785 bytes (Technical Plan 6.2). A re-emitted `complete` may name its
+// output by `descriptor_sha256` and `descriptor_size` alone, whether its deferral carried it inline or as a blob: a
+// deferred `complete` holds its output until it is accepted or the run ends, and the held output is the one accepted,
+// also when the re-emission carries it again (Decision 044-259). A continue-as-new's input and state are always inline,
+// re-emission included: a descriptor alone there is COMMAND_INVALID.
 type CommandValue struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Carrier:

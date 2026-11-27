@@ -866,6 +866,17 @@ class Run {
     if (this.carriedState !== undefined && C(this.carriedState).length > stateMaxBytes) {
       throw new Error(`${this.scenario}/${this.label}: the carried state is over the version's state.maxBytes`);
     }
+    for (const activation of this.activations) {
+      for (const command of activation.commands ?? []) {
+        if (command.kind === 'set_state' && C(command.typed.setState).length > stateMaxBytes) {
+          throw new Error(`${this.scenario}/${this.label}: a set-state over the version's state.maxBytes (${stateMaxBytes})`);
+        }
+        const carried = command.kind === 'continue_as_new' ? command.typed.continueAsNew.state : undefined;
+        if (carried !== undefined && carried !== null && C(carried).length > stateMaxBytes) {
+          throw new Error(`${this.scenario}/${this.label}: a carried state over the version's state.maxBytes (${stateMaxBytes})`);
+        }
+      }
+    }
     const lease = { ...(this.lease ?? {}), ...(stateMaxBytes ? { stateMaxBytes } : {}) };
     if (Object.keys(lease).length) commands.lease = lease;
     if (this.declarations) commands.declarations = this.declarations;
@@ -1167,11 +1178,15 @@ workflow report(input):
 scenario('code-updates', (name) => {
   const r = new Run(name, 'main', { workflowType: 'credit-line', input: { accountId: 'acc-3', limit: 100 } });
   r.declarations = {
-    updates: {
-      raiseLimit: {
-        argsSchema: { type: 'object', properties: { amount: { type: 'integer' } }, required: ['amount'] },
-        disclosure: 'declared-business-result-v1',
-        resultSchema: { type: 'object', properties: { limit: { type: 'integer' } }, required: ['limit'] },
+    state: {
+      schema: { type: 'object' },
+      initial: '{}',
+      updates: {
+        raiseLimit: {
+          argsSchema: { type: 'object', properties: { amount: { type: 'integer' } }, required: ['amount'] },
+          disclosure: 'declared-business-result-v1',
+          resultSchema: { type: 'object', properties: { limit: { type: 'integer' } }, required: ['limit'] },
+        },
       },
     },
   };
@@ -1259,11 +1274,15 @@ workflow creditLine(input):
 scenario('code-update-with-start', (name) => {
   const r = new Run(name, 'main', { workflowType: 'basket', input: { basketId: 'b-12' } });
   r.declarations = {
-    updates: {
-      addItem: {
-        argsSchema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] },
-        disclosure: 'declared-business-result-v1',
-        resultSchema: { type: 'object', properties: { items: { type: 'integer' } }, required: ['items'] },
+    state: {
+      schema: { type: 'object' },
+      initial: '{}',
+      updates: {
+        addItem: {
+          argsSchema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] },
+          disclosure: 'declared-business-result-v1',
+          resultSchema: { type: 'object', properties: { items: { type: 'integer' } }, required: ['items'] },
+        },
       },
     },
   };
@@ -1962,7 +1981,6 @@ scenario('code-nondeterminism', (name) => {
   moved.begin({ worker: 'A' });
   const scope = moved.cmd(sagaOpen(options));
   moved.cmd(activity('hotel.book', { tripId: 'trip-12' }));
-  moved.cmd(sagaClose(scope));
   moved.finish();
   moved.completed('c-2', { hotelBookingId: 'h-12' });
   moved.begin({ worker: 'B' });
@@ -1994,8 +2012,8 @@ workflow notifyOrder(input):                                 // the second versi
   return {orderId: input.orderId}
 
 workflow bookTrip(input):                                    // run "scope-moved", version 1
-  saga({}, async (s) => {})                                  // s-1, empty: it closes after the next call
-  await activity("hotel.book", {tripId: input.tripId})       // outside any scope
+  await saga({}, async (s) =>                                // s-1
+      await activity("hotel.book", {tripId: input.tripId}))  // the run's activity, not the scope's: outside any scope
 
 workflow bookTrip(input):                                    // its second version, replayed by worker B
   await saga({}, async (s) =>                                // s-1
@@ -2160,7 +2178,7 @@ scenario('code-cache-eviction', (name) => {
 workflow paymentFlow(input):
   requestId = uuid()
   charge = await activity("payments.charge", {orderId: input.orderId, requestId: requestId})
-  fx = sideEffect(() => readRate("EURUSD"))                  // {pair, rate}, recorded once
+  fx = sideEffect(() => readRate("EURUSD"), {id: "fx-rate"})  // {pair, rate}, recorded once
   settled = await waitForEvent("payment.settled", input.orderId, {timeoutMs: 3600000, lookbackMs: 60000})
   await script("${normalize}",
                {settlementId: settled.settlementId, rate: fx.rate})

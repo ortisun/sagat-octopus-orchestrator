@@ -306,7 +306,7 @@ strongest architecture and the most value to the customer, not for the least wor
 - **D031-003 — What the worker protocol never encodes.** `FailStepRequest.error_code` (a machine code
   `[A-Z0-9_]{1,64}` that design 045's retry policy matches), `safe_message` (as today: built by the SDK's error rule,
   never a payload), design 045's `next_retry_delay_ms` (`FailStepRequest` field 14) and lease fields 26 and 27, the 1.8
-  fields, identifiers, idempotency keys and lease tokens. Draft 019's `details_json` (`FailStepRequest` field 13) is
+  fields, identifiers, idempotency keys and lease tokens. Draft 019's `details_json` (`FailStepRequest` field 15; 13 until 2026-11-27, Decision 044-256) is
   checkpoint content and is encoded under the lease's `checkpoint` plan, decoded under `/checkpoint/...` by the next
   lease. Reason: the server must read what it routes and retries on; only payload content is the customer's.
 - **D031-004 — A KMS failure before the handler starts spends no attempt.** At protocol 1.8 or later, when a host

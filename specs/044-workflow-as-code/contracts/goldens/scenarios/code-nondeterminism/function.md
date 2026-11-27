@@ -18,8 +18,8 @@ workflow notifyOrder(input):                                 // the second versi
   return {orderId: input.orderId}
 
 workflow bookTrip(input):                                    // run "scope-moved", version 1
-  saga({}, async (s) => {})                                  // s-1, empty: it closes after the next call
-  await activity("hotel.book", {tripId: input.tripId})       // outside any scope
+  await saga({}, async (s) =>                                // s-1
+      await activity("hotel.book", {tripId: input.tripId}))  // the run's activity, not the scope's: outside any scope
 
 workflow bookTrip(input):                                    // its second version, replayed by worker B
   await saga({}, async (s) =>                                // s-1

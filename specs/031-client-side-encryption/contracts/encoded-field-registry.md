@@ -83,7 +83,7 @@ Kinds: **I** inspection position (refused when it reads an encoded location, FR-
 | 043 | run input validation at every creator of 043's table, rows 1 to 14 | W (check order) | 031's envelope checks first, then 043 over the encoded view (subschema at each encoded location replaced by `true`); the pre-check is given the schema without `x-sagat-encoding` (D031-006, FR-031-037) |
 | 043 | an `inputSchema` written as `anyOf` of a manual shape and the trigger shape | K (restricted) | no encoded location inside the `anyOf` (`ENCODING_UNSUPPORTED_LOCATION`) |
 | 041 | step-log lines and fields (`AppendStepLogs`, protocol 1.7) | not a carrier | free text, never an envelope; the worker host redacts decoded values by value before sending (FR-031-038); the server cannot |
-| 019 | `FailStepRequest.details_json` (field 13) | S | checkpoint content: encoded under the lease's `checkpoint` plan, decoded under `/checkpoint/...` by the next lease |
+| 019 | `FailStepRequest.details_json` (field 15; 13 until 2026-11-27, Decision 044-256) | S | checkpoint content: encoded under the lease's `checkpoint` plan, decoded under `/checkpoint/...` by the next lease |
 | 045 | `FailStepRequest.error_code`, `next_retry_delay_ms` (field 14); `TaskLease` fields 26 and 27 | not payload | never encoded (D031-003); `error_code` is a machine code the retry policy matches |
 | 006 (1.8) | `TaskLease` fields 23 and 24, `WorkerCapabilities` field 10, `AcknowledgeTasks` | not payload | never encoded; a codec host carries the 1.8 host procedure (D031-002, D031-004) |
 | 044 | workflow function payloads | to be registered by 044 | same converter, envelope v1 and `ctx` binding; server-read fields stay under this registry (D031-012) |

@@ -26,10 +26,11 @@
 //   without a number"); the golden's number is the one the server gives it when it is accepted.
 // - A value the golden carries as a blob (`valueBlob`) must carry a non-empty `blob_id` (any: WriteBlob is not served)
 //   or, when the golden's carrier is "descriptor only", no carrier and the descriptor; descriptor fields, when sent,
-//   must equal the golden descriptor. An inline value's descriptor fields, when sent, must be D(value). In a re-emitted
-//   deferral, any value may also come with no carrier and its descriptor alone (Decision 044-259).
+//   must equal the golden descriptor. An inline value's descriptor fields, when sent, must be D(value). A re-emitted
+//   complete may name its output by its descriptor alone or carry it as a new blob with the same descriptor, whatever
+//   the golden's carrier; a re-emitted continue-as-new carries its values inline (Decision 044-259).
 // - A FailWorkflowTask is compared with the golden's failed attempt, `actual_saga_scope` included (empty when the
-//   golden's report names none); a scope outside `^s-[1-9][0-9]{0,9}$`, or on a kind other than an activity or a
+//   golden's attempt has no report or its report names none); a scope outside `^s-[1-9][0-9]{0,9}$`, or on a kind other than an activity or a
 //   script, is a mismatch.
 // - The lease: `task_id` `wt-<k>-<attempt>`, `attempt` counted within the activation from 1, `generation` counted over
 //   the run from 1, `gated_entries` and `state_max_bytes` from commands.json's `lease` (empty and 0 otherwise),
@@ -1055,7 +1056,7 @@ class ServerState implements FakeWorkflowServer {
       // The scope the function used (Decision 044-244): compared whenever the golden reports a command, empty when
       // the golden names none; the server drops a scope outside its pattern (Decision 044-250), so a conforming SDK
       // never sends one, and only an activity or a script has a scope.
-      if (golden.report) check('actual_saga_scope', golden.report.actualSagaScope ?? '', record.actualSagaScope);
+      check('actual_saga_scope', golden.report?.actualSagaScope ?? '', record.actualSagaScope);
       check('code_digest', golden.report?.codeDigest, record.codeDigest);
     }
     if (record.actualSagaScope !== '') {
@@ -1101,10 +1102,11 @@ function compareValue(
   }
   const sha = String(received['descriptor_sha256'] ?? '');
   const size = Number(received['descriptor_size'] ?? 0);
-  // A re-emitted deferral may name any value its deferral holds by its descriptor alone, whatever the deferral's
-  // carrier (Decision 044-259): the server resolves the descriptor to the value it holds.
-  if (reEmitted && !received['carrier']) {
+  // A re-emitted complete may name its output by its descriptor alone, or carry it again as a new blob with the same
+  // descriptor, whatever its deferral's carrier (Decision 044-259): the server accepts the output it holds.
+  if (reEmitted && received['carrier'] !== 'json') {
     const d = 'json' in expected ? descriptorOf(expected.json) : expected.blob.descriptor;
+    if (received['carrier'] === 'blob_id' && !received['blob_id']) differ(`${where}: a blob carrier with an empty blob_id`);
     if (sha !== d.sha256) differ(`${where}.descriptor_sha256: expected ${d.sha256}, received ${sha || '(empty)'}`);
     if (size !== d.size) differ(`${where}.descriptor_size: expected ${d.size}, received ${size}`);
     return;
@@ -1141,7 +1143,9 @@ function compareCommand(where: string, received: Record<string, any>, golden: Go
   const same = (field: string, expected: unknown, actual: unknown): void => {
     if (expected !== actual) differ(`${where}: ${field}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
   };
-  const reEmitted = golden.reEmitted === true;
+  // Only a re-emitted complete may change its output's carrier; a continue-as-new hashes its values themselves and
+  // carries them inline (Decision 044-259).
+  const reEmitted = golden.reEmitted === true && golden.kind === 'complete';
   same('command_number', number, received['command_number']);
   same('kind', wireKind(golden.kind), received['kind']);
   const fragment = golden.fragment ? canonicalJson(golden.fragment) : Buffer.alloc(0);

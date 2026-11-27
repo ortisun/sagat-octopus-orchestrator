@@ -276,7 +276,7 @@ reasoning; question 4 is the owner's own decision.
 3. **The next step in the answer to a completion?** Not in 0.3.0. A woken stream already receives its next task by push,
    so what remains is one claim transaction; the remedy would be a second lease producer (its locks after the
    completion commits, under ADR-0098 and ADR-0099's withdrawal rules, marked provisional and acknowledged from protocol
-   1.8), in a protocol minor behind those `sdks/SPEC.md` already reserves (1.9 for design 045, 1.10 to 1.12 for draft
+   1.8), in a protocol minor behind those `sdks/SPEC.md` already reserves (1.9 for design 045, 1.10 for design 044, 1.11 to 1.13 for draft
    019), in six SDKs. A follow-up only if Success criterion 052-006 shows the claim after a wake dominates (Owner
    decision 2026-11-24-525).
 4. **Does the CI gate need a constitution amendment?** Yes, and so does the chart checker's step on every pull request

@@ -11,31 +11,40 @@
   "codeVersions": {
     "v1": "sha256:7587465769ad8ec840ed111ff60a4164c8308e91897ba68c536bf20e86bc162c"
   },
+  "lease": {
+    "stateMaxBytes": 65536
+  },
   "declarations": {
-    "updates": {
-      "raiseLimit": {
-        "argsSchema": {
-          "type": "object",
-          "properties": {
-            "amount": {
-              "type": "integer"
-            }
+    "state": {
+      "schema": {
+        "type": "object"
+      },
+      "initial": "{}",
+      "updates": {
+        "raiseLimit": {
+          "argsSchema": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "amount"
+            ]
           },
-          "required": [
-            "amount"
-          ]
-        },
-        "disclosure": "declared-business-result-v1",
-        "resultSchema": {
-          "type": "object",
-          "properties": {
-            "limit": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "limit"
-          ]
+          "disclosure": "declared-business-result-v1",
+          "resultSchema": {
+            "type": "object",
+            "properties": {
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "limit"
+            ]
+          }
         }
       }
     }

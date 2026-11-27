@@ -1135,8 +1135,8 @@ A code version is a workflow document of the additive v1 schema in which the top
   `schema`.
 - `state` keeps the IR's form (a closed `schema`, an `initial` expression) and, in a code version only, `maxBytes`: the
   most bytes the declared state takes as RFC 8785 JSON, 1 to 131,072 (128 KiB), 65,536 when absent; the version's
-  workflow leases carry it as `state_max_bytes`, and a version that declares no state has a bound of 0 (Decision
-  044-257). `state.updates` of a code version are the
+  workflow leases carry it as `state_max_bytes`, a start whose evaluated `initial` is over it is refused `422
+  VALIDATION_FAILED`, and a version that declares no state has a bound of 0 (Decision 044-257). `state.updates` of a code version are the
   code variant of the IR's update: `argsSchema`, `disclosure` and `resultSchema` required; `validate`, `state` and
   `result` absent, because the function validates and handles the update (section 8.2). `state.queries` keep their
   expression form: they are the engine-answered queries.
@@ -1267,12 +1267,15 @@ version (Requirement 044-026).
      `blobs_owner_valid`), checked in the completion's transaction; another blob is `COMMAND_INVALID`. The completion
      commits each blob that an accepted command names; a deferral marks its blob held (`blobs.held_by_seq`, the
      deferral record's sequence), the blob-reference check accepts a blob held by the run's latest deferral record,
-     acceptance commits it, and the run's end or a re-emission naming another blob releases it. A re-emission refers to
-     the held blob by its descriptor alone, which the server resolves to the blob the latest deferral holds, so a cold
-     worker uploads nothing and nothing is charged twice; an inline value of a deferred command (a continue-as-new's
-     input and carried state, an inline output) is held by the deferral record as well, and a re-emission may name it
-     by its descriptor alone too, whatever carrier the deferral used (Decision 044-259); a retained-bytes check of a re-emission that names a new blob
-     nets off the held blob it releases. A blob
+     acceptance commits it, and the run's end releases it; a deferral of a deferral moves the hold to the newer record.
+     A deferred `complete` holds its output whatever its carrier: an output that travelled inline is written by the
+     server, in the deferral's transaction, as a `COMMAND_VALUE` blob of the run's `~workflow` step held the same way
+     and charged to the retained bytes once (Decision 044-259). A re-emitted `complete` may name its output by its
+     descriptor alone, which the server resolves to the blob the latest deferral holds, so a cold worker uploads nothing
+     and nothing is charged twice; it may also carry the output again (inline, or a new blob with the same descriptor),
+     and the server still accepts the held blob and never commits the re-sent one, which the blob pass releases as an
+     unused upload. A continue-as-new hashes its input and state themselves, so its re-emission carries them inline, as
+     its first emission did; a descriptor alone there is `COMMAND_INVALID`. A blob
      whose carrier schema classifies any field `secret` is never delivered to a workflow, query or replay-check token:
      its `HistoryEvent` payload is the placeholder `EXTERNAL_CONTENT_NOT_INSPECTED`, `ReadBlob` refuses it and no
      command may name it, because the server cannot redact a blob (feature 016, FR-016-015). A blob written under a
@@ -1636,10 +1639,10 @@ The bytes of `d(k)`: `seq` a number; `body` 64 lowercase hexadecimal characters;
 | `consume_signals` | `""` (one command whose body lists each signal name with its sequences; the list counts against the inline values, at most 1,000 sequences as the inbox holds) |
 | `set_state`, `complete`, `fail`, `continue_as_new`, `acknowledge_cancellation` | `""` |
 
-A command on a step that is already terminal keeps its own kind and target. A deferral record holds its values (a blob,
-and an inline value as well) until the command is accepted or the run ends, and a re-emission may name each value by its
-descriptor alone, whatever its first carrier, or carry it again, inline or as another blob with the same descriptor
-(Decision 044-259). The history never carries a command body, so a worker can produce the
+A command on a step that is already terminal keeps its own kind and target. A deferred `complete` holds its output (as a
+blob, whatever its first carrier) until the command is accepted or the run ends; its re-emission may name the output by
+its descriptor alone or carry it again with the same descriptor, and the held output is the one accepted. A re-emitted
+continue-as-new carries its input and state inline, since its body hashes them (Decision 044-259). The history never carries a command body, so a worker can produce the
 chain only by producing the same commands, their bodies included: a worker that skipped replay, an input or a state that changed between two runs of the same code (an
 escaped `uuid4()`, a clock read) or an SDK bug all end as `CHAIN_MISMATCH`. A worker that reuses its cached state and
 chain, whose state is corrupted but whose chain is intact, is caught when its next commands differ from what a replay
@@ -2844,8 +2847,9 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_from_a_session_of_another_digest_is_stale`, `...::a_completion_during_the_stop_drain_is_stale`,
   `...::a_completion_below_the_window_reviews_as_nondeterminism_risk`, `...::an_immediate_effect_of_a_command_makes_the_workflow_task_ready`,
   `...::a_deferred_command_re_emitted_with_another_body_is_a_chain_mismatch`,
-  `...::a_re_emission_names_an_inline_held_value_by_its_descriptor_alone` (Decision 044-259; the successor's input and
-  state are the held bytes), `...::a_re_emission_by_descriptor_after_the_run_ended_is_stale`,
+  `...::a_re_emitted_complete_names_an_output_held_inline_by_its_descriptor_alone` (Decision 044-259; the run's output is
+  the held bytes), `...::a_re_emitted_complete_that_carries_its_output_again_commits_the_held_blob_only`,
+  `...::a_re_emitted_continue_as_new_with_a_descriptor_alone_is_invalid`,
   `...::a_command_naming_a_blob_of_another_run_is_refused`, `...::a_deferral_answers_ok_with_its_cause`,
   `...::the_first_workflow_task_delivers_the_input_in_run_started`,
   `...::a_look_back_wait_satisfied_in_the_same_completion_is_not_unseen`,
@@ -3087,6 +3091,7 @@ a replaying worker derives from `ReadHistory`.
   `...::an_update_receipt_of_another_principal_is_not_found`, `...::a_repeated_post_of_another_principal_reveals_nothing`,
   `...::a_lost_update_response_replays_after_authorization_is_checked_again`, `...::update_with_start_admits_in_the_creating_transaction`,
   `...::update_with_start_journals_run_started_first`, `...::signal_with_start_journals_run_started_first` (Decision 044-246),
+  `...::a_start_whose_initial_state_is_over_max_bytes_is_refused` (Decision 044-257),
   `...::an_update_beyond_the_backlog_is_refused_429`, `...::update_waits_beyond_the_process_bound_are_refused`,
   `integration_workflow_as_code::state::a_declared_query_is_answered_with_no_worker`,
   `...::a_set_state_outside_its_schema_is_refused`,

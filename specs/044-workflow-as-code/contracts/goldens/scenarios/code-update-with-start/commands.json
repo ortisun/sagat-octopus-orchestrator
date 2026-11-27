@@ -10,31 +10,40 @@
   "codeVersions": {
     "v1": "sha256:565c7cfeb0f4e82ea0da774c58fffe42f582d2d524e5d260b21c82004b8ad1a7"
   },
+  "lease": {
+    "stateMaxBytes": 65536
+  },
   "declarations": {
-    "updates": {
-      "addItem": {
-        "argsSchema": {
-          "type": "object",
-          "properties": {
-            "sku": {
-              "type": "string"
-            }
+    "state": {
+      "schema": {
+        "type": "object"
+      },
+      "initial": "{}",
+      "updates": {
+        "addItem": {
+          "argsSchema": {
+            "type": "object",
+            "properties": {
+              "sku": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sku"
+            ]
           },
-          "required": [
-            "sku"
-          ]
-        },
-        "disclosure": "declared-business-result-v1",
-        "resultSchema": {
-          "type": "object",
-          "properties": {
-            "items": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "items"
-          ]
+          "disclosure": "declared-business-result-v1",
+          "resultSchema": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "items"
+            ]
+          }
         }
       }
     }

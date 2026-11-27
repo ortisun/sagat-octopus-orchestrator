@@ -19,6 +19,6 @@ added with new numbers in three consecutive minors, one per wire slice; IR field
 enumerations only grow.
 
 Corrected 2026-11-24: the three minors are the next free ones of the register in `sdks/SPEC.md` §9 when the contract
-merges (1.10, 1.11 and 1.12 at the time of writing); `RegisterWorkerResponse.deployment_version_state` is field 5
+merges (1.10, 1.11 and 1.12 at the time of writing; 1.11 to 1.13 since design 044 took 1.10, Decision 044-255); `RegisterWorkerResponse.deployment_version_state` is field 5
 (field 4 is design 041's); each capability's surfaces are refused until its fleet requirement is recorded (ADR-0082,
 research D019-001).

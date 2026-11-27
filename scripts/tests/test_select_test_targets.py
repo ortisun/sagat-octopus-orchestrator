@@ -323,6 +323,17 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.chosen(), set())
 
+    def test_a_directory_joined_onto_a_contracts_directory_is_a_read_of_every_file_beneath_it(self):
+        # The same corpus, reached by joining its directory name onto the contracts directory.
+        self.readers()
+        self.write(f"{self.CONTRACTS}/goldens/scenarios/s/history.jsonl", "{}\n")
+        self.write("tests/contract/a/goldens.rs",
+                   f'fn corpus() {{ walk(root().join("{self.CONTRACTS}").join("goldens")); }}\n')
+        self.base = self.commit("a reader that joins a corpus")
+        self.write(f"{self.CONTRACTS}/goldens/scenarios/s/history.jsonl", "{\"changed\": true}\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"contract_a"})
+
     def test_a_file_named_under_another_contracts_directory_is_not_a_read_of_this_one(self):
         self.readers()
         self.write("tests/contract/a/errors.rs", 'const TABLE: &str = "specs/014-other/contracts/README.md";\n')

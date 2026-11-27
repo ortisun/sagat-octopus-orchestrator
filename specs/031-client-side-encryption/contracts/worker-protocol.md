@@ -57,7 +57,7 @@ Only the planned locations of payload content are encoded. These stay as they ar
 `FailStepRequest.safe_message` (built by the SDK's error rule, `sdks/SPEC.md` section 2, and redacted of decoded values
 by FR-031-038), design 045's `FailStepRequest.next_retry_delay_ms` (field 14) and `TaskLease` fields 26 and 27, the 1.8
 fields (`TaskLease` 23 and 24, `WorkerCapabilities` 10), every identifier, idempotency key, lease token and trace
-context. Draft 019's `FailStepRequest.details_json` (field 13) is checkpoint content: it is encoded under the lease's
+context. Draft 019's `FailStepRequest.details_json` (field 15; 13 until 2026-11-27, Decision 044-256) is checkpoint content: it is encoded under the lease's
 `checkpoint` plan and decoded under `/checkpoint/...` by the next lease. A step-log line (1.7) is free text, never an
 envelope; the host redacts decoded values from it (FR-031-038).
 
