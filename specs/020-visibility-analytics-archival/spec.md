@@ -31,7 +31,7 @@ run: it is derived from the journal after the fact, like spans (ADR-0017). A ter
 returns to running; retention removes content from terminal runs and leaves a stub. Retention changes
 an obligation of constitution principle I, so it ships only after a MINOR amendment of that principle
 (proposed in ADR-0054, not made here); the owner questions O1080/O1082 were decided on 2026-11-24
-(research.md §5). External sinks
+(research.md §5). *Note (2026-11-26, constitution 5.1.0, Owner decision 2026-11-25-3):* principle I now admits this feature's per-run purge under a namespace retention policy, only after a verified archive, with the obligations Task 020-070 brings into the design. Two things this feature proposes are not admitted: `archive = NONE` (deletion with no copy) and erasure (Requirement 020-037) before the policy's retention or without a verified archive; each needs the owner's further amendment (Gap 1101). External sinks
 are at-least-once (ADR-0004): every record has a deterministic key and the platform never promises
 exactly-once delivery. The engine never opens a connection to a customer destination: every sink
 whose destination is a 017 connection is written by the managed executor (`apps/database-runner`).
@@ -520,7 +520,7 @@ whose input payload is shared with a retained run and check what survives.
 ### Functional Requirements — retention, archival and history export
 
 - **FR-020-030 — Retention policy.** `retention:manage` holders MAY set a namespace policy:
-  `hotRetentionDays` (1..3650, clamped to the operator ceiling), `archive` (`REQUIRED`, `NONE`),
+  `hotRetentionDays` (1..3650, clamped to the operator ceiling), `archive` (`REQUIRED`; `NONE` *(2026-11-26, constitution 5.1.0: not admitted; Gap 1101 and the owner.)*),
   `archiveValues` (`METADATA_ONLY`, `UP_TO_INTERNAL`, `UP_TO_PII`), destination (`PLATFORM`, the platform
   blob store, or `CONNECTION`, an `object_storage` connection of feature 035 written by the managed
   executor; *corrected 2026-11-24*, research Decision 020-012) and `sinkHoldDays`. `UP_TO_PII` needs the reveal grant.
@@ -561,7 +561,7 @@ whose input payload is shared with a retained run and check what survives.
   `Cache-Control: private, no-store`, `run:history:export` plus FR-016-007 audiences, and audit
   (`run.history_exported`; `pii` reveals never collapsed). Oversize is HTTP 413
   `BAD_REQUEST`/`HISTORY_TOO_LARGE`.
-- **FR-020-037 — Erasure.** `retention:manage` holders MAY request erasure of a terminal run: same
+- **FR-020-037 — Erasure.** *(2026-11-26, constitution 5.1.0: erasure before the policy's retention or without a verified archive is not admitted; Gap 1101 and the owner.)* `retention:manage` holders MAY request erasure of a terminal run: same
   pipeline, eligibility now (still refusing unresolved effects with `CONFLICT`/`EFFECT_UNRESOLVED`),
   optional archive, archive object deleted (platform destination), subject replaced in the stub,
   every store of the content-store registry handled by its erasure rule (022 cache entries by

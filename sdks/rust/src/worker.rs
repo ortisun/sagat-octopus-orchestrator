@@ -115,11 +115,14 @@ const TASK_NOT_STARTED: &str = "TASK_NOT_STARTED";
 /// `TASK_NOT_STARTED`, and an older one would record it as an ordinary failure that spends the
 /// attempt (decision D006-080).
 const HAND_BACK_MINOR: u32 = 8;
-/// The newest worker protocol minor this SDK understands: a newer accepted one is refused. The unit
-/// tests also run sessions of 1.8, the first minor on which the host hands a lease back, which no
-/// server of this build negotiates yet.
+/// The newest worker protocol minor this SDK understands: a newer accepted one is refused. 1.7 (step
+/// logs, design 041) is accepted from the server's task T041-7, so that a runner that offers it is
+/// served; the host sends no batch and no carry until the SDK's capture (task T041-20), which the
+/// contract allows (a carry is absent when the attempt assigned no sequence). The unit tests also run
+/// sessions of 1.8, the first minor on which the host hands a lease back, which no server of this
+/// build negotiates yet.
 #[cfg(not(test))]
-const NEWEST_MINOR: u32 = 6;
+const NEWEST_MINOR: u32 = 7;
 #[cfg(test)]
 const NEWEST_MINOR: u32 = HAND_BACK_MINOR;
 /// Why a lease the host received is not run: it arrived after `stop` began, it is beyond the
@@ -566,7 +569,8 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
                         SagatError::new("PROTOCOL", "invalid accepted worker protocol")
                     })?;
                 // The canonical 1.6 protocol is the 1.5 ordinary-worker path plus managed database
-                // RPCs restricted to database-runner identities. Unknown future versions are refused.
+                // RPCs restricted to database-runner identities; 1.7 adds step logs, which this host
+                // does not send yet. Unknown future versions are refused.
                 if accepted > NEWEST_MINOR {
                     return Err(SagatError::new(
                         "UNSUPPORTED_PROTOCOL",

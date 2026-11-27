@@ -229,6 +229,47 @@ or submit time, and the adoption list names 020, 021, 025 and 026 (D1656); the a
 slot 1 (read) and slot 4a (memberships, fences, namespace row) of ADR-0050 decision 7 (D1657); the capability tables are 018's instance-capability
 registry (D1658) and activated only by an operator (D1659). New numbers: D1655–D1659 (overflow range).
 
+## Readiness decisions (2026-11-24)
+
+Taken by the agent the coordinating session briefed for the product surface, under Owner decision 2026-11-24-4
+("delegate (OD-2026-11-24-4)"), each weighed over its options for the most architectural and business advantage, after
+a re-read against `develop` at `2c94064f`. New entries use the feature-scoped form of
+`docs/governance/identifier-scheme.md`.
+
+- **Decision 029-001 — ADR-0064 accepted.** Options: accept; a policy language (Cedar or OPA); additive-only folders
+  (Temporal's custom roles); administrator bypass of folder lists (Windmill). Chosen: accept, as written: grants only
+  add, only a restricted folder or an operation list narrows, one evaluator decides. It is the only option that gives
+  both delegation without escalation and real restriction while staying explainable and testable by the shared
+  vectors; a policy language would make the explanation of US06 a proof, and a bypass would make restriction
+  invisible. Additions at acceptance: the catalog is updated (Decision 029-005), external groups come from design 013
+  (Decision 029-002), and the capability names are those of design 050's list. Recorded as OD-2026-11-24-710.
+- **Decision 029-002 — O1440 answered: design 013 delivers identity-provider groups, from SCIM (sign-in assertions
+  deferred by design 013's Decision 013-007 after its review).** Options (above): A, SCIM push; B, group claims read at sign-in; C, defer. Chosen: A, with a bounded
+  form of B. SCIM is the authoritative source and the recommended one. B as the draft described it (claims read on
+  each request) stays refused; what design 013 adds is different: the claims of a sign-in are stored as durable rows
+  that an administrator sees, that confer nothing until an assignment names the group, and that stop counting when the
+  session that wrote them ends or after 24 hours. That lets a tenant whose provider has no SCIM (common for SAML
+  deployments) use groups, with a removal delay bounded by the session, which the runbook states. The contract is
+  amended for the two kinds (`contracts/group-source.md`). Recorded as OD-2026-11-24-711.
+- **Decision 029-003 — O1441 answered: yes, a built-in role change revokes custom grants**, as recommended and as
+  D663 does for reveal grants; it applies equally to a change by design 013's group-to-role mapping, which changes a
+  role only when its stored inputs change and never a pinned role, so the revocation cannot flap. Recorded as
+  OD-2026-11-24-712.
+- **Decision 029-004 — O1442 answered: member management is design 013's** (just-in-time provisioning, SCIM and the
+  member routes, Requirement 013-020), which closes G290; this feature consumes memberships. Recorded as
+  OD-2026-11-24-713.
+- **Decision 029-005 — The catalog classifies the five permissions merged since the baseline.** `schedule:read`,
+  `schedule:write` and `schedule:operate` are assignable namespace permissions (feature 018 rechecks a schedule's
+  target at fire time against its `authorizedBy` subject, FR-029-023); `run:batch` is a sensitive item permission on
+  runs (a batch selection honours visibility); `database:browse` a sensitive item permission on connections; design
+  013's `identity:manage` is reserved and administrator-equivalent, because a group-to-role mapping can make
+  administrators. The default arm still reserves anything unclassified.
+- **Decision 029-006 — No separate prerequisite release.** The instance-capability registry is built (T018-080) and
+  ships in 0.3.0 with this feature; the operator's activation of `access-narrowing-v1` is refused while any live
+  control plane lacks it, which is the guarantee the earlier release gave (G1607 of feature 018).
+- **Decision 029-007 — The capability names are design 050's.** `accessControl` of `GET /version` becomes the
+  `access.*` names of the one capability list (ADR-0143).
+
 ## Owner questions
 
 - **O1440 — Source of identity-provider groups.** (A) amend 013 or a successor to push SCIM 2.0 Groups

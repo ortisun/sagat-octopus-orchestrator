@@ -67,6 +67,10 @@ pub struct GrpcConfig {
     /// for work (`RegisterWorker`, `PollTasks`) are shed with `RESOURCE_EXHAUSTED`, the rest only
     /// when it is full, so a reserve stays for the calls that keep leased work alive.
     pub max_in_flight: usize,
+    /// `AppendStepLogs` calls running at once (design 041 section 1, `SAGAT_GRPC_MAX_LOG_CALLS`), counted apart from
+    /// `max_in_flight`; the next one is shed `RESOURCE_EXHAUSTED`. Half the database pool, at least 1, by the
+    /// execution engine's configuration; 5 here, half of the binary's default pool of 10.
+    pub max_log_calls: usize,
     /// Ping interval that detects dead peers behind a NAT or a silent load balancer.
     pub keepalive_interval: Duration,
     /// How long to wait for the ping answer before dropping the connection.
@@ -90,6 +94,7 @@ impl Default for GrpcConfig {
             handshake_timeout: Duration::from_secs(10),
             max_connection_age: Duration::from_secs(1800),
             max_in_flight: 1024,
+            max_log_calls: 5,
             keepalive_interval: Duration::from_secs(30),
             keepalive_timeout: Duration::from_secs(10),
             tls: None,
@@ -135,7 +140,11 @@ pub async fn serve<T: WorkerService>(
     let admission = service
         .admission
         .unwrap_or_else(|| Admission::new(config.max_in_flight, config.request_timeout));
-    admission.configure(config.max_in_flight, config.request_timeout);
+    admission.configure(
+        config.max_in_flight,
+        config.max_log_calls,
+        config.request_timeout,
+    );
     let mut builder = Server::builder();
     if let Some(tls) = &config.tls {
         // Name the provider this platform uses instead of letting rustls guess from the features of the build: a

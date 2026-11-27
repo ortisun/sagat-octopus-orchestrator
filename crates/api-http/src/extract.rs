@@ -17,6 +17,7 @@ use tower_http::timeout::TimeoutError;
 use crate::concurrency::TenantPermit;
 use crate::core::Core;
 use crate::error::ApiError;
+use crate::limits::RateLimiter;
 
 /// An authenticated caller plus the correlation data of its request.
 ///
@@ -53,20 +54,52 @@ pub async fn authenticate_bearer<St: Core>(
     state: &St,
     token: &str,
 ) -> Result<Authenticated, ApiError> {
+    authenticate_bearer_with(
+        state,
+        token,
+        Budgets {
+            subject: state.subject_limiter(),
+            tenant: state.tenant_limiter(),
+            scope: ("subject", "tenant"),
+        },
+    )
+    .await
+}
+
+/// The two budgets a call is charged to, and the `scope` labels of `http_rate_limited_total` that name them.
+#[derive(Clone, Copy)]
+pub struct Budgets<'a> {
+    pub subject: &'a RateLimiter<String>,
+    pub tenant: &'a RateLimiter,
+    pub scope: (&'static str, &'static str),
+}
+
+/// [`authenticate_bearer`] charging `budgets` instead of the state's own: a class of calls that must never spend the
+/// budget of the others (the worker's step-log batches, which would otherwise take the budget its heartbeats and
+/// reports need; design 041, decision D041-150) is charged to buckets of its own, in the same order.
+///
+/// # Errors
+/// As [`authenticate_bearer`].
+pub async fn authenticate_bearer_with<St: Core>(
+    state: &St,
+    token: &str,
+    budgets: Budgets<'_>,
+) -> Result<Authenticated, ApiError> {
+    let (subject_scope, tenant_scope) = budgets.scope;
     let claims = state.verifier().verify(token).await?;
     // Budget per verified subject, before the database is touched: `authenticate` costs two
     // lookups, and a holder of a valid token who is not a member (or names an unknown tenant)
     // would otherwise get them for free, without ever reaching the tenant budget below. Only a
     // token that verified is charged, so an anonymous flood cannot spend anyone's budget.
-    if let Err(retry_after) = state.subject_limiter().check(claims.subject.clone()) {
-        metrics::counter!("http_rate_limited_total", "scope" => "subject").increment(1);
+    if let Err(retry_after) = budgets.subject.check(claims.subject.clone()) {
+        metrics::counter!("http_rate_limited_total", "scope" => subject_scope).increment(1);
         return Err(ApiError::rate_limited(retry_after));
     }
     let session = state.authenticate(&claims.tenant, &claims.subject).await?;
     // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
     // cannot spend (or be blamed on) a tenant's budget.
-    if let Err(retry_after) = state.tenant_limiter().check(session.principal.tenant_id()) {
-        metrics::counter!("http_rate_limited_total", "scope" => "tenant").increment(1);
+    if let Err(retry_after) = budgets.tenant.check(session.principal.tenant_id()) {
+        metrics::counter!("http_rate_limited_total", "scope" => tenant_scope).increment(1);
         return Err(ApiError::rate_limited(retry_after));
     }
     // How many requests of this tenant may be in flight at once: a tenant that parks requests

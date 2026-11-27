@@ -74,8 +74,9 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
 /// `ResolveSecrets`; 1.3 streaming blobs; 1.4 bounded task streams; 1.5 scoped execution identity;
-/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5).
-pub const PROTOCOL_MINOR: u32 = 6;
+/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5); 1.7 step logs
+/// (`AppendStepLogs`, `StepLogPolicy` and a report's `StepLogCarry`, design 041).
+pub const PROTOCOL_MINOR: u32 = 7;
 /// The newest minor a storage adapter may negotiate before it proves scoped claim and report.
 pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 /// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
@@ -83,6 +84,10 @@ pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
 /// Managed database capabilities first became available in protocol 1.6 (decision D600).
 pub const DATABASE_PROTOCOL_MINOR: u32 = 6;
+/// Step logs first became available in protocol 1.7 (design 041, OD-2026-11-15-8): `AppendStepLogs`, the
+/// `StepLogPolicy` of a registration and the `StepLogCarry` of a report. A batch is stored only for a session
+/// accepted at this minor or later.
+pub const STEP_LOG_PROTOCOL_MINOR: u32 = 7;
 
 /// Delivery acknowledgement (feature 006, ADR-0099): the minor that marks a lease provisional until its host acknowledges
 /// it, and that reserves `TASK_NOT_STARTED` for the host (decision D006-061). Negotiated only once the compiled ceiling,
@@ -97,6 +102,8 @@ struct StoreProofs {
     scoped: bool,
     /// The managed database path (1.6).
     database: bool,
+    /// The store of step logs (1.7, design 041).
+    step_logs: bool,
     /// The paths of delivery acknowledgement (1.8): the marks, the acknowledgement, the capability record and the
     /// withdrawals of a marked lease.
     delivery_acknowledgement: bool,
@@ -106,15 +113,21 @@ struct StoreProofs {
 /// identity (1.5) needs a store that proves the scoped claim and report path; the managed database minor (1.6) is a
 /// superset of 1.5 for ordinary workers, so it needs both proofs. The dedicated database runner only ever handles root
 /// work, so it reaches 1.6 on a store that proves the database path alone, and it stays there (ADR-0099 decision 11).
-/// Delivery acknowledgement (1.8) is answered to an ordinary worker when the minors below it are and the store proves
-/// it (decision D006-105).
+/// Step logs (1.7) are a superset of 1.6 and need a third proof, the store of step logs; they are offered to an ordinary
+/// worker only: the database runner and the script runner keep 1.6, since the ingest refuses their batches (design 041
+/// section 2, P1) and a minor whose calls a role is always refused is not offered to it (decision D041-149). Delivery
+/// acknowledgement (1.8) is answered to an ordinary worker when 1.7 is and the store proves it (decisions D006-105 and
+/// D006-117): the minors are cumulative, so neither runner reaches it.
 fn protocol_ceiling(role: Role, proofs: StoreProofs, compiled: u32) -> u32 {
-    let proven = if proofs.database && (proofs.scoped || role == Role::DatabaseRunner) {
-        if proofs.delivery_acknowledgement && role != Role::DatabaseRunner {
+    let machine_runner = matches!(role, Role::DatabaseRunner | Role::Runner);
+    let proven = if proofs.database && proofs.scoped && proofs.step_logs && !machine_runner {
+        if proofs.delivery_acknowledgement {
             DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR
         } else {
-            DATABASE_PROTOCOL_MINOR
+            STEP_LOG_PROTOCOL_MINOR
         }
+    } else if proofs.database && (proofs.scoped || role == Role::DatabaseRunner) {
+        DATABASE_PROTOCOL_MINOR
     } else if proofs.scoped {
         SCOPED_PROTOCOL_MINOR
     } else {
@@ -252,6 +265,10 @@ pub struct WorkerSettings {
     pub session_ttl: Duration,
     /// What a worker is told to wait before polling again when nothing was available.
     pub idle_retry: Duration,
+    /// The deployment switch of step logs (`SAGAT_STEP_LOGS_ENABLED`, on by default; design 041 section 10): off, a
+    /// registration at 1.7 is told capture is off and the ingest answers every batch `STOP_CAPTURE` (`CAPTURE_OFF`).
+    /// The one value the registration policy and the ingest read, so that the two cannot disagree.
+    pub step_logs_enabled: bool,
 }
 
 impl Default for WorkerSettings {
@@ -260,6 +277,7 @@ impl Default for WorkerSettings {
             lease_ttl: Duration::from_secs(30),
             session_ttl: Duration::from_secs(3600),
             idle_retry: Duration::from_millis(500),
+            step_logs_enabled: true,
         }
     }
 }
@@ -445,6 +463,10 @@ pub struct Registered {
     pub session_token: Token,
     pub accepted_protocol_version: String,
     pub expires_at: OffsetDateTime,
+    /// The step-log policy of the session (`RegisterWorkerResponse.step_logs`, design 041 section 1): `None` below
+    /// protocol 1.7; otherwise whether capture is on, that is, the deployment switch is on and the namespace's
+    /// `step_log_attempt_records` is above 0. A hint for the worker: every batch is judged again by the ingest.
+    pub step_logs_enabled: Option<bool>,
 }
 
 /// A task handed to a worker.
@@ -916,6 +938,7 @@ where
             StoreProofs {
                 scoped: self.store.supports_scoped_worker_protocol(),
                 database: self.store.supports_database_worker_protocol(),
+                step_logs: self.store.supports_step_log_protocol(),
                 delivery_acknowledgement: self.store.supports_delivery_acknowledgement(),
             },
             PROTOCOL_MINOR,
@@ -1014,6 +1037,23 @@ where
             }
             return Err(AppError::NotBound);
         }
+        let step_logs_enabled = if accepted_protocol_minor < STEP_LOG_PROTOCOL_MINOR {
+            None
+        } else if self.settings.step_logs_enabled {
+            // Read without a policy fence: a hint, which the ingest's T3 reads again under its fences. Read before the
+            // session is created, so that a failed read leaves no session behind (the security review of task T041-7).
+            let records = self
+                .store
+                .effective_limit(
+                    principal.tenant_id(),
+                    Some(namespace.id()),
+                    QuotaResource::StepLogAttemptRecords,
+                )
+                .await?;
+            Some(records > 0)
+        } else {
+            Some(false)
+        };
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
         let proposed = Uuid::now_v7();
         let ttl = self.settings.session_ttl;
@@ -1064,6 +1104,7 @@ where
             session_token: token,
             accepted_protocol_version,
             expires_at: self.clock.now() + ttl,
+            step_logs_enabled,
         })
     }
 
@@ -3390,10 +3431,16 @@ mod tests {
     };
 
     /// The proofs of a store, in the order of the minors they open.
-    const fn proofs(scoped: bool, database: bool, delivery_acknowledgement: bool) -> StoreProofs {
+    const fn proofs(
+        scoped: bool,
+        database: bool,
+        step_logs: bool,
+        delivery_acknowledgement: bool,
+    ) -> StoreProofs {
         StoreProofs {
             scoped,
             database,
+            step_logs,
             delivery_acknowledgement,
         }
     }
@@ -3401,58 +3448,111 @@ mod tests {
     #[test]
     fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
         use sagat_domain::identity::Role;
-        let ceiling = |role, scoped, database| {
-            super::protocol_ceiling(role, proofs(scoped, database, false), PROTOCOL_MINOR)
+        let ceiling = |role, scoped, database, step_logs| {
+            super::protocol_ceiling(
+                role,
+                proofs(scoped, database, step_logs, false),
+                PROTOCOL_MINOR,
+            )
         };
-        for role in [Role::Worker, Role::Runner, Role::Admin] {
-            assert_eq!(ceiling(role, false, true), 4);
-            assert_eq!(ceiling(role, true, false), 5);
-            assert_eq!(ceiling(role, true, true), 6);
+        for step_logs in [false, true] {
+            for role in [Role::Worker, Role::Runner, Role::Admin] {
+                assert_eq!(ceiling(role, false, true, step_logs), 4);
+                assert_eq!(ceiling(role, true, false, step_logs), 5);
+            }
+            assert_eq!(ceiling(Role::DatabaseRunner, false, true, step_logs), 6);
+            assert_eq!(ceiling(Role::DatabaseRunner, false, false, step_logs), 4);
         }
-        assert_eq!(ceiling(Role::DatabaseRunner, false, true), 6);
-        assert_eq!(ceiling(Role::DatabaseRunner, false, false), 4);
+        for role in [Role::Worker, Role::Runner, Role::Admin] {
+            assert_eq!(ceiling(role, true, true, false), 6);
+        }
     }
 
-    /// Feature 006, Task 006-048 (decision D006-105): the negotiation that answers 1.8, with the compiled ceiling raised
-    /// in this test only. This build's own ceiling stays below it, so no store's proof makes a session 1.8.
+    /// Design 041 section 1: 1.7 needs the three proofs (scoped, database and step logs) and is an ordinary worker's;
+    /// the database runner and the script runner keep 1.6, since the ingest refuses their batches (P1).
+    #[test]
+    fn step_logs_raise_the_ceiling_to_seven_for_an_ordinary_worker_only() {
+        use sagat_domain::identity::Role;
+        let ceiling = |role, scoped, database, step_logs| {
+            super::protocol_ceiling(
+                role,
+                proofs(scoped, database, step_logs, false),
+                PROTOCOL_MINOR,
+            )
+        };
+        assert_eq!(PROTOCOL_MINOR, 7);
+        assert_eq!(super::STEP_LOG_PROTOCOL_MINOR, 7);
+        for role in [Role::Worker, Role::Admin, Role::Developer, Role::Operator] {
+            assert_eq!(ceiling(role, true, true, true), 7, "{role:?}");
+            assert_eq!(ceiling(role, false, true, true), 4, "{role:?}");
+            assert_eq!(ceiling(role, true, false, true), 5, "{role:?}");
+        }
+        for role in [Role::DatabaseRunner, Role::Runner] {
+            assert_eq!(ceiling(role, true, true, true), 6, "{role:?}");
+        }
+        assert_eq!(
+            negotiate_protocol_details("1.999", ceiling(Role::Worker, true, true, true)),
+            Some(("1.7".to_owned(), 7))
+        );
+        assert_eq!(
+            negotiate_protocol_details("1.6", ceiling(Role::Worker, true, true, true)),
+            Some(("1.6".to_owned(), 6)),
+            "a worker that offers 1.6 is served at 1.6"
+        );
+        assert_eq!(
+            negotiate_protocol_details("1.999", ceiling(Role::DatabaseRunner, true, true, true)),
+            Some(("1.6".to_owned(), 6))
+        );
+    }
+
+    /// Feature 006, Task 006-048 (decisions D006-105 and D006-117): the negotiation that answers 1.8, with the compiled
+    /// ceiling raised in this test only. This build's own ceiling stays below it, so no store's proof makes a session 1.8.
     #[test]
     fn delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof()
     {
         use sagat_domain::identity::Role;
         let raised = DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR;
-        for role in [Role::Worker, Role::Runner, Role::Admin] {
+        for role in [Role::Worker, Role::Admin, Role::Developer, Role::Operator] {
             // every proof and the raised ceiling: 1.8
             assert_eq!(
-                super::protocol_ceiling(role, proofs(true, true, true), raised),
+                super::protocol_ceiling(role, proofs(true, true, true, true), raised),
                 8
             );
             // the proof of 1.8 without the minors below it opens nothing more
             assert_eq!(
-                super::protocol_ceiling(role, proofs(false, true, true), raised),
+                super::protocol_ceiling(role, proofs(false, true, true, true), raised),
                 4
             );
             assert_eq!(
-                super::protocol_ceiling(role, proofs(true, false, true), raised),
+                super::protocol_ceiling(role, proofs(true, false, true, true), raised),
                 5
             );
-            // without the store's proof the raised ceiling stops below 1.8
             assert_eq!(
-                super::protocol_ceiling(role, proofs(true, true, false), raised),
+                super::protocol_ceiling(role, proofs(true, true, false, true), raised),
                 6
+            );
+            // without the store's proof the raised ceiling stops at 1.7
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, true, false), raised),
+                7
             );
             // this build's ceiling answers its own minor whatever the store proves
             assert_eq!(
-                super::protocol_ceiling(role, proofs(true, true, true), PROTOCOL_MINOR),
+                super::protocol_ceiling(role, proofs(true, true, true, true), PROTOCOL_MINOR),
                 PROTOCOL_MINOR
             );
         }
-        // the dedicated database runner keeps 1.6 (ADR-0099 decision 11)
+        // the dedicated database runner keeps 1.6 (ADR-0099 decision 11), and so does the script runner, which is not
+        // offered 1.7 (decision D041-149) and so not 1.8, the minors being cumulative (decision D006-117)
+        for runner in [Role::DatabaseRunner, Role::Runner] {
+            assert_eq!(
+                super::protocol_ceiling(runner, proofs(true, true, true, true), raised),
+                6,
+                "{runner:?}"
+            );
+        }
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, proofs(true, true, true), raised),
-            6
-        );
-        assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, proofs(false, true, true), raised),
+            super::protocol_ceiling(Role::DatabaseRunner, proofs(false, true, true, true), raised),
             6
         );
         // a worker that offers 1.8 is agreed at 1.8 under the raised ceiling and at this build's own below it
@@ -3500,7 +3600,6 @@ mod tests {
 
     #[test]
     fn scoped_identity_negotiation_is_gated_by_storage_support() {
-        assert_eq!(PROTOCOL_MINOR, 6);
         assert_eq!(ROOT_PROTOCOL_MINOR, 4);
         assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
         assert_eq!(

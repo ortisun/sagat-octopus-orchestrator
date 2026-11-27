@@ -156,7 +156,8 @@ No access entity is journaled or visible to the run state machine.
   pg_temp`, `REVOKE ALL FROM PUBLIC`, executable by nobody else) that removes the subject's direct
   assignments, group memberships, folder entries and list principals, and inserts one
   `access.revoked_on_role_change` audit record with counts only and actor `system:operator` (FR-029-024,
-  pending O1441).
+  O1441 answered yes on 2026-11-24; a change made by design 013's group-to-role mapping takes the same path, with
+  its own audit reason).
 
 ## Grants for the runtime role
 
@@ -180,3 +181,13 @@ bounded per role; audit records are protected system records under ADR-0027. No 
 a secret or a token.
 
 *Note 2026-11-08 (018 T018-080, G2001).* `platform_requirement_epoch` is readable by `sagat_app` but cannot be locked by it (`FOR SHARE` needs `UPDATE`); the request path that "reads the epoch `FOR SHARE`" needs a runtime-executable definer function, and must not hold the share lock for the whole tenant transaction (an activation's `FOR UPDATE` would queue behind it and stall new registrations).
+
+## External groups (2026-11-24)
+
+Design 013 adds to `access_groups` the columns `source_kind` (`LOCAL` by default, `SCIM`), `connection_id`,
+`external_value` and `generation` (design 013, Decision 013-017), so that assignments, folder entries and operation lists name an external group exactly
+as a local one. This feature's migration lands first; design 013's adds the columns. External rows are read-only through
+this feature's routes (`EXTERNAL_GROUP_READ_ONLY`); a connection whose groups are named cannot be deleted. The group
+name is unique among `LOCAL` rows only (a partial unique index), and external rows are unique by (tenant, connection,
+`external_value`).
+

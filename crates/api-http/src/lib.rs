@@ -54,7 +54,9 @@ pub use blobs::HttpBlobTransfer;
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
 pub use core::Core;
 pub use exec::{Exec, ExecState};
-pub use extract::{Authenticated, authenticate_bearer, parse_bearer};
+pub use extract::{
+    Authenticated, Budgets, authenticate_bearer, authenticate_bearer_with, parse_bearer,
+};
 pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,

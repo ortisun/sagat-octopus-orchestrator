@@ -52,7 +52,7 @@ ENVIRONMENT (shared with the control plane):
                                       with a role that could rewrite the audit trail.
     SAGAT_ENV                         dev | staging | prod            [prod]
     SAGAT_LOG_FORMAT                  json | pretty                   [json]
-    SAGAT_DB_MAX_CONNECTIONS          pool size                       [20]
+    SAGAT_DB_MAX_CONNECTIONS          pool size                       [10]
     SAGAT_DB_STATEMENT_TIMEOUT_MS     per-statement server timeout    [5000]
     SAGAT_OIDC_ISSUER / _AUDIENCE / _JWKS_URI   worker identity verification (required)
     SAGAT_OIDC_TENANT_CLAIM, SAGAT_OIDC_REQUIRED_TYP, SAGAT_ALLOW_INSECURE_JWKS_HTTP (dev only)
@@ -67,6 +67,11 @@ ENVIRONMENT (serve):
     SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS   give up on a TLS handshake after [10]
     SAGAT_GRPC_MAX_CONNECTION_AGE_SECS    ask a connection to reconnect after [1800]
     SAGAT_GRPC_MAX_IN_FLIGHT          calls running at once; polls shed at 3/4 [1024]
+    SAGAT_GRPC_MAX_LOG_CALLS          AppendStepLogs calls running at once, apart from the others; more
+                                      than half the pool is refused [half of SAGAT_DB_MAX_CONNECTIONS, at least 1]
+    SAGAT_STEP_LOGS_ENABLED           capture step logs: off, workers are told capture is off and every
+                                      batch is answered STOP_CAPTURE [true]
+    SAGAT_STEP_LOGS_TENANT_CALLS      step-log batches of one tenant at once; at most the cap above [7]
     SAGAT_GRPC_TLS_CERT_FILE / _KEY_FILE   serve the worker API over TLS (PEM files)
     SAGAT_GRPC_TLS_CLIENT_CA_FILE     also require client certificates signed by this CA (mTLS)
     SAGAT_SECRETS_KEYS                key ring that opens secrets for workers: id:base64,id2:base64

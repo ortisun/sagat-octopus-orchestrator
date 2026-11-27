@@ -10,8 +10,8 @@
     "schemaVersion": {"const": 1},
     "turn": {"type": "integer", "minimum": 1, "maximum": 64},
     "stopReason": {"enum": ["end_turn", "tool_use", "max_tokens", "refusal", "other"]},
-    "reportedModel": {"type": "string", "maxLength": 128},
-    "providerRequestId": {"type": "string", "maxLength": 128, "description": "Provider correlation id (for example the request-id header); kept on spans and the turn row, never on metrics."},
+    "reportedModel": {"type": "string", "maxLength": 128, "description": "The model the provider reports. Provider-written: transcript content only; the turn row and run-read surfaces keep only model_substituted, true when it differs from the pinned model id and its aliases (Decision 025-016)."},
+    "providerRequestId": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$", "description": "Provider correlation id (for example the request-id header); kept on spans only, never on metrics, run-read surfaces or the journal. A value outside the pattern is dropped by the runner, not reported."},
     "blocks": {
       "type": "array",
       "maxItems": 512,
@@ -22,8 +22,8 @@
           {"type": "object", "additionalProperties": false, "required": ["type", "callIndex", "name", "providerCallId", "input"],
            "properties": {"type": {"const": "tool_request"},
                           "callIndex": {"type": "integer", "minimum": 1, "maximum": 256},
-                          "name": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
-                          "providerCallId": {"type": "string", "maxLength": 128},
+                          "name": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$", "description": "Model-written. Kept as written only in the transcript; an undeclared name is recorded on every other surface as the fixed marker UNKNOWN_TOOL with the call index (Decision 025-016)."},
+                          "providerCallId": {"type": "string", "maxLength": 128, "description": "Provider or model-written tool-use id; transcript content only, used by the server to pair results on the next request, never on a run-read surface, the journal, the stream or spans."},
                           "input": {"description": "Bounded JSON value; validated against the tool's inputSchema by the server, never by the runner alone."},
                           "inputComplete": {"type": "boolean", "default": true}}},
           {"type": "object", "additionalProperties": false, "required": ["type", "providerKind", "blockType", "bytesBase64"],
@@ -59,7 +59,7 @@
           "properties": {
             "callIndex": {"type": "integer", "minimum": 1},
             "status": {"enum": ["ok", "error", "refused"]},
-            "reason": {"enum": ["UNKNOWN_TOOL", "INVALID_INPUT", "LIMIT_REACHED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED", "TOOL_FAILED", "MCP_UNSUPPORTED_RESULT", "AI_TOOL_CHANGED"], "description": "Fixed, safe reason sent to the model; never a provider or executor message."},
+            "reason": {"enum": ["UNKNOWN_TOOL", "INVALID_INPUT", "LIMIT_REACHED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED", "TOOL_FAILED", "MCP_UNSUPPORTED_RESULT", "AI_TOOL_CHANGED", "MCP_TOOL_ERROR"], "description": "Fixed, safe reason sent to the model; never a platform, provider or executor message. INVALID_INPUT and TOOL_FAILED for CHILD_INPUT_INVALID add only the design 043 validator's value-free rule and field. MCP_TOOL_ERROR is an external server's isError result: its bounded, secret-scanned text is the content only when the agent's transcript level is pii (Decision 025-008)."},
             "content": {"description": "Projected tool output (bounded JSON) or a fixed reason text."},
             "truncated": {"type": "boolean"}
           }}}

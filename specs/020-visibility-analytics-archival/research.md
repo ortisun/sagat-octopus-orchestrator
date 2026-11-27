@@ -403,7 +403,13 @@ D1080–D1119 are all in use, so these take the next free numbers of the shared 
   amendment PR is accepted, US08/US09 do not start. *2026-11-24:* still open and not a delegate's to close
   (OD-2026-11-24-4 does not cover amending the constitution); the text is proposed for the coordinator to
   carry with constitution 5.0.0 (OD-2026-11-24-2) or a later MINOR amendment. User stories 020-08 and
-  020-09 stay gated; the other seven are not.
+  020-09 stay gated; the other seven are not. *2026-11-26:* constitution 5.1.0 (Owner decision 2026-11-25-3)
+  admits the per-run purge under a namespace retention policy after a verified archive; the gap closes for that path
+  when its pull request merges, and Task 020-070 brings the design to the obligations 5.1.0 adds. It stays open for
+  `archive = NONE` and for erasure (Requirement 020-037), which 5.1.0 does not admit: erasure purges before the
+  policy's retention and makes the archive optional. Recommended to the owner: admit erasure as an audited request by a
+  person holding `retention:manage`, for a terminal, settled run, after a verified archive, which the erasure then
+  deletes, so that it ends with no copy of the run; keep `archive = NONE` out.
 - **G1102** — A compromised runtime role can still write a retention policy and audit rows; requiring an
   audited human policy change raises the bar but is not a defense against that compromise.
 - **G1103** — 018 must let the purge function clear `runs.business_id` (its immutability trigger); this

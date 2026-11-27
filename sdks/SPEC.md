@@ -331,6 +331,13 @@ pools, max_inflight, protocol_version}}`:
   accepted, the host omits it from every request, even if an additive field is present on the lease.
   The server uses the echoed identity with the lease fence and tenant-bound worker session; an SDK
   never treats the identity alone as authorization.
+- Protocol `1.7` adds step logs (design 041): `AppendStepLogs`, the `StepLogPolicy` of `RegisterWorkerResponse`
+  (field 4, sent only when `1.7` or later is accepted; `enabled` is false when the deployment switch or the
+  namespace's `step_log_attempt_records` turned capture off) and the `StepLogCarry` of `CompleteStep` and `FailStep`
+  (field 13). The server offers `1.7` to an ordinary worker on a store that proves the scoped, database and step-log
+  paths; a database-runner or runner identity is served at most `1.6`, since its batches are always refused. A host
+  that accepted `1.7` and does not capture yet sends no batch and no carry, which the contract allows. `1.7` includes
+  `1.6`.
 - Protocol `1.8` adds delivery acknowledgement (Architecture decision 0099): a lease the server marked provisional
   carries `acknowledge_before_start = true`, and the host acknowledges it with `AcknowledgeTasks` and calls or runs
   nothing else for it but the hand-back before the server answers (§6.2); an unflagged lease is dispatched at once,
@@ -721,8 +728,12 @@ fixed message that contains no SQL or values. It adds neither retry policy nor
 secret references. SQL parsing, permission checks, connection/credential pinning,
 execution and unknown-write handling are server responsibilities. Writes have no
 automatic retry. Ordinary SDK workers keep negotiating the scoped-identity minor 1.5 (or
-older); only the dedicated managed executor offers 1.6, which carries `ResolveDatabase` and is a
-superset of 1.5. The server rejects unsupported IR before execution.
+older) until their step-log capture is built; only the dedicated managed executor offers 1.6, which carries
+`ResolveDatabase` and is a superset of 1.5. Since the server offers 1.7 (step logs, design 041 task T041-7),
+an ordinary worker that offers 1.7 or later is served at 1.7, which carries 1.6's `ResolveDatabase` on the
+wire: such a worker never calls it, and the server refuses it to any caller that does not own the managed
+executor and its live capability (an admin token holds `database:execute`, so for admin the refusal rests on
+that ownership). The server rejects unsupported IR before execution.
 
 Inline results retain `{columns, rows, affectedRows, truncated}` with ordered tagged cells,
 exact numeric strings and explicit nulls. They use the ordinary retained steps map
@@ -825,7 +836,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.4 | Bounded task streams (`StreamTasks`) | ADR-0029 |
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
-  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
+  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; offered by the server from its task T041-7 (`AppendStepLogs` and `StepLogPolicy`; a carry is read from task T041-36, and ignored until then); spoken by each SDK from its capture task (T041-15 to T041-20) |
   | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
   | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` and `heartbeat_from_handler`, `FailStepRequest.next_retry_delay_ms`) | design 045 (named; taken when its contract merges) |
   | 1.10 to 1.12 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges) |
