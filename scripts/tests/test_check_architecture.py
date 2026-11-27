@@ -990,14 +990,46 @@ class OneWayOfAuditingALookupAcrossTheTenantBoundary(unittest.TestCase):
         }))
         self.assertEqual(code, 0, out)
 
-    def test_a_forwarder_that_calls_another_check_is_refused(self):
+    def test_a_check_that_records_something_itself_is_refused(self):
         code, out = creator_check(boundary_tree(**{
             "crates/infra-postgres/src/payloads.rs": (
-                "async fn run_exists_outside(&self, t: TenantId, r: RunId) -> bool { self.of_another_tenant(t, &[r]).await }\n"
+                "async fn run_exists_outside(&self, t: TenantId, r: RunId) -> bool {\n"
+                "    let found = exists_outside(self, \"runs\", t, r).await;\n"
+                "    self.record_denial(&audit).await;\n"
+                "    found\n"
+                "}\n"
             ),
         }))
         self.assertEqual(code, 1, out)
-        self.assertIn("of_another_tenant", out)
+        self.assertIn("crates/infra-postgres/src/payloads.rs:2", out)
+
+    def test_a_bare_call_of_a_check_is_seen(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/other.rs": "async fn f(s: &S) { let _ = exists_outside(s, \"runs\", t, r).await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/application/src/other.rs:1", out)
+
+    def test_an_argument_of_the_shared_function_that_records_is_refused(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/other.rs": (
+                "async fn f(&self) {\n"
+                "    deny_unresolved(&self.store, async { self.store.record_denial(&a).await; self.store.run_exists_outside(t, r).await }).await;\n"
+                "}\n"
+            ),
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("records something itself", out)
+
+    def test_the_word_cross_tenant_in_any_text_is_refused_but_not_inside_a_longer_name(self):
+        code, out = creator_check(boundary_tree(**{
+            "crates/infra-postgres/src/other.rs": 'fn f() { let a = concat!("access.denied.", "cross_tenant"); }\n',
+        }))
+        self.assertEqual(code, 1, out)
+        code, out = creator_check(boundary_tree(**{
+            "crates/application/src/other.rs": 'fn f() { metrics::counter!("step_log_cross_tenant_check_failures_total"); }\n',
+        }))
+        self.assertEqual(code, 0, out)
 
     def test_the_platform_action_or_the_tenant_record_named_elsewhere_is_refused(self):
         for source, needle in (

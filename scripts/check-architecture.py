@@ -652,7 +652,11 @@ def gate_wiring_errors(root):
 # (`AuditAction::ResourceNotFoundDenied`) are named only by the domain, which builds both from one `BoundaryDenial`.
 BOUNDARY_HOME = "crates/application/src/tenant_boundary.rs"
 BOUNDARY_DOMAIN = "crates/domain/src/audit.rs"
-BOUNDARY_CHECK_CALL = re.compile(r"(?:\.|::)\s*(\w+_outside|run_tenancy|\w*another_tenant\w*)\s*\(")
+BOUNDARY_CHECK_NAME = r"\w+_outside|run_tenancy|\w*another_tenant\w*"
+BOUNDARY_CHECK_CALL = re.compile(r"(?<![\w])(" + BOUNDARY_CHECK_NAME + r")\s*\(")
+# what records a denial by itself: a store method of the `record_*` family, or a record built by hand
+BOUNDARY_RECORDS = re.compile(r"\brecord_\w*\s*\(|\bAuditRecord\b")
+BOUNDARY_WORD = re.compile(r"(?<![\w])cross_tenant(?![\w])")
 BOUNDARY_FUNCTION_CALL = re.compile(r"\b(deny_unresolved|deny_unresolved_among|deny_unless_own)\s*\(")
 BOUNDARY_NAMES = re.compile(r"\b(CrossTenantAccessDenied|ResourceNotFoundDenied)\b")
 BOUNDARY_TEXT = "access.denied.cross_tenant"
@@ -672,10 +676,23 @@ def tenant_boundary_errors(root):
             end = balanced_end(masked, m.end() - 1)
             if end is not None:
                 spans.append((m.end() - 1, end))
+                if BOUNDARY_RECORDS.search(masked[m.end() - 1:end]):
+                    errors.append(
+                        f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: an argument of `{m.group(1)}` records something "
+                        f"itself: the shared function is the one that records a lookup across the tenant boundary (D60)"
+                    )
         for m in BOUNDARY_CHECK_CALL.finditer(masked):
+            if rel.startswith("crates/domain/"):
+                break  # the domain reads no store, so a name of its own (`ended_from_outside`) is no check
+            if re.search(r"\bfn\s+$", masked[max(0, m.start() - 16):m.start()]):
+                continue  # the declaration
             inside = enclosing_function(masked, m.start())
-            if inside is not None and inside[0] == m.group(1):
-                continue  # the forwarder of the method to another implementation of it
+            if (
+                inside is not None
+                and re.fullmatch(BOUNDARY_CHECK_NAME, inside[0])
+                and not BOUNDARY_RECORDS.search(masked[inside[1]:inside[2]])
+            ):
+                continue  # an implementation of a check, which records nothing
             if any(start < m.start() < end for start, end in spans):
                 continue
             errors.append(
@@ -692,9 +709,9 @@ def tenant_boundary_errors(root):
                 f"gets the same record for a missing and a foreign identifier (D60, G041-028)"
             )
         for offset, content in literals:
-            if BOUNDARY_TEXT in content and masked[offset - 1] in "\"#":
+            if BOUNDARY_WORD.search(content) and masked[offset - 1] in "\"#":
                 errors.append(
-                    f"{rel}:{text.count(chr(10), 0, offset) + 1}: the text `{BOUNDARY_TEXT}` is written outside "
+                    f"{rel}:{text.count(chr(10), 0, offset) + 1}: the text `cross_tenant` (as in `{BOUNDARY_TEXT}`) is written outside "
                     f"{BOUNDARY_DOMAIN}: the platform's record is built only from a `BoundaryDenial` (D60, G041-028)"
                 )
     return errors
