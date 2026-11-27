@@ -691,10 +691,19 @@ What the build settles that the text below leaves open:
   with no record; it takes neither the reservation nor the block. The new stream's plan is not used to decide it, since
   the existing stream's plan can charge where the new stream's would not (a tenant allowance that the whole carry
   exceeds and a remainder of it fits).
-- `path` is `refill` only when the block's write charged something; a block whose plan kept nothing (all duplicates)
-  returns `none` and a null `room`. On the fast path `room` is the reservation's room less the plan's charge, and CD's
-  inserted rows are checked equal to the plan's rows (an `internal_error` otherwise, which the store maps to
-  `StoreError::StepLogCarry`).
+- Item 0 also refuses more than 64 records and a level outside the five, so that a caller's bug never runs an oversized
+  carry under the run lock (decision D041-156).
+- Inside the block, the write reserves the plan's exact charge before CD: when the writer's quota lease holds it (its
+  room lay between the charge and the bound), no refill runs and `path` is `fast`, with `room` the lease's room less
+  the charge; `path` is `refill` only when the charge refilled, so `step_log_quota_fallbacks_total` counts refills and
+  nothing else (decision D041-156). A block whose plan charges nothing (all duplicates) returns `none` and a null
+  `room`; a reserved carry that charged nothing returns `fast`, the reading this section gives and design section 2a's
+  "`none`: it charged nothing" does not (decision D041-156). On the fast path `room` is the reservation's room less the
+  plan's charge, and CD's inserted rows are checked equal to the plan's rows (an `internal_error` otherwise, which the
+  store maps to `StoreError::StepLogCarry`).
+- CC′ refuses an existing stream whose namespace is not `p_namespace`, with a fixed text: the fences and the ceilings
+  would be another namespace's (decision D041-156). A missing accounting row (no row from the allowance) raises an
+  `internal_error` rather than planning against nothing.
 - A new stream's `public_id` is `gen_random_uuid()`, and its `first_at` is the carry's time, as T9 sets it for a batch.
 
 Its body, each statement with a snapshot of its own (the function is `VOLATILE`, the transaction READ COMMITTED):
