@@ -7,8 +7,10 @@
 //! (`activate`, `remove`) calls functions the runtime role cannot execute: it runs with the schema-owning role, as
 //! `provision-tenant` does, and the feature's own activation runs in the same transaction through the closure it passes.
 //!
-//! Locks, in the order the functions take them: the requirement epoch row (`FOR SHARE` to register, `FOR UPDATE` to
-//! change a requirement), the advisory lock that counts the table, then rows.
+//! Locks, in the order the functions take them: the gate of ADR-0112's amendment (a transaction advisory lock, shared to
+//! register or to hold a requirement for a publication, exclusive to change a requirement, so that a stream of holds cannot
+//! starve the operator), the requirement epoch row (`FOR SHARE` to register or hold, `FOR UPDATE` to change a requirement),
+//! the advisory lock that counts the table, then rows.
 //!
 //! **A feature's activation step takes no lock that a transaction reading the epoch may hold: it reads, it does not
 //! lock.** The step runs while the epoch is held `FOR UPDATE`, and every process that registers waits for the epoch
@@ -462,6 +464,75 @@ pub async fn requirement_recorded(
     .fetch_one(conn)
     .await
     .map_err(store_error)
+}
+
+/// The longest a publication waits for the publication hold of a fleet requirement (ADR-0112 decision 1): a removal or an
+/// activation of a requirement holds the gate and the epoch for at most its own bounds ([`OperatorBounds`]), and a publication
+/// that waits longer is refused [`REQUIREMENT_BUSY`] rather than holding the author's request.
+pub const HOLD_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The reason of the [`StoreError::Unavailable`] of [`hold_requirement`] when its wait reached [`HOLD_LOCK_TIMEOUT`].
+pub const REQUIREMENT_BUSY: &str = "REQUIREMENT_BUSY";
+
+/// The publication hold of ADR-0112 (decision 1 and its amendment of 2026-11-27), called by a publication in its own
+/// transaction as its last statement before its commit: it takes the registry's gate shared and the requirement epoch `FOR
+/// SHARE` until the transaction ends, so a removal of `capability` cannot commit between this answer and the publication's
+/// commit, and answers whether `capability` is recorded for both control planes and engines. `false` is the publication's
+/// refusal `CAPABILITY_NOT_ACTIVE` with the capability named, which is the caller's to give.
+///
+/// The wait is bounded by [`HOLD_LOCK_TIMEOUT`], set just before the hold and set back to the transaction's own value after it,
+/// so no earlier statement of the publication is limited by it.
+///
+/// # Errors
+/// [`StoreError::Unavailable`] with [`REQUIREMENT_BUSY`] when the wait reached its bound (an operator's command holds the
+/// registry; a retry cures it); [`StoreError::Internal`] when no floor is registered for `capability`, which is a defect of
+/// the build (the hold answers only for a capability that has a floor); otherwise the store's.
+pub async fn hold_requirement(
+    conn: &mut sqlx::PgConnection,
+    capability: Capability,
+) -> Result<bool, StoreError> {
+    let previous: String = sqlx::query_scalar("SELECT current_setting('lock_timeout')")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+        .bind(millis(HOLD_LOCK_TIMEOUT))
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    let active: bool = sqlx::query_scalar("SELECT platform_requirement_hold($1)")
+        .bind(capability.as_str())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|error| hold_error(&error, capability).unwrap_or_else(|| store_error(error)))?;
+    sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+        .bind(previous)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    Ok(active)
+}
+
+/// The two refusals of the hold that are its own: a wait over its bound (`55P03`) and a capability with no floor (`22023`).
+fn hold_error(error: &sqlx::Error, capability: Capability) -> Option<StoreError> {
+    match error
+        .as_database_error()
+        .and_then(|db| db.code())
+        .as_deref()
+    {
+        Some("55P03") => Some(StoreError::Unavailable {
+            detail: format!(
+                "{REQUIREMENT_BUSY}: the registry of fleet requirements is held by an operator's command; retry"
+            ),
+        }),
+        Some("22023") => Some(StoreError::Internal {
+            detail: format!(
+                "no floor is registered for the capability {}: this build holds a requirement it does not register",
+                capability.as_str()
+            ),
+        }),
+        _ => None,
+    }
 }
 
 /// The refusal of [`census_step`] when the requirement the activation follows is not recorded for every kind under the lock.

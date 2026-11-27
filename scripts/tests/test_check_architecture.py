@@ -768,6 +768,8 @@ def capability_migration(values):
         f"    ADD CONSTRAINT platform_requirements_capability_known CHECK (capability IN ({listed})) NOT VALID;\n"
         "ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_known,\n"
         f"    ADD CONSTRAINT platform_requirement_history_capability_known CHECK (capability IN ({listed}));\n"
+        "ALTER TABLE platform_requirement_floors DROP CONSTRAINT platform_requirement_floors_capability_known,\n"
+        f"    ADD CONSTRAINT platform_requirement_floors_capability_known CHECK (capability IN ({listed}));\n"
     )
 
 
