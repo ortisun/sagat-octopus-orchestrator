@@ -571,6 +571,8 @@ export class AttemptCapture {
   #ended = false;
   #closed = false;
   #tick: NodeJS.Timeout | undefined;
+  /** When the handler ended: the 2-second wait before the report counts from it (§6.9, "The carry"). */
+  #endedAt = 0;
   readonly #drops = new Map<StepLogDropReason, number>();
 
   constructor(
@@ -739,6 +741,8 @@ export class AttemptCapture {
             return this.#count('send_failed', batch.held.length);
           case 'UNAUTHENTICATED':
           case 'PERMISSION_DENIED':
+            // A batch the server refused is one the attempt gave up on (§6.9, "What is counted locally").
+            this.#count('send_failed', batch.held.length);
             this.#stopSession();
             return;
           case 'UNIMPLEMENTED':
@@ -808,6 +812,7 @@ export class AttemptCapture {
 
   /** The handler ended: what its logger captures from now on is nothing. */
   end(): void {
+    if (!this.#ended) this.#endedAt = Date.now();
     this.#ended = true;
     if (this.#tick) clearInterval(this.#tick);
     this.#tick = undefined;
@@ -835,7 +840,7 @@ export class AttemptCapture {
       return { records: [], highest_sequence: this.#lastSequence };
     };
     if (this.#state === 'finalOnly' || processSecrets.full) return markOnly();
-    const deadline = Date.now() + LIMITS.reportWaitMs;
+    const deadline = this.#endedAt + LIMITS.reportWaitMs;
     for (;;) {
       if (this.#inFlight) {
         const left = deadline - Date.now();
@@ -884,7 +889,8 @@ export class AttemptCapture {
    */
   #close(): void {
     if (this.#closed) return;
-    if (this.#inFlight && !this.#inFlight.abandoned) {
+    // The shutdown batch is left to its answer, which counts it only when it fails: the server may well store it.
+    if (this.#inFlight && !this.#inFlight.abandoned && !this.#inFlight.once) {
       this.#inFlight.abandoned = true;
       this.#count('send_failed', this.#inFlight.held.length);
     }
