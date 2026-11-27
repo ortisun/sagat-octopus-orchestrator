@@ -665,10 +665,14 @@ One transaction per call, through a store port of its own (`AcknowledgementTx`: 
    `statement_timeout` to 1 s, and `synchronous_commit` to `local` when it is `off`.
 2. `matched`: one statement with no lock, by the step primary key (`steps_pkey`), reads the addressed rows whose `lease_token_hash`
    matches the request's token hash: their namespace and activity. Tasks of more than one namespace: `INVALID_ARGUMENT`. A task with
-   no such row answers `NOT_HELD`. The run ids with no row in the caller's tenant are checked for existence in another tenant with
-   one statement, and at most one `CrossTenantAccessDenied` record per call is written, spawned off the answer path through a
-   bounded gate (32 places and 5 s, as `crates/api-http/src/denial.rs` has, moved to the application layer); past the gate the
-   record is counted and dropped.
+   no such row answers `NOT_HELD`. The run ids with no matching row are returned with the answer, or with the failure of a
+   call that fails after this read, and after it, off the answer path, one statement checks them for existence in another
+   tenant (the runs of the caller's own tenant taken out first, by their primary key, under a statement timeout of 1 s, on
+   a connection taken only if one is idle) and at most one `CrossTenantAccessDenied` record per call is written, under a
+   gate of its own (4 places, one per tenant at a time, taken without waiting; D006-110: with no index on the run id alone,
+   the check can scan the runs, which neither the answer path nor the audits of refused calls may wait for); a check that
+   finds no place is counted and dropped. The namespaces are those of the rows that hold a presented token now; a row
+   matched by its last withdrawn token alone is answered `NOT_HELD` (`withdrawn`) without a lock.
 3. The checks of `ensure_bound`, under its locks and in its order, for the call's one namespace, through the same function the run
    transactions call, over a narrow trait that both they and `AcknowledgementTx` implement (a test makes both refuse the same
    narrowed binding): the binding's shared advisory lock and the namespace's bound patterns, then the namespace's shared secrets

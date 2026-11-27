@@ -454,7 +454,10 @@ barriers.
   acknowledgement, recorded before the serve, root and scoped; the case of `WriteBlob` followed by a hand-back is Task 006-050's
   (round 15); the `AppendStepLogs` case once Task 041-7 has merged; with `ALTER ROLE sagat_app SET synchronous_commit =
   off`, the record committing with `local`); a report on a provisional lease is served; a wrong
-  token gets the ordinary stale answer.
+  token gets the ordinary stale answer. As the last task that builds a store path of 1.8, it also turns the PostgreSQL
+  adapter's `supports_delivery_acknowledgement()` on (Gap 006-051, settled by G006-055), with a test that the ceiling raised
+  in the test then answers 8 against the real store and a contract test that a session of 1.8 is served the
+  acknowledgement, the capability refusal and the withdrawals; Task 006-057 then raises only the compiled minor.
 - [ ] T006-053 What the server sees of the trust assumption: the violations of Decision 006-053, and calls after a withdrawal, counted and
   audited once per step and generation by the identical-record rule, the refusal path committing its audit; hand-backs and
   acknowledgements exempt and counted apart. Evidence: a test for each, including a give-up hand-back before and after the withdrawal

@@ -171,3 +171,21 @@ database clock sampled after acquisition. Expiry during the wait refuses owner a
 including heartbeat renewal. It preserves the current dedicated role, binding, namespace,
 protocol and lease checks; session renewal remains a separate operation. See the
 [managed executor contract](../../specs/017-database-connections/contracts/managed-executor.md).
+
+## Delivery acknowledgement (protocol 1.8, feature 006; built dormant)
+
+A lease claimed for a session of 1.8 that does not decline acknowledgement is *provisional* (`acknowledge_before_start`):
+its host runs nothing and calls nothing for it but `AcknowledgeTasks` and the hand-back before the server has committed the
+acknowledgement ([ADR-0099](../adr/ADR-0099-a-lease-of-protocol-1-8-is-provisional-until-its-host-acknowledges-it-and-a-provisional-lease-that-expires-is-withdrawn.md)).
+`AcknowledgeTasks` takes 1 to 64 leases of one namespace, named and fenced as `Heartbeat` names them, and answers one
+verdict per lease in request order: `ACKNOWLEDGED` (with the time left before the lease's expiry and the attempt's
+deadline), `NOT_HELD`, `CANCELLED` (run nothing, hand the lease back) or `RETRY` (its row was busy). It is one transaction
+per call, under a deadline of 3 s from the call's arrival: an unlocked read of the addressed rows whose token matches, the
+binding and membership checks under their locks (the same function the run transactions call), one statement that locks
+the matched rows `FOR NO KEY UPDATE SKIP LOCKED` without the run lock, the verdicts decided on the locked rows, and one
+update of `lease_acknowledged_at`. It renews nothing and writes no journal event. A call past its deadline, or on an engine
+that reached no writable database, answers `UNAVAILABLE` with `ACKNOWLEDGEMENT_DEADLINE` or
+`ACKNOWLEDGEMENT_STORE_UNREACHABLE`; one shed by admission (the class `Acknowledge`, between discovery and the lease
+calls) answers `RESOURCE_EXHAUSTED` with `ACKNOWLEDGEMENT_SHED`. Until the server offers 1.8 (Task 006-057) no lease is
+flagged, so every lease is answered `NOT_HELD`. The contract and the host procedure are
+[`stream-completion.md`](../../specs/006-sdk-multilanguage/stream-completion.md), "Delivery acknowledgement (protocol 1.8)".

@@ -13,6 +13,9 @@ Worker use cases for managed-database capabilities, fenced completion, exact-pat
 - Parent-private `PathReport` handling supports completion/failure, reconciliation, durable receipts, secret scanning and quota fallback; `refuse_scoped_output` performs the full-run refusal path. [scoped_reports.rs:PathReport] [scoped_reports.rs:WorkerService::report_path] [scoped_output_refusal.rs:WorkerService::refuse_scoped_output]
 - Parent-private `SecretResolutionTx` unifies root/scoped transaction operations without putting provider values into its transaction interface. [secret_resolution.rs:SecretResolutionTx] [secret_resolution.rs:WorkerService::open_secret_resolution]
 
+- Public `acknowledge_tasks` serves the delivery acknowledgement of protocol 1.8 through its own port (`AcknowledgementStore`, `AcknowledgementTx`), decided per locked row by the pure `decide`; `audit_other_tenants` records an addressed run of another tenant off the answer path. [acknowledgement.rs:WorkerService::acknowledge_tasks] [acknowledgement.rs:decide] [acknowledgement.rs:AcknowledgementTx] [acknowledgement.rs:WorkerService::audit_other_tenants]
+- Parent-private `judge_binding` is the one binding check of the run transactions (root and path) and of the acknowledgement, over the narrow trait `BindingChecks`. [binding_checks.rs:judge_binding] [binding_checks.rs:BindingChecks]
+
 ## Invariants
 
 - Reports check/replay idempotency receipts before mutation and verify current lease attempt/generation plus applicable stop/cancellation fences. [output.rs:WorkerService::complete_inner] [scoped_reports.rs:WorkerService::checked_path_report] [scoped_output_refusal.rs:WorkerService::strict_refusal_fence]

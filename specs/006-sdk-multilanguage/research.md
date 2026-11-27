@@ -1607,7 +1607,7 @@ one receive call.
   never set", which fixes that meaning of 1.8 for good and moves delivery acknowledgement to a later minor, and releasing it (Decision
   006-057). Asked through the coordinator. **Answered 2026-11-21: "Reserve 1.8 now" (Owner decision 2026-11-21-6).**
 
-### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-119, G006-039 and G006-049 to G006-053; G006-040 to G006-048 are the design's)
+### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-119, G006-039 and G006-049 to G006-055; G006-040 to G006-048 are the design's)
 
 The server tasks of protocol 1.8, built dormant on `feature/delivery-acknowledgement` in the order of the task list. Each
 decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
@@ -1791,3 +1791,105 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
 - **G006-053 — The barrier test of the marks writes the acknowledgement by SQL**, and the claim of a full-run transaction no
   longer reaches `upsert_scoped_instance`, so that statement's marks are proven at the store only (D006-109). Closed by Task
   006-051, whose barrier tests run the acknowledgement of Task 006-049 against a run transaction loaded before it.
+- **D006-110 — The acknowledgement is served by this build at every minor, and its cross-tenant check runs off the answer
+  path** (Task 006-049; delegate, OD-2026-11-24-4). `AcknowledgeTasks` answers from the first build that has it, whatever
+  the minor a session negotiated: before Task 006-057 no lease is marked, so every task is answered `NOT_HELD`
+  (`not_provisional`, or `no_match` for a token no row holds), which is what a host of 1.8 needs to know and costs nothing
+  to a host below it, which never calls it. The design reads "the run ids with no row in the caller's tenant are checked for
+  existence in another tenant with one statement" before the record is spawned; `runs` has no index on its id alone (its
+  primary key leads with the tenant), so that statement can scan the table, and on the answer path it could spend the call's
+  deadline, or its statement timeout, on a host whose lease was merely replaced. So the service returns the run ids of the
+  tasks with no matching row (also with the failure of a call that fails after its first read), and the transport runs the
+  check and the record together, after the answer, as a task of its own under a gate of its own (`check_other_tenants` of
+  `crates/api-grpc/src/acknowledgement.rs`: 4 places taken without waiting, at most one per tenant at a time; the check on a
+  connection taken only when one is idle, with its own statement timeout of 1 s, the runs of the caller's own tenant taken
+  out first in a materialized table expression, by the primary key), counted in
+  `worker_task_acknowledgement_cross_tenant_checks_total{outcome}` (`recorded`, `none`, `failed`, `busy` with no idle
+  connection, `dropped_tenant` and `dropped_full`). The gate is not the one of the denials' audits the design names (32
+  places, 5 s) and not in the application layer: a check that can scan must not take the places of the records of refused
+  calls, nor a connection the answer path waits for, nor all the places for one tenant, and the application may not name
+  `tokio` (Architecture decision 0092). Options weighed: an index on `runs (id)` (a write cost on every run for an audit of a
+  probe); the check on the answer path, as the design reads (the cost above); the denials' gate (review round 1 of this task:
+  it counted a check that found nothing as a record written and let a burst of checks starve the denials). Tested:
+  `a_forged_token_takes_no_lock_and_a_withdrawn_token_is_answered_withdrawn` (the unmatched run returned for the check) and
+  `a_run_of_another_tenant_is_recorded_once_and_a_run_of_its_own_is_not` (`integration_durable_execution`).
+- **D006-111 — What the verdicts decide where the design does not say** (Task 006-049; delegate, OD-2026-11-24-4). The pure
+  function `decide` (`crates/application/src/worker/acknowledgement.rs`) answers: another token, attempt, generation or step
+  identity than the row's, `NOT_HELD` `no_match` (the token is the step's last withdrawn one: `withdrawn`); a lease whose
+  offer is not of its generation, `NOT_HELD` `not_provisional` (an unmarked lease, a 1.8 lease reserved but not offered, a
+  lease of an older offer); a provisional lease that is `RUNNING` (its host heartbeated before acknowledging, which is the
+  violation counted by Task 006-053), `not_provisional` too, since the lost-lease pass ends it as any running lease; a
+  provisional lease with a stop, `CANCELLED` `stop_asked` before its margin is judged, and short of the margin, `NOT_HELD`
+  `too_late` (the pass withdraws it, so the host hands nothing back); an acknowledged lease or a lease whose offer no longer
+  counts, `ACKNOWLEDGED` (`duplicate`, `recovered`) under the margin and the stop rule, else `CANCELLED`. "Recovered" needs the
+  offer of the lease's generation, so a lease never offered is never recovered. The margin is "at least" one receive bound:
+  6 s exactly is enough. Answered without any lock: a row matched only by its withdrawn token, and a row of a managed or
+  non-activity node (`not_provisional`). A request that names one lease twice is malformed, since the update writes each row
+  once. Each row is decided at its own clock sample, read after the statement holds its lock (the locking query is a common
+  table expression, which PostgreSQL never inlines, and the clock is read outside it). Tested: the unit tests of the module
+  (every verdict and reason, the margin to the microsecond, the stop of each kind) and `integration_durable_execution`.
+- **D006-112 — The binding checks are one function over a narrow trait** (Task 006-049; delegate, OD-2026-11-24-4).
+  `judge_binding` (`crates/application/src/worker/binding_checks.rs`) reads the patterns under the binding's shared lock only
+  when there is an activity to cover, decides coverage per activity, and checks the membership under its locks unless no
+  activity was covered; `BindingChecks` is implemented by the root and path run transactions (`RunBinding`, `PathBinding`) and
+  by the acknowledgement's transaction in its one namespace. `ensure_bound` (root, ordinary steps) and `ensure_path_bound` call
+  it; the managed database path keeps its own check (a database runner is no member that executes work). The behaviour of the
+  run transactions is unchanged: uncovered is `NotBound` before any membership lock, a revoked member `Forbidden`. For the
+  acknowledgement an uncovered row is `NOT_HELD` `unbound` with one `AccessDenial` for the call, audited by the transport off
+  the answer path, and a revoked member refuses the whole call (`PERMISSION_DENIED`), as it refuses every report. Tested:
+  the unit tests of `binding_checks.rs` (the order of the reads, no membership lock when nothing is covered) and
+  `a_narrowed_binding_is_unbound_for_the_acknowledgement_and_the_run_transactions_alike`.
+- **D006-113 — A database not reached is one rule of the adapter, and `25006` is in it** (Task 006-049; delegate,
+  OD-2026-11-24-4). `store_unreachable` (`crates/infra-postgres/src/pool.rs`) is the instance registry's rule (the pool's
+  errors, input and output, TLS, `08` connection exceptions, `57P01` to `57P03`) with `25006` (a server that answers
+  read-only after a failover) added, used by the registry and by the acknowledgement; for the registry, a read-only server is
+  now a database that cannot be reached, which keeps an engine serving through a failover as a lost connection does. The
+  acknowledgement's transaction that does not begin before the deadline, its pool acquisition included, is unreachable too,
+  and every statement of the acknowledgement, the binding's and the membership's among them, is classified by the rule and
+  checked against the deadline before it runs (review round 1 of this task: the shared helpers of the run transactions
+  classified a read-only membership lock as an internal error). Tested:
+  `a_database_that_cannot_be_reached_or_answers_read_only_is_unreachable` (every code of the rule and the statement codes
+  outside it); the read-only server against the real store is Gap 006-054's.
+- **D006-115 — Review round 1 of Task 006-049, settled** (delegate, OD-2026-11-24-4; the correctness reviewer's report, no
+  Blocker, two Majors). Fixed: the membership and binding statements classified as the acknowledgement classifies (D006-113);
+  a refused permission or membership mapped through the service's `app`, so it is audited as every other call
+  (`an_identity_without_worker_execute_is_refused_and_audited`); the binding refusal audited also when the call fails after
+  finding it (`FailedAcknowledgement` carries it); the delay histogram recorded after the commit only; the cross-tenant check
+  given its own gate and counter (D006-110); the deadline test made to fail if a statement ran past the deadline (the
+  namespace's secrets lock held throughout: a statement run after the deadline would end at its lock timeout, not the
+  deadline) and bounded so that it cannot hang; the bounds on the time left widened by the 2 s the CI's virtual machine can
+  step the database clock back; the unit test of the unreachable rule given every code; added the tests of two namespaces,
+  of `attempt_time_left_ms`, of the shed envelope, of the cross-tenant record, of the path transaction under the narrowed
+  binding and of the denial audited once. The metric `worker_task_acknowledgement_failures_total{reason}` the reviewer
+  questioned is Task 006-054's, named in its text.
+- **D006-114 — The admission of the class `Acknowledge`** (Task 006-049; delegate, OD-2026-11-24-4). `AcknowledgeTasks` is
+  the class `Acknowledge`, admitted below `max(D, min(L - 1, D + max(1, (L - D) / 2)))` calls in flight, and a shed one is
+  answered `RESOURCE_EXHAUSTED` with `ACKNOWLEDGEMENT_SHED`; the call keeps the unary time limit. `AppendStepLogs` is not
+  classified here: Task 041-7 gives it the class `Logs` of design 041, and whichever of the two branches merges second keeps
+  both. Tested: `an_acknowledgement_never_takes_the_lease_reserve_for_every_limit_to_64` (every limit from 1 to 64 and every
+  discovery threshold below it).
+- **G006-054 — What of Task 006-049 this slice does not build.** The deadline starts where the platform's admission layer
+  stamps the call's arrival (`Arrival`), which is inside tonic's per-connection concurrency limit: the platform's own
+  outermost layer that replaces `concurrency_limit_per_connection` (the semaphore in `CappedConnectInfo`, the reserve of four
+  places for the class `Acknowledge` while the compiled minor is at least 8, the per-connection counter for the conformance
+  assertion and the gauge of open connections) is not built, nor the authentication's lookups under the call's deadline
+  (a full pool after the token verified answered `ACKNOWLEDGEMENT_STORE_UNREACHABLE`), the tests of a pool held full, of
+  `pg_terminate_backend` between `lock_matched` and `acknowledge`, of a read-only server, of a deadlock, of a connection with
+  more than 128 calls, of the release-0.2 configuration, the test seams' negative cases in `scripts/check-architecture.py`,
+  and the compensation and reconciliation acknowledged under a stop on the real store. Closed by the next slice of Task
+  006-049.
+- **G006-055 — Which task turns the adapter's proof of 1.8 on (G006-051).** Task 006-052, the last task that builds a store
+  path of 1.8 (the capability record): it turns `supports_delivery_acknowledgement()` of the PostgreSQL adapter on, with a test
+  that the ceiling raised in the test then answers 8 against the real store and a contract test that a session of 1.8 is
+  served the acknowledgement, the capability refusal and the withdrawals; Task 006-057 then raises only the compiled minor.
+  Recorded in the text of Task 006-052.
+- **D006-116 — Review round 1 of Task 006-049 by the security reviewer, settled** (no Blocker, no Major; every finding
+  fixed, as security findings are). The cross-tenant check holds at most one place per tenant, never waits for a pool
+  connection, and counts each way it is dropped (D006-110); a call that fails after its first read still has its unmatched
+  runs checked (`FailedAcknowledgement` carries them); the namespaces of a request are those of the rows that hold a
+  presented token now, so a row matched by its withdrawn token alone neither refuses the call nor says where a live lease
+  is (the design's text says so now); the own-tenant runs are taken out of the check in a materialized table expression
+  before any scan; and the comment and counter of a slow rollback say what happens (the transaction is dropped and its
+  rollback queued; the connection is not discarded, which stays in Gap 006-054). The one oracle left, a request that
+  carries a live token of another namespace answered `INVALID_ARGUMENT`, needs the 256-bit token, which is the lease's
+  bearer capability (constitution principle V), and is the design's rule ("tasks of more than one namespace").
