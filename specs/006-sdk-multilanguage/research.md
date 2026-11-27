@@ -1930,8 +1930,8 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   OD-2026-11-24-4). tonic's `concurrency_limit_per_connection` sat outside the admission layer, so a call waited for a place
   of its connection before its arrival was stamped. It is removed; `concurrency_per_connection` (64) is applied by the
   admission layer itself, after the stamp: each accepted connection gets its `ConnectionPlaces` (two semaphores held in its
-  `CappedConnectInfo`, dropped with it, never a map keyed by the peer). A call waits for a place as it waited for tonic's
-  (unbounded, so the meaning of the key does not change for the other classes), then takes its process ticket (`in_flight`,
+  `CappedConnectInfo`, dropped with it, never a map keyed by the peer). A call waits for a place as it waited for tonic's,
+  then takes its process ticket (`in_flight`,
   shed as before), and holds the place until its response, as tonic's permit was held. The class `Acknowledge` takes any
   free place, the others only the places outside the reserve; the reserve is `min(4, limit - 1)` places while the compiled
   minor is at least `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` (`acknowledge_reserve`), none below it, so the dormant build
@@ -2005,3 +2005,25 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   the first lease `no_match`: it set that lease's expiry 1 s ahead before claiming the second lease, which a slower run took
   longer than, so the lease had ended by the call. Both deadlines are now set right before the call, 3 s ahead (short of the
   margin of 6 s even with the clock stepped back 2 s); it passed plain and twice as the runtime role.
+- **D006-123 — Review round 2 of Task 006-049 by the correctness reviewer, settled** (one Blocker, two Majors, three Minors;
+  delegate, OD-2026-11-24-4). Fixed: (Blocker) a call dropped while its `BEGIN` waited for the answer handed the connection
+  back to the pool inside a transaction (sqlx's return only pings, and a raw `BEGIN` is not counted as one); the guard now
+  holds the connection before `BEGIN` is sent, so its `Drop` ends the transaction (a `ROLLBACK` within 100 ms, or the
+  connection discarded), and a `BEGIN` that fails or is cut short discards it. (Major) the guard's `Drop` was untested:
+  `a_call_dropped_while_it_waits_leaves_no_transaction_behind` drops a call that waits for the membership's row with the
+  binding's and the secrets' locks held, and asserts that no lock and no transaction of its session is left. (Major)
+  `below_1_8_every_class_has_every_place_of_a_connection` sent only acknowledgements, which take every place with or without
+  the reserve; it now parks 64 heartbeats first. (Minor) every statement and the `COMMIT` are waited for on this side for the
+  call's time left and one statement timeout; one cut short poisons the transaction, whose connection is then discarded, and
+  answers `ACKNOWLEDGEMENT_STORE_UNREACHABLE` (`worker_task_acknowledgement_statements_cut_total`), so a network that drops
+  every packet or a stalled flush of the log still ends the call one statement timeout past its deadline. (Minor) the
+  acquisition's task gives up at the deadline too, so no abandoned acquisition waits in the pool's queue. (Minor) a call
+  with less than one statement timeout left when it reaches the handler answers `ACKNOWLEDGEMENT_DEADLINE`, so time spent
+  waiting for a place is not counted as a store not reached; and the design now says that a lookup's failure that is not a
+  refusal (`AppError::Internal`) is classified as the store's, as D006-120 decided. Recorded, not changed: the wait for a
+  place now runs inside tonic's transport timeout (`max(request_timeout, transfer_timeout)`) and a client's `grpc-timeout`,
+  where tonic's own limit sat outside them, so a call queued behind its connection's other calls now has that much less of
+  its time; this bounds a wait that was unbounded and is the direction the deadline of the acknowledgement needs, and
+  D006-119 no longer says the wait is unbounded. Not a defect: the assertion "no connection discarded" of the full-pool test
+  holds by construction (the call never gets a connection); it stays as the design's statement of the case.
+

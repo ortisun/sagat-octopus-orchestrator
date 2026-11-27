@@ -657,9 +657,12 @@ One transaction per call, through a store port of its own (`AcknowledgementTx`: 
    unreachable, or a statement or the `COMMIT` failed with such an error (`57P01` of a planned switchover among them) or with
    `25006` (a server that answers read-only after a failover); the classification is one shared function of
    `crates/infra-postgres`, the registry's rule with `25006` added, not a copy. In the authentication's lookups, once the token has
-   verified, any unavailable store maps to this reason, the safe direction, and the lookups run under the call's deadline, their
+   verified, any unavailable store, and any failure of the lookups that says nothing of the caller (a store error that is
+   not a refusal), maps to this reason, the safe direction, and the lookups run under the call's deadline, their
    acquisition bounded by its time left. A call that reached the
-   handler with too little time left after the concurrency layer answers `ACKNOWLEDGEMENT_DEADLINE`. The
+   handler with too little time left after the concurrency layer (less than one statement timeout, 1 s) answers
+   `ACKNOWLEDGEMENT_DEADLINE`. Every statement and the `COMMIT` are also waited for on this side for at most the call's
+   time left and one statement timeout; one cut short discards the connection and answers `ACKNOWLEDGEMENT_STORE_UNREACHABLE`. The
    `statement_timeout` also bounds the `COMMIT`; a commit whose wait for a synchronous standby is cut short has committed locally
    (PostgreSQL warns, the client sees success), and the incarnation covers the failover that would lose it. `worker:execute`, once
    (`PERMISSION_DENIED`, audited as today). One statement sets, for the transaction (`set_config(..., true)`), `lock_timeout` and
