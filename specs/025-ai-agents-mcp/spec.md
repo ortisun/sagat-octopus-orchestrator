@@ -14,8 +14,8 @@ tools (published scripts, activities, managed operations, child workflows, MCP t
 output, budgets (turns, tokens, cost, wall time) and human approval for sensitive tools; an MCP
 server exposing declared workflows, scripts and operations as tools with OAuth or scoped tokens,
 per-tool authorization, audit and declared result disclosure; an MCP client so agent steps can use
-external MCP servers (static bearer-token servers now; OAuth-authenticated servers wait for the owner's
-Principle V amendment requested by design 047); token streaming through feature 026 Workflow Streams; and, at P3, a Studio
+external MCP servers (static bearer-token servers now; OAuth-authenticated servers once constitution 5.1.0, whose third
+declared set of Principle V the owner approved in Owner decision 2026-11-25-3, merges and design 047's token broker is built); token streaming through feature 026 Workflow Streams; and, at P3, a Studio
 authoring assistant that drafts workflows and never publishes them.
 
 ## Context and delivery boundary
@@ -46,9 +46,8 @@ This feature adds no second engine, approval mechanism, secret authority or stre
   step is the agent node of the published version together with the provider revision and the
   MCP-server revision that version pins, so the secrets those pinned revisions name are the declared
   secrets of that task definition (Requirement 025-003). OAuth-authenticated MCP servers are the one
-  exception: they reach tokens only through design 047's token broker, which needs a third declared
-  set added to Principle V by the owner; until the owner makes that amendment, the
-  `oauth-client-credentials` mode is refused (Gap 025-001).
+  exception: they reach tokens only through design 047's token broker, under the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token);
+  until 5.1.0 merges and the broker is built, the `oauth-client-credentials` mode is refused (Gap 025-001).
 - Effects stay at-least-once (ADR-0004). A model call has no provider idempotency key: a lost
   response is asked again and paid twice. A tool call carries a stable key.
 - Approvals use feature 014 (FR-014-007, FR-014-008); values follow ADR-0033; the transcript has its
@@ -251,8 +250,8 @@ key; there is one run, one audited call and only the declared projection in the 
 ### US07 — Use tools of an external MCP server (Priority: P2)
 
 An administrator registers an external MCP server with a static bearer token and refreshes its
-tools; an author allows two of them in an agent node. (OAuth client credentials wait for the owner's
-Principle V amendment requested by design 047, Gap 025-001.)
+tools; an author allows two of them in an agent node. (OAuth client credentials wait for constitution 5.1.0 to merge, approved by the owner in Owner
+decision 2026-11-25-3, and for design 047's broker, Gap 025-001.)
 
 **Why this priority**: many tool providers publish MCP servers.
 
@@ -322,8 +321,8 @@ may apply.
   concurrency is free again, without any counter repair.
 - A workflow with a `write` tool acknowledged `approval: "none"` is published, then someone tries to
   expose it through MCP or a 026 public link: both refuse with `UNATTENDED_WRITE_TOOL`.
-- An external MCP server starts advertising another token endpoint (OAuth servers, once the owner's
-  Principle V amendment requested by design 047 is made): the next call is refused before any
+- An external MCP server starts advertising another token endpoint (OAuth servers, once constitution 5.1.0
+  merges and design 047's broker is built): the next call is refused before any
   credential is used, and the change is audited.
 - Two tool calls of a turn complete at once: the run lock serializes them; only the last commit
   schedules the next turn.
@@ -384,8 +383,8 @@ fails before work.
   publisher's `secret:use` is checked at publication and again at delivery. No fallback; a deployment's
   own cloud identity is never used for a tenant account; adapters use explicit static credentials only,
   never SDK default credential chains or instance-metadata lookups (D1299). MCP servers authenticated by
-  OAuth are outside this rule: they reach tokens only through design 047's token broker, which waits
-  for the owner's Principle V amendment requested by design 047 (Gap 025-001).
+  OAuth are outside this rule: they reach tokens only through design 047's token broker, under
+  the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token) (Gap 025-001).
 - **FR-025-004 — Provider probe**: Test provider MUST admit a fixed durable probe (origin
   `AI_PROVIDER_PROBE`) run by the agent runner on the same destination, TLS, credential and quota
   path as a model call, calling a model-listing endpoint or equivalent. It generates no tokens and
@@ -626,8 +625,8 @@ fails before work.
   `maxArgumentClassification` of `public`, `internal` or `pii` (`pii` under the same reveal-grant rule as
   FR-025-005), authentication none or static bearer secret, limits), as a 021 resource type (Owner
   decision 2026-11-26-122). The static bearer secret is a declared secret of the task definition as in
-  Requirement 025-003. OAuth client credentials with a resource indicator wait for the owner's
-  Principle V amendment requested by design 047 and are refused at save until then
+  Requirement 025-003. OAuth client credentials with a resource indicator rest on the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token), and are refused at save until
+  5.1.0 merges and design 047's broker is built
   (`MCP_AUTH_MODE_UNAVAILABLE`, Gap 025-001); when enabled, the revision records the issuer and token
   endpoint, confirmed by the saving `ai:manage` holder, and tokens come only from design 047's broker
   (D1306). User-delegated authorization is not supported (G1288).

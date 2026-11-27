@@ -14,8 +14,8 @@ Format: `T025-NNN [P?] [USn?] Description — requirements — files — evidenc
 files, no dependency on an unfinished task in the same phase. Test targets: `contract_ai_agents_mcp`,
 `integration_ai_agents_mcp`, `fault_ai_agents_mcp`, `e2e_ai_agents_mcp`, `perf_ai_agents_mcp`
 (declared in `tests/Cargo.toml`), plus `sdk_conformance`. An indented `Owner-gate:` line names the
-owner decision a task builds on; a task that "waits for the owner's Principle V amendment requested by
-design 047" has no such line because no owner row exists yet (Gap 025-001). How the tasks are cut into
+owner decision a task builds on; the OAuth tasks cite Owner decision 2026-11-25-3, the owner's approval of
+constitution 5.1.0's third declared set of Principle V (Gap 025-001). How the tasks are cut into
 slices and two parallel lanes is in [Build slices](#build-slices).
 
 ## Phase 1: Setup and foundations (blocks every story)
@@ -350,9 +350,9 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   `none` and `bearer`, secrets (`ai:manage` and `secret:use` to save), the `pii` argument ceiling under
   the rule of Owner decision 2026-11-26-120; `oauth-client-credentials` refused with
   `MCP_AUTH_MODE_UNAVAILABLE` — FR-025-034 — `routes/mcp_servers.rs`, `frontend/apps/studio/src/features/ai/`
-  — HTTP and component tests. The OAuth part waits for the owner's Principle V amendment requested by
-  design 047.
-  Owner-gate: OD-2026-11-26-120, OD-2026-11-26-122
+  — HTTP and component tests. The OAuth part waits for constitution 5.1.0 to merge and for design 047's
+  token broker.
+  Owner-gate: OD-2026-11-26-120, OD-2026-11-26-122, OD-2026-11-25-3
 - [ ] T025-053 [US7] Refresh job (origin `MCP_TOOL_REFRESH`, through `start_private`) in the runner;
   immutable snapshots with digests and bounds — FR-025-035 — `crates/infra-ai/src/mcp_client.rs`,
   `apps/agent-runner/` — tests against the test MCP server (both revisions).
@@ -371,7 +371,7 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 - [ ] T025-058 [P] [US7] OAuth client credentials with resource indicator, with tokens only from design
   047's broker: issuer and token endpoint recorded in the revision and confirmed by an `ai:manage`
   holder, refresh-time comparison with discovered metadata (`mcp.oauth_metadata_changed`, calls refused
-  until revised). Waits for the owner's Principle V amendment requested by design 047 (Gap 025-001) —
+  until revised). Rests on constitution 5.1.0's third declared set (Owner decision 2026-11-25-3); waits for 5.1.0 to merge and for design 047's broker (Gap 025-001) —
   FR-025-034, 036 — `crates/infra-ai/src/mcp_auth.rs`, `crates/application/src/mcp_servers.rs` — tests
   against the test authorization server, including a server that switches its advertised token
   endpoint.
@@ -493,8 +493,8 @@ blocks US02–US09. US03, US04 and US05 depend on US02's tool planning (T025-025
 Phase 1 and the admission path only; US07 needs the runner (T025-016, T025-017, T025-091). The provider
 and MCP-server resource tasks (T025-006, T025-022, T025-024, T025-052) need 021's resource core; until
 then T025-092's test provider stands in. US08 streaming needs feature 026; T025-028 needs feature 021's
-operations; script and operation exposures need feature 022; T025-058 waits for the owner's Principle V
-amendment requested by design 047; T025-090 needs design 040 built. Phase 10 closes after every story
+operations; script and operation exposures need feature 022; T025-058 waits for constitution 5.1.0, approved by
+the owner (Owner decision 2026-11-25-3), to merge and for design 047's broker; T025-090 needs design 040 built. Phase 10 closes after every story
 it covers.
 
 ## Build slices
@@ -586,8 +586,8 @@ starts only after that slice has merged.
 - **Slice B5, deployment and documentation.** Tasks 025-068, 025-069, 025-071. Touches
   `infra/docker/Dockerfile`, `infra/helm/`, `docs/runbooks/`. Depends on B3. Verification: rendered
   chart tests, the network policy test, the docs contract check.
-- **Waiting.** Task 025-058 and the OAuth part of 025-052 wait for the owner's Principle V amendment
-  requested by design 047 (Gap 025-001); when it is made they form one slice of lane B (runner side)
+- **Waiting.** Task 025-058 and the OAuth part of 025-052 wait for constitution 5.1.0, approved by the owner
+  (Owner decision 2026-11-25-3), to merge and for design 047's broker (Gap 025-001); when both are there they form one slice of lane B (runner side)
   followed by one of lane A (resource side).
 
 ### Cross-lane order points

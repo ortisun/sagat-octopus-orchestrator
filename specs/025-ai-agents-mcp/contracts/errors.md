@@ -24,7 +24,7 @@ credential, provider or executor message.
 | A `result`, approval-view tool input or child input field is annotated below the transcript level | `VALIDATION_FAILED` (422) | `CLASSIFICATION_LOOSENED` (existing, FR-016-004) with `details.pointer` | false |
 | A `write` tool without `approval`, or an `operation` tool with `approval: "none"` | `VALIDATION_FAILED` (422) | `WRITE_TOOL_APPROVAL_REQUIRED` | false |
 | Exposure (or 026 public link) target version has an unattended write tool | `VALIDATION_FAILED` (422) | `UNATTENDED_WRITE_TOOL` | false |
-| MCP server saved with `auth.mode` `oauth-client-credentials` while the owner's Principle V amendment requested by design 047 is not made (Gap 025-001) | `VALIDATION_FAILED` (422) | `MCP_AUTH_MODE_UNAVAILABLE` | false |
+| MCP server saved with `auth.mode` `oauth-client-credentials` before constitution 5.1.0 (its third declared set of Principle V, approved by the owner in Owner decision 2026-11-25-3) has merged and design 047's broker is built (Gap 025-001) | `VALIDATION_FAILED` (422) | `MCP_AUTH_MODE_UNAVAILABLE` | false |
 | OAuth MCP server without recorded issuer and token endpoint (once the OAuth mode is enabled) | `VALIDATION_FAILED` (422) | `MCP_OAUTH_ENDPOINT_REQUIRED` | false |
 | A provider or MCP server referencing a secret the saving administrator may not use (`secret:use` and the secret's access list) | `FORBIDDEN` (403) | `SECRET_NOT_USABLE` | false |
 | An exposure whose target version's `inputSchema` is outside the design 043 subset | `VALIDATION_FAILED` (422) | `RUN_INPUT_SCHEMA_UNUSABLE` (existing, design 043) | false |

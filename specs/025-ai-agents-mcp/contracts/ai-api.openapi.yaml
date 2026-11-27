@@ -78,7 +78,7 @@ paths:
       description: >-
         Requires ai:manage and secret:use plus the access list of each referenced secret, as putAiProvider. Same
         revision and receipt rules. auth.mode oauth-client-credentials is refused with 422 MCP_AUTH_MODE_UNAVAILABLE
-        until the owner's Principle V amendment requested by design 047 (Gap 025-001). No network call.
+        until constitution 5.1.0 (its third declared set of Principle V, approved by the owner in Owner decision 2026-11-25-3) merges and design 047's broker is built (Gap 025-001). No network call.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpServerRequest'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}
       x-standard-errors: true
