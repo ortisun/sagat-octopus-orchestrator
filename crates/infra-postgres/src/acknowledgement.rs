@@ -32,6 +32,12 @@ use sqlx::pool::PoolConnection;
 
 /// How long a rollback at the deadline may take before the connection is discarded instead of returned.
 const ROLLBACK_BOUND: Duration = Duration::from_millis(100);
+/// How long the rollback of a call that was dropped may take, off the call, before its connection is discarded: the
+/// statement it was waiting for can take one statement timeout to end (a lock it waits for), and nobody waits for this
+/// rollback, so a host that resets its calls does not make the server discard the pool's connections (security review
+/// round 2 of Task 006-049).
+const DROPPED_ROLLBACK_BOUND: Duration =
+    ACKNOWLEDGEMENT_STATEMENT_TIMEOUT.saturating_add(ROLLBACK_BOUND);
 
 fn acknowledgement_error(error: sqlx::Error) -> AcknowledgementStoreError {
     if store_unreachable(&error) {
@@ -150,7 +156,7 @@ impl Drop for PgAcknowledgementTx {
             }
             match tokio::runtime::Handle::try_current() {
                 Ok(runtime) => {
-                    drop(runtime.spawn(roll_back(connection, false)));
+                    drop(runtime.spawn(roll_back(connection, false, DROPPED_ROLLBACK_BOUND)));
                 }
                 Err(_) => discard(connection),
             }
@@ -158,10 +164,10 @@ impl Drop for PgAcknowledgementTx {
     }
 }
 
-/// Ends the transaction of `connection` with a `ROLLBACK` that may take [`ROLLBACK_BOUND`]: the connection goes back to the
+/// Ends the transaction of `connection` with a `ROLLBACK` that may take `bound`: the connection goes back to the
 /// pool when it returns in time, and is discarded otherwise, or when it failed. `stall` makes the `ROLLBACK` never return
 /// (the test of the discard).
-async fn roll_back(mut connection: PoolConnection<Postgres>, stall: bool) {
+async fn roll_back(mut connection: PoolConnection<Postgres>, stall: bool, bound: Duration) {
     let ended = {
         let rollback = async {
             if stall {
@@ -169,7 +175,7 @@ async fn roll_back(mut connection: PoolConnection<Postgres>, stall: bool) {
             }
             sqlx::raw_sql("ROLLBACK").execute(&mut *connection).await
         };
-        tokio::time::timeout(ROLLBACK_BOUND, rollback).await
+        tokio::time::timeout(bound, rollback).await
     };
     match ended {
         Ok(Ok(_)) => {}
@@ -274,7 +280,7 @@ impl PgAcknowledgementTx {
     #[doc(hidden)]
     pub async fn rollback_stalled_for_tests(mut self) {
         if let Some(connection) = self.connection.take() {
-            roll_back(connection, true).await;
+            roll_back(connection, true, ROLLBACK_BOUND).await;
         }
     }
 
@@ -615,7 +621,7 @@ impl AcknowledgementTx for PgAcknowledgementTx {
             if self.poisoned {
                 discard(connection);
             } else {
-                roll_back(connection, false).await;
+                roll_back(connection, false, ROLLBACK_BOUND).await;
             }
         }
     }

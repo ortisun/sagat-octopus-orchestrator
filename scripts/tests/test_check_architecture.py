@@ -728,6 +728,16 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
                 self.assertEqual(code, 1, out)
                 self.assertIn("apps/execution-engine/src/lib.rs:3: ", out)
                 self.assertIn(probe, out)
+        # security review round 2 of Task 006-049: a probe called through its type's path, or passed as a function, is a call
+        for source in (
+            "fn build() -> G {\n    WorkerApi::with_connection_probe(api, hook)\n}\n",
+            "fn build() -> G {\n    apis.map(WorkerApi::with_compiled_minor_for_tests)\n}\n",
+            "async fn end(tx: T) {\n    PgAcknowledgementTx::rollback_stalled_for_tests(tx).await\n}\n",
+        ):
+            with self.subTest(source=source):
+                code, out = creator_check(creator_tree(**{"apps/execution-engine/src/lib.rs": source}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("apps/execution-engine/src/lib.rs:2: ", out)
         code, out = creator_check(creator_tree(**{
             "crates/api-grpc/src/service.rs": (
                 "/// set it with `WorkerGrpc::with_commit_probe`\n"

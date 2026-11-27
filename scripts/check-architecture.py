@@ -902,8 +902,10 @@ def mark_assignment_errors(src):
 # Task 006-049 adds the acknowledgement's hook that reads `synchronous_commit` back from its transaction, the compiled minor the
 # connection layer judges the reserve of `Acknowledge` by, the hook told each call's connection ordinal (Task 006-058), and the
 # rollback that never returns, which tests that its connection is discarded.
+# A call in any form: `.probe(x)`, `Type::probe(x)` and a path passed as a function (`.map(Type::probe)`); a definition
+# (`fn probe(`) and a comment do not match (comments are masked).
 TEST_PROBE_CALL = re.compile(
-    r"\.\s*(with_delivery_probe|with_commit_probe|synchronous_commit_for_tests|with_compiled_minor_for_tests|with_connection_probe|rollback_stalled_for_tests)\s*\("
+    r"(?:\.|::)\s*(with_delivery_probe|with_commit_probe|synchronous_commit_for_tests|with_compiled_minor_for_tests|with_connection_probe|rollback_stalled_for_tests)\b"
 )
 
 

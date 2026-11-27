@@ -480,6 +480,11 @@ pub fn is_statement(text: &str) -> bool {
     if verb && rest.starts_with(char::is_whitespace) {
         return true;
     }
+    // Transaction control alone, the whole literal and nothing after it (security review round 2 of Task 006-049): a
+    // `BEGIN; UPDATE ...` stays unmodelled and fails the audit, so no allowance of a first word can excuse what follows it.
+    if matches!(text.trim(), "BEGIN" | "COMMIT" | "ROLLBACK") {
+        return true;
+    }
     // Session control, which needs no privilege; matched on the whole opening so prose such as
     // "set SAGAT_STUDIO_DIR ..." is not mistaken for a statement.
     let opening = text.trim_start().to_ascii_uppercase();
@@ -522,6 +527,7 @@ const UNMODELLED_VERBS: &[&str] = &[
     "DEALLOCATE",
     "BEGIN",
     "COMMIT",
+    "ROLLBACK",
     "ABORT",
     "START",
     "VALUES",
@@ -670,6 +676,25 @@ pub fn extract_with_macros(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transaction_control_alone_is_a_statement_and_anything_after_it_is_not() {
+        for control in ["BEGIN", "COMMIT", "ROLLBACK", " COMMIT "] {
+            assert!(is_statement(control), "{control}");
+        }
+        for glued in [
+            "BEGIN; UPDATE steps SET status = 'READY'",
+            "COMMIT; DELETE FROM runs",
+        ] {
+            assert!(!is_statement(glued), "{glued}");
+            assert!(
+                is_unmodelled(glued),
+                "{glued} stays unmodelled and fails the audit"
+            );
+        }
+        assert!(!is_statement("ROLLBACK; DELETE FROM runs"));
+        assert!(is_unmodelled("ROLLBACK; DELETE FROM runs"));
+    }
 
     #[test]
     fn a_continued_literal_is_one_statement_without_the_indentation() {

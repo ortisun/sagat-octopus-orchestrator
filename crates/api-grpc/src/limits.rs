@@ -907,6 +907,17 @@ where
             return Box::pin(std::future::ready(Ok(to_status(&refusal).into_http())));
         }
         let places = connection_places(&request);
+        if places.is_none() {
+            // a call on a transport that is not the platform's listener: no place of a connection limits it (security
+            // review round 2 of Task 006-049: counted, and said once, so that a change of tonic's connection info that
+            // turned the limit off would not pass unseen)
+            metrics::counter!("grpc_calls_without_connection_places_total").increment(1);
+            if !NO_PLACES_SAID.swap(true, Ordering::AcqRel) {
+                tracing::warn!(
+                    "a gRPC call arrived without the places of its connection; the per-connection limit does not apply to it"
+                );
+            }
+        }
         if let (Some(probe), Some(places)) = (self.shared.connection_probe.get(), &places) {
             probe(request.uri().path(), places.ordinal);
         }
@@ -947,6 +958,9 @@ where
         })
     }
 }
+
+/// Whether a call without the places of its connection has been said in the log already.
+static NO_PLACES_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The places of the connection a request came on, plain or under TLS; none for a transport that is not the platform's
 /// listener (an in-process test transport), which tonic did not limit either.

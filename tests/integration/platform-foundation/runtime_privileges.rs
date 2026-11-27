@@ -200,16 +200,6 @@ const ALLOWED: &[Allowed] = &[
         reason: "apply_content_delta, unused (see the INSERT entry)",
     },
     Allowed {
-        file: "crates/infra-postgres/src/acknowledgement.rs",
-        need: "UNRESOLVED statement kind the audit does not model: BEGIN",
-        reason: "the acknowledgement's transaction is begun on the pooled connection it holds itself, so that a rollback that does not return in time discards the connection (Task 006-049); transaction control needs no privilege",
-    },
-    Allowed {
-        file: "crates/infra-postgres/src/acknowledgement.rs",
-        need: "UNRESOLVED statement kind the audit does not model: COMMIT",
-        reason: "the commit of that transaction (see the BEGIN entry); transaction control needs no privilege",
-    },
-    Allowed {
         file: CONTENT_USAGE,
         need: "UNRESOLVED placeholder {}",
         reason: "the advisory fences of a step-log batch (feature 041): the text is a list of pg_advisory_xact_lock_shared and pg_advisory_xact_lock calls formatted from numbered placeholders only, every key bound; the functions touch no table",
