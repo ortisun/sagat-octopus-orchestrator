@@ -1607,7 +1607,7 @@ one receive call.
   never set", which fixes that meaning of 1.8 for good and moves delivery acknowledgement to a later minor, and releasing it (Decision
   006-057). Asked through the coordinator. **Answered 2026-11-21: "Reserve 1.8 now" (Owner decision 2026-11-21-6).**
 
-### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-119, G006-039 and G006-049 to G006-055; G006-040 to G006-048 are the design's)
+### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-129, G006-039 and G006-049 to G006-060; G006-040 to G006-048 are the design's)
 
 The server tasks of protocol 1.8, built dormant on `feature/delivery-acknowledgement` in the order of the task list. Each
 decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
@@ -1893,3 +1893,35 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   rollback queued; the connection is not discarded, which stays in Gap 006-054). The one oracle left, a request that
   carries a live token of another namespace answered `INVALID_ARGUMENT`, needs the 256-bit token, which is the lease's
   bearer capability (constitution principle V), and is the design's rule ("tasks of more than one namespace").
+- **D006-117 — With 1.7 served, 1.8 needs the step-log proof and is not offered to either runner** (the merge of design
+  041's Task 041-7, pull request #298; delegate, OD-2026-11-24-4). Minors are cumulative proofs (D006-041), and D006-105
+  answers 1.8 "when it would answer the newest minor below it". Now that the newest minor below 1.8 is 1.7, `StoreProofs`
+  carries a fourth proof, `step_logs` (`WorkerStore::supports_step_log_protocol()`), and `protocol_ceiling` answers
+  `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` to an ordinary worker only when it would answer 1.7 and the store proves the paths
+  of 1.8. The script runner (`Role::Runner`) is not offered 1.7 (decision D041-149), so it is not offered 1.8 either; the
+  dedicated database runner keeps 1.6 (ADR-0099 decision 11). The test of D006-105 asserted that a script runner reaches 8
+  under the raised ceiling; it now asserts 6 for both runners and 7 for an ordinary worker without the store's proof of 1.8.
+  The admission keeps both classes: `Acknowledge` (D006-114) shares `in_flight` below its own limit, `Logs` is counted apart
+  against its own cap. Tested: `delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof`,
+  `step_logs_raise_the_ceiling_to_seven_for_an_ordinary_worker_only`.
+- **D006-118 — The first run of the database tests of 1.8, its seven failures explained and fixed** (pull request #297, run
+  45942873719; delegate, OD-2026-11-24-4; each a defect, none rerun). (1) The `Debug` that hides a report's lease token
+  (Task 006-043) dropped its step-log carry, whose counts FR-041-007 (d) prints: `CompleteStepRequest` and `FailStepRequest`
+  print `step_logs` again (`the_debug_of_a_report_that_holds_a_carry_prints_counts_and_no_text`). (2) The TypeScript
+  SDK's fake server decodes with `defaults: true`, so the field `declines_acknowledgement` of 1.8 reads `false` in the
+  registration it records; the expectation names it. (3) A statement of the acknowledgement began with a macro whose argument
+  sat in its middle, which the audit of the runtime role's privileges does not expand: what followed (a `FOR NO KEY UPDATE`)
+  was a fragment outside any statement, and the three statements of the acknowledgement were not audited at all. The macro is
+  now two fixed texts (`decoded_addresses!()`, `address_arrays!()`) between which a statement writes its columns, and the audit
+  reads the whole of each. (4) The claim's marks (Task 006-047) changed the two lease-creating `UPDATE`s of `steps`; their
+  status, generation and guards are unchanged, and the reviewed inventory of step status writers is updated with them.
+  (5) The audit found `SELECT {}` in `content_usage.rs`, the advisory fences of a step-log batch (feature 041, pull request
+  #285, whose run did not select the platform-foundation target): placeholders only, every key bound, no table; an entry of
+  `ALLOWED` says so. (6) The cross-tenant record is written off the response path (`IdentityStore::record_denial`), so the
+  test read the trail before the record landed; it now waits for it, bounded. (7) Three tests rolled the schema back to a
+  version below 20270216000000 and went on with the services: `sqlx` reverts each migration in its own transaction, so a
+  rollback refused by an older migration still committed the downs of every newer one, and a round trip took the marks'
+  columns with it. The two tests whose rollback is refused (`zero_policy_writer_and_downgrade_obey_both_relation_lock_orders`,
+  `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation`) upgrade again before the services resume, as
+  `step_log_isolation/schema.rs` already does; the round trip of the lookback index compares the rolled-back snapshot without
+  the marks, asserts they left, and compares the whole snapshot once upgraded again.

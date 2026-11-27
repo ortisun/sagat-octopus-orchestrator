@@ -187,5 +187,6 @@ update of `lease_acknowledged_at`. It renews nothing and writes no journal event
 that reached no writable database, answers `UNAVAILABLE` with `ACKNOWLEDGEMENT_DEADLINE` or
 `ACKNOWLEDGEMENT_STORE_UNREACHABLE`; one shed by admission (the class `Acknowledge`, between discovery and the lease
 calls) answers `RESOURCE_EXHAUSTED` with `ACKNOWLEDGEMENT_SHED`. Until the server offers 1.8 (Task 006-057) no lease is
-flagged, so every lease is answered `NOT_HELD`. The contract and the host procedure are
+flagged, so every lease is answered `NOT_HELD`. 1.8 is a superset of 1.7: it is offered to an ordinary worker only, when
+1.7 is and the store proves the paths of 1.8, so neither the database runner nor the script runner reaches it (D006-117). The contract and the host procedure are
 [`stream-completion.md`](../../specs/006-sdk-multilanguage/stream-completion.md), "Delivery acknowledgement (protocol 1.8)".
