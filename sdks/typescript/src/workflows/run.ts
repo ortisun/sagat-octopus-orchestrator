@@ -17,6 +17,16 @@ export interface CodeRunOptions {
   activationDeadlineMs?: number;
   /** The clock of the deadline (tests inject one). */
   clock?: () => number;
+  /**
+   * Whether the thread's memory outside its heap is over its bound, asked after every evaluation (Decision 044-323);
+   * the workflow thread gives it.
+   */
+  memoryExceeded?: () => boolean;
+}
+
+/** The thread's external memory (the backing stores of ArrayBuffers) went over its bound during an activation. */
+export class ExternalMemoryExceeded extends Error {
+  constructor() { super('the workflow thread\'s memory outside its heap is over its bound'); this.name = 'ExternalMemoryExceeded'; }
 }
 
 /** A command ready to send: its body digest, and whether its value field travels as a blob. */
@@ -58,6 +68,7 @@ export class CodeRun {
   readonly #sandbox: WorkflowSandbox;
   readonly #deadlineMs: number;
   readonly #clock: () => number;
+  readonly #memoryExceeded: (() => boolean) | undefined;
   #windowStart = 0;
   #accepted = 0;
   #chain: Uint8Array = EMPTY_CHAIN;
@@ -75,6 +86,7 @@ export class CodeRun {
     this.init = init;
     this.#deadlineMs = deadline;
     this.#clock = options.clock ?? (() => performance.now());
+    this.#memoryExceeded = options.memoryExceeded;
     this.#sandbox = new WorkflowSandbox(bundle, deadline);
     this.#sandbox.call(JSON.stringify({ op: 'init', init }), deadline);
   }
@@ -210,15 +222,23 @@ export class CodeRun {
       if (left <= 0) throw new ActivationDeadlineExceeded();
       return left;
     };
+    const call = (request: string): Record<string, unknown> => {
+      const answer = this.#sandbox.call(request, remaining());
+      if (this.#memoryExceeded?.()) throw new ExternalMemoryExceeded();
+      return answer;
+    };
     try {
-      this.#sandbox.call(JSON.stringify({ op: 'begin', begin }), remaining());
+      call(JSON.stringify({ op: 'begin', begin }));
       for (const event of appliedEvents(window)) {
-        const answer = this.#sandbox.call(JSON.stringify({ op: 'apply', event }), remaining());
+        const answer = call(JSON.stringify({ op: 'apply', event }));
         if (answer['stopped'] === true) break;
       }
-      return checkResult(this.#sandbox.call(JSON.stringify({ op: 'end' }), remaining()));
+      return checkResult(call(JSON.stringify({ op: 'end' })));
     } catch (error) {
       this.#broken = true;
+      if (error instanceof ExternalMemoryExceeded) {
+        return { commands: [], failure: { cause: 'WORKFLOW_TASK_FAILED', exceptionType: 'ExternalMemoryExceeded' }, logs: [], open: true };
+      }
       const cause = error instanceof ActivationDeadlineExceeded ? 'ACTIVATION_DEADLINE' : 'NONDETERMINISM_RISK';
       return { commands: [], failure: { cause }, logs: [], open: true };
     }

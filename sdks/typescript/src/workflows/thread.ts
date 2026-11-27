@@ -9,7 +9,9 @@
  *
  * Only data crosses: requests and answers are structured-cloned messages of strings, numbers and byte arrays.
  */
-import { parentPort } from 'node:worker_threads';
+import { getHeapStatistics, setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
+import { parentPort, workerData } from 'node:worker_threads';
 import type { HistoryEvent, RunInit } from './context.js';
 import type { ReplayActivation } from './history.js';
 import { CodeRun, type CompletionAnswer } from './run.js';
@@ -44,6 +46,27 @@ export interface RunState {
   deferredBodyDigest: Uint8Array | undefined;
 }
 
+// The bound of the memory outside the heap (Decision 044-323), and a full collection that only this thread holds: V8's
+// `gc` is taken once, with the flag that exposes it set for that moment, so no workflow context made later has it.
+const externalLimit = typeof (workerData as { maxExternalMemoryBytes?: unknown } | null)?.maxExternalMemoryBytes === 'number'
+  ? (workerData as { maxExternalMemoryBytes: number }).maxExternalMemoryBytes : Number.POSITIVE_INFINITY;
+let collect: ((options: { type: 'major'; execution: 'sync' }) => void) | undefined;
+if (parentPort) {
+  try {
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('typeof gc === "function" ? gc : undefined') as unknown;
+    if (typeof gc === 'function') collect = gc as typeof collect;
+  } finally {
+    setFlagsFromString('--no-expose-gc');
+  }
+}
+
+function memoryExceeded(): boolean {
+  if (getHeapStatistics().external_memory <= externalLimit) return false;
+  collect?.({ type: 'major', execution: 'sync' });
+  return getHeapStatistics().external_memory > externalLimit;
+}
+
 const bundles = new Map<string, WorkflowBundle>();
 const runs = new Map<string, CodeRun>();
 
@@ -73,7 +96,7 @@ function handle(request: ThreadRequest): unknown {
     case 'create': {
       const bundle = bundles.get(request.bundleKey);
       if (!bundle) throw new ThreadRequestError(`the workflow thread holds no bundle ${request.bundleKey}`);
-      const options = request.activationDeadlineMs === undefined ? {} : { activationDeadlineMs: request.activationDeadlineMs };
+      const options = request.activationDeadlineMs === undefined ? { memoryExceeded } : { activationDeadlineMs: request.activationDeadlineMs, memoryExceeded };
       const run = new CodeRun(bundle, request.init, options);
       runs.set(request.runKey, run);
       return { state: stateOf(run) };

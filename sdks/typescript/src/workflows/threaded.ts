@@ -45,10 +45,13 @@ export interface WorkflowThreadOptions {
   requestTimeoutMs?: number;
   /** The heap of the thread in MiB: one run's memory cannot take the worker's process with it (default 1,024). */
   maxOldGenerationSizeMb?: number;
+  /** The thread's memory outside its heap (ArrayBuffer backing stores) in MiB, checked between evaluations (default 1,024). */
+  maxExternalMemoryMb?: number;
 }
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const DEFAULT_THREAD_HEAP_MB = 1024;
+export const DEFAULT_THREAD_EXTERNAL_MB = 1024;
 
 export class WorkflowThread {
   readonly #worker: Worker;
@@ -69,6 +72,7 @@ export class WorkflowThread {
       stdout: false,
       stderr: false,
       resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb ?? DEFAULT_THREAD_HEAP_MB },
+      workerData: { maxExternalMemoryBytes: (options.maxExternalMemoryMb ?? DEFAULT_THREAD_EXTERNAL_MB) * 1024 * 1024 },
     });
     this.#worker.unref();
     this.#worker.on('message', (message: { id: number; ok?: unknown; error?: { name: string; message: string } }) => {

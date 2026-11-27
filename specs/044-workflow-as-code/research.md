@@ -1458,6 +1458,19 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
   first one that moved instead of returning the other's recorded value. Reported to the coordinating session for the
   server lane: `sdks/SPEC.md` 12.1 should name the option (or the corpus use `side-effect`). delegate (OD-2026-11-24-4):
   an option is additive, keeps every call that names none, and makes the replay more precise.
+- **D044-323** (2026-11-27) The workflow thread bounds the memory outside its heap (Gap 044-304): the backing stores of
+  `ArrayBuffer`s, which the heap bound does not count. `WorkflowThreadOptions.maxExternalMemoryMb` (1,024 MiB by
+  default) is checked after every evaluation of an activation (its start, each event, its end) and of a replay: when
+  the thread's external memory is over it after a full synchronous collection, the activation fails
+  `WORKFLOW_TASK_FAILED` with the exception type `ExternalMemoryExceeded` and its context is dropped, so a function that
+  keeps buffers grows no further than one evaluation past the bound, and the run goes under review after its fifth
+  failure as for any failed workflow task. The collection is the thread's own: it takes V8's `gc` once at start, with
+  the flag that exposes it set for that moment only, so no workflow context ever sees it (measured: a context made after
+  the flag is cleared has no `gc`). The measure is the thread's, not the run's: the run whose evaluation crosses the bound
+  is the one failed, and the runs a cache holds count against the others, which the cache's size bounds. What one
+  evaluation allocates before it yields is bounded by its activation deadline only. delegate (OD-2026-11-24-4): Node
+  gives no limit on a thread's external memory, and a check between evaluations is the tightest bound the runtime can
+  keep without a host object in the context.
 - **G044-305** (2026-11-27) A TypeScript host that registers activities and workflow types together would speak minor
   1.10 for its activities too, which carries the host procedures of 1.7 (step logs) and 1.9 (activity timeouts) that
   the TypeScript activity host does not have yet; until it has them, such a host refuses to start and the activities

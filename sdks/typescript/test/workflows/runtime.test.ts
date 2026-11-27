@@ -167,3 +167,34 @@ test('an unhandled rejection in workflow code leaves the workflow thread running
   const again = new WorkflowTestEnvironment({ bundle: bundleOf({ flow }), workflowType: 'flow' }).start(null);
   assert.equal((await again.runUntilBlocked()).output, 'alive', 'the same thread serves the next run');
 });
+
+test('a run that keeps buffers beyond the thread\'s external memory bound fails its workflow task, and the thread goes on', async () => {
+  // The backing stores of ArrayBuffers live outside the heap bound (research Decision 044-323).
+  const thread = new WorkflowThread({ maxExternalMemoryMb: 64 });
+  try {
+    const flow = `async (ctx) => {
+      const kept = [];
+      ctx.onSignal('grow', () => { const buffer = new ArrayBuffer(48 * 1024 * 1024); new Uint8Array(buffer).fill(1); kept.push(buffer); });
+      await ctx.signal('stop');
+      return kept.length;
+    }`;
+    const env = new WorkflowTestEnvironment({ bundle: bundleOf({ flow }), workflowType: 'flow', thread }).start(null);
+    for (let i = 0; i < 3; i++) env.signal('grow', null);
+    const outcome = await env.runUntilBlocked();
+    assert.equal(outcome.status, 'UNDER_REVIEW');
+    assert.deepEqual(outcome.review?.failure, { cause: 'WORKFLOW_TASK_FAILED', exceptionType: 'ExternalMemoryExceeded' });
+    // The memory of the dropped contexts is collected: a small run on the same thread completes.
+    const small = new WorkflowTestEnvironment({ bundle: bundleOf({ flow }), workflowType: 'flow', thread }).start(null);
+    small.signal('grow', null);
+    small.signal('stop', null);
+    assert.equal((await small.runUntilBlocked()).output, 1);
+  } finally {
+    await thread.terminate();
+  }
+});
+
+test('the thread\'s own collection is never visible to workflow code', async () => {
+  const flow = 'async () => [typeof gc, typeof globalThis.gc]';
+  const env = new WorkflowTestEnvironment({ bundle: bundleOf({ flow }), workflowType: 'flow' }).start(null);
+  assert.deepEqual((await env.runUntilBlocked()).output, ['undefined', 'undefined']);
+});
