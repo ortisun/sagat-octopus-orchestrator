@@ -885,6 +885,13 @@ Three slices, each a pull request, in this order.
   sink's own `audit.sink_record_refused` is excluded while its other `audit.sink_*` records reach it, `rebase`'s
   overclaim pointed at Gap 040-008, and Gap 040-007 worded for any logical restore without the epoch step.
   Refs: Requirement 040-009
+- [ ] T040-31 Since gap G041-028 was closed (feature 009, decision D60), a cross-tenant probe is no longer an
+  `audit_records` row: the operator sink reads the platform table `security_audit_records` as a stream of its own, mapped
+  as `access.denied.cross_tenant` is (Detection Finding, operator sink only), and the tenant and operator sinks map the
+  new action `access.denied.not_found` as `access.denied.permission` is (API Activity 99, Low, Failure); tenant sinks keep
+  withholding `access.denied.cross_tenant` for the rows written before the change; Success criterion 040-004 adds a
+  probe of a missing identifier and asserts tenant A's events are the same for both.
+  Refs: Requirement 040-007, Requirement 040-009, Success criterion 040-004
 
 ### Verification Plan
 

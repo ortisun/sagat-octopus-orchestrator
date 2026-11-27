@@ -90,12 +90,18 @@ Every action is a command that the platform checks, journals and audits; none ed
 
 - **Reading it is recorded** (`audit.read`, with the filters). The same reading by the same person within five minutes is recorded once; after that it is a new reading and is on the trail again.
 - A reason that has the shape of a credential (a token, `Bearer …`, the password in a URL, a key with a well-known prefix) is replaced on the way out; the trail keeps what was written.
-- **Denied attempts to reach another tenant's resource (`access.denied.cross_tenant`) are not returned.** They are written only when the identifier exists elsewhere, so listing them would answer "does this exist?" for whoever could read them. They stay in the table for you:
+- **A caller that names a resource not in its tenant leaves `access.denied.not_found`**: the kind of resource, no
+  identifier, the same record whether the resource is missing or another tenant's, once per actor and kind in five
+  minutes. When it is another tenant's, the identifier and the tenant that owns it go to the platform's security audit,
+  which no tenant reads (feature 009, D60; `docs/runbooks/security-governance.md`):
 
 ```sql
-SELECT created_at, actor, resource_type, resource_id, trace_id FROM audit_records
-WHERE action = 'access.denied.cross_tenant' ORDER BY created_at DESC LIMIT 100;
+SELECT created_at, caller_tenant_id, actor, resource_type, resource_id, owner_tenant_id, trace_id
+FROM security_audit_records ORDER BY created_at DESC LIMIT 100;
 ```
+
+- **`access.denied.cross_tenant` is not returned.** Rows of that action written in `audit_records` before gap
+  G041-028 was closed stay there for you and stay hidden from the tenant.
 
 ## engine-down
 
