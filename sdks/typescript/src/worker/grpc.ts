@@ -18,7 +18,11 @@ export interface WorkerCapabilities {
   pools: string[];
   max_inflight: number;
   protocol_version: string;
+  /** Added in 1.10 (design 044): the (workflow type, code digest) pairs the session serves, at most 64. */
+  workflow_types?: WorkflowTypeOffer[];
+  offers_workflow_as_code?: boolean;
 }
+export interface WorkflowTypeOffer { workflow_type: string; code_digest: string }
 export interface RegisterWorkerRequest { worker_name: string; namespace: string; capabilities: WorkerCapabilities }
 export interface RegisterWorkerResponse { worker_id: string; session_token: string; accepted_protocol_version: string }
 export interface PollTasksRequest { worker_id: string; session_token: string; max_tasks: number }
@@ -30,7 +34,36 @@ export interface TaskLease {
   traceparent: string; tenant_alias: string; idempotency_key: string; task_kind: string;
   target_node: string; target_idempotency_key: string;
   instance?: ExecutionInstanceIdentity; target_instance?: ExecutionInstanceIdentity;
+  /** Added in 1.10: the oneof `workflow_work`, selected by `task_kind` WORKFLOW, QUERY or REPLAY_CHECK. */
+  workflow_task?: WorkflowTaskLease | null;
+  workflow_work?: string;
 }
+export interface WorkflowTaskLease {
+  run_id: string; attempt: number; generation: number; lease_token: string; expires_at_epoch_ms: number;
+  seed: Buffer; started_at_us: number; window_start_seq: number; gated_entries: string[]; state_max_bytes: number;
+  first_page: WireHistoryEvent[]; visible_count: number; continue_as_new_suggested: boolean; history_limit_reached: boolean;
+  traceparent: string; workflow_type: string; code_digest: string;
+}
+/** A `HistoryEvent` as the loader decodes it: snake_case, int64 as numbers, enums by name, the oneof's member in `body`. */
+export type WireHistoryEvent = Record<string, any> & { seq: number; kind: string; body?: string };
+export interface CommandValue { json?: Buffer; blob_id?: string; descriptor_sha256?: string; descriptor_size?: number }
+export type WireCommand = Record<string, unknown> & { command_number: number; kind: string };
+export interface CompleteWorkflowTaskRequest {
+  task_id: string; run_id: string; attempt: number; generation: number; lease_token: string; idempotency_key: string;
+  applied_through_seq: number; replayed_chain: Buffer; commands: WireCommand[]; deferred_command?: WireCommand;
+  traceparent: string;
+}
+export interface CompleteWorkflowTaskResponse { outcome: string; cause: string; already_applied: boolean }
+export interface FailWorkflowTaskRequest {
+  task_id: string; run_id: string; attempt: number; generation: number; lease_token: string; idempotency_key: string;
+  cause: string; command_number: number; actual_kind: string; actual_target: string; exception_type: string;
+  code_digest: string; traceparent: string; actual_saga_scope: string;
+}
+export interface FailWorkflowTaskResponse { already_applied: boolean }
+export interface ReadHistoryRequest {
+  task_id: string; run_id: string; attempt: number; generation: number; lease_token: string; read_token: string; from_seq: number;
+}
+export interface ReadHistoryResponse { events: WireHistoryEvent[]; last_page: boolean; lease_expires_at_epoch_ms: number }
 export interface PollTasksResponse { tasks: TaskLease[]; retry_after_ms: number }
 export interface HeartbeatRequest {
   task_id: string; worker_id: string; generation: number; lease_token: string; run_id: string; step_id: string; attempt: number;
@@ -63,11 +96,13 @@ export interface WriteBlobResponse { blob_id: string; size: number; sha256: stri
 export interface ReadBlobRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string; blob_id: string;
   instance?: ExecutionInstanceIdentity;
+  read_token?: string;
 }
 export interface ReadBlobResponse { header?: WriteBlobResponse; chunk?: Buffer; part?: string }
 export interface StepCommandResponse { command_id: string; already_applied: boolean; step_status: string; run_status: string }
 
-export type Method = 'RegisterWorker' | 'PollTasks' | 'StreamTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob';
+export type Method = 'RegisterWorker' | 'PollTasks' | 'StreamTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob'
+  | 'CompleteWorkflowTask' | 'FailWorkflowTask' | 'ReadHistory';
 
 export interface GrpcConfig {
   grpcUrl: string;
@@ -137,6 +172,8 @@ export function errorOfStatus(method: Method, error: grpc.ServiceError): SagatEr
     case grpc.status.FAILED_PRECONDITION:
       return safe('STALE_ATTEMPT', 'the lease is no longer current');
     case grpc.status.NOT_FOUND:
+      // ReadHistory answers an expired or invalidated lease as it answers an unknown run (worker.proto).
+      if (method === 'ReadHistory') return safe('STALE_ATTEMPT', 'the lease is no longer current');
       return safe('NOT_FOUND', 'the worker service does not know it');
     case grpc.status.RESOURCE_EXHAUSTED:
       return safe(reason === 'QUOTA_EXCEEDED' ? 'QUOTA_EXCEEDED' : 'RATE_LIMITED', 'the worker service asks for a slower pace');
@@ -292,6 +329,51 @@ export class WorkerRpc {
   }
   resolveSecrets(request: ResolveSecretsRequest, traceparent?: string): Promise<ResolveSecretsResponse> {
     return this.call('ResolveSecrets', request, traceparent);
+  }
+
+  completeWorkflowTask(request: CompleteWorkflowTaskRequest, traceparent?: string): Promise<CompleteWorkflowTaskResponse> {
+    return this.call('CompleteWorkflowTask', request, traceparent);
+  }
+  failWorkflowTask(request: FailWorkflowTaskRequest, traceparent?: string): Promise<FailWorkflowTaskResponse> {
+    return this.call('FailWorkflowTask', request, traceparent);
+  }
+
+  /** The pages of a run's visible history from `from_seq` (design 044), under a workflow lease. */
+  async *readHistory(request: ReadHistoryRequest, traceparent?: string, signal?: AbortSignal): AsyncIterable<ReadHistoryResponse> {
+    const metadata = new grpc.Metadata();
+    metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
+    if (traceparent) metadata.set('traceparent', checkTraceparent(traceparent));
+    const fn = this.client.readHistory as (request: ReadHistoryRequest, metadata: grpc.Metadata, options: grpc.CallOptions) => grpc.ClientReadableStream<ReadHistoryResponse>;
+    // Each page has its own deadline, not the whole stream: a history of 57 pages of 3 MiB takes longer than one call's
+    // timeout, while a page that does not come within it ends the stream as a transport failure (Decision 044-325).
+    const call = fn.call(this.client, request, metadata, {});
+    const pageMs = this.#config.timeoutMs ?? 30_000;
+    let late = false;
+    let timer: NodeJS.Timeout | undefined;
+    const arm = (): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { late = true; call.cancel(); }, pageMs);
+    };
+    const cancel = (): void => call.cancel();
+    if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
+    arm();
+    try {
+      for await (const value of call as unknown as AsyncIterable<ReadHistoryResponse>) {
+        clearTimeout(timer);
+        yield value;
+        arm();
+      }
+    } catch (error) {
+      if (late) throw new SagatError({ code: 'TRANSPORT', message: 'no history page came in time' });
+      if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number') {
+        throw errorOfStatus('ReadHistory', error as grpc.ServiceError);
+      }
+      throw new SagatError({ code: 'INTERNAL', message: 'the history stream failed' });
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      if (!call.destroyed) call.cancel();
+    }
   }
 
   async writeBlob(parts: AsyncIterable<WriteBlobRequest>, traceparent?: string, signal?: AbortSignal): Promise<WriteBlobResponse> {

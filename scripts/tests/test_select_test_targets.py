@@ -587,6 +587,14 @@ class Scope(unittest.TestCase):
         decision = self.decide()
         self.assertEqual((decision["frontend"], decision["scripts"]), ("true", "true"))
 
+    def test_the_workflows_bundler_has_its_own_entry_and_follows_the_typescript_sdk(self):
+        self.write("sdks/typescript-workflows-bundler/src/bundle.ts", "// changed\n")
+        self.commit()
+        self.assertEqual(self.decide()["sdks"], "typescript-workflows-bundler")
+        self.write("sdks/typescript/src/workflows/context.ts", "// changed\n")
+        self.commit()
+        self.assertEqual(set(self.decide()["sdks"].split()), {"typescript", "typescript-workflows-bundler"})
+
     def test_a_change_elsewhere_flags_neither(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()
@@ -597,7 +605,8 @@ class Scope(unittest.TestCase):
     def assert_full(self, decision):
         self.assertEqual(decision["full"], "true")
         self.assertEqual(decision["crates"], "ALL")
-        self.assertEqual(set(decision["sdks"].split()), {"typescript", "python", "go", "dotnet", "java", "rust"})
+        self.assertEqual(set(decision["sdks"].split()), {"typescript", "python", "go", "dotnet", "java", "rust",
+                                                        "typescript-workflows-bundler"})
         self.assertEqual((decision["frontend"], decision["scripts"], decision["all"]), ("true", "true", "true"))
         self.assertEqual(set(decision["targets"].split()), set(TARGETS))
 

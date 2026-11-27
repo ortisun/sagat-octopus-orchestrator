@@ -1164,3 +1164,380 @@ finding was answered.
   with eager dispatch (Task 044-14). The core keeps the worker's cache, reused when the window follows it; exclusivity is
   an optimisation to be measured, and it brings a routing string with several writers. Raised by the zoom-out review of
   round 3.
+
+## 5. The TypeScript lane (Task 044-10, and the TypeScript parts of Tasks 044-36 and 044-37)
+
+The TypeScript lane (branch `feature/044-typescript`) records its decisions and gaps here, in numbers of its own:
+decisions from D044-300 to D044-349 and gaps from G044-300 to G044-319, so that they never clash with the numbers the
+server lane takes in sections 2 and 3 while both are open. Every decision below is the lane's, delegate
+(OD-2026-11-24-4), with its reasoning.
+
+- **D044-300** (2026-11-26) The numbering block of the TypeScript lane above. delegate (OD-2026-11-24-4): two lanes
+  append to this register at once, and a number taken twice has happened before (`AGENTS.md`, "Start here").
+- **D044-301** (2026-11-26) The runtime that runs inside a run's context is one module that imports nothing
+  (`sdks/typescript/src/workflows/context.ts`), reached from a bundle through the package export condition
+  `sagat-workflow` of `@sagat-octopus-orchestrator/sdk/workflows`, so the bundler puts the runtime itself into the
+  bundle; in the host the same import resolves to the host entry point, whose workflow calls throw `NotInWorkflow`.
+  The host places in the context only a number (the bridge version, which tells the runtime to replace the globals
+  before any workflow module is evaluated) and one primitive string per call, and reads back one primitive string; it
+  refuses a bundle whose bridge version differs. delegate (OD-2026-11-24-4): the code digest then covers the exact
+  runtime code that runs (Technical Plan 3.2 hashes the bundle file), and Technical Plan 1.2's string bridge holds
+  without any host object.
+- **D044-302** (2026-11-26) The contexts of workflow runs live on a thread of their own (`node:worker_threads`, started
+  with no inherited command-line options), not on the worker's main thread. Evidence, Node 26.13.1 on the development
+  machine: an activation deadline that stops a `vm` evaluation inside the context's microtask checkpoint, on a thread
+  where async hooks are enabled (`createHook`, as OpenTelemetry's context manager does; `node:test` does too), ended the
+  whole process with `async hook stack has become corrupted`; the same activation on the workflow thread fails
+  `ACTIVATION_DEADLINE` and the process goes on (`an infinite loop stops at the activation deadline`, run under
+  `node:test`). The thread also ignores unhandled rejections, which workflow code makes as part of its own control
+  flow (a losing race, a cancelled sleep): the default handler would end the thread with every run it holds
+  (`an unhandled rejection in workflow code leaves the workflow thread running`). delegate (OD-2026-11-24-4): a
+  workflow bug must not take down a worker that also runs activities; the thread keeps workflow code off the thread of
+  the activities and of the gRPC client too. Cost: one structured-clone message per call; measured by Task 044-25.
+- **D044-303** (2026-11-26) A workflow module that reads the clock or the generator at its top level is refused when
+  its bundle loads (`NotInWorkflow`): top-level code runs before any activation, where no workflow time and no
+  position in the run's random stream exist. delegate (OD-2026-11-24-4): a silent value there would differ between the
+  worker that started a run and the one that replays it.
+- **D044-304** (2026-11-26) The default locale of workflow code is `en-US`, and the default time zone of `Intl` and of
+  the `toLocale...` methods is UTC. Technical Plan 1.2 asks for the root locale, but V8 has no data for `und` and
+  resolves it to the process's default locale (measured: `new Intl.NumberFormat("und").resolvedOptions().locale` is
+  `en-US` on the development machine, and follows the process's language settings elsewhere), which would make the same
+  code format differently on two workers. A fixed tag is deterministic; its data comes from the ICU version that the
+  digest's runtime string names. delegate (OD-2026-11-24-4).
+- **D044-305** (2026-11-26) The order of an activation's commands: the commands of the function and of its handlers in
+  the order they are made; then, when the function has a terminal outcome, the SDK's aborts of its open saga scopes,
+  innermost first; then one `consume_signals`; then one `set_state` (the last value of the activation); then the
+  terminal command (or the deferred one it re-emits) last. The terminal command does not count against the function's
+  256 commands: a completion carries a first-time terminal command or a re-emitted one, never both, so the SDK's 147
+  (Requirement 044-012, "one re-emitted deferral") covers it and a completion stays within 403. A side-effect marker's
+  identifier is the constant `side-effect` (the API names none, and the kind already says what it is). delegate
+  (OD-2026-11-24-4): six SDKs must make the same commands for one golden, so the order is fixed, and the commands the
+  SDK adds for the activation as a whole come after what the function did.
+- **D044-306** (2026-11-26) `patched(id)` and `deprecatePatch(id)` follow Temporal's semantics within Technical Plan
+  7.2: the answer of `patched(id)` is kept for the rest of the run, so only its first call records a marker; on replay
+  it is true only when the record at the next command number is that patch marker, and false otherwise (the old path);
+  `deprecatePatch(id)` records its marker live, and on replay only where the history has it. delegate
+  (OD-2026-11-24-4).
+- **D044-307** (2026-11-26) A replay of an exported history that differs from its records after the activation was
+  given a withheld value (a placeholder of feature 016, a blob the export does not carry) answers
+  `INCONCLUSIVE_REDACTED` at that command, never a mismatch; a replay that matches all the same is a match on kinds and
+  targets, the only thing an export lets a replayer compare (it carries no body). delegate (OD-2026-11-24-4): Technical
+  Plan 7.4 asks for "never a false mismatch"; declaring every replay that saw a classified field inconclusive would make
+  the replayer useless for the runs that matter most.
+- **D044-308** (2026-11-26) The SDK's inline accounting (Non-functional requirement 044-006, Tasks 044-36 and 044-37):
+  at the activation's start it reserves the version's `state.maxBytes` and the size of the consumption list of every
+  signal that could be consumed in the activation (those buffered and not consumed before it, and those of its window),
+  both known from the history; a value that always stays inline (a gated activity's input, an approval's subject,
+  continue-as-new's input and carried state) must fit 192 KiB less the reserve, or its call throws
+  `InlineValuesExceeded`; after every value that may travel as a blob (a work command's input, a side-effect value, an
+  update result) the SDK checks that the activation's values can still be carried (the largest moved to blobs first,
+  at most 16 blobs and 4 MiB of them), and the call after which they could not throws `InlineValuesExceeded` (an update
+  result fails its update with `RETAINED_BYTES_LIMIT` instead). A returned value that cannot be carried fails the
+  workflow task (`WORKFLOW_TASK_FAILED`, exception type `InlineValuesExceeded`), because nothing can be thrown into a
+  function that has returned; the run goes under review after its fifth failure rather than end with a value nobody can
+  read. The command metadata a call counts is the RFC 8785 size of its kind, target and body without its literal values.
+  delegate (OD-2026-11-24-4): every bound is decided from sizes alone, so the same call throws live and in replay.
+- **D044-309** (2026-11-26) The update rejections the SDK makes carry the reasons `HANDLER_NOT_REGISTERED` (no handler
+  when the admission is applied) and `VALIDATION_REJECTED` (the validator threw); the message of a validator's
+  exception never leaves the function. Both join the closed list of Task 044-2 when its contract merges. delegate
+  (OD-2026-11-24-4).
+- **D044-310** (2026-11-26) The runtime follows the server lane's contract as it stands on its branch: the body table
+  of `specs/044-workflow-as-code/contracts/goldens/README.md` (Decision 044-232 of that branch) and the code profiles of
+  `workflow.schema.json`. A work command's value (`input`, an approval's `subject`) is kept apart from its fragment and
+  enters the hashed body as its descriptor; the saga scope of an activity travels beside the fragment; a wait needs
+  `timeoutMs`; a script takes no `timeoutMs`; the literal keys of feature 022 are refused at the call until Task 044-27
+  admits them. Until the proto of Task 044-2 merges, the runtime exchanges a model of its own with the same names, and
+  one adapter will map the protocol's messages to it. delegate (OD-2026-11-24-4): the server lane owns the contract,
+  and following its draft now keeps the two lanes from drifting.
+- **D044-311** (2026-11-26) `requestCancellation(command)` cancels one of the run's own steps or children (Requirement
+  044-012 lists the command; the API of Technical Plan 1.12 names no call for it); on a durable timer it makes
+  `timer_cancel`, and the sleep rejects with `TimerCancelled`; `clearTimeout` and `clearInterval` cancel the timers of
+  `setTimeout` and `setInterval`. Task 044-1 names them in `sdks/SPEC.md`. delegate (OD-2026-11-24-4).
+- **D044-312** (2026-11-26) The time zone precondition accepts exactly `UTC` and `Etc/UTC`: an offset of zero is not
+  enough (`Europe/London` has summer time, `Africa/Abidjan` could change). delegate (OD-2026-11-24-4).
+- **D044-313** (2026-11-26) The SDK's own tests build their bundles without esbuild: the compiled runtime with its
+  `export` keywords removed, then the workflow functions' source text, in one function scope, which is what the
+  bundler's output amounts to; the bundler package's tests use esbuild itself. delegate (OD-2026-11-24-4): esbuild stays
+  a dependency of the bundler package only (Technical Plan 1.12).
+
+- **G044-300** (2026-11-26) The worker protocol of Task 044-2 is not merged: the worker's side (registering workflow
+  types with their digests, leasing `WORKFLOW` tasks, `ReadHistory` pages, `CompleteWorkflowTask` and
+  `FailWorkflowTask`, the capability declaration, the export lines in the proto3 JSON mapping) waits for it, and the
+  runtime is tested against the histories its test environment journals.
+- **G044-301** (2026-11-26) The bundler package `sdks/typescript-workflows-bundler/` (esbuild, the manifest and the
+  digest) and its supply-chain review (Gap 044-012) are the lane's next slice.
+- **G044-302** (2026-11-26) A `vm` evaluation with a timeout cost about 40 µs on the development machine against 0.5 µs
+  without (20,000 calls each, Node 26.13.1); an activation evaluates once per event the function sees, plus three. The
+  97.65625 µs per visible event of Non-functional requirement 044-001 leaves room, which Task 044-25 measures.
+- **G044-303** (2026-11-26) The server lane's contract keeps an activity's saga scope out of its hashed body
+  (`Command.saga_scope` beside the fragment), and the command record carries no scope: a changed function that schedules
+  the same activity inside another scope (or outside any) replays with the same kinds, targets and chain, while the
+  engine would compensate it differently. Reported to the coordinating session for the server lane: the scope belongs
+  in the hashed body of `activity` and `script`.
+- **D044-314** (2026-11-26) The bundler package `@sagat-octopus-orchestrator/workflows-bundler`
+  (`sdks/typescript-workflows-bundler/`) bundles with esbuild as one IIFE script (`platform: 'neutral'`, ES2022,
+  `keepNames`, no legal comments, the condition `sagat-workflow`): a synthetic entry imports the SDK's runtime first,
+  then the entry module, then registers its exported functions; built-in modules (with or without `node:`), the SDK's
+  activity side and the caller's `--refuse` prefixes are refused by a resolve hook; module paths are relative to the
+  project's `package.json`, so two builds of the same tree are the same bytes; the workflow types are the bundle's own
+  list, read on a workflow thread. The digest and the manifest are the SDK's (`manifest.ts`), so that a worker
+  recomputes them from the file it loads under its own Node and SDK, and refuses a manifest of another runtime, SDK
+  version or content. delegate (OD-2026-11-24-4): the digest is only worth its name if the worker checks it, and a
+  digest made under another Node would register a code version no run is pinned to.
+- **G044-012** (2026-11-26, later state: the supply-chain review of Task 044-10) esbuild `0.28.2`, the newest release,
+  published on 2026-08-08: an exact version in `sdks/typescript-workflows-bundler/package.json`; the `integrity` of
+  all 27 esbuild entries of its `package-lock.json` (the package and its 26 platform binaries, optional dependencies)
+  checked by `npm ci`; `npm audit signatures` verified the registry signatures and the attestations of the installed
+  packages, esbuild's being SLSA provenance published from GitHub Actions; licence MIT (the platform binaries too);
+  one maintainer, the author; one install script (`postinstall: node install.js`), which only checks that the platform
+  binary of its optional dependency is there and is never run (`npm ci --ignore-scripts` in CI, in the packaging smoke
+  and in the documented commands), the bundler working without it; the platform binaries are native executables,
+  verified by their integrity and provenance. Every advisory known for esbuild concerns its development server
+  (fixed in 0.25.0), which the bundler does not start. The gap closes with this review; the CI step
+  `TypeScript workflows bundler` runs `npm audit signatures` on each change.
+- **D044-315** (2026-11-26) The independent security review of pull request 290 (2 Major, 5 Minor, Nits, and one
+  suspected Major) is fixed, every finding first seen failing by a test of
+  `sdks/typescript/test/workflows/isolation.test.ts`; none is settled without a fix (OD-2026-11-24-4 does not reach a
+  security finding):
+  - Suspected, confirmed (Major): a dynamic `import()` in workflow code was refused by Node with an error of the host's
+    realm, from which the host's `Function`, and with it `process`, was reachable (the test read `object`). The workflow
+    thread now starts with `--experimental-vm-modules`, every script of a context is compiled with an import callback
+    that throws a primitive string, and a context refuses to exist where that callback cannot be given; the bundler
+    compiles `import()` into esbuild's `require` shim, which fails inside the context at the same point live and in
+    replay (Node's loader would settle it outside the activation).
+  - Major: workflow code could turn the bridge's input property into a setter that the host would run outside any
+    deadline. Both properties the host writes are made non-configurable data properties before the bundle runs, and
+    every request to the workflow thread has a watchdog (120,000 ms by default, the longest lease of a workflow task)
+    that ends the thread rather than hang.
+  - Major: a failure on the host after an activation left a half-run context reusable. The host side of an activation
+    no longer throws: a bridge failure or an answer it refuses fails the workflow task `NONDETERMINISM_RISK` and drops
+    the run, a failure while committing drops the run, a failed request marks a threaded run broken, and the depth of a
+    declared or carried state is checked at the call against the body that carries it.
+  - Minor: free text of workflow code crossed back in host errors. Host errors carry an error's name, checked against
+    the exception-type pattern by the host, never its message; the thread relays only the SDK's own texts.
+  - Minor: the host trusted the failure fields the context returned. Every field (cause, command number, kinds,
+    targets, exception type, inconclusive point, log lines) is checked, and one outside its pattern is dropped.
+  - Minor: values were checked at the call and serialized later. Each value is taken at the call as its canonical text
+    parsed again, the whole body is taken as the host will hash it, and the host checks the bounds again (commands,
+    metadata, the state's and a side effect's sizes, what one completion can carry), deciding which values stay inline
+    from the kinds and the gated entries rather than from the context's flags.
+  - Minor: one run's memory could end the worker's process. The thread has a heap bound (1,024 MiB by default), no
+    environment variable, and answers longer than 8 MiB are refused; a thread that ends fails only its own runs
+    (`WorkflowThreadExited`).
+  - Minor: the real clock was reachable through `Intl.DateTimeFormat.prototype.format()` without a date and through
+    `Temporal.Now` (Node 26 has `Temporal`). Both answer the workflow time, in UTC.
+  - Nit, settled otherwise: the reviewer proposed telling Node's timeout from a forged one by `instanceof Error`, but Node
+    makes that error in the context's realm (measured), so a deadline is judged by the clock: an evaluation that ends
+    before its allowance is never a deadline, whatever it threw.
+  - Nits: `WebAssembly` is removed (its shared memory handed out a `SharedArrayBuffer`); the bridge's version is read
+    as a number only.
+  - Suspected, confirmed: stack traces made inside the context held the host's frames with their absolute paths. The
+    context formats stack traces with the bundle's frames only, and every bundle is compiled under the fixed name
+    `workflow-bundle.js`.
+- **G044-304** (2026-11-26) The heap bound of the workflow thread does not bound the backing stores of `ArrayBuffer`s,
+  which live outside the V8 heap: a run that keeps allocating them can exhaust the worker's process. The code is the
+  tenant's own, in the tenant's worker (Gap 044-008); Task 044-25 measures a cached run's memory, and the worker's
+  memory alert is the operator's guard.
+- **G044-302** (2026-11-26, later state) A replay through the workflow thread cost 56 to 78 µs per visible event on the
+  development machine (Node 26.13.1, a loop of 2,000 and 4,000 activities, 8,004 and 16,004 visible events, cold
+  replay with every event's evaluation under a deadline); within the 97.65625 µs of Non-functional requirement 044-001
+  but without much room. Task 044-25 measures it on the reference host; the first lever is fewer timed evaluations per
+  activation.
+- **D044-316** (2026-11-26) The independent correctness review of pull request 290 (1 Blocker, 7 Major, 7 Minor and
+  Nits) is fixed, every finding first seen failing by a test of `sdks/typescript/test/workflows/review.test.ts` or by a
+  hand mutation; none is contested. delegate (OD-2026-11-24-4) for the choices each fix makes:
+  - Blocker: a side effect whose computation drew from the run's generator left a live run one draw ahead of its
+    replay, so a cold worker's later bodies differed (`CHAIN_MISMATCH`). The generator's state is put back after the
+    computation, which may make no command.
+  - Major: a signal handler that waited for another buffered signal gave it twice; each signal now leaves the buffer
+    before it is given. Aborting a scope left its open nested scopes open; the region is aborted, and their bodies can
+    schedule nothing more. The function's metadata bound is 48 KiB (Requirement 044-012), not the completion's 64 KiB.
+    A withheld value now keeps a replay inconclusive in every later activation, side-effect markers included. The live
+    activation applies only events up to its start. The test environment checks commands as the server does (command
+    numbers, a re-emission against its deferral, consumed signals, scopes, update decisions), lets a test journal events
+    during a task, and settles aborted regions as a whole. The corpus test compares every vector once it is enabled.
+  - Minor: a cancelled wait or approval rejects with `CommandCancelled`, a cancelled child with `ChildWorkflowError`;
+    cancelling a timer that fired makes `timer_cancel`; a failure's message is at most 4,096 characters and a wait's
+    correlation key and a child's business identifier count as inline values; a terminal command thrown in an update
+    handler ends the run, a validator that sets the state or consumes a signal fails `VALIDATOR_COMMAND`, and a
+    validator that answers a promise rejects its update (`VALIDATION_REJECTED`); `carriedState()` returns the state a
+    predecessor carried (Requirement 044-005 delivers it and the API of Technical Plan 1.12 named no reader; Task 044-1
+    names it in `sdks/SPEC.md`); a call's command bounds are judged before its values and a refused call records no
+    value; the SDK's share is 146 commands besides one re-emitted terminal command; an activation closes or aborts at
+    most 16 scopes and a run has at most 16 open, the call beyond either throwing `CommandBatchLimitExceeded`.
+  - Left to the server lane, reported to the coordinating session: the protocol has no cancelled outcome for a wait or
+    an approval (the runtime takes a step outcome `cancelled`); and Update-with-Start must journal `run.started` before
+    the `update.admitted` it creates, or the update meets no handler (`HANDLER_NOT_REGISTERED`).
+- **D044-317** (2026-11-27) The runtime follows the contract of Task 044-2 as the server lane settled it (pull request
+  291, worker protocol 1.10, Decisions 044-244 to 044-251), which supersedes the lane's drafts where they differ:
+  - The saga scope of an activity or a script enters its hashed body as `"scope": "s-<n>"` (the corpus README's body
+    table); a command record carries the scope (`HistoryCommandRecord.saga_scope`), the runtime's model has it as
+    `sagaScope` on `command.record`, and a replay compares the kind, the target and, for an activity or a script, the
+    scope; a difference fails `NONDETERMINISM` with `actualSagaScope` (empty outside a scope), which the host keeps only
+    when it matches `^s-[1-9][0-9]{0,9}$` and the replayer reports with the expected scope (Decision 044-244). Gap
+    044-303 is answered by it.
+  - A cancelled activity or script rejects with `CommandCancelled`, as a wait and an approval do (Decision 044-248); a
+    step outcome `failed` or `timed_out` still rejects with `ActivityError`. A cancelled step's promise settles only
+    from its outcome in the history, never at `requestCancellation`; a sleep rejects with `TimerCancelled` once its
+    `timer_cancel` is made, because that command is its end (Decision 044-245).
+  - A script command takes `timeoutMs` in its fragment, as a graph script node does, and `waitForEvent` requires
+    `timeoutMs` in its type as well as at the call (Decision 044-247); Decision 044-310's "a script takes no
+    `timeoutMs`" is withdrawn.
+  - A validator's refusal rejects its update with `VALIDATION_FAILED` (Decision 044-251), not Decision 044-309's
+    `VALIDATION_REJECTED`; `HANDLER_NOT_REGISTERED` stays.
+  delegate (OD-2026-11-24-4): the server lane owns the contract and its corpus is the proof six SDKs share, so the
+  runtime takes its rules as written; the corpus test (`the corpus vectors of Task 044-30 hold`) now runs on every
+  change and compares every RFC 8785 case, every primitive stream and every command of `vectors/chain.json` (body,
+  `d(k)` and `H(k)`).
+- **D044-318** (2026-11-27) The test environment journals what the server journals for the cases the contract settled:
+  - A start writes `run.started` first; a delayed start then takes the next sequence for `run.start_delayed` (a journal
+    row that is not visible, so the history skips its number) and its first workflow task waits for the delay; a
+    Signal-with-Start's `signal.buffered` or an Update-with-Start's `update.admitted` follows (Decision 044-246).
+  - A step whose attempt has not begun is cancelled by the function's `step_cancel` at once, with a step outcome
+    `cancelled`, error code `CANCELLED`, origin `effect`; a step whose attempt began is not (Decision 044-245): the
+    command changes nothing, and the test settles the step as its worker would (`completeStep`, or `failStep` with the
+    status `cancelled`). A wait for an event and an approval wait and are never begun; an activity or a script with a
+    stub runs at once, and one without a stub is ready until the test calls `beginStep(commandNumber)`, which is what a
+    worker's lease does; a child without a stub has not started until `beginStep`, and a child cancelled before it
+    starts ends `child.finished` `cancelled`, origin `effect`. delegate (OD-2026-11-24-4): a developer's unit test can
+    then prove both halves of the rule a function must live with (a cancellation that came too late leaves the activity's
+    outcome to its attempt), with the same events a real run would hold.
+- **D044-319** (2026-11-27) The worker side of the TypeScript SDK (Gap 044-300) is the `WorkerHost` itself, given
+  workflow bundles:
+  - Configuration: `workflowBundlePath` and `workflowManifestPath` (`sdks/SPEC.md` 12.1), or `workflowBundles`, a list
+    of such pairs, so that one session serves two code versions of a type while runs move between them (each pair
+    registers its own digests). At start the host checks the runtime's precondition, verifies every manifest against
+    the bundle file it names (content, runtime, SDK and each digest, Decision 044-314), loads the bundles on one
+    workflow thread, and checks that each bundle exports the types its manifest lists.
+  - Registration offers minor 1.10 with `workflow_types` (at most 64 pairs, the host refusing more) and
+    `offers_workflow_as_code`; a host whose server accepts a lower minor refuses to start (`UNSUPPORTED_PROTOCOL`),
+    because no workflow task would ever reach it.
+  - A lease of the kind `WORKFLOW` is served only when its `(workflow_type, code_digest)` is a pair the host offered and
+    its seed is 32 bytes; otherwise no code of the host may answer it, so it is left to lapse (logged, counted), never
+    answered by other code.
+  - The history is the lease's first page, then `ReadHistory` pages from the next sequence until `last_page` (on a
+    cache hit, from the larger of that and S(k − 1) + 1), so a page is never read twice. A blob payload is read with
+    `ReadBlob` under the workflow lease (step `~workflow`) and checked against its size and SHA-256; a `placeholder` is
+    a withheld value. The open activation ends at the last `workflow_task.started` read, S(k).
+  - A cached run is reused only at `window_start_seq` (Technical Plan 4.2) and under the code digest that made it: after
+    a move the lease names the new digest, and a context of the old code would run the new version's activations
+    (`code-patch-and-move` found it: activation 2 ran the first version's code). Any other worker replays every completed
+    activation in a new context, and a replay that does not end at `window_start_seq` fails the workflow task
+    `NONDETERMINISM_RISK`, because the history and the lease disagree. A live replay that differs after reading a
+    withheld value is reported `NONDETERMINISM_RISK` at that command, not `NONDETERMINISM`: the difference may be the
+    withheld value's.
+  - A completion sends its commands as the corpus maps them (`Command.fragment_json` without the value field, the value
+    in `Command.value`, the typed member for every other kind); a value the runtime moved to a blob is written with
+    `WriteBlob` under the workflow lease (`application/json`, its expected size and SHA-256 those of its descriptor)
+    and sent as its `blob_id` with its descriptor; a re-emitted deferral names its blob by the descriptor alone
+    (Decision 044-243). A failure sends its cause, the command number, the actual kind, target and saga scope, the
+    exception type and the session's code digest.
+  - Every report carries an idempotency key that is the same on every retry (`workflow-complete-<task>-<generation>`,
+    `workflow-fail-<task>-<generation>`) and is repeated on a retriable error. `ACCEPTED` and `ACCEPTED_DEFERRED`
+    commit the run and keep it in the cache; `REVIEW`, `STALE_ATTEMPT` and any other error drop it, so the next lease
+    replays.
+  - A workflow thread that ends (a stuck request, a crash) loses its runs: the lease is not answered and lapses, and the
+    host starts a new thread for the next lease. No failure is reported, because nothing of the function's is known to
+    have failed.
+  delegate (OD-2026-11-24-4): the host the SPEC names, one session for every version a deployment serves, and no lease
+  answered by code whose digest the run is not pinned to.
+- **D044-320** (2026-11-27) The lines of an export (format 1) are `HistoryEvent` in the proto3 JSON mapping of
+  `worker.proto`, as the corpus's `history.jsonl` are: the replayer reads them through the same adapter the worker uses
+  (`sdks/typescript/src/workflows/protocol.ts`), ignores the fields it does not know (`sdks/SPEC.md` 12.9) and refuses an
+  event without a kind or a sequence; the test environment's `exportLines` writes the same mapping. A blob in an export
+  is a withheld value. delegate (OD-2026-11-24-4): one adapter for the wire, the export and the corpus, so that a
+  history any SDK reads is the history every SDK reads.
+- **D044-321** (2026-11-27) A child whose run ended `PARTIAL` (`HistoryChildFinished.status`) rejects with
+  `ChildWorkflowError` of status `partial`, beside `failed`, `cancelled` and `timed_out`. delegate (OD-2026-11-24-4): the
+  protocol names the status; a function must be able to tell a partly compensated child from a failed one.
+- **D044-322** (2026-11-27) `sideEffect(compute, { id })` takes an optional marker identifier (the pattern of a patch
+  identifier, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`); without one the marker is `side-effect`, as Decision 044-305 fixed.
+  The corpus names its side effects (`fx-rate` in `code-cache-eviction`, `exchange-rate` in `vectors/chain.json`) while
+  `sdks/SPEC.md` 12.1 gives `sideEffect` no identifier, so no SDK could make the corpus's command; the identifier is
+  the marker's target, compared at replay like every target, so a reordered pair of side effects is reported at the
+  first one that moved instead of returning the other's recorded value. Reported to the coordinating session for the
+  server lane: `sdks/SPEC.md` 12.1 should name the option (or the corpus use `side-effect`). delegate (OD-2026-11-24-4):
+  an option is additive, keeps every call that names none, and makes the replay more precise.
+- **D044-323** (2026-11-27) The workflow thread bounds the memory outside its heap (Gap 044-304): the backing stores of
+  `ArrayBuffer`s, which the heap bound does not count. `WorkflowThreadOptions.maxExternalMemoryMb` (1,024 MiB by
+  default) is checked after every evaluation of an activation (its start, each event, its end) and of a replay: when
+  the thread's external memory is over it after a full synchronous collection, the activation fails
+  `WORKFLOW_TASK_FAILED` with the exception type `ExternalMemoryExceeded` and its context is dropped, so a function that
+  keeps buffers grows no further than one evaluation past the bound, and the run goes under review after its fifth
+  failure as for any failed workflow task. The collection is the thread's own: it takes V8's `gc` once at start, with
+  the flag that exposes it set for that moment only, so no workflow context ever sees it (measured: a context made after
+  the flag is cleared has no `gc`). The measure is the thread's, not the run's: the run whose evaluation crosses the bound
+  is the one failed, and the runs a cache holds count against the others, which the cache's size bounds. What one
+  evaluation allocates before it yields is bounded by its activation deadline only. delegate (OD-2026-11-24-4): Node
+  gives no limit on a thread's external memory, and a check between evaluations is the tightest bound the runtime can
+  keep without a host object in the context.
+- **D044-324** (2026-11-27) The independent security review of the worker side (commits up to f7da5b15; 2 Major, 3 Minor,
+  5 Nits, 3 suspicions) is fixed, each finding first seen failing by a test of
+  `sdks/typescript/test/workflows/security.test.ts`; none is settled without a fix:
+  - Major: a cached run kept the gated entries and the state bound of the lease that made it, so a republished envelope
+    that gates an activity under the same digest sent its input as a blob. A cached context is reused only under the
+    same code digest, `state_max_bytes` and set of gated entries; any change replays in a new context.
+  - Major: the history and its blobs were loaded into the worker's main thread without a bound. A lease's history is at
+    most 58,368 events (the largest history a function is asked to replay, Non-functional requirement 044-001, or it is
+    malformed), and its blobs are judged from their references before any is read: at most 64 MiB each and 256 MiB in
+    all; a history over either fails the workflow task `WORKFLOW_TASK_FAILED` with the exception type
+    `HistoryValuesExceeded` (counted, so the run goes under review after its fifth failure), never by allocating.
+  - Minor: the typed fields of a command went to the wire as the context's body gave them. The host now takes the marker
+    identifier and every command target from the checked target, and checks the context's answer for each typed kind
+    (failure and rejection codes against their pattern or closed list, a failure message at most 4,096 characters and
+    counted in the inline total, the saga-open fields against their values, an update's sequence against its target).
+  - Minor: the check that the history ends at the lease's S(k) could be skipped: a lease with no `started_at_us` is
+    dropped, and a `ReadHistory` stream that ends without `last_page` is a transport failure (the lease lapses).
+  - Minor: a blob named twice with different claims was checked once: it is a malformed history.
+  - Nits: a blob read checks its header against the reference; an export line's keys `__proto__` are ignored and its
+    nesting is bounded; a malformed manifest is `VALIDATION_FAILED`; a host that fails to load its bundles ends the thread
+    it started; a lease whose inner attempt or generation differ from its own is dropped; a cached run of a thread that
+    ended is never taken.
+  - Suspicion, settled otherwise (not a security matter): a re-emitted deferral names a blob-carried value by its
+    descriptor alone, which is what the corpus (`code-blob-values`, a cold worker) requires; whether the server accepts
+    a descriptor for a deferral it holds inline is the server lane's to say, reported to the coordinating session.
+    The other two suspicions (the depth of a history value, which the thread's clone bounds, and the server's own
+    refusal of a gated input as a blob) are answered by the Majors' fixes.
+- **D044-325** (2026-11-27) The independent correctness review of the worker side (commits up to fb7c1c1f; no Blocker,
+  6 Major, 7 Minor, 2 Nits, 6 test gaps) is answered, each fix first seen failing by a test of
+  `sdks/typescript/test/workflows/worker.test.ts` or of the files it names; delegate (OD-2026-11-24-4) for the two
+  settled otherwise:
+  - Major: a cold worker replayed only after reading the whole history, while the lease's time counts from the last
+    page delivered (Technical Plan 4.2). Each page's blobs are read and its completed activations replayed before the
+    next page is asked for.
+  - Major: in the test environment a stubbed step that its own completion cancels ended completed. The completion's
+    cancellations are applied before any stub runs (a stub is the worker that leases the step after the commit).
+  - Major: in the test environment a child, a wait or an approval settled by `completeStep` or `failStep` received a
+    step outcome and hung. Each kind receives its own event (`child.finished`, `wait.outcome`), an approval is decided
+    by `decideApproval`, and a kind that has none is refused; the events carry the corpus's origins (`engine`, a wait's
+    payload `external`).
+  - Major: a re-emitted deferral chose its carrier afresh, so it could name a blob the deferral never held, or send
+    inline a value held as a blob. The carrier is the deferral's: a run remembers whether the value it deferred was moved
+    to a blob (a cold replay computes the same from the replayed activation's commands), and the re-emission keeps it,
+    counted inline or not accordingly.
+  - Major: the host's packing left a failure message out of the inline total its own check counts, and refused a valid
+    completion. Both count it.
+  - Major: `ReadHistory` and `ReadBlob` were not repeated. A retriable error (`RESOURCE_EXHAUSTED` with
+    `retry-after-ms`, a dropped stream) resumes from the next sequence, at most five times, within the lease's expiry,
+    and each page has its own deadline instead of one for the whole stream.
+  - Minor: an out-of-order history is malformed (`NONDETERMINISM_RISK`), not unreported; a thread that is alive and
+    refused a request is not a lost thread (an activation deadline while a context is made fails `ACTIVATION_DEADLINE`);
+    a lease takes its channel once, so no report opens a channel after `stop`; a workflow lease received while stopping
+    is left to lapse, never handed back with `FailStep`; `waitForEvent` and `script` refuse a `timeoutMs` that is not an
+    integer from 1 ms to 366 days and a `lookbackMs` beyond 7 days, at the call; the workflow thread takes one request at
+    a time from the host, so a request's watchdog counts its own time, not the queue's.
+  - Minor, settled otherwise: the run that crosses the external-memory bound is the one failed while cached runs keep
+    theirs (accepted in Decision 044-323; the cache's size bounds them). The fake server's check of
+    `actual_saga_scope` is the server lane's file: reported to the coordinating session.
+  - Nit, settled otherwise: an older `put` overwriting a newer cached run costs one replay; no eager lease overlaps a
+    commit until Task 044-14.
+  - Test gaps closed: the corpus-defect tests assert the cause and the activation; the round trip of a history line is
+    named for what it proves (the model survives); trailing events after S(k), report retries with the same key and
+    body, the cache after each answer, and the blob each command names are tested.
+- **G044-305** (2026-11-27) A TypeScript host that registers activities and workflow types together would speak minor
+  1.10 for its activities too, which carries the host procedures of 1.7 (step logs) and 1.9 (activity timeouts) that
+  the TypeScript activity host does not have yet; until it has them, such a host refuses to start and the activities
+  run in a host of their own (which keeps its minor, as `sdks/SPEC.md` 12.5 allows).
+- **G044-306** (2026-11-27) The TypeScript host does not serve `QUERY` (Task 044-29, deferrable) or `REPLAY_CHECK`
+  (Task 044-13) leases yet: it leaves them to lapse, logged. The runtime already computes what a replay check answers
+  (every body digest, the chain, S(k) and a deferral's digest).

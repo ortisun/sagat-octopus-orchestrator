@@ -67,7 +67,7 @@ done
 source_root="${work_dir}/source"
 mkdir -p "${source_root}"
 git -C "${repo_root}" ls-files -z --cached --others --exclude-standard -- \
-  sdks/typescript sdks/python sdks/java >"${work_dir}/package-source-files"
+  sdks/typescript sdks/typescript-workflows-bundler sdks/python sdks/java >"${work_dir}/package-source-files"
 "${python_bin}" - "${repo_root}" "${source_root}" "${work_dir}/package-source-files" <<'PY'
 from pathlib import Path
 import shutil
@@ -82,6 +82,7 @@ for relative in files:
     shutil.copy2(root / relative, target)
 PY
 typescript_source="${source_root}/sdks/typescript"
+bundler_source="${source_root}/sdks/typescript-workflows-bundler"
 python_source="${source_root}/sdks/python"
 dotnet_source="${repo_root}/sdks/dotnet"
 java_source="${source_root}/sdks/java"
@@ -97,6 +98,9 @@ assert_contains() {
 
 assert_contains "${repo_root}/sdks/typescript/package.json" "\"version\": \"${SDK_VERSION}\""
 assert_contains "${repo_root}/sdks/typescript/package.json" '"license": "MIT"'
+assert_contains "${repo_root}/sdks/typescript-workflows-bundler/package.json" "\"version\": \"${SDK_VERSION}\""
+assert_contains "${repo_root}/sdks/typescript-workflows-bundler/package.json" "\"@sagat-octopus-orchestrator/sdk\": \"${SDK_VERSION}\""
+assert_contains "${repo_root}/sdks/typescript-workflows-bundler/package.json" '"license": "MIT'
 assert_contains "${repo_root}/sdks/python/pyproject.toml" "version = \"${SDK_VERSION}\""
 assert_contains "${repo_root}/sdks/python/pyproject.toml" 'license = "MIT"'
 assert_contains "${repo_root}/sdks/go/version.go" "const Version = \"${SDK_VERSION}\""
@@ -121,6 +125,26 @@ mkdir -p "${work_dir}/typescript-consumer"
   npm install --ignore-scripts --no-audit --no-fund --cache "${work_dir}/npm-smoke-cache" "${typescript_package}"
   node --input-type=module -e \
     "import { SDK_VERSION, workflow } from '@sagat-octopus-orchestrator/sdk'; if (SDK_VERSION !== '${SDK_VERSION}' || workflow('package-smoke').end('done').build().metadata.name !== 'package-smoke') process.exit(1);"
+)
+
+echo "==> TypeScript workflows bundler: build, npm pack, clean consumer that bundles a workflow"
+(
+  cd "${bundler_source}"
+  npm ci --ignore-scripts --no-audit --no-fund --cache "${work_dir}/npm-build-cache"
+  npm run build
+  npm pack --pack-destination "${output_dir}"
+)
+bundler_package="${output_dir}/sagat-octopus-orchestrator-workflows-bundler-${SDK_VERSION}.tgz"
+tar -tzf "${bundler_package}" | grep -x 'package/LICENSE' >/dev/null
+mkdir -p "${work_dir}/bundler-consumer"
+(
+  cd "${work_dir}/bundler-consumer"
+  npm init --yes >/dev/null
+  npm install --ignore-scripts --no-audit --no-fund --cache "${work_dir}/npm-smoke-cache" "${typescript_package}" "${bundler_package}"
+  printf '%s\n' "import type { WorkflowContext } from '@sagat-octopus-orchestrator/sdk/workflows';" \
+    "export async function smoke(ctx: WorkflowContext): Promise<string> { return ctx.uuid(); }" >workflows.ts
+  TZ=UTC npx --no-install sagat-workflows bundle workflows.ts --out out
+  grep -q '"workflowType": "smoke"' out/workflows.manifest.json
 )
 
 echo "==> Python: wheel and sdist, clean consumer"

@@ -408,6 +408,16 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm test
+      # The workflows bundler of design 044 (Task 044-10) bundles the TypeScript SDK's runtime with esbuild, pinned and
+      # hash-locked: its install scripts stay off, and the registry's signatures and provenance are checked.
+      - name: TypeScript workflows bundler
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.sdks), ' typescript-workflows-bundler ')
+        working-directory: sdks/typescript-workflows-bundler
+        run: |
+          (cd ../typescript && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm audit signatures
+          npm test
       - name: Python SDK
         if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' python ')
         working-directory: sdks/python

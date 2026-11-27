@@ -27,6 +27,7 @@ The expected version is `0.2.0`. The script rejects a different version or licen
 The output contains:
 
 - `sagat-octopus-orchestrator-sdk-0.2.0.tgz`: npm package, including `LICENSE`.
+- `sagat-octopus-orchestrator-workflows-bundler-0.2.0.tgz`: the npm package of the `sagat-workflows` command (design 044), including `LICENSE`; its clean consumer installs both npm packages, bundles a workflow with `TZ=UTC` and checks the manifest names it. The bundler's one dependency, esbuild, is pinned to an exact version and installed with `--ignore-scripts`.
 - `sagat_octopus_orchestrator-0.2.0-py3-none-any.whl` and `sagat_octopus_orchestrator-0.2.0.tar.gz`: Python wheel and source distribution, including `LICENSE`.
 - `sagat-octopus-orchestrator-go-0.2.0.tar.gz`: deterministic Go module source archive, including `go.mod`, `go.sum` and `LICENSE`.
 - `SagatOctopusOrchestrator.Sdk.0.2.0.nupkg`: NuGet package, including `LICENSE.txt`.

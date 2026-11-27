@@ -69,6 +69,9 @@ SHA = re.compile(r"[0-9a-f]{40}")
 MANIFEST = "tests/Cargo.toml"
 TESTS_PACKAGE = "sagat-tests"
 SDK_LANGUAGES = ("typescript", "python", "go", "dotnet", "java", "rust")
+# Packages under sdks/ that are not a language's SDK but have tests of their own. The workflows bundler of design 044
+# bundles the TypeScript SDK's runtime, so a change of the TypeScript SDK runs its tests too.
+SDK_PACKAGES = ("typescript-workflows-bundler",)
 BROWSER_SUITES = ("e2e_workflow_studio", "e2e_developer_experience", "e2e_database_connections")
 SDK_SUITES = ("sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage")
 BUDGET_SUITES = ("integration_claim_transition_efficiency",)
@@ -448,9 +451,11 @@ def scope(root, base, head, targets, workspace):
             # Said in the log so that nobody wonders why no suite ran; the file still goes through the rest, since a
             # runner may be a workspace package whose own unit tests (and its dependents') are due.
             decision.reasons.append(("no suite", f"{rel} is shared by the suites; the release runs them"))
-        for language in SDK_LANGUAGES:
+        for language in SDK_LANGUAGES + SDK_PACKAGES:
             if rel.startswith(f"sdks/{language}/"):
                 decision.sdks.add(language)
+        if rel.startswith("sdks/typescript/"):
+            decision.sdks.add("typescript-workflows-bundler")
         if rel.startswith("frontend/"):
             decision.frontend = True
         if rel.startswith("scripts/"):
@@ -504,7 +509,7 @@ def full_run_reason(event, ref_name, ref_type, base_ref, base, root):
 
 def emit(decision, durations):
     if decision.full:
-        crates, sdks = "ALL", list(SDK_LANGUAGES)
+        crates, sdks = "ALL", list(SDK_LANGUAGES + SDK_PACKAGES)
         frontend = scripts = lake = True
     else:
         crates = "ALL" if decision.everything else " ".join(sorted(decision.crates))

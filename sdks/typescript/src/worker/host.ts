@@ -18,7 +18,10 @@ import {
   type WriteBlobOptions,
 } from './activity.js';
 import { WorkerRpc, checkGrpcConfig, type TaskLease, type WriteBlobRequest } from './grpc.js';
+import type { OfferedCode, WorkflowTaskEvent, WorkflowTasks } from './workflows.js';
 import type * as grpc from '@grpc/grpc-js';
+import { readFile } from 'node:fs/promises';
+import { basename, dirname, resolve } from 'node:path';
 
 export interface WorkerConfig {
   /** `http://host:port` or `https://host:port` of the worker service. */
@@ -46,6 +49,18 @@ export interface WorkerConfig {
   interceptors?: grpc.Interceptor[];
   /** Called for each thing that happens in the host: the hook for metrics. */
   onEvent?: (event: WorkerEvent) => void;
+  /**
+   * Workflow code (design 044): the bundle `sagat-workflows bundle` wrote and its manifest. The host then registers the
+   * manifest's (workflow type, code digest) pairs on protocol 1.10 and serves their workflow tasks (`sdks/SPEC.md` 12.5).
+   */
+  workflowBundlePath?: string;
+  workflowManifestPath?: string;
+  /** Several bundles and manifests, so that one session serves several code versions while runs move between them. */
+  workflowBundles?: Array<{ bundlePath: string; manifestPath: string }>;
+  /** Runs kept between workflow tasks (256 by default); any other worker replays a run from its history. */
+  workflowCacheSize?: number;
+  /** The activation deadline in milliseconds, from 100 to the workflow task timeout; 2,000 by default. */
+  activationDeadlineMs?: number;
 }
 
 export type WorkerTransport = 'auto' | 'poll' | 'stream';
@@ -60,7 +75,8 @@ export type WorkerEvent =
   | { type: 'task.dropped'; taskId: string; reason: string }
   | { type: 'heartbeat'; taskId: string }
   | { type: 'receive.failed'; code: string }
-  | { type: 'reconnect' };
+  | { type: 'reconnect' }
+  | WorkflowTaskEvent;
 
 type Kind = 'activity' | 'compensation' | 'reconciler';
 
@@ -126,6 +142,20 @@ export function observePauses(host: WorkerHost, observe: (ms: number) => void): 
   pauseObservers.set(host, observe);
 }
 
+/**
+ * The code versions a host serves, given directly instead of read from bundle and manifest files: the seam of the tests
+ * of this package (which serve the corpus's digests with their own bundles), not part of the public interface.
+ */
+const workflowCode = new WeakMap<WorkerHost, OfferedCode[]>();
+
+/** Makes `host` serve these code versions; for the tests of this package only. */
+export function serveWorkflowCode(host: WorkerHost, offers: OfferedCode[]): void {
+  workflowCode.set(host, offers);
+}
+
+/** The protocol minor of workflow tasks (design 044, Architecture decision 0109). */
+const WORKFLOW_MINOR = 10;
+
 /** The worker host of the SDK (SPEC §6). */
 export class WorkerHost {
   private readonly handlers = new Map<string, Registered>();
@@ -154,6 +184,8 @@ export class WorkerHost {
   #handBackQueue: Array<{ lease: TaskLease; run: () => Promise<void>; drop: () => void }> = [];
   #handBackNext = 0;
   #handBacksRunning = 0;
+  // The workflow tasks of a host that serves workflow code (design 044); made at start.
+  #workflows: WorkflowTasks | undefined;
   // Called with the number of leases after a poll answer or a stream frame is read and before it is looked at; unset
   // except in the tests, which hold the loop there while `stop` begins.
   private frameReceived: ((leases: number) => Promise<void> | void) | undefined;
@@ -238,9 +270,44 @@ export class WorkerHost {
   }
 
   async #begin(): Promise<void> {
-    if (this.handlers.size === 0) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'register at least one activity before start' });
+    const offers = await this.#workflowOffers();
+    if (this.handlers.size === 0 && !offers) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'register at least one activity before start' });
+    if (offers && this.handlers.size > 0) {
+      // Research Gap 044-305: protocol 1.10 carries the host procedures of 1.7 and 1.9, which this activity host lacks.
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'a host serves workflow types or activities, not both yet: run the activities in a host of their own' });
+    }
+    if (offers && this.#config.protocolVersion !== undefined && minorOf(this.#config.protocolVersion) < WORKFLOW_MINOR) {
+      throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'workflow tasks need worker protocol 1.10' });
+    }
+    if (offers) {
+      // Loaded only here, so that a host of activities alone never loads the workflow runtime (which needs Node 22.8).
+      const { WorkflowTasks } = await import('./workflows.js');
+      const tasks = new WorkflowTasks({
+        offers, rpc: () => this.#channel(), log: this.log, emit: (event) => this.#emit(event), retry: this.retry,
+        ...(this.#config.workflowCacheSize === undefined ? {} : { cacheSize: this.#config.workflowCacheSize }),
+        ...(this.#config.activationDeadlineMs === undefined ? {} : { activationDeadlineMs: this.#config.activationDeadlineMs }),
+      });
+      try {
+        await tasks.load();
+      } catch (error) {
+        await tasks.close();
+        throw error;
+      }
+      this.#workflows = tasks;
+    }
     warnIfNotSecure(this.#config.grpcUrl, this.log);
-    await this.register();
+    try {
+      await this.register();
+      if (this.#workflows && minorOf(this.accepted) < WORKFLOW_MINOR) {
+        throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: `the server accepted worker protocol ${this.accepted}; workflow tasks need 1.10` });
+      }
+    } catch (error) {
+      await this.#workflows?.close();
+      this.#workflows = undefined;
+      this.#rpc?.close();
+      this.#rpc = undefined;
+      throw error;
+    }
     if (this.#config.transport === 'stream' && minorOf(this.accepted) < 4) {
       this.#rpc?.close();
       this.#rpc = undefined;
@@ -310,11 +377,58 @@ export class WorkerHost {
     this.running = false;
     this.#rpc?.close();
     this.#rpc = undefined;
+    await this.#workflows?.close();
+    this.#workflows = undefined;
+  }
+
+  /**
+   * The code versions this host serves: the test seam's, or every bundle and manifest of the configuration, each manifest
+   * verified against its bundle file under this Node and this SDK (Decision 044-314). Undefined for an activity host.
+   */
+  async #workflowOffers(): Promise<OfferedCode[] | undefined> {
+    const given = workflowCode.get(this);
+    if (given) return given;
+    const config = this.#config;
+    const files = [...(config.workflowBundles ?? [])];
+    if ((config.workflowBundlePath === undefined) !== (config.workflowManifestPath === undefined)) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'workflowBundlePath and workflowManifestPath are given together' });
+    }
+    if (config.workflowBundlePath !== undefined && config.workflowManifestPath !== undefined) {
+      files.unshift({ bundlePath: config.workflowBundlePath, manifestPath: config.workflowManifestPath });
+    }
+    if (files.length === 0) return undefined;
+    const { verifyManifest } = await import('../workflows/manifest.js');
+    const offers: OfferedCode[] = [];
+    for (const { bundlePath, manifestPath } of files) {
+      const [bundle, manifest] = await Promise.all([readFile(bundlePath, 'utf8'), readFile(manifestPath, 'utf8')]);
+      let parsed: unknown;
+      try { parsed = JSON.parse(manifest); } catch { throw new SagatError({ code: 'VALIDATION_FAILED', message: `the workflow manifest ${basename(manifestPath)} is not JSON` }); }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray((parsed as { workflows?: unknown }).workflows)
+        || !(parsed as { workflows: unknown[] }).workflows.every((workflow) => workflow !== null && typeof workflow === 'object')) {
+        throw new SagatError({ code: 'VALIDATION_FAILED', message: `the workflow manifest ${basename(manifestPath)} is not a manifest` });
+      }
+      const named = (parsed as { bundle?: unknown }).bundle;
+      if (typeof named !== 'string' || resolve(dirname(manifestPath), named) !== resolve(bundlePath)) {
+        throw new SagatError({ code: 'VALIDATION_FAILED', message: `the workflow manifest ${basename(manifestPath)} names another bundle than ${basename(bundlePath)}` });
+      }
+      let verified: ReturnType<typeof verifyManifest>;
+      try {
+        verified = verifyManifest(parsed as Parameters<typeof verifyManifest>[0], bundle);
+      } catch (error) {
+        // The manifest's own text (an SDK message naming versions and types) explains the refusal; nothing else is relayed.
+        throw new SagatError({ code: 'VALIDATION_FAILED', message: error instanceof Error && error.name === 'ManifestMismatch' ? error.message : 'the workflow manifest does not hold' });
+      }
+      for (const workflow of verified) {
+        offers.push({ workflowType: workflow.workflowType, codeDigest: workflow.digest, bundleCode: bundle, filename: basename(bundlePath) });
+      }
+    }
+    return offers;
   }
 
   // ------------------------------------------------------------------------------------ registration
 
   private async register(): Promise<void> {
+    const workflows = this.#workflows;
     const request = {
       worker_name: this.#config.workerName,
       namespace: this.#config.namespace,
@@ -323,7 +437,9 @@ export class WorkerHost {
         activities: [...this.handlers.keys()].sort(),
         pools: this.#config.pools ?? [],
         max_inflight: this.maxInflight,
-        protocol_version: this.#config.protocolVersion ?? PROTOCOL_VERSION,
+        // A host of workflow code offers the workflow-as-code minor; a host of activities keeps its own (SPEC §12.5).
+        protocol_version: workflows ? `1.${WORKFLOW_MINOR}` : this.#config.protocolVersion ?? PROTOCOL_VERSION,
+        ...(workflows ? { workflow_types: workflows.offers, offers_workflow_as_code: true } : {}),
       },
     };
     let refreshed = false;
@@ -531,6 +647,11 @@ export class WorkerHost {
    */
   #handBack(lease: TaskLease, key: string, why: HandBackReason): void {
     const minor = minorOf(this.accepted);
+    // FailStep accepts no workflow, query or replay-check lease (design 044, Technical Plan 4.1): such a lease lapses.
+    if (lease.task_kind === 'WORKFLOW' || lease.task_kind === 'QUERY' || lease.task_kind === 'REPLAY_CHECK') {
+      this.log.warn('the host leaves a workflow lease it did not start to lapse', { task: lease.task_id, reason: why });
+      return;
+    }
     if (minor < HAND_BACK_MINOR) {
       this.log.warn('the host drops a task it did not start; its lease lapses', { task: lease.task_id, reason: why });
       return;
@@ -572,7 +693,10 @@ export class WorkerHost {
 
   private dispatch(lease: TaskLease, key: string): void {
     const abort = new AbortController();
-    const done = this.execute(lease, abort)
+    const workflows = this.#workflows;
+    // A workflow host serves its leases there (a QUERY or REPLAY_CHECK lease is left to lapse, research Gap 044-306).
+    const work = workflows ? workflows.serve(lease) : this.execute(lease, abort);
+    const done = work
       .catch((error: unknown) => {
         // Nothing here may reject: `stop` waits on these and an unhandled rejection ends the process.
         this.log.error('a task failed unexpectedly', { task: lease.task_id, error: error instanceof Error ? error.name : 'unknown' });

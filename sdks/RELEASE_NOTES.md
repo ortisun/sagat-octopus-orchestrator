@@ -2,6 +2,14 @@
 
 ## 0.3.0 — in development
 
+Design 044 adds workflow as code to the TypeScript SDK: the entry point `@sagat-octopus-orchestrator/sdk/workflows`
+(Node 22.8 or later, checked when it loads; the package's other entry points keep Node 20) runs a workflow function in a
+`node:vm` context per run on a worker thread of its own, with the clock, randomness, timers and locale made
+deterministic; it ships the replayer of exported histories and a test environment. The new package
+`@sagat-octopus-orchestrator/workflows-bundler` (command `sagat-workflows bundle`, esbuild pinned to an exact version)
+bundles workflow code, refuses imports of Node's built-in modules, and writes the manifest with each workflow type's
+code digest. The worker side of the protocol follows with the contract of Task 044-2.
+
 Adds the native Tokio Rust SDK under `sdks/rust`: typed REST client, worker host, scoped
 secrets/blobs, compensation/reconciliation, trace/metric hooks and declarative builders using
 the canonical IR. Rust joins the common conformance matrix and local `.crate`/consumer checks.
