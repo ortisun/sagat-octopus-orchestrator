@@ -33,6 +33,11 @@ URL, header, body, address, value, credential or provider message.
 | `FORBIDDEN` | `PII_REVEAL_NOT_GRANTED` | existing reason, reused for previews over retained events |
 | `QUOTA_EXCEEDED` | `LIMIT` with `details.resource` | any ceiling of the plan |
 | `VALIDATION_FAILED` | `UNSUPPORTED_NODE` with `dependency: SCOPED_RESOURCE_OPERATION` | `resourceOperation` inside a body (G1120) |
+| `VALIDATION_FAILED` | `OAUTH_BROKER_UNAVAILABLE` | the `oauth` scheme while design 047's broker capability is off (added 2026-11-24, Decision 021-001) |
+| `VALIDATION_FAILED` | `RESOURCE_TYPE_NOT_AUTHORABLE` | a request to create a resource type from a namespace (added 2026-11-24, Decision 021-004) |
+| `VALIDATION_FAILED` | `CONCURRENCY_GATE_UNAVAILABLE` | a per-resource `limits.concurrency` while 022's concurrency-key gate is off (added 2026-11-24, Decision 021-009) |
+| `UNAVAILABLE` | `INTEGRATION_CAPABILITY_NOT_ACTIVATED` with `details.capability` | a write, publication or admission of a capability of Decision 021-011 before its operator activation (added 2026-11-24) |
+| `VALIDATION_FAILED` | `RUN_INPUT_INVALID`, `RUN_INPUT_SCHEMA_UNUSABLE` | existing reasons of Architecture decision 0090, reused for a resource probe; a triggered run refused on its input is a delivery outcome, not an answer (added 2026-11-24, Decision 021-010) |
 
 Route and e-mail ingress: before authentication only route-independent refusals (`413` global cap,
 `431` headers, `429` from the prefix-slot limiter); every authentication failure is one `401`; after
@@ -59,9 +64,12 @@ and admission to `200` (FR-021-028). Existing webhook endpoints keep their order
 | `OPERATION_MISMATCH` | no | GraphQL kind differs from the document |
 | `GRAPHQL_ERRORS` | no | `errors` with null `data` |
 | `SECRET_IN_OUTPUT` | no | a resolved slot value appears in the output |
-| `CAPABILITY_UNAVAILABLE` | yes | OpenBao or resolution unavailable; nothing was sent |
+| `CAPABILITY_UNAVAILABLE` | yes | OpenBao or resolution unavailable; nothing was sent (2026-11-24: also design 047's token broker unavailable) |
+| `RESOURCE_REAUTHORIZATION_REQUIRED` | yes | added by design 047: the OAuth credential needs a person to reconnect, or its registration is broken; nothing was sent |
+| `OAUTH_SCOPE_INSUFFICIENT` | no | added by design 047: the credential's granted scopes do not cover the operation or declaration |
+| `RESOURCE_ASK_LIMIT` | yes | added by design 047: a script or activity spent its delivery budget for the attempt |
 | `RESOURCE_UNAVAILABLE` | no | resource paused/deleted or authority revoked at capability use; also ends a connector stream lease |
-| `CAPACITY` | yes | per-resource/namespace/tenant concurrency full before dispatch |
+| `CAPACITY` | yes | per-resource/namespace/tenant concurrency full before dispatch (2026-11-24: withdrawn, never produced: a step over a concurrency bound waits outside `READY` or is not claimed, Decision 021-009) |
 | `OUTCOME_UNKNOWN` | never automatically | effect may have happened; reconcile or manual review |
 | `ENCODING_READ_BY_EXPRESSION` | no | an expression reached an encoded (client-encrypted) field; code and positions owned by 031's registry (`specs/031-client-side-encryption/contracts/workflow-encoding.md`); publication refuses it where the position is known, and runtime evaluation fails with the same code |
 | `WORKER_ERROR` | yes (safe only) | runner fault before dispatch |

@@ -7,6 +7,11 @@ implemented. Identifiers: decisions D1320–D1359, gaps G1320–G1359, owner que
 Revised on 2026-10-26 after the independent architecture and security reviews: decisions were
 revised in place where noted, D1357–D1359 and G1334–G1337 were added. Revised again for the
 coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the overflow range D1640–D1644.
+Re-baselined on 2026-11-24 against `develop` at `2c94064f`: the stale items, the decisions D026-001 to D026-017, the
+gaps G1338 to G1347 and the answers to the three owner questions are in
+[Re-baseline against `develop`](#re-baseline-against-develop-2026-11-24) and [Owner questions](#owner-questions);
+the outcomes of Architecture decisions 0061 and 0068 are in their status blocks, those of the requirements checklist
+in `checklists/requirements.md`, and the build slices in `plan.md` ("Build slices (2026-11-24)").
 
 ## Repository evidence
 
@@ -125,7 +130,7 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
 - **D1335 — Link tokens travel in the fragment; the path carries a non-secret embed id.**
   `https://<public-forms-origin>/f/<embedId>#t=<token>` keeps the token out of server and proxy access
   logs and `Referer`; the page sends it as `X-Octopus-Link-Token`; the embed id lets the server compute
-  the page's `frame-ancestors` from that one link (ADR-0061 decisions 3 and 4; security review B1).
+  the page's `frame-ancestors` from that one link (ADR-0061 decisions 3 and 4; Blocker 1 of the security review).
 - **D1336 — Public links are enabled by quota and run in their own pool.** The count quota
   `public_links` defaults to 0; no separate namespace switch. Each link has a required cap on live
   runs, and the namespace counts live public-link runs in `public_link_active_runs`, a sub-pool of
@@ -146,7 +151,7 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
   networks, and then the right-most untrusted hop counts.
 - **D1339 — Anonymous callers see only declared `public` result fields** (ADR-0061, decision 5). A
   model-written value (feature 025) has at least the highest level of everything in its transcript
-  (feature 025's model-output floor, security review B4), so an author annotation cannot relabel it
+  (feature 025's model-output floor, Blocker 4 of the security review), so an author annotation cannot relabel it
   `public`. The same rule serves a feature-021 synchronous route, which must declare
   `public-fields-v1` to return anything.
 - **D1340 — Notifications never block an approval.** Notifications are a convenience; the approval's
@@ -203,8 +208,8 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
   row. Identity links use single-use 128-bit codes consumed atomically, a team bound by the code's
   tenant, per-team rate limits and confirmation in the signed-in Studio. Rejected: one
   platform-distributed app with a deployment-wide signing secret (it needs a deployment OAuth client
-  and still cannot tie a team to one tenant without the same install binding). (Architecture review B1,
-  security review B2/S5.)
+  and still cannot tie a team to one tenant without the same install binding). (Blocker 1 of the
+  architecture review; Blocker 2 and finding 5 of the security review.)
 - **D1351 — Two new permissions only.** `link:read`, `link:manage`; channels reuse `event:manage`
   (outbound subscriptions), forms and OpenAPI `definition:read`, invocation `run:start`/`run:read`,
   decisions `approval:decide`.
@@ -219,7 +224,7 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
   delivery to edit at settlement; a lost acknowledgement re-sends and produces a second message (G1322).
 - **D1354 — The public page is a second minimal build entry on its own origin.** Served under
   `/f/<embedId>` on the public-forms origin with its own CSP, no shell, no sign-in code, no cookie;
-  never on the Studio origin (security review B1).
+  never on the Studio origin (Blocker 1 of the security review).
 - **D1355 — `sagat.` channel names are reserved for platform-defined channels.** Feature 025 declares
   `stream.tokens: true` on its agent node rather than an author channel; the reserved prefix lets such a
   feature fix the schema, classification (transcript content) and budget while every append, read and
@@ -303,8 +308,273 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
   ceiling `public`; `secret` never (D1345). If the owner declines O1081, channels stay at `internal` at
   most.
 
+### Answers of 2026-11-24 (delegate (OD-2026-11-24-4))
+
+The owner delegated the open questions of release 0.3.0 (Owner decisions 2026-11-20-6 and 2026-11-24-4). Each answer
+below weighed every option and took the one with the most architectural and business advantage, not the simplest.
+
+- **O1320 — decided: no possession-only decision in release 0.3.0; delegate (OD-2026-11-24-4).** Options weighed:
+  (a) never, every decision by a signed-in eligible member; (b) a per-approval opt-in mode now, with single-use
+  per-recipient links; (c) Windmill's bearer default. (c) breaks Requirement 014-008 (eligibility at commit), the
+  initiator exclusion and an audit that names a person, which are what make the platform's approvals acceptable to
+  regulated buyers (the business case of surpassing Windmill is the audit, not the convenience). (b) adds a second
+  decision authority, its own key handling and its own revocation story to a release that already carries 21 new
+  features, for a need (external approvers without an account) that a later guest principal of federated login
+  (feature 013) serves better, since that principal is a person with an identity. (a) keeps Architecture decision 0061
+  decision 6 true with no exception to test. Consequence: Gap 1347 (external approvers need an account). A later mode
+  still needs its own architecture decision, as the recommendation said.
+- **O1321 — decided: public links are off in every namespace by default, development included; delegate
+  (OD-2026-11-24-4).** Options weighed: (a) quota `public_links` 0 everywhere; (b) a non-zero default in the
+  development compose profile; (c) a deployment switch plus the quota. (b) makes the anonymous surface reachable on
+  any machine that runs the development profile with a published port, and a demonstration that needs it raises the
+  quota in one command (the quickstart does so). (c) adds a second switch that says the same thing as the quota and
+  can disagree with it. (a) is secure by default, one control, already audited through ADR-0027 administration.
+- **O1322 — decided: yes, a channel may carry `pii` summary fields, only under the uniform `pii` egress rule of
+  Owner question 1081 (feature 020); delegate (OD-2026-11-24-4).** Options weighed: (a) never above `internal`;
+  (b) under the uniform rule; (c) under a channel-specific rule. (c) creates a second egress policy for one destination
+  kind, which the coordinator decision C9 exists to prevent. (a) forces teams who approve on personal data (a refund to
+  a named customer, a credit decision) to open the Studio for every approval, which is the friction feature 026 exists
+  to remove, and it is the weaker product against Windmill, whose messages carry whatever the author puts in them.
+  (b) keeps one rule, a named accountable administrator holding the reveal grant, a recheck at every delivery, an audit
+  per delivery and `secret` never. Owner question 1081 itself is feature 020's and is not answered here; until it is
+  answered, the `pii` ceiling stays unbuildable (Task 026-077 of `tasks.md` names the gate) and channels stop at
+  `internal`, which is the fallback the original recommendation stated. Gap 1346.
+
 Note (2026-11-15, from feature 041): the owner gave worker-protocol minor 1.7 to feature 041 (step logs, OD-2026-11-15-8).
 Where this feature names 1.7 for its own addition, it takes the next free minor of the register in `sdks/SPEC.md` §9 when
 its contract merges.
+
+## Re-baseline against `develop` (2026-11-24)
+
+The drafts were written on 2026-10-26 at `70f09435`. They were read again on 2026-11-24 against `develop` at
+`2c94064f` (worktree `sagat-wt-windmill-parity`), and against the open branches that change what this feature builds
+on: `feature/022-throughput-control`, `feature/041-step-logs-server`, `feature/007-astryx-design-system` (pull request
+267) and `feature/044-workflow-as-code` (no content yet). Every path below was read at that revision. Nothing of feature
+026 is built.
+
+Identifiers. The bare decision range of this feature (D1320 to D1359, overflow D1640 to D1644) is spent but for
+D1642 to D1644, which stay unused; from this re-baseline on, new decisions take the feature-scoped form
+`D026-NNN`, as features 041 and 043 do. New gaps continue the bare range (G1338 upward). No new owner question is
+open: every question is decided under the delegation. In prose they are written in words (Decision 026-001,
+Gap 1338), as `docs/governance/identifier-scheme.md` requires.
+
+### What changed on `develop`, and what this feature had wrong
+
+Each stale item names the evidence and the decision that fixes it. The fixes are written into `spec.md`, `plan.md`,
+`tasks.md`, `data-model.md` and the contracts in the same change.
+
+| # | Stale item | Evidence on `develop` | Fixed by |
+|---|---|---|---|
+| 1 | Server validation was described as a list of JSON pointers and a reason of this feature (`FORM_INPUT_INVALID`). Every run start is now checked by the run input gate of design 043, which answers the first violation only: `422 VALIDATION_FAILED`, `details.reason` `RUN_INPUT_INVALID` or `RUN_INPUT_SCHEMA_UNUSABLE`, one `details.field` and one `details.rule`, never a value | `crates/application/src/run_input.rs` (`RunInputGate`, `Creator`, `FieldPolicy`), `specs/001-platform-foundation/contracts/openapi.yaml` (`startRun` description, `Error.details.rule` enum), Architecture decisions 0090 and 0092 | Decision 026-017 |
+| 2 | `x-sagat-form` was an annotation inside `inputSchema`. The supported subset of design 043 admits one `x-` keyword only, `x-sagat-classification`; any other makes the schema unusable, so a version with a form hint would refuse every start | `specs/043-run-input-validation/contracts/input-schema-subset.md` ("the only `x-` keyword the platform reads"), the `inputSchema` description of `workflow.schema.json` | Decision 026-001 |
+| 3 | The form keyword subset was this feature's own. Design 043 fixed the subset every `inputSchema` must stay inside (combinators, `pattern`, `multipleOf`, type lists, `minProperties`, `maxProperties`); a form must render a subset of it and nothing outside it | the same contract | Decision 026-002 |
+| 4 | Approval input, stream events and link presets were to be validated with the `jsonschema` crate. Design 043 showed that its cost cannot be bounded beforehand and built a platform validator with a work counter | `crates/infra-schema/src/run_input/`, design 043 Technical Plan 4, Owner decision 2026-11-14-14 | Decision 026-003 |
+| 5 | `runs.origin` was to gain `PUBLIC_LINK`. That column is the private-run marker of feature 017: a trigger refuses a non-null origin on a workflow that is not internal | `20261125000000_database_ad_hoc.up.sql` (`runs_private_definition_guard`, CHECK `AD_HOC_STEP`, `AD_HOC_WORKFLOW`, `CONNECTION_PROBE`) | Decision 026-004 |
+| 6 | Live public-link runs were to be counted by exact queries under locks. Active runs are now read from counters the database keeps with the runs, because counting cost a start one index entry per active run | `20261017000100_active_run_counts.up.sql`, `ensure_room_for_run` in `crates/infra-postgres/src/quotas.rs` | Decision 026-004 |
+| 7 | The waiter was "woken by the existing `run.finished` hint". The hint is published (outbox relay to `sagat.v1.run.finished.<tenant>`), but no process subscribes to NATS: `crates/infra-nats` is a JetStream publisher only | `crates/infra-nats/src/lib.rs`, `crates/scheduler/src/outbox.rs` (subject format) | Decision 026-005 |
+| 8 | The stream append locked the step row `FOR SHARE` and the stream tables had foreign keys to `runs`. The hot path now has a statement budget tested as equalities, a heartbeat updates the step row, and feature 041 forbids its appends to take or wait for a lock on `runs`, `steps` or `run_events` and to take the tenant usage row before commit | `tests/integration/claim-transition-efficiency/work_budget.rs`, design 041 Requirement 041-008 and Problem items 3 and 4 | Decisions 026-006 and 026-007 |
+| 9 | The stream purge instant was written in the run's terminal transaction, one more write on the transition design 038 made cheaper | design 038, the work budget above | Decision 026-008 |
+| 10 | Five SDKs. There are six: the Rust SDK (feature 034, Architecture decision 0070) is in the conformance harness | `tests/contract/sdk-conformance/harness.rs` (`LANGUAGES`, six entries), `sdks/rust/` | spec Requirement 026-048, `contracts/sdk-conformance.md` |
+| 11 | Worker-protocol minor 1.7. It is feature 041's (`AppendStepLogs`); drafts 020, 021, 025 and 026 each take the next free minor when their contract merges | `sdks/SPEC.md` register of minors | `contracts/worker-protocol.md` |
+| 12 | `executeRun` took "the `StartRunRequest` body" without saying what the new fields of feature 018 do: a business identifier with `USE_EXISTING` answers `200` with the holder, `startDelayMs`, `inputBlobRef`; Signal-with-Start and Update-with-Start exist, and Update-with-Start already answers its Update result synchronously; chains have their own Query and Update paths | `startRun`, `signalWithStart`, `updateWithStart`, `queryExecutionChain`, `updateExecutionChain` in the canonical OpenAPI | Decision 026-009 |
+| 13 | Synchronous custom routes were "served by the same waiter" on a run. A feature-021 route admits an event into the inbox and the engine's dispatcher creates the run later, so at the moment of the request there is no run to wait on | `specs/021-integration-resources-triggers/contracts/connector-kinds.md` (route `response` reserved, `202 EventAccepted`), `event_deliveries.run_id` (`20261012000000_events.up.sql`), design 043 Technical Plan 1 row 9 | Decision 026-010 |
+| 14 | Feature 022 was cited as if present. Its throughput slice (Architecture decisions 0088 and 0089) is on `feature/022-throughput-control`, not on `develop`; early return (its User story 022-04) is not built anywhere; every run creator must call its permit port (its Task 022-064) | `specs/022-flow-control-step-policies/plan.md` "Run creators" | Decision 026-017, Gap 1338 |
+| 15 | Step logs (feature 041) were not considered. They are a second per-attempt record beside the journal, with their own rpc, permission (`run:logs:read`), storage class and routes (`/runs/{runId}/logs`, `/logs/streams`, `/logs/stream`) | `docs/designs/041-step-logs.md`, Architecture decisions 0084 and 0085 | Decision 026-011 |
+| 16 | Names. "Stream" now also means the log streams of feature 041, the Redis Streams destination of feature 033 (`REDIS` in the destination CHECK) and, avoided on purpose, the operator chains of design 042 | `docs/designs/042-stream-operators.md` (a word on names), `20261224000000_redis_callback_destination.up.sql` | Decision 026-012 |
+| 17 | "Capability gates" were server flags. A feature that every control plane or engine must honour is switched on through the instance registry (`schedules-v1`, `run-input-validation-v1`) | `crates/application/src/instances.rs` (`Capability`), Architecture decision 0082 | Decision 026-013 |
+| 18 | Migrations were named `<next>_*`. The newest on `develop` is `20270119000000_batch_purge`; from `20270118000000` every CHECK is added `NOT VALID` and validated by a later migration, and a static test enforces it | `tests/integration/platform-foundation/migrations.rs` (`a_constraint_added_not_valid_is_validated_by_a_later_migration`) | `plan.md` Migration and compatibility, `data-model.md` |
+| 19 | The OpenAPI fragment said "no existing operation changes", yet `ApprovalDecisionRequest` gains `input` and `linkToken`, which changes `decideWorkflowApproval`. Two tests pin existing operations | `tests/contract/payload-classification/openapi.rs`, `tests/contract/iceberg-writes/openapi.rs` | Decision 026-014 |
+| 20 | Studio paths. *Start run* now carries a business identifier and a start delay; the Astryx design system migration rewrites every feature directory; `features/integrations/` is the broker connector page that feature 021 extends | `frontend/apps/studio/src/features/runs/StartRun.tsx`, `features/integrations/README.md`, branch `feature/007-astryx-design-system` | Decision 026-015 |
+| 21 | "Single region (ADR-0009)" and a declarative-only IR. The constitution amendment 5.0.0 in progress makes it one writable region per cell (feature 032) and adds a procedural mode, which enters release 0.3.0 (Owner decisions 2026-11-24-2 and 2026-11-24-3) | `docs/owner-decisions.md` 2026-11-24 | Decision 026-016 |
+| 22 | `contracts/sdk-conformance.md` said `decideApproval` gains `input` and `via`; a client never sends `via` (Requirement 026-032) | this feature's own contracts | `contracts/sdk-conformance.md` |
+| 23 | The reserved actor `system:public-link:<id>` was new. Feature 018 has since added `system:schedule:<id>` the same way, which is the precedent to follow; the catalog still has no `link:` permission and no principal other than `Principal` | `crates/domain/src/identity.rs` | none needed; `plan.md` cites it |
+| 24 | Audit actions were listed without a mapping. Design 040 (in release 0.3.0) requires every audit action to have one OCSF mapping that a test enforces | `docs/designs/040-ocsf-event-standard.md` Requirement 040-001 | Gap 1345 |
+
+### Decisions of 2026-11-24 (delegate (OD-2026-11-24-4))
+
+- **D026-001 — Form hints leave the schema.** Options weighed: (a) keep `x-sagat-form` in `inputSchema` and widen the
+  subset of design 043; (b) hints beside the schema, keyed by the field's JSON pointer: `inputFormHints` at the root
+  of the definition and `hints` in an approval `form`; (c) no hints. (a) changes the contract of an approved and built
+  design, makes a placeholder edit change the schema digest that keys the validator cache, and is dangerous in a
+  rolling upgrade: a process of the previous release reads the unknown keyword as outside the subset and refuses every
+  start of the version, permanently for the engine's creators (design 043 Technical Plan 1: those refusals are final).
+  (c) loses parity with Windmill's title, placeholder and widget customization. (b) leaves the validated schema about
+  validation only, adds one IR field behind the same fleet capability as the other IR additions (Decision 026-013),
+  and suits workflows written as code (design 044), whose schemas are generated from types and whose hints are set
+  beside them. Pointers are instance pointers over `properties` names only (the form of design 043's `details.field`),
+  checked at publication against the schema; an unknown pointer is `FORM_HINT_INVALID`.
+- **D026-002 — The form model renders a subset of design 043's subset, from 043's own walk.** The form walker reads
+  the schema positions that the 043 pre-check records (`crates/infra-schema/src/run_input/vocabulary.rs`), so the form
+  and the validator cannot disagree on what a schema contains. Rendered: single types; a nullable field written as a
+  type list `[T, "null"]` or as `anyOf`/`oneOf` of one supported schema and `{"type": "null"}` (what Pydantic and Zod
+  emit for an optional field, so code-first schemas render); `enum`, `const`, the numeric bounds including the
+  exclusive ones and `multipleOf` (as the control's step), the length bounds, `minProperties`/`maxProperties` on a
+  group, `pattern` (shown as "must match the author's pattern"; checked only by the server), local `$ref` and the
+  `$defs`/`definitions` containers, the annotations `title`, `description`, `default` and `format` (four formats chose
+  the widget; `format` is never asserted, as in 043, so the form says so). Not rendered, so the field is unsupported
+  and the model `UNAVAILABLE` when the field is required: other combinators, type lists other than the nullable form,
+  `additionalProperties` as a schema (extra keys are never offered), arrays of objects. A version whose schema the 043
+  pre-check refuses (stored before 0.3.0, or published in `report` mode) answers `UNAVAILABLE` with the new reason
+  `SCHEMA_UNUSABLE`, and the Studio offers the JSON editor. Rejected: a renderer with its own keyword list (it would
+  drift from the validator, the reason Decision 1320 put the walker on the server).
+- **D026-003 — One validator for every value this feature validates.** Approval form input, stream event data, link
+  presets and the merged public submission are validated by the platform validator of design 043 (`InputSchemas`),
+  with its work counter, depth limit and closed refusal, never by the `jsonschema` crate. Their schemas must stay
+  inside the 043 subset, checked at publication by the 043 pre-check (refusal `STREAM_SCHEMA_OUTSIDE_SUBSET`,
+  `FORM_SCHEMA_OUTSIDE_SUBSET`, both under `VALIDATION_FAILED`). The validations take permits from the same per-process
+  pool and its fair queue (design 043 Technical Plan 3), each counted for its tenant; one stream batch takes one permit
+  for all its events. Rejected: a second pool (the cache weight bound of 043 counts the matchers four permits allow,
+  so a second pool needs a second bound and a second measurement); the `jsonschema` crate (unbounded cost on hostile
+  schemas, the finding that produced design 043). The cost of sharing is unmeasured (Gap 1339).
+- **D026-004 — A public-link run carries the link id; live counts are counters kept by the database.**
+  `runs.public_link_id` (nullable uuid, set only at admission, immutable like the admission identity) replaces the
+  `runs.origin` value. Two counter tables follow `run_active_counts` exactly: `public_link_active_counts` per link
+  (sixteen slots, kept by the same insert, finish and delete triggers when `public_link_id IS NOT NULL`, with a `WHEN`
+  clause so that every other run pays nothing) and its sum per namespace for `public_link_active_runs`. Admission reads
+  them under the existing quota advisory locks of slot 6 (ADR-0050 decision 7). Rejected: `runs.origin` (refused by the
+  private-run guard, and its meaning is "private"); counting runs joined through `public_link_submissions` (the cost
+  grows with retained receipts, and a purged receipt would drop a live run from the count); a table of live public-link
+  runs (a delete on every terminal transition).
+- **D026-005 — Waiters are woken by a new NATS subscriber, and the poll remains the authority.** A port
+  `RunOutcomeHints` in `crates/application` and its adapter in `crates/infra-nats`: a core NATS subscription on
+  `sagat.v1.run.finished.*` (and `sagat.v1.run.result_returned.*` once feature 022 publishes it) on every
+  control-plane replica, without a queue group; JetStream-published messages reach core subscribers, so nothing in the
+  relay changes. The wake-up latency includes the outbox relay's own pass. NATS disabled or down: the batched poll alone
+  serves waiters (500 ms default). Rejected: PostgreSQL `LISTEN/NOTIFY` (as Decision 1325), a JetStream consumer per
+  replica (durable state for a hint that may be lost).
+- **D026-006 — The stream append fences the lease without a lock on `steps` or `runs`.** The append transaction locks
+  its own attempt row (`run_stream_attempts`, one row per node instance, attempt and generation that appended) `FOR
+  UPDATE`, then reads the step's lease without a lock, on the database clock sampled after that read, and refuses with
+  `STALE_ATTEMPT` when the token, generation or attempt do not match, the lease expired or the attempt row is closed.
+  An attempt row is closed (`closed_at`) by the publisher's final batch (`final: true`, which the SDK sends when it
+  flushes before completing), or, for an attempt whose step settled or was superseded without a final batch, by the
+  first feed read or maintenance pass that sees that committed state. A feed sends `settled` or `superseded` for an
+  attempt only after its row is closed. Ordering proof: an append that took the attempt row before the close commits
+  before the close can take it, so its events are read before `settled`; an append that takes the row after the close
+  is refused. Leasing, heartbeat and completion read and write nothing of the stream tables, and the stream tables
+  carry no foreign key to `runs` or `steps`, so an insert takes no `KEY SHARE` on a row the engine locks `FOR UPDATE`.
+  Rejected: `steps FOR SHARE` (blocks heartbeats and completions behind appends and creates multixacts on the hottest
+  row of a streaming step); a close written by the completion (one more statement on the hot path that design 038
+  budgets); a time bound after settlement (PostgreSQL 16, pinned in `infra/docker/compose.yaml`, has no
+  `transaction_timeout`, so the bound could not be proven).
+- **D026-007 — Stream bytes are a storage class of their own.** Bytes of `run_stream_events.data` are charged to a new
+  class `workflow_stream` with the tenant quota `tenant_stream_bytes`, in the way feature 041 charges `step_log`
+  (ADR-0027 Amendment of 2026-11-15), not to `tenant_content_bytes`. A batch never takes the tenant usage row before its
+  commit. Business reason: a runaway token stream of an agent must not exhaust the content quota that run completions
+  need, which would fail unrelated runs with `STORAGE_QUOTA_EXCEEDED`. Architecture reason: the same hot-row contention
+  that feature 041 measured on `tenant_retained_usage`. If feature 041's measurement (its Owner question 041-026) gives
+  the step-log class a usage row of its own, this class follows. This amends Architecture decision 0068 decision 4
+  and needs an ADR-0027 amendment written with the migration (Task 026-071).
+- **D026-008 — The purge time is stamped by the purge pass, not by the terminal transaction.** `run_stream_heads`
+  gains `terminal_seen_at` (infrastructure time), set by the purge pass the first time it sees the run terminal; rows
+  are deleted after that instant plus the effective retention. The cost is at most one pass interval of extra
+  retention; the gain is no added statement on the run's terminal transition. Erasure still deletes at once.
+- **D026-009 — `executeRun` takes the whole `StartRunRequest` and says what each of its fields means for a wait.**
+  With a business identifier held by an open run and `businessIdConflictPolicy: USE_EXISTING`, the call waits on the
+  holder and the outcome says `admission: EXISTING` (otherwise `CREATED`); `run:read` is already required, so the
+  holder is disclosed exactly as `startRun` discloses it. `startDelayMs` is accepted and simply makes a `202` likely.
+  `inputBlobRef` is accepted. Signal-with-Start and Update-with-Start get no waiting variant: Update-with-Start already
+  answers its Update result in its own response, and the run's result is `getRunOutcome` on the run it names; a third
+  start operation with a wait would duplicate the authorization and idempotency rules of feature 018 for no new
+  capability. The per-workflow OpenAPI specializes `signalWithStart`, `updateWithStart` and the chain Query and Update
+  operations as well (Requirement 026-040).
+- **D026-010 — A synchronous custom route waits on its event, then on its run.** A route with `response.mode: wait`
+  admits its event into the inbox exactly as in mode `accept` (feature 021 owns that path); the waiter is keyed by
+  tenant, endpoint and event id, woken by the batched poll over `event_deliveries` (the dispatcher writes `run_id` in
+  its delivery transaction) and by the run hints once the run exists. Outcomes for the route's caller, a webhook
+  identity: the run's public fields under `resultDisclosure: public-fields-v1`, else `202` with no run identifier; an
+  event the dispatcher refused for its input (design 043 row 9) answers `422 VALIDATION_FAILED` `RUN_INPUT_INVALID` with
+  `field` `/` and `rule` `other` (the policy `Root`, since the schema's names are not the sender's to learn); a
+  dispatch not done within the wait answers `202`. Rejected: admitting the run synchronously in the control plane,
+  which would bypass the inbox's deduplication, rate and dead-letter rules that feature 021 builds on. Feature 021 needs
+  nothing new beyond what it specifies: the reserved `response` field, refusal of `mode: wait` until 026's capability
+  is active, and `event_deliveries.run_id` written by the dispatcher (it already is). Order: 021's routes (mode
+  `accept`) merge first; this feature's waiter is built in its own slice; the route wait is one joint task after both
+  (Task 026-065). Gap 1342.
+- **D026-011 — Workflow Streams stay separate from step logs.** Options weighed: (a) one store for logs and streams;
+  (b) two stores with a shared pattern. A log line is lossy by design, unclassified text, redacted by value in the
+  worker and read under `run:logs:read` (Architecture decisions 0084 and 0085); a stream event is lossless, typed by
+  a declared schema, classified per field and read under `run:read` through the feature-016 projection. Merging them
+  would either make logs pay for schema validation and exactly-once storage, or make stream values lose their per-field
+  disclosure. (b) keeps both contracts and shares what is the same: the SDK's bounded buffer and background flusher,
+  the attempt identity of a batch, the storage-class accounting and the attempt fence of Decision 026-006.
+- **D026-012 — Names.** "Workflow Stream" (product term, Temporal's name) and, in the IR, `streams` and `emits`; the
+  REST resource `stream-events`; the SSE path `/runs/{runId}/stream-events`. Kept distinct from: the graph stream
+  (`/runs/{runId}/stream`, ADR-0016), the log streams and live tail of feature 041 (`/runs/{runId}/logs/streams`,
+  `/runs/{runId}/logs/stream`), the Redis Streams destination of feature 033, and the operator chains of design 042
+  (which avoid the word). The glossary needs one entry per term (Gap 1344).
+- **D026-013 — Each surface that every process must honour is an instance-registry capability.** New
+  capabilities of `crates/application/src/instances.rs` (Architecture decision 0082): `form-hints-v1` and
+  `workflow-streams-v1` (control plane and engine: the IR codec of both must read the new fields, and the engine runs
+  the purge and close passes), `notification-channels-v1` (control plane and engine: the engine's delivery worker must
+  know the new destinations before a channel exists), `approval-channels-v1` (control plane and engine: the opening
+  fan-out runs in the engine, the decision's settlement in the control plane), `public-links-v1` (control plane) and
+  `synchronous-routes-v1` (control plane; feature 021 refuses `response.mode: wait` at route creation until it is
+  active, Decision 026-010). Six in all.
+  Publication refuses the corresponding IR fields, and creation refuses the corresponding resources, until the
+  requirement is activated. `executeRun`, `getRunOutcome`, the form model and the per-workflow OpenAPI need no
+  requirement: they are reads or admissions on one replica, and an older replica answers `ROUTE_NOT_FOUND`, which the
+  SDKs treat as an older server. Rejected: per-process flags (the gap Architecture decision 0081 closes), one capability
+  for everything (prevents the rollout order of `plan.md`).
+- **D026-014 — Changes to existing operations are marked and the pinning tests learn the mark, never a re-bless.**
+  `decideWorkflowApproval` (through `ApprovalDecisionRequest.input`, `.linkToken` and `ApprovalDecisionReceipt.via`) is
+  the one existing operation this feature extends; it is marked `x-extended: '026'`. The byte-stability test of feature
+  016 already skips its own `x-extended` value and the new operations of later features; it gains the same exclusion
+  for 026. The baseline test of feature 035 gains an exclusion of operations marked `x-extended` by a later approved
+  feature, with the reviewed one-operation diff in its comment, instead of a rewrite of its baseline file. No other
+  existing schema gains a field (`RunOutcome` wraps `Run`; `Run` is unchanged).
+- **D026-015 — Studio work follows the Astryx migration.** The Studio tasks start after pull request 267 merges and use
+  its components and tokens. New directories: `features/forms/` (the shared renderer), `features/notifications/`
+  (channels and Slack app bindings; not `features/integrations/`, which is the connector page of features 004 and 021),
+  `features/public-links/`, `features/approvals/`, and the second build entry `src/public/`. *Start run* keeps its
+  business identifier and start delay fields beside the generated form.
+- **D026-016 — Workflows written as code use the same surfaces (Owner decision 2026-11-24-3).** What this feature
+  requires of design 044: a procedural version publishes `inputSchema`, `outputSchema`, its Query and Update
+  declarations and its stream channel declarations as data of the version, so that forms, links, `executeRun`, the
+  per-workflow OpenAPI and the stream feed treat it as any version; its activities append through
+  `AppendStreamEvents` under their lease; whether workflow code itself may append is design 044's decision, and if it
+  may, the append is a command of the workflow task, its publisher sequence derived from the replay position so that a
+  replay deduplicates (Gap 1343); a human approval opened from code is a feature-014 approval, so `notify`, `summary`
+  and `form` are arguments of that SDK call and the same opening transaction applies. Nothing of this feature waits on
+  design 044; its conformance scenarios add a procedural case once 044 lands. Also from the amendment 5.0.0: a cell
+  has one writable region; public links and decision pages are served by the cell's control planes, and Decision 1640
+  already carries the cell epoch in stream cursors.
+- **D026-017 — The new run creators, and what each caller gets on refusal.** Rows for design 043's Technical Plan 1
+  (the coordinator adds them to the design, documentation first, before the code) and for feature 022's "Run
+  creators" table:
+
+  | Creator | Entry | Gate call | `Creator` label | Invalid input | Schema unusable | Gate busy |
+  |---|---|---|---|---|---|---|
+  | Studio generated form | `startRun` (row 1 unchanged) | as row 1 | `api` | as row 1; the form marks the one field | as row 1; the form was `UNAVAILABLE` already | `503`, the form keeps its key and retries |
+  | `executeRun` | `crates/api-http/src/routes/invocation.rs` → `start_with_options` (row 1, a second entry) | as row 1, before any waiter is registered | `api` | `422 RUN_INPUT_INVALID`, `field` and `rule` (policy `Show`); no wait | `422 RUN_INPUT_SCHEMA_UNUSABLE` | `503`, retryable, key not consumed |
+  | Public-link submission | `crates/api-http/src/routes/public.rs` → `crates/application/src/public_links.rs` → `start_with` | `RunInputGate::check` on the merged input of the unlocked revision, before the admission transaction; the transaction refuses a revision other than the one checked and the use case repeats once from the gate | `public_link` (new) | `422 VALIDATION_FAILED` `RUN_INPUT_INVALID`, keeping `field` only when it lies inside an exposed pointer, else `/` and `other`; `rule` withheld outside exposed fields | the uniform `404` (an unusable link), audited `public_link.refused` `SCHEMA_UNUSABLE` and raised as the alert `PUBLIC_LINK_UNUSABLE` | `503` with `Retry-After`, no detail |
+  | Synchronous custom route (with feature 021) | the dispatcher, row 9 unchanged | as row 9 | `trigger` | `422` `field` `/`, `rule` `other` (Decision 026-010) | as invalid | the dispatcher retries as row 9; the caller gets `202` at the end of the wait |
+
+  A field outside the exposed pointers is refused before the gate with `422 VALIDATION_FAILED` `FORM_INPUT_INVALID`
+  and `field` `/` (the caller's own keys are never echoed). No channel of this feature starts a run: a Slack slash
+  command only links an identity (Requirement 026-042), and Teams and e-mail are outbound only, so there is no
+  channel-started creator; one added later is a new row. Every creator above calls feature 022's permit port when that
+  slice is merged; a run queued or buffered by it is simply not terminal, so a waiter answers `202`.
+
+  Where the rows went (2026-11-26, OD-2026-11-24-310): design 043 carries them as its follow-up Task 043-29 until its
+  next revision moves them into Technical Plan 1 (a change of that table reopens the approved design). Feature 022's
+  "Run creators" table is not edited here: feature 022 belongs to the other coordinating session, which received the
+  four rows above through the coordinator and adds them to `specs/022-flow-control-step-policies/` itself. Until it
+  does, this note is the record that the edit is owed.
+
+### Gaps added on 2026-11-24
+
+| Id | Gap | Consequence |
+|---|---|---|
+| G1338 | Feature 022 proposes `runs.origin` values `STANDALONE_STEP` and `DRAFT_TEST`; the private-run guard of feature 017 refuses a non-null origin on a workflow that is not internal, the same conflict Decision 026-004 avoids. | Feature 022 resolves it in its own slice; this feature's no-notification rule for draft test runs reads whatever 022 chooses. |
+| G1339 | Stream batches and decision inputs share the four validator permits of design 043 with run starts. | Unmeasured; Task 026-061 measures start latency with streaming load, and a separate pool needs a new cache bound. |
+| G1340 | An unsealed attempt (a worker that died before its final batch) gets `settled` only when a feed read or the maintenance pass closes its row. | `settled` may arrive one pass interval after the step settled; no event is lost or reordered. |
+| G1341 | Arrays of objects and tuples are not rendered by forms (tuples are outside the 043 subset, Owner decision 2026-11-19-5). | Such inputs use the JSON editor. |
+| G1342 | The route wait (Decision 026-010) includes the dispatcher's pass latency before the run exists. | Synchronous routes answer later than `executeRun`; measured by Task 026-061. |
+| G1343 | Appends from workflow code (design 044) are undefined until design 044 decides whether workflow code may append. | Activities stream; workflow code does not, until then. |
+| G1344 | `docs/glossary.md` has no entry for Workflow Stream, graph stream, log stream or operator chain. | The coordinator adds them (this feature does not edit the glossary). |
+| G1345 | Design 040 requires one OCSF mapping per audit action; this feature adds about thirty actions. | Each action enters 040's mapping table in the task that adds it, once 040 is built (Task 026-054). |
+| G1346 | Owner question 1081 (feature 020) is unanswered, so the `pii` channel ceiling cannot be built. | Channels stop at `internal` until it is answered (Task 026-077 gate). |
+| G1347 | External approvers without an account cannot decide (Owner question 1320 answered no). | A guest principal of federated login (feature 013) is the later route. |
 
 Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9. A host of 1.9 or later also carries the 1.8 host procedure (a flagged lease is acknowledged before it runs), so the SDK work of delivery acknowledgement comes before any later minor in the SDKs. `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken.

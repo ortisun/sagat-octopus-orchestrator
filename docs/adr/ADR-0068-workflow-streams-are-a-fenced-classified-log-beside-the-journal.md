@@ -1,8 +1,18 @@
 # ADR-0068: Workflow Stream events are a fenced, budgeted, value-carrying log beside the journal, read only through a classified feed
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26); number allocated by the parity
-coordinator after the architecture review of feature 026
+**Status:** Accepted (2026-11-24) with the amendments of 2026-11-24 below, which change decisions 3, 4 and 6; delegate
+(OD-2026-11-24-4). No evidence exists yet: acceptance is of the decision for implementation in release 0.3.0; the
+tests under **Enforced by** remain required before feature 026 is called done.
+**Decided by:** agent proposal (2026-10-26); number allocated by the parity coordinator after the architecture review
+of feature 026; accepted on 2026-11-24 by the agent re-baselining feature 026, under the owner's delegation of Owner
+decision 2026-11-24-4, to be reported to the owner. Reasoning, weighed over the options below: option 1 is the only one
+that leaves the journal, replay equality, the payload-free graph stream and telemetry derivation untouched while giving
+resumable, classified, exactly-once-stored progress and token streams (the Temporal Workflow Streams capability, and
+the base of feature 025's token streaming); options 2 to 5 each break an invariant the platform's durability rests on.
+The re-baseline against `develop` showed that two details of the first text would have cost the hot path that design
+038 budgets and feature 041 protects (a share lock on the step row, bytes on the tenant content row) and that the
+purge stamp added a write to the terminal transition; the amendments replace them without changing the decision's
+shape.
 **Refines / supersedes:** refines ADR-0016 (adds a second live feed next to the graph stream, which
 stays payload-free), ADR-0028 and ADR-0033 (a new place that shows values, under the feature-016
 projection), ADR-0027 (a new retained-content table) and ADR-0017 (the journal stays the only source
@@ -16,7 +26,12 @@ classified `content` (T026-012); disclosure canaries over the feed for every aud
 test that a workflow expression, a Query/Update and a step input cannot observe an appended event
 (T026-021); and review of the evaluation-context builders (for example
 `crates/application/src/operation_evaluation.rs`), because no layer check can express "this port is
-never read by that code path".
+never read by that code path". Added 2026-11-24 with the amendments: the barrier test of the attempt fence
+(an append holding its attempt row while the step completes is read before `settled`; an append after the
+close is refused) and a lock observation test that an append never waits on `steps` or `runs` (T026-073);
+the hot-path work budget of design 038 (`tests/integration/claim-transition-efficiency/work_budget.rs`)
+unchanged; the storage-class test that a stream exhausting `tenant_stream_bytes` leaves run completions
+unaffected (T026-071).
 
 ## Context
 
@@ -71,6 +86,36 @@ because of code replay and is not available to a declarative engine.
    feature 023's reserved, capability-gated `stream.append` host call, which their supervisor turns into
    the same append under the attempt's lease.
 
+### Amendments of 2026-11-24 (accepted with the decision)
+
+Read against `develop` at `2c94064f`; each is recorded in feature 026's research register
+(`specs/026-invocation-human-surfaces/research.md`, "Re-baseline against `develop`", Decisions 026-003, 026-006,
+026-007, 026-008, 026-011 and 026-016).
+
+- **Decision 3 is replaced by:** *Fenced by the lease, without a lock on the hot rows.* Only the holder of the current
+  lease of a node that declares the channel MAY append, through a worker-protocol rpc whose transaction locks the
+  attempt's own stream row (`run_stream_attempts`) `FOR UPDATE` and the run's stream head for update, and reads the
+  step's lease without a lock on the database clock. It MUST NOT take or wait for a lock on a row of `runs`, `steps`
+  or `run_events`, the stream tables carry no foreign key to `runs` or `steps`, and leasing, heartbeat and completion
+  read and write nothing of them (the rule feature 041 set for step logs). A batch marked final, or a feed read or a
+  maintenance pass that sees the step settled or superseded, closes the attempt row; the feed sends `settled` or
+  `superseded` only after the close, so no event of an attempt follows its `settled`. A stale lease or a closed
+  attempt stores nothing. Deduplication is unchanged.
+- **Decision 4, the bytes:** stream bytes are charged to a storage class of their own, `workflow_stream`, under the
+  tenant quota `tenant_stream_bytes` (an ADR-0027 amendment written with the migration, as feature 041 added
+  `step_log`), not to `tenant_content_bytes`, and an append never takes the tenant usage row before its commit. A
+  runaway stream therefore cannot exhaust the content quota that run completions need.
+- **Decision 4, the schemas:** a channel schema stays inside the run-input subset of design 043 and event data is
+  validated by that design's platform validator, with its work counter and shared permits, before the transaction.
+- **Decision 6, the purge instant:** counted from the moment the purge pass first sees the run terminal, stamped by
+  that pass (`terminal_seen_at`), never written by the run's terminal transaction.
+- **Decision 8, the publishers:** the SDK workers are six (Rust joined); a workflow written as code (design 044)
+  publishes from its activities through the same rpc, and if design 044 lets workflow code append, the append is a
+  command of the workflow task whose publisher sequence comes from the replay position.
+- **Names.** Stream events stay distinct from the step logs of feature 041 (Architecture decisions 0084 and 0085),
+  which are lossy unclassified text under their own permission; the two share the SDK flusher pattern and the attempt
+  fence, not a store.
+
 ## Considered options
 
 1. **Own table with inline data (chosen).** Keeps the journal, replay and telemetry unchanged; the lease
@@ -93,6 +138,13 @@ because of code replay and is not available to a declarative engine.
 5. **Data in the shared `payloads` table, referenced by digest.** Reuses content addressing and
    accounting, but nothing deletes `payloads` rows, so a purge could not free bytes and per-run counts
    would drift from tenant accounting (architecture review, feature 026). Rejected.
+6. **Fence by a share lock on the step row (the first text of decision 3, added 2026-11-24).** Simple and
+   strictly ordered with completion, but every heartbeat and completion of a streaming step waits behind an
+   append, and the row that changes most often in the engine accumulates multixacts. Rejected for the attempt
+   row of the amendment.
+7. **Merge stream events into the step logs of feature 041 (added 2026-11-24).** One store, but either logs
+   pay for schema validation and exactly-once storage, or stream values lose their per-field disclosure.
+   Rejected.
 
 ## Consequences
 

@@ -16,9 +16,11 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Approved | 0 of 30 |
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 56 |
-| 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
+| 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 29 |
 | 044 | [Workflow as code](044-workflow-as-code.md) | Approved | 0 of 37 |
 | 045 | [Activity timeouts and retry per failure code](045-activity-timeouts.md) | Approved | 0 of 20 |
+| 046 | [Package dependencies for TypeScript and Python scripts](046-script-dependencies.md) | Approved | 0 of 33 |
+| 047 | [OAuth resources and a curated integration hub](047-oauth-integration-hub.md) | Approved (condition met by constitution 5.1.0, #286) | 1 of 29 |
 | 048 | [A reference high-availability topology for PostgreSQL, and the platform's side of a failover](048-high-availability.md) | Approved | 0 of 19 |
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Approved | 0 of 20 |
 | 050 | [The Studio catch-up: every executable node kind, the approvals inbox, the audit log](050-studio-catch-up.md) | Approved | 0 of 22 |

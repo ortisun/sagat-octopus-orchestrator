@@ -17,6 +17,12 @@ is executed and its real output recorded by T026-064. Commands that exist today 
 - `SAGAT_LINK_KEYS` set to a generated development key file (never committed), and
   `SAGAT_PUBLIC_FORMS_ORIGIN` set to a loopback origin different from the Studio origin (for example
   `http://forms.localhost:8081`); the control plane refuses to start when the two are equal.
+- Added 2026-11-24 (research.md, Decision 026-013): the six requirements `form-hints-v1`,
+  `workflow-streams-v1`, `notification-channels-v1`, `approval-channels-v1`, `public-links-v1` and
+  `synchronous-routes-v1` recorded through the instance registry, as `docs/runbooks/instance-registry.md`
+  describes for `run-input-validation-v1`; until then publication of the workflow below is refused with
+  the `*_DISABLED` reasons. Failure scenario 11 below is added for design 043: an input the schema refuses through
+  `sagat run execute` answers `422 RUN_INPUT_INVALID` with one field and no value, and nothing is created.
 
 ## 1. Publish a workflow with a form, a stream and a notified approval
 
@@ -113,6 +119,9 @@ without any address.
    poll) within the wait.
 10. **Restart during a wait**: kill the control plane during the wait; rerun the same command with the
    same key → the same run, no second run.
+11. **Input refused before the wait** (added 2026-11-24, design 043): `sagat run execute` with an input the
+   version's `inputSchema` refuses → `422 VALIDATION_FAILED`, `RUN_INPUT_INVALID`, one `field` and one `rule`,
+   no value echoed, no run created, no waiter registered.
 
 Record for each step the command, the HTTP status or CLI output, and the audit rows read through
 `GET /v1/audit`, in `verification.md` (T026-066). A step that cannot be executed is reported as not

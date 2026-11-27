@@ -7,8 +7,13 @@ info:
     T026-005 at implementation time; component names that already exist there (`Run`, `Error`,
     `StartRunRequest`, `PayloadDisclosure`, `ApprovalDecisionRequest`, `ApprovalDecisionReceipt`,
     parameters and responses) are referenced, not redefined, except where this fragment adds optional
-    properties (marked `x-additive: '026'`). Every operation is additive; no existing operation changes.
-    Errors use the existing `Error` envelope; reasons are listed in contracts/errors.md.
+    properties (marked `x-additive: '026'`). Every new operation is additive. Revised 2026-11-24 (research.md,
+    Decision 026-014): one existing operation changes, `decideWorkflowApproval`, through the optional
+    `input` and `linkToken` of `ApprovalDecisionRequest` and the `via` of `ApprovalDecisionReceipt`; it is
+    marked `x-extended: '026'` when merged, and the pinning tests of features 016 and 035 learn that mark
+    instead of being re-blessed. `Run` gains nothing. Errors use the existing `Error` envelope; reasons are
+    listed in contracts/errors.md; a run input refusal is design 043's (`RUN_INPUT_INVALID`,
+    `RUN_INPUT_SCHEMA_UNUSABLE`, one `details.field` and one `details.rule`).
 servers:
   - url: https://api.sagat-octopus-orchestrator.example/v1
 security:
@@ -66,7 +71,12 @@ paths:
       x-proposed: '026'
       description: |
         Same admission, authorization and idempotency as `startRun` (`run:start`), plus `run:read` to
-        receive the outcome. Waits at most min(`waitMs`, namespace `run_wait_ms`, deployment ceiling;
+        receive the outcome. The input passes the run input gate of design 043 before any waiter is
+        registered: a refusal is `startRun`'s `422 VALIDATION_FAILED` (`RUN_INPUT_INVALID` with `field` and
+        `rule`, or `RUN_INPUT_SCHEMA_UNUSABLE`), nothing is created and the key is not consumed; a busy gate
+        is a retryable `503`. With a `businessId` held by an open run and `businessIdConflictPolicy:
+        USE_EXISTING`, nothing is created and the call waits on the holder (`admission: EXISTING`).
+        `startDelayMs` and `inputBlobRef` keep their `startRun` meaning (revised 2026-11-24). Waits at most min(`waitMs`, namespace `run_wait_ms`, deployment ceiling;
         default 30 s, ceiling 60 s) without holding any database resource. `200` when terminal or
         returned early; `202` otherwise, with `Location: /v1/runs/{runId}/outcome`. A replay with the
         same key and body waits on the same run. `Cache-Control: private, no-store`.
@@ -255,6 +265,10 @@ paths:
       x-proposed: '026'
       security: [{publicLinkToken: []}]
       description: |
+        Revised 2026-11-24: the merged input passes the run input gate of design 043 before the admission
+        transaction (creator `public_link`); a refusal names `field` and `rule` only inside an exposed
+        pointer, else `/` and `other`; a field outside the exposed pointers is `FORM_INPUT_INVALID` with
+        `field` `/`; a busy gate is `503` with `Retry-After`.
         Admission order of FR-026-025 (ADR-0050 decision 7: link row in slot 1). `202` with a
         receipt and no internal identifier. The same `submissionKey` and body replays the same receipt
         token (it is derived, not stored); another body is `409 IDEMPOTENCY_KEY_REUSED`. A link at its
@@ -473,7 +487,7 @@ components:
             type: object
             required: [code, pointer]
             properties:
-              code: {type: string, enum: [NO_SCHEMA, UNSUPPORTED_REQUIRED_FIELD, ENCODING_READ_BY_FORM, TOO_COMPLEX], description: 'ENCODING_READ_BY_FORM is feature 031''s code.'}
+              code: {type: string, enum: [NO_SCHEMA, UNSUPPORTED_REQUIRED_FIELD, ENCODING_READ_BY_FORM, TOO_COMPLEX, SCHEMA_UNUSABLE], description: 'ENCODING_READ_BY_FORM is feature 031''s code. SCHEMA_UNUSABLE (added 2026-11-24): the design-043 pre-check refuses the carrier, so a start would be RUN_INPUT_SCHEMA_UNUSABLE.'}
               pointer: {type: string, maxLength: 512}
         fields: {type: array, maxItems: 256, items: {$ref: '#/components/schemas/FormField'}}
         generator: {type: string, const: form-model-v1}
@@ -487,6 +501,7 @@ components:
         required: {type: boolean}
         level: {type: string, enum: [public, internal, pii, secret]}
         supported: {type: boolean}
+        nullable: {type: boolean, default: false, description: 'Added 2026-11-24: the schema admits null (a type list [T, null] or a one-branch anyOf/oneOf with null); an empty control submits null.'}
         unsupportedKeyword: {type: string, maxLength: 64}
         title: {type: string, maxLength: 200}
         description: {type: string, maxLength: 2000}
@@ -506,9 +521,13 @@ components:
             minLength: {type: integer}
             maxLength: {type: integer}
             pattern: {type: string, maxLength: 1024}
-            format: {type: string, enum: [date, date-time, email, uri]}
+            format: {type: string, enum: [date, date-time, email, uri], description: 'Chooses the widget; never asserted by the server (design 043).'}
             minItems: {type: integer}
             maxItems: {type: integer}
+            multipleOf: {type: integer, minimum: 1, description: 'Added 2026-11-24; a positive integer in the 043 subset; the control step.'}
+            minProperties: {type: integer}
+            maxProperties: {type: integer}
+            hasPattern: {type: boolean, description: 'Added 2026-11-24: the server checks a pattern; the pattern itself is not sent and the browser never evaluates it.'}
     ExecuteRunRequest:
       x-additive: '026'
       description: '`StartRunRequest` plus `waitMs`; the same oneOf input/inputBlobRef rule.'
@@ -521,10 +540,11 @@ components:
     RunOutcome:
       type: object
       additionalProperties: false
-      required: [run, completion, effectiveWaitMs]
+      required: [run, completion, admission, effectiveWaitMs]
       properties:
         run: {$ref: '#/components/schemas/Run'}
         completion: {type: string, enum: [TERMINAL, EARLY_RETURN, PENDING]}
+        admission: {type: string, enum: [CREATED, EXISTING, NONE], description: 'Added 2026-11-24. executeRun: CREATED, or EXISTING when USE_EXISTING attached the wait to the holder; getRunOutcome: NONE.'}
         failureCode: {type: [string, 'null'], maxLength: 64, description: 'Closed failure code of a failed run; never a payload.'}
         result: {$ref: '#/components/schemas/PayloadDisclosure', description: 'Present for TERMINAL with a result and for EARLY_RETURN.'}
         effectiveWaitMs: {type: integer, minimum: 0}
@@ -678,6 +698,12 @@ components:
       properties:
         input: {type: object, description: 'Validated against the approval form schema (DECISION_INPUT_INVALID); part of the decision-key fingerprint when present.'}
         linkToken: {type: string, maxLength: 128}
+    ApprovalDecisionReceiptAdditions:
+      x-additive: '026'
+      description: 'Added 2026-11-24: the optional property added to the existing ApprovalDecisionReceipt.'
+      type: object
+      properties:
+        via: {type: string, enum: [SLACK, TEAMS, EMAIL, API], description: 'Derived by the server from a verified link token; never from the request.'}
     NotificationChannelSettings:
       type: object
       additionalProperties: false

@@ -2,7 +2,8 @@
 
 DRAFT, not implemented. Added to `sdks/SPEC.md` (§3 client, §6 worker, §7 builders) and to
 `tests/contract/sdk-conformance/scenarios/` by T026-055..058. Every scenario runs in TypeScript, Go,
-Python, C# and Java against the real platform (`tests/support`), and the normalized results must equal
+Python, C#, Java and Rust (the six languages of `tests/contract/sdk-conformance/harness.rs`; revised
+2026-11-24, Rust joined with feature 034) against the real platform (`tests/support`), and the normalized results must equal
 each other and the reviewed golden files; goldens are written only after reading the diff
 (`SAGAT_SDK_BLESS=1`, then rerun without it).
 
@@ -10,18 +11,18 @@ each other and the reviewed golden files; goldens are written only after reading
 
 | Operation | Request | Success |
 |---|---|---|
-| `execute(workflowId, input, options)` | `POST /runs/execute` with `StartRunRequest` + `waitMs`, `Idempotency-Key` (generated per call, kept across retries) | `RunOutcome` for `200` and `202` alike; `completion` says which |
+| `execute(workflowId, input, options)` | `POST /runs/execute` with `StartRunRequest` (business identifier, conflict policy, start delay included) + `waitMs`, `Idempotency-Key` (generated per call, kept across retries) | `RunOutcome` for `200` and `202` alike; `completion` says which, `admission` says `CREATED` or `EXISTING`; a `422 RUN_INPUT_INVALID` is the typed validation error of design 043 |
 | `awaitOutcome(runId, options)` | `GET /runs/{runId}/outcome?waitMs=`; loops until terminal or the caller's overall timeout, each wait ≤ the server ceiling | final `RunOutcome` |
 | `streamEvents(runId, options)` | `GET /runs/{runId}/stream-events` (SSE via the language's streaming HTTP, never browser `EventSource`); resumes with the last `<epoch>.<offset>` cursor after a disconnection; stops at `end` | an iterator of typed `StreamEvent` with raw JSON kept, plus the control events |
 | `listStreamEvents(runId, after, options)` | the JSON page | `StreamEventPage` |
 | `getStartForm(workflowId, version)` | `GET …/form` | typed `FormModel` |
 | `getWorkflowOpenApi(workflowId, version)` | `GET …/openapi` with `If-None-Match` | the document as raw JSON + `ETag` |
-| `decideApproval(approvalId, decision, options)` | existing, gains optional `input` and `via` | `ApprovalDecisionReceipt` |
+| `decideApproval(approvalId, decision, options)` | existing, gains optional `input` and `linkToken` (the server derives `via` from it; a client never sends `via`, FR-026-032; revised 2026-11-24) | `ApprovalDecisionReceipt`, which gains `via` |
 
 `waitForCompletion` is kept and documented as the polling fallback for servers without `getRunOutcome`
 (an older server answers `NOT_FOUND` with `ROUTE_NOT_FOUND`).
 
-## Stream consumer rule (all five SDKs and the Studio)
+## Stream consumer rule (all six SDKs and the Studio)
 
 1. Keep, per node instance, the current attempt from the `attempts` snapshot sent on open and on every
    resume, and update it on each `superseded` control event.
@@ -37,13 +38,15 @@ each other and the reviewed golden files; goldens are written only after reading
 
 `ctx.stream(channel).publish(data)` and `flush()` per [worker-protocol.md](./worker-protocol.md); the
 worker negotiates the new minor and refuses locally to publish when the server did not accept it
-(`UNSUPPORTED_PROTOCOL`), without failing the step.
+(`UNSUPPORTED_PROTOCOL`), without failing the step. Completing or failing the step sends the `final`
+batch first.
 
 ## Builders
 
 `streams` (channel name → schema, display, description), node `emits`, approval `notify`, `summary`,
-`form` and the `x-sagat-form` annotation as a key of the free-form schema map (no helper, as feature 016
-did for classification). Byte-identical canonical documents across the five builders.
+`form` (with its `hints`) and the root `inputFormHints` (an object from a field pointer to `{widget, order,
+placeholder}`; revised 2026-11-24: hints left the schema, research.md Decision 026-001). Byte-identical
+canonical documents across the six builders.
 
 ## Scenarios
 
@@ -59,3 +62,6 @@ did for classification). Byte-identical canonical documents across the five buil
 | `approval-channel-builders.json` | build-only: `notify`, `summary`, `form`, `requiredFor` |
 | `approval-form-decision.json` | decision with valid input; missing required input; replay; changed input under the same key (409); later step reads `steps.<node>.output.input` |
 | `workflow-openapi.json` | document retrieval, `ETag`/`304`, agreement of a valid and an invalid request with the server |
+| `invocation-business-id.json` | added 2026-11-24: `execute` with a business identifier held by an open run and `USE_EXISTING` (waits on the holder, `admission: EXISTING`); an input the schema refuses (`422 RUN_INPUT_INVALID`, nothing created, no wait) |
+| `workflow-streams-final.json` | added 2026-11-24: a final batch closes the attempt; a later append is `STALE_ATTEMPT`; a worker killed before its final batch: `settled` arrives after the feed closes the attempt, with no event after it |
+| `procedural-surfaces.json` | added 2026-11-24, after design 044 lands: a workflow written as code started by `execute`, its form, its OpenAPI document and an activity's stream events, with the same normalized results as the graph twin (FR-026-051) |

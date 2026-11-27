@@ -1,7 +1,7 @@
 # ADR-0055: Integration resources reuse the managed-connection model, run in a separate managed executor, and new triggers are kinds of the existing inbox sources
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26); revised 2026-10-27 after independent architecture and security reviews and the coordinator's decisions C3, C4, C12 and C21; the placement rule of decision 11 is an owner question (O1123)
+**Status:** Accepted (2026-11-24, delegate (OD-2026-11-24-4)), with the [amendment of 2026-11-24](#amendment-2026-11-24); proposed 2026-10-26
+**Decided by:** agent proposal (2026-10-26); revised 2026-10-27 after independent architecture and security reviews and the coordinator's decisions C3, C4, C12 and C21; accepted on 2026-11-24 by the readiness review of feature 021 under the owner's delegation, "delegate (OD-2026-11-24-4)", which lets the agents accept or reject architecture decisions for release 0.3.0. Reasoning: of the five options below, option 1 is the only one that keeps feature 017's released catalog and pins untouched, keeps every new customer credential, tenant-authored request and customer-directed socket out of the processes that hold platform credentials (constitution Principle V), and reuses the inbox, dedupe, dead letters, quotas and triggers without an IR change; the readiness review re-read every decision against `develop` at `2c94064f` and found none contradicted by what was built since, only stale details, which the amendment corrects. Rejection would leave 021, 019, 020, 025, 026, 028 and design 047 without the placement rule they cite. Acceptance is of the decision; the "Enforced by" checks and the "Evidence" list remain required before the feature is declared done. The placement rule of decision 11 (Owner question 1123) is accepted with clause (e) added
 **Refines / supersedes:** Refines ADR-0012 (new connector and endpoint kinds, a managed stream placement), ADR-0023 (decision 1 kept through a factory; the refusal of secret-bearing uploads is lifted only for managed integration steps behind a streaming scan), ADR-0026 (a route signing string and one provider profile for inbound e-mail), ADR-0035 (its connection decisions 1, 3, 5, 6 and 7 are applied to non-database resources without changing feature 017) and ADR-0036 decision 6 (the output of a resource operation is a classification carrier). Supersedes none.
 **Enforced by:** planned, not yet existing: a per-crate client allowlist in `scripts/check-architecture.py` (`object_store` only in `crates/infra-blobstore`; HTTP-provider, SMTP and GraphQL clients only in `crates/infra-integrations`; broker, MQTT, WebSocket and cloud clients only in `crates/infra-connectors`; the replication client only in `crates/infra-database`; T021-016); one cargo feature per connector kind in `crates/infra-connectors` and a CI assertion that `cargo tree -e features -p sagat-execution-engine` enables none of the `MANAGED` kinds' features (`mqtt`, `pubsub`, `servicebus`, `websocket`), so the engine cannot link them (T021-080); the contract compatibility tests over `openapi.yaml`, `workflow.schema.json`, `events.asyncapi.yaml` and `worker.proto`; `tests/{integration,fault,security}/integration-resources/` listed in `specs/021-integration-resources-triggers/tasks.md`. Until those exist this is review only.
 
@@ -112,6 +112,14 @@ process boundaries:
     (d) the new inbound connector kinds MQTT, Pub/Sub, Service Bus and WebSocket run as managed
         streams in `apps/integration-runner` (decision 5); the pre-existing Kafka, NATS and SQS
         consumers keep their engine placement (G1137).
+    (e) (added 2026-11-24) a token request of a fixed, standard shape (the OAuth 2.0 grants of
+        RFC 6749: authorization-code exchange, refresh, client credentials) to a token endpoint fixed
+        by an OAuth provider definition or an operator- or tenant-registered OAuth client MAY be sent
+        by the platform token broker of design 047 in the control plane through the guarded egress
+        client; it carries no tenant-authored content; client secrets and refresh tokens never leave
+        the broker, and an executor receives only a current access token through its capability
+        (`ResolveResource` for resource operations, the declared-secret delivery of Principle V for
+        ordinary activities and scripts).
     026 notification channels keep their own channel credentials, like webhook subscriptions, and do
     not use 021 resources.
 
@@ -159,9 +167,50 @@ process boundaries:
   `sagat.integration.*` tasks and stream leases, keep tables and readers; migrations refuse to drop
   rows that pins or retained runs reference.
 
+## Amendment (2026-11-24)
+
+Made with the acceptance, under "delegate (OD-2026-11-24-4)", after the readiness review of feature 021 against
+`develop` at `2c94064f` ([research](../../specs/021-integration-resources-triggers/research.md#readiness-review-2026-11-24)).
+Each item corrects a detail that work built since 2026-10-26 made stale; no decision above is reversed. The text of
+decisions 1 to 11 is kept as written, except clause (e) added to decision 11.
+
+1. **Decision 2, type provenance.** A type version is platform-provided or a curated hub type version installed from
+   design 047's signed hub (constitution 5.0.0); a hub type version only narrows operations of the platform catalog
+   and inherits their effect class, executor role, egress profile and probe. A namespace still cannot define a type
+   (Owner question 1122; Decision 021-004).
+2. **Decision 3, OAuth.** The integration runner sends no OAuth token request and never holds a client secret or
+   refresh token: the `oauth` scheme references a design 047 credential, and `ResolveResource` returns its current
+   access token from the broker (Decision 021-001). The scheme is refused until 047's broker capability is on, so this
+   decision holds without design 047.
+3. **Decision 3, the binary.** The integration runner stays a separate binary, not a profile of `apps/database-runner`
+   as the lake runner of feature 035 is: a profile shares the database runner's role and boundary (Architecture
+   decision 0071 decision 1), and one binary would link the integration clients into the process that reaches private
+   customer databases. The shared session, lease, heartbeat, receipt and slot code of both database-runner profiles
+   moves to `crates/infra-managed` (Decision 021-007).
+4. **Decision 3, the claim.** An integration step is a new managed kind leased only at this feature's protocol minor
+   (the next free one at merge, provisionally 1.9: 1.7 is step logs, 1.8 is reserved for delivery acknowledgement);
+   its admission runs inside the claim and moves design 038's recorded budget in the same change. Concurrency is not
+   counted at the claim (Architecture decisions 0088 and 0089): namespace and tenant bounds are the existing activity
+   quotas of the reserved activities, and a per-resource bound is a concurrency key of Architecture decision 0056
+   granted by the scheduler (Decisions 021-008 and 021-009). The runner writes no step log (Architecture decision 0084
+   decision 5; Decision 021-012).
+5. **Decisions 5 and 7, run creation.** Every run that a route, an e-mail endpoint or a new connector kind starts goes
+   through the trigger dispatcher and therefore through the `RunInputGate` of Architecture decision 0090; the resource
+   probe is a new creator of that gate (Decision 021-010).
+6. **Rollout.** Five capabilities join the instance registry of Architecture decision 0082 and are switched on by an
+   audited operator activation (Decision 021-011).
+7. **Decision 1, the listing.** The database drivers listed `managedBy: connections` are read from the connection
+   catalog's driver registry, which now includes the lake drivers of feature 035 (Decision 021-016).
+8. **Decision 5, transports and partitions.** Hints travel on NATS JetStream or Redis Streams (Architecture decision
+   0069); no inbound Redis connector is added. Architecture decision 0073 (proposed) concerns the engine's Kafka
+   partitions only; the managed stream leases extend `connector_leases` beside it (Decision 021-017).
+
 ## Evidence
 
-None yet: the decision is a proposal. Required before acceptance: real PostgreSQL/OpenBao tests of
+None yet: the decision was a proposal until 2026-11-24 and is now accepted for implementation; nothing is built.
+Required before the feature is declared done (written before acceptance as "required before acceptance"), together
+with tests of the amendment (the `oauth` scheme refused without design 047's broker, the probe through the input gate,
+each capability refused before its activation, the claim budget): real PostgreSQL/OpenBao tests of
 pinning and two-phase resolution; ordinary-worker refusal; egress refusal of metadata, loopback and
 DNS rebinding for every operation and every new connector kind; crash after send and before
 completion; a real logical-replication crash between inbox commit and flush report, also after the

@@ -85,6 +85,14 @@ paths:
         catalog, is `422` with `details.reason` `PACKAGE_NOT_ALLOWED` or `LANGUAGE_NOT_BUILT`. The change is
         audited as `script.policy_changed` in the same transaction. Runs already admitted are not affected;
         the next draft, publication, test run or workflow publication is checked against the new revision.
+        Corrected 2026-11-24 (research Decision 1226, Decision 1235): an admitted run is affected at its next
+        script step attempt, which the engine refuses at lease as non-retryable `SCRIPT_DENIED` when the
+        language is disabled; an attempt already leased finishes. Until the instance registry has
+        `script-languages-v1` recorded, a document that disables a language or narrows packages is `422`
+        with `details.reason` `SCRIPT_LANGUAGES_CAPABILITY_DISABLED` (Decision 1234). For `typescript` and
+        `python`, `packages` and any rule property are reserved for design 046 and refused
+        `PACKAGE_NOT_ALLOWED` until it ships (Decision 1237). The document is at most 64 KiB and each allow
+        list at most 256 names; over either, `ABOVE_CEILING`.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       requestBody:
@@ -112,7 +120,9 @@ components:
         (FR-023-027); it is refused `LANGUAGE_NOT_BUILT` until 024 ships it. Replaces the inline five-value enums of Script, ScriptSummary, ScriptVersion and ScriptVersionSummary
         (additive). `CreateScriptRequest.language` keeps type string and its description is corrected to
         name every built language (G1200); an unbuilt language is refused with `LANGUAGE_NOT_BUILT`, a
-        language disabled by the namespace policy with `LANGUAGE_DISABLED`.
+        language disabled by the namespace policy with `LANGUAGE_DISABLED`, and, until the instance
+        registry has `script-languages-v1` recorded, a new language with
+        `SCRIPT_LANGUAGES_CAPABILITY_DISABLED` (added 2026-11-24).
     ScriptLanguageList:
       type: object
       required: [items]
@@ -173,8 +183,10 @@ components:
       additionalProperties: false
       maxProperties: 10
       propertyNames: {$ref: '#/components/schemas/ScriptLanguageId'}
+      # Corrected 2026-11-24: the pattern was '^[a-z]+$', which left `python-data` unmatched and so refused by
+      # additionalProperties. Properties of each language object grow only additively (research Decision 1237).
       patternProperties:
-        '^[a-z]+$':
+        '^[a-z]+(-[a-z]+)?$':
           type: object
           additionalProperties: false
           properties:
@@ -213,6 +225,8 @@ components:
     - LANGUAGE_DISABLED
     - PACKAGE_NOT_ALLOWED
     - LOCKFILE_INVALID
+    # Added 2026-11-24 (research Decision 1234): new language or narrowing policy before the fleet activation.
+    - SCRIPT_LANGUAGES_CAPABILITY_DISABLED
   x-step-failures:
     # A script step refused at lease by the namespace language policy fails with the existing
     # non-retryable SCRIPT_DENIED (D1226); no new failure code.
