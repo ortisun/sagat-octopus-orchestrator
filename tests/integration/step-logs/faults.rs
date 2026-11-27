@@ -136,7 +136,12 @@ async fn a_stale_task_lease_is_lease_and_stores_nothing() {
         w.fail(&session, &first, true)
             .await
             .expect("a retryable failure");
-        w.age_retry(run, "a").await;
+        // Aged by an hour, not by the helper's second: the VM's clock can step back up to 2 s.
+        sqlx::query("UPDATE steps SET next_attempt_at = clock_timestamp() - interval '1 hour' WHERE run_id = $1 AND node = 'a'")
+            .bind(run.as_uuid())
+            .execute(&w.db.pool)
+            .await
+            .expect("the retry is due");
         w.scheduler.tick().await;
         let second = w.one_task(&session).await;
         assert_eq!((first.fence.attempt, second.fence.attempt), (1, 2));
@@ -177,7 +182,12 @@ async fn an_expired_task_lease_not_yet_reclaimed_is_lease() {
         let a = leased(&w, "a").await;
         let ingest = ingest(&w);
         assert_eq!(send(&ingest, &a, records([1])).await, continued(1));
-        w.age_lease(a.run, "a").await;
+        // Aged by an hour, not by the helper's second: the VM's clock can step back up to 2 s.
+        sqlx::query("UPDATE steps SET lease_expires_at = clock_timestamp() - interval '1 hour' WHERE run_id = $1 AND node = 'a'")
+            .bind(a.run.as_uuid())
+            .execute(&w.db.pool)
+            .await
+            .expect("the lease expires");
         let status: String =
             sqlx::query_scalar("SELECT status FROM steps WHERE run_id = $1 AND node = 'a'")
                 .bind(a.run.as_uuid())
@@ -319,52 +329,67 @@ async fn two_attempts_of_one_run_meet_their_ceilings_at_once() {
 /// `tenant_step_log_quota_exceeded` (ADR-0097 decision 4) whichever comes first: one batch is stored, the other told to
 /// retry, and the usage never passes the limit. The resend reads the limit at T6 and counts its records
 /// `tenant_quota`.
-#[tokio::test]
-async fn two_runs_at_the_tenant_limit_at_once_never_store_past_it() {
-    bounded::within("two runs at the tenant limit", LIMIT, async {
-        let w = world().await;
-        set_tenant_limit(&w, 4_096).await;
-        let a = leased(&w, "a").await;
-        let b = leased(&w, "b").await;
-        let big = || vec![record(1, &"x".repeat(1_000)), record(2, &"y".repeat(1_000))];
-        let (held_a, gate_a) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterAuthority);
-        let (held_b, gate_b) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterAuthority);
-        let first = spawn_send(&held_a, &a, big());
-        let second = spawn_send(&held_b, &b, big());
-        gate_a.reached().await;
-        gate_b.reached().await;
-        gate_a.release();
-        gate_b.release();
-        let mut answers = vec![
-            first.await.expect("a").expect("answered"),
-            second.await.expect("b").expect("answered"),
-        ];
-        answers.sort_by_key(|answer| answer.stored_through_sequence);
-        assert_eq!(answers, [RETRY, continued(2)]);
-        assert_eq!(step_log_usage(&w).await, 2_256);
-        let refused = if stream_of(&w, &a).await.is_none() {
-            &a
-        } else {
-            &b
-        };
-        assert_eq!(
-            send(&ingest(&w), refused, big()).await.verdict,
-            StepLogVerdict::FinalOnly
-        );
-        let stream = stream_of(&w, refused)
-            .await
-            .expect("the refused run's stream");
-        assert_eq!(
-            (
-                stream.records,
-                stream.dropped_by_server,
-                stream.ceiling_reason.as_deref()
-            ),
-            (0, 2, Some("tenant_quota"))
-        );
-        assert!(step_log_usage(&w).await <= 4_096);
-    })
-    .await;
+#[test]
+fn two_runs_at_the_tenant_limit_at_once_never_store_past_it() {
+    let page = crate::counted::recorded(|_| async {
+        bounded::within("two runs at the tenant limit", LIMIT, async {
+            let w = world().await;
+            set_tenant_limit(&w, 4_096).await;
+            let a = leased(&w, "a").await;
+            let b = leased(&w, "b").await;
+            let big = || vec![record(1, &"x".repeat(1_000)), record(2, &"y".repeat(1_000))];
+            let (held_a, gate_a) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterAuthority);
+            let (held_b, gate_b) = hooked_on(pool_of(&w, 1).await, Hook::HoldAfterAuthority);
+            let first = spawn_send(&held_a, &a, big());
+            let second = spawn_send(&held_b, &b, big());
+            gate_a.reached().await;
+            gate_b.reached().await;
+            gate_a.release();
+            gate_b.release();
+            let mut answers = vec![
+                first.await.expect("a").expect("answered"),
+                second.await.expect("b").expect("answered"),
+            ];
+            answers.sort_by_key(|answer| answer.stored_through_sequence);
+            assert_eq!(answers, [RETRY, continued(2)]);
+            assert_eq!(step_log_usage(&w).await, 2_256);
+            let refused = if stream_of(&w, &a).await.is_none() {
+                &a
+            } else {
+                &b
+            };
+            assert_eq!(
+                send(&ingest(&w), refused, big()).await.verdict,
+                StepLogVerdict::FinalOnly
+            );
+            let stream = stream_of(&w, refused)
+                .await
+                .expect("the refused run's stream");
+            assert_eq!(
+                (
+                    stream.records,
+                    stream.dropped_by_server,
+                    stream.ceiling_reason.as_deref()
+                ),
+                (0, 2, Some("tenant_quota"))
+            );
+            assert!(step_log_usage(&w).await <= 4_096);
+        })
+        .await;
+    });
+    // The second charge was refused for the limit, not told to retry by a lock timeout behind the first's refill.
+    assert_eq!(
+        crate::counted::series(
+            &page,
+            "step_log_quota_refusals_total",
+            &[("cause", "limit")]
+        ),
+        Some(1.0)
+    );
+    assert_eq!(
+        crate::counted::series(&page, "step_log_lock_timeouts_total", &[]),
+        None
+    );
 }
 
 /// A value that redaction lengthens, at the tenant limit: a field `password` whose value is the integer 1 is stored as
@@ -512,11 +537,12 @@ async fn a_task_delivered_again_under_a_new_generation_writes_a_new_stream() {
     .await;
 }
 
-/// Step logs are no part of a run's journal or projections: replaying the journal of a run whose step logged (and
-/// whose report was recorded) gives the stored projections, the journal holds no step-log event, and no log row
-/// changes.
+/// Step logs are no part of a run's journal or projections ("rebuilding the projections" of task T041-8 is the journal
+/// replay `verify_run`, the platform having no projection writer, D041-152 (3)): with lines stored, while the step runs
+/// and after its report, the replay of the journal equals the stored projections, and the journal holds no step-log
+/// event. The replay only reads, so the log rows compared around it guard the helper, not the ingest.
 #[tokio::test]
-async fn replaying_a_runs_journal_changes_no_log_row() {
+async fn a_runs_journal_replays_to_its_projections_with_its_step_logs_stored() {
     bounded::within("replay", LIMIT, async {
         let w = world().await;
         let a = leased(&w, "a").await;

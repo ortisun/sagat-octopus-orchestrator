@@ -344,6 +344,28 @@ async fn a_restart_of_the_api_in_the_middle_of_an_attempt_stores_the_next_batch_
     assert_eq!(next.verdict, i32::from(StepLogVerdict::Continue));
     assert_eq!(next.stored_through_sequence, 3);
     assert_eq!(stored_lines(&p, &lease.run_id).await, 3, "no duplicate");
+    // The stream's counters and the tenant's usage carry across the restart: the usage is exactly the stored rows'
+    // charge (their text plus 128 a row), the first engine's quota lease, whose backend is gone, included.
+    let (records, last_sequence): (i32, i64) = sqlx::query_as(
+        "SELECT records, last_sequence FROM step_log_streams WHERE run_id = $1::uuid",
+    )
+    .bind(&lease.run_id)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the stream");
+    assert_eq!((records, last_sequence), (3, 3));
+    let (usage, charged): (i64, i64) = sqlx::query_as(
+        "SELECT sagat_quota_step_log_usage($1), \
+                (SELECT sum(octet_length(message) + coalesce(octet_length(exception), 0) \
+                            + coalesce(octet_length(fields), 0) + 128)::bigint \
+                   FROM step_log_lines WHERE run_id = $2::uuid)",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(&lease.run_id)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the usage");
+    assert_eq!(usage, charged);
 }
 
 /// The server canary through the handler (the security review of task T041-8, finding 1): a connection string whose
