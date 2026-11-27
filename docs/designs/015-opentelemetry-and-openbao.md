@@ -1876,6 +1876,25 @@ Two lanes that can run at the same time; where they touch the same file the orde
 - [ ] T015-46 Restore the original text of the register row of Owner question 015-006 and append a dated line that
   supersedes it, citing Owner decision 2026-11-26-115.
   Refs: Requirement 015-012
+- [ ] T015-47 Restore the OpenBao custody of the Collector's ingest token (Owner decision 2026-11-27-3, which overrules
+  Owner decision 2026-11-27-158): the key/value path `secret/data/sagat/telemetry/collector` under the custody prefix
+  `sagat/telemetry/`, with a policy of its own that grants `read` on that path and nothing else, declared in the
+  platform's allow-list; an OpenBao Agent per pod of the control plane and the execution engine for that custody,
+  rendering the header file (`OTEL_EXPORTER_OTLP_HEADERS_FILE`) that Requirement 015-006 reads, so a rotation reaches
+  the processes through the file's reload; an OpenBao Agent in the Collector's pod, under a Kubernetes service account
+  and auth role of its own (`sagat-otel-collector`, bound to no other policy), rendering the token file the Collector's
+  bearer-token authenticator reads, so the token the Collector checks and the one the processes send have one source.
+  The database runner, which holds no OpenBao token by Technical Plan 7, keeps `telemetry.headersSecret` as the
+  design had it before Owner decision 2026-11-27-158; the sandbox runner's header stays the operator's. Rotation
+  writes a new version of the path holding the new token beside the old one, then the old one alone is removed.
+  Order: after Tasks 015-17 and 015-23, before Task 015-7 merges. This task supersedes, for the Collector's token, the
+  custody wording of Requirement 015-006, of Technical Plan 7 (its paragraph on the sandbox and database runners and
+  its rotation paragraph) and of the alternatives row "One Agent sidecar per custody"; the observability runbook, the
+  chart reference of Task 015-22 and the policy allow-list follow this task. Tests: the policy checker refuses any grant of the telemetry policy beyond `read` on that path; a chart test
+  that the Collector's Agent renders the token file and holds no other policy; a compose test that a token rotated in
+  OpenBao is accepted by the Collector and sent by the engine within the reload period, the old token refused once
+  removed; the canary test of Task 015-20 extended to the token's value in every log, span and audit record.
+  Refs: Requirement 015-006, Requirement 015-016
 
 ### Verification Plan
 
