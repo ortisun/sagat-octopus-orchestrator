@@ -712,7 +712,15 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
 
     def test_a_test_probe_of_the_worker_api_is_refused_outside_the_tests(self):
         """Feature 006, D006-093 (security round 4 Minor 2): the probes hold claims until a test releases them."""
-        for probe in ("with_delivery_probe", "with_commit_probe", "synchronous_commit_for_tests"):
+        for probe in (
+            "with_delivery_probe",
+            "with_commit_probe",
+            "synchronous_commit_for_tests",
+            # Task 006-049: the compiled minor the connection layer judges the reserve by, and the connection ordinal's hook
+            "with_compiled_minor_for_tests",
+            "with_connection_probe",
+            "rollback_stalled_for_tests",
+        ):
             with self.subTest(probe=probe):
                 code, out = creator_check(creator_tree(**{
                     "apps/execution-engine/src/lib.rs": f"fn build() -> G {{\n    WorkerGrpc::new(a, b)\n        .{probe}(p)\n}}\n",

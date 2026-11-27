@@ -26,7 +26,9 @@ use uuid::Uuid;
 
 use crate::execution::{PgRunStore, stored_path_parts};
 use crate::identity::store_error;
-use crate::pool::{BeginSafely, store_unreachable};
+use crate::pool::store_unreachable;
+use sqlx::Postgres;
+use sqlx::pool::PoolConnection;
 
 /// How long a rollback at the deadline may take before the connection is discarded instead of returned.
 const ROLLBACK_BOUND: Duration = Duration::from_millis(100);
@@ -123,11 +125,63 @@ macro_rules! addressed_steps {
     };
 }
 
-/// One acknowledgement's transaction, scoped to the caller's tenant and checked against the call's deadline.
+/// One acknowledgement's transaction, scoped to the caller's tenant and checked against the call's deadline. It holds its
+/// pooled connection itself, not an `sqlx::Transaction`, so that a rollback that does not return within [`ROLLBACK_BOUND`]
+/// can discard the connection instead of handing it back (`stream-completion.md`, "The server's acknowledgement", step 1;
+/// Task 006-049): closing it makes the server roll the transaction back, and the pool opens another.
 pub struct PgAcknowledgementTx {
-    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    /// The connection while its transaction is open; none once it has been committed, rolled back or discarded.
+    connection: Option<PoolConnection<Postgres>>,
     tenant: TenantId,
     deadline: CallDeadline,
+}
+
+impl Drop for PgAcknowledgementTx {
+    fn drop(&mut self) {
+        // A transaction neither committed nor rolled back (the call's future was dropped mid-way): rolled back off the call,
+        // under the same bound, or discarded when there is no runtime to do it on.
+        if let Some(connection) = self.connection.take() {
+            match tokio::runtime::Handle::try_current() {
+                Ok(runtime) => {
+                    drop(runtime.spawn(roll_back(connection, false)));
+                }
+                Err(_) => discard(connection),
+            }
+        }
+    }
+}
+
+/// Ends the transaction of `connection` with a `ROLLBACK` that may take [`ROLLBACK_BOUND`]: the connection goes back to the
+/// pool when it returns in time, and is discarded otherwise, or when it failed. `stall` makes the `ROLLBACK` never return
+/// (the test of the discard).
+async fn roll_back(mut connection: PoolConnection<Postgres>, stall: bool) {
+    let ended = {
+        let rollback = async {
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            sqlx::raw_sql("ROLLBACK").execute(&mut *connection).await
+        };
+        tokio::time::timeout(ROLLBACK_BOUND, rollback).await
+    };
+    match ended {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "an acknowledgement's rollback failed; its connection is discarded");
+            discard(connection);
+        }
+        Err(_) => {
+            metrics::counter!("worker_task_acknowledgement_rollbacks_slow_total").increment(1);
+            discard(connection);
+        }
+    }
+}
+
+/// Closes `connection` instead of handing it back to the pool: its state is not known, and the server rolls back whatever
+/// transaction it had open when it goes. Counted in `worker_task_acknowledgement_connections_discarded_total`.
+fn discard(connection: PoolConnection<Postgres>) {
+    metrics::counter!("worker_task_acknowledgement_connections_discarded_total").increment(1);
+    drop(connection.detach());
 }
 
 impl std::fmt::Debug for PgAcknowledgementTx {
@@ -145,7 +199,9 @@ impl PgAcknowledgementTx {
         if self.deadline.passed() {
             return Err(AcknowledgementStoreError::Deadline);
         }
-        Ok(&mut self.tx)
+        self.connection
+            .as_deref_mut()
+            .ok_or_else(|| corrupt("acknowledgement transaction, already ended"))
     }
 
     /// The one settings statement, for the transaction alone: the lock and statement timeouts, and `synchronous_commit`
@@ -169,8 +225,39 @@ impl PgAcknowledgementTx {
     /// `synchronous_commit` as the acknowledgement's transaction has it, for the test of the durable commit.
     #[doc(hidden)]
     pub async fn synchronous_commit_for_tests(&mut self) -> Result<String, StoreError> {
+        let Some(connection) = self.connection.as_deref_mut() else {
+            return Err(StoreError::Internal {
+                detail: "the acknowledgement's transaction has ended".to_owned(),
+            });
+        };
         sqlx::query_scalar("SELECT current_setting('synchronous_commit')")
-            .fetch_one(&mut *self.tx)
+            .fetch_one(connection)
+            .await
+            .map_err(store_error)
+    }
+
+    /// Ends the transaction with a `ROLLBACK` that never returns, for the test that the connection is then discarded (a
+    /// test probe: `test_probe_errors` of `scripts/check-architecture.py` refuses a call of it in a production source).
+    #[doc(hidden)]
+    pub async fn rollback_stalled_for_tests(mut self) {
+        if let Some(connection) = self.connection.take() {
+            roll_back(connection, true).await;
+        }
+    }
+
+    /// The server process of the transaction's connection, for the tests that end it or look for it.
+    ///
+    /// # Errors
+    /// The statement failed, or the transaction has ended.
+    #[doc(hidden)]
+    pub async fn backend_pid(&mut self) -> Result<i32, StoreError> {
+        let Some(connection) = self.connection.as_deref_mut() else {
+            return Err(StoreError::Internal {
+                detail: "the acknowledgement's transaction has ended".to_owned(),
+            });
+        };
+        sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(connection)
             .await
             .map_err(store_error)
     }
@@ -431,26 +518,32 @@ impl AcknowledgementTx for PgAcknowledgementTx {
             .collect()
     }
 
-    async fn commit(self) -> Result<(), AcknowledgementStoreError> {
+    async fn commit(mut self) -> Result<(), AcknowledgementStoreError> {
         if self.deadline.passed() {
             self.rollback().await;
             return Err(AcknowledgementStoreError::Deadline);
         }
-        self.tx.commit().await.map_err(acknowledgement_error)
+        let Some(mut connection) = self.connection.take() else {
+            return Err(corrupt("acknowledgement transaction, already ended"));
+        };
+        // bounded by the transaction's `statement_timeout`, as every statement of it is
+        match sqlx::raw_sql("COMMIT").execute(&mut *connection).await {
+            Ok(_) => Ok(()),
+            // the server answered: the transaction has ended and the connection is idle again
+            Err(error @ sqlx::Error::Database(_)) if !store_unreachable(&error) => {
+                Err(acknowledgement_error(error))
+            }
+            // whether it committed is not known on this side; the connection is not handed out again
+            Err(error) => {
+                discard(connection);
+                Err(acknowledgement_error(error))
+            }
+        }
     }
 
-    async fn rollback(self) {
-        // A rollback that does not return in time is not waited for: the transaction is dropped, which queues its rollback on
-        // the connection before the pool lends it again, so nothing of it ever commits; the connection itself is not discarded
-        // (Gap 006-054: discarding it needs the connection out of the transaction, which `sqlx` does not give mid-rollback).
-        match tokio::time::timeout(ROLLBACK_BOUND, self.tx.rollback()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(%error, "an acknowledgement's rollback failed");
-            }
-            Err(_) => {
-                metrics::counter!("worker_task_acknowledgement_rollbacks_slow_total").increment(1);
-            }
+    async fn rollback(mut self) {
+        if let Some(connection) = self.connection.take() {
+            roll_back(connection, false).await;
         }
     }
 }
@@ -466,17 +559,39 @@ impl AcknowledgementStore for PgRunStore {
         let Some(left) = deadline.left(Instant::now()) else {
             return Err(AcknowledgementStoreError::Deadline);
         };
-        // The transaction that did not begin before the deadline, its acquisition included, is a database not reached.
-        let tx = match tokio::time::timeout(left, self.pool.begin_safely()).await {
-            Ok(Ok(tx)) => tx,
+        // The transaction that did not begin before the deadline, its acquisition included, is a database not reached. The
+        // connection is acquired in a task of its own, as `begin_safely` does: a call that stops waiting leaves the task to
+        // hand the connection it gets back to the pool, never strands it.
+        let pool = self.pool.clone();
+        let mut connection =
+            match tokio::time::timeout(left, tokio::spawn(async move { pool.acquire().await }))
+                .await
+            {
+                Ok(Ok(Ok(connection))) => connection,
+                Ok(Ok(Err(error))) => {
+                    tracing::warn!(%error, "an acknowledgement could not take a connection");
+                    return Err(AcknowledgementStoreError::Unreachable);
+                }
+                Ok(Err(_)) | Err(_) => return Err(AcknowledgementStoreError::Unreachable),
+            };
+        let Some(left) = deadline.left(Instant::now()) else {
+            return Err(AcknowledgementStoreError::Unreachable);
+        };
+        match tokio::time::timeout(left, sqlx::raw_sql("BEGIN").execute(&mut *connection)).await {
+            Ok(Ok(_)) => {}
             Ok(Err(error)) => {
                 tracing::warn!(%error, "an acknowledgement could not begin its transaction");
+                discard(connection);
                 return Err(AcknowledgementStoreError::Unreachable);
             }
-            Err(_) => return Err(AcknowledgementStoreError::Unreachable),
-        };
+            // a `BEGIN` cut short leaves the connection in a state not known
+            Err(_) => {
+                discard(connection);
+                return Err(AcknowledgementStoreError::Unreachable);
+            }
+        }
         let mut tx = PgAcknowledgementTx {
-            tx,
+            connection: Some(connection),
             tenant,
             deadline,
         };

@@ -66,8 +66,14 @@ struct Lab {
 }
 
 async fn lab() -> Lab {
+    lab_with(|_| {}).await
+}
+
+/// [`lab`] on a platform whose options `adjust` changes.
+async fn lab_with(adjust: impl FnOnce(&mut Options)) -> Lab {
     let mut options = Options::default();
     options.worker.idle_retry = Duration::from_millis(50);
+    adjust(&mut options);
     let p = platform_with(options).await;
     drop(p.worker(SUBJECT).await);
     let (status, body) = p
@@ -486,17 +492,21 @@ async fn too_little_time_left_before_either_deadline_is_too_late() {
     let lab = lab().await;
     for scoped in [false, true] {
         let expiring = lab.provisional(&format!("ack.late{scoped}"), scoped).await;
-        lab.on_row(
-            &expiring,
-            "lease_expires_at = clock_timestamp() + interval '1 second'",
-        )
-        .await;
         let timing_out = lab
             .provisional(&format!("ack.timeout{scoped}"), scoped)
             .await;
+        // both deadlines set right before the call, 3 s ahead: short of the margin of one receive bound (6 s) even with the
+        // 2 s the virtual machine of the CI can step the clock back, and far enough that neither lease ends before the call
+        // reads it (set 1 s ahead before the second lease was claimed, the first could expire under a slower run and be
+        // answered `no_match`)
+        lab.on_row(
+            &expiring,
+            "lease_expires_at = clock_timestamp() + interval '3 seconds'",
+        )
+        .await;
         lab.on_row(
             &timing_out,
-            "attempt_deadline_at = clock_timestamp() + interval '1 second'",
+            "attempt_deadline_at = clock_timestamp() + interval '3 seconds'",
         )
         .await;
         assert_eq!(
@@ -512,7 +522,7 @@ async fn too_little_time_left_before_either_deadline_is_too_late() {
         lab.verdicts(&[&acknowledged_then_late]).await;
         lab.on_row(
             &acknowledged_then_late,
-            "lease_expires_at = clock_timestamp() + interval '1 second'",
+            "lease_expires_at = clock_timestamp() + interval '3 seconds'",
         )
         .await;
         assert_eq!(
@@ -901,4 +911,286 @@ async fn a_run_of_another_tenant_is_recorded_once_and_a_run_of_its_own_is_not() 
             lease.run.to_string()
         )]
     );
+}
+
+/// A store of its own over the lab's database, on a pool of one connection whose sessions `prepare` sets up.
+async fn store_with(lab: &Lab, prepare: &'static str) -> (PgRunStore, sqlx::PgPool) {
+    let options = lab.p.api.db.pool.connect_options().as_ref().clone();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(move |conn, _| {
+            Box::pin(async move {
+                sqlx::query(sqlx::AssertSqlSafe(prepare))
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_with(options)
+        .await
+        .expect("a pool of one prepared connection");
+    let store = PgRunStore::new(
+        pool.clone(),
+        sagat_application::execution::DefinitionCache::new(
+            Arc::new(sagat_infra_ir::JsonIrCodec),
+            8,
+        ),
+    )
+    .with_scoped_worker_protocol();
+    (store, pool)
+}
+
+/// The lab's service over `store`.
+fn workers_over(store: PgRunStore) -> Workers {
+    WorkerService::new(
+        store,
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        WorkerSettings::default(),
+    )
+    .with_lease_withdrawal(gate())
+    .with_new_withdrawals(true)
+    .with_hand_back_ceiling(8)
+}
+
+/// Task 006-049 (`stream-completion.md`, "The server's acknowledgement", step 1): with every connection of the pool held and
+/// `acquire_timeout` at 10 s, an acknowledgement is answered `ACKNOWLEDGEMENT_STORE_UNREACHABLE` within 4.5 s (its deadline,
+/// 3 s, bounds the acquisition, not the pool's timeout), and no connection is discarded; released, the lease is acknowledged.
+#[tokio::test]
+async fn a_pool_held_full_is_a_store_not_reached_within_the_bound_and_discards_nothing() {
+    let lab = lab_with(|options| options.pool_acquire_timeout = Duration::from_secs(10)).await;
+    let lease = lab.provisional("ack.pool", false).await;
+    // the pool the platform's store and authentication use (`db.pool` is the tests' own handle)
+    let pool = &lab.p.api.api_pool;
+    let max = pool.options().get_max_connections();
+    let mut held = Vec::new();
+    for _ in 0..max {
+        held.push(pool.acquire().await.expect("a connection of the pool"));
+    }
+    let started = Instant::now();
+    let answered = lab.acknowledge(&[&lease]).await;
+    let took = started.elapsed();
+    assert!(
+        matches!(answered, Err(AcknowledgementFailure::StoreUnreachable)),
+        "{answered:?}"
+    );
+    assert!(took < Duration::from_millis(4500), "{took:?}");
+    let pids: std::collections::BTreeSet<i32> = {
+        let mut pids = std::collections::BTreeSet::new();
+        for connection in &mut held {
+            pids.insert(
+                sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut **connection)
+                    .await
+                    .expect("its server process"),
+            );
+        }
+        pids
+    };
+    drop(held);
+    assert_eq!(pool.size(), max, "no connection discarded");
+    assert_eq!(pids.len(), usize::try_from(max).expect("a count"));
+    assert!(acknowledged(Acknowledged::Written)(
+        &lab.verdicts(&[&lease]).await[0]
+    ));
+}
+
+/// A connection ended by the server between `lock_matched` and `acknowledge` (`pg_terminate_backend`, as a failover or an
+/// operator ends it) is a database not reached: `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, nothing written, and a later call on a
+/// new connection acknowledges the lease.
+#[tokio::test]
+async fn a_connection_ended_between_the_lock_and_the_update_is_a_store_not_reached() {
+    use sagat_application::worker::acknowledgement::{
+        AcknowledgementStore, AcknowledgementStoreError, AcknowledgementTx, LeaseProbe,
+    };
+    let lab = lab().await;
+    let lease = lab.provisional("ack.terminated", false).await;
+    let probes = [LeaseProbe {
+        run_id: lease.run,
+        instance: lease.task.instance.clone(),
+        token_hash: sagat_application::entropy::Token::hash_of(lease.task.lease_token.expose()),
+    }];
+    let mut tx = lab
+        .p
+        .api
+        .executions
+        .begin_acknowledgement(lab.p.tenant, CallDeadline::of_arrival(Instant::now()))
+        .await
+        .expect("begin");
+    let locked = tx.lock_matched(&probes, &[0]).await.expect("locked");
+    assert_eq!(locked.len(), 1);
+    let pid = tx.backend_pid().await.expect("its server process");
+    let ended: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+        .bind(pid)
+        .fetch_one(&lab.p.api.db.pool)
+        .await
+        .expect("terminate");
+    assert!(ended);
+    let generation = lease.task.fence.generation;
+    assert!(matches!(
+        tx.acknowledge(&probes, &[(0, generation)]).await,
+        Err(AcknowledgementStoreError::Unreachable)
+    ));
+    tx.rollback().await;
+    assert_eq!(lab.acknowledged_at(&lease).await, None, "nothing written");
+    assert!(acknowledged(Acknowledged::Written)(
+        &lab.verdicts(&[&lease]).await[0]
+    ));
+}
+
+/// A server that answers read-only (`25006`, a standby that a failover left in place) is a database not reached for the
+/// whole call: `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, never `NOT_HELD`, and nothing written.
+#[tokio::test]
+async fn a_read_only_server_is_a_store_not_reached() {
+    let lab = lab().await;
+    let lease = lab.provisional("ack.read_only", false).await;
+    let (store, _pool) = store_with(&lab, "SET default_transaction_read_only = on").await;
+    let workers = workers_over(store);
+    let tasks = [lease.task_ref()];
+    let answered = workers
+        .acknowledge_tasks(
+            &lab.principal,
+            &tasks,
+            CallDeadline::of_arrival(Instant::now()),
+        )
+        .await
+        .map_err(|failed| failed.failure);
+    assert!(
+        matches!(answered, Err(AcknowledgementFailure::StoreUnreachable)),
+        "{answered:?}"
+    );
+    assert_eq!(lab.acknowledged_at(&lease).await, None, "nothing written");
+}
+
+/// A rollback that does not return within its bound (100 ms) discards the connection instead of handing it back: the server
+/// process of the transaction goes, the pool opens another, and nothing of the transaction committed.
+#[tokio::test]
+async fn a_rollback_that_does_not_return_in_time_discards_its_connection() {
+    use sagat_application::worker::acknowledgement::{
+        AcknowledgementStore, AcknowledgementTx, LeaseProbe,
+    };
+    let lab = lab().await;
+    let lease = lab.provisional("ack.rollback", false).await;
+    let (store, pool) = store_with(&lab, "SELECT 1").await;
+    let probes = [LeaseProbe {
+        run_id: lease.run,
+        instance: lease.task.instance.clone(),
+        token_hash: sagat_application::entropy::Token::hash_of(lease.task.lease_token.expose()),
+    }];
+    let mut tx = store
+        .begin_acknowledgement(lab.p.tenant, CallDeadline::of_arrival(Instant::now()))
+        .await
+        .expect("begin");
+    let pid = tx.backend_pid().await.expect("its server process");
+    tx.lock_matched(&probes, &[0]).await.expect("locked");
+    tx.acknowledge(&probes, &[(0, lease.task.fence.generation)])
+        .await
+        .expect("written in the transaction");
+    tx.rollback_stalled_for_tests().await;
+    assert_eq!(pool.size(), 0, "the connection is not handed back");
+    crate::support::eventually("the discarded connection's server process ends", || async {
+        let alive: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)")
+                .bind(pid)
+                .fetch_one(&lab.p.api.db.pool)
+                .await
+                .expect("activity");
+        (!alive).then_some(())
+    })
+    .await;
+    assert_eq!(lab.acknowledged_at(&lease).await, None, "nothing committed");
+    // the pool opens another connection, and the lease is still acknowledged
+    let mut tx = store
+        .begin_acknowledgement(lab.p.tenant, CallDeadline::of_arrival(Instant::now()))
+        .await
+        .expect("a new connection");
+    assert_ne!(tx.backend_pid().await.expect("its server process"), pid);
+    tx.rollback().await;
+    assert_eq!(
+        pool.size(),
+        1,
+        "a rollback in time hands the connection back"
+    );
+}
+
+/// A deadlock that ends the acknowledgement's transaction is a retryable failure (`UNAVAILABLE`, never `NOT_HELD`), with
+/// nothing written: asked again, the lease is acknowledged, and asked once more, the repeat is a duplicate. The other
+/// transaction holds the membership's row before the acknowledgement asks for it, then asks for the binding's lock the
+/// acknowledgement holds shared; the acknowledgement's session detects the cycle after 500 ms (before its lock timeout of
+/// 1 s), the other's only after 10 s, so the server ends the acknowledgement.
+#[tokio::test]
+async fn a_deadlock_is_a_retryable_failure_and_the_call_asked_again_is_acknowledged() {
+    let lab = lab().await;
+    let lease = lab.provisional("ack.deadlock", false).await;
+    let (store, _pool) = store_with(&lab, "SET deadlock_timeout = '500ms'").await;
+    let workers = workers_over(store);
+    let namespace: Uuid = sqlx::query_scalar(
+        "SELECT namespace_id FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = 'a'",
+    )
+    .bind(lab.p.tenant.as_uuid())
+    .bind(lease.run.as_uuid())
+    .fetch_one(&lab.p.api.db.pool)
+    .await
+    .expect("namespace");
+    let mut other = lab.p.api.db.pool.begin().await.expect("begin");
+    sqlx::query("SET LOCAL deadlock_timeout = '10s'")
+        .execute(&mut *other)
+        .await
+        .expect("the other session waits long before it looks for a cycle");
+    sqlx::query("SELECT 1 FROM memberships WHERE tenant_id = $1 AND subject = $2 FOR UPDATE")
+        .bind(lab.p.tenant.as_uuid())
+        .bind(SUBJECT)
+        .fetch_one(&mut *other)
+        .await
+        .expect("hold the membership's row");
+    let tasks = [lease.task_ref()];
+    let call = workers.acknowledge_tasks(
+        &lab.principal,
+        &tasks,
+        CallDeadline::of_arrival(Instant::now()),
+    );
+    let cycle = async {
+        // once the acknowledgement waits for the membership's row, holding the binding's lock shared, the other asks for
+        // that lock: the cycle
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+                                 AND query LIKE '%sagat_lock_memberships%')",
+                )
+                .fetch_one(&lab.p.api.db.pool)
+                .await
+                .expect("activity");
+                if waiting {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the acknowledgement waits for the membership's row");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!(
+                "binding:{}:{}:{}",
+                lab.p.tenant, namespace, SUBJECT
+            ))
+            .execute(&mut *other)
+            .await
+            .expect("the other has the binding's lock once the acknowledgement is ended");
+    };
+    let (answered, ()) = tokio::join!(call, cycle);
+    let answered = answered.map_err(|failed| failed.failure);
+    assert!(
+        matches!(answered, Err(AcknowledgementFailure::Transient)),
+        "{answered:?}"
+    );
+    other.rollback().await.expect("release");
+    assert_eq!(lab.acknowledged_at(&lease).await, None, "nothing written");
+    assert!(acknowledged(Acknowledged::Written)(
+        &lab.verdicts(&[&lease]).await[0]
+    ));
+    assert!(acknowledged(Acknowledged::Duplicate)(
+        &lab.verdicts(&[&lease]).await[0]
+    ));
 }
