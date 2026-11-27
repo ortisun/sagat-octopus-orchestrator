@@ -3,14 +3,19 @@
 **Status:** Proposed (2026-11-26). Returned from Accepted the same day: design 015's first review round found decisions to revise (its architecture findings are open); it is accepted with design 015's approval
 **Decided by:** agent proposal with design 015, accepted by the agent preparing design 015 for build under the owner's
 delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-119. The owner may overrule it.
-**Refines / supersedes:** refines ADR-0033 (the wrapped key is classified `secret`) and ADR-0035 (feature 017's OpenBao
+**Refines / supersedes:** refines ADR-0035 (feature 017's OpenBao
 mount is one custody among several; this is the separate platform-wide proposal its decision 8 leaves the signing-key
 and platform migration to), follows ADR-0082 (the gate of a process whose configuration disagrees with the recorded
 mode is closed, never an exit; the requirement is a capability listed only with the configuration) and applies ADR-0066
-decision 1 (feature 031's customer keys live outside the platform's OpenBao); supersedes none.
+decision 1 (feature 031's customer keys live outside the platform's OpenBao); supersedes none. (An earlier text said it
+refined ADR-0033 by classifying the wrapped key `secret`; ADR-0033 classifies payload fields, and the wrapped key's
+column is classified in `crates/infra-postgres/storage-classification.json` as `protected_system`, design 015 Technical
+Plan 5.)
 **Enforced by:** the cross-tenant unwrap test, the rotation and rewrap test, the migration test under load, the
 outage test and the paired restore test on a real OpenBao (Tasks 015-19, 015-24); the signature-binding tests (Task 015-15); the exact allow-list policy test (Task
-015-17); the canary test (Task 015-20); the closed gates of Requirement 015-010 (Task 015-18); the rule
+015-17, `scripts/check-openbao-policies.py`); the canary test (Task 015-20); the closed gates of Requirement 015-010
+and the two rollout orders under load (Task 015-18); the insert-only signature table (Tasks 015-12, 015-15); the
+re-seal inventory (Task 015-34); the rule
 `secret-resolve-never-discards` of `scripts/check-architecture.py` and the representation and floor triggers (Tasks
 015-10, 015-12); the privilege audit of the state row's functions (Task 015-12). Until they exist: review only.
 
@@ -23,9 +28,14 @@ values of feature 017's `openbao` custody (design 015, The Problem).
 ## Decision
 
 1. A deployment MUST choose a key authority, `local` or `transit`; both are supported, and so are the passages between
-   them, `migrating` and `returning`. Under `transit` no platform key MAY exist outside OpenBao: a process with a local
-   key configured keeps its gate closed (ADR-0082), except in the two passages. The mode changes only through
-   functions of the schema-owning role, each change audited in its transaction.
+   them, `migrating` and `returning`. Under `transit` no platform key MAY exist outside OpenBao once the operator has
+   recorded the requirement `key-authority-ring-absent-v1`, which a process lists only with no local key: from then on
+   a process with a local key configured keeps its gate closed (ADR-0082). Before it is recorded (the hand-over window
+   after `finish-migration`, and before `begin-return`) a process with a local key stays open, never uses that key, and
+   warns, so that neither passage closes a serving process's gate. A process reads the mode at registration and after
+   every registry heartbeat. The mode changes only through functions of the schema-owning role, each change audited in
+   its transaction; the triggers that enforce it take the state row's lock through a `SECURITY DEFINER` function the
+   runtime role cannot call.
 2. Under `transit` a secret version of `transit` custody, which carries no key id so that older readers fail closed,
    MUST be sealed with a fresh data key from Transit key
    `sagat-secrets`, derived with the tenant's context, and stored with its wrapped data key and the key's version in
@@ -37,8 +47,10 @@ values of feature 017's `openbao` custody (design 015, The Problem).
    sealing floor that the database enforces, then counts. A re-key command issues new data keys after
    a compromise of a token.
 4. Scripts MUST be signed with Transit key `sagat-scripts` over the message that binds the tenant, the digest and the
-   language; runners MUST get the public keys from the control plane, never from OpenBao. Feature 017's intents MUST be
-   bound with Transit key `sagat-intent` over their metadata and the digest of the value, never the value.
+   language; runners MUST get the public keys from the control plane, never from OpenBao. Artifact bytes stay
+   immutable: every signature is a row of an insert-only table, so re-signing adds a row and never updates an
+   artifact. Feature 017's intents MUST be bound with Transit key `sagat-intent` over their metadata and the digest of
+   the value, never the value.
 5. Each custody MUST have its own mount or path prefix and its own policy, and each process kind its own token per
    custody it uses. Every
    policy MUST be an exact allow-list; the bootstrap and a test refuse any other grant. Feature 031's customer keys MUST
@@ -47,7 +59,8 @@ values of feature 017's `openbao` custody (design 015, The Problem).
    output. Opening MAY use an unwrapped data key from a cache of at most 4,096 keys, 512 per tenant, each at most 300
    seconds after its unwrap.
 7. Under `transit`, OpenBao MUST be backed up by scheduled encrypted snapshots, and a restore pairs a PostgreSQL backup
-   with a later snapshot.
+   with a later snapshot. The schedule belongs to the operator's OpenBao installation, under an operator-only policy
+   that no platform role holds and that the platform's allow-list test does not read.
 
 ## Considered options
 
@@ -61,8 +74,8 @@ values of feature 017's `openbao` custody (design 015, The Problem).
 
 OpenBao becomes a dependency of every secret seal and every cold open under `transit`; its availability is the
 platform's for those paths (a three-node Raft cluster in the runbook). A binary older than 0.3.0 cannot open a
-Transit-sealed row, so `transit` is gated by the instance registry, and a sandbox runner of 0.2.x by its key-list
-fetches. Leaving `transit` is the `returning` passage, gated and audited like the way in.
+Transit-sealed row, so `transit` is gated by the instance registry, and a sandbox runner of 0.2.x by the trust header
+every newer runner sends on each request. Leaving `transit` is the `returning` passage, gated and audited like the way in.
 
 ## Evidence
 

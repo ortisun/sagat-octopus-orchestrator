@@ -7,7 +7,8 @@ delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-26-
 standard variables) and 5 (redaction on the way out) by adding logs and the Collector's scrape of metrics; supersedes none.
 **Enforced by:** the unit tests of `crates/telemetry` for the log queue (drop, scrub, correlation) and the configuration
 refusals (Tasks 015-2, 015-3); the resource-attribute test (Task 015-4); `otelcol-contrib validate` on both Collector
-configurations and the attribute-filter drift test (Tasks 015-5, 015-6); the measurement of Non-functional requirement
+configurations in the step `OpenTelemetry Collector validate` of `.github/workflows/ci.yml`, and the attribute-filter
+drift and behaviour tests (Tasks 015-5, 015-6); the measurement of Non-functional requirement
 015-001 (Task 015-9). Until they exist: review only.
 
 ## Context
@@ -24,10 +25,13 @@ pipeline.
 2. Metrics MUST reach the Collector by its Prometheus receiver scraping each process's admin port. No process gains a
    second metrics pipeline; names, units and closed labels are unchanged.
 3. A process MUST read the Collector's authentication header from a file when one is configured
-   (`OTEL_EXPORTER_OTLP_HEADERS_FILE`).
+   (`OTEL_EXPORTER_OTLP_HEADERS_FILE`, in the format of `OTEL_EXPORTER_OTLP_HEADERS`, overriding the variables' header
+   of the same name, re-read when its content changes and after a `401`).
 4. No resource attribute or metric label MAY carry a tenant, namespace, run or sink id.
 5. The repository MUST ship a production Collector configuration with TLS, bearer authentication, a memory limiter and
-   an attribute filter generated from the platform's sensitive-name rule.
+   an attribute filter generated from the platform's sensitive-name rule, which replaces string values and keeps other
+   types as the process does. Each metrics store receives the series by one path only (in development the Collector is
+   the only scraper), so that no series arrives twice.
 
 ## Considered options
 
