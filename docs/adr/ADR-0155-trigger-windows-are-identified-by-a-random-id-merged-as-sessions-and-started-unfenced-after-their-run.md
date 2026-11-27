@@ -1,0 +1,85 @@
+# ADR-0155: Trigger windows are identified by a random id, merged as sessions and started unfenced after their run; chain keys are plain digests that never leave the database
+
+**Status:** Accepted (2026-11-27, delegate, Owner decision 2026-11-24-4)
+**Decided by:** agent proposal with the fourth revision of design 042, accepted by the agent finishing design 042 under the
+owner's delegation (Owner decision 2026-11-24-4); recorded as Owner decision 2026-11-27-428. The owner may overrule it.
+**Refines / supersedes:** supersedes ADR-0086 decisions 2 (keys as keyed hashes), 3 (the chain and key always locked),
+6 (the window's identity) and 7 (the start holding the chain, key and window rows before the port); refines ADR-0153
+decisions 1 (the statement that records the horizon) and 2 (the backlog rule and the cap); records a deviation of
+ADR-0050 decision 7.
+**Enforced by:** the fitness checks of Task 042-58 in `scripts/check-architecture.py` (the horizon statement reads
+`now()`; no transaction holding a chain, usage or key row locks a `SEALED` window; no counter on `operator_chains`); the
+slot tests of Tasks 042-13 and 042-22 in `tests/support/lock_order.rs`; the order-independence property tests of Task
+042-15; the failpoint and two-replica tests of Task 042-27; the guarded-write test of Task 042-22. Until they exist:
+review only.
+
+## Context
+
+The round-1 reviews of the third revision of design 042 (2026-11-27,
+`docs/designs/042-stream-operators.reviews/2026-11-27/round-1/`) found that, as ADR-0086 and ADR-0153 wrote it:
+
+- two dispatchers applying new keys to one chain deadlock, because both hold the chain row `FOR SHARE` and both update
+  its counter;
+- a session window that never extends an elapsed deadline lets the order in which events are applied, after a crash or
+  between two replicas, split one burst into two runs;
+- the pass could read "the deadline has passed" after taking its snapshot, so the horizon would not cover an admission
+  that started just before the deadline;
+- the backlog rule ignored events that had been attempted, and its cap equalled the dispatcher's claim lease, so a
+  crashed apply's event could miss its window;
+- the window identity used a key-row sequence that some chains do not have and that a purge resets;
+- the start was to read a shard fence that the dispatcher, which starts windows sealed at once, does not hold, and to
+  hold slot-3 rows before the port while also writing its window after the run;
+- the keyed hash of keys protected nothing that a plain digest never shown does not, and its definer function was a
+  security exception taken by a delegate.
+
+## Decision
+
+1. **Window identity.** A window is identified by a random `window_id` (a UUIDv7) drawn when it opens; the start's
+   idempotency key is derived from it (and from the index after `flatMap`), and its fingerprint from the members'
+   `(source, event_id)` in emit order. No key-row sequence and no key digest is part of it.
+2. **Session windows merge.** An element joins every `OPEN` window of its key whose interval `[opened_at - gapMs,
+   closes_at]` contains its `received_at`, whether or not that deadline has passed; windows it bridges merge into the
+   earliest opened. Any change of a deadline clears the recorded horizon. Tumbling windows are aligned to the clock;
+   count windows follow the order of application, the one order-dependent kind.
+3. **Locks of the apply.** The chain row is taken `FOR SHARE` and never updated by an apply; a new key reserves a slot by
+   a conditional update of the chain's own usage row; marks are bounded per key under the key lock the apply already
+   holds; the held-bytes quota lock is slot 8b, last. A chain of only `filter`, `map` and `flatMap` takes no key row.
+4. **The start.** The start is not fenced. It reads the window's state, held values and chain state in one statement;
+   it calls the admission port, which takes its receipt (slot 2) and creates the run (slot 6); in the run's open
+   transaction it updates its window `WHERE window_id = $1 AND state = 'SEALED'` and fails the transaction unless
+   exactly one row changed. A replay sets `STARTED` in a short guarded transaction. A window of a removed trigger is
+   refused `TRIGGER_REMOVED`.
+5. **The horizon and the holds.** The statement that records the horizon compares the deadline with `now()`, the start
+   of its transaction, never with `clock_timestamp()`. The backlog hold covers every `PENDING` inbox event of a source
+   and type the chain matches, whatever its attempt count. The horizon wait and the backlog hold both end at
+   `D + maxHoldMs`; `maxHoldMs` is 180 seconds by default and at least 90 (the claim lease of 60 seconds and a margin).
+6. **Digests.** A key and a `distinct` value are stored only as the SHA-256 of their canonical form, never returned by an
+   API, a log, a metric, a span, an audit record or an error; no key text is stored. No keyed hash, key table or
+   definer function computes them.
+
+**Recorded deviation of ADR-0050 decision 7.** The start writes its window row, a slot-3 row for the apply and the seal,
+after the run it creates (slot 6) and after 022's rows (slots 7 and 8). No cycle: a `SEALED` window is written only by
+its starts and by the pass's short back-off, expiry and refusal transactions, which hold no other operator row; the
+apply, the seal and a flush lock only `OPEN` windows, a discard `OPEN` or `REFUSED` ones, a retry `REFUSED` ones, so no
+transaction that holds a slot-3 row locks a `SEALED` window, and duplicates of one start serialise first on the slot-2
+receipt.
+
+## Considered options
+
+1. **This record** — no deadlock, one run per burst whatever the order of the applies, a start that a dispatcher and a
+   pass can both run, and no security exception.
+2. **Counters on the chain row taken `FOR UPDATE`** — no deadlock, but every element of a chain waits for the one before.
+3. **A fenced start** — needs a shard the dispatcher does not hold, and a change to the port to carry the fence.
+4. **Keeping the keyed hash** — a key table, an extension and a definer function the owner would have to accept as a
+   security exception, for no protection the digest lacks.
+
+## Consequences
+
+New keys of one chain are serial on its usage row; applies that add held bytes are serial per tenant on the quota lock;
+both are measured by Task 042-33. A long transaction delays a window by at most `maxHoldMs` past its deadline, then the
+window seals and a later element is late, never lost. A window is purged seven days after it becomes final.
+
+## Evidence
+
+Design 042, Requirements FR-042-014 to FR-042-024 and FR-042-031 to FR-042-034, sections 4 to 6 and 10, fourth
+revision (`docs/designs/042-stream-operators.md`); research Decisions 042-168 to 042-179.

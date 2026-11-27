@@ -68,3 +68,11 @@ the requirement is also checked when `switch` activates a chained version, and t
 to remove a requirement while a chain, a window that is not final or a chained version exists. A binary from before the
 instance registry does not register, so the registry cannot refuse it; for such binaries the upgrade rule of
 `docs/runbooks/scaling.md` is the only guard (design 042, Gap 042-006).
+
+## Revision of 2026-11-27 (design 042, round-1 reviews)
+
+Decisions 1 and 2 are refined by [ADR-0155](ADR-0155-trigger-windows-are-identified-by-a-random-id-merged-as-sessions-and-started-unfenced-after-their-run.md)
+(Owner decision 2026-11-27-428): the statement that records the horizon compares the deadline with `now()`, never
+`clock_timestamp()`; the backlog rule covers every pending event of a matching source and type; the horizon wait and
+the backlog hold both end at `D + maxHoldMs`, 180 seconds by default and at least 90. The Consequences' "the pass's lag
+shows it" is replaced by the alerts `OperatorSealHorizonOld` and `OperatorSealedPastHold` of design 042, section 9.

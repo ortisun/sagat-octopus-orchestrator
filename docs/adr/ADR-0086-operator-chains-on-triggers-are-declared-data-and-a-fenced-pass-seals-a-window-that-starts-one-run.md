@@ -122,3 +122,10 @@ sealed at once with its one member), so the apply never creates a run and only t
 run, as an ADR-0050 decision 7 slot 8a row, and takes no chain or key row; the apply's and the seal's operator rows are
 slot 3. The HMAC key is used only through one `SECURITY DEFINER` function, `operator_key_hmac`, over `pgcrypto`. Design
 042, Functional requirements 042-014 and 042-019, Technical Plan 4 to 6.
+
+## Revision of 2026-11-27 (design 042, round-1 reviews of the third revision)
+
+Decisions 2, 3, 6 and 7 are superseded by [ADR-0155](ADR-0155-trigger-windows-are-identified-by-a-random-id-merged-as-sessions-and-started-unfenced-after-their-run.md)
+(Owner decision 2026-11-27-428): keys and `distinct` values are plain digests that never leave the database, the apply
+counts new keys on a usage row of its own, a window is identified by a random id, and the start is unfenced and writes
+its window after its run. The text of those decisions above is kept as the record of what was accepted.
