@@ -3,7 +3,11 @@
 **Branch**: `feature/026-invocation-human-surfaces` | **Date**: 2026-10-26 | **Spec**: [spec.md](./spec.md)
 
 Status: Proposed — not started. Revised on 2026-10-26 after the independent architecture and
-security reviews (findings applied are listed in research.md under the revised decisions).
+security reviews (findings applied are listed in research.md under the revised decisions). Re-baselined
+on 2026-11-24 against `develop` at `2c94064f` for release 0.3.0: the stale items and the decisions D026-001
+to D026-017 are in research.md ("Re-baseline against `develop`"); this plan carries them in place (marked
+"revised 2026-11-24") and in four new sections at the end: Run creators, Boundaries with other work,
+Fleet capabilities and Build slices (2026-11-24).
 
 **Input**: [spec.md](./spec.md), [research.md](./research.md), [data-model.md](./data-model.md),
 [contracts/](./contracts/), proposed
@@ -31,8 +35,9 @@ existing generic operations. Every surface is additive and enabled separately.
 **Language/Version**: Rust 1.98.0 (`rust-toolchain.toml`); the locked TypeScript, Go, Python, .NET and
 Java SDK toolchains; the Studio's locked Node toolchain. No toolchain change.
 
-**Primary Dependencies**: existing Tokio, Axum, tonic, SQLx, NATS client, `jsonschema` 0.58 (through
-`crates/infra-schema`), `hmac`/`sha2`. New adapter dependency, only in `crates/infra-connectors`: an SMTP
+**Primary Dependencies**: existing Tokio, Axum, tonic, SQLx, NATS client, the platform validator of
+design 043 (`crates/infra-schema/src/run_input/`, with its work counter and permits) for every value this
+feature validates, never the `jsonschema` crate (revised 2026-11-24, Decision 026-003), `hmac`/`sha2`. New adapter dependency, only in `crates/infra-connectors`: an SMTP
 client (candidate `lettre`, pinned, TLS-only, no default features) — selected and pinned in T026-004.
 Slack and Teams use the existing guarded HTTP client. No new dependency in `crates/domain`.
 
@@ -44,14 +49,14 @@ NATS carries only the existing `run.finished` hint.
 (Testcontainers) as `integration_invocation_human_surfaces` and `fault_invocation_human_surfaces`;
 `contract_rest_invocation_human_surfaces`, `contract_grpc_invocation_human_surfaces`,
 `contract_asyncapi_events_webhooks_messaging` (baseline growth); `e2e_invocation_human_surfaces` with a
-real browser; five-language `sdk_conformance` scenarios; the security battery; the runtime-role sweep;
+real browser; six-language `sdk_conformance` scenarios (Rust joined, revised 2026-11-24); the security battery; the runtime-role sweep;
 a performance harness under `tests/performance/invocation-human-surfaces/`. Local Slack, Teams and SMTP
 stand-ins (the existing `tests/support/receiver.rs` pattern and an SMTP sink container pinned in the
 test fixtures); real-provider smoke tests are optional and never the only evidence.
 
 **Target Platform**: existing single-region Linux containers, Compose and Helm profiles.
 
-**Project Type**: modular monolith with five SDKs and the Studio.
+**Project Type**: modular monolith with six SDKs and the Studio (revised 2026-11-24).
 
 **Performance Goals**: measure, on a declared environment, waiter wake-up latency (hint and poll paths),
 the batched poll's database cost at 2,000 waiters, stream append throughput per run and publish-to-SSE
@@ -62,7 +67,8 @@ form logic use the existing bounded evaluator and the JSON Schema adapter); tena
 or the stored link only; typed errors from the closed set; telemetry without values, tokens or
 addresses.
 
-**Scale/Scope**: 50 functional requirements, 8 user stories, 1 proposed ADR.
+**Scale/Scope**: 52 functional requirements (51 and 52 added on 2026-11-24), 8 user stories, 2 ADRs
+(0061 and 0068, accepted with amendments on 2026-11-24 under Owner decision 2026-11-24-4).
 
 ## Constitution Check
 
@@ -73,7 +79,7 @@ Design checks, not approval of an implementation. Re-evaluated after Phase 1 des
 | I — durable atomic transitions | Pass | Pass | Transaction table below; submission, append, opening, decision and fan-out each one transaction with audit/outbox; terminal runs never reopen; first commit wins (T026-047). |
 | II — pure domain, inward dependencies | Pass | Pass | Domain types only (form model, stream limits, link state, destinations); SMTP/HTTP clients only in `infra-connectors`; `check-architecture.py` (T026-062). |
 | III — at-least-once effects | Pass | Pass | Chat/e-mail sends at-least-once with stable delivery id and stated duplicates (G1322); no compensation is promised for a sent message. |
-| IV — pinned versions, five SDKs | Pass | Pass | Forms, links, OpenAPI and streams follow the pinned version; additive IR/protocol/REST; shared conformance (T026-055..058). |
+| IV — pinned versions, six SDKs | Pass | Pass | Forms, links, OpenAPI and streams follow the pinned version; additive IR/protocol/REST; shared conformance in six languages (T026-055..058); fleet capabilities through the instance registry so that no process of an older release reads an IR field it does not know (revised 2026-11-24). |
 | V — isolated code, tenant and secrets | Justified | Pass | Anonymous principal kind (ADR-0061) with one capability on its own origin and pool; owner recheck; tokens hashed; Slack tenant only from the decision-link row; no secrets in messages; egress guard for every send (Complexity Tracking rows 1, 3, 4). |
 | VI — OTel, audit, typed errors | Pass | Pass | Observability section; audit in the decision transaction; reasons in `contracts/errors.md`. |
 | VII — inbox/outbox | Pass | Pass | Notifications are outbox deliveries in the causing transaction (ADR-0025); Slack interactions are admitted to the inbox (ADR-0012). |
@@ -85,7 +91,8 @@ Design checks, not approval of an implementation. Re-evaluated after Phase 1 des
 |---|---|
 | `crates/domain` | `src/forms.rs` (form model types, closed reasons, ceilings); `src/streams.rs` (channel declaration, event identity, limits, refusal verdicts); `src/public_links.rs` (link state machine, `LinkBearer` principal kind that has no `authorize(Permission)`); `src/identity.rs` (`Permission::LinkRead`, `LinkManage`; `Subject::public_link(id)` reserved actor); `src/outbound.rs` (`ChatDestination::{Slack, Teams}`, `EmailDestination`, `OutboundKind::{ApprovalRequested, ApprovalSettled}`, `max_classification`); `src/execution/approval.rs` (notify, summary, form declarations, decision input); `src/workflow.rs`/`src/definition.rs` (IR fields `streams`, `emits`, approval `notify`/`summary`/`form`); `src/quota.rs` (five resources). |
 | `crates/application` | `src/forms.rs` (form service: version → carrier → model); `src/invocation.rs` (execute/outcome use cases, `RunWaiters` port); `src/streams.rs` (append and read use cases, ports); `src/public_links.rs` (management and submission use cases); `src/approval_progress.rs` (opening with summary, links and fan-out; decision with input); `src/approval_links.rs` (decision-link tokens, keys, resolution); `src/notifications.rs` (channel management, rendering inputs); `src/chat_identity.rs` (P3); `src/authz.rs` (matrix). |
-| `crates/infra-schema` | form-model walker next to `src/classification/walk.rs`; `x-sagat-form` validation; per-version OpenAPI generator (`src/openapi.rs`). |
+| `crates/infra-schema` | form-model walker (`src/forms.rs`) over the schema positions of the design-043 pre-check (`src/run_input/vocabulary.rs`) and the classification walker; form hint validation (`inputFormHints`, `form.hints`); per-version OpenAPI generator (`src/openapi.rs`); stream event and decision input validation through `InputSchemas` (revised 2026-11-24). |
+| `crates/infra-nats` | a core-NATS subscriber adapter for the `RunOutcomeHints` port (`sagat.v1.run.finished.*`, later `sagat.v1.run.result_returned.*`), no queue group; the crate publishes only today (added 2026-11-24, Decision 026-005). |
 | `crates/infra-ir` | codec/validation of the new IR fields and capability gates (ADR-0032); summary expression checks with the existing evaluator. |
 | `crates/infra-postgres` | migrations (`<next>_public_links`, `<next>_workflow_streams`, `<next>_approval_channels`, `<next>_notification_channels`, `<next>_slack_apps`, `<next>_chat_identity`), stores for each port, the code-consumption and purge `SECURITY DEFINER` functions, storage-classification entries. |
 | `crates/infra-connectors` | `src/chat.rs` (Slack `auth.test`, `chat.postMessage`/`chat.update`, Teams Workflows webhook, through `guard.rs`); `src/email.rs` (SMTP, TLS required, egress guard); destination dispatch in `src/publish.rs`. |
@@ -93,10 +100,10 @@ Design checks, not approval of an implementation. Re-evaluated after Phase 1 des
 | `crates/api-http` | `src/routes/forms.rs`, `src/routes/invocation.rs`, `src/routes/streams.rs`, `src/routes/public_links.rs` (management), `src/routes/public.rs` (anonymous: form, submission, receipt; a separate router with no bearer extractor, mounted only for requests whose `Host` is the public-forms origin), `src/public_site.rs` (serves the public build under `/f/{embedId}` on that origin with the per-link `frame-ancestors` header; `'none'` for unknown ids and unusable links; origins and CSP per ADR-0062 of feature 027, C15), `src/routes/notifications.rs` (channels and Slack app bindings), `src/routes/chat.rs` (P3: `/v1/chat/slack/apps/{bindingId}/requests`); `src/streams.rs` (separate counters for stream-event subscriptions and waiters); `src/studio.rs` (unchanged CSP; answers `/f/` and `/v1/public/*` with `404` on the Studio origin). |
 | `crates/api-grpc` | `AppendStreamEvents` in `src/service.rs`, limits in `src/limits.rs`. |
 | `crates/telemetry` | span and metric names below. |
-| `apps/control-plane` | waiter registry wiring (subscriptions to `sagat.v1.run.finished.*` and feature 022's `run.result_returned` hint without a queue group on every replica); link key configuration (`SAGAT_LINK_KEYS`, a file of versioned 32-byte keys mounted only into the control plane, used with distinct labels for decision links and receipt tokens; an entry of feature 032's cell key inventory, C11); `SAGAT_PUBLIC_FORMS_ORIGIN` (start-up refuses it when it equals the Studio origin; it may share a host with the feature-027 apps origin); trusted proxy networks for the public rate guard. |
+| `apps/control-plane` | waiter registry wiring (the `crates/infra-nats` subscriber to `sagat.v1.run.finished.*` and feature 022's `run.result_returned` hint without a queue group on every replica; gate wiring with `.with_run_inputs` for the new routes, design 043); link key configuration (`SAGAT_LINK_KEYS`, a file of versioned 32-byte keys mounted only into the control plane, used with distinct labels for decision links and receipt tokens; an entry of feature 032's cell key inventory, C11); `SAGAT_PUBLIC_FORMS_ORIGIN` (start-up refuses it when it equals the Studio origin; it may share a host with the feature-027 apps origin); trusted proxy networks for the public rate guard. |
 | `apps/sandbox-runner`, `runners/` | the supervisor serves feature 023's reserved, capability-gated `stream.append` host call (C17) by calling `AppendStreamEvents` under the attempt's lease (G1332). |
 | `apps/cli` | `run execute`, `run outcome`, `run stream`, `workflow form`, `workflow openapi`, `link create/list/pause/resume/rotate/revoke` (with `--max-concurrent-runs`), `channel create/test`, `slack-app register/list`. |
-| `frontend/apps/studio` | `src/features/forms/` (renderer), `src/features/runs/StartRun.tsx` (form by default, JSON fallback), `src/features/runs/StreamsTab.tsx`, `src/features/approvals/DecidePage.tsx`, `src/features/public-links/`, `src/features/integrations/` (channels, Slack app bindings, identity-link confirmation), a second build entry `src/public/` served only on the public-forms origin. |
+| `frontend/apps/studio` | `src/features/forms/` (renderer), `src/features/runs/StartRun.tsx` (form by default, JSON fallback, keeping its business identifier and start delay fields), `src/features/runs/StreamsTab.tsx`, `src/features/approvals/DecidePage.tsx`, `src/features/public-links/`, `src/features/notifications/` (channels, Slack app bindings, identity-link confirmation; revised 2026-11-24: not `features/integrations/`, the connector page that feature 021 extends), a second build entry `src/public/` served only on the public-forms origin; all on the Astryx components after pull request 267 merges (Decision 026-015). |
 | `sdks/*` | client operations, worker publishing, builder fields, conformance runners. |
 
 ## Transaction boundaries
@@ -104,16 +111,17 @@ Design checks, not approval of an implementation. Re-evaluated after Phase 1 des
 | # | Operation | Commits together | Never in the transaction |
 |---|---|---|---|
 | T1 | Link management | link row, revision, management receipt, audit, `public_links` count | token plaintext (returned once after commit) |
-| T2 | Public submission | before it, in its own committed decision (as ADR-0027 API rate admission): debit of the durable per-link and per-namespace buckets after an unlocked lookup of the link by token hash. Then, in the slots of ADR-0050 decision 7: slot 1 — link row `FOR UPDATE` (state, expiry, submission counter, exact live-run count of the link) and the read-only 029 access check; slot 2 — submission receipt (derived token hash); slot 4a — owner membership `FOR SHARE` (017 helpers) → 029 access fences → namespace row; slots 4b–5 as any admission; slot 6 — run rows, whose active-run admission also takes the exact `public_link_active_runs` count under the feature-009 namespace lock (run with origin `PUBLIC_LINK`, version pin, input payload, first tasks, journal, outbox, `run.started` and `public_link.submitted` audit); slot 8b — usage rows last | the process rate guard; schema validation (repeated against the locked revision inside) |
+| T2 | Public submission | before it, in its own committed decision (as ADR-0027 API rate admission): debit of the durable per-link and per-namespace buckets after an unlocked lookup of the link by token hash; then the run input gate of design 043 on the merged input of the unlocked revision (revised 2026-11-24, Decision 026-017; the transaction refuses another revision and the use case repeats once). Then, in the slots of ADR-0050 decision 7: slot 1 — link row `FOR UPDATE` (state, expiry, submission counter, exact live-run count of the link) and the read-only 029 access check; slot 2 — submission receipt (derived token hash); slot 4a — owner membership `FOR SHARE` (017 helpers) → 029 access fences → namespace row; slots 4b–5 as any admission; slot 6 — run rows, whose active-run admission also reads `public_link_active_runs` from `public_link_active_counts` under the feature-009 namespace lock (run with `public_link_id` set, revised 2026-11-24, Decision 026-004; version pin, input payload, first tasks, journal, outbox, `run.started` and `public_link.submitted` audit); slot 8b — usage rows last | the process rate guard; schema validation (repeated against the locked revision inside) |
 | T3 | `executeRun` admission | exactly the `startRun` transaction and its receipt | the wait (after commit, holding nothing) |
-| T4 | Stream append batch | lease check under the step row `FOR SHARE` → head `FOR UPDATE` → per event: dedupe lookup, channel budget, pool and per-run ceiling, event row with inline data, channel usage and pool counters, head advance → deferred byte accounting | run row lock, journal, outbox, `payloads` |
+| T4 | Stream append batch (revised 2026-11-24, Decision 026-006) | attempt row `FOR UPDATE` (refused when closed) → lease read without a lock, database clock after it → head `FOR UPDATE` → per event: dedupe lookup, channel budget, pool and per-run ceiling, event row with inline data, channel usage and pool counters, head advance → with `final`, close the attempt row → deferred byte accounting of `workflow_stream` | any lock on `runs`, `steps` or `run_events`; the tenant usage row before commit; journal, outbox, `payloads`; the schema validation (before the transaction, under a design-043 permit) |
+| T4b | Attempt close by a feed read or the maintenance pass (added 2026-11-24) | `UPDATE run_stream_attempts SET closed_at … WHERE closed_at IS NULL` for an attempt whose committed step state is settled or superseded; it waits for an append holding the row | anything of `steps` or `runs` |
 | T5 | Approval opening (any owner kind, including 025 `AGENT_TOOL_CALL`) | existing opening (request, routes, timer, journal, audit, outbox) + summary payload + one delivery per active target + one decision link per delivery + `notification.skipped` audits; none of the notification rows for a draft test run (022 `DRAFT_TEST`) | provider sends |
 | T6 | Decision (any path) | existing decision (receipt with server-derived `via`, route, timer cancel, journal, audit, outbox) + input payload + `approval.settled` deliveries + decision links closed | the link lookup that resolved the approval (read-only, before) |
 | T7 | Expiry / cancellation | existing expiry or cancellation + `approval.settled` deliveries + links closed | — |
 | T8 | Delivery attempt | ADR-0025: claim under rate slot, attempt row, next state, `provider_ref`, health, auto-disable audit; for a delivery carrying a `pii` field, the recheck of `classification_set_by`'s reveal grant and its audit, or the channel's pause (`PII_GRANT_REVOKED`) | the provider call itself (between claim and record, fenced by attempt number), sent by the engine through the guarded egress client with only the channel's credential (ADR-0055 rule (b), C3) |
 | T9 | Fan-out of `run.finished`/alerts | existing fact transaction + deliveries for matching channels (filters evaluated in SQL) | rendering |
 | T10 | Slack interaction (P3) | inbox admission keyed by binding + Slack action id (binding found by the path id, signature verified with its secret before); then dispatcher: decision-link row → tenant/namespace, check against the binding's tenant, team and channel, identity lookup inside that tenant, T6 as the linked subject + `event_deliveries` effect row | the signature check (before); any tenant taken from the payload |
-| T11 | Stream purge | head lock, events (with their data), channel usage and head delete, byte release (one run per transaction) | — |
+| T11 | Stream purge (revised 2026-11-24, Decision 026-008) | stamp `terminal_seen_at` on heads of terminal runs; then per run: head lock, events (with their data), attempt rows, channel usage and head delete, byte release | the run's terminal transaction (nothing is written there) |
 | T12 | Slack app binding registration | after an `auth.test` call outside the transaction: binding row with the returned team id, audit, `slack_app_bindings` count; an interactive channel write checks the global `(team, channel)` index | the bot token value |
 | T13 | Identity link (P3) | code issue: code hash, audit. Slash command (dispatcher): consume the code through the SECURITY DEFINER function (single use, team check) + pending link + audit. Confirmation (subject's signed-in session): pending → active + audit | the code plaintext after it is shown |
 
@@ -158,7 +166,7 @@ Proposed defaults and hard ceilings; design bounds to verify (SC-026-012), not c
 | Resource | Default | Hard ceiling |
 |---|---:|---:|
 | Form carrier schema size / fields / nesting / choices per field | 64 KiB / 128 / 4 / 100 | 64 KiB / 256 / 8 / 1,000 |
-| `x-sagat-form.placeholder` | 120 chars | 120 chars |
+| Form hint `placeholder` (`inputFormHints`, `form.hints`) | 120 chars | 120 chars |
 | `executeRun` / `getRunOutcome` wait (`run_wait_ms`) | 30 s | 60 s |
 | Waiters per subject / tenant / process | 20 / 200 / 2,000 | 100 / 1,000 / 10,000 |
 | Batched waiter poll interval | 500 ms | ≥ 250 ms |
@@ -169,7 +177,7 @@ Proposed defaults and hard ceilings; design bounds to verify (SC-026-012), not c
 | Author channel budget (`budget` of one channel) | 5,000 events / 2 MiB | 100,000 / 32 MiB |
 | Author pool (all author channels of a run) | 10,000 events / 4 MiB | 100,000 / 64 MiB |
 | Reserved pool (all `sagat.` channels of a run; budgets fixed by the owning feature, e.g. 025) | 65,536 events / 32 MiB | 131,072 / 64 MiB |
-| Per-run hard ceiling over both pools | — | 262,144 events / 128 MiB (and `tenant_content_bytes`) |
+| Per-run hard ceiling over both pools | — | 262,144 events / 128 MiB (and `tenant_stream_bytes`, revised 2026-11-24) |
 | Appends per attempt per second | 20 | 100 |
 | Stream retention after run end (`stream_retention_seconds`) | 7 days | 30 days, never beyond the run |
 | Stream subscriptions per subject / tenant / process | 20 / 200 / 2,000 | as graph streams, separate counters |
@@ -292,9 +300,13 @@ existing dead-items and outbox alerts cover channel deliveries. Runbook: `docs/r
    ADR-0032), worker proto minor (additive), AsyncAPI outbound kinds (grow only, baseline regenerated
    after review), error reasons (no new `Error.code`).
 2. Migrations are additive; `CHECK` constraints are widened, never narrowed; down migrations refuse
-   while new-kind subscriptions, links, stream events or decision links exist.
+   while new-kind subscriptions, links, stream events or decision links exist. Revised 2026-11-24:
+   timestamps after the newest on `develop` at merge (`20270119000000` today); every CHECK added `NOT
+   VALID` and validated by a later migration (design 043's rule and its static test); the
+   `destination_kind` CHECK keeps `REDIS` (feature 033).
 3. Capability gates: publication refuses `streams`, `emits`, `notify`, `summary`, `form` and
-   `x-sagat-form` until the corresponding capability is enabled on the server; an older server cannot
+   `inputFormHints` until the corresponding instance-registry capability is active (revised 2026-11-24,
+   section Fleet capabilities below); an older server cannot
    publish them; an older server is not a safe reader of runs that used them (ADR-0032 decision 8), so
    rollback disables new publication and starts while keeping readers.
 4. Runs in flight are unaffected: no existing approval gains notifications retroactively; existing
@@ -302,6 +314,12 @@ existing dead-items and outbox alerts cover channel deliveries. Runbook: `docs/r
    without `input` keeps today's `request_hash` byte for byte, so a decision retried across the upgrade
    replays (compatibility test in T026-040).
 5. SDKs: new operations behind a server-version check (`ROUTE_NOT_FOUND` means an older server).
+   Six SDKs, Rust included (revised 2026-11-24). The worker-protocol minor is the next free one of the
+   register in `sdks/SPEC.md` when this contract merges (1.7 is feature 041's).
+5b. Existing operations (added 2026-11-24, Decision 026-014): `decideWorkflowApproval` is marked
+   `x-extended: '026'`; the pinning tests of features 016 (`tests/contract/payload-classification/openapi.rs`)
+   and 035 (`tests/contract/iceberg-writes/openapi.rs`) gain an exclusion for that mark with the reviewed
+   one-operation diff in their comment, never a re-blessed baseline.
 6. Rollout order: forms → execute/outcome → streams → channels → approval channels → public links →
    OpenAPI → Slack in-chat (P3). Public links ship disabled (quota 0) and need the public-forms origin
    configured; feature 016's carrier list (FR-016-002) is amended in the same delivery (T026-067).
@@ -333,5 +351,94 @@ interactions, the decision-versus-expiry race and the wait-deadline race, lost `
 restart during waits and streams, tenant isolation over every new operation (battery), quota and
 ceiling exhaustion at and past each limit, failed compensation unchanged for runs started through the
 new surfaces; canary values at each level through outcomes, streams, receipts, summaries, messages,
-logs and spans; five-SDK conformance; real-browser journeys with WCAG checks; the benchmark report with
-environment and failures. A skipped or failing test is reported as such; no number is invented.
+logs and spans; six-SDK conformance (revised 2026-11-24); real-browser journeys with WCAG checks; the
+benchmark report with environment and failures; the hot-path work budget of design 038
+(`tests/integration/claim-transition-efficiency/work_budget.rs`) unchanged by every slice (added
+2026-11-24: no statement of this feature runs in a lease, a heartbeat or a completion). A skipped or failing
+test is reported as such; no number is invented.
+
+## Run creators (2026-11-24)
+
+Every path of this feature that creates a run passes the run input gate of design 043 and, once feature
+022's throughput slice is merged, its permit port. The rows, their gate calls and what each caller gets on
+each refusal are in research.md, Decision 026-017. In short: a Studio form is `startRun` (design 043 row 1);
+`executeRun` is a second entry of row 1, checked before any waiter is registered; a public-link submission
+is a new creator (`Creator::PublicLink`, metric label `public_link`) whose refusals keep `field` and `rule`
+only inside an exposed pointer; a synchronous custom route stays row 9 (the dispatcher). No notification
+channel starts a run. The coordinator adds these rows to design 043's Technical Plan 1 and to feature 022's
+"Run creators" table before the code of slices 1 and 7 (documentation first, Owner decision 2026-11-20-8);
+each row gets the test that fails when the creator bypasses the gate (design 043 Requirement 043-016) or the
+permit port (Task 022-064).
+
+## Boundaries with other work (2026-11-24)
+
+- **Feature 021 (custom HTTP routes).** 021 keeps its asynchronous `202` and the reserved route field
+  `response`, refusing `mode: wait` at creation until this feature's capability `synchronous-routes-v1` is
+  active. What 026 needs from 021, and nothing more: the reserved field, that refusal, and
+  `event_deliveries.run_id` written by the dispatcher in its delivery transaction (it already is, for every
+  trigger). Order: 021's routes merge in mode `accept`; 026 builds its waiter (slice 1) independently; the
+  route wait (Requirement 026-012, Decision 026-010) is one joint task after both (Task 026-065, slice 11),
+  with 021's contract test and 026's waiter test. Channel credentials never reuse 021 resources (ADR-0055
+  rule 11b).
+- **Design 043 (run input validation).** Every validated value goes through its validator, every new
+  creator through its gate (above); its subset is not widened by this feature (hints moved beside the
+  schema, Decision 026-001).
+- **Design 047 (OAuth resources and curated hub), being written.** Notification channels keep their own
+  credentials as secret bindings (ADR-0055 rule 11b) in release 0.3.0; this feature does not depend on 047.
+  Weighed for later: the Slack app binding's bot token MAY come from a 047 OAuth connection once 047 offers
+  Slack's token rotation, because an installed Slack app is an OAuth grant and rotation is the one thing a
+  stored token lacks; the binding keeps its signing secret and its `auth.test`-verified team id, which are
+  not OAuth concepts, and the tenant check of Architecture decision 0061 decision 7 does not change. A Teams
+  Workflows webhook URL and an SMTP relay credential are not OAuth credentials and stay channel secrets. The
+  coordinator should record that boundary in design 047.
+- **Feature 041 (step logs).** Separate store and permission (Decision 026-011); its minor 1.7, its hot-path
+  rule and its storage-class pattern are followed (Decisions 026-006 and 026-007).
+- **Design 044 (workflows written as code).** Requirement 026-051 and Decision 026-016.
+
+## Fleet capabilities (2026-11-24)
+
+Instance-registry capabilities (Architecture decision 0082, `crates/application/src/instances.rs`), each
+activated by the operator once every live process of the listed kinds lists it (Decision 026-013):
+
+| Capability | Kinds | Gates | Built in |
+|---|---|---|---|
+| `form-hints-v1` | control plane, engine | publication of `inputFormHints` and `form.hints` | slice 0a (declared), slice 2 (checked) |
+| `workflow-streams-v1` | control plane, engine | publication of `streams` and `emits`; the append rpc | slice 0a, slice 3 |
+| `notification-channels-v1` | control plane, engine | creation of `SLACK`, `TEAMS`, `EMAIL` channels | slice 0a, slice 5 |
+| `approval-channels-v1` | control plane, engine | publication of `notify`, `summary`, `form` | slice 0a, slice 5 |
+| `public-links-v1` | control plane | creation of public links; the anonymous routes | slice 0a, slice 7 |
+| `synchronous-routes-v1` | control plane | feature 021's `response.mode: wait` | slice 0a, slice 11 |
+
+## Build slices (2026-11-24)
+
+Two builders, lane A and lane B, run in parallel. Within one window the two lanes own disjoint crates,
+apps, SDK directories and Studio paths, so their branches merge without conflicts; ownership of a crate may
+pass from one lane to the other between windows. A builder whose slice needs a crate of the other lane in
+the same window codes against the port declared in slice 0a and runs its integration tests after the other
+slice merges. Each builder keeps its own `CARGO_TARGET_DIR` outside the repository (two heavy builds at most,
+AGENTS.md rule 19). Migrations are written in slice 0a only and allocated at merge after the newest on
+`develop`. The test crate `sagat-tests` is shared by file: slice 0b declares every module of
+`tests/{integration,fault,contract,e2e}/invocation-human-surfaces/main.rs`, and each later slice owns the
+files named in its row.
+
+| Window | Slice | Lane | Tasks | Owns (crates, apps, SDKs, Studio, tests) | Migrations and contract files | Depends on |
+|---|---|---|---|---|---|---|
+| 0 | 0a Foundation of the server | A | T026-009, 010, 011, 012, 013, 070, 071 (migration and ADR-0027 amendment text), 074 (migration) | `crates/domain`, `crates/infra-ir` (codec, publication checks, fixture corpus), `crates/telemetry`, `crates/application/src/instances.rs` and the new port traits only (`invocation.rs`, `streams.rs`, `public_links.rs`, `notifications.rs`, `approval_links.rs`, `chat_identity.rs` as declarations), `crates/infra-postgres/migrations/`, `crates/infra-postgres/storage-classification.json` | every migration of `data-model.md` (`NOT VALID` then validate) | design 043 built; ADR-0061 and ADR-0068 accepted (done 2026-11-24) |
+| 0 | 0b Contracts and fixtures | B | T026-002, 003, 004, 005, 006 (the schema file), 007 (the proto file and the protocol document), 008, 076 | `specs/001-platform-foundation/contracts/` (`openapi.yaml`, `workflow.schema.json`, `worker.proto`, `events.asyncapi.yaml`, `events.baseline.json`), `docs/architecture/worker-runtime-protocol.md`, `sdks/error-catalog.json`, `sdks/SPEC.md` (sections and the minor register row), the proto copies under `sdks/*/proto`, `tests/Cargo.toml` and the `main.rs` skeletons, `tests/support/{receiver,smtp}.rs`, `crates/infra-connectors/Cargo.toml` and `Cargo.lock` (the SMTP crate), the two pinning tests of Decision 026-014, `frontend/apps/studio/src/api/` (generated types) | the four contract files; the next free worker minor | none |
+| 1 | 1 Invocation server | A | T026-018, 019, 020, 069 (the `executeRun` row) | `crates/application` (`invocation.rs`, `payload_disclosure.rs`, `run_input.rs` for the creator label), `crates/infra-postgres/src` (batched poll in `execution.rs`), `crates/api-http` (`routes/invocation.rs`, `streams.rs` counters), `apps/control-plane`; tests `invocation.rs` | — | slice 0a, 0b; design 043 Technical Plan 1 rows written by the coordinator |
+| 1 | 2 Schema-side builders and hints | B | T026-014, 042, 072, 075 (walker and hint validation) | `crates/infra-schema` (`forms.rs`, `openapi.rs`, validation of hints), `crates/infra-nats` (the subscriber adapter) | — | slice 0a, 0b |
+| 2 | 3 Forms routes and Workflow Streams server | A | T026-015, 043, 021, 022, 023, 073, 067 (the stream carriers of feature 016) | `crates/application` (`forms.rs`, `streams.rs`), `crates/infra-postgres/src` (`streams.rs`), `crates/api-http` (`routes/forms.rs`, `routes/streams.rs`, `routes/versioning.rs`), `crates/api-grpc` (`service.rs`, `limits.rs`), `apps/control-plane` (subscriber wiring); tests `forms.rs`, `openapi.rs`, `streams.rs` | — | slices 1 and 2 |
+| 2 | 4 Stream passes, SDK clients and workers, CLI | B | T026-024, 073 (maintenance close), 055 and 056 (execute, outcome, form, OpenAPI, stream consume and publish with the final batch), 059 (invocation and stream commands) | `crates/scheduler` (`passes.rs` or the maintenance loop), `sdks/typescript`, `sdks/go`, `sdks/python`, `sdks/dotnet`, `sdks/java`, `sdks/rust`, `apps/cli`; tests `purge.rs` | — | slice 2; its integration tests run after slice 3 merges |
+| 3 | 5 Channels and approval channels server | A | T026-034, 037, 038, 039, 040, 077 (gated) | `crates/application` (`notifications.rs`, `approval_progress.rs`, `approval_links.rs`), `crates/infra-postgres/src` (`outbound.rs`, `approval_progress.rs`), `crates/api-http` (`routes/notifications.rs`, `routes/operations.rs`, `routes/primitives.rs`), `crates/infra-ir` (summary checks), `crates/infra-schema` (`classification/publication.rs`), `apps/control-plane` (`SAGAT_LINK_KEYS`); tests `channels.rs`, `approvals.rs` | — | slice 3; Task 026-077 also Owner question 1081 |
+| 3 | 6 Delivery adapters and the first Studio surfaces | B | T026-035, 036 (rendering and fan-out in the scheduler), 031 (the alert in the monitor), 049, 016, 017, 026 | `crates/infra-connectors` (`chat.rs`, `email.rs`, `publish.rs`), `crates/infra-egress` if the guard needs a new destination kind, `crates/scheduler` (`deliveries.rs`, `monitor.rs`), `frontend/apps/studio/src/features/{forms,runs}/`, `frontend/e2e/tests/{start-form,streams}.spec.ts`; tests `deliveries.rs` (fault) | — | slices 3 and 4; pull request 267 (Astryx) merged |
+| 4 | 7 Public links server | A | T026-027, 028, 029, 030, 031 (the races), 032, 033 (`public_site.rs`), 069 (the public-link row), 074 (counters in use) | `crates/application` (`public_links.rs`), `crates/infra-postgres/src` (`public_links.rs`, `quotas.rs`), `crates/api-http` (`routes/public_links.rs`, `routes/public.rs`, `public_site.rs`, `limits.rs`, `studio.rs`), `apps/control-plane` (public-forms origin, trusted proxies); tests `links.rs` | — | slice 5; design 043 row for public links written |
+| 4 | 8 People-facing Studio, SDK approvals and builders, scripts | B | T026-041, 033 (Studio), 036 (Studio channel page), 055 and 056 (decisions with input, builders), 025 | `frontend/apps/studio/src/{features/approvals,features/public-links,features/notifications,public}/`, `frontend/e2e/tests/{approval-decide,public-link}.spec.ts`, `sdks/*`, `apps/sandbox-runner`, `runners/` | — | slices 5 and 6; feature 023's `stream.append` host call for Task 026-025 |
+| 5 | 9 Slack in-chat server and the server gates | A | T026-044, 045 (route), 046, 047, 048, 050, 051, 053, 054, 058 (server) | `crates/application` (`chat_identity.rs`), `crates/infra-postgres/src` (`chat_identity.rs`), `crates/api-http` (`routes/chat.rs`), `tests/{integration,fault,contract}/invocation-human-surfaces/` (the files of these tasks), `tests/contract/security-multitenancy/` | — | slices 7 and 8 |
+| 5 | 10 Slack adapter and dispatcher, conformance, runbooks, benchmark | B | T026-044 (`auth.test` adapter), 045 (dispatcher), 057, 060, 061, 063, 052 | `crates/infra-connectors` (`chat.rs`), `crates/scheduler` (`events.rs`), `tests/contract/sdk-conformance/`, `docs/runbooks/`, `docs/architecture/` (the documents of Task 026-060 and the threat model), `tests/performance/` | — | slices 7 and 8 |
+| 6 | 11 Joint hooks and closing | coordinator | T026-065 (with features 021 and 022), 078 (with design 044), 068, 064, 062, 066 | as each task names | — | both lanes done; features 021 and 022 merged for their hooks; design 044 built for Task 026-078 |
+
+What each window delivers on its own: window 1, `executeRun` and `getRunOutcome` with the poll path (the
+hint path joins in window 2); window 2, the MVP of User stories 026-01 to 026-03 on the server and in the
+SDKs; window 3, channels and channel approvals; window 4, public links and every Studio surface; window 5,
+Slack in-chat decisions and the release gates. A window's slices merge one at a time into `develop`, each
+with its own pull request and CI, lane A first when both touch `research.md`.

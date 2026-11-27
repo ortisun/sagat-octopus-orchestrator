@@ -1,7 +1,17 @@
 # ADR-0061: A link carries one narrow capability: an anonymous submitter may only submit its form, and a decision link never authorizes a decision
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-11-24) with the amendments of 2026-11-24 below; delegate (OD-2026-11-24-4). No evidence
+exists yet: acceptance is of the decision for implementation in release 0.3.0, as Architecture decision 0090 was accepted
+before it was built; the tests under **Enforced by** remain required before feature 026 is called done.
+**Decided by:** agent proposal (2026-10-26); accepted on 2026-11-24 by the agent re-baselining feature 026, under the
+owner's delegation of Owner decision 2026-11-24-4 ("Quero que os agents continuem por mim. Tomem a melhor decisão"), to
+be reported to the owner. Reasoning, weighed over the options below: option 1 is the only one that keeps Requirement
+014-008 (eligibility at commit), Architecture decision 0033 (per-field disclosure) and an audit that names a person
+true while still giving the anonymous intake and chat approvals that Windmill offers; options 2, 3 and 6 each break one
+of those for convenience, options 4 and 5 lose revocation or same-origin isolation. The business advantage is the
+same: regulated buyers can use public forms and chat approvals without the leaked-link and unknown-decider risks that
+Windmill's bearer URLs carry. The re-baseline against `develop` found nothing that weakens the decision and five
+details that had to follow the code as built; they are the amendments.
 **Refines / supersedes:** refines ADR-0033 (adds an anonymous audience to its disclosure table) and
 ADR-0012/ADR-0026 (a second kind of unauthenticated public request); follows ADR-0062 (feature 027)
 for origins and CSP; preserves FR-014-008 and ADR-0031 unchanged; supersedes none.
@@ -12,7 +22,8 @@ suites under `tests/integration/invocation-human-surfaces/` and `tests/fault/inv
 unit test that the public-link principal type cannot be converted into a `Principal` or authorize
 any `Permission`, a control-plane start-up test that refuses equal Studio and public-forms origins,
 a header test that the Studio origin answers `/f/` and `/v1/public/*` with `404`, and review. None
-exists yet.
+exists yet. Added 2026-11-24: the design-043 creator test of the public-link row (a submission that bypasses the
+gate fails it) and the disclosure test of its refusals (Task 026-069), and the counter test of Task 026-074.
 
 ## Context
 
@@ -114,6 +125,30 @@ need their publisher.
 8. **No source address is kept.** Rate guards MAY key on a source address in memory; audit, logs,
    spans, metrics and stored rows MUST NOT contain source addresses, user agents or submitted values.
 
+### Amendments of 2026-11-24 (accepted with the decision)
+
+Read against `develop` at `2c94064f`; each is recorded in feature 026's research register
+(`specs/026-invocation-human-surfaces/research.md`, "Re-baseline against `develop`").
+
+- **To decision 2.** A run admitted through a link is marked by `runs.public_link_id`, not by a `runs.origin` value:
+  `runs.origin` is feature 017's private-run marker, guarded by a trigger. The live runs of a link and of the
+  namespace pool are read from counters the database keeps with the runs (`public_link_active_counts`, the shape of
+  `run_active_counts`), under the same locks; "counted exactly" still holds, by counters instead of a count of rows
+  (Decision 026-004).
+- **To decision 2 and decision 5.** A submission's merged input passes the run input gate of design 043 (Architecture
+  decisions 0090 and 0092) as a creator of its own, before the admission transaction. Its refusal to an anonymous
+  caller names a field and a rule only when the field lies inside an exposed pointer, else `/` and `other`, so that
+  neither a preset nor the shape of an unexposed field is disclosed; a schema the gate finds unusable makes the link
+  answer the uniform `404` of decision 4 (Decision 026-017).
+- **To decision 4.** Public links are disabled until both the instance-registry capability `public-links-v1` is
+  active (Architecture decision 0082) and an administrator raises the namespace count quota `public_links` above 0.
+  The quota stays 0 in every namespace by default, development included (Owner question 1321, answered on 2026-11-24).
+- **To decision 6.** Deciding by possession of a link stays excluded in release 0.3.0 (Owner question 1320, answered
+  no on 2026-11-24, delegate (OD-2026-11-24-4)); a later mode needs its own architecture decision.
+- **To decision 7.** The Slack app binding keeps its bot token and signing secret as secret bindings in release
+  0.3.0. A later release may take the bot token from an OAuth connection of design 047 once it offers Slack's token
+  rotation; the signing secret, the `auth.test`-verified team id and the tenant check of this decision do not change.
+
 ## Considered options
 
 1. **Narrow principal kind, owner rechecked, pointers for decisions (chosen).** It keeps FR-014-008,
@@ -134,11 +169,11 @@ need their publisher.
 5. **Serve the public page on the Studio origin under `/f/`.** One origin to operate, but `frame-ancestors`
    could only be `'none'` or the union of every tenant's approved sites (the token is in the fragment,
    which the server never sees), and an XSS in the anonymous page could script a Studio page of the same
-   origin and read its in-memory token (security review B1; ADR-0062 rejected the same for apps).
+   origin and read its in-memory token (Blocker 1 of the security review; ADR-0062 rejected the same for apps).
    Rejected.
 6. **Read the tenant of a Slack interaction from the stored channel matched by team and channel.**
    Two tenants could register the same team and channel and nothing proved who owns the team
-   (architecture review B1). Rejected for decision 7.
+   (Blocker 1 of the architecture review). Rejected for decision 7.
 
 ## Consequences
 

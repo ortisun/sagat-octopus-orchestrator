@@ -107,10 +107,11 @@ security and cross-feature consistency) and revised. Suggested order and gates: 
 **Owner decisions that gate the drafts** (each recorded as an `O…` question in the feature's `research.md`):
 the amendment of constitution principle I for retention (020, ADR-0054; made in 5.1.0 for the purge after a verified archive, still open for `archive = NONE` and erasure); one rule for `pii` leaving
 the platform (020, O1081, applied by 020/025/026/031); the placement rule for customer-credentialed calls (021,
-ADR-0055); and acceptance of every proposed ADR. Constitution 5.0.0 (2026-11-24, Owner decision 2026-11-24-2) settled
-two that were listed here: the Delivery Constraints admit standby regions per cell (032, O1560 answered) and internal
-apps over declared operations (027, O1360 answered), together with workflow as code (design 044) and the curated hub
-(021, 028, design 047).
+ADR-0055, accepted on 2026-11-24 with clause 11(e) under Owner decision 2026-11-24-4); and acceptance of every proposed
+ADR (ADR-0055, ADR-0057, ADR-0061 and ADR-0068 accepted on 2026-11-24, same delegation). Constitution 5.0.0 (2026-11-24,
+Owner decision 2026-11-24-2) settled two that were listed here: the Delivery Constraints admit standby regions per cell
+(032, O1560 answered) and internal apps over declared operations (027, O1360 answered), together with workflow as code
+(design 044) and the curated hub (021, 028, design 047).
 
 **Cross-feature registries and their owners.** Each concern has one owner; the others cite it.
 

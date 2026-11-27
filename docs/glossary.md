@@ -50,3 +50,14 @@
 - **Disclosure carrier:** the pinned workflow input/result schema or eligible node output schema which governs one retained payload. Native managed database outputs are outside this closed carrier set.
 - **Payload reveal grant:** an audited, namespace-scoped grant allowing a current internal-read role to request PII explicitly. No built-in role, including admin, receives it automatically.
 - **Classified disclosure:** the explicit, bounded, non-cacheable read of permitted values. A successful PII reveal commits its audit before values are returned; structural inspection remains a separate operation.
+
+- **Workflow Stream:** an ordered, append-only log of events a running step publishes on declared channels (feature 026,
+  ADR-0068), read through a classified feed while the run lives and purged after its retention. Not the journal, not the
+  step logs, and not a NATS or Redis stream.
+- **Graph stream:** the payload-free live view of a run's state changes (`/runs/{runId}/stream`, ADR-0016), rechecked
+  for membership while it is open; it carries no values and is not a Workflow Stream.
+- **Log stream:** the step logs of one attempt (design 041, ADR-0084, `/runs/{runId}/logs/streams`), a bounded, lossy
+  record of what a step printed, read under `run:logs:read`; never a business output, and not the Redis Streams
+  destination of feature 033.
+- **Operator chain:** the declared operators (filter, window, debounce and the like) applied to a trigger's events or a
+  collection before a run starts or a scope enters (design 042, ADR-0086 and ADR-0087); not a platform operator.

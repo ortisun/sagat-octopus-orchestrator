@@ -7,6 +7,14 @@ content-addressed and shared by builds of the same digest; the statement is not:
 under another toolchain is another build key and gets its own statement, and a version finished from the
 build-key cache shows the statement of the build it reused (D1227). Older builds have none (G1217).
 
+Shared with design 046 (added 2026-11-24, research Decisions 1236 and 1627). The statement, the envelope
+and the SBOM rule are built by design 046's crate `crates/infra-packages` (Task T046-15), through an
+application port; the signature over the pre-authentication encoding is made in
+`crates/application/src/script_signing.rs`, beside the key. `buildType` is a closed list in that crate:
+this feature adds the value below (Task T023-068); design 046 has its own for dependency layers, with a
+subject of its own and its own storage. Design 046 builds the crate first; this contract is what the
+`ScriptBuild` statement must hold.
+
 ## Envelope
 
 DSSE (https://github.com/secure-systems-lab/dsse), JSON:

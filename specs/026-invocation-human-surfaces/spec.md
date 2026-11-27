@@ -6,6 +6,13 @@
 
 **Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
+**Re-baseline (2026-11-24)**: read again against `develop` at `2c94064f` for release 0.3.0 (Owner decision
+2026-11-24-1). Twenty-four stale items were fixed in this text, the plan, the tasks, the data model and the contracts;
+each is listed with its evidence in [research.md](./research.md#re-baseline-against-develop-2026-11-24), with the
+decisions D026-001 to D026-017. The three owner questions, Architecture decisions 0061 and 0068 and the open items of
+the requirements checklist were decided under the delegation of Owner decision 2026-11-24-4. Requirements whose text
+changed carry "(revised 2026-11-24)".
+
 **Input**: Temporal/Windmill parity for invoking workflows and involving people: start forms generated
 from a workflow's input schema (classification-aware, in the Studio and embeddable); public, shareable
 form links (scoped, expiring, rate-limited, an anonymous principal kind, audited, under quota); a
@@ -18,6 +25,31 @@ feature 025); approval through Slack, Teams and e-mail with signed decision link
 approval input form under the feature-014 approval semantics; and notification channels for run events
 and operational alerts over the ADR-0025 outbound pipeline.
 
+## In plain words (added 2026-11-24)
+
+For a reader who does not need the contracts. This feature lets people and other systems use a workflow
+without writing code against it:
+
+- **Start a workflow from a form.** The Studio draws a form from the fields a workflow says it needs,
+  instead of asking for raw JSON. Sensitive fields are marked and never kept in the browser.
+- **Share a form with people outside the company.** An administrator can publish a form as a link that
+  expires, can be paused or revoked, and is limited in how often it can be used. The person who fills it in
+  needs no account and sees only a receipt.
+- **Call a workflow and get its answer.** Another system can start a workflow and wait a short, bounded time
+  for its result in the same call; if it takes longer, it gets a handle to ask again.
+- **Watch progress live.** A long step can report progress or partial results (rows processed, text
+  produced so far) that the Studio and other clients follow live and pick up again after a disconnection.
+- **Approve from Slack, Teams or e-mail.** When a workflow waits for a person's approval, the right people
+  are told where they already work, follow a link, sign in and decide; the link alone can never approve.
+  With a linked Slack identity, a person can approve from the Slack message itself.
+- **Be told when things happen.** Teams receive messages when runs fail or alerts fire, through the same
+  reliable delivery the platform already uses for webhooks.
+- **Describe a workflow as an API.** Each published workflow version gets a standard API description
+  (OpenAPI) that tools can import.
+
+What it never does: let an anonymous caller see more than the fields an author marked public, let a link
+decide an approval, or change how a workflow runs. Every surface can be switched on separately.
+
 ## Context and delivery boundary
 
 Today a member with `run:start` starts a run through `startRun` (`202`); the Studio asks for raw JSON
@@ -29,6 +61,15 @@ decision screen and a decision carries only `APPROVE`/`REJECT` and a reason code
 go to webhook and broker subscriptions for `run.finished` and operational alerts (ADR-0025). Every
 caller is a tenant member with a role (`crates/domain/src/identity.rs`) or a signed webhook sender
 (ADR-0012, ADR-0026); there is no anonymous principal. Evidence: [research.md](./research.md).
+
+Since this text was drafted (re-baseline of 2026-11-24): every path that creates a run passes the run input gate of
+design 043 (Architecture decisions 0090 and 0092), which refuses an input outside the version's `inputSchema` with
+`422 VALIDATION_FAILED` and one value-free pointer, and refuses a schema outside its supported subset; *Start run* in
+the Studio carries a business identifier and a start delay (feature 018) beside the JSON text; Signal-with-Start and
+Update-with-Start exist; there are six SDKs (Rust joined, Architecture decision 0070); step logs (feature 041) are a
+second per-attempt record beside the journal; fleet-wide features are switched on through the instance registry
+(Architecture decision 0082); and workflows written as code (design 044) enter release 0.3.0 beside the graph model.
+This feature builds on each of them; [research.md](./research.md#re-baseline-against-develop-2026-11-24) says how.
 
 This feature adds surfaces and changes no execution semantics: runs started from a form, a link or the
 synchronous endpoint use the existing admission transaction; a channel decision is the feature-014
@@ -59,14 +100,18 @@ input and no value in browser storage.
 
 1. **Given** a published version whose input schema uses only the supported keywords, **When** an
    operator with `run:start` opens *Start run*, **Then** the form shows one control per declared
-   field, ordered by its `x-sagat-form.order` hint and then by name, with its level marked by text
-   and shape, and submits the canonical input through `startRun` with one idempotency key per form.
-2. **Given** a value that violates the schema, **When** it is submitted, **Then** the server refuses
-   it with `VALIDATION_FAILED` and JSON pointers, the form marks those fields, and no value is echoed
-   in the error.
-3. **Given** a required field that uses an unsupported keyword, **When** the form is requested,
-   **Then** the form model is `UNAVAILABLE` with the reason and the pointer, and the Studio offers the
-   JSON editor instead; it never draws a partial form that would submit an incomplete input.
+   field, ordered by its form hint `order` (`inputFormHints`, Decision 026-001) and then by name, with its
+   level marked by text and shape, and submits the canonical input through `startRun` with one idempotency
+   key per form (revised 2026-11-24).
+2. **Given** a value that violates the schema, **When** it is submitted, **Then** the run input gate of
+   design 043 refuses it with `422 VALIDATION_FAILED`, `details.reason` `RUN_INPUT_INVALID`, the one
+   `details.field` and `details.rule` of the first violation, the form marks that field, and no value is
+   echoed in the error (revised 2026-11-24: the gate answers the first violation, not a list).
+3. **Given** a required field that uses a keyword the form does not render, or a version whose schema is
+   outside the subset of design 043, **When** the form is requested, **Then** the form model is
+   `UNAVAILABLE` with the reason (`UNSUPPORTED_REQUIRED_FIELD` with the pointer, or `SCHEMA_UNUSABLE`) and
+   the Studio offers the JSON editor instead; it never draws a partial form that would submit an incomplete
+   input.
 4. **Given** a `secret` field, **When** the form is rendered, **Then** it is a write-only control,
    never prefilled, never shown back in a confirmation, with browser autocomplete off; a `pii` field
    is never kept in any browser store.
@@ -104,6 +149,12 @@ that no database connection is held by a waiting request.
    the run's trailing steps continue.
 5. **Given** the waiter limit of the subject is reached, **When** another waiting call arrives,
    **Then** it is refused with `429 RATE_LIMITED` before any run is admitted.
+6. **Given** an input that the version's `inputSchema` refuses, **When** `executeRun` is called, **Then**
+   it answers `422 VALIDATION_FAILED` `RUN_INPUT_INVALID` exactly as `startRun` does, before any waiter is
+   registered, and nothing is created (added 2026-11-24, Decision 026-017).
+7. **Given** a business identifier held by an open run and `businessIdConflictPolicy: USE_EXISTING`,
+   **When** `executeRun` is called, **Then** nothing is created and the call waits on the holder, whose
+   outcome says `admission: EXISTING` (added 2026-11-24, Decision 026-009).
 
 ### US03 — Follow progress and partial results through a Workflow Stream (Priority: P1)
 
@@ -114,11 +165,12 @@ disconnection without missing or duplicating an event.
 **Why this priority**: Long steps and AI agents (feature 025, token streaming) need live output that
 is neither the final step output nor a log line.
 
-**Independent Test**: A worker in each of the five SDKs publishes 500 progress events in batches on a
+**Independent Test**: A worker in each of the six SDKs publishes 500 progress events in batches on a
 declared channel while a client follows the SSE stream, disconnects at event 200 and reconnects with
 `Last-Event-ID`; the lease expires once and a second attempt publishes again; assert the delivered
-offsets are gap-free and unique, both attempts are distinguishable, and an append after the lease
-expired is refused with `STALE_ATTEMPT`.
+offsets are gap-free and unique, both attempts are distinguishable, an append after the lease
+expired is refused with `STALE_ATTEMPT`, and no event of an attempt arrives after its `settled` (revised
+2026-11-24: six SDKs; the attempt fence of Decision 026-006).
 
 **Acceptance Scenarios**:
 
@@ -164,9 +216,10 @@ responses, logs or audit, and that the Studio origin answers the public paths `4
    a link, **Then** it is refused with `QUOTA_EXCEEDED`; after the quota is raised it is created and
    its token is shown once.
 2. **Given** an active link, **When** an anonymous person submits the exposed fields, **Then** the
-   input is the presets merged with the submitted fields, validated against the pinned version, the
+   input is the presets merged with the submitted fields, checked by the run input gate of design 043
+   against the pinned version (a refusal names a field only when it lies inside an exposed field), the
    run is admitted in one transaction with the submission receipt and audit, and the answer is a
-   receipt with no run identifier.
+   receipt with no run identifier (revised 2026-11-24, Decision 026-017).
 3. **Given** an unknown, expired, paused, revoked or exhausted link, **When** it is used, **Then** the
    answer is the same `404` with no reason that distinguishes them.
 4. **Given** a link owner who no longer holds `run:start` in the namespace, **When** a submission
@@ -328,31 +381,40 @@ confirmation (no active link).
   hints and the feature-016 effective classification level, plus a status `AVAILABLE` or
   `UNAVAILABLE` with closed reasons. One Rust implementation computes it; the browser renders it and
   never infers schema semantics itself (ADR-0016). The model is deterministic for a version.
-- **FR-026-002 — Supported subset**: The model MUST support exactly the keyword subset of
-  [contracts/form-model.md](./contracts/form-model.md) (scalar types, objects, `required`, `enum`,
-  `const`, `default`, titles, numeric and string bounds, four formats, arrays of scalars, local `$ref`).
-  Any other keyword makes its field `UNSUPPORTED` with its pointer; an unsupported required field, or a
-  schema above the form ceilings, makes the model `UNAVAILABLE`; no `inputSchema` is `NO_SCHEMA`.
-- **FR-026-003 — Form hints**: The IR MUST accept an optional, closed `x-sagat-form` annotation on
-  carrier schema nodes of `inputSchema` and of the approval form (FR-026-033) with only `widget`
-  (`text`, `textarea`, `select`, `radio`, `checkbox`, `password`, `date`), `order` (integer) and
-  `placeholder` (≤ 120 characters). Publication and `validate` reject unknown keys, wrong types and a
-  widget incompatible with the field type. Hints never change validation of the input.
+- **FR-026-002 — Supported subset** (revised 2026-11-24, Decision 026-002): The model MUST render
+  exactly the keywords of [contracts/form-model.md](./contracts/form-model.md), which are a subset of the
+  run-input subset of design 043 (`specs/043-run-input-validation/contracts/input-schema-subset.md`); it
+  never renders a keyword outside that subset. The walker reads the schema positions recorded by the 043
+  pre-check, so form and validator see the same schema. A keyword of the 043 subset that the form does
+  not render makes its field `UNSUPPORTED` with its pointer; an unsupported required field, or a schema
+  above the form ceilings, makes the model `UNAVAILABLE`; a schema the 043 pre-check refuses is
+  `UNAVAILABLE` / `SCHEMA_UNUSABLE`; no `inputSchema` is `NO_SCHEMA`.
+- **FR-026-003 — Form hints** (revised 2026-11-24, Decision 026-001): The IR MUST accept optional,
+  closed form hints beside the schema, never inside it: `inputFormHints` at the root of the definition
+  and `hints` in an approval `form` (FR-026-033), each an object from a field's instance JSON pointer
+  (names under `properties` only) to `{widget, order, placeholder}` with only `widget` (`text`,
+  `textarea`, `select`, `radio`, `checkbox`, `password`, `date`), `order` (integer) and `placeholder`
+  (≤ 120 characters). Publication and `validate` reject unknown keys, wrong types, a pointer that names no
+  field of the schema and a widget incompatible with the field type (`FORM_HINT_INVALID`). Hints never
+  change validation of the input and never change the schema's digest. A schema that still carries an
+  `x-sagat-form` keyword is outside the 043 subset and is refused as 043 refuses it.
 - **FR-026-004 — Classification-aware rendering**: Each field MUST show its effective level by text
   and shape, not colour alone. A `secret` field MUST be write-only (password control, never prefilled,
   never echoed, autocomplete off). No field value is put in a URL, a browser store, a persisted query
   cache or telemetry; form state is cleared on submission, on navigation and on session change.
   Values are never prefilled from a URL.
-- **FR-026-005 — Submission**: A form MUST submit through the existing `startRun` admission with one
-  idempotency key per opened form, kept across retries. Server validation errors map to fields by
-  JSON pointer only, without echoing values.
+- **FR-026-005 — Submission** (revised 2026-11-24, Decision 026-017): A form MUST submit through the
+  existing `startRun` admission with one idempotency key per opened form, kept across retries, so the run
+  input gate of design 043 checks it as row 1 of that design's Technical Plan 1. The refusal's one
+  `details.field` maps to its control, without echoing values; a `503` from a busy gate keeps the key
+  and offers a retry.
 - **FR-026-006 — Encrypted fields**: A location that feature 031 declares encoded (its draft annotation
   `x-sagat-encoding`) MUST be opaque to every surface of this feature, which registers its positions in
   feature 031's encoded-field registry (forms and public submissions as read positions and write paths,
   stream channel schemas and the approval form as carriers, approval summaries as expression positions)
   and uses only that feature's codes. The derived start form treats such a field as unsupported
-  (reason `ENCODING_READ_BY_FORM`; `UNAVAILABLE` when required); a declared artefact that reads it (an
-  `x-sagat-form` hint, an approval `form` or `summary`) is refused at publication through the
+  (reason `ENCODING_READ_BY_FORM`; `UNAVAILABLE` when required); a declared artefact that reads it (a
+  form hint, an approval `form` or `summary`) is refused at publication through the
   feature-031 check (`ENCODING_READ_BY_FORM`); a public link cannot expose or preset it (the same code);
   no form accepts, renders or presets it.
 
@@ -364,13 +426,21 @@ confirmation (no active link).
   outcome), and waits at most the effective wait (min of request, namespace setting and deployment
   ceiling). It answers `200` with a `RunOutcome` when the run is terminal (or returned early,
   FR-026-011) and `202` with `completion: PENDING`, the `Run` and a `Location` header otherwise.
+  (Revised 2026-11-24, Decisions 026-009 and 026-017.) The input is checked by the run input gate of
+  design 043 before any waiter is registered, with `startRun`'s refusals (`422 RUN_INPUT_INVALID`,
+  `422 RUN_INPUT_SCHEMA_UNUSABLE`, a retryable `503` when the gate is busy). Every field of
+  `StartRunRequest` keeps its meaning: with a business identifier held by an open run and
+  `USE_EXISTING`, nothing is created and the call waits on the holder (`admission: EXISTING`; otherwise
+  `CREATED`); `startDelayMs` and `inputBlobRef` are accepted. Signal-with-Start and Update-with-Start
+  gain no waiting variant: their run's outcome is `getRunOutcome`.
 - **FR-026-008 — Wait on an existing run**: The platform MUST provide
   `GET /v1/runs/{runId}/outcome?waitMs=` that answers `200` immediately for a terminal run and
   otherwise waits like FR-026-007, answering `202` at the end of the wait. It requires `run:read`.
 - **FR-026-009 — Waiting is not holding**: A waiting request MUST NOT hold a database transaction,
   connection, row lock, lease or worker slot. Waiters register in a bounded in-process registry woken
   by the existing `run.finished` hint and by feature 022's `run.result_returned` hint, to which every
-  control-plane replica subscribes without a queue group, and by one batched poll per process at a
+  control-plane replica subscribes without a queue group through a NATS subscriber that this feature
+  adds (no process subscribes today; revised 2026-11-24, Decision 026-005), and by one batched poll per process at a
   bounded interval that reads both terminal status and a committed early result; a hint is never the
   record. Waiters are bounded per subject, tenant and process; a refusal happens before admission. On
   shutdown or at the end of the wait a waiter answers `202`. The wait deadline is infrastructure time.
@@ -388,7 +458,15 @@ confirmation (no active link).
   declare a wait (`response.mode: wait`, `waitMs`) served by the same waiter. Its caller is a webhook
   identity, not a member: it receives a result only when the route declares
   `resultDisclosure: public-fields-v1`, and then only the fields of FR-026-026; otherwise `202` with no
-  run identifier. This requirement is a contract hook implemented with feature 021.
+  run identifier. This requirement is a contract hook implemented with feature 021. (Revised 2026-11-24,
+  Decision 026-010.) A route's request admits an event into the inbox as in mode `accept`; the run is
+  created later by the engine's dispatcher. The waiter therefore waits on the event (keyed by tenant,
+  endpoint and event id, polled through `event_deliveries`, whose `run_id` the dispatcher writes) and then
+  on its run. An event the dispatcher refuses for its input answers `422 VALIDATION_FAILED`
+  `RUN_INPUT_INVALID` with `field` `/` and `rule` `other`; a dispatch not done within the wait answers
+  `202`. Feature 021 keeps `response.mode: wait` refused at route creation until the instance-registry
+  capability `synchronous-routes-v1` of this feature is active (Decision 026-013), so a control plane
+  of an older release never serves a wait route as an accepting one.
 
 #### Workflow Streams (US03)
 
@@ -401,12 +479,20 @@ confirmation (no active link).
   author channels whose budgets sum above the author pool. Channel names starting with `sagat.` are
   reserved: their schema, classification and budget are fixed by the owning feature (for example
   `sagat.agent.tokens` of feature 025), declared by that feature's node declaration, and counted in a
-  separate reserved pool (FR-026-019). Declarations are pinned with the version (ADR-0068).
+  separate reserved pool (FR-026-019). Declarations are pinned with the version (ADR-0068). A channel
+  schema MUST stay inside the run-input subset of design 043 (`STREAM_SCHEMA_OUTSIDE_SUBSET`, revised
+  2026-11-24, Decision 026-003). A version written as code (design 044) declares its channels as data of
+  the version in the same shape (FR-026-051).
 - **FR-026-014 — Append**: A leased attempt MUST append batches through a new worker-protocol rpc,
   `AppendStreamEvents` ([contracts/worker-protocol.md](./contracts/worker-protocol.md)). The server
   checks the lease on the database clock, that the node declares each channel, the channel schema, the
   ceilings, and that no value given to the step as a secret appears (`SECRET_IN_OUTPUT`); accepted
-  events commit atomically; a stale lease is `STALE_ATTEMPT` and stores nothing.
+  events commit atomically; a stale lease is `STALE_ATTEMPT` and stores nothing. (Revised 2026-11-24,
+  Decision 026-006.) The append MUST NOT take or wait for a lock on a row of `runs`, `steps` or
+  `run_events`, and leasing, heartbeat and completion MUST NOT read or write the stream tables (the rule
+  feature 041 set for step logs, under the hot-path budget of design 038). The lease is read without a
+  lock after the append has locked its own attempt row; a batch with `final: true` closes the attempt's
+  row, and every later append of that attempt is `STALE_ATTEMPT`.
 - **FR-026-015 — Stream log**: Events MUST be stored in a per-run append-only log separate from the
   journal (ADR-0068), with a per-run monotonic offset allocated in the append transaction, the
   channel, node, instance path, attempt, generation, publisher sequence, server time and the event
@@ -422,7 +508,10 @@ confirmation (no active link).
   `superseded` when a newer attempt of such a node instance starts and `settled` when its step
   settles; both are derived from committed attempt state at read time, carry no offset and add no write
   to the claim path. A client discards events of attempts older than the current one. A stream belongs
-  to one run (one Continue-As-New segment); a successor starts its own log at offset 1.
+  to one run (one Continue-As-New segment); a successor starts its own log at offset 1. (Revised
+  2026-11-24, Decision 026-006.) The feed sends `superseded` or `settled` for an attempt only after that
+  attempt's stream row is closed, closing it itself when the committed state shows the step settled or
+  superseded, so no event of an attempt is ever delivered after its `settled`.
 - **FR-026-017 — Delivery**: The platform MUST serve `GET /v1/runs/{runId}/stream-events` as
   `text/event-stream` and as a bounded JSON page for the same query, filtered by channel. The SSE `id`
   and the resume cursor are `<epoch>.<offset>`, where `epoch` is the cell epoch of feature 032 (0 when
@@ -440,10 +529,12 @@ confirmation (no active link).
   before storage: each channel's own budget; the author pool (every author channel of the run
   together); the reserved pool (every `sagat.` channel together); all under a per-run hard ceiling
   that bounds both pools (plan, Finite ceilings). A reserved channel never consumes the author pool,
-  and the reverse. Stream bytes count against `tenant_content_bytes`. Exhaustion is `QUOTA_EXCEEDED`
+  and the reverse. Stream bytes are charged to a storage class of their own, `workflow_stream`, under
+  the tenant quota `tenant_stream_bytes`, so a stream can never exhaust the content quota that run
+  completions need (revised 2026-11-24, Decision 026-007; it was `tenant_content_bytes`). Exhaustion is `QUOTA_EXCEEDED`
   (`STREAM_LIMIT`, with the exhausted scope) or `RATE_LIMITED` (`STREAM_RATE`) to the publisher; it
   never fails the step by itself.
-- **FR-026-020 — Publishers**: The five SDK workers MUST publish through FR-026-014; scripts publish
+- **FR-026-020 — Publishers**: The six SDK workers (revised 2026-11-24: the Rust SDK joined) MUST publish through FR-026-014; scripts publish
   through the reserved, capability-gated `stream.append` host call that feature 023 defines for every
   script language, which the supervisor turns into an append under the attempt's lease; managed
   executors (features 017/025) use the same rpc under their capability. No publisher other than a
@@ -451,7 +542,9 @@ confirmation (no active link).
 - **FR-026-021 — Retention and reset**: Stream events MUST be deleted, data included, a bounded time
   after the run is terminal (namespace setting within the deployment ceiling, never later than the
   run's retention), one run per transaction, releasing exactly the bytes they were charged; the purge
-  instant is infrastructure time set when the run becomes terminal. The store is registered in feature
+  instant is infrastructure time, counted from the moment the purge pass first sees the run terminal
+  and stamped by that pass, never written by the run's terminal transaction (revised 2026-11-24,
+  Decision 026-008). The store is registered in feature
   020's content-store registry with this purge rule and the erasure rule that run erasure deletes the
   rows at once. A reset of feature 018 does not copy stream events: the new run starts its own log at
   offset 1 (the rule this feature declares in feature 018's reset-rule registry).
@@ -497,9 +590,18 @@ confirmation (no active link).
   admission, where slot 6's active-run admission also takes the exact count of the namespace pool of
   live public-link runs (`public_link_active_runs`, a sub-pool of `active_runs` under the feature-009
   lock, so anonymous callers cannot take the capacity members need); slot 8b — usage rows last. The run
-  (origin `PUBLIC_LINK`), its first tasks, journal, outbox, audit, quotas and the submission receipt
+  (marked by its link, below), its first tasks, journal, outbox, audit, quotas and the submission receipt
   commit together. A client-generated submission key (at least 128 random bits, one per opened page)
-  replays the original receipt.
+  replays the original receipt. (Revised 2026-11-24, Decisions 026-004 and 026-017.) The schema check
+  is the run input gate of design 043 (a new creator, label `public_link`), run on the merged input of the
+  unlocked revision before the admission transaction, which refuses any other revision than the one
+  checked (the use case then repeats once from the gate). A field outside the exposed pointers is
+  `FORM_INPUT_INVALID` with `field` `/`; a gate refusal keeps `field` and `rule` only inside an exposed
+  pointer, else `/` and `other`; a schema the gate finds unusable makes the link answer the uniform
+  `404` and raises `PUBLIC_LINK_UNUSABLE`; a busy gate is `503` with `Retry-After`. The run is marked
+  by `runs.public_link_id`, not by `runs.origin` (which is feature 017's private-run marker), and the live
+  counts of the link and of the namespace pool are counters the database keeps with the runs, read
+  under the quota locks of slot 6, as `active_runs` is.
 - **FR-026-026 — Receipt**: The submitter MUST receive `202` with a receipt token (a second
   capability bound to one submission, 256 bits, derived as an HMAC of the link and submission-key hash
   so that a replay returns the same token without the server storing it; kept in page memory only) and
@@ -570,7 +672,11 @@ confirmation (no active link).
   present and stays byte-identical to today's fingerprint when it is absent, so decision retries in
   flight across the upgrade replay instead of conflicting. The input is the approval step's output
   under `input`; the approval form schema becomes a feature-016 carrier (an additive extension of
-  FR-016-002).
+  FR-016-002). (Revised 2026-11-24, Decisions 026-001 and 026-003.) The form schema MUST stay inside the
+  run-input subset of design 043 (`FORM_SCHEMA_OUTSIDE_SUBSET` at publication), its hints sit in
+  `form.hints`, and the input is validated by the platform validator of design 043 with its work counter
+  (`DECISION_INPUT_INVALID` with the one `field` and `rule` of the first violation). The page sends the
+  decision-link token as `linkToken` so that the server derives `via`; the receipt returns `via`.
 - **FR-026-034 — Settlement**: The settlement transaction (decision, expiry or cancellation) MUST
   insert one `approval.settled` delivery for each delivery of `approval.requested`, which edits the
   original message where the destination allows it and otherwise posts a follow-up; it carries the
@@ -625,7 +731,10 @@ confirmation (no active link).
   classification annotations kept and no run data; a version without `inputSchema` or
   `outputSchema` describes it as an open object marked `x-sagat-untyped: true`. The answer has a
   strong `ETag` derived from the version digest and the generator version. No new execution path is
-  created.
+  created. (Revised 2026-11-24, Decision 026-009.) The document also specializes `signalWithStart` and
+  `updateWithStart` (feature 018), the business-identifier and chain Query and Update operations, and
+  the input schema exactly as stored, inside the 043 subset; `format` is written as an annotation that
+  the server never asserts, so a generated client may not refuse what the server accepts.
 - **FR-026-041 — Agreement with the server**: A request that validates against the generated
   document MUST pass the server's schema validation for that version and one that fails it MUST be
   refused at the same JSON pointer; this is a contract test, not an assumption.
@@ -664,24 +773,47 @@ confirmation (no active link).
 - **FR-026-046 — Errors**: Errors MUST reuse the closed `Error.code` set and add only `details.reason`
   refinements listed in [contracts/errors.md](./contracts/errors.md), named by the shared convention
   (`<AREA>_INPUT_INVALID`, `<AREA>_DESTINATION_DENIED`) and using feature 031's codes for encoded
-  fields; worker-protocol refusals reuse the existing `x-sagat-error` codes.
+  fields; worker-protocol refusals reuse the existing `x-sagat-error` codes. A run input refusal is
+  always design 043's (`RUN_INPUT_INVALID`, `RUN_INPUT_SCHEMA_UNUSABLE`, with `details.field` and
+  `details.rule`), never a reason of this feature (revised 2026-11-24).
 - **FR-026-047 — Ceilings and quotas**: Every new resource MUST have the defaults and hard ceilings of
   the plan; effective = min(request, namespace, deployment); zero is not unlimited; admission fails
   before work; new quota resources reuse ADR-0027 administration.
-- **FR-026-048 — Five SDKs**: TypeScript, Go, Python, C# and Java MUST offer `execute`,
+- **FR-026-048 — Six SDKs** (revised 2026-11-24: the Rust SDK joined, Architecture decision 0070):
+  TypeScript, Go, Python, C#, Java and Rust MUST offer `execute`,
   `awaitOutcome`, `streamEvents` (resume by offset), `getStartForm`, `getWorkflowOpenApi`,
-  `decideApproval` with `input`, worker stream publishing with flush and a bounded buffer, and the
-  builder fields `streams`, `emits`, `notify`, `summary` and `form`, with byte-identical canonical
-  documents, and pass shared conformance scenarios.
+  `decideApproval` with `input`, worker stream publishing with flush, a final batch and a bounded
+  buffer, and the builder fields `streams`, `emits`, `notify`, `summary`, `form` and `inputFormHints`,
+  with byte-identical canonical documents, and pass shared conformance scenarios.
 - **FR-026-049 — Studio**: The Studio MUST add the start form, the run's *Streams* tab, the decision
   page, public link management, notification channel management and the public page entry, using
-  design tokens only, WCAG AA, a table/list alternative and FR-007-010 unavailable states.
+  design tokens only, WCAG AA, a table/list alternative and FR-007-010 unavailable states. (Revised
+  2026-11-24, Decision 026-015.) It is built on the components and tokens of the Astryx design system
+  migration (pull request 267), after that migration merges.
 - **FR-026-050 — Compatibility and rollout**: OpenAPI, IR, worker protocol and AsyncAPI changes MUST
   be additive; existing `startRun`, approval decisions, subscriptions and Studio keep working. A
   worker that does not negotiate the new protocol minor keeps receiving every task it serves today:
   publishing is optional for a node that declares `emits`, and such a worker simply never appends.
   Each capability is enabled separately and rolled back by disabling new publication or creation
-  while readers and stored data remain.
+  while readers and stored data remain. (Revised 2026-11-24, Decision 026-013.) The capabilities that
+  every process must honour are instance-registry capabilities (Architecture decision 0082):
+  `form-hints-v1`, `workflow-streams-v1`, `notification-channels-v1`, `approval-channels-v1`,
+  `public-links-v1` and `synchronous-routes-v1`; publication or creation that needs one is refused until
+  its requirement is activated. Migrations follow the rule of design 043: every CHECK is added `NOT VALID`
+  and validated by a later migration.
+- **FR-026-051 — Workflows written as code** (added 2026-11-24, Owner decision 2026-11-24-3, Decision
+  026-016): A version written as code (design 044) MUST be startable and awaitable through every surface
+  of this feature exactly as a graph version: its `inputSchema`, `outputSchema`, Query and Update
+  declarations and stream channel declarations are data of the published version, so forms, public
+  links, `executeRun`, `getRunOutcome`, the per-workflow OpenAPI and the stream feed treat it alike; its
+  activities append through `AppendStreamEvents` under their lease. Whether workflow code itself appends
+  is design 044's decision; if it does, the append is a command of the workflow task whose publisher
+  sequence comes from the replay position, so a replay stores nothing twice.
+- **FR-026-052 — One validator** (added 2026-11-24, Decision 026-003): Every value this feature
+  validates against a declared schema (a run input through a form, a link or `executeRun`; link presets;
+  approval form input; stream event data) MUST be validated by the platform validator of design 043 with
+  its work counter, depth limit, closed refusal and shared permits, and every such schema MUST stay inside
+  that design's subset. The `jsonschema` crate is not on any of these paths.
 
 ### Amendment to feature 016
 
@@ -725,8 +857,9 @@ version). Query/Update schemas stay non-carriers (FR-016-004).
   immutable revisions, and one receipt per accepted submission key.
 - **Public-link principal**: the anonymous caller of one link, with one capability.
 - **Waiter**: an in-process registration of a request waiting for a run outcome; never durable.
-- **Stream channel / stream event / stream head**: a declared channel of a version with its budget, one
-  appended event with its offset and inline data, and the per-run allocation and budget row.
+- **Stream channel / stream event / stream head / stream attempt**: a declared channel of a version with
+  its budget, one appended event with its offset and inline data, the per-run allocation and budget row,
+  and the per-attempt fence row that a final batch or a feed read closes (added 2026-11-24).
 - **Approval summary / decision link / decision input**: the evaluated declared summary of an opened
   approval, the signed pointer sent with a delivery, and the validated form input of a decision.
 - **Notification channel**: an outbound subscription with a chat or e-mail destination and a name.
@@ -747,7 +880,7 @@ All criteria below are future evidence; nothing is complete because this documen
 - **SC-026-002**: `executeRun` returns `200` for runs that end within the wait and `202` otherwise in
   100 % of 1,000 mixed calls, with zero duplicate runs across retries, a control-plane kill and a
   lost NATS hint, and zero database connections held by waiting requests (FR-026-007..010).
-- **SC-026-003**: The five SDKs produce identical normalized results for execute, outcome wait,
+- **SC-026-003**: The six SDKs (revised 2026-11-24) produce identical normalized results for execute, outcome wait,
   stream publish/subscribe with resume, start form, OpenAPI retrieval and decisions with input
   (FR-026-048).
 - **SC-026-004**: 10,000 appended events across two attempts, with injected lost responses, a lease
@@ -805,6 +938,14 @@ All criteria below are future evidence; nothing is complete because this documen
 - **SC-026-019**: The previous release's fixture corpus, SDK clients, workers and Studio build pass
   unchanged against the new server, and each down migration refuses while its data exists
   (FR-026-050, NFR-026-004).
+- **SC-026-020** (added 2026-11-24): A workflow written as code and its graph twin give the same normalized
+  results, in the six languages, for `execute`, the start form, the per-workflow OpenAPI document and an
+  activity's stream events (FR-026-051).
+- **SC-026-021** (added 2026-11-24): On every path that validates a value (form and link submissions,
+  `executeRun`, link presets, decision input, stream events), an input past the design-043 work budget is
+  refused with `workLimit` and a schema outside the subset is refused at publication; a test that bypasses the
+  run input gate on any new creator fails; no such path calls the `jsonschema` crate (FR-026-052, FR-026-005,
+  FR-026-025).
 
 ## Assumptions
 
@@ -820,9 +961,16 @@ All criteria below are future evidence; nothing is complete because this documen
   notification to each eligible person individually needs a directory that does not exist (G1326).
 - Microsoft retired Office 365 Connectors (incoming webhooks) in Teams in May 2026; Teams delivery uses
   Workflows webhooks, which do not support interactive buttons (D1341).
-- Single region (ADR-0009); public links and decision pages are served by the control plane. The
+- One writable region per cell (the constitution amendment 5.0.0 in progress, feature 032; it was
+  "single region, ADR-0009" when drafted); public links and decision pages are served by the cell's
+  control planes. The
   operator configures a public-forms origin distinct from the Studio origin before public links can be
   used (it may share a host with the feature-027 apps origin).
+- Feature 022's early return and its permit port are not on `develop` on 2026-11-24 (the throughput
+  slice is on `feature/022-throughput-control`; early return is not built). `EARLY_RETURN` stays reserved
+  and the new run creators call the permit port when it merges (Decision 026-017).
+- Run input validation (design 043) is built and approved; its subset, refusal shape and gate are
+  authoritative for every input this feature admits.
 - Each tenant that wants Slack interactivity creates and registers its own Slack app; there is no
   platform-distributed Slack app (G1335).
 
@@ -847,6 +995,17 @@ All criteria below are future evidence; nothing is complete because this documen
   cell epoch in stream cursors, FR-026-017; decision-link and receipt keys in its key inventory), 029
   (its evaluator rechecks links when enabled, FR-026-024, 031; groups could later be
   approval-notification recipients), 013 (federated login is not required). None is required for P1.
+- **Added on 2026-11-24**: design 043 (built: the run input gate, its subset and validator, which every
+  new creator and every validated value uses; its Technical Plan 1 gains this feature's rows, Decision
+  026-017); design 044 (workflows written as code, FR-026-051); feature 041 (step logs: the minor 1.7 it
+  holds, its hot-path rule and storage-class pattern that the stream append follows); design 038 (the
+  hot-path work budget); feature 033 (the `REDIS` destination kept when the destination CHECK widens);
+  feature 018 as built (business identifiers, `USE_EXISTING`, Signal-with-Start and Update-with-Start,
+  `system:schedule:<id>` as the actor precedent); Architecture decision 0082 (instance registry
+  capabilities); design 040 (an OCSF mapping per audit action, Gap 1345); feature 007's Astryx migration
+  (pull request 267) before the Studio tasks; feature 047 (OAuth resources): channel credentials stay
+  this feature's own (ADR-0055 rule 11b); whether a Slack or Teams credential later becomes a 047 OAuth
+  resource is stated in `plan.md` (Boundaries with other work).
 
 ## Out of Scope
 
@@ -862,6 +1021,9 @@ All criteria below are future evidence; nothing is complete because this documen
 ## Owner questions
 
 See [research.md](./research.md#owner-questions): O1320 (possession-only decision links), O1321
-(public links default enablement), O1322 (`pii` in channel messages).
+(public links default enablement), O1322 (`pii` in channel messages). All three were decided on
+2026-11-24 under the delegation (delegate (OD-2026-11-24-4)): no possession-only decision in 0.3.0;
+public links off by default everywhere; `pii` in channel messages only under the uniform rule of Owner
+question 1081, which stays feature 020's to answer.
 
 See also the [requirements checklist](./checklists/requirements.md).

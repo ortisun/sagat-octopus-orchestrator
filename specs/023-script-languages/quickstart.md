@@ -30,6 +30,8 @@ real result recorded at the end of this file, failures and skips included.
 ```sh
 # Units: language ids, policy narrowing, bundle v1/v3/v4 validators, catalogs, provenance, shims' protocol
 cargo test -p sagat-domain -p sagat-application -p sagat-infra-schema -p sagat-infra-sandbox -p sagat-sandbox-runner
+# Added 2026-11-24: design 046's provenance and SBOM crate, with this feature's additions (research Decision 1627)
+cargo test -p sagat-infra-packages
 
 # Registry, policy, presence, provenance and migration against real PostgreSQL
 cargo test -p sagat-tests --test integration_script_languages
@@ -46,7 +48,7 @@ cargo test -p sagat-tests --test fault_script_languages
 # Contract: the merged OpenAPI operations and fields, normal and error paths
 cargo test -p sagat-tests --test contract_rest_script_languages
 
-# Five SDKs: canonical IR of script nodes in the four new languages
+# Six SDKs (Rust joined on 2026-10-27): canonical IR of script nodes in the four new languages
 cargo test -p sagat-tests --test sdk_conformance
 
 # Benchmark and the Deno/Bun spike (release mode, on purpose)
@@ -55,6 +57,11 @@ SAGAT_PERF_REPORT=tests/performance/reports/script-languages.md \
 ```
 
 ## By hand: the happy path (Bash, then Rust)
+
+0. Added 2026-11-24 (research Decision 1234): after every control plane and engine runs this release,
+   record the requirement `script-languages-v1` through the instance registry's activation, as an
+   operator. Expected before it: creating a `bash` script is `422` with reason
+   `SCRIPT_LANGUAGES_CAPABILITY_DISABLED`; after it, the steps below.
 
 1. Start the stack and a runner as in the 005 quickstart, adding the new languages explicitly:
 

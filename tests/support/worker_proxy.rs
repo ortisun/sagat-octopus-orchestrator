@@ -1,4 +1,11 @@
 //! Faults at the real gRPC boundary, preserving the durable engine and target execution.
+//!
+//! A proxy of the worker service that forwards each call to a real API and can lose or hold what comes back. First
+//! written for the database runner; moved here by design 041's task T041-8, which teaches it two faults of its own:
+//! `lose_append_ack` forwards one `AppendStepLogs` and drops its answer, and `lose_report_ack` forwards one
+//! `CompleteStep` or `FailStep` and drops its answer (used by the carry's tests, task T041-36). Each fault is armed for
+//! one call and disarms itself. Declared by the targets that use it through `#[path]`, not by `tests/support/mod.rs`.
+#![allow(dead_code)]
 use sagat_api_grpc::pb::{
     self,
     worker_service_client::WorkerServiceClient,
@@ -20,6 +27,15 @@ use tonic::{
 #[derive(Default)]
 pub struct Faults {
     pub lose_complete_ack: AtomicBool,
+    /// Forward the next `AppendStepLogs`, then answer `UNAVAILABLE` as a lost answer would (design 041, task T041-8).
+    pub lose_append_ack: AtomicBool,
+    /// Forward the next `CompleteStep` or `FailStep`, then answer `UNAVAILABLE` as a lost answer would (task T041-8,
+    /// for the carry of task T041-36).
+    pub lose_report_ack: AtomicBool,
+    /// The `AppendStepLogs` answers dropped by `lose_append_ack`.
+    pub lost_appends: AtomicUsize,
+    /// The report answers dropped by `lose_report_ack`.
+    pub lost_reports: AtomicUsize,
     pub fail_heartbeat: AtomicBool,
     pub wrong_namespace: AtomicBool,
     pub heartbeats: AtomicUsize,
@@ -65,6 +81,20 @@ pub async fn start(url: &str) -> Running {
         task,
     }
 }
+impl Proxy {
+    /// The answer of a report that reached the server, dropped once when `lose_report_ack` is armed: the fault is
+    /// spent by the call whatever the server answered.
+    fn lose_report(
+        &self,
+        response: Result<Response<pb::StepCommandResponse>, Status>,
+    ) -> Result<Response<pb::StepCommandResponse>, Status> {
+        if self.faults.lose_report_ack.swap(false, Ordering::SeqCst) {
+            self.faults.lost_reports.fetch_add(1, Ordering::SeqCst);
+            return Err(Status::unavailable("lost report answer"));
+        }
+        response
+    }
+}
 #[tonic::async_trait]
 impl WorkerService for Proxy {
     async fn register_worker(
@@ -108,7 +138,10 @@ impl WorkerService for Proxy {
             return std::future::pending().await;
         }
         let started = Instant::now();
-        let response = self.client.clone().complete_step(r).await?;
+        let response = match self.client.clone().complete_step(r).await {
+            Ok(response) => response,
+            Err(status) => return self.lose_report(Err(status)),
+        };
         if self.faults.measure.load(Ordering::SeqCst) {
             let mut samples = self.faults.completions.lock().unwrap();
             assert!(samples.len() < 512);
@@ -120,13 +153,14 @@ impl WorkerService for Proxy {
         if self.faults.lose_complete_ack.swap(false, Ordering::SeqCst) {
             return Err(Status::unavailable("lost committed ack"));
         }
-        Ok(response)
+        self.lose_report(Ok(response))
     }
     async fn fail_step(
         &self,
         r: Request<pb::FailStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        self.client.clone().fail_step(r).await
+        let response = self.client.clone().fail_step(r).await;
+        self.lose_report(response)
     }
     async fn resolve_secrets(
         &self,
@@ -138,9 +172,15 @@ impl WorkerService for Proxy {
     }
     async fn append_step_logs(
         &self,
-        _: Request<pb::AppendStepLogsRequest>,
+        r: Request<pb::AppendStepLogsRequest>,
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
-        Err(Status::unimplemented("AppendStepLogs"))
+        let response = self.client.clone().append_step_logs(r).await;
+        // Armed for one call: spent by it whatever the server answered.
+        if self.faults.lose_append_ack.swap(false, Ordering::SeqCst) {
+            self.faults.lost_appends.fetch_add(1, Ordering::SeqCst);
+            return Err(Status::unavailable("lost step-log answer"));
+        }
+        response
     }
     async fn acknowledge_tasks(
         &self,

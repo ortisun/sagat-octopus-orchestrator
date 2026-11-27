@@ -8,6 +8,12 @@ Status: Proposed — not started; revised 2026-10-26 after the architecture and 
 coordinator decisions C1–C22. No task is ticked; a task is ticked only with the evidence it names
 (a test and its real result, or a command and its output), recorded in a future `verification.md`.
 
+Re-baselined on 2026-11-24 against `develop` (research.md, "Re-baseline against `develop`", Decisions
+D026-001 to D026-017): tasks whose content changed say "revised 2026-11-24"; Tasks 026-069 to 026-078 are
+new (Phase 12). Who builds what, in which order and in which crates: `plan.md`, "Build slices
+(2026-11-24)". Wherever a task below says "five SDKs" or names five languages, read six: Rust joined
+(feature 034).
+
 **Format**: `T026-NNN [P?] [Story] Description — Files — Evidence — Traces`. `[P]`: can run in
 parallel with the other `[P]` tasks of its phase (different files, no dependency). Tests are written
 first and seen failing for the right reason (AGENTS.md rule 18). Suites: `tests/{contract,integration,
@@ -18,6 +24,9 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
 - [ ] T026-001 Owner review of ADR-0061 and ADR-0068 and answers to O1320–O1322; record them in
   `docs/owner-decisions.md` and the ADR status — Files: `docs/adr/ADR-0061-*.md`, `docs/adr/ADR-0068-*.md`,
   `docs/owner-decisions.md` — Evidence: owner's recorded answer — Traces: FR-026-013..027, 031, 037, 042.
+  (Revised 2026-11-24: decided under the delegation of Owner decision 2026-11-24-4. The ADR status blocks and
+  the research register carry the decisions; the task is ticked when the coordinator's rows are in
+  `docs/owner-decisions.md`, which is the evidence it names.)
 - [ ] T026-002 [P] Add test targets `integration_`, `fault_`, `contract_rest_`, `contract_grpc_`,
   `e2e_`, `perf_invocation_human_surfaces` and their `main.rs` — Files: `tests/Cargo.toml`,
   `tests/{integration,fault,contract,e2e}/invocation-human-surfaces/main.rs` — Evidence: `cargo test -p
@@ -63,7 +72,9 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
   property tests (budget arithmetic per channel, pool and run); a compile-fail test that `LinkBearer`
   cannot become a `Principal` — Traces: FR-026-001, 013..016, 019, 022, 024, 029, 033, 035, 042.
 - [ ] T026-011 IR codec and publication checks for `streams`, `emits`, `notify`, `summary`, `form`,
-  `x-sagat-form`, summary expressions on the existing evaluator, reserved `sagat.` channel names, and
+  `inputFormHints` and `form.hints` (revised 2026-11-24: hints left the schema), the design-043 subset of
+  channel and approval form schemas (`STREAM_SCHEMA_OUTSIDE_SUBSET`, `FORM_SCHEMA_OUTSIDE_SUBSET`), the
+  capability refusals of Task 026-070, summary expressions on the existing evaluator, reserved `sagat.` channel names, and
   the feature-031 encoded-location check (`ENCODING_READ_BY_FORM`) when 031 is present — Files:
   `crates/infra-ir/src/{convert,evaluator}.rs`, `crates/infra-schema/src/classification/publication.rs` —
   Evidence: codec round trip,
@@ -73,7 +84,9 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
   (embed id, live-run cap, inline presets), streams (inline `data`, channel usage), approval channels,
   notification channels (`classification_set_by`, Slack columns, the global interactive index), Slack
   app bindings and chat identities (consumed codes through a `SECURITY DEFINER` function; registry
-  entries of data-model.md) — Files: `crates/infra-postgres/migrations/<next>_*.{up,down}.sql`,
+  entries of data-model.md; revised 2026-11-24: `runs.public_link_id` and its counters, `run_stream_attempts`,
+  no foreign key from stream tables to `runs`, every CHECK `NOT VALID` then validated by a later migration,
+  timestamps after the newest on `develop` at merge) — Files: `crates/infra-postgres/migrations/<next>_*.{up,down}.sql`,
   `crates/infra-postgres/storage-classification.json` — Evidence: migration up/down tests, manifest test
   in `integration_security_multitenancy` (`run_stream_events.data` classified `content`),
   `tests/integration/platform-foundation/runtime_privileges` (no direct `UPDATE` on codes) — Traces:
@@ -86,8 +99,9 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
 
 ## Phase 3: US01 — Start a run from a generated form (P1) 🎯 MVP
 
-- [ ] T026-014 [P] [US1] Form-model walker and `x-sagat-form` validation per
-  [form-model.md](./contracts/form-model.md) — Files: `crates/infra-schema/src/forms.rs` — Evidence:
+- [ ] T026-014 [P] [US1] Form-model walker and form hint validation per
+  [form-model.md](./contracts/form-model.md), over the schema positions of the design-043 pre-check
+  (revised 2026-11-24, Task 026-075) — Files: `crates/infra-schema/src/forms.rs` — Evidence:
   unit and property tests (determinism, each keyword, unsupported optional/required, bounds,
   encrypted marker, `secret` never prefilled) — Traces: FR-026-001..004, 006.
 - [ ] T026-015 [US1] Form service and `getStartForm` route — Files: `crates/application/src/forms.rs`,
@@ -119,7 +133,8 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
 
 ## Phase 5: US03 — Workflow Streams (P1) 🎯 MVP
 
-- [ ] T026-021 [US3] `AppendStreamEvents`: lease check, `emits`, reserved `sagat.` names, schema,
+- [ ] T026-021 [US3] `AppendStreamEvents` (revised 2026-11-24: the fence of Task 026-073, validation by the
+  design-043 validator before the transaction, the storage class of Task 026-071): lease check, `emits`, reserved `sagat.` names, schema,
   secret scan, head allocation, deduplication, channel budget, author and reserved pools, per-run hard
   ceiling and rate; refusal never fails the step; data inline — Files: `crates/api-grpc/src/service.rs`,
   `crates/api-grpc/src/limits.rs`, `crates/application/src/streams.rs`,
@@ -178,7 +193,8 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
   with slot 6's active-run admission, usage rows last; buckets debited in their own decision before):
   presets merge,
   exposed-field check (`FORM_INPUT_INVALID`), owner and 029 recheck, live-run cap and namespace pool
-  counts, derived receipt token, `system:public-link:<id>` actor, origin `PUBLIC_LINK` — Files:
+  counts, derived receipt token, `system:public-link:<id>` actor, `runs.public_link_id` (revised 2026-11-24:
+  not `runs.origin`, Task 026-074), the run input gate as the creator `public_link` (Task 026-069) — Files:
   `crates/application/src/public_links.rs`, `crates/infra-postgres/src/public_links.rs` — Evidence:
   integration tests (one run per key, replay returns the same receipt token, conflict, foreign fields
   refused); unit test that the bearer authorizes no `Permission` — Traces: FR-026-024, 025, 026, ADR-0061.
@@ -314,8 +330,9 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
 - [ ] T026-055 [P] `sdks/SPEC.md` additions and TypeScript and Go clients, worker publishing and builders
   — Files: `sdks/SPEC.md`, `sdks/typescript/`, `sdks/go/` — Evidence: per-SDK unit tests and lints of
   `sdks/AGENTS.md` — Traces: FR-026-048.
-- [ ] T026-056 [P] Python, C# and Java clients, worker publishing and builders — Files: `sdks/python/`,
-  `sdks/dotnet/`, `sdks/java/` — Evidence: per-SDK unit tests and lints — Traces: FR-026-048.
+- [ ] T026-056 [P] Python, C#, Java and Rust clients, worker publishing and builders (revised 2026-11-24: Rust
+  added; the four lock files of the Rust SDK move together) — Files: `sdks/python/`,
+  `sdks/dotnet/`, `sdks/java/`, `sdks/rust/` — Evidence: per-SDK unit tests and lints — Traces: FR-026-048.
 - [ ] T026-057 Conformance scenarios of [sdk-conformance.md](./contracts/sdk-conformance.md) with
   reviewed goldens — Files: `tests/contract/sdk-conformance/scenarios/`, `expected/` — Evidence:
   `SAGAT_SDK_SCENARIO=<name> cargo test -p sagat-tests --test sdk_conformance -- --ignored` for each,
@@ -345,7 +362,9 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
 - [ ] T026-065 Dependency hooks: contract tests that `EARLY_RETURN` and route waits are never produced
   without features 022/021, that a waiter wakes on 022's `run.result_returned` hint and, with the hint
   dropped, at the next poll, and that a route returns a result only with `public-fields-v1`; update
-  those drafts' dependency sections when they are integrated —
+  those drafts' dependency sections when they are integrated (revised 2026-11-24, Decision 026-010: the
+  route wait waits on the inbox event through `event_deliveries`, then on the run; a refused dispatch answers
+  `422` with `field` `/`; feature 021 refuses `mode: wait` until `synchronous-routes-v1` is active) —
   Files: `tests/contract/invocation-human-surfaces/hooks.rs` — Evidence: test result — Traces:
   FR-026-011, 012, SC-026-017.
 - [ ] T026-066 Final verification record and traceability rows — Files:
@@ -366,9 +385,72 @@ fault,e2e}/invocation-human-surfaces/`, targets `*_invocation_human_surfaces` in
   the 031 and 020 registries (through their owners) — Evidence: a reset fixture showing an empty stream
   log and a fresh notification for a reopened approval — Traces: FR-026-006, 021, 030.
 
+## Phase 12: Re-baseline of 2026-11-24 (new tasks)
+
+- [ ] T026-069 Design 043 and feature 022 creator rows: the coordinator writes this feature's rows into
+  design 043's Technical Plan 1 and feature 022's "Run creators" (research.md, Decision 026-017) before
+  their code; `Creator::PublicLink` (label `public_link`); the public-link refusal filter (field and rule
+  only inside an exposed pointer); `executeRun` checked before any waiter — Files:
+  `docs/designs/043-run-input-validation.md` (coordinator), `crates/application/src/run_input.rs`,
+  `crates/application/src/invocation.rs`, `crates/application/src/public_links.rs` — Evidence: one test per
+  row that fails when the creator bypasses the gate (design 043 Requirement 043-016), seen failing first; an
+  anonymous refusal that names no field outside the exposed pointers — Traces: FR-026-005, 007, 025, 052.
+- [ ] T026-070 Fleet capabilities: `form-hints-v1`, `workflow-streams-v1`, `notification-channels-v1`,
+  `approval-channels-v1`, `public-links-v1`, `synchronous-routes-v1` in the instance registry, and the
+  refusals of publication and creation while a requirement is not active (the `*_DISABLED` reasons of
+  `contracts/errors.md`) — Files: `crates/application/src/instances.rs`, `crates/infra-ir/src/`, the creation
+  use cases — Evidence: a registry test per capability; publication refused before activation and accepted
+  after — Traces: FR-026-050.
+- [ ] T026-071 Storage class `workflow_stream` and tenant quota `tenant_stream_bytes` (Decision 026-007), with
+  the ADR-0027 amendment written first, as feature 041 did for `step_log` — Files: `docs/adr/ADR-0027-*.md`
+  (amendment, coordinator), `crates/infra-postgres/migrations/`, `crates/domain/src/quota.rs` — Evidence:
+  accounting test (bytes before the first append equal bytes after the purge, in the new class); a stream
+  that exhausts `tenant_stream_bytes` leaves a run completion with output unaffected; no append takes the
+  tenant usage row before commit (lock observation test) — Traces: FR-026-019, 021.
+- [ ] T026-072 NATS subscriber for waiter hints: the `RunOutcomeHints` port and its `crates/infra-nats`
+  adapter (core subscription, no queue group, every replica) — Files: `crates/application/src/invocation.rs`,
+  `crates/infra-nats/src/` — Evidence: two-replica test that the replica holding the waiter is woken; a test
+  with NATS absent served by the poll alone — Traces: FR-026-009.
+- [ ] T026-073 Stream attempt fence without locks on `steps` or `runs` (Decision 026-006): `run_stream_attempts`,
+  the `final` batch, the close by a feed read and by the maintenance pass, `settled` and `superseded` only
+  after the close — Files: `crates/infra-postgres/src/streams.rs`, `crates/application/src/streams.rs`,
+  `crates/scheduler/src/` (maintenance close) — Evidence: barrier test (an append holding its attempt row
+  while the step completes: its events precede `settled`; an append after the close is `STALE_ATTEMPT`); the
+  design-038 work budget unchanged; a lock observation test that an append never waits on `steps` or `runs`
+  — Traces: FR-026-014, 016, SC-026-004, SC-026-005.
+- [ ] T026-074 `runs.public_link_id` and `public_link_active_counts` kept by triggers with `WHEN` clauses
+  (Decision 026-004) — Files: `crates/infra-postgres/migrations/`, `crates/infra-postgres/src/public_links.rs`,
+  `crates/infra-postgres/src/quotas.rs` — Evidence: counts equal a recount after 10 concurrent submissions and
+  run ends; a run without a link fires no counting trigger (statement count); the private-run guard still
+  refuses a stray `origin` — Traces: FR-026-022, 025.
+- [ ] T026-075 Form hints beside the schema (`inputFormHints`, `form.hints`) and the form walker over design
+  043's subset: nullable fields, `multipleOf`, `minProperties` and `maxProperties`, `pattern` shown but not
+  evaluated, `SCHEMA_UNUSABLE` (Decisions 026-001 and 026-002) — Files: `crates/infra-schema/src/forms.rs`,
+  `crates/infra-ir/src/` — Evidence: property test that every model the walker renders is of a schema the
+  043 pre-check accepts; a schema carrying `x-sagat-form` is refused as 043 refuses it; a hint edit leaves
+  the schema digest unchanged — Traces: FR-026-002, 003.
+- [ ] T026-076 Pinned OpenAPI tests learn `x-extended: '026'` (Decision 026-014) — Files:
+  `tests/contract/payload-classification/openapi.rs`, `tests/contract/iceberg-writes/openapi.rs` — Evidence:
+  both tests pass without a bless switch; the reviewed one-operation diff of `decideWorkflowApproval` quoted
+  in their comments — Traces: FR-026-050, NFR-026-004.
+- [ ] T026-077 The `pii` channel ceiling (the `pii` part of Requirement 026-039) — Owner-gate: O1081 — Files:
+  `crates/application/src/notifications.rs`, `crates/scheduler/src/deliveries.rs` — Evidence: as Task
+  026-049's reveal-grant case — Traces: FR-026-039, SC-026-010. Until Owner question 1081 is answered,
+  channels stop at `internal` (research.md, Owner question 1322).
+- [ ] T026-078 Workflows written as code through every surface (Requirement 026-051): the
+  `procedural-surfaces` conformance scenario, after design 044 publishes versions with their schemas and
+  declarations — Files: `tests/contract/sdk-conformance/scenarios/procedural-surfaces.json` — Evidence:
+  six-language run with the same normalized results as the graph twin — Traces: FR-026-051.
+
 ## Dependencies and order
 
 Phase 1 → Phase 2 → {US01, US02, US03} (independent; MVP) → US06 → US05 (needs channels) → US04 (needs
 US01's form model) → US07 (needs US02 operations) → US08 (needs US05). Phase 11 tasks follow the stories
 they test; T026-067 and T026-068 run with the first story that needs them (streams and approvals);
 T026-062 and T026-066 are last. Parallel within a phase only where marked `[P]`.
+
+Revised 2026-11-24: the order and the parallel lanes are `plan.md`, "Build slices (2026-11-24)", which
+supersedes the line above for scheduling (the story order is unchanged). The new tasks run in the slices
+that table names. Already done outside this feature: feature 018's reset-rule registry lists this
+feature's two entries (`specs/018-schedules-bulk-operations/contracts/journal-and-events.md`, the rows for
+026), so Task 026-068 has only the 020 and 031 registries and its reset fixture left.
